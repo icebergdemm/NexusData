@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+
+{% block title %}Игрок {{ player.player_id }} — Nexus Data{% endblock %}
+
+{% block content %}
+  <div class="player-detail-layout">
+    <div class="card player-main-card">
+      <h2>Игрок {{ player.player_last_time_name or ('#' ~ player.player_id) }}</h2>
+      <div class="data-grid player-data-grid">
+      <div><label>ID игрока</label><span>{{ player.player_id }}</span></div>
+      <div><label>SteamID</label><span>{{ player.player_steamid }}</span></div>
+      <div><label>Последний ник</label><span>{{ player.player_last_time_name }}</span></div>
+      <div><label>Последний вход</label><span>{{ player.last_login_time.strftime('%Y-%m-%d %H:%M:%S') if player.last_login_time else 'N/A' }}</span></div>
+      <div><label>Время на сервере (сек)</label><span>{{ player.play_time }}</span></div>
+      <div><label>Время на сервере (часы)</label><span>{{ '%.2f'|format(player.play_time_hours) }}</span></div>
+      <div><label>Ранг (число)</label><span>{{ player.rank_id if player.rank_id is not none else 'N/A' }}</span></div>
+      <div><label>Ранг (из конфига)</label><span>{{ player.rank_name or 'N/A' }}</span></div>
+      <div><label>Набор (число)</label><span>{{ player.kit_level if player.kit_level is not none else 'N/A' }}</span></div>
+      <div><label>Набор (из конфига)</label><span>{{ player.kit_name or 'N/A' }}</span></div>
+      </div>
+    </div>
+
+    <div class="card player-edit-card">
+      <h3>Редактирование</h3>
+      <form class="player-edit-form" action="/admin/players/{{ player.player_id }}/update" method="post">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+
+        <div class="form-group compact-field">
+          <label for="rank_id">Ранг</label>
+          <select id="rank_id" name="rank_id">
+            <option value="">Не задан</option>
+            {% for r_id, r_name in ranks.items() %}
+            <option value="{{ r_id }}" {% if (r_id|string) == (player.rank_id|string) %}selected{% endif %}>{{ r_id }} — {{ r_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group compact-field">
+          <label for="kit_level">Набор</label>
+          <select id="kit_level" name="kit_level">
+            <option value="">Не задан</option>
+            {% for k_id, k_name in kits.items() %}
+            <option value="{{ k_id }}" {% if (k_id|string) == (player.kit_level|string) %}selected{% endif %}>{{ k_id }} — {{ k_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group full-row">
+          <label for="achievements">Достижения (JSON-массив)</label>
+          <textarea id="achievements" name="achievements" rows="5">{{ player.achievements | tojson }}</textarea>
+        </div>
+
+        <div class="player-edit-actions">
+          <button type="submit" class="btn">Сохранить</button>
+          <a href="/admin/players" class="btn btn-secondary">К списку игроков</a>
+        </div>
+      </form>
+    </div>
+
+    <div class="card stats-section player-stats-card">
+      <h3>Статистика игрока</h3>
+      {% if stats %}
+      <div class="data-grid player-stats-grid">
+        <div><label>Успешных миссий капитаном</label><span>{{ stats.successful_missions_captain }}</span></div>
+        <div><label>Всего миссий капитаном</label><span>{{ stats.total_missions_captain }}</span></div>
+        <div><label>Спасено игроков</label><span>{{ stats.saved_players }}</span></div>
+        <div><label>Убито монстров</label><span>{{ stats.killed_monsters }}</span></div>
+        <div><label>Убито игроков</label><span>{{ stats.killed_players }}</span></div>
+        <div><label>Убито NPC</label><span>{{ stats.killed_npc }}</span></div>
+      </div>
+      {% else %}
+      <p>Статистика для этого игрока пока не найдена.</p>
+      {% endif %}
+    </div>
+
+    <!-- Player Kills by Monster Type -->
+    <div class="card">
+      <h3>Убийства по типам монстров</h3>
+      {% if kills %}
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Тип монстра</th>
+              <th>Кол-во убийств</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for kill in kills %}
+            <tr>
+              <td>{{ kill.monster_type }}</td>
+              <td>{{ kill.kills_count }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>Нет данных об убийствах.</p>
+      {% endif %}
+    </div>
+
+    <!-- Player Role Actions -->
+    <div class="card">
+      <h3>Действия в ролях</h3>
+      {% if role_actions %}
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Роль</th>
+              <th>Тип действия</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for action in role_actions %}
+            <tr>
+              <td>{{ action.role }}</td>
+              <td>{{ action.action_type }}</td>
+              <td>{{ action.value }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>Нет действий в ролях.</p>
+      {% endif %}
+    </div>
+
+    <!-- Player IPs -->
+    <div class="card">
+      <h3>История IP адресов</h3>
+      {% if ips %}
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>IP адрес</th>
+              <th>Подсеть</th>
+              <th>Первый вход</th>
+              <th>Последний вход</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ip in ips %}
+            <tr>
+              <td>{{ ip.ip }}</td>
+              <td>{{ ip.subnet }}</td>
+              <td>{{ ip.first_seen.strftime('%Y-%m-%d %H:%M:%S') if ip.first_seen else 'N/A' }}</td>
+              <td>{{ ip.last_seen.strftime('%Y-%m-%d %H:%M:%S') if ip.last_seen else 'N/A' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>Нет истории IP адресов.</p>
+      {% endif %}
+    </div>
+
+    <!-- Player Names History -->
+    <div class="card">
+      <h3>История ников</h3>
+      {% if names %}
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Ник</th>
+              <th>Первый раз</th>
+              <th>Последний раз</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for name in names %}
+            <tr>
+              <td><strong>{{ name.nickname }}</strong></td>
+              <td>{{ name.first_seen.strftime('%Y-%m-%d %H:%M:%S') if name.first_seen else 'N/A' }}</td>
+              <td>{{ name.last_seen.strftime('%Y-%m-%d %H:%M:%S') if name.last_seen else 'N/A' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>Нет истории ников.</p>
+      {% endif %}
+    </div>
+
+    <!-- Player Role Stats -->
+    <div class="card">
+      <h3>Статистика по ролям</h3>
+      {% if role_stats %}
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Роль</th>
+              <th>Раундов сыграно</th>
+              <th>MVP очки</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for stat in role_stats %}
+            <tr>
+              <td>{{ stat.role }}</td>
+              <td>{{ stat.rounds_played }}</td>
+              <td>{{ '%.2f'|format(stat.mvp_score) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>Нет статистики по ролям.</p>
+      {% endif %}
+    </div>
+
+    <!-- Player Sessions -->
+    <div class="card">
+      <h3>История сеансов</h3>
+      {% if sessions %}
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>№ сеанса</th>
+              <th>Вход</th>
+              <th>Выход</th>
+              <th>Длительность (сек)</th>
+              <th>Средний пинг</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for session in sessions %}
+            <tr>
+              <td>{{ session.session_number }}</td>
+              <td>{{ session.login_time.strftime('%Y-%m-%d %H:%M:%S') if session.login_time else 'N/A' }}</td>
+              <td>{{ session.logout_time.strftime('%Y-%m-%d %H:%M:%S') if session.logout_time else 'активный' }}</td>
+              <td>{{ session.session_duration if session.session_duration else '—' }}</td>
+              <td>{{ session.avg_ping if session.avg_ping else '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p>Нет истории сеансов.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Игроки — Nexus Data{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2>Игроки сервера</h2>
+    <p>Всего игроков: {{ total }}</p>
+
+    <div style="margin-bottom: 1rem;">
+      <input type="text" id="search-input" placeholder="Поиск по имени или SteamID..." style="padding: 8px; width: 300px; border: 1px solid #ddd; border-radius: 4px;">
+      <div id="search-results" style="position: absolute; background: white; border: 1px solid #ddd; max-height: 200px; overflow-y: auto; display: none; z-index: 1000;"></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+                        <th>SteamID</th>
+                        <th>Имя</th>
+                        <th>Ранг</th>
+                        <th>Уровень набора</th>
+                        <th>Время на сервере (ч)</th>
+                        <th>Последний вход</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for player in players %}
+                    <tr>
+                        <td>{{ player.player_id }}</td>
+                        <td>{{ player.player_steamid }}</td>
+                        <td>{{ player.player_last_time_name }}</td>
+                        <td>{{ player.rank_name }}</td>
+                        <td>{{ player.kit_name }}</td>
+                        <td>{{ "%.1f"|format(player.play_time_hours) }}</td>
+                        <td>{{ player.last_login_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td>
+                            <a href="/admin/players/{{ player.player_id }}" class="btn">Просмотр</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            {% if total_pages > 1 %}
+            <div class="pagination">
+                {% if page > 1 %}
+                <a href="?page={{ page - 1 }}&page_size={{ page_size }}" class="page-btn">« Предыдущая</a>
+                {% endif %}
+
+                {% for p in range(max(1, page - 2), min(total_pages + 1, page + 3)) %}
+                <a href="?page={{ p }}&page_size={{ page_size }}" class="page-btn {% if p == page %}active{% endif %}">{{ p }}</a>
+                {% endfor %}
+
+                {% if page < total_pages %}
+                <a href="?page={{ page + 1 }}&page_size={{ page_size }}" class="page-btn">Следующая »</a>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('search-input');
+        const searchResults = document.getElementById('search-results');
+        let timeout;
+
+        searchInput.addEventListener('input', function() {
+            clearTimeout(timeout);
+            const query = this.value.trim();
+            if (query.length < 2) {
+                searchResults.style.display = 'none';
+                return;
+            }
+            timeout = setTimeout(() => searchPlayers(query), 300);
+        });
+
+        async function searchPlayers(query) {
+            try {
+                const response = await fetch(`/players/search?q=${encodeURIComponent(query)}`);
+                const results = await response.json();
+                displayResults(results);
+            } catch (error) {
+                console.error('Search error:', error);
+            }
+        }
+
+        function displayResults(results) {
+            if (results.length === 0) {
+                searchResults.style.display = 'none';
+                return;
+            }
+            searchResults.innerHTML = results.map(player => 
+                `<div style="padding: 8px; cursor: pointer; border-bottom: 1px solid #eee;" onclick="goToPlayer(${player.id})">
+                    ${player.name} (${player.steamid})
+                </div>`
+            ).join('');
+            searchResults.style.display = 'block';
+        }
+
+        function goToPlayer(id) {
+            window.location.href = `/admin/players/${id}`;
+            searchResults.style.display = 'none';
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
+                searchResults.style.display = 'none';
+            }
+        });
+    </script>
+{% endblock %}

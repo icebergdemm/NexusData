@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Nexus Data Admin{% endblock %}</title>
+    <link rel="stylesheet" href="/static/admin/admin_styles.css">
+  </head>
+  <body>
+    {% set flashes = flashes if flashes is defined else [] %}
+    {% if flashes %}
+    <div id="flash-root" class="flash-root" aria-live="polite" aria-atomic="true">
+      {% for flash in flashes %}
+      <div class="flash-message flash-{{ flash.level }}" data-flash>
+        <span>{{ flash.message }}</span>
+        <button type="button" class="flash-close" data-flash-close aria-label="Закрыть уведомление">×</button>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <header class="header">
+      <h1>Nexus Data Admin</h1>
+      <div>
+        {% if request.session.get('username') %}
+        <span>Привет, {{ request.session.get('username') }}!</span>
+        <form action="/logout" method="post" style="display:inline;">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+          <button type="submit" class="logout-btn">Выйти</button>
+        </form>
+        {% endif %}
+      </div>
+    </header>
+
+    <nav class="nav">
+      <ul>
+        <li><a href="/admin">Главная</a></li>
+        <li><a href="/admin/users">Пользователи Nexus Data</a></li>
+        <li><a href="/admin/players">Игроки</a></li>
+        <li><a href="/admin/sessions">Сессии</a></li>
+        <li><a href="/admin/audit">Аудит</a></li>
+      </ul>
+    </nav>
+
+    <main class="container">
+      {% block content %}{% endblock %}
+    </main>
+
+    <script>
+      (function initFlashToasts() {
+        const root = document.getElementById('flash-root');
+        if (!root) return;
+
+        const dismissDelayMs = 4200;
+        const fadeDurationMs = 320;
+
+        const hideFlash = (node) => {
+          if (!node || node.classList.contains('is-leaving')) return;
+          node.classList.add('is-leaving');
+          window.setTimeout(() => {
+            node.remove();
+            if (!root.querySelector('[data-flash]')) {
+              root.remove();
+            }
+          }, fadeDurationMs);
+        };
+
+        root.querySelectorAll('[data-flash]').forEach((item) => {
+          const closeBtn = item.querySelector('[data-flash-close]');
+          if (closeBtn) {
+            closeBtn.addEventListener('click', () => hideFlash(item));
+          }
+          window.setTimeout(() => hideFlash(item), dismissDelayMs);
+        });
+      })();
+    </script>
+  </body>
+</html>

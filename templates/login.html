@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход в админку - Nexus Data</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/admin/admin_styles.css">
+</head>
+<body class="login-page">
+    <video id="login-bg-video" class="login-bg-video" muted playsinline preload="auto">
+        <source src="/static/admin/login-bg.mp4" type="video/mp4">
+    </video>
+
+    {% if request.query_params.get('error') == 'not_authorized' %}
+    <div class="auth-error-panel">Доступ запрещён: ваш Discord ID не внесён в список администраторов.</div>
+    {% elif request.query_params.get('error') %}
+    <div class="auth-error-panel">Ошибка авторизации. Попробуйте снова.</div>
+    {% endif %}
+
+    <div id="auth-cta" class="auth-cta">
+        <a href="{{ oauth_url }}" class="discord-btn">Войти через Discord</a>
+    </div>
+
+    <script>
+        const LOGIN_SCENE_CONFIG = {
+            // Second from which the video will restart after ending.
+            videoLoopStart: 3.2,
+            // Delay before showing the auth button.
+            buttonDelayMs: 5000,
+            // Duration of the fade-in animation for the button.
+            buttonFadeMs: 1300,
+            // Button position in viewport percentage.
+            buttonPosition: { xPercent: 50, yPercent: 80 },
+            // Anchor mode: center | top-left
+            buttonAnchor: 'center'
+        };
+
+        (function initLoginScene() {
+            const video = document.getElementById('login-bg-video');
+            const authCta = document.getElementById('auth-cta');
+
+            // ── Button setup ─────────────────────────────────────────────
+            if (authCta) {
+                authCta.style.setProperty('--auth-fade-ms', `${LOGIN_SCENE_CONFIG.buttonFadeMs}ms`);
+                authCta.style.left  = `${LOGIN_SCENE_CONFIG.buttonPosition.xPercent}%`;
+                authCta.style.top   = `${LOGIN_SCENE_CONFIG.buttonPosition.yPercent}%`;
+                authCta.style.transform = LOGIN_SCENE_CONFIG.buttonAnchor === 'top-left'
+                    ? 'translate(0, 0)'
+                    : 'translate(-50%, -50%)';
+                setTimeout(() => authCta.classList.add('visible'), LOGIN_SCENE_CONFIG.buttonDelayMs);
+            }
+
+            if (!video) return;
+
+            // ── Video loop via requestAnimationFrame (60 fps polling) ─────
+            // timeupdate fires too rarely (~4 Hz) and can miss the loop point.
+            // rAF is called every frame, so we catch the boundary reliably.
+
+            const LOOP_THRESHOLD = 0.18; // seconds before end → jump
+            let started  = false;
+            let jumping  = false;
+
+            const getLoopStart = () => {
+                const s = Math.max(0, Number(LOGIN_SCENE_CONFIG.videoLoopStart) || 0);
+                if (!video.duration || !isFinite(video.duration)) return s;
+                return Math.min(s, video.duration - 0.25);
+            };
+
+            const doLoop = () => {
+                if (jumping) return;
+                jumping = true;
+                video.currentTime = getLoopStart();
+                video.play().catch(() => {});
+                // Release lock after seek settles (250 ms is safe margin)
+                setTimeout(() => { jumping = false; }, 250);
+            };
+
+            const tick = () => {
+                if (
+                    !video.paused &&
+                    video.duration  &&
+                    isFinite(video.duration) &&
+                    video.currentTime >= video.duration - LOOP_THRESHOLD
+                ) {
+                    doLoop();
+                }
+                requestAnimationFrame(tick);
+            };
+
+            // `ended` as a hard safety net in case rAF somehow misses
+            video.addEventListener('ended', doLoop);
+
+            const startVideo = () => {
+                if (started) return;
+                started = true;
+                video.muted       = true;
+                video.loop        = false;
+                video.currentTime = 0;
+                video.play().catch(() => {});
+                requestAnimationFrame(tick);
+            };
+
+            video.addEventListener('loadedmetadata', startVideo, { once: true });
+            video.addEventListener('canplay',        startVideo, { once: true });
+
+            // Hard fallback: if metadata never fires (cached/instant load)
+            setTimeout(() => { if (!started) startVideo(); }, 1500);
+        })();
+    </script>
+</body>
+</html>

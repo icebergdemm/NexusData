@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Панель управления — Nexus Data{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2>Панель управления</h2>
+    <p>Добро пожаловать в систему управления Nexus Data.</p>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card">
+      <h3>Игроки</h3>
+      <p>Управление данными игроков</p>
+      <a href="/admin/players">Перейти</a>
+    </div>
+    <div class="stat-card">
+      <h3>Админы</h3>
+      <p>Управление пользователями админки</p>
+      <a href="/admin/users">Перейти</a>
+    </div>
+    <div class="stat-card">
+      <h3>Статистика</h3>
+      <p>Просмотр статистики системы</p>
+      <a href="#">Скоро</a>
+    </div>
+  </div>
+{% endblock %}

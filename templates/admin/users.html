@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Пользователи Nexus Data — Nexus Data{% endblock %}
+
+{% block content %}
+    <div class="card">
+        <h2>Пользователи Nexus Data</h2>
+
+        <h3>Добавить нового админа</h3>
+        <form action="/admin/users" method="post">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+            <div class="form-group">
+                <label for="discord_id">Discord ID:</label>
+                <input type="text" id="discord_id" name="discord_id" required>
+            </div>
+            <div class="form-group">
+                <label for="role">Роль:</label>
+                <select id="role" name="role">
+                    {% for role in roles %}
+                    <option value="{{ role }}">{{ role|title }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Добавить</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2>Существующие админы</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Discord ID</th>
+                    <th>Имя</th>
+                    <th>Роль</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for admin_user in admins %}
+                <tr>
+                    <td>{{ admin_user.id }}</td>
+                    <td>{{ admin_user.discord_id }}</td>
+                    <td>{{ admin_user.discord_username }}</td>
+                    <td>{{ admin_user.role }}</td>
+                    <td>
+                        <form action="/admin/users/{{ admin_user.id }}/update" method="post" style="display: inline;">
+                            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+                            <select name="role">
+                                {% for role in roles %}
+                                <option value="{{ role }}" {% if role == admin_user.role %}selected{% endif %}>{{ role|title }}</option>
+                                {% endfor %}
+                            </select>
+                            <button type="submit" class="btn">Изменить</button>
+                        </form>
+                        <form action="/admin/users/{{ admin_user.id }}/delete" method="post" style="display: inline;">
+                            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+                            <button type="submit" class="btn btn-danger">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endblock %}

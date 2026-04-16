@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Сессии — Nexus Data{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2>Активные сессии</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Admin ID</th>
+          <th>Token (partial)</th>
+          <th>Created</th>
+          <th>Expires</th>
+          <th>Revoked</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+        <tr>
+          <td>{{ s.id }}</td>
+          <td>{{ s.admin_id }}</td>
+          <td>{{ s.token[:8] }}…</td>
+          <td>{{ s.created_at }}</td>
+          <td>{{ s.expires_at }}</td>
+          <td>{{ 'yes' if s.revoked else 'no' }}</td>
+          <td>
+            <form action="/admin/sessions/{{ s.id }}/revoke" method="post" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+              <button type="submit" class="btn btn-danger">Отозвать</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

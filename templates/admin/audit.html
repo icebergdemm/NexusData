@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Аудит — Nexus Data{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2>Журнал действий администраторов Nexus Data</h2>
+    <table class="audit-table">
+      <thead>
+        <tr>
+          <th>Кто</th>
+          <th>Действие</th>
+          <th>Объект</th>
+          <th>Изменения</th>
+          <th>Время</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        {% set d = log.details or {} %}
+        {% set target = d.get('target') or {} %}
+        {% set changes = d.get('changes') or [] %}
+        <tr>
+          <td>
+            <div class="audit-actor">
+              <strong>{{ admin_lookup.get(log.admin_id, 'ID ' ~ log.admin_id) }}</strong>
+              <span>ID {{ log.admin_id }}</span>
+            </div>
+          </td>
+          <td>
+            <span class="audit-action-badge">{{ log.action }}</span>
+          </td>
+          <td>
+            <div class="audit-target">
+              {% if target.get('player_id') %}
+              <span>Игрок #{{ target.get('player_id') }}</span>
+              {% endif %}
+              {% if target.get('name') %}
+              <span>{{ target.get('name') }}</span>
+              {% endif %}
+              {% if target.get('steamid') %}
+              <span>{{ target.get('steamid') }}</span>
+              {% endif %}
+              {% if target.get('admin_id') %}
+              <span>Админ #{{ target.get('admin_id') }}</span>
+              {% endif %}
+              {% if target.get('username') %}
+              <span>{{ target.get('username') }}</span>
+              {% endif %}
+              {% if target.get('discord_id') %}
+              <span>Discord {{ target.get('discord_id') }}</span>
+              {% endif %}
+              {% if target.get('session_id') %}
+              <span>Сессия #{{ target.get('session_id') }}</span>
+              {% endif %}
+              {% if not target %}
+              <span class="text-warning">Нет данных</span>
+              {% endif %}
+            </div>
+          </td>
+          <td>
+            {% if changes %}
+            <ul class="audit-changes">
+              {% for c in changes %}
+              <li><code>{{ c.get('field') }}</code>: <span class="audit-from">{{ c.get('from') }}</span> → <span class="audit-to">{{ c.get('to') }}</span></li>
+              {% endfor %}
+            </ul>
+            {% elif d %}
+            <pre class="audit-raw">{{ d | tojson(indent=2) }}</pre>
+            {% else %}
+            <span class="text-warning">Нет данных</span>
+            {% endif %}
+          </td>
+          <td>{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') if log.created_at else 'N/A' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

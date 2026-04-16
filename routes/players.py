@@ -1,0 +1,164 @@
+from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy.orm import Session
+from typing import List
+from database import get_db
+from services import (
+    PlayerService, PlayerKillService, PlayerRoleActionService, 
+    PlayerIPService, PlayerNameService, PlayerRoleStatService, PlayerSessionService
+)
+from schemas import (
+    PlayerDataOut, PlayerDataCreate, PaginatedResponse, PaginationParams,
+    PlayerKillOut, PlayerRoleActionOut, PlayerIPOut, PlayerNameOut,
+    PlayerRoleStatOut, PlayerSessionOut
+)
+from security import verify_api_key_dependency
+from config import get_settings
+import math
+
+settings = get_settings()
+
+router = APIRouter(
+    prefix="/players",
+    tags=["players"]
+)
+
+auth_dependency = Depends(verify_api_key_dependency) if settings.require_auth else None
+
+
+@router.get("", response_model=PaginatedResponse[PlayerDataOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_all_players(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """Get all players with pagination"""
+    service = PlayerService(db)
+    players, total = service.get_all_players(page, page_size)
+    
+    total_pages = math.ceil(total / page_size)
+    has_next = page < total_pages
+    has_prev = page > 1
+    
+    return {
+        "items": players,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "has_next": has_next,
+        "has_prev": has_prev,
+    }
+
+
+@router.get("/info", response_model=PlayerDataOut, dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_info(
+    type: str = Query("steamid", description="steamid or name"),
+    identifier: str = Query(..., description="Identifier value"),
+    db: Session = Depends(get_db),
+):
+    """
+    Get player by identifier (steamid or name)
+    
+    Query params:
+    - type: 'steamid' or 'name'
+    - identifier: the value to search for
+    """
+    service = PlayerService(db)
+    return service.get_player_by_identifier(type, identifier)
+
+
+@router.get("/search", dependencies=[auth_dependency] if auth_dependency else [])
+def search_players(
+    q: str = Query(..., min_length=1, max_length=50),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """Search players by name or SteamID for autocomplete"""
+    service = PlayerService(db)
+    results = service.search_players(q, limit)
+    return [{"id": p.player_id, "name": p.player_last_time_name, "steamid": p.player_steamid} for p in results]
+
+
+@router.post("", response_model=PlayerDataOut, dependencies=[auth_dependency] if auth_dependency else [])
+def create_or_update_player(
+    player: PlayerDataCreate,
+    db: Session = Depends(get_db),
+):
+    """Create new player or update existing by steamid"""
+    service = PlayerService(db)
+    return service.upsert_player(player)
+
+
+# Player kills endpoints
+@router.get("/{player_id}/kills", response_model=List[PlayerKillOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_kills(
+    player_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all kills by monster type for player"""
+    service = PlayerKillService(db)
+    return service.get_player_kills(player_id)
+
+
+# Player role actions endpoints
+@router.get("/{player_id}/role-actions", response_model=List[PlayerRoleActionOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_role_actions(
+    player_id: int,
+    role: str = Query(None, description="Filter by role"),
+    db: Session = Depends(get_db)
+):
+    """Get role actions for player (optionally filtered by role)"""
+    service = PlayerRoleActionService(db)
+    actions = service.get_player_actions(player_id)
+    if role:
+        actions = [a for a in actions if a.role == role]
+    return actions
+
+
+# Player IPs endpoints
+@router.get("/{player_id}/ips", response_model=List[PlayerIPOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_ips(
+    player_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get IP address history for player"""
+    service = PlayerIPService(db)
+    return service.get_player_ips(player_id)
+
+
+# Player names endpoints
+@router.get("/{player_id}/names", response_model=List[PlayerNameOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_names(
+    player_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get nickname history for player"""
+    service = PlayerNameService(db)
+    return service.get_player_names(player_id)
+
+
+# Player role stats endpoints
+@router.get("/{player_id}/role-stats", response_model=List[PlayerRoleStatOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_role_stats(
+    player_id: int,
+    role: str = Query(None, description="Filter by role"),
+    db: Session = Depends(get_db)
+):
+    """Get role statistics for player (optionally filtered by role)"""
+    service = PlayerRoleStatService(db)
+    stats = service.get_player_role_stats(player_id)
+    if role:
+        stats = [s for s in stats if s.role == role]
+    return stats
+
+
+# Player sessions endpoints
+@router.get("/{player_id}/sessions", response_model=List[PlayerSessionOut], dependencies=[auth_dependency] if auth_dependency else [])
+def get_player_sessions(
+    player_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get all sessions for player"""
+    service = PlayerSessionService(db)
+    return service.get_player_sessions(player_id)
+
