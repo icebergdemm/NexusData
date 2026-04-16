@@ -73,10 +73,65 @@ def search_players(
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
-    """Search players by name or SteamID for autocomplete"""
+    """
+    Search players by:
+    - Current nickname (player_last_time_name)
+    - SteamID
+    - Previous nicknames
+    - IP addresses
+    
+    Returns list of matching players with search context
+    """
     service = PlayerService(db)
+    from models import PlayerName, PlayerIP
+    from sqlalchemy import or_
+    
     results = service.search_players(q, limit)
-    return [{"id": p.player_id, "name": p.player_last_time_name, "steamid": p.player_steamid} for p in results]
+    
+    # Enrich results with search context
+    enriched_results = []
+    for player in results:
+        search_context = []
+        
+        # Check what matched
+        query_lower = q.lower()
+        if query_lower in player.player_last_time_name.lower():
+            search_context.append("nickname")
+        if query_lower in player.player_steamid.lower():
+            search_context.append("steamid")
+        
+        # Check if matched by previous nickname
+        prev_names = db.query(PlayerName).filter(
+            PlayerName.player_id == player.player_id,
+            PlayerName.nickname.ilike(f"%{q}%")
+        ).all()
+        if prev_names:
+            search_context.append("previous_nickname")
+        
+        # Check if matched by IP
+        ips = db.query(PlayerIP).filter(
+            PlayerIP.player_id == player.player_id,
+            or_(
+                PlayerIP.ip.ilike(f"%{q}%"),
+                PlayerIP.subnet.ilike(f"%{q}%")
+            )
+        ).all()
+        if ips:
+            search_context.append("ip_address")
+        
+        enriched_results.append({
+            "id": player.player_id,
+            "name": player.player_last_time_name,
+            "steamid": player.player_steamid,
+            "play_time_hours": player.play_time / 3600,
+            "rank_id": player.rank_id,
+            "kit_level": player.kit_level,
+            "match_context": search_context or ["name_or_steamid"],
+            "previous_names": [name.nickname for name in prev_names] if prev_names else [],
+            "ips": [ip.ip for ip in ips] if ips else []
+        })
+    
+    return enriched_results
 
 
 @router.post("", response_model=PlayerDataOut, dependencies=[auth_dependency] if auth_dependency else [])

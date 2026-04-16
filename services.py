@@ -6,7 +6,7 @@ import os
 import httpx
 from models import (
     PlayerData, PlayerStats, AdminUser, PlayerKill, PlayerRoleAction,
-    PlayerIP, PlayerName, PlayerRoleStat, PlayerSession
+    PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, ServerPlayerPrivilege
 )
 from schemas import (
     PlayerDataCreate, PlayerStatsCreate, PaginationParams, PlayerDataOut, MessageEnvelope, MessageProcessResult,
@@ -409,161 +409,6 @@ class KitService:
             raise HTTPException(status_code=404, detail="Kit not found")
         return kit
 
-        
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        return player
-    
-    def upsert_player(self, player_data: PlayerDataCreate) -> PlayerData:
-        """
-        Create or update player by steamid
-        
-        Args:
-            player_data: Player data from request
-            
-        Returns:
-            Created or updated PlayerData
-        """
-        # Try to find existing
-        existing = self.player_repo.get_by_steamid(player_data.player_steamid)
-        
-        if existing:
-            # Update existing player
-            update_data = {
-                "player_last_time_name": player_data.player_last_time_name,
-                "play_time": player_data.play_time,
-                "rank_id": player_data.rank_id,
-                "kit_level": player_data.kit_level,
-                "achievements": safe_get_list(player_data.achievements),
-            }
-            
-            if player_data.last_login_time:
-                update_data["last_login_time"] = parse_iso_datetime(
-                    player_data.last_login_time
-                )
-            
-            return self.player_repo.update(existing.player_id, update_data)
-        
-        # Create new player
-        new_player = PlayerData(
-            player_last_time_name=player_data.player_last_time_name,
-            player_steamid=player_data.player_steamid,
-            play_time=safe_get_int(player_data.play_time),
-            rank_id=player_data.rank_id,
-            kit_level=player_data.kit_level,
-            achievements=safe_get_list(player_data.achievements),
-        )
-        
-        if player_data.last_login_time:
-            new_player.last_login_time = parse_iso_datetime(
-                player_data.last_login_time
-            )
-        
-        created_player = self.player_repo.create(new_player)
-        
-        # Create stats for new player
-        new_stats = PlayerStats(player_id=created_player.player_id)
-        self.stats_repo.create(created_player.player_id, new_stats)
-        
-        return created_player
-
-
-class PlayerStatsService:
-    """Business logic for player stats operations"""
-    
-    def __init__(self, db: Session):
-        self.player_repo = PlayerRepository(db)
-        self.stats_repo = PlayerStatsRepository(db)
-    
-    def get_stats(self, player_id: int) -> PlayerStats:
-        """Get stats for player, raise 404 if not found"""
-        player = self.player_repo.get_by_id(player_id)
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        stats = self.stats_repo.get_by_player_id(player_id)
-        if not stats:
-            raise HTTPException(status_code=404, detail="Stats not found")
-        
-        return stats
-    
-    def upsert_stats(
-        self,
-        player_id: int,
-        stats_data: PlayerStatsCreate
-    ) -> PlayerStats:
-        """
-        Create or accumulate stats for player
-        
-        Args:
-            player_id: Player ID
-            stats_data: Stats delta/values from Lua
-            
-        Returns:
-            Updated or created PlayerStats
-        """
-        # Verify player exists
-        player = self.player_repo.get_by_id(player_id)
-        if not player:
-            raise HTTPException(status_code=404, detail="Player not found")
-        
-        # Check if stats exist
-        existing_stats = self.stats_repo.get_by_player_id(player_id)
-        
-        if existing_stats:
-            # Accumulate delta values
-            delta = {
-                "successful_missions_captain": safe_get_int(
-                    stats_data.successful_missions_captain
-                ),
-                "total_missions_captain": safe_get_int(
-                    stats_data.total_missions_captain
-                ),
-                "saved_players": safe_get_int(stats_data.saved_players),
-                "killed_monsters": safe_get_int(stats_data.killed_monsters),
-                "killed_players": safe_get_int(stats_data.killed_players),
-                "killed_npc": safe_get_int(stats_data.killed_npc),
-            }
-            return self.stats_repo.accumulate(player_id, delta)
-        
-        # Create new stats
-        new_stats = PlayerStats(
-            player_id=player_id,
-            successful_missions_captain=safe_get_int(
-                stats_data.successful_missions_captain
-            ),
-            total_missions_captain=safe_get_int(
-                stats_data.total_missions_captain
-            ),
-            saved_players=safe_get_int(stats_data.saved_players),
-            killed_monsters=safe_get_int(stats_data.killed_monsters),
-            killed_players=safe_get_int(stats_data.killed_players),
-            killed_npc=safe_get_int(stats_data.killed_npc),
-        )
-        
-        return self.stats_repo.create(player_id, new_stats)
-
-
-class KitService:
-    """Business logic for kit operations"""
-
-    def __init__(self, db: Session):
-        self.kit_repo = KitRepository(db)
-
-    def get_all_kits(self, page: int = 1, page_size: int = 50) -> Tuple[List, int]:
-        if page < 1:
-            raise HTTPException(status_code=400, detail="Page must be >= 1")
-
-        kits, total = self.kit_repo.get_all(page, page_size)
-        return kits, total
-
-    def get_kit(self, kit_id: int):
-        kit = self.kit_repo.get_by_id(kit_id)
-        if not kit:
-            raise HTTPException(status_code=404, detail="Kit not found")
-        return kit
-
 
 class PlayerKillService:
     """Business logic for player kills"""
@@ -879,3 +724,156 @@ class AdminService:
             from datetime import datetime
             admin.last_login = datetime.utcnow()
             self.db.commit()
+    
+    def update_server_permissions(self, admin_id: int, server_permissions: List[str]) -> AdminUser:
+        """Update server-side privileges/permissions"""
+        admin = self.db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+        if not admin:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        
+        # Validate permissions exist in config
+        valid_permissions = list(settings.server_permissions_mapping.keys())
+        for perm in server_permissions:
+            if perm not in valid_permissions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid permission: {perm}. Valid permissions: {valid_permissions}"
+                )
+        
+        admin.server_permissions = server_permissions
+        self.db.commit()
+        self.db.refresh(admin)
+        return admin
+    
+    def get_admin_server_permissions(self, admin_id: int) -> dict:
+        """Get server permissions for admin"""
+        admin = self.db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+        if not admin:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        
+        # Get details for each permission
+        perms = []
+        for perm in admin.server_permissions:
+            if perm in settings.server_permissions_mapping:
+                perms.append({
+                    "id": perm,
+                    **settings.server_permissions_mapping[perm]
+                })
+        
+        return {"admin_id": admin_id, "permissions": perms}
+    
+    def has_server_permission(self, admin_id: int, permission: str) -> bool:
+        """Check if admin has specific server permission"""
+        admin = self.db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+        if not admin:
+            return False
+        
+        return permission in admin.server_permissions
+
+
+class ServerPlayerPrivilegeService:
+    """Business logic for managing server-side privileges for players"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+    
+    def grant_privilege(self, steamid: str, privileges: List[str], 
+                       reason: str = None, granted_by_admin_id: int = None,
+                       expires_at = None) -> ServerPlayerPrivilege:
+        """Grant server privileges to a player by SteamID"""
+        # Validate privileges
+        valid_privileges = list(settings.server_permissions_mapping.keys())
+        for priv in privileges:
+            if priv not in valid_privileges:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid privilege: {priv}. Valid privileges: {valid_privileges}"
+                )
+        
+        # Check if player privilege record already exists
+        privilege_record = self.db.query(ServerPlayerPrivilege).filter(
+            ServerPlayerPrivilege.steamid == steamid
+        ).first()
+        
+        if privilege_record:
+            privilege_record.privileges = privileges
+            privilege_record.reason = reason
+            privilege_record.expires_at = expires_at
+        else:
+            # Try to find player_id by steamid
+            player = self.db.query(PlayerData).filter(
+                PlayerData.player_steamid == steamid
+            ).first()
+            
+            privilege_record = ServerPlayerPrivilege(
+                steamid=steamid,
+                player_id=player.player_id if player else None,
+                privileges=privileges,
+                reason=reason,
+                granted_by_admin_id=granted_by_admin_id,
+                expires_at=expires_at
+            )
+            self.db.add(privilege_record)
+        
+        self.db.commit()
+        self.db.refresh(privilege_record)
+        return privilege_record
+    
+    def revoke_privilege(self, steamid: str):
+        """Revoke all privileges for a player"""
+        privilege_record = self.db.query(ServerPlayerPrivilege).filter(
+            ServerPlayerPrivilege.steamid == steamid
+        ).first()
+        
+        if privilege_record:
+            self.db.delete(privilege_record)
+            self.db.commit()
+            return True
+        return False
+    
+    def get_player_privileges(self, steamid: str) -> Optional[ServerPlayerPrivilege]:
+        """Get privileges for a player by SteamID"""
+        return self.db.query(ServerPlayerPrivilege).filter(
+            ServerPlayerPrivilege.steamid == steamid
+        ).first()
+    
+    def get_all_privileges(self, limit: int = 100, offset: int = 0) -> Tuple[List[ServerPlayerPrivilege], int]:
+        """Get all player privileges with pagination"""
+        query = self.db.query(ServerPlayerPrivilege)
+        total = query.count()
+        records = query.offset(offset).limit(limit).all()
+        return records, total
+    
+    def search_privileges(self, query: str, limit: int = 50) -> List[ServerPlayerPrivilege]:
+        """Search for player privileges by steamid or player name"""
+        # Search by steamid
+        results = self.db.query(ServerPlayerPrivilege).filter(
+            ServerPlayerPrivilege.steamid.like(f"%{query}%")
+        ).limit(limit).all()
+        
+        if len(results) < limit:
+            # Also search by player name if available
+            remaining = limit - len(results)
+            player_results = self.db.query(ServerPlayerPrivilege).join(
+                PlayerData, ServerPlayerPrivilege.player_id == PlayerData.player_id
+            ).filter(
+                PlayerData.player_last_time_name.like(f"%{query}%")
+            ).limit(remaining).all()
+            results.extend(player_results)
+        
+        return results
+    
+    def has_privilege(self, steamid: str, privilege: str) -> bool:
+        """Check if player has specific privilege"""
+        privilege_record = self.get_player_privileges(steamid)
+        if not privilege_record:
+            return False
+        
+        return privilege in privilege_record.privileges
+    
+    def update_privileges(self, steamid: str, privileges: List[str], 
+                         reason: str = None) -> ServerPlayerPrivilege:
+        """Update privileges for a player"""
+        return self.grant_privilege(steamid, privileges, reason=reason)
+
+

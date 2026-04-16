@@ -22,6 +22,7 @@
 
     <div class="card player-edit-card">
       <h3>Редактирование</h3>
+      {% if "write" in admin.permissions %}
       <form class="player-edit-form" action="/admin/players/{{ player.player_id }}/update" method="post">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
 
@@ -55,6 +56,10 @@
           <a href="/admin/players" class="btn btn-secondary">К списку игроков</a>
         </div>
       </form>
+      {% else %}
+      <p style="color: #999;">У вас нет прав на редактирование данных игроков.</p>
+      <a href="/admin/players" class="btn btn-secondary">К списку игроков</a>
+      {% endif %}
     </div>
 
     <div class="card stats-section player-stats-card">

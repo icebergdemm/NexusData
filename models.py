@@ -19,12 +19,19 @@ class PlayerData(Base):
     player_last_time_name = Column(String(255), index=True)
     player_steamid = Column(String(50), unique=True, index=True)
     last_login_time = Column(DateTime, default=func.now())
-    play_time = Column(Integer, default=0)
+    play_time = Column(Integer, default=0)  # in seconds
     rank_id = Column(Integer)
     kit_level = Column(Integer)
     achievements = Column(JSON, default=list)
     
     stats = relationship("PlayerStats", backref="player", uselist=False)
+    
+    @property
+    def play_time_hours(self) -> float:
+        """Convert play_time (in seconds) to hours"""
+        if not self.play_time:
+            return 0.0
+        return self.play_time / 3600.0
 
 
 class PlayerStats(Base):
@@ -46,8 +53,11 @@ class AdminUser(Base):
     discord_id = Column(String(50), unique=True, index=True)
     discord_username = Column(String(255))
     discord_avatar = Column(String(255), nullable=True)
-    role = Column(String(50), default="admin")  # admin, moderator, etc.
-    permissions = Column(JSON, default=list)  # list of permissions
+    role = Column(String(50), default="admin")  # "Администратор", "Управляющий", "Смотритель"
+    # Permissions for admin panel: read, write, admin
+    permissions = Column(JSON, default=lambda: ["read"])  # list of permissions
+    # Server-side permissions for managing moderator/admin privileges
+    server_permissions = Column(JSON, default=lambda: [])  # list of server privilege permissions
     created_at = Column(DateTime, default=func.now())
     last_login = Column(DateTime, nullable=True)
 
@@ -133,3 +143,17 @@ class PlayerSession(Base):
     logout_time = Column(DateTime, nullable=True)
     session_duration = Column(Integer, nullable=True)
     avg_ping = Column(Integer, nullable=True)
+
+
+class ServerPlayerPrivilege(Base):
+    """Server-side privileges for regular players (by SteamID)"""
+    __tablename__ = "server_player_privileges"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    steamid = Column(String(50), unique=True, nullable=False, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
+    privileges = Column(JSON, default=lambda: [])  # list of privileges: mute, kick, ban, etc.
+    reason = Column(String(500), nullable=True)  # Why this privilege was given
+    granted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    granted_at = Column(DateTime, default=func.now())
+    expires_at = Column(DateTime, nullable=True)  # Optional expiration

@@ -9,20 +9,33 @@
   </div>
 
   <div class="stats">
+    {% if "read" in admin.permissions or "write" in admin.permissions %}
     <div class="stat-card">
       <h3>Игроки</h3>
       <p>Управление данными игроков</p>
       <a href="/admin/players">Перейти</a>
     </div>
+    {% endif %}
+    {% if "admin" in admin.permissions %}
     <div class="stat-card">
       <h3>Админы</h3>
       <p>Управление пользователями админки</p>
       <a href="/admin/users">Перейти</a>
     </div>
+    {% endif %}
+    {% if "admin" in admin.permissions %}
     <div class="stat-card">
       <h3>Статистика</h3>
       <p>Просмотр статистики системы</p>
       <a href="#">Скоро</a>
     </div>
+    {% endif %}
+    {% if "admin" in admin.permissions or "manage_admins" in admin.server_permissions or "manage_moderators" in admin.server_permissions %}
+    <div class="stat-card">
+      <h3>Привилегии сервера</h3>
+      <p>Управление правами модераторов и администраторов</p>
+      <a href="/admin/server-privileges">Перейти</a>
+    </div>
+    {% endif %}
   </div>
 {% endblock %}

@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     kits_mapping: Dict[str, str] = {}
     roles_mapping: Dict[str, List[str]] = {}
     
+    # Server permissions configuration (for managing moderator/admin privileges)
+    server_permissions_mapping: Dict[str, Dict] = Field(default_factory=lambda: {
+        "mute": {"name": "Мут", "description": "Возможность выдавать мут"},
+        "kick": {"name": "Кик", "description": "Возможность кикать игроков"},
+        "ban": {"name": "Бан", "description": "Возможность банить игроков"},
+        "manage_whitelist": {"name": "Управление вайтлистом", "description": "Возможность управлять вайтлистом"},
+        "manage_moderators": {"name": "Управление модераторами", "description": "Возможность добавлять/удалять модераторов"},
+        "manage_admins": {"name": "Управление администраторами", "description": "Возможность управлять администраторами"},
+    })
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         config_dir = os.path.join(os.path.dirname(__file__), 'config')
@@ -90,3 +100,7 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
+def reset_settings_cache():
+    """Clear the settings cache - useful for testing or reloading config"""
+    get_settings.cache_clear()

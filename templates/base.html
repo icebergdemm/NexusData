@@ -35,10 +35,21 @@
     <nav class="nav">
       <ul>
         <li><a href="/admin">Главная</a></li>
+        {% if "read" in admin.permissions or "write" in admin.permissions %}
         <li><a href="/admin/users">Пользователи Nexus Data</a></li>
+        {% endif %}
+        {% if "read" in admin.permissions or "write" in admin.permissions %}
         <li><a href="/admin/players">Игроки</a></li>
+        {% endif %}
+        {% if "admin" in admin.permissions %}
         <li><a href="/admin/sessions">Сессии</a></li>
+        {% endif %}
+        {% if "admin" in admin.permissions %}
         <li><a href="/admin/audit">Аудит</a></li>
+        {% endif %}
+        {% if "admin" in admin.permissions or "manage_admins" in admin.server_permissions %}
+        <li><a href="/admin/server-privileges">Привилегии игроков</a></li>
+        {% endif %}
       </ul>
     </nav>
 

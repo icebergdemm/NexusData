@@ -89,6 +89,10 @@ async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, db: Session = Depends(get_db)):
     """Discord login page"""
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    
     # Redirect only if server-side admin session exists and is valid.
     token = request.cookies.get("admin_token")
     if token:
@@ -252,6 +256,10 @@ async def admin_dashboard(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Admin dashboard"""
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    
     return templates.TemplateResponse("admin/dashboard.html", {
         "request": request,
         "admin": current_admin,
@@ -266,6 +274,14 @@ async def admin_users_list(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """List admin users"""
+    # Only admins can manage users
+    if "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    
     admin_service = AdminService(db)
     admins = admin_service.get_all_admins()
     
@@ -449,14 +465,45 @@ async def admin_players_list(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None, min_length=2),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin)
 ):
-    """List players"""
-    player_service = PlayerService(db)
-    players, total = player_service.get_all_players(page, page_size)
+    """List players with optional search"""
+    # Only users with read or write permissions can view players
+    if "read" not in current_admin.permissions and "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     
-    total_pages = (total + page_size - 1) // page_size
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    
+    player_service = PlayerService(db)
+    
+    # If search query provided, perform full search
+    if search:
+        from models import PlayerName, PlayerIP
+        from sqlalchemy import or_
+        
+        query_lower = f"%{search.lower()}%"
+        # Perform comprehensive search
+        player_ids = set()
+        results = []
+        
+        # Search in PlayerData
+        player_results = player_service.search_players(search, limit=1000)
+        results.extend(player_results)
+        player_ids.update(p.player_id for p in player_results)
+        
+        total = len(results)
+        players = results[:page_size]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        search_query = search
+    else:
+        # Normal pagination
+        players, total = player_service.get_all_players(page, page_size)
+        total_pages = (total + page_size - 1) // page_size
+        search_query = None
     
     return templates.TemplateResponse("admin/players.html", {
         "request": request,
@@ -466,6 +513,7 @@ async def admin_players_list(
         "page_size": page_size,
         "total": total,
         "total_pages": total_pages,
+        "search_query": search_query,
         "flashes": pop_flashes(request),
     })
 
@@ -478,6 +526,14 @@ async def admin_player_detail(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Player detail page with extended data"""
+    # Only users with read or write permissions can view players
+    if "read" not in current_admin.permissions and "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    
     player_service = PlayerService(db)
     player = player_service.get_player_by_id(player_id)
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
@@ -492,32 +548,56 @@ async def admin_player_detail(
     
     try:
         kills = kill_service.get_player_kills(player_id)
-    except:
+    except HTTPException:
+        logger.warning(f"Failed to get player kills for {player_id}")
+        kills = []
+    except Exception as e:
+        logger.warning(f"Failed to get player kills: {e}")
         kills = []
     
     try:
         role_actions = role_action_service.get_player_actions(player_id)
-    except:
+    except HTTPException:
+        logger.warning(f"Failed to get player actions for {player_id}")
+        role_actions = []
+    except Exception as e:
+        logger.warning(f"Failed to get player actions: {e}")
         role_actions = []
     
     try:
         ips = ip_service.get_player_ips(player_id)
-    except:
+    except HTTPException:
+        logger.warning(f"Failed to get player IPs for {player_id}")
+        ips = []
+    except Exception as e:
+        logger.warning(f"Failed to get player IPs: {e}")
         ips = []
     
     try:
         names = name_service.get_player_names(player_id)
-    except:
+    except HTTPException:
+        logger.warning(f"Failed to get player names for {player_id}")
+        names = []
+    except Exception as e:
+        logger.warning(f"Failed to get player names: {e}")
         names = []
     
     try:
         role_stats = role_stat_service.get_player_role_stats(player_id)
-    except:
+    except HTTPException:
+        logger.warning(f"Failed to get player role stats for {player_id}")
+        role_stats = []
+    except Exception as e:
+        logger.warning(f"Failed to get player role stats: {e}")
         role_stats = []
     
     try:
         sessions = session_service.get_player_sessions(player_id)
-    except:
+    except HTTPException:
+        logger.warning(f"Failed to get player sessions for {player_id}")
+        sessions = []
+    except Exception as e:
+        logger.warning(f"Failed to get player sessions: {e}")
         sessions = []
 
     log_admin_action(
@@ -648,6 +728,10 @@ async def admin_sessions_list(request: Request, db: Session = Depends(get_db), c
     if "admin" not in current_admin.permissions:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
     sessions = db.query(AdminSession).order_by(AdminSession.created_at.desc()).all()
 
     return templates.TemplateResponse("admin/sessions.html", {"request": request, "admin": current_admin, "sessions": sessions, "flashes": pop_flashes(request)})
@@ -701,6 +785,10 @@ async def admin_audit_list(request: Request, db: Session = Depends(get_db), curr
     if "admin" not in current_admin.permissions:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
     logs = db.query(AdminActionLog).order_by(AdminActionLog.created_at.desc()).limit(200).all()
     admins = db.query(AdminUser).all()
     admin_lookup = {a.id: a.discord_username for a in admins}
@@ -714,3 +802,217 @@ async def admin_audit_list(request: Request, db: Session = Depends(get_db), curr
             "flashes": pop_flashes(request),
         },
     )
+
+
+@router.get("/admin/server-privileges", response_class=HTMLResponse)
+async def admin_server_privileges(
+    request: Request,
+    page: int = 1,
+    search: str = "",
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Server privileges management page - manage player privileges"""
+    # Check if user has permission to manage server privileges
+    if not ("admin" in current_admin.permissions or 
+            "manage_admins" in current_admin.server_permissions):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    # Initialize CSRF token if not exists
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    
+    from services import ServerPlayerPrivilegeService
+    privilege_service = ServerPlayerPrivilegeService(db)
+    
+    # Get server privileges config
+    server_privileges = settings.server_permissions_mapping
+    
+    # Search or list all privileges
+    page = max(1, page)
+    limit = settings.default_page_size
+    offset = (page - 1) * limit
+    
+    if search:
+        privileges = privilege_service.search_privileges(search, limit=1000)
+        total = len(privileges)
+        privileges = privileges[offset:offset+limit]
+    else:
+        privileges, total = privilege_service.get_all_privileges(limit=limit, offset=offset)
+    
+    total_pages = (total + limit - 1) // limit
+    
+    return templates.TemplateResponse("admin/server_privileges.html", {
+        "request": request,
+        "admin": current_admin,
+        "privileges": privileges,
+        "server_privileges": server_privileges,
+        "page": page,
+        "total": total,
+        "total_pages": total_pages,
+        "limit": limit,
+        "search": search,
+        "flashes": pop_flashes(request),
+    })
+
+
+@router.post("/admin/server-privileges/add")
+async def add_server_privilege(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Add new player privilege"""
+    # Check if user has permission to manage server privileges
+    if not ("admin" in current_admin.permissions or 
+            "manage_admins" in current_admin.server_permissions):
+        push_flash(request, "error", "Недостаточно прав")
+        return RedirectResponse(url="/admin/server-privileges", status_code=302)
+    
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        
+        form = await request.form()
+        steamid = form.get("steamid", "").strip()
+        selected_privileges = form.getlist("privileges")
+        reason = form.get("reason", "").strip()
+        
+        if not steamid:
+            push_flash(request, "error", "SteamID не может быть пустым")
+            return RedirectResponse(url="/admin/server-privileges", status_code=302)
+        
+        from services import ServerPlayerPrivilegeService
+        privilege_service = ServerPlayerPrivilegeService(db)
+        privilege_service.grant_privilege(
+            steamid=steamid,
+            privileges=selected_privileges,
+            reason=reason if reason else None,
+            granted_by_admin_id=current_admin.id
+        )
+        
+        log_admin_action(
+            db,
+            current_admin.id,
+            "grant_player_privilege",
+            {
+                "steamid": steamid,
+                "privileges": selected_privileges,
+                "reason": reason
+            },
+        )
+        push_flash(request, "success", f"Привилегии выданы игроку {steamid}")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Add privilege failed: %s", exc)
+        push_flash(request, "error", "Не удалось добавить привилегию")
+    
+    return RedirectResponse(url="/admin/server-privileges", status_code=302)
+
+
+@router.post("/admin/server-privileges/{privilege_id}/update")
+async def update_server_privilege(
+    request: Request,
+    privilege_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Update player privilege"""
+    # Check if user has permission to manage server privileges
+    if not ("admin" in current_admin.permissions or 
+            "manage_admins" in current_admin.server_permissions):
+        push_flash(request, "error", "Недостаточно прав")
+        return RedirectResponse(url="/admin/server-privileges", status_code=302)
+    
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        
+        from models import ServerPlayerPrivilege
+        from services import ServerPlayerPrivilegeService
+        
+        privilege_record = db.query(ServerPlayerPrivilege).filter(
+            ServerPlayerPrivilege.id == privilege_id
+        ).first()
+        
+        if not privilege_record:
+            push_flash(request, "error", "Запись о привилегиях не найдена")
+            return RedirectResponse(url="/admin/server-privileges", status_code=302)
+        
+        form = await request.form()
+        selected_privileges = form.getlist("privileges")
+        reason = form.get("reason", "").strip()
+        
+        privilege_service = ServerPlayerPrivilegeService(db)
+        privilege_service.update_privileges(
+            steamid=privilege_record.steamid,
+            privileges=selected_privileges,
+            reason=reason if reason else None
+        )
+        
+        log_admin_action(
+            db,
+            current_admin.id,
+            "update_player_privilege",
+            {
+                "steamid": privilege_record.steamid,
+                "privileges": selected_privileges,
+                "reason": reason
+            },
+        )
+        push_flash(request, "success", "Привилегии успешно обновлены")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Update privilege failed: %s", exc)
+        push_flash(request, "error", "Не удалось обновить привилегии")
+    
+    return RedirectResponse(url="/admin/server-privileges", status_code=302)
+
+
+@router.post("/admin/server-privileges/{privilege_id}/delete")
+async def delete_server_privilege(
+    request: Request,
+    privilege_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Delete player privilege"""
+    # Check if user has permission to manage server privileges
+    if not ("admin" in current_admin.permissions or 
+            "manage_admins" in current_admin.server_permissions):
+        push_flash(request, "error", "Недостаточно прав")
+        return RedirectResponse(url="/admin/server-privileges", status_code=302)
+    
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        
+        from models import ServerPlayerPrivilege
+        from services import ServerPlayerPrivilegeService
+        
+        privilege_record = db.query(ServerPlayerPrivilege).filter(
+            ServerPlayerPrivilege.id == privilege_id
+        ).first()
+        
+        if not privilege_record:
+            push_flash(request, "error", "Запись о привилегиях не найдена")
+            return RedirectResponse(url="/admin/server-privileges", status_code=302)
+        
+        steamid = privilege_record.steamid
+        privilege_service = ServerPlayerPrivilegeService(db)
+        privilege_service.revoke_privilege(steamid)
+        
+        log_admin_action(
+            db,
+            current_admin.id,
+            "revoke_player_privilege",
+            {"steamid": steamid},
+        )
+        push_flash(request, "success", f"Привилегии удалены у игрока {steamid}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Delete privilege failed: %s", exc)
+        push_flash(request, "error", "Не удалось удалить привилегии")
+    
+    return RedirectResponse(url="/admin/server-privileges", status_code=302)

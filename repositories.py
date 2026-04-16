@@ -98,11 +98,61 @@ class PlayerRepository(BaseRepository):
         return player
     
     def search(self, query: str, limit: int = 10) -> List[PlayerData]:
-        """Search players by name or SteamID"""
-        return self.db.query(PlayerData).filter(
-            (PlayerData.player_last_time_name.ilike(f"%{query}%")) |
-            (PlayerData.player_steamid.ilike(f"%{query}%"))
+        """
+        Search players by:
+        - Current nickname (player_last_time_name)
+        - SteamID (all variants)
+        - Previous nicknames (PlayerName table)
+        - IP addresses (PlayerIP table)
+        """
+        from sqlalchemy import or_, func, distinct
+        
+        query_lower = f"%{query.lower()}%"
+        
+        # Search by current nickname, steamid
+        direct_search = self.db.query(PlayerData).filter(
+            or_(
+                PlayerData.player_last_time_name.ilike(query_lower),
+                PlayerData.player_steamid.ilike(query_lower),
+            )
         ).limit(limit).all()
+        
+        if len(direct_search) >= limit:
+            return direct_search[:limit]
+        
+        # If not enough results, search by previous nicknames
+        player_ids = set(p.player_id for p in direct_search)
+        remaining_limit = limit - len(direct_search)
+        
+        if remaining_limit > 0:
+            from models import PlayerName
+            nickname_results = self.db.query(PlayerData).join(
+                PlayerName, PlayerData.player_id == PlayerName.player_id
+            ).filter(
+                PlayerName.nickname.ilike(query_lower),
+                PlayerData.player_id.notin_(player_ids) if player_ids else True
+            ).distinct().limit(remaining_limit).all()
+            
+            direct_search.extend(nickname_results)
+            player_ids.update(p.player_id for p in nickname_results)
+            remaining_limit = limit - len(direct_search)
+        
+        # If still not enough, search by IP addresses
+        if remaining_limit > 0:
+            from models import PlayerIP
+            ip_results = self.db.query(PlayerData).join(
+                PlayerIP, PlayerData.player_id == PlayerIP.player_id
+            ).filter(
+                or_(
+                    PlayerIP.ip.ilike(query_lower),
+                    PlayerIP.subnet.ilike(query_lower),
+                ),
+                PlayerData.player_id.notin_(player_ids) if player_ids else True
+            ).distinct().limit(remaining_limit).all()
+            
+            direct_search.extend(ip_results)
+        
+        return direct_search[:limit]
 
 
 class PlayerStatsRepository(BaseRepository):

@@ -10,13 +10,17 @@ from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 import logging
 
-from config import get_settings
+from config import get_settings, reset_settings_cache
 from database import init_db
 from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router
 from datetime import datetime
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+# Ensure fresh settings on startup (clear any cached old instances)
+reset_settings_cache()
+settings = get_settings()
 
 # Jinja2 templates for global error pages
 templates = Jinja2Templates(directory="templates")
@@ -54,12 +58,35 @@ def create_app() -> FastAPI:
     @app.exception_handler(IntegrityError)
     async def integrity_exception_handler(request, exc):
         logger.error(f"Integrity error: {exc}")
-        raise HTTPException(status_code=409, detail="Duplicate entry")
+        return templates.TemplateResponse(
+            "error_generic.html",
+            {
+                "request": request,
+                "title": "Ошибка целостности данных",
+                "message": "Данный элемент уже существует или нарушены ограничения целостности.",
+                "details": "integrity_error",
+                "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
+                "back_text": "Вернуться",
+            },
+            status_code=409,
+        )
     
     @app.exception_handler(SQLAlchemyError)
     async def db_exception_handler(request, exc):
         logger.error(f"Database error: {exc}")
-        raise HTTPException(status_code=500, detail="Database error")
+        # Don't raise, return response directly to avoid middleware issues
+        return templates.TemplateResponse(
+            "error_generic.html",
+            {
+                "request": request,
+                "title": "Ошибка базы данных",
+                "message": "Не удалось выполнить операцию с базой данных. Пожалуйста, попробуйте позже.",
+                "details": "database_error",
+                "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
+                "back_text": "Вернуться",
+            },
+            status_code=500,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request, exc):
