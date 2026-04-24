@@ -23,6 +23,10 @@ class PlayerData(Base):
     rank_id = Column(Integer)
     kit_level = Column(Integer)
     achievements = Column(JSON, default=list)
+    last_ip = Column(String(45), nullable=True)  # Last IP address
+    last_subnet = Column(String(45), nullable=True)  # Subnet (e.g., 192.168.1.0/24)
+    first_login = Column(DateTime, nullable=True)  # First login time
+    avg_ping = Column(Integer, nullable=True)  # Average ping
     
     stats = relationship("PlayerStats", backref="player", uselist=False)
     

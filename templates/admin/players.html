@@ -3,6 +3,20 @@
 {% block title %}Игроки — Nexus Data{% endblock %}
 
 {% block content %}
+  <style>
+    .table-responsive.players-page {
+      max-height: 350px;
+      overflow-y: auto;
+      border: 1px solid var(--stroke-01);
+      border-radius: var(--border-radius-8);
+      overflow-x: hidden;
+    }
+    .table-responsive.players-page table {
+      margin-top: 0;
+      border: none;
+      border-radius: 0;
+    }
+  </style>
   <div class="card">
     <h2>Игроки сервера</h2>
     {% if search_query %}
@@ -23,7 +37,7 @@
   <!-- Players Table -->
   <div class="card">
     <h3>Всего игроков: {{ total }}</h3>
-    <div class="table-responsive">
+    <div class="table-responsive players-page">
       <table class="data-table">
         <thead>
           <tr>

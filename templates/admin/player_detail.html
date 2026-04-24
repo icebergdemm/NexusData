@@ -3,6 +3,32 @@
 {% block title %}Игрок {{ player.player_id }} — Nexus Data{% endblock %}
 
 {% block content %}
+  <style>
+    .player-sessions-table {
+      max-height: 400px;
+      overflow-y: auto;
+      border: 1px solid var(--stroke-01);
+      border-radius: var(--border-radius-8);
+      overflow-x: hidden;
+    }
+    .player-sessions-table table {
+      margin-top: 0;
+      border: none;
+      border-radius: 0;
+    }
+    .player-detail-table {
+      max-height: 320px;
+      overflow-y: auto;
+      border: 1px solid var(--stroke-01);
+      border-radius: var(--border-radius-8);
+      overflow-x: hidden;
+    }
+    .player-detail-table table {
+      margin-top: 0;
+      border: none;
+      border-radius: 0;
+    }
+  </style>
   <div class="player-detail-layout">
     <div class="card player-main-card">
       <h2>Игрок {{ player.player_last_time_name or ('#' ~ player.player_id) }}</h2>
@@ -82,7 +108,7 @@
     <div class="card">
       <h3>Убийства по типам монстров</h3>
       {% if kills %}
-      <div class="table-responsive">
+      <div class="table-responsive player-detail-table">
         <table class="data-table">
           <thead>
             <tr>
@@ -109,7 +135,7 @@
     <div class="card">
       <h3>Действия в ролях</h3>
       {% if role_actions %}
-      <div class="table-responsive">
+      <div class="table-responsive player-detail-table">
         <table class="data-table">
           <thead>
             <tr>
@@ -138,7 +164,7 @@
     <div class="card">
       <h3>История IP адресов</h3>
       {% if ips %}
-      <div class="table-responsive">
+      <div class="table-responsive player-detail-table">
         <table class="data-table">
           <thead>
             <tr>
@@ -169,7 +195,7 @@
     <div class="card">
       <h3>История ников</h3>
       {% if names %}
-      <div class="table-responsive">
+      <div class="table-responsive player-detail-table">
         <table class="data-table">
           <thead>
             <tr>
@@ -198,7 +224,7 @@
     <div class="card">
       <h3>Статистика по ролям</h3>
       {% if role_stats %}
-      <div class="table-responsive">
+      <div class="table-responsive player-detail-table">
         <table class="data-table">
           <thead>
             <tr>
@@ -227,7 +253,7 @@
     <div class="card">
       <h3>История сеансов</h3>
       {% if sessions %}
-      <div class="table-responsive">
+      <div class="player-sessions-table">
         <table class="data-table">
           <thead>
             <tr>

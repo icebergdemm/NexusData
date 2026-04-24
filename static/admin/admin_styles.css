@@ -382,6 +382,60 @@ table {
   overflow: hidden;
 }
 
+/* TABLE RESPONSIVE - для ограничения высоты и скроллинга */
+.table-responsive {
+  overflow-x: auto;
+}
+
+.table-responsive table {
+  margin-top: 0;
+}
+
+/* На странице игроков - ограничение до 5 рядов */
+.table-responsive.players-page {
+  max-height: 350px;
+  overflow-y: auto;
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-8);
+  overflow-x: hidden;
+}
+
+.table-responsive.players-page table {
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+}
+
+/* На странице деталей игрока - История сеансов специальный класс */
+.player-sessions-table {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-8);
+  overflow-x: hidden;
+}
+
+.player-sessions-table table {
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+}
+
+/* На странице деталей игрока - другие таблицы (убийства, ники, роли и т.д.) */
+.player-detail-table {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-8);
+  overflow-x: hidden;
+}
+
+.player-detail-table table {
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+}
+
 th {
   background: var(--dark-blue-bg);
   color: var(--white);
@@ -389,6 +443,9 @@ th {
   text-align: left;
   font-weight: 600;
   border-bottom: 1px solid var(--stroke-01);
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 td {

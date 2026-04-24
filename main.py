@@ -121,10 +121,10 @@ def create_app() -> FastAPI:
         )
     
     # Include routers
-    app.include_router(status_router)
-    app.include_router(kits_router)
-    app.include_router(players_router)
-    app.include_router(stats_router)
+    app.include_router(status_router, prefix="/api/v1")
+    app.include_router(kits_router, prefix="/api/v1")
+    app.include_router(players_router, prefix="/api/v1")
+    app.include_router(stats_router, prefix="/api/v1")
     app.include_router(admin_router)
     app.include_router(events_router)
 

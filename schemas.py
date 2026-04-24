@@ -59,6 +59,10 @@ class PlayerDataBase(BaseModel):
 
 class PlayerDataCreate(PlayerDataBase):
     last_login_time: Optional[str] = None
+    last_ip: Optional[str] = Field(None, max_length=45, description="Last IP address")
+    last_subnet: Optional[str] = Field(None, max_length=45, description="Last subnet (e.g., 192.168.1.0/24)")
+    first_login: Optional[str] = None
+    avg_ping: Optional[int] = Field(None, ge=0, description="Average ping")
 
 
 class PlayerDataUpdate(BaseModel):

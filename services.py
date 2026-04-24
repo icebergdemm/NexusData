@@ -155,34 +155,108 @@ class EventDispatcherService:
         return {"id": role_stat.id, "player_id": player_id, "role": role}
     
     def _handle_player_session_login(self, payload: dict) -> dict:
-        player_id = payload.get("player_id")
+        player_steamid = payload.get("player_steamid")
+        player_name = payload.get("player_last_time_name")
+        ip = payload.get("ip")
+        subnet = payload.get("subnet")
         login_time_str = payload.get("login_time")
         
-        if not all([player_id, login_time_str]):
-            raise HTTPException(status_code=400, detail="player_id, login_time are required")
+        logger.debug(f"Login payload: steamid={player_steamid}, ip={ip}, subnet={subnet}, name={player_name}")
+        
+        if not all([player_steamid, login_time_str]):
+            raise HTTPException(status_code=400, detail="player_steamid, login_time are required")
         
         try:
             login_time = parse_iso_datetime(login_time_str)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         
-        session = self.session_service.login(int(player_id), login_time)
-        return {"session_id": session.id, "player_id": player_id, "session_number": session.session_number}
+        # Найти или создать игрока
+        player = self.player_service.get_or_create_player_by_steamid(player_steamid, player_name)
+        
+        # Закрыть старую открытую сессию если есть
+        from models import PlayerSession
+        old_session = self.db.query(PlayerSession).filter(
+            PlayerSession.player_id == player.player_id,
+            PlayerSession.logout_time == None
+        ).order_by(PlayerSession.id.desc()).first()
+        
+        if old_session:
+            old_session.logout_time = login_time
+            old_session.session_duration = (login_time - old_session.login_time).total_seconds()
+            self.db.flush()  # Flush before commit to avoid session conflicts
+            self.db.commit()
+            logger.warning(f"Closed stale session {old_session.id} for player {player.player_id}")
+        
+        # Обновить IP и имя если предоставлены
+        if ip or subnet or player_name:
+            update_data = {}
+            if player_name:
+                update_data["player_last_time_name"] = player_name
+            if ip:
+                update_data["last_ip"] = ip
+            if subnet:
+                update_data["last_subnet"] = subnet
+            
+            logger.debug(f"Updating player {player.player_id} with: {update_data}")
+            player = self.player_service.update_player(player.player_id, update_data)
+            logger.debug(f"After update - IP: {player.last_ip}, Subnet: {player.last_subnet}")
+        
+        # Создать сессию
+        session = self.session_service.login(player.player_id, login_time)
+        return {"session_id": session.id, "player_id": player.player_id, "session_number": session.session_number}
     
     def _handle_player_session_logout(self, payload: dict) -> dict:
-        session_id = payload.get("session_id")
+        player_steamid = payload.get("player_steamid")
         logout_time_str = payload.get("logout_time")
+        play_time_this_session = payload.get("play_time_this_session")
+        stats = payload.get("stats", {})
         
-        if not all([session_id, logout_time_str]):
-            raise HTTPException(status_code=400, detail="session_id, logout_time are required")
+        if not all([player_steamid, logout_time_str]):
+            raise HTTPException(status_code=400, detail="player_steamid, logout_time are required")
         
         try:
             logout_time = parse_iso_datetime(logout_time_str)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         
-        session = self.session_service.logout(int(session_id), logout_time)
-        return {"session_id": session_id, "duration_seconds": session.session_duration or 0}
+        # Найти открытую сессию по steamid
+        player = self.player_service.player_repo.get_by_steamid(player_steamid)
+        if not player:
+            raise HTTPException(status_code=404, detail="Player not found")
+        
+        # Найти последнюю открытую сессию
+        from models import PlayerSession
+        session = self.db.query(PlayerSession).filter(
+            PlayerSession.player_id == player.player_id,
+            PlayerSession.logout_time == None
+        ).order_by(PlayerSession.id.desc()).first()
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="No open session found")
+        
+        # Закрыть сессию
+        session = self.session_service.logout(session.id, logout_time)
+        
+        # Обновить статистику если передана
+        if stats:
+            stats_create = PlayerStatsCreate(
+                killed_monsters=stats.get("killed_monsters", 0),
+                killed_players=stats.get("killed_players", 0),
+                saved_players=stats.get("saved_players", 0),
+                total_missions_captain=stats.get("total_missions_captain", 0),
+                successful_missions_captain=stats.get("successful_missions_captain", 0),
+                killed_npc=stats.get("killed_npc", 0)
+            )
+            self.stats_service.upsert_stats(player.player_id, stats_create)
+        
+        # Обновить общее время игры
+        if play_time_this_session:
+            current_play_time = player.play_time or 0
+            new_play_time = current_play_time + int(play_time_this_session)
+            self.player_service.player_repo.update(player.player_id, {"play_time": new_play_time})
+        
+        return {"session_id": session.id, "player_id": player.player_id, "duration_seconds": session.session_duration or 0}
 
 
 class PlayerService:
@@ -276,6 +350,19 @@ class PlayerService:
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=str(e))
             
+            # Add new optional fields
+            if player_data.last_ip:
+                update_data["last_ip"] = player_data.last_ip
+            if player_data.last_subnet:
+                update_data["last_subnet"] = player_data.last_subnet
+            if player_data.first_login:
+                try:
+                    update_data["first_login"] = parse_iso_datetime(player_data.first_login)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
+            if player_data.avg_ping is not None:
+                update_data["avg_ping"] = player_data.avg_ping
+            
             logger.info(f"Updating player: {existing.player_id}")
             updated_player = self.player_repo.update(existing.player_id, update_data)
             return PlayerDataOut.from_orm_with_mappings(updated_player, settings.ranks_mapping, settings.kits_mapping)
@@ -288,6 +375,9 @@ class PlayerService:
             rank_id=player_data.rank_id,
             kit_level=player_data.kit_level,
             achievements=safe_get_list(player_data.achievements),
+            last_ip=player_data.last_ip,
+            last_subnet=player_data.last_subnet,
+            avg_ping=player_data.avg_ping,
         )
         
         if player_data.last_login_time:
@@ -295,6 +385,12 @@ class PlayerService:
                 new_player.last_login_time = parse_iso_datetime(
                     player_data.last_login_time
                 )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        
+        if player_data.first_login:
+            try:
+                new_player.first_login = parse_iso_datetime(player_data.first_login)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
         
@@ -309,6 +405,38 @@ class PlayerService:
     def search_players(self, query: str, limit: int = 10) -> List[PlayerData]:
         """Search players by name or SteamID"""
         return self.player_repo.search(query, limit)
+    
+    def get_or_create_player_by_steamid(self, steamid: str, player_name: str = None) -> PlayerData:
+        """Get existing player or create new one by steamid"""
+        if not validate_steamid(steamid):
+            raise HTTPException(status_code=400, detail="Invalid SteamID format")
+        
+        # Try to find existing
+        existing = self.player_repo.get_by_steamid(steamid)
+        if existing:
+            return existing
+        
+        # Create new player
+        new_player = PlayerData(
+            player_steamid=steamid,
+            player_last_time_name=player_name or f"Player_{steamid[-8:]}",
+        )
+        created_player = self.player_repo.create(new_player)
+        
+        # Create stats for new player
+        new_stats = PlayerStats(player_id=created_player.player_id)
+        self.stats_repo.create(created_player.player_id, new_stats)
+        
+        logger.info(f"Created new player: {created_player.player_id} ({steamid})")
+        return created_player
+    
+    def update_player(self, player_id: int, update_data: dict) -> PlayerData:
+        """Update player data"""
+        updated = self.player_repo.update(player_id, update_data)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Player not found")
+        logger.info(f"Updated player: {player_id}")
+        return updated
 
 
 class PlayerStatsService:
