@@ -8,7 +8,7 @@ class Kit(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(String(15), index=True)
-    kit_level = Column(Integer)
+    kit_level = Column(Integer, default=0)
     items = Column(JSON)
 
 
@@ -20,8 +20,8 @@ class PlayerData(Base):
     player_steamid = Column(String(50), unique=True, index=True)
     last_login_time = Column(DateTime, default=func.now())
     play_time = Column(Integer, default=0)  # in seconds
-    rank_id = Column(Integer)
-    kit_level = Column(Integer)
+    rank_id = Column(Integer, default=0)
+    kit_level = Column(Integer, default=0)
     achievements = Column(JSON, default=list)
     last_ip = Column(String(45), nullable=True)  # Last IP address
     last_subnet = Column(String(45), nullable=True)  # Subnet (e.g., 192.168.1.0/24)

@@ -464,7 +464,7 @@ async def delete_admin_user(
 async def admin_players_list(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=100),
+    page_size: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None, min_length=2),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin)
@@ -1016,3 +1016,182 @@ async def delete_server_privilege(
         push_flash(request, "error", "Не удалось удалить привилегии")
     
     return RedirectResponse(url="/admin/server-privileges", status_code=302)
+
+
+# ============================================
+# API ENDPOINTS FOR ACHIEVEMENTS
+# ============================================
+
+from fastapi.responses import JSONResponse
+import json
+import os
+
+
+def load_achievements_config() -> dict:
+    """Load achievements configuration from JSON file"""
+    config_dir = os.path.join(os.path.dirname(__file__), '..', 'config')
+    
+    # Default structure with packs and stat types
+    config = {
+        "packs": {},
+        "statTypes": {}
+    }
+    
+    # Try to load from achievements.json
+    achievements_file = os.path.join(config_dir, 'achievements.json')
+    if os.path.exists(achievements_file):
+        try:
+            with open(achievements_file, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                # Check if new format (with packs and statTypes)
+                if 'packs' in loaded and 'statTypes' in loaded:
+                    return loaded
+                # Otherwise, try to use old format (for backward compatibility)
+                elif isinstance(loaded, dict):
+                    # If it has old format keys like affliction, item, perk, stat
+                    return loaded
+                else:
+                    return config
+        except Exception as e:
+            logger.error(f"Error loading achievements.json: {e}")
+    
+    # Fallback: return default structure
+    return config
+
+
+@router.get("/api/v1/admin/achievements/config")
+def get_achievements_config(
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Get available achievements configuration"""
+    if "read" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    config = load_achievements_config()
+    return JSONResponse(content=config)
+
+
+@router.post("/api/v1/admin/players/{player_id}/achievements")
+async def add_achievement(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Add achievement to player"""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        
+        player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+        if not player:
+            raise HTTPException(status_code=404, detail="Player not found")
+        
+        body = await request.json()
+        achievement = body.get("achievement")
+        
+        if not achievement:
+            raise HTTPException(status_code=400, detail="Achievement data is required")
+        
+        # Validate achievement structure
+        if not isinstance(achievement, dict):
+            raise HTTPException(status_code=400, detail="Achievement must be a dictionary")
+        
+        required_fields = ["type", "id", "name"]
+        for field in required_fields:
+            if field not in achievement:
+                raise HTTPException(status_code=400, detail=f"Field '{field}' is required in achievement")
+        
+        # Get current achievements
+        current_achievements = player.achievements or []
+        
+        # Check if achievement with same ID already exists
+        for existing in current_achievements:
+            if existing.get("id") == achievement.get("id"):
+                raise HTTPException(status_code=409, detail="Achievement with this ID already exists")
+        
+        # Add new achievement
+        current_achievements.append(achievement)
+        player.achievements = current_achievements
+        
+        db.commit()
+        db.refresh(player)
+        
+        # Log action
+        log_admin_action(db, current_admin.id, "add_achievement", {
+            "player_id": player_id,
+            "achievement_id": achievement.get("id"),
+            "achievement_type": achievement.get("type")
+        })
+        
+        return JSONResponse(
+            status_code=201,
+            content={
+                "status": "success",
+                "message": "Achievement added",
+                "achievement": achievement
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding achievement: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/api/v1/admin/players/{player_id}/achievements")
+async def delete_achievement(
+    request: Request,
+    player_id: int,
+    id: str = Query(..., description="Achievement ID to delete"),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Delete achievement from player"""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        
+        player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+        if not player:
+            raise HTTPException(status_code=404, detail="Player not found")
+        
+        # Get current achievements
+        current_achievements = player.achievements or []
+        
+        # Find and remove achievement
+        initial_count = len(current_achievements)
+        current_achievements = [a for a in current_achievements if a.get("id") != id]
+        
+        if len(current_achievements) == initial_count:
+            raise HTTPException(status_code=404, detail="Achievement not found")
+        
+        player.achievements = current_achievements
+        
+        db.commit()
+        db.refresh(player)
+        
+        # Log action
+        log_admin_action(db, current_admin.id, "delete_achievement", {
+            "player_id": player_id,
+            "achievement_id": id
+        })
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Achievement deleted"
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting achievement: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -36,8 +36,8 @@ class PlayerDataBase(BaseModel):
     player_last_time_name: str = Field(min_length=1, max_length=255)
     player_steamid: str = Field(min_length=17, max_length=18)
     play_time: int = Field(default=0, ge=0, description="Play time in seconds")
-    rank_id: Optional[int] = Field(None, ge=0)
-    kit_level: Optional[int] = Field(None, ge=0)
+    rank_id: int = Field(default=0, ge=0)
+    kit_level: int = Field(default=0, ge=0)
     achievements: List[str] = Field(default_factory=list)
     
     @field_validator('player_steamid')

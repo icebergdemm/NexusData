@@ -242,7 +242,7 @@
 
         async function searchPlayers(query) {
             try {
-                const response = await fetch(`/players/search?q=${encodeURIComponent(query)}`);
+                const response = await fetch(`/api/v1/players/search?q=${encodeURIComponent(query)}`);
                 const results = await response.json();
                 displayResults(results, query);
             } catch (error) {

@@ -250,10 +250,17 @@ class EventDispatcherService:
             )
             self.stats_service.upsert_stats(player.player_id, stats_create)
         
-        # Обновить общее время игры
+        # Обновить общее время игры (вычисляем из сессии, не полагаясь на клиента)
         if play_time_this_session:
             current_play_time = player.play_time or 0
             new_play_time = current_play_time + int(play_time_this_session)
+        else:
+            # Если клиент не отправил play_time, вычисляем из session_duration
+            duration_seconds = session.session_duration or 0
+            current_play_time = player.play_time or 0
+            new_play_time = current_play_time + duration_seconds
+
+        if new_play_time > 0:
             self.player_service.player_repo.update(player.player_id, {"play_time": new_play_time})
         
         return {"session_id": session.id, "player_id": player.player_id, "duration_seconds": session.session_duration or 0}

@@ -1,0 +1,78 @@
+{
+  "packs": {
+    "breathing_protected": {
+      "name": "🫁 Защита от дыхания",
+      "description": "Защита от кислородных проблем",
+      "achievements": [
+        { "type": "affliction", "id": "oxygen_low", "name": "Нехватка кислорода", "profession": "medic" },
+        { "type": "affliction", "id": "hypoxia", "name": "Гипоксия", "profession": "medic" }
+      ]
+    },
+    "heavy_equipment": {
+      "name": "⚔️ Тяжелое снаряжение",
+      "description": "Тяжелая броня и костюмы",
+      "achievements": [
+        { "type": "item", "id": "ID_Heavy_Armor", "name": "Тяжелая броня", "profession": "security", "replacedItems": ["ID_Diver_Suit"] },
+        { "type": "item", "id": "combat_suit", "name": "Боевой костюм", "profession": "security", "replacedItems": ["ID_Diver_Suit"] }
+      ]
+    },
+    "medical_expert": {
+      "name": "💊 Медицинский эксперт",
+      "description": "Медицинские навыки и достижения",
+      "achievements": [
+        { "type": "perk", "id": "medicine", "name": "Медицина", "profession": "medic" },
+        { "type": "item", "id": "scalpel", "name": "Скальпель", "profession": "medic", "replacedItems": ["welding_tool"] }
+      ]
+    },
+    "combat_specialist": {
+      "name": "🔫 Боевой специалист",
+      "description": "Боевые навыки и оружие",
+      "achievements": [
+        { "type": "perk", "id": "brave", "name": "Смелость", "profession": "security" },
+        { "type": "item", "id": "revolver", "name": "Револьвер", "profession": "security", "replacedItems": ["pistol"] }
+      ]
+    },
+    "engineer_master": {
+      "name": "🔧 Мастер инженер",
+      "description": "Инженерные и электрические навыки",
+      "achievements": [
+        { "type": "perk", "id": "engineering", "name": "Инженерия", "profession": "engineer" },
+        { "type": "perk", "id": "demolitions_expert", "name": "Специалист по взрывчатке", "profession": "mechanic" }
+      ]
+    },
+    "survivor": {
+      "name": "🏆 Выживший",
+      "description": "Достижения за выживание",
+      "achievements": [
+        { "type": "perk", "id": "camaraderie", "name": "Товарищество", "profession": "captain" },
+        { "type": "perk", "id": "leadership", "name": "Лидерство", "profession": "captain" }
+      ]
+    }
+  },
+  "statTypes": {
+    "kills": {
+      "name": "Убийства монстров",
+      "icon": "⚔️"
+    },
+    "electrical_repair": {
+      "name": "Уровень электрика",
+      "icon": "⚡"
+    },
+    "mechanical_repair": {
+      "name": "Уровень механика",
+      "icon": "🔧"
+    },
+    "missions_completed": {
+      "name": "Миссий завершено",
+      "icon": "✅"
+    },
+    "players_rescued": {
+      "name": "Игроков спасено",
+      "icon": "🆘"
+    },
+    "mvp_rounds": {
+      "name": "MVP раундов",
+      "icon": "⭐"
+    }
+  }
+}
