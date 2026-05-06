@@ -37,5 +37,12 @@
       <a href="/admin/server-privileges">Перейти</a>
     </div>
     {% endif %}
+    {% if "admin" in admin.permissions or "write" in admin.permissions %}
+    <div class="stat-card">
+      <h3>⚙️ Редактирование китов</h3>
+      <p>Управление стартовыми наборами предметов по профессиям и уровням</p>
+      <a href="/admin/kits">Перейти</a>
+    </div>
+    {% endif %}
   </div>
 {% endblock %}

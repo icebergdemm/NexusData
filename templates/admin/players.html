@@ -1,309 +1,217 @@
 {% extends "base.html" %}
-
 {% block title %}Игроки — Nexus Data{% endblock %}
 
 {% block content %}
-  <style>
-    .table-responsive.players-page {
-      max-height: 350px;
-      overflow-y: auto;
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      overflow-x: hidden;
-    }
-    .table-responsive.players-page table {
-      margin-top: 0;
-      border: none;
-      border-radius: 0;
-    }
-  </style>
-  <div class="card">
-    <h2>Игроки сервера</h2>
+<style>
+.pg-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--spacing-16); margin-bottom:var(--spacing-24); }
+.pg-header h2 { color:var(--white); font-size:22px; font-weight:700; }
+.pg-header p  { color:var(--gray); font-size:14px; margin-top:4px; }
+.stats-chips { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:var(--spacing-12); margin-bottom:var(--spacing-24); }
+.stat-chip { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:var(--spacing-16) 20px; text-align:center; }
+.stat-chip .sv { font-size:26px; font-weight:800; color:var(--primary-blue); line-height:1; }
+.stat-chip .sl { font-size:11px; color:var(--gray); margin-top:6px; text-transform:uppercase; letter-spacing:.4px; }
+.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; margin-bottom:var(--spacing-24); }
+.block-card-header { display:flex; align-items:center; justify-content:space-between; padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); }
+.block-card-header h3 { color:var(--white); font-size:16px; font-weight:600; }
+.block-card-body { padding:var(--spacing-20,20px) var(--spacing-24); }
+.search-wrapper { position:relative; }
+.search-field {
+  width:100%; padding:11px 42px 11px 14px;
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); color:var(--white);
+  font-family:'Manrope',sans-serif; font-size:14px;
+  transition:border-color var(--transition-03);
+}
+.search-field:focus { outline:none; border-color:var(--primary-blue); box-shadow:0 0 0 2px rgba(26,104,222,.15); }
+.search-field::placeholder { color:var(--gray-dark); }
+.search-icon { position:absolute; right:14px; top:50%; transform:translateY(-50%); color:var(--gray-dark); pointer-events:none; }
+.search-hint { font-size:12px; color:var(--gray-dark); margin-top:8px; }
+.search-active { display:flex; align-items:center; gap:10px; padding:9px 14px; background:rgba(26,104,222,.1); border:1px solid rgba(26,104,222,.25); border-radius:var(--border-radius-8); margin-bottom:14px; font-size:13px; color:var(--white); }
+.search-active a { color:var(--gray); text-decoration:none; font-size:20px; line-height:1; margin-left:auto; }
+.search-active a:hover { color:var(--error); }
+.search-dropdown {
+  position:absolute; top:calc(100% + 4px); left:0; right:0;
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); max-height:360px; overflow-y:auto;
+  display:none; z-index:1000; box-shadow:0 8px 24px rgba(0,0,0,.45);
+}
+.sd-item { padding:11px 16px; cursor:pointer; border-bottom:1px solid var(--stroke-01); transition:background var(--transition-03); }
+.sd-item:last-child { border-bottom:none; }
+.sd-item:hover { background:var(--blue-010); }
+.sd-name { font-weight:600; color:var(--white); font-size:14px; }
+.sd-sub  { font-size:11px; color:var(--gray); margin-top:3px; }
+.data-table { width:100%; border-collapse:collapse; }
+.data-table thead { background:var(--dark-blue-bg); }
+.data-table th { padding:11px 16px; text-align:left; color:var(--gray); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; white-space:nowrap; }
+.data-table td { padding:12px 16px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; vertical-align:middle; }
+.data-table tbody tr:last-child td { border-bottom:none; }
+.data-table tbody tr:hover { background:var(--blue-010); }
+.cell-id { color:var(--gray-dark); font-size:12px; }
+.cell-steamid { font-family:'Courier New',monospace; font-size:11px; color:var(--gray); }
+.cell-time { color:var(--gray); font-size:12px; }
+.badge-rank { display:inline-block; padding:3px 9px; border-radius:20px; font-size:11px; font-weight:700; background:rgba(26,104,222,.15); color:#4d9fff; }
+.btn { display:inline-flex; align-items:center; gap:5px; padding:6px 13px; border-radius:var(--border-radius-8); font-size:12px; font-weight:600; font-family:'Manrope',sans-serif; cursor:pointer; border:1px solid transparent; transition:all var(--transition-03); text-decoration:none; white-space:nowrap; }
+.btn-outline { background:transparent; color:var(--primary-blue); border-color:rgba(26,104,222,.4); }
+.btn-outline:hover { background:rgba(26,104,222,.1); }
+.pagination { display:flex; align-items:center; justify-content:center; gap:6px; padding:var(--spacing-16) var(--spacing-24); border-top:1px solid var(--stroke-01); flex-wrap:wrap; }
+.pg-btn { display:inline-flex; align-items:center; justify-content:center; min-width:36px; height:36px; padding:0 10px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--gray); font-size:13px; font-weight:600; text-decoration:none; transition:all var(--transition-03); white-space:nowrap; }
+.pg-btn:hover { background:var(--blue-010); color:var(--white); border-color:var(--primary-blue); }
+.pg-btn.active { background:var(--primary-blue); color:var(--white); border-color:var(--primary-blue); }
+.pg-btn.nav { padding:0 12px; font-size:12px; }
+.pg-dots { color:var(--gray-dark); padding:0 2px; line-height:36px; }
+@media(max-width:768px){
+  .data-table th:nth-child(2),.data-table td:nth-child(2){ display:none; }
+  .data-table th:nth-child(5),.data-table td:nth-child(5){ display:none; }
+  .data-table th:nth-child(7),.data-table td:nth-child(7){ display:none; }
+}
+</style>
+
+<div class="pg-header">
+  <div>
+    <h2>👥 Игроки сервера</h2>
+    <p>Просмотр и управление данными всех игроков.</p>
+  </div>
+</div>
+
+<div class="stats-chips">
+  <div class="stat-chip"><div class="sv">{{ total }}</div><div class="sl">Найдено</div></div>
+  <div class="stat-chip"><div class="sv">{{ page }}</div><div class="sl">Страница</div></div>
+  <div class="stat-chip"><div class="sv">{{ total_pages }}</div><div class="sl">Всего стр.</div></div>
+  <div class="stat-chip"><div class="sv">{{ page_size }}</div><div class="sl">На странице</div></div>
+</div>
+
+<!-- Search -->
+<div class="block-card">
+  <div class="block-card-header"><h3>🔍 Поиск</h3></div>
+  <div class="block-card-body">
     {% if search_query %}
-    <p style="color: var(--success); font-weight: 600;">Результаты поиска: <strong>"{{ search_query }}"</strong></p>
+    <div class="search-active">
+      <span>Результаты по: <strong>«{{ search_query }}»</strong></span>
+      <a href="/admin/players" title="Сбросить">✕</a>
+    </div>
+    {% endif %}
+    <div class="search-wrapper">
+      <input type="text" id="search-input" class="search-field"
+             placeholder="Поиск по нику, SteamID, IP адресу..."
+             value="{{ search_query or '' }}" autocomplete="off">
+      <span class="search-icon">🔍</span>
+      <div id="search-dropdown" class="search-dropdown"></div>
+    </div>
+    <p class="search-hint">💡 Начните вводить для живого поиска · Enter — показать все результаты на странице</p>
+  </div>
+</div>
+
+<!-- Table -->
+<div class="block-card">
+  <div class="block-card-header">
+    <h3>Список игроков</h3>
+    <span style="font-size:13px; color:var(--gray);">{{ total }} записей</span>
+  </div>
+  {% if players %}
+  <div style="overflow-x:auto;">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>SteamID</th>
+          <th>Имя</th>
+          <th>Ранг</th>
+          <th>Набор</th>
+          <th>Время (ч)</th>
+          <th>Последний вход</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for player in players %}
+        <tr>
+          <td class="cell-id">#{{ player.player_id }}</td>
+          <td class="cell-steamid">{{ player.player_steamid }}</td>
+          <td><strong>{{ player.player_last_time_name }}</strong></td>
+          <td><span class="badge-rank">{{ player.rank_name or '—' }}</span></td>
+          <td class="cell-time">{{ player.kit_name or '—' }}</td>
+          <td class="cell-time">{{ "%.1f"|format(player.play_time_hours) }}</td>
+          <td class="cell-time">{{ player.last_login_time.strftime('%d.%m.%Y %H:%M') if player.last_login_time else '—' }}</td>
+          <td><a href="/admin/players/{{ player.player_id }}" class="btn btn-outline">Просмотр →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="text-align:center; padding:48px 32px; color:var(--gray-dark);">
+    <div style="font-size:48px; margin-bottom:16px; opacity:.45;">👤</div>
+    <h3 style="color:var(--gray); margin-bottom:8px;">Игроки не найдены</h3>
+    {% if search_query %}<p>Попробуйте изменить запрос или <a href="/admin/players" style="color:var(--primary-blue);">сбросить поиск</a></p>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if total_pages > 1 %}
+  <div class="pagination">
+    {# First page #}
+    {% if page > 1 %}
+    <a href="?page=1&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav" title="Первая страница">«</a>
+    <a href="?page={{ page - 1 }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav">‹ Назад</a>
+    {% endif %}
+
+    {# Page numbers with ellipsis #}
+    {% set ns = namespace(show_dots=false) %}
+    {% for p in range(1, total_pages + 1) %}
+      {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+        {% set ns.show_dots = false %}
+        <a href="?page={{ p }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}"
+           class="pg-btn {% if p == page %}active{% endif %}">{{ p }}</a>
+      {% else %}
+        {% if not ns.show_dots %}
+          <span class="pg-dots">…</span>
+          {% set ns.show_dots = true %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+
+    {# Last page #}
+    {% if page < total_pages %}
+    <a href="?page={{ page + 1 }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav">Вперёд ›</a>
+    <a href="?page={{ total_pages }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav" title="Последняя страница">»</a>
     {% endif %}
   </div>
+  {% endif %}
+</div>
 
-  <!-- Search -->
-  <div class="card">
-    <h3>Поиск</h3>
-    <div class="search-form-wrapper">
-      <input type="text" id="search-input" placeholder="Поиск по нику, SteamID, IP адресу..." value="{{ search_query or '' }}" class="search-input">
-      <div id="search-results" class="search-dropdown"></div>
-      <small style="display: block; margin-top: var(--spacing-12); color: var(--gray);">💡 Нажмите Enter для показа всех результатов поиска</small>
-    </div>
-  </div>
+<script>
+const si = document.getElementById('search-input');
+const dd = document.getElementById('search-dropdown');
+let tmr;
 
-  <!-- Players Table -->
-  <div class="card">
-    <h3>Всего игроков: {{ total }}</h3>
-    <div class="table-responsive players-page">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>SteamID</th>
-            <th>Имя</th>
-            <th>Ранг</th>
-            <th>Уровень набора</th>
-            <th>Время (ч)</th>
-            <th>Последний вход</th>
-            <th>Действия</th>
-          </tr>
-                </thead>
-                <tbody>
-                    {% for player in players %}
-                    <tr>
-                        <td>{{ player.player_id }}</td>
-                        <td>{{ player.player_steamid }}</td>
-                        <td>{{ player.player_last_time_name }}</td>
-                        <td>{{ player.rank_name }}</td>
-                        <td>{{ player.kit_name }}</td>
-                        <td>{{ "%.1f"|format(player.play_time_hours) }}</td>
-                        <td>{{ player.last_login_time.strftime('%Y-%m-%d %H:%M') }}</td>
-                        <td>
-                            <a href="/admin/players/{{ player.player_id }}" class="btn">Просмотр</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-      </div>
+si.addEventListener('input', function() {
+  clearTimeout(tmr);
+  const q = this.value.trim();
+  if (q.length < 2) { dd.style.display='none'; return; }
+  tmr = setTimeout(() => doSearch(q), 280);
+});
+si.addEventListener('keydown', function(e) {
+  if (e.key==='Enter') { e.preventDefault(); const q=this.value.trim(); if(q.length>=2) location.href=`/admin/players?search=${encodeURIComponent(q)}`; }
+  if (e.key==='Escape') dd.style.display='none';
+});
+document.addEventListener('click', e => { if(!si.contains(e.target)&&!dd.contains(e.target)) dd.style.display='none'; });
 
-      {% if total_pages > 1 %}
-      <div class="pagination">
-        {% if page > 1 %}
-        <a href="?page={{ page - 1 }}&page_size={{ page_size }}" class="page-btn">« Предыдущая</a>
-        {% endif %}
-
-        {% for p in range(max(1, page - 2), min(total_pages + 1, page + 3)) %}
-        <a href="?page={{ p }}&page_size={{ page_size }}" class="page-btn {% if p == page %}active{% endif %}">{{ p }}</a>
-        {% endfor %}
-
-        {% if page < total_pages %}
-        <a href="?page={{ page + 1 }}&page_size={{ page_size }}" class="page-btn">Следующая »</a>
-        {% endif %}
-      </div>
-      {% endif %}
-    </div>
-
-  <style>
-    .search-form-wrapper {
-      position: relative;
-      margin-bottom: var(--spacing-16);
-    }
-
-    .search-input {
-      width: 100%;
-      padding: var(--spacing-12);
-      background: var(--dark-blue-bg);
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      color: var(--white);
-      font-family: inherit;
-      font-size: 14px;
-    }
-
-    .search-input::placeholder {
-      color: var(--gray);
-    }
-
-    .search-dropdown {
-      position: absolute;
-      top: 100%;
-      left: 0;
-      right: 0;
-      background: var(--card-bg);
-      border: 1px solid var(--stroke-01);
-      border-top: none;
-      max-height: 400px;
-      overflow-y: auto;
-      display: none;
-      z-index: 1000;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-      border-radius: 0 0 var(--border-radius-8) var(--border-radius-8);
-    }
-
-    .search-dropdown > div {
-      padding: var(--spacing-12);
-      cursor: pointer;
-      border-bottom: 1px solid var(--stroke-01);
-      transition: background-color var(--transition-03);
-      background-color: transparent;
-    }
-
-    .search-dropdown > div:hover {
-      background-color: var(--blue-010);
-    }
-
-    .search-dropdown > div:last-child {
-      border-bottom: none;
-    }
-
-    .table-responsive {
-      overflow-x: auto;
-    }
-
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: var(--spacing-16);
-    }
-
-    .data-table thead {
-      background: var(--dark-blue-bg);
-      border-bottom: 2px solid var(--stroke-01);
-    }
-
-    .data-table th {
-      padding: var(--spacing-12);
-      text-align: left;
-      color: var(--gray);
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .data-table td {
-      padding: var(--spacing-12);
-      border-bottom: 1px solid var(--stroke-01);
-      color: var(--white);
-      font-size: 14px;
-    }
-
-    .data-table tbody tr:hover {
-      background-color: var(--blue-010);
-    }
-
-    .data-table .btn {
-      padding: var(--spacing-8) var(--spacing-12);
-      font-size: 12px;
-    }
-
-    .pagination {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: var(--spacing-12);
-      margin-top: var(--spacing-24);
-      padding-top: var(--spacing-16);
-      border-top: 1px solid var(--stroke-01);
-    }
-
-    .page-btn {
-      padding: var(--spacing-8) var(--spacing-12);
-      background: var(--dark-blue-bg);
-      color: var(--gray);
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      cursor: pointer;
-      font-size: 12px;
-      transition: all var(--transition-03);
-      text-decoration: none;
-      display: inline-block;
-    }
-
-    .page-btn:hover {
-      background: var(--blue-010);
-      color: var(--white);
-    }
-
-    .page-btn.active {
-      background: var(--primary-blue);
-      color: var(--white);
-      border-color: var(--primary-blue);
-    }
-  </style>
-
-  <script>
-        const searchInput = document.getElementById('search-input');
-        const searchResults = document.getElementById('search-results');
-        let timeout;
-
-        searchInput.addEventListener('input', function() {
-            clearTimeout(timeout);
-            const query = this.value.trim();
-            if (query.length < 2) {
-                searchResults.style.display = 'none';
-                return;
-            }
-            timeout = setTimeout(() => searchPlayers(query), 300);
-        });
-
-        searchInput.addEventListener('keydown', function(e) {
-            const query = this.value.trim();
-            if (e.key === 'Enter' && query.length >= 2) {
-                e.preventDefault();
-                // Redirect to search results page
-                window.location.href = `/admin/players?search=${encodeURIComponent(query)}`;
-            }
-        });
-
-        async function searchPlayers(query) {
-            try {
-                const response = await fetch(`/api/v1/players/search?q=${encodeURIComponent(query)}`);
-                const results = await response.json();
-                displayResults(results, query);
-            } catch (error) {
-                console.error('Search error:', error);
-                searchResults.innerHTML = '<div style="padding: var(--spacing-12); color: var(--error);">Ошибка при поиске</div>';
-                searchResults.style.display = 'block';
-            }
-        }
-
-        function displayResults(results, query) {
-            if (results.length === 0) {
-                searchResults.innerHTML = '<div style="padding: var(--spacing-12); color: var(--gray);">Игроки не найдены</div>';
-                searchResults.style.display = 'block';
-                return;
-            }
-
-            searchResults.innerHTML = results.map((player, index) => {
-                const matchContext = player.match_context || [];
-                let additionalInfo = '';
-
-                if (matchContext.includes('ip_address')) {
-                    additionalInfo = `<div style="font-size: 11px; color: var(--gray); margin-top: 4px;">
-                        <strong>${player.steamid}</strong> • ${escapeHtml(player.name)}
-                    </div>`;
-                } else if (matchContext.includes('nickname') || matchContext.includes('previous_nickname')) {
-                    additionalInfo = `<div style="font-size: 11px; color: var(--gray); margin-top: 4px;">
-                        <strong>${player.steamid}</strong>
-                    </div>`;
-                } else if (matchContext.includes('steamid')) {
-                    if (player.previous_names && player.previous_names.length > 0) {
-                        additionalInfo = `<div style="font-size: 11px; color: var(--gray); margin-top: 4px;">
-                            Ники: ${player.previous_names.slice(0, 2).join(', ')}${player.previous_names.length > 2 ? ' +' + (player.previous_names.length - 2) : ''}
-                        </div>`;
-                    }
-                }
-
-                return `<div style="padding: var(--spacing-12); cursor: pointer; transition: background-color var(--transition-03);" 
-                        onmouseover="this.style.backgroundColor='var(--blue-010)'" 
-                        onmouseout="this.style.backgroundColor='transparent'"
-                        onclick="goToPlayer(${player.id})">
-                    <div style="font-weight: 600; color: var(--white);">${escapeHtml(player.name)}</div>
-                    ${additionalInfo}
-                </div>`;
-            }).join('');
-            searchResults.style.display = 'block';
-        }
-
-        function escapeHtml(text) {
-            const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'};
-            return text.replace(/[&<>"']/g, m => map[m]);
-        }
-
-        function goToPlayer(id) {
-            window.location.href = `/admin/players/${id}`;
-            searchResults.style.display = 'none';
-        }
-
-        document.addEventListener('click', function(e) {
-            if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
-                searchResults.style.display = 'none';
-            }
-        });
-    </script>
+async function doSearch(q) {
+  try {
+    const r = await fetch(`/api/v1/players/search?q=${encodeURIComponent(q)}`);
+    renderDD(await r.json());
+  } catch { dd.innerHTML='<div class="sd-item"><span class="sd-sub" style="color:var(--error)">Ошибка поиска</span></div>'; dd.style.display='block'; }
+}
+const esc = t => String(t).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+function renderDD(res) {
+  if (!res.length) { dd.innerHTML='<div class="sd-item"><span class="sd-name" style="color:var(--gray)">Не найдено</span></div>'; dd.style.display='block'; return; }
+  dd.innerHTML = res.map(p => {
+    const ctx = p.match_context||[];
+    let sub = esc(p.steamid);
+    if (ctx.includes('ip_address')) sub=`<strong>${esc(p.steamid)}</strong> · ${esc(p.name)}`;
+    else if (ctx.includes('steamid')&&p.previous_names?.length) sub=`Ники: ${p.previous_names.slice(0,3).map(esc).join(', ')}`;
+    return `<div class="sd-item" onclick="location.href='/admin/players/${p.id}'"><div class="sd-name">${esc(p.name)}</div><div class="sd-sub">${sub}</div></div>`;
+  }).join('');
+  dd.style.display='block';
+}
+</script>
 {% endblock %}

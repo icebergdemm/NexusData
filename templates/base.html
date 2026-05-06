@@ -50,6 +50,9 @@
         {% if "admin" in admin.permissions or "manage_admins" in admin.server_permissions %}
         <li><a href="/admin/server-privileges">Привилегии игроков</a></li>
         {% endif %}
+        {% if "admin" in admin.permissions or "write" in admin.permissions %}
+        <li><a href="/admin/kits">Редактирование китов</a></li>
+        {% endif %}
       </ul>
     </nav>
 

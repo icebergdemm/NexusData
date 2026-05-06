@@ -1,0 +1,734 @@
+{% extends "base.html" %}
+
+{% block title %}Редактирование китов — Nexus Data{% endblock %}
+
+{% block content %}
+
+<style>
+/* ===== KITS PAGE STYLES ===== */
+.kits-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--spacing-16);
+  margin-bottom: var(--spacing-24);
+}
+.kits-header h2 {
+  color: var(--white);
+  font-size: 22px;
+  font-weight: 700;
+}
+.kits-header p {
+  color: var(--gray);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+/* FILTER BAR */
+.kits-filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-12);
+  flex-wrap: wrap;
+  background: var(--card-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-12);
+  padding: var(--spacing-16) var(--spacing-24);
+  margin-bottom: var(--spacing-24);
+}
+.kits-filter-bar .filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 160px;
+}
+.kits-filter-bar label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.kits-filter-bar select,
+.kits-filter-bar input[type="text"] {
+  background: var(--dark-blue-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-8);
+  color: var(--white);
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: 'Manrope', sans-serif;
+  transition: border-color var(--transition-03);
+  width: 100%;
+}
+.kits-filter-bar select:focus,
+.kits-filter-bar input[type="text"]:focus {
+  outline: none;
+  border-color: var(--primary-blue);
+}
+.kits-filter-bar select option {
+  background: var(--dark-blue-bg);
+}
+.filter-actions {
+  display: flex;
+  gap: var(--spacing-8);
+  align-items: flex-end;
+  padding-bottom: 0;
+}
+
+/* STATS ROW */
+.kits-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--spacing-12);
+  margin-bottom: var(--spacing-24);
+}
+.kits-stat-chip {
+  background: var(--card-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-12);
+  padding: var(--spacing-16) var(--spacing-20, 20px);
+  text-align: center;
+}
+.kits-stat-chip .stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--primary-blue);
+  line-height: 1;
+}
+.kits-stat-chip .stat-label {
+  font-size: 12px;
+  color: var(--gray);
+  margin-top: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* ADD KIT CARD */
+.add-kit-card {
+  background: var(--card-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-12);
+  margin-bottom: var(--spacing-24);
+  overflow: hidden;
+}
+.add-kit-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-16) var(--spacing-24);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--transition-03);
+}
+.add-kit-card-header.open {
+  border-bottom-color: var(--stroke-01);
+}
+.add-kit-card-header h3 {
+  color: var(--white);
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-8);
+}
+.add-kit-card-header h3::before {
+  content: "＋";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(26, 104, 222, 0.2);
+  color: var(--primary-blue);
+  font-size: 16px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.toggle-arrow {
+  color: var(--gray);
+  font-size: 18px;
+  transition: transform var(--transition-03);
+}
+.toggle-arrow.rotated {
+  transform: rotate(180deg);
+}
+.add-kit-card-body {
+  display: none;
+  padding: var(--spacing-24);
+}
+.add-kit-card-body.visible {
+  display: block;
+}
+
+/* KITS GRID */
+.kits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: var(--spacing-16);
+}
+.kit-card {
+  background: var(--card-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-12);
+  overflow: hidden;
+  transition: border-color var(--transition-03), box-shadow var(--transition-03);
+}
+.kit-card:hover {
+  border-color: var(--primary-blue);
+  box-shadow: 0 0 0 1px rgba(26, 104, 222, 0.15), 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+.kit-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-16) var(--spacing-20, 20px);
+  border-bottom: 1px solid var(--stroke-01);
+  background: rgba(26, 104, 222, 0.04);
+}
+.kit-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kit-card-job {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--white);
+  letter-spacing: 0.3px;
+}
+.kit-card-level {
+  font-size: 12px;
+  color: var(--gray);
+}
+.kit-level-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.level-0 { background: rgba(163, 171, 184, 0.15); color: #a3abb8; }
+.level-1 { background: rgba(3, 123, 54, 0.2); color: #00ff88; }
+.level-2 { background: rgba(26, 104, 222, 0.2); color: #4d9fff; }
+.level-3 { background: rgba(169, 121, 0, 0.25); color: #ffcf55; }
+.level-4 { background: rgba(174, 0, 122, 0.22); color: #ff6fd8; }
+
+.kit-card-actions {
+  display: flex;
+  gap: var(--spacing-8);
+  align-items: center;
+}
+.kit-card-body {
+  padding: var(--spacing-16) var(--spacing-20, 20px);
+}
+.kit-items-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--spacing-8);
+}
+.item-tag {
+  background: rgba(26, 104, 222, 0.12);
+  border: 1px solid rgba(26, 104, 222, 0.25);
+  color: var(--gray);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  word-break: break-all;
+}
+.kit-items-count {
+  font-size: 12px;
+  color: var(--gray-dark);
+  margin-top: 4px;
+}
+
+/* EDIT FORM */
+.kit-edit-form {
+  display: none;
+  padding: var(--spacing-16) var(--spacing-20, 20px);
+  border-top: 1px solid var(--stroke-01);
+  background: rgba(3, 9, 49, 0.4);
+}
+.kit-edit-form.visible {
+  display: block;
+}
+
+/* FORM ELEMENTS */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-12);
+  margin-bottom: var(--spacing-12);
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.form-group input,
+.form-group select,
+.form-group textarea {
+  background: var(--dark-blue-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-8);
+  color: var(--white);
+  padding: 9px 12px;
+  font-size: 13px;
+  font-family: 'Manrope', sans-serif;
+  transition: border-color var(--transition-03);
+  width: 100%;
+}
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--primary-blue);
+  box-shadow: 0 0 0 2px rgba(26, 104, 222, 0.15);
+}
+.form-group textarea {
+  resize: vertical;
+  min-height: 100px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.form-group textarea.json-editor {
+  min-height: 140px;
+  color: #7ec8e3;
+}
+.form-hint {
+  font-size: 11px;
+  color: var(--gray-dark);
+  margin-top: 2px;
+}
+.form-actions {
+  display: flex;
+  gap: var(--spacing-8);
+  margin-top: var(--spacing-16);
+  flex-wrap: wrap;
+}
+
+/* BUTTONS */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border-radius: var(--border-radius-8);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Manrope', sans-serif;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition-03);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--primary-blue);
+  color: var(--white);
+  border-color: var(--primary-blue);
+}
+.btn-primary:hover {
+  background: #1557c0;
+  border-color: #1557c0;
+  box-shadow: 0 2px 10px rgba(26, 104, 222, 0.35);
+}
+.btn-secondary {
+  background: transparent;
+  color: var(--gray);
+  border-color: var(--stroke-01);
+}
+.btn-secondary:hover {
+  background: var(--stroke-01);
+  color: var(--white);
+}
+.btn-danger {
+  background: rgba(183, 12, 70, 0.15);
+  color: #ff4d80;
+  border-color: rgba(183, 12, 70, 0.35);
+}
+.btn-danger:hover {
+  background: rgba(183, 12, 70, 0.3);
+  border-color: #b70c46;
+}
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.btn-icon {
+  padding: 6px 8px;
+  font-size: 14px;
+}
+
+/* EMPTY STATE */
+.kits-empty {
+  text-align: center;
+  padding: var(--spacing-48) var(--spacing-32);
+  color: var(--gray-dark);
+}
+.kits-empty-icon {
+  font-size: 52px;
+  margin-bottom: var(--spacing-16);
+  opacity: 0.5;
+}
+.kits-empty h3 {
+  color: var(--gray);
+  font-size: 18px;
+  margin-bottom: var(--spacing-8);
+}
+
+/* JSON VALIDATION */
+.json-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  margin-top: 4px;
+  font-weight: 600;
+}
+.json-status.valid { color: var(--success); }
+.json-status.invalid { color: var(--error); }
+
+/* RESPONSIVE */
+@media (max-width: 768px) {
+  .kits-grid { grid-template-columns: 1fr; }
+  .form-row { grid-template-columns: 1fr; }
+  .kits-filter-bar { flex-direction: column; }
+  .filter-actions { width: 100%; }
+}
+</style>
+
+<!-- PAGE HEADER -->
+<div class="kits-header">
+  <div>
+    <h2>⚙️ Редактирование базовых китов</h2>
+    <p>Управление стартовыми наборами предметов для каждой профессии и уровня.</p>
+  </div>
+</div>
+
+<!-- STATS CHIPS -->
+<div class="kits-stats-row">
+  <div class="kits-stat-chip">
+    <div class="stat-value">{{ kits | length }}</div>
+    <div class="stat-label">Всего китов</div>
+  </div>
+  <div class="kits-stat-chip">
+    <div class="stat-value">{{ all_job_ids | length }}</div>
+    <div class="stat-label">Профессий</div>
+  </div>
+  <div class="kits-stat-chip">
+    <div class="stat-value">{{ kits_mapping | length }}</div>
+    <div class="stat-label">Уровней в маппинге</div>
+  </div>
+</div>
+
+<!-- FILTER BAR -->
+<form method="get" action="/admin/kits" class="kits-filter-bar">
+  <div class="filter-group">
+    <label for="f-job">Профессия (job_id)</label>
+    <select id="f-job" name="job_id">
+      <option value="">— Все профессии —</option>
+      {% for jid in all_job_ids %}
+      <option value="{{ jid }}" {% if selected_job_id == jid %}selected{% endif %}>{{ jid }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="f-level">Уровень кита</label>
+    <select id="f-level" name="kit_level">
+      <option value="">— Любой уровень —</option>
+      {% for lvl_id, lvl_name in kits_mapping.items() %}
+      <option value="{{ lvl_id }}" {% if selected_kit_level|string == lvl_id|string %}selected{% endif %}>
+        {{ lvl_id }} — {{ lvl_name }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-actions">
+    <button type="submit" class="btn btn-primary">Применить</button>
+    <a href="/admin/kits" class="btn btn-secondary">Сброс</a>
+  </div>
+</form>
+
+<!-- ADD NEW KIT (collapsible) -->
+<div class="add-kit-card">
+  <div class="add-kit-card-header" id="addKitToggle" onclick="toggleAddKit()">
+    <h3>Добавить новый кит</h3>
+    <span class="toggle-arrow" id="addKitArrow">▾</span>
+  </div>
+  <div class="add-kit-card-body" id="addKitBody">
+    <form method="post" action="/admin/kits/add" id="addKitForm">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="add-job-id">Профессия (job_id) *</label>
+          <input type="text" id="add-job-id" name="job_id" placeholder="Например: Captain, Engineer..." maxlength="15" required>
+          <span class="form-hint">Идентификатор профессии, до 15 символов</span>
+        </div>
+        <div class="form-group">
+          <label for="add-kit-level">Уровень кита *</label>
+          <select id="add-kit-level" name="kit_level" required>
+            {% for lvl_id, lvl_name in kits_mapping.items() %}
+            <option value="{{ lvl_id }}">{{ lvl_id }} — {{ lvl_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="add-items">Предметы (JSON)</label>
+        <textarea id="add-items" name="items" class="json-editor"
+                  placeholder='[]' oninput="validateJson(this)">[
+]</textarea>
+        <div class="json-status" id="add-items-status"></div>
+        <span class="form-hint">JSON-массив с предметами набора. Например: <code>["item_id_1", "item_id_2"]</code></span>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">＋ Создать кит</button>
+        <button type="button" class="btn btn-secondary" onclick="toggleAddKit()">Отмена</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- KITS GRID -->
+{% if kits %}
+<div class="kits-grid">
+  {% for kit in kits %}
+  {% set lvl_str = kit.kit_level | string %}
+  {% set lvl_name = kits_mapping.get(lvl_str, 'Уровень ' ~ kit.kit_level) %}
+  {% if kit.items is mapping %}
+    {% set items_list = kit.items.values() | list %}
+  {% elif kit.items is iterable and kit.items is not string %}
+    {% set items_list = kit.items | list %}
+  {% else %}
+    {% set items_list = [] %}
+  {% endif %}
+  {% set items_count = items_list | length %}
+
+  <div class="kit-card" id="kit-card-{{ kit.id }}">
+    <!-- Card Header -->
+    <div class="kit-card-header">
+      <div class="kit-card-meta">
+        <span class="kit-card-job">{{ kit.job_id }}</span>
+        <span class="kit-card-level">{{ lvl_name }}</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="kit-level-badge level-{{ kit.kit_level }}">Lv {{ kit.kit_level }}</span>
+        <div class="kit-card-actions">
+          <button type="button" class="btn btn-sm btn-secondary" onclick="toggleEdit({{ kit.id }})" title="Редактировать">✏️</button>
+          <button type="button" class="btn btn-sm btn-danger" onclick="confirmDelete({{ kit.id }}, '{{ kit.job_id }}', {{ kit.kit_level }})" title="Удалить">🗑️</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card Body: preview -->
+    <div class="kit-card-body" id="kit-preview-{{ kit.id }}">
+      {% if items_count > 0 %}
+      {% set preview_items = items_list | list %}
+      <div class="kit-items-preview">
+        {% for item in preview_items %}
+        {% if loop.index0 < 8 %}
+        <span class="item-tag">{{ item if item is string else item | tojson }}</span>
+        {% endif %}
+        {% endfor %}
+        {% if items_count > 8 %}
+        <span class="item-tag">+{{ items_count - 8 }} ещё...</span>
+        {% endif %}
+      </div>
+      <div class="kit-items-count">{{ items_count }} {% if items_count == 1 %}предмет{% elif items_count in [2,3,4] %}предмета{% else %}предметов{% endif %}</div>
+      {% else %}
+      <div class="kit-items-count" style="color: var(--gray-dark); font-style:italic;">Нет предметов</div>
+      {% endif %}
+    </div>
+
+    <!-- Edit Form (hidden by default) -->
+    <div class="kit-edit-form" id="kit-edit-{{ kit.id }}">
+      <form method="post" action="/admin/kits/{{ kit.id }}/update">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Профессия (job_id)</label>
+            <input type="text" name="job_id" value="{{ kit.job_id }}" maxlength="15" required>
+          </div>
+          <div class="form-group">
+            <label>Уровень кита</label>
+            <select name="kit_level" required>
+              {% for lvl_id, lname in kits_mapping.items() %}
+              <option value="{{ lvl_id }}" {% if lvl_id|string == kit.kit_level|string %}selected{% endif %}>
+                {{ lvl_id }} — {{ lname }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Предметы (JSON)</label>
+          <textarea name="items" class="json-editor" id="items-textarea-{{ kit.id }}"
+                    oninput="validateJson(this)">{{ kit.items | tojson(indent=2) }}</textarea>
+          <div class="json-status" id="status-{{ kit.id }}"></div>
+          <span class="form-hint">JSON-массив предметов набора</span>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+          <button type="button" class="btn btn-secondary" onclick="toggleEdit({{ kit.id }})">Отмена</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<!-- Empty State -->
+<div class="add-kit-card" style="border-style: dashed;">
+  <div class="kits-empty">
+    <div class="kits-empty-icon">📦</div>
+    <h3>
+      {% if selected_job_id or selected_kit_level != "" %}
+        Китов с выбранными фильтрами не найдено
+      {% else %}
+        Китов пока нет
+      {% endif %}
+    </h3>
+    <p>
+      {% if selected_job_id or selected_kit_level != "" %}
+        Попробуйте изменить фильтры или <a href="/admin/kits" style="color:var(--primary-blue);">сбросить их</a>.
+      {% else %}
+        Создайте первый кит, нажав «Добавить новый кит» выше.
+      {% endif %}
+    </p>
+  </div>
+</div>
+{% endif %}
+
+<!-- Delete Confirmation Modal -->
+<div id="deleteModal" style="
+  display:none; position:fixed; inset:0; z-index:2000;
+  background:rgba(1,9,38,0.82); backdrop-filter:blur(4px);
+  align-items:center; justify-content:center;
+">
+  <div style="
+    background:var(--card-bg); border:1px solid var(--stroke-01);
+    border-radius:var(--border-radius-12); padding:32px;
+    max-width:420px; width:90%; text-align:center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  ">
+    <div style="font-size:44px; margin-bottom:16px;">🗑️</div>
+    <h3 style="color:var(--white); font-size:18px; margin-bottom:8px;">Удалить кит?</h3>
+    <p id="deleteModalText" style="color:var(--gray); margin-bottom:24px; font-size:14px;"></p>
+    <div style="display:flex; gap:12px; justify-content:center;">
+      <form id="deleteModalForm" method="post">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+      <button type="button" class="btn btn-secondary" onclick="closeDeleteModal()">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== TOGGLE ADD FORM =====
+let addKitOpen = false;
+function toggleAddKit() {
+  addKitOpen = !addKitOpen;
+  document.getElementById('addKitBody').classList.toggle('visible', addKitOpen);
+  document.getElementById('addKitToggle').classList.toggle('open', addKitOpen);
+  document.getElementById('addKitArrow').classList.toggle('rotated', addKitOpen);
+}
+
+// ===== TOGGLE EDIT FORM =====
+let openEditId = null;
+function toggleEdit(kitId) {
+  // Close previously open
+  if (openEditId !== null && openEditId !== kitId) {
+    document.getElementById('kit-edit-' + openEditId).classList.remove('visible');
+    document.getElementById('kit-preview-' + openEditId).style.display = '';
+  }
+  const form = document.getElementById('kit-edit-' + kitId);
+  const preview = document.getElementById('kit-preview-' + kitId);
+  const isOpen = form.classList.contains('visible');
+  if (isOpen) {
+    form.classList.remove('visible');
+    preview.style.display = '';
+    openEditId = null;
+  } else {
+    form.classList.add('visible');
+    preview.style.display = 'none';
+    openEditId = kitId;
+    // Validate existing JSON immediately
+    const ta = document.getElementById('items-textarea-' + kitId);
+    if (ta) validateJson(ta);
+  }
+}
+
+// ===== JSON VALIDATOR =====
+function validateJson(textarea) {
+  const statusEl = textarea.nextElementSibling;
+  if (!statusEl || !statusEl.classList.contains('json-status')) return;
+  try {
+    JSON.parse(textarea.value);
+    statusEl.textContent = '✓ JSON корректен';
+    statusEl.className = 'json-status valid';
+    textarea.style.borderColor = '';
+  } catch (e) {
+    statusEl.textContent = '✗ Ошибка: ' + e.message;
+    statusEl.className = 'json-status invalid';
+    textarea.style.borderColor = 'var(--error)';
+  }
+}
+
+// Run validation on all visible textareas on load
+document.querySelectorAll('.json-editor').forEach(ta => {
+  if (ta.value.trim()) validateJson(ta);
+});
+
+// ===== DELETE MODAL =====
+function confirmDelete(kitId, jobId, level) {
+  document.getElementById('deleteModalText').textContent =
+    'Кит "' + jobId + '" (уровень ' + level + ') будет удалён без возможности восстановления.';
+  document.getElementById('deleteModalForm').action = '/admin/kits/' + kitId + '/delete';
+  document.getElementById('deleteModal').style.display = 'flex';
+}
+function closeDeleteModal() {
+  document.getElementById('deleteModal').style.display = 'none';
+}
+// Close on backdrop click
+document.getElementById('deleteModal').addEventListener('click', function(e) {
+  if (e.target === this) closeDeleteModal();
+});
+// Close on Escape
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeDeleteModal();
+});
+
+// ===== FORMAT JSON BUTTON =====
+function formatJson(kitId) {
+  const ta = document.getElementById('items-textarea-' + kitId);
+  if (!ta) return;
+  try {
+    const parsed = JSON.parse(ta.value);
+    ta.value = JSON.stringify(parsed, null, 2);
+    validateJson(ta);
+  } catch (e) {}
+}
+</script>
+
+{% endblock %}

@@ -1,965 +1,703 @@
 {% extends "base.html" %}
-
-{% block title %}Игрок {{ player.player_id }} — Nexus Data{% endblock %}
+{% block title %}Игрок #{{ player.player_id }} — Nexus Data{% endblock %}
 
 {% block content %}
-  <style>
-    .player-sessions-table {
-      max-height: 400px;
-      overflow-y: auto;
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      overflow-x: hidden;
-    }
-    .player-sessions-table table {
-      margin-top: 0;
-      border: none;
-      border-radius: 0;
-    }
-    .player-detail-table {
-      max-height: 320px;
-      overflow-y: auto;
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      overflow-x: hidden;
-    }
-    .player-detail-table table {
-      margin-top: 0;
-      border: none;
-      border-radius: 0;
-    }
+<style>
+/* ── Layout ── */
+.pg-header { display:flex; align-items:center; gap:var(--spacing-16); margin-bottom:var(--spacing-24); flex-wrap:wrap; }
+.pg-header a.back-btn {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:8px 14px; border-radius:var(--border-radius-8);
+  border:1px solid var(--stroke-01); background:var(--card-bg);
+  color:var(--gray); font-size:13px; text-decoration:none;
+  transition:var(--transition-03);
+}
+.pg-header a.back-btn:hover { color:var(--white); border-color:var(--primary-blue); }
+.pg-header h2 { color:var(--white); font-size:20px; font-weight:700; }
 
-    /* ============================================
-       ACHIEVEMENTS MODAL STYLES
-       ============================================ */
-    .modal-overlay {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.8);
-      z-index: 1000;
-      align-items: center;
-      justify-content: center;
-    }
+/* ── Cards ── */
+.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
+.block-card-header { padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; }
+.block-card-header h3 { color:var(--white); font-size:15px; font-weight:600; }
+.block-card-body { padding:var(--spacing-24); }
 
-    .modal-overlay.active {
-      display: flex;
-    }
+/* ── Hero ── */
+.hero-card { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-24); }
+@media(max-width:840px){ .hero-card { grid-template-columns:1fr; } }
 
-    .modal-content {
-      background: var(--card-bg);
-      border-radius: var(--border-radius-8);
-      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
-      max-width: 900px;
-      width: 90%;
-      max-height: 90vh;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      border: 1px solid var(--line-color);
-    }
+.player-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 24px; }
+.info-row { display:flex; flex-direction:column; gap:4px; }
+.info-label { font-size:11px; color:var(--gray-dark); font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
+.info-value { font-size:14px; color:var(--white); font-weight:500; }
+.info-value.mono { font-family:'Courier New',monospace; font-size:12px; color:var(--gray); }
 
-    .modal-header {
-      padding: 24px;
-      border-bottom: 1px solid var(--line-color);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+.rank-badge {
+  display:inline-block; padding:4px 10px; border-radius:6px;
+  font-size:12px; font-weight:700; background:rgba(26,104,222,.2); color:#4d9fff;
+}
 
-    .modal-header h3 {
-      margin: 0;
-      color: var(--white);
-    }
+/* ── Stats chips ── */
+.chips-row { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:var(--spacing-24); }
+.chip {
+  display:flex; align-items:center; gap:8px;
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); padding:10px 16px;
+}
+.chip-icon { font-size:18px; }
+.chip-label { font-size:11px; color:var(--gray-dark); font-weight:600; }
+.chip-value { font-size:16px; font-weight:700; color:var(--white); line-height:1; }
 
-    .modal-close-btn {
-      background: none;
-      border: none;
-      color: var(--white);
-      font-size: 28px;
-      cursor: pointer;
-      padding: 0;
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
+/* ── Tables ── */
+.data-table { width:100%; border-collapse:collapse; }
+.data-table thead { background:var(--dark-blue-bg); }
+.data-table th { padding:10px 14px; text-align:left; color:var(--gray); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; }
+.data-table td { padding:11px 14px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; }
+.data-table tbody tr:last-child td { border-bottom:none; }
+.data-table tbody tr:hover { background:rgba(26,104,222,.04); }
+.mono-cell { font-family:'Courier New',monospace; font-size:11px; color:var(--gray); }
+.empty-row td { text-align:center; padding:24px; color:var(--gray-dark); }
 
-    .modal-close-btn:hover {
-      color: var(--primary-blue);
-    }
+/* scrollable table wrapper */
+.table-scroll-wrap { overflow-x:auto; }
+.table-scroll-body {
+  max-height:430px; /* ~10 rows */
+  overflow-y:auto;
+  scrollbar-width:thin;
+  scrollbar-color:var(--primary-blue) var(--dark-blue-bg);
+}
+.table-scroll-body::-webkit-scrollbar { width:5px; }
+.table-scroll-body::-webkit-scrollbar-track { background:var(--dark-blue-bg); border-radius:4px; }
+.table-scroll-body::-webkit-scrollbar-thumb { background:var(--primary-blue); border-radius:4px; }
+.table-scroll-body::-webkit-scrollbar-thumb:hover { background:#1460d4; }
+.table-scroll-body .data-table { border-collapse:separate; border-spacing:0; }
+.table-scroll-body .data-table thead { position:sticky; top:0; z-index:2; }
 
-    .modal-body {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-    }
+/* ── Section grid ── */
+.sections-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-24); }
+.sections-grid .full { grid-column:1/-1; }
+@media(max-width:960px){ .sections-grid { grid-template-columns:1fr; } }
 
-    .modal-tabs {
-      display: flex;
-      gap: 8px;
-      border-bottom: 2px solid var(--line-color);
-      margin-bottom: 24px;
-    }
+/* ── Form ── */
+.form-row { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-16); }
+.form-group { display:flex; flex-direction:column; gap:6px; }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group select, .form-group input, .form-group textarea {
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); color:var(--white);
+  padding:10px 14px; font-size:13px; font-family:inherit; width:100%;
+  box-sizing:border-box; transition:var(--transition-03);
+}
+.form-group select:focus, .form-group input:focus, .form-group textarea:focus {
+  outline:none; border-color:var(--primary-blue);
+}
+textarea { resize:vertical; min-height:100px; }
 
-    .modal-tab {
-      padding: 12px 20px;
-      background: none;
-      border: none;
-      color: var(--gray);
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 500;
-      border-bottom: 3px solid transparent;
-      margin-bottom: -2px;
-    }
+/* ── Buttons ── */
+.btn { display:inline-flex; align-items:center; gap:6px; padding:9px 18px; border-radius:var(--border-radius-8); font-size:13px; font-weight:600; cursor:pointer; border:none; text-decoration:none; font-family:inherit; transition:var(--transition-03); }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#1460d4; }
+.btn-secondary { background:transparent; border:1px solid var(--stroke-01); color:var(--gray); }
+.btn-secondary:hover { border-color:var(--primary-blue); color:var(--white); }
+.btn-danger { background:transparent; border:1px solid rgba(183,12,70,.4); color:#ff4d80; }
+.btn-danger:hover { background:rgba(183,12,70,.15); }
+.btn-sm { padding:5px 12px; font-size:12px; }
 
-    .modal-tab.active {
-      color: var(--primary-blue);
-      border-bottom-color: var(--primary-blue);
-    }
+/* ── Achievements ── */
+.ach-list { display:flex; flex-direction:column; gap:8px; }
+.ach-item {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px; background:var(--dark-blue-bg);
+  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8);
+  gap:12px;
+}
+.ach-item-info { display:flex; flex-direction:column; gap:2px; }
+.ach-item-name { font-size:13px; color:var(--white); font-weight:600; }
+.ach-item-id   { font-size:11px; color:var(--gray-dark); font-family:'Courier New',monospace; }
+.ach-note      { font-size:12px; color:var(--gray); margin-top:2px; }
 
-    .modal-pane {
-      display: none;
-    }
+/* ── Modal ── */
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.7); backdrop-filter:blur(4px);
+  z-index:1000; display:none; align-items:center; justify-content:center;
+  padding:16px;
+}
+.modal-overlay.open { display:flex; }
+.modal-box {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); width:100%; max-width:740px;
+  max-height:90vh; display:flex; flex-direction:column; overflow:hidden;
+}
+.modal-header { padding:var(--spacing-20) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; }
+.modal-header h3 { color:var(--white); font-size:16px; font-weight:600; }
+.modal-close { background:none; border:none; color:var(--gray); cursor:pointer; font-size:20px; line-height:1; padding:0 4px; }
+.modal-close:hover { color:var(--white); }
+.modal-body { padding:var(--spacing-24); overflow-y:auto; flex:1; }
+.modal-tabs { display:flex; gap:0; border-bottom:1px solid var(--stroke-01); margin-bottom:var(--spacing-20); }
+.modal-tab { padding:10px 20px; font-size:13px; font-weight:600; cursor:pointer; color:var(--gray); border:none; background:none; border-bottom:2px solid transparent; transition:var(--transition-03); font-family:inherit; }
+.modal-tab.active { color:var(--primary-blue); border-bottom-color:var(--primary-blue); }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
 
-    .modal-pane.active {
-      display: block;
-    }
+.packs-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; margin-bottom:var(--spacing-20); }
+.pack-card {
+  background:var(--dark-blue-bg); border:2px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); padding:12px; cursor:pointer;
+  transition:var(--transition-03); user-select:none;
+}
+.pack-card:hover { border-color:var(--primary-blue); }
+.pack-card.selected { border-color:var(--primary-blue); background:rgba(26,104,222,.1); }
+.pack-name { font-size:13px; font-weight:700; color:var(--white); }
+.pack-count { font-size:11px; color:var(--gray-dark); margin-top:2px; }
 
-    .manual-form-group {
-      margin-bottom: 16px;
-    }
+.config-ach-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:8px; }
+.config-ach-item {
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); padding:10px 12px;
+  display:flex; align-items:center; gap:10px; cursor:pointer;
+  transition:var(--transition-03);
+}
+.config-ach-item:hover { border-color:var(--primary-blue); }
+.config-ach-item.owned { border-color:var(--success); background:rgba(3,123,54,.08); cursor:default; opacity:.6; }
+.ach-check { width:18px; height:18px; flex-shrink:0; }
+.ach-label-text { font-size:12px; color:var(--white); line-height:1.3; }
 
-    .manual-form-group label {
-      display: block;
-      margin-bottom: 8px;
-      color: var(--white);
-      font-weight: 500;
-    }
+.manual-form { display:flex; flex-direction:column; gap:14px; }
+.manual-form input { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:10px 14px; font-size:13px; font-family:inherit; box-sizing:border-box; width:100%; }
+.manual-form input:focus { outline:none; border-color:var(--primary-blue); }
 
-    .manual-form-group input,
-    .manual-form-group select,
-    .manual-form-group textarea {
-      width: 100%;
-      padding: 10px;
-      background: var(--dark-blue-bg);
-      border: 1px solid var(--line-color);
-      border-radius: var(--border-radius-4);
-      color: var(--white);
-      font-family: inherit;
-    }
+/* flashes */
+.flash { padding:12px 18px; border-radius:var(--border-radius-8); margin-bottom:var(--spacing-16); font-size:13px; font-weight:500; }
+.flash.success { background:rgba(3,123,54,.15); border:1px solid var(--success); color:var(--success); }
+.flash.error   { background:rgba(183,12,70,.15); border:1px solid #ff4d80; color:#ff4d80; }
+.flash.info    { background:rgba(26,104,222,.12); border:1px solid var(--primary-blue); color:#88b8ff; }
+</style>
 
-    .manual-form-group textarea {
-      resize: vertical;
-      min-height: 80px;
-    }
+{% for f in flashes %}
+<div class="flash {{ f.type }}">{{ f.message }}</div>
+{% endfor %}
 
-    .form-help {
-      font-size: 12px;
-      color: var(--gray);
-      margin-top: 4px;
-    }
+<div class="pg-header">
+  <a href="/admin/players" class="back-btn">← Игроки</a>
+  <h2>Профиль игрока #{{ player.player_id }}</h2>
+</div>
 
-    .conditional-field {
-      display: none;
-    }
+<!-- ── Stats chips ── -->
+{% set playtime_h = (player.play_time // 3600) if player.play_time else 0 %}
+<div class="chips-row">
+  <div class="chip">
+    <span class="chip-icon">⏱</span>
+    <div><div class="chip-label">Наигранное время</div><div class="chip-value">{{ playtime_h }} ч</div></div>
+  </div>
+  {% if stats %}
+  <div class="chip">
+    <span class="chip-icon">🎯</span>
+    <div><div class="chip-label">Миссии капитана</div><div class="chip-value">{{ stats.successful_missions_captain or 0 }}</div></div>
+  </div>
+  <div class="chip">
+    <span class="chip-icon">🛡</span>
+    <div><div class="chip-label">Спасённых</div><div class="chip-value">{{ stats.saved_players or 0 }}</div></div>
+  </div>
+  <div class="chip">
+    <span class="chip-icon">💀</span>
+    <div><div class="chip-label">Убито монстров</div><div class="chip-value">{{ stats.killed_monsters or 0 }}</div></div>
+  </div>
+  <div class="chip">
+    <span class="chip-icon">⚔️</span>
+    <div><div class="chip-label">Убито игроков</div><div class="chip-value">{{ stats.killed_players or 0 }}</div></div>
+  </div>
+  <div class="chip">
+    <span class="chip-icon">🤖</span>
+    <div><div class="chip-label">Убито NPC</div><div class="chip-value">{{ stats.killed_npc or 0 }}</div></div>
+  </div>
+  {% endif %}
+</div>
 
-    .conditional-field.visible {
-      display: block;
-    }
-
-    .modal-footer {
-      padding: 16px 24px;
-      border-top: 1px solid var(--line-color);
-      display: flex;
-      gap: 12px;
-      justify-content: flex-end;
-    }
-
-    .pack-card {
-      padding: 16px;
-      background: var(--dark-blue-bg);
-      border: 1px solid var(--line-color);
-      border-radius: var(--border-radius-8);
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .pack-card:hover {
-      border-color: var(--primary-blue);
-      transform: translateY(-2px);
-    }
-
-    .pack-emoji {
-      font-size: 28px;
-      display: block;
-      margin-bottom: 8px;
-    }
-
-    .pack-name {
-      font-weight: 600;
-      color: var(--white);
-      margin-bottom: 4px;
-    }
-
-    .pack-description {
-      font-size: 13px;
-      color: var(--gray);
-      margin-bottom: 8px;
-    }
-
-    .pack-count {
-      font-size: 12px;
-      color: var(--primary-blue);
-    }
-
-    #packsGrid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 16px;
-    }
-
-    /* ACHIEVEMENTS SECTION */
-    .achievements-section {
-      margin-top: 16px;
-    }
-
-    .achievements-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-
-    .achievements-header h4 {
-      margin: 0;
-      color: var(--white);
-    }
-
-    #addAchievementBtn {
-      padding: 8px 16px;
-      background: var(--primary-blue);
-      color: var(--white);
-      border: none;
-      border-radius: var(--border-radius-4);
-      cursor: pointer;
-      font-weight: 500;
-      white-space: nowrap;
-    }
-
-    #addAchievementBtn:hover {
-      background: #145bbf;
-    }
-
-    .achievements-container {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 12px;
-    }
-
-    .achievement-card {
-      padding: 16px;
-      background: var(--dark-blue-bg);
-      border: 1px solid var(--line-color);
-      border-radius: var(--border-radius-6);
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 12px;
-    }
-
-    .achievement-info {
-      flex: 1;
-    }
-
-    .achievement-type-badge {
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-      margin-bottom: 8px;
-      text-transform: uppercase;
-    }
-
-    .achievement-type-badge.affliction {
-      background: rgba(255, 100, 100, 0.2);
-      color: #ff6464;
-    }
-
-    .achievement-type-badge.item {
-      background: rgba(100, 200, 255, 0.2);
-      color: #64c8ff;
-    }
-
-    .achievement-type-badge.perk {
-      background: rgba(100, 255, 150, 0.2);
-      color: #64ff96;
-    }
-
-    .achievement-type-badge.stat {
-      background: rgba(255, 200, 100, 0.2);
-      color: #ffc864;
-    }
-
-    .achievement-type-badge.other {
-      background: rgba(200, 100, 255, 0.2);
-      color: #c864ff;
-    }
-
-    .achievement-name {
-      font-weight: 600;
-      color: var(--white);
-      margin-bottom: 4px;
-    }
-
-    .achievement-id {
-      font-size: 12px;
-      color: var(--gray);
-    }
-
-    .achievement-delete-btn {
-      background: none;
-      border: none;
-      color: #ff6464;
-      font-size: 20px;
-      cursor: pointer;
-      padding: 4px;
-      flex-shrink: 0;
-    }
-
-    .achievement-delete-btn:hover {
-      color: #ff9090;
-    }
-
-    #achievementCount {
-      font-size: 13px;
-      color: var(--gray);
-      margin-top: 12px;
-    }
-  </style>
-
-  <div class="player-detail-layout">
-    <div class="card player-main-card">
-      <h2>Игрок {{ player.player_last_time_name or ('#' ~ player.player_id) }}</h2>
-      <div class="data-grid player-data-grid">
-      <div><label>ID игрока</label><span>{{ player.player_id }}</span></div>
-      <div><label>SteamID</label><span>{{ player.player_steamid }}</span></div>
-      <div><label>Последний ник</label><span>{{ player.player_last_time_name }}</span></div>
-      <div><label>Последний вход</label><span>{{ player.last_login_time.strftime('%Y-%m-%d %H:%M:%S') if player.last_login_time else 'N/A' }}</span></div>
-      <div><label>Время на сервере (сек)</label><span>{{ player.play_time }}</span></div>
-      <div><label>Время на сервере (часы)</label><span>{{ '%.2f'|format(player.play_time_hours) }}</span></div>
-      <div><label>Ранг (число)</label><span>{{ player.rank_id if player.rank_id is not none else 'N/A' }}</span></div>
-      <div><label>Ранг (из конфига)</label><span>{{ player.rank_name or 'N/A' }}</span></div>
-      <div><label>Набор (число)</label><span>{{ player.kit_level if player.kit_level is not none else 'N/A' }}</span></div>
-      <div><label>Набор (из конфига)</label><span>{{ player.kit_name or 'N/A' }}</span></div>
+<!-- ── Hero card: info + edit ── -->
+<div class="hero-card" style="margin-bottom:var(--spacing-24);">
+  <!-- Info -->
+  <div class="block-card">
+    <div class="block-card-header"><h3>Информация</h3></div>
+    <div class="block-card-body">
+      <div class="player-info-grid">
+        <div class="info-row">
+          <span class="info-label">Имя</span>
+          <span class="info-value">{{ player.player_last_time_name or '—' }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">ID</span>
+          <span class="info-value">#{{ player.player_id }}</span>
+        </div>
+        <div class="info-row" style="grid-column:1/-1;">
+          <span class="info-label">SteamID</span>
+          <span class="info-value mono">{{ player.player_steamid or '—' }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Ранг</span>
+          <span class="info-value">
+            {% if player.rank_id is not none %}
+            <span class="rank-badge">{{ ranks.get(player.rank_id | string, player.rank_id) }}</span>
+            {% else %}—{% endif %}
+          </span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Уровень кита</span>
+          <span class="info-value">
+            {% if player.kit_level is not none %}
+            {{ kits.get(player.kit_level | string, player.kit_level) }}
+            {% else %}—{% endif %}
+          </span>
+        </div>
+        {% if player.last_ip %}
+        <div class="info-row">
+          <span class="info-label">Последний IP</span>
+          <span class="info-value mono">{{ player.last_ip }}</span>
+        </div>
+        {% endif %}
+        {% if player.first_login %}
+        <div class="info-row">
+          <span class="info-label">Регистрация</span>
+          <span class="info-value">{{ player.first_login.strftime('%d.%m.%Y') }}</span>
+        </div>
+        {% endif %}
       </div>
     </div>
+  </div>
 
-    <div class="card player-edit-card">
-      <h3>Редактирование</h3>
-      {% if "write" in admin.permissions %}
-      <form class="player-edit-form" action="/admin/players/{{ player.player_id }}/update" method="post">
-        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-
-        <div class="form-group compact-field">
-          <label for="rank_id">Ранг</label>
-          <select id="rank_id" name="rank_id">
-            <option value="">Не задан</option>
-            {% for r_id, r_name in ranks.items() %}
-            <option value="{{ r_id }}" {% if (r_id|string) == (player.rank_id|string) %}selected{% endif %}>{{ r_id }} — {{ r_name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="form-group compact-field">
-          <label for="kit_level">Набор</label>
-          <select id="kit_level" name="kit_level">
-            <option value="">Не задан</option>
-            {% for k_id, k_name in kits.items() %}
-            <option value="{{ k_id }}" {% if (k_id|string) == (player.kit_level|string) %}selected{% endif %}>{{ k_id }} — {{ k_name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <!-- Achievements Section with UI -->
-        <div class="form-group full-row achievements-section">
-          <div class="achievements-header">
-            <h4>Достижения</h4>
-            <button type="button" id="addAchievementBtn" class="btn btn-success">+ Добавить</button>
+  <!-- Edit -->
+  {% if "write" in admin.permissions %}
+  <div class="block-card">
+    <div class="block-card-header"><h3>Редактирование</h3></div>
+    <div class="block-card-body">
+      <form method="post" action="/admin/players/{{ player.player_id }}/update">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <div style="display:flex; flex-direction:column; gap:var(--spacing-16);">
+          <div class="form-group">
+            <label>Ранг</label>
+            <select name="rank_id">
+              <option value="">— Без ранга —</option>
+              {% for rank_id, rank_name in ranks.items() %}
+              <option value="{{ rank_id }}" {% if player.rank_id | string == rank_id %}selected{% endif %}>{{ rank_name }}</option>
+              {% endfor %}
+            </select>
           </div>
-          <div id="achievementsContainer" class="achievements-container"></div>
-          <div id="achievementCount"></div>
-          <input type="hidden" id="achievements" name="achievements" value="{{ player.achievements | tojson }}">
-        </div>
-
-        <div class="player-edit-actions">
-          <button type="submit" class="btn">Сохранить</button>
-          <a href="/admin/players" class="btn btn-secondary">К списку игроков</a>
+          <div class="form-group">
+            <label>Уровень кита</label>
+            <select name="kit_level">
+              <option value="">— Без кита —</option>
+              {% for kit_id, kit_name in kits.items() %}
+              <option value="{{ kit_id }}" {% if player.kit_level | string == kit_id %}selected{% endif %}>{{ kit_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Достижения (JSON)</label>
+            <textarea name="achievements" rows="4" placeholder='["ach_id_1", "ach_id_2"]'>{% if player.achievements %}{{ player.achievements | tojson(indent=2) }}{% endif %}</textarea>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+            {% if "write" in admin.permissions %}
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('ach-modal').classList.add('open')">🏆 Редактор достижений</button>
+            {% endif %}
+          </div>
         </div>
       </form>
-      {% else %}
-      <p style="color: #999;">У вас нет прав на редактирование данных игроков.</p>
-      <a href="/admin/players" class="btn btn-secondary">К списку игроков</a>
-      {% endif %}
-    </div>
-
-    <div class="card stats-section player-stats-card">
-      <h3>Статистика игрока</h3>
-      {% if stats %}
-      <div class="data-grid player-stats-grid">
-        <div><label>Успешных миссий капитаном</label><span>{{ stats.successful_missions_captain }}</span></div>
-        <div><label>Всего миссий капитаном</label><span>{{ stats.total_missions_captain }}</span></div>
-        <div><label>Спасено игроков</label><span>{{ stats.saved_players }}</span></div>
-        <div><label>Убито монстров</label><span>{{ stats.killed_monsters }}</span></div>
-        <div><label>Убито игроков</label><span>{{ stats.killed_players }}</span></div>
-        <div><label>Убито NPC</label><span>{{ stats.killed_npc }}</span></div>
-      </div>
-      {% else %}
-      <p>Статистика для этого игрока пока не найдена.</p>
-      {% endif %}
-    </div>
-
-    <!-- Player Kills by Monster Type -->
-    <div class="card">
-      <h3>Убийства по типам монстров</h3>
-      {% if kills %}
-      <div class="table-responsive player-detail-table">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Тип монстра</th>
-              <th>Кол-во убийств</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for kill in kills %}
-            <tr>
-              <td>{{ kill.monster_type }}</td>
-              <td>{{ kill.kills_count }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p>Нет данных об убийствах.</p>
-      {% endif %}
-    </div>
-
-    <!-- Player Role Actions -->
-    <div class="card">
-      <h3>Действия в ролях</h3>
-      {% if role_actions %}
-      <div class="table-responsive player-detail-table">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Роль</th>
-              <th>Тип действия</th>
-              <th>Значение</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for action in role_actions %}
-            <tr>
-              <td>{{ action.role }}</td>
-              <td>{{ action.action_type }}</td>
-              <td>{{ action.value }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p>Нет действий в ролях.</p>
-      {% endif %}
-    </div>
-
-    <!-- Player IPs -->
-    <div class="card">
-      <h3>История IP адресов</h3>
-      {% if ips %}
-      <div class="table-responsive player-detail-table">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>IP адрес</th>
-              <th>Подсеть</th>
-              <th>Первый вход</th>
-              <th>Последний вход</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for ip in ips %}
-            <tr>
-              <td>{{ ip.ip }}</td>
-              <td>{{ ip.subnet }}</td>
-              <td>{{ ip.first_seen.strftime('%Y-%m-%d %H:%M:%S') if ip.first_seen else 'N/A' }}</td>
-              <td>{{ ip.last_seen.strftime('%Y-%m-%d %H:%M:%S') if ip.last_seen else 'N/A' }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p>Нет истории IP адресов.</p>
-      {% endif %}
-    </div>
-
-    <!-- Player Names History -->
-    <div class="card">
-      <h3>История ников</h3>
-      {% if names %}
-      <div class="table-responsive player-detail-table">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Ник</th>
-              <th>Первый раз</th>
-              <th>Последний раз</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for name in names %}
-            <tr>
-              <td><strong>{{ name.nickname }}</strong></td>
-              <td>{{ name.first_seen.strftime('%Y-%m-%d %H:%M:%S') if name.first_seen else 'N/A' }}</td>
-              <td>{{ name.last_seen.strftime('%Y-%m-%d %H:%M:%S') if name.last_seen else 'N/A' }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p>Нет истории ников.</p>
-      {% endif %}
-    </div>
-
-    <!-- Player Role Stats -->
-    <div class="card">
-      <h3>Статистика по ролям</h3>
-      {% if role_stats %}
-      <div class="table-responsive player-detail-table">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Роль</th>
-              <th>Раундов сыграно</th>
-              <th>MVP очки</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for stat in role_stats %}
-            <tr>
-              <td>{{ stat.role }}</td>
-              <td>{{ stat.rounds_played }}</td>
-              <td>{{ '%.2f'|format(stat.mvp_score) }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p>Нет статистики по ролям.</p>
-      {% endif %}
-    </div>
-
-    <!-- Player Sessions -->
-    <div class="card">
-      <h3>История сеансов</h3>
-      {% if sessions %}
-      <div class="player-sessions-table">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>№ сеанса</th>
-              <th>Вход</th>
-              <th>Выход</th>
-              <th>Длительность (сек)</th>
-              <th>Средний пинг</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for session in sessions %}
-            <tr>
-              <td>{{ session.session_number }}</td>
-              <td>{{ session.login_time.strftime('%Y-%m-%d %H:%M:%S') if session.login_time else 'N/A' }}</td>
-              <td>{{ session.logout_time.strftime('%Y-%m-%d %H:%M:%S') if session.logout_time else 'активный' }}</td>
-              <td>{{ session.session_duration if session.session_duration else '—' }}</td>
-              <td>{{ session.avg_ping if session.avg_ping else '—' }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% else %}
-      <p>Нет истории сеансов.</p>
-      {% endif %}
     </div>
   </div>
+  {% endif %}
+</div>
 
-  <!-- Achievement Modal -->
-  <div id="achievementModal" class="modal-overlay">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Управление достижениями</h3>
-        <button type="button" class="modal-close-btn" id="closeAchievementModal">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="modal-tabs">
-          <button type="button" class="modal-tab active" data-tab="packs-tab">Из конфига</button>
-          <button type="button" class="modal-tab" data-tab="manual-tab">Вручную</button>
-        </div>
+<!-- ── Data sections ── -->
+<div class="sections-grid">
 
-        <!-- Packs Tab -->
-        <div class="modal-pane active" id="packs-tab">
-          <div id="packsGrid"></div>
-        </div>
-
-        <!-- Manual Tab -->
-        <div class="modal-pane" id="manual-tab">
-          <div class="manual-form-group">
-            <label for="manualName">Название достижения *</label>
-            <input type="text" id="manualName" placeholder="Например: Герой в бою">
-          </div>
-          <div class="manual-form-group">
-            <label for="manualIds">Идентификатор(ы) *</label>
-            <textarea id="manualIds" placeholder="Введите ID, разделяя их запятыми"></textarea>
-            <div class="form-help">💡 Можно вводить несколько ID через запятую</div>
-          </div>
-          <div class="manual-form-group">
-            <label for="manualType">Тип *</label>
-            <select id="manualType">
-              <option value="">Выберите тип...</option>
-              <option value="affliction">Affliction (Статус)</option>
-              <option value="item">Item (Предмет)</option>
-              <option value="perk">Perk (Специальность)</option>
-              <option value="stat">Stat (Статистика)</option>
-              <option value="other">Other (Другое)</option>
-            </select>
-          </div>
-          <div class="manual-form-group conditional-field" id="replacedItemsField">
-            <label for="manualReplacedItems">Замененные предметы (опционально)</label>
-            <textarea id="manualReplacedItems" placeholder="ID1, ID2, ID3..."></textarea>
-          </div>
-          <div class="manual-form-group conditional-field" id="levelField">
-            <label for="manualLevel">Уровень/Количество (опционально)</label>
-            <input type="number" id="manualLevel" placeholder="Например: 100" min="0">
-          </div>
-          <div class="manual-form-group">
-            <label for="manualProfession">Профессия *</label>
-            <select id="manualProfession" required>
-              <option value="">Выберите профессию...</option>
-              <option value="captain">Captain — Капитан</option>
-              <option value="mechanic">Mechanic — Механик</option>
-              <option value="electrician">Electrician — Электрик</option>
-              <option value="medic">Medic — Медик</option>
-              <option value="security">Security — Охрана</option>
-              <option value="assistant">Assistant — Ассистент</option>
-              <option value="engineer">Engineer — Инженер</option>
-              <option value="any">Any — Любая</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" id="cancelAchievementModal">Отмена</button>
-        <button type="button" class="btn btn-success" id="addAchievementConfirm">Добавить</button>
+  <!-- Kills -->
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>⚔️ Убийства</h3>
+      <span style="font-size:12px; color:var(--gray);">{{ kills|length }}</span>
+    </div>
+    <div class="table-scroll-wrap">
+      <div class="table-scroll-body">
+      <table class="data-table">
+        <thead><tr><th>Монстр / Тип</th><th>Кол-во убийств</th></tr></thead>
+        <tbody>
+          {% if kills %}
+          {% for k in kills %}
+          <tr>
+            <td>{{ k.monster_type or '—' }}</td>
+            <td><span style="font-size:12px; color:var(--gray);">{{ k.kills_count or 0 }}</span></td>
+          </tr>
+          {% endfor %}
+          {% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
+        </tbody>
+      </table>
       </div>
     </div>
   </div>
 
-  <script>
-    let achievementsConfig = {};
+  <!-- Role Actions -->
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>📋 Действия по ролям</h3>
+      <span style="font-size:12px; color:var(--gray);">{{ role_actions|length }}</span>
+    </div>
+    <div class="table-scroll-wrap">
+      <div class="table-scroll-body">
+      <table class="data-table">
+        <thead><tr><th>Роль</th><th>Тип действия</th><th>Значение</th></tr></thead>
+        <tbody>
+          {% if role_actions %}
+          {% for ra in role_actions %}
+          <tr>
+            <td class="mono-cell">{{ ra.role or '—' }}</td>
+            <td>{{ ra.action_type or '—' }}</td>
+            <td class="mono-cell">{{ ra.value or '—' }}</td>
+          </tr>
+          {% endfor %}
+          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
 
-    document.addEventListener('DOMContentLoaded', function() {
-      loadAchievementsConfig();
-      loadAchievements();
-      setupEventListeners();
-    });
+  <!-- IPs -->
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>🌐 IP-адреса</h3>
+      <span style="font-size:12px; color:var(--gray);">{{ ips|length }}</span>
+    </div>
+    <div class="table-scroll-wrap">
+      <div class="table-scroll-body">
+      <table class="data-table">
+        <thead><tr><th>IP</th><th>Первый вход</th><th>Последний вход</th></tr></thead>
+        <tbody>
+          {% if ips %}
+          {% for ip in ips %}
+          <tr>
+            <td class="mono-cell">{{ ip.ip }}</td>
+            <td class="mono-cell">{{ ip.first_seen.strftime('%d.%m.%Y') if ip.first_seen else '—' }}</td>
+            <td class="mono-cell">{{ ip.last_seen.strftime('%d.%m.%Y') if ip.last_seen else '—' }}</td>
+          </tr>
+          {% endfor %}
+          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
 
-    async function loadAchievementsConfig() {
-      try {
-        const response = await fetch('/api/v1/admin/achievements/config');
-        if (response.ok) {
-          achievementsConfig = await response.json();
-          renderPacksGrid();
-        }
-      } catch (e) {
-        console.error('Error loading achievements config:', e);
-      }
-    }
+  <!-- Names -->
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>📝 История имён</h3>
+      <span style="font-size:12px; color:var(--gray);">{{ names|length }}</span>
+    </div>
+    <div class="table-scroll-wrap">
+      <div class="table-scroll-body">
+      <table class="data-table">
+        <thead><tr><th>Имя</th><th>Впервые замечено</th></tr></thead>
+        <tbody>
+          {% if names %}
+          {% for n in names %}
+          <tr>
+            <td>{{ n.nickname }}</td>
+            <td class="mono-cell">{{ n.first_seen.strftime('%d.%m.%Y') if n.first_seen else '—' }}</td>
+          </tr>
+          {% endfor %}
+          {% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
 
-    function renderPacksGrid() {
-      const packsGrid = document.getElementById('packsGrid');
-      packsGrid.innerHTML = '';
+  <!-- Role Stats -->
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>📊 Статистика по ролям</h3>
+      <span style="font-size:12px; color:var(--gray);">{{ role_stats|length }}</span>
+    </div>
+    <div class="table-scroll-wrap">
+      <div class="table-scroll-body">
+      <table class="data-table">
+        <thead><tr><th>Роль</th><th>Сыграно раундов</th><th>MVP Score</th></tr></thead>
+        <tbody>
+          {% if role_stats %}
+          {% for rs in role_stats %}
+          <tr>
+            <td class="mono-cell">{{ rs.role or '—' }}</td>
+            <td>{{ rs.rounds_played or 0 }}</td>
+            <td>{{ rs.mvp_score or 0 }}</td>
+          </tr>
+          {% endfor %}
+          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
 
-      if (!achievementsConfig.packs) {
-        packsGrid.innerHTML = '<div style="padding: 20px; color: var(--gray);">Пакеты не загружены</div>';
-        return;
-      }
+  <!-- Sessions -->
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>🔐 Сессии</h3>
+      <span style="font-size:12px; color:var(--gray);">{{ sessions|length }}</span>
+    </div>
+    <div class="table-scroll-wrap">
+      <div class="table-scroll-body">
+      <table class="data-table">
+        <thead><tr><th>Начало</th><th>Конец</th><th>Время</th></tr></thead>
+        <tbody>
+          {% if sessions %}
+          {% for s in sessions %}
+          <tr>
+            <td class="mono-cell">{{ s.login_time.strftime('%d.%m.%Y %H:%M') if s.login_time else '—' }}</td>
+            <td class="mono-cell">{% if s.logout_time %}{{ s.logout_time.strftime('%d.%m.%Y %H:%M') }}{% else %}<span style="color:var(--success)">онлайн</span>{% endif %}</td>
+            <td>
+              {% if s.session_duration %}
+              {{ (s.session_duration // 60) }} мин
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
 
-      Object.entries(achievementsConfig.packs).forEach(([packId, packData]) => {
-        const card = document.createElement('div');
-        card.className = 'pack-card';
-        
-        const emoji = packData.name.split(' ')[0] || '📦';
-        const packName = packData.name.replace(/^[^\s]+\s*/, '');
-        const achievementCount = (packData.achievements || []).length;
+</div>
 
-        card.innerHTML = `
-          <span class="pack-emoji">${emoji}</span>
-          <div class="pack-name">${packName}</div>
-          <div class="pack-description">${packData.description}</div>
-          <div class="pack-count">${achievementCount} достижен${achievementCount === 1 ? 'ие' : 'ий'}</div>
-        `;
+<!-- ── Achievements Modal ── -->
+{% if "write" in admin.permissions %}
+<div class="modal-overlay" id="ach-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>🏆 Редактор достижений</h3>
+      <button class="modal-close" onclick="document.getElementById('ach-modal').classList.remove('open')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tabs">
+        <button class="modal-tab active" onclick="switchTab('config')">Из конфига</button>
+        <button class="modal-tab" onclick="switchTab('manual')">Вручную</button>
+      </div>
 
-        card.addEventListener('click', () => addPackAchievements(packId, packData));
-        packsGrid.appendChild(card);
-      });
-    }
+      <!-- Tab: config -->
+      <div class="tab-panel active" id="tab-config">
+        <div id="packs-grid" class="packs-grid"></div>
+        <div id="config-ach-grid" class="config-ach-grid" style="display:none;"></div>
+        <div id="config-tab-actions" style="display:none; margin-top:var(--spacing-16); display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="backToPacks()">← Назад к пакетам</button>
+          <button class="btn btn-primary btn-sm" id="add-pack-btn" onclick="addPackAchievements()">✅ Добавить выбранные</button>
+        </div>
+      </div>
 
-    function addPackAchievements(packId, packData) {
-      const achievementsJson = document.getElementById('achievements').value;
-      let achievements = [];
-      
-      try {
-        achievements = JSON.parse(achievementsJson || '[]');
-      } catch (e) {
-        achievements = [];
-      }
-
-      const packAchievements = packData.achievements || [];
-      
-      packAchievements.forEach(achievement => {
-        achievements.push(JSON.parse(JSON.stringify(achievement)));
-      });
-
-      document.getElementById('achievements').value = JSON.stringify(achievements);
-      loadAchievements();
-      closeAchievementModal();
-    }
-
-    function loadAchievements() {
-      const achievementsJson = document.getElementById('achievements').value;
-      let achievements = [];
-      
-      try {
-        achievements = JSON.parse(achievementsJson || '[]');
-      } catch (e) {
-        achievements = [];
-      }
-
-      const container = document.getElementById('achievementsContainer');
-      container.innerHTML = '';
-
-      achievements.forEach((achievement, index) => {
-        const card = document.createElement('div');
-        card.className = 'achievement-card';
-        
-        const typeLabel = {
-          'affliction': 'Статус',
-          'item': 'Предмет',
-          'perk': 'Специальность',
-          'stat': 'Статистика',
-          'other': 'Другое'
-        }[achievement.type] || achievement.type;
-
-        let cardHTML = `
-          <div class="achievement-info">
-            <div class="achievement-type-badge ${achievement.type}">${typeLabel}</div>
-            <div class="achievement-name">${achievement.name}</div>
-            <div class="achievement-id">${achievement.id}</div>
-        `;
-
-        if (achievement.replacedItems && achievement.replacedItems.length > 0) {
-          cardHTML += `<div style="font-size: 0.8rem; color: var(--gray); margin-top: 5px;">Замены: ${achievement.replacedItems.join(', ')}</div>`;
-        }
-
-        if (achievement.level) {
-          cardHTML += `<div style="font-size: 0.8rem; color: var(--gray); margin-top: 5px;">Уровень: ${achievement.level}</div>`;
-        }
-
-        if (achievement.profession) {
-          cardHTML += `<div style="font-size: 0.8rem; color: var(--gray); margin-top: 3px;">👤 ${achievement.profession}</div>`;
-        }
-
-        cardHTML += `
+      <!-- Tab: manual -->
+      <div class="tab-panel" id="tab-manual">
+        <div class="manual-form">
+          <div class="form-group">
+            <label>ID достижения</label>
+            <input type="text" id="manual-ach-id" placeholder="achievement_id">
           </div>
-          <button type="button" class="achievement-delete-btn" data-index="${index}">✕</button>
-        `;
+          <div class="form-group">
+            <label>Примечание (необязательно)</label>
+            <input type="text" id="manual-ach-note" placeholder="За что выдано...">
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="addManualAchievement()">➕ Добавить</button>
+        </div>
+      </div>
 
-        card.innerHTML = cardHTML;
-        card.querySelector('.achievement-delete-btn').addEventListener('click', () => deleteAchievement(index));
-        container.appendChild(card);
-      });
+      <!-- Current achievements -->
+      <div style="margin-top:var(--spacing-24);">
+        <h4 style="color:var(--white); font-size:14px; font-weight:600; margin-bottom:12px;">Текущие достижения</h4>
+        <div class="ach-list" id="current-ach-list">
+          {% set current_achs = player.achievements or [] %}
+          {% for ach in current_achs %}
+          {% if ach is mapping %}
+          <div class="ach-item" data-id="{{ ach.get('id','') }}">
+            <div class="ach-item-info">
+              <span class="ach-item-name">{{ ach.get('name', ach.get('id','—')) }}</span>
+              <span class="ach-item-id">{{ ach.get('id','') }}</span>
+              {% if ach.get('note') %}<span class="ach-note">{{ ach.note }}</span>{% endif %}
+            </div>
+            <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach.get('id','') }}')">🗑</button>
+          </div>
+          {% else %}
+          <div class="ach-item" data-id="{{ ach }}">
+            <div class="ach-item-info">
+              <span class="ach-item-name">{{ ach }}</span>
+              <span class="ach-item-id">{{ ach }}</span>
+            </div>
+            <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach }}')">🗑</button>
+          </div>
+          {% endif %}
+          {% endfor %}
+          {% if not current_achs %}
+          <div id="ach-empty" style="text-align:center; padding:24px; color:var(--gray-dark);">Нет достижений</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-      document.getElementById('achievementCount').textContent = `Всего: ${achievements.length}`;
+<script>
+const PLAYER_ID = {{ player.player_id }};
+const CSRF_TOKEN = "{{ request.session.get('csrf_token','') }}";
+
+// Tab switching
+function switchTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.currentTarget.classList.add('active');
+}
+
+// Close modal on backdrop click
+document.getElementById('ach-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('open');
+});
+
+// Load achievements config on modal open
+let configData = null;
+let selectedPack = null;
+let ownedIds = [];
+
+document.querySelector('[onclick*="ach-modal"]')?.addEventListener('click', loadConfig);
+// also trigger when the edit button opens modal
+document.querySelectorAll('button').forEach(btn => {
+  if (btn.textContent.includes('Редактор достижений')) {
+    btn.addEventListener('click', loadConfig);
+  }
+});
+
+async function loadConfig() {
+  if (configData) return;
+  try {
+    const r = await fetch('/admin/achievements/config');
+    configData = await r.json();
+    // get current owned ids
+    ownedIds = Array.from(document.querySelectorAll('#current-ach-list .ach-item'))
+      .map(el => el.dataset.id);
+    renderPacksGrid();
+  } catch(e) {
+    console.error('Failed to load achievements config', e);
+  }
+}
+
+function renderPacksGrid() {
+  const grid = document.getElementById('packs-grid');
+  grid.innerHTML = '';
+  if (!configData || !configData.packs) return;
+  configData.packs.forEach(pack => {
+    const card = document.createElement('div');
+    card.className = 'pack-card';
+    card.innerHTML = `<div class="pack-name">${pack.name}</div><div class="pack-count">${pack.achievements?.length||0} достижений</div>`;
+    card.onclick = () => showPack(pack);
+    grid.appendChild(card);
+  });
+  document.getElementById('config-ach-grid').style.display = 'none';
+  document.getElementById('config-tab-actions').style.display = 'none';
+}
+
+function showPack(pack) {
+  selectedPack = pack;
+  document.getElementById('packs-grid').style.display = 'none';
+  const grid = document.getElementById('config-ach-grid');
+  grid.style.display = 'grid';
+  document.getElementById('config-tab-actions').style.display = 'flex';
+  grid.innerHTML = '';
+  (pack.achievements || []).forEach(ach => {
+    const owned = ownedIds.includes(ach.id);
+    const item = document.createElement('div');
+    item.className = 'config-ach-item' + (owned ? ' owned' : '');
+    item.dataset.id = ach.id;
+    item.innerHTML = `
+      <input type="checkbox" class="ach-check" id="ach_${ach.id}" ${owned?'checked disabled':''}>
+      <label for="ach_${ach.id}" class="ach-label-text">${ach.name||ach.id}</label>`;
+    if (!owned) item.onclick = () => {
+      const cb = item.querySelector('input');
+      cb.checked = !cb.checked;
+    };
+    grid.appendChild(item);
+  });
+}
+
+function backToPacks() {
+  selectedPack = null;
+  document.getElementById('packs-grid').style.display = 'grid';
+  document.getElementById('config-ach-grid').style.display = 'none';
+  document.getElementById('config-tab-actions').style.display = 'none';
+}
+
+async function addPackAchievements() {
+  const checked = Array.from(document.querySelectorAll('#config-ach-grid .ach-check:checked:not(:disabled)'))
+    .map(cb => cb.id.replace('ach_',''));
+  if (!checked.length) return;
+  for (const id of checked) {
+    await addAchievement(id, '');
+  }
+  backToPacks();
+}
+
+async function addManualAchievement() {
+  const id = document.getElementById('manual-ach-id').value.trim();
+  const note = document.getElementById('manual-ach-note').value.trim();
+  if (!id) return;
+  await addAchievement(id, note);
+  document.getElementById('manual-ach-id').value = '';
+  document.getElementById('manual-ach-note').value = '';
+}
+
+async function addAchievement(achId, note) {
+  const fd = new FormData();
+  fd.append('csrf_token', CSRF_TOKEN);
+  fd.append('achievement_id', achId);
+  fd.append('note', note);
+  const r = await fetch(`/admin/players/${PLAYER_ID}/achievements/add`, { method:'POST', body:fd });
+  if (r.ok) {
+    const data = await r.json();
+    appendAchItem(achId, achId, note);
+    ownedIds.push(achId);
+    document.getElementById('ach-empty')?.remove();
+  } else {
+    alert('Ошибка при добавлении достижения');
+  }
+}
+
+function appendAchItem(id, name, note) {
+  const list = document.getElementById('current-ach-list');
+  const item = document.createElement('div');
+  item.className = 'ach-item';
+  item.dataset.id = id;
+  item.innerHTML = `
+    <div class="ach-item-info">
+      <span class="ach-item-name">${name}</span>
+      <span class="ach-item-id">${id}</span>
+      ${note ? `<span class="ach-note">${note}</span>` : ''}
+    </div>
+    <button class="btn btn-danger btn-sm" onclick="deleteAchievement('${id}')">🗑</button>`;
+  list.appendChild(item);
+}
+
+async function deleteAchievement(achId) {
+  if (!confirm(`Удалить достижение "${achId}"?`)) return;
+  const fd = new FormData();
+  fd.append('csrf_token', CSRF_TOKEN);
+  fd.append('achievement_id', achId);
+  const r = await fetch(`/admin/players/${PLAYER_ID}/achievements/delete`, { method:'POST', body:fd });
+  if (r.ok) {
+    document.querySelector(`.ach-item[data-id="${achId}"]`)?.remove();
+    ownedIds = ownedIds.filter(i => i !== achId);
+    if (!document.querySelectorAll('#current-ach-list .ach-item').length) {
+      document.getElementById('current-ach-list').innerHTML =
+        '<div id="ach-empty" style="text-align:center;padding:24px;color:var(--gray-dark);">Нет достижений</div>';
     }
-
-    function deleteAchievement(index) {
-      const achievementsJson = document.getElementById('achievements').value;
-      let achievements = [];
-      
-      try {
-        achievements = JSON.parse(achievementsJson || '[]');
-      } catch (e) {
-        achievements = [];
-      }
-
-      achievements.splice(index, 1);
-      document.getElementById('achievements').value = JSON.stringify(achievements);
-      loadAchievements();
-    }
-
-    function switchModalTab(tabName) {
-      document.querySelectorAll('.modal-tab').forEach(tab => {
-        tab.classList.remove('active');
-      });
-      document.querySelectorAll('.modal-pane').forEach(pane => {
-        pane.classList.remove('active');
-      });
-      
-      const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
-      const activePane = document.getElementById(tabName);
-      if (activeTab) activeTab.classList.add('active');
-      if (activePane) activePane.classList.add('active');
-    }
-
-    function updateConditionalFields() {
-      const type = document.getElementById('manualType').value;
-      const replacedItemsField = document.getElementById('replacedItemsField');
-      const levelField = document.getElementById('levelField');
-
-      if (type === 'item') {
-        replacedItemsField.classList.add('visible');
-      } else {
-        replacedItemsField.classList.remove('visible');
-      }
-
-      if (type === 'stat') {
-        levelField.classList.add('visible');
-      } else {
-        levelField.classList.remove('visible');
-      }
-    }
-
-    function addManualAchievements() {
-      const name = document.getElementById('manualName').value.trim();
-      const idsInput = document.getElementById('manualIds').value.trim();
-      const type = document.getElementById('manualType').value;
-      const replacedItems = document.getElementById('manualReplacedItems').value.trim();
-      const level = document.getElementById('manualLevel').value.trim();
-      const profession = document.getElementById('manualProfession').value;
-
-      if (!name) {
-        alert('Пожалуйста, введите название достижения');
-        return;
-      }
-
-      if (!idsInput) {
-        alert('Пожалуйста, введите идентификатор(ы)');
-        return;
-      }
-
-      if (!type) {
-        alert('Пожалуйста, выберите тип');
-        return;
-      }
-
-      if (!profession) {
-        alert('Пожалуйста, выберите профессию');
-        return;
-      }
-
-      const ids = idsInput.split(',').map(id => id.trim()).filter(id => id.length > 0);
-
-      if (ids.length === 0) {
-        alert('Пожалуйста, введите корректные идентификаторы');
-        return;
-      }
-
-      const achievementsJson = document.getElementById('achievements').value;
-      let achievements = [];
-      
-      try {
-        achievements = JSON.parse(achievementsJson || '[]');
-      } catch (e) {
-        achievements = [];
-      }
-
-      ids.forEach(id => {
-        const achievement = {
-          type: type,
-          id: id,
-          name: name,
-          profession: profession
-        };
-
-        if (type === 'item' && replacedItems) {
-          achievement.replacedItems = replacedItems.split(',').map(s => s.trim()).filter(s => s);
-        }
-
-        if (type === 'stat' && level) {
-          achievement.level = parseInt(level);
-        }
-
-        achievements.push(achievement);
-      });
-
-      document.getElementById('achievements').value = JSON.stringify(achievements);
-      loadAchievements();
-      resetManualForm();
-      closeAchievementModal();
-    }
-
-    function resetManualForm() {
-      document.getElementById('manualName').value = '';
-      document.getElementById('manualIds').value = '';
-      document.getElementById('manualType').value = '';
-      document.getElementById('manualReplacedItems').value = '';
-      document.getElementById('manualLevel').value = '';
-      document.getElementById('manualProfession').value = '';
-      document.getElementById('replacedItemsField').classList.remove('visible');
-      document.getElementById('levelField').classList.remove('visible');
-    }
-
-    function openAchievementModal() {
-      document.getElementById('achievementModal').classList.add('active');
-      resetManualForm();
-      switchModalTab('packs-tab');
-    }
-
-    function closeAchievementModal() {
-      document.getElementById('achievementModal').classList.remove('active');
-    }
-
-    function setupEventListeners() {
-      document.getElementById('addAchievementBtn').addEventListener('click', openAchievementModal);
-      document.getElementById('closeAchievementModal').addEventListener('click', closeAchievementModal);
-      document.getElementById('cancelAchievementModal').addEventListener('click', closeAchievementModal);
-      document.getElementById('addAchievementConfirm').addEventListener('click', addManualAchievements);
-      document.getElementById('manualType').addEventListener('change', updateConditionalFields);
-
-      document.querySelectorAll('.modal-tab').forEach(tab => {
-        tab.addEventListener('click', (e) => {
-          switchModalTab(e.target.dataset.tab);
-        });
-      });
-
-      document.getElementById('achievementModal').addEventListener('click', (e) => {
-        if (e.target === document.getElementById('achievementModal')) {
-          closeAchievementModal();
-        }
-      });
-    }
-  </script>
+  } else {
+    alert('Ошибка при удалении достижения');
+  }
+}
+</script>
+{% endif %}
 {% endblock %}

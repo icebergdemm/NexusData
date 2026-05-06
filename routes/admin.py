@@ -1195,3 +1195,232 @@ async def delete_achievement(
     except Exception as e:
         logger.error(f"Error deleting achievement: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ============================================
+# KITS MANAGEMENT ENDPOINTS
+# ============================================
+
+from models import Kit
+
+
+def _require_kits_permission(current_admin: AdminUser):
+    if "admin" not in current_admin.permissions and "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
+@router.get("/admin/kits", response_class=HTMLResponse)
+async def admin_kits_list(
+    request: Request,
+    job_id: Optional[str] = Query(None),
+    kit_level: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """List and manage base kits"""
+    _require_kits_permission(current_admin)
+
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    query = db.query(Kit)
+    if job_id:
+        query = query.filter(Kit.job_id == job_id)
+    if kit_level is not None:
+        query = query.filter(Kit.kit_level == kit_level)
+
+    kits = query.order_by(Kit.job_id, Kit.kit_level).all()
+
+    # Unique job_ids for filter dropdown
+    all_job_ids = [row[0] for row in db.query(Kit.job_id).distinct().order_by(Kit.job_id).all()]
+
+    return templates.TemplateResponse("admin/kits.html", {
+        "request": request,
+        "admin": current_admin,
+        "kits": kits,
+        "all_job_ids": all_job_ids,
+        "kits_mapping": settings.kits_mapping,
+        "selected_job_id": job_id or "",
+        "selected_kit_level": kit_level if kit_level is not None else "",
+        "flashes": pop_flashes(request),
+    })
+
+
+@router.post("/admin/kits/add")
+async def admin_kits_add(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Create a new kit"""
+    _require_kits_permission(current_admin)
+
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        form = await request.form()
+
+        job_id = form.get("job_id", "").strip()
+        kit_level_raw = form.get("kit_level", "0")
+        items_raw = form.get("items", "[]").strip()
+
+        if not job_id:
+            push_flash(request, "error", "Профессия (job_id) не может быть пустой")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        try:
+            kit_level = int(kit_level_raw)
+        except (TypeError, ValueError):
+            push_flash(request, "error", "Некорректное значение уровня кита")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        try:
+            items = json.loads(items_raw)
+        except json.JSONDecodeError:
+            push_flash(request, "error", "Некорректный JSON в поле предметов")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        # Check duplicate
+        existing = db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first()
+        if existing:
+            push_flash(request, "error", f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
+        db.add(new_kit)
+        db.commit()
+        db.refresh(new_kit)
+
+        log_admin_action(db, current_admin.id, "create_kit", {
+            "kit_id": new_kit.id,
+            "job_id": job_id,
+            "kit_level": kit_level,
+        })
+        push_flash(request, "success", f"Кит '{job_id}' (уровень {kit_level}) успешно создан")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Create kit failed: %s", exc)
+        push_flash(request, "error", "Не удалось создать кит")
+
+    return RedirectResponse(url="/admin/kits", status_code=302)
+
+
+@router.post("/admin/kits/{kit_id}/update")
+async def admin_kits_update(
+    request: Request,
+    kit_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Update an existing kit"""
+    _require_kits_permission(current_admin)
+
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        form = await request.form()
+
+        kit = db.query(Kit).filter(Kit.id == kit_id).first()
+        if not kit:
+            push_flash(request, "error", "Кит не найден")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        job_id = form.get("job_id", kit.job_id).strip()
+        kit_level_raw = form.get("kit_level", str(kit.kit_level))
+        items_raw = form.get("items", "[]").strip()
+
+        if not job_id:
+            push_flash(request, "error", "Профессия (job_id) не может быть пустой")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        try:
+            kit_level = int(kit_level_raw)
+        except (TypeError, ValueError):
+            push_flash(request, "error", "Некорректное значение уровня кита")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        try:
+            items = json.loads(items_raw)
+        except json.JSONDecodeError:
+            push_flash(request, "error", "Некорректный JSON в поле предметов")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        # Check duplicate (excluding self)
+        conflict = db.query(Kit).filter(
+            Kit.job_id == job_id,
+            Kit.kit_level == kit_level,
+            Kit.id != kit_id
+        ).first()
+        if conflict:
+            push_flash(request, "error", f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        changes = []
+        if kit.job_id != job_id:
+            changes.append({"field": "job_id", "from": kit.job_id, "to": job_id})
+        if kit.kit_level != kit_level:
+            changes.append({"field": "kit_level", "from": kit.kit_level, "to": kit_level})
+        if kit.items != items:
+            changes.append({"field": "items", "from": kit.items, "to": items})
+
+        if not changes:
+            push_flash(request, "info", "Изменений не обнаружено")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        kit.job_id = job_id
+        kit.kit_level = kit_level
+        kit.items = items
+        db.commit()
+
+        log_admin_action(db, current_admin.id, "update_kit", {
+            "kit_id": kit_id,
+            "changes": changes,
+        })
+        push_flash(request, "success", f"Кит успешно обновлён")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Update kit failed: %s", exc)
+        push_flash(request, "error", "Не удалось обновить кит")
+
+    return RedirectResponse(url="/admin/kits", status_code=302)
+
+
+@router.post("/admin/kits/{kit_id}/delete")
+async def admin_kits_delete(
+    request: Request,
+    kit_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Delete a kit"""
+    _require_kits_permission(current_admin)
+
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+
+        kit = db.query(Kit).filter(Kit.id == kit_id).first()
+        if not kit:
+            push_flash(request, "error", "Кит не найден")
+            return RedirectResponse(url="/admin/kits", status_code=302)
+
+        job_id = kit.job_id
+        level = kit.kit_level
+        db.delete(kit)
+        db.commit()
+
+        log_admin_action(db, current_admin.id, "delete_kit", {
+            "kit_id": kit_id,
+            "job_id": job_id,
+            "kit_level": level,
+        })
+        push_flash(request, "success", f"Кит '{job_id}' (уровень {level}) удалён")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Delete kit failed: %s", exc)
+        push_flash(request, "error", "Не удалось удалить кит")
+
+    return RedirectResponse(url="/admin/kits", status_code=302)

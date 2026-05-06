@@ -1,11 +1,66 @@
 {% extends "base.html" %}
-
 {% block title %}Аудит — Nexus Data{% endblock %}
 
 {% block content %}
-  <div class="card">
-    <h2>Журнал действий администраторов Nexus Data</h2>
-    <table class="audit-table">
+<style>
+.pg-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--spacing-16); margin-bottom:var(--spacing-24); }
+.pg-header h2 { color:var(--white); font-size:22px; font-weight:700; }
+.pg-header p  { color:var(--gray); font-size:14px; margin-top:4px; }
+.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
+.block-card-header { display:flex; align-items:center; justify-content:space-between; padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); }
+.block-card-header h3 { color:var(--white); font-size:16px; font-weight:600; }
+.data-table { width:100%; border-collapse:collapse; }
+.data-table thead { background:var(--dark-blue-bg); }
+.data-table th { padding:11px 16px; text-align:left; color:var(--gray); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; white-space:nowrap; }
+.data-table td { padding:12px 16px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; vertical-align:top; }
+.data-table tbody tr:last-child td { border-bottom:none; }
+.data-table tbody tr:hover { background:rgba(26,104,222,.04); }
+.actor-block { display:flex; flex-direction:column; gap:2px; }
+.actor-name { font-weight:700; color:var(--white); font-size:13px; }
+.actor-id   { font-size:11px; color:var(--gray-dark); }
+.action-badge {
+  display:inline-block; padding:3px 9px; border-radius:6px;
+  font-size:11px; font-weight:700; font-family:'Courier New',monospace;
+  background:rgba(26,104,222,.15); color:#4d9fff; letter-spacing:.3px;
+  white-space:nowrap;
+}
+.action-badge.create  { background:rgba(3,123,54,.2); color:var(--success); }
+.action-badge.delete  { background:rgba(183,12,70,.2); color:#ff4d80; }
+.action-badge.update  { background:rgba(169,121,0,.2); color:#ffcf55; }
+.action-badge.revoke  { background:rgba(183,12,70,.15); color:#ff8fab; }
+.action-badge.login   { background:rgba(0,255,136,.12); color:var(--success); }
+.action-badge.logout  { background:rgba(163,171,184,.12); color:var(--gray); }
+.action-badge.view    { background:rgba(26,104,222,.1); color:#88b8ff; }
+.target-block { display:flex; flex-direction:column; gap:3px; }
+.target-line  { font-size:12px; color:var(--gray); }
+.target-line strong { color:var(--white); }
+.changes-list { list-style:none; display:flex; flex-direction:column; gap:4px; }
+.changes-list li { font-size:12px; display:flex; align-items:baseline; gap:5px; flex-wrap:wrap; }
+.changes-list code { background:rgba(26,104,222,.15); color:#88b8ff; padding:1px 5px; border-radius:4px; font-size:11px; }
+.ch-from { color:var(--error); text-decoration:line-through; font-size:11px; }
+.ch-to   { color:var(--success); font-size:11px; }
+.raw-pre { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:8px; font-size:11px; color:var(--gray); font-family:'Courier New',monospace; max-width:320px; overflow:auto; white-space:pre-wrap; word-break:break-all; max-height:120px; }
+.cell-time { font-size:12px; color:var(--gray); white-space:nowrap; }
+@media(max-width:900px){
+  .data-table th:nth-child(3),.data-table td:nth-child(3){ display:none; }
+}
+</style>
+
+<div class="pg-header">
+  <div>
+    <h2>📋 Журнал аудита</h2>
+    <p>История действий администраторов в системе (последние 200 записей).</p>
+  </div>
+</div>
+
+<div class="block-card">
+  <div class="block-card-header">
+    <h3>Действия администраторов</h3>
+    <span style="font-size:13px; color:var(--gray);">{{ logs|length }} записей</span>
+  </div>
+  {% if logs %}
+  <div style="overflow-x:auto;">
+    <table class="data-table">
       <thead>
         <tr>
           <th>Кто</th>
@@ -20,61 +75,80 @@
         {% set d = log.details or {} %}
         {% set target = d.get('target') or {} %}
         {% set changes = d.get('changes') or [] %}
+        {% set action = log.action | lower %}
+        {% if 'create' in action or 'add' in action or 'grant' in action %}
+          {% set badge_cls = 'create' %}
+        {% elif 'delete' in action or 'revoke' in action and 'session' not in action %}
+          {% set badge_cls = 'delete' %}
+        {% elif 'update' in action %}
+          {% set badge_cls = 'update' %}
+        {% elif 'revoke' in action %}
+          {% set badge_cls = 'revoke' %}
+        {% elif 'login' in action %}
+          {% set badge_cls = 'login' %}
+        {% elif 'logout' in action %}
+          {% set badge_cls = 'logout' %}
+        {% elif 'view' in action %}
+          {% set badge_cls = 'view' %}
+        {% else %}
+          {% set badge_cls = '' %}
+        {% endif %}
         <tr>
           <td>
-            <div class="audit-actor">
-              <strong>{{ admin_lookup.get(log.admin_id, 'ID ' ~ log.admin_id) }}</strong>
-              <span>ID {{ log.admin_id }}</span>
+            <div class="actor-block">
+              <span class="actor-name">{{ admin_lookup.get(log.admin_id, 'Неизвестный') }}</span>
+              <span class="actor-id">ID {{ log.admin_id }}</span>
             </div>
           </td>
+          <td><span class="action-badge {{ badge_cls }}">{{ log.action }}</span></td>
           <td>
-            <span class="audit-action-badge">{{ log.action }}</span>
-          </td>
-          <td>
-            <div class="audit-target">
-              {% if target.get('player_id') %}
-              <span>Игрок #{{ target.get('player_id') }}</span>
-              {% endif %}
-              {% if target.get('name') %}
-              <span>{{ target.get('name') }}</span>
-              {% endif %}
-              {% if target.get('steamid') %}
-              <span>{{ target.get('steamid') }}</span>
-              {% endif %}
-              {% if target.get('admin_id') %}
-              <span>Админ #{{ target.get('admin_id') }}</span>
-              {% endif %}
-              {% if target.get('username') %}
-              <span>{{ target.get('username') }}</span>
-              {% endif %}
-              {% if target.get('discord_id') %}
-              <span>Discord {{ target.get('discord_id') }}</span>
-              {% endif %}
-              {% if target.get('session_id') %}
-              <span>Сессия #{{ target.get('session_id') }}</span>
-              {% endif %}
-              {% if not target %}
-              <span class="text-warning">Нет данных</span>
-              {% endif %}
+            <div class="target-block">
+              {% if target.get('player_id') %}<div class="target-line">Игрок <strong>#{{ target.get('player_id') }}</strong></div>{% endif %}
+              {% if target.get('name') %}<div class="target-line">{{ target.get('name') }}</div>{% endif %}
+              {% if target.get('steamid') %}<div class="target-line" style="font-family:'Courier New',monospace; font-size:11px;">{{ target.get('steamid') }}</div>{% endif %}
+              {% if target.get('admin_id') %}<div class="target-line">Админ <strong>#{{ target.get('admin_id') }}</strong></div>{% endif %}
+              {% if target.get('username') %}<div class="target-line">{{ target.get('username') }}</div>{% endif %}
+              {% if target.get('discord_id') %}<div class="target-line" style="font-family:'Courier New',monospace; font-size:11px;">{{ target.get('discord_id') }}</div>{% endif %}
+              {% if target.get('session_id') %}<div class="target-line">Сессия <strong>#{{ target.get('session_id') }}</strong></div>{% endif %}
+              {% if target.get('kit_id') %}<div class="target-line">Кит <strong>#{{ target.get('kit_id') }}</strong></div>{% endif %}
+              {% if not target and not d %}<span style="color:var(--gray-dark); font-size:12px;">—</span>{% endif %}
             </div>
           </td>
           <td>
             {% if changes %}
-            <ul class="audit-changes">
+            <ul class="changes-list">
               {% for c in changes %}
-              <li><code>{{ c.get('field') }}</code>: <span class="audit-from">{{ c.get('from') }}</span> → <span class="audit-to">{{ c.get('to') }}</span></li>
+              <li>
+                <code>{{ c.get('field') }}</code>
+                <span class="ch-from">{{ c.get('from') if c.get('from') is not none else '∅' }}</span>
+                <span style="color:var(--gray-dark);">→</span>
+                <span class="ch-to">{{ c.get('to') if c.get('to') is not none else '∅' }}</span>
+              </li>
               {% endfor %}
             </ul>
-            {% elif d %}
-            <pre class="audit-raw">{{ d | tojson(indent=2) }}</pre>
+            {% elif d and not target %}
+            <pre class="raw-pre">{{ d | tojson(indent=2) }}</pre>
+            {% elif d.get('privileges') or d.get('steamid') %}
+            <div style="font-size:12px; color:var(--gray);">
+              {% if d.get('steamid') %}<div>SteamID: <code style="font-size:11px; color:#88b8ff;">{{ d.get('steamid') }}</code></div>{% endif %}
+              {% if d.get('privileges') %}<div>Привилегии: {{ d.get('privileges') | join(', ') }}</div>{% endif %}
+              {% if d.get('reason') %}<div>Причина: {{ d.get('reason') }}</div>{% endif %}
+            </div>
             {% else %}
-            <span class="text-warning">Нет данных</span>
+            <span style="color:var(--gray-dark); font-size:12px;">—</span>
             {% endif %}
           </td>
-          <td>{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') if log.created_at else 'N/A' }}</td>
+          <td class="cell-time">{{ log.created_at.strftime('%d.%m.%Y %H:%M:%S') if log.created_at else '—' }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  {% else %}
+  <div style="text-align:center; padding:48px 32px; color:var(--gray-dark);">
+    <div style="font-size:48px; margin-bottom:16px; opacity:.4;">📋</div>
+    <h3 style="color:var(--gray);">Записей нет</h3>
+  </div>
+  {% endif %}
+</div>
 {% endblock %}

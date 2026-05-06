@@ -13,6 +13,7 @@ import logging
 from config import get_settings, reset_settings_cache
 from database import init_db
 from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router
+from workers import start_playtime_worker
 from datetime import datetime
 
 settings = get_settings()
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
         init_db()
         logger.info("Database initialized")
         app.state.start_time = datetime.utcnow()
+        start_playtime_worker()
 
     # HTTP exception handler to render friendly templates for common errors
     @app.exception_handler(StarletteHTTPException)

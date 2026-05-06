@@ -1,40 +1,112 @@
 {% extends "base.html" %}
-
 {% block title %}Сессии — Nexus Data{% endblock %}
 
 {% block content %}
-  <div class="card">
-    <h2>Активные сессии</h2>
-    <table>
+<style>
+.pg-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--spacing-16); margin-bottom:var(--spacing-24); }
+.pg-header h2 { color:var(--white); font-size:22px; font-weight:700; }
+.pg-header p  { color:var(--gray); font-size:14px; margin-top:4px; }
+.stats-chips { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:var(--spacing-12); margin-bottom:var(--spacing-24); }
+.stat-chip { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:var(--spacing-16) 20px; text-align:center; }
+.stat-chip .sv { font-size:26px; font-weight:800; color:var(--primary-blue); line-height:1; }
+.stat-chip .sl { font-size:11px; color:var(--gray); margin-top:6px; text-transform:uppercase; letter-spacing:.4px; }
+.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
+.block-card-header { display:flex; align-items:center; justify-content:space-between; padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); }
+.block-card-header h3 { color:var(--white); font-size:16px; font-weight:600; }
+.data-table { width:100%; border-collapse:collapse; }
+.data-table thead { background:var(--dark-blue-bg); }
+.data-table th { padding:11px 16px; text-align:left; color:var(--gray); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; white-space:nowrap; }
+.data-table td { padding:12px 16px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; vertical-align:middle; }
+.data-table tbody tr:last-child td { border-bottom:none; }
+.data-table tbody tr:hover { background:var(--blue-010); }
+.cell-id { color:var(--gray-dark); font-size:12px; }
+.cell-mono { font-family:'Courier New',monospace; font-size:12px; color:var(--gray); }
+.cell-time { font-size:12px; color:var(--gray); }
+.status-badge { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+.status-active { background:rgba(0,255,136,.12); color:var(--success); }
+.status-revoked { background:rgba(183,12,70,.15); color:#ff4d80; }
+.status-expired { background:rgba(163,171,184,.12); color:var(--gray); }
+.status-dot { width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0; }
+.btn { display:inline-flex; align-items:center; gap:5px; padding:6px 13px; border-radius:var(--border-radius-8); font-size:12px; font-weight:600; font-family:'Manrope',sans-serif; cursor:pointer; border:1px solid transparent; transition:all var(--transition-03); text-decoration:none; }
+.btn-danger { background:rgba(183,12,70,.15); color:#ff4d80; border-color:rgba(183,12,70,.35); }
+.btn-danger:hover { background:rgba(183,12,70,.3); }
+@media(max-width:768px){
+  .data-table th:nth-child(3),.data-table td:nth-child(3){ display:none; }
+}
+</style>
+
+<div class="pg-header">
+  <div>
+    <h2>🔑 Сессии администраторов</h2>
+    <p>Просмотр и управление активными сессиями в панели.</p>
+  </div>
+</div>
+
+{% set active_count = sessions | selectattr('revoked', 'equalto', 0) | list | length %}
+{% set revoked_count = sessions | length - active_count %}
+
+<div class="stats-chips">
+  <div class="stat-chip"><div class="sv">{{ sessions | length }}</div><div class="sl">Всего</div></div>
+  <div class="stat-chip"><div class="sv" style="color:var(--success);">{{ active_count }}</div><div class="sl">Активных</div></div>
+  <div class="stat-chip"><div class="sv" style="color:var(--error);">{{ revoked_count }}</div><div class="sl">Отозвано</div></div>
+</div>
+
+<div class="block-card">
+  <div class="block-card-header">
+    <h3>Список сессий</h3>
+    <span style="font-size:13px; color:var(--gray);">{{ sessions|length }} записей</span>
+  </div>
+  {% if sessions %}
+  <div style="overflow-x:auto;">
+    <table class="data-table">
       <thead>
         <tr>
           <th>ID</th>
-          <th>Admin ID</th>
-          <th>Token (partial)</th>
-          <th>Created</th>
-          <th>Expires</th>
-          <th>Revoked</th>
-          <th>Действия</th>
+          <th>Администратор</th>
+          <th>Токен</th>
+          <th>Создана</th>
+          <th>Истекает</th>
+          <th>Статус</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
         {% for s in sessions %}
+        {% set is_active = not s.revoked %}
+        {% set now_ts = none %}
         <tr>
-          <td>{{ s.id }}</td>
-          <td>{{ s.admin_id }}</td>
-          <td>{{ s.token[:8] }}…</td>
-          <td>{{ s.created_at }}</td>
-          <td>{{ s.expires_at }}</td>
-          <td>{{ 'yes' if s.revoked else 'no' }}</td>
+          <td class="cell-id">#{{ s.id }}</td>
+          <td><strong>ID {{ s.admin_id }}</strong></td>
+          <td class="cell-mono">{{ s.token[:12] }}…</td>
+          <td class="cell-time">{{ s.created_at.strftime('%d.%m.%Y %H:%M') if s.created_at else '—' }}</td>
+          <td class="cell-time">{{ s.expires_at.strftime('%d.%m.%Y %H:%M') if s.expires_at else '∞' }}</td>
           <td>
+            {% if s.revoked %}
+            <span class="status-badge status-revoked"><span class="status-dot"></span>Отозвана</span>
+            {% else %}
+            <span class="status-badge status-active"><span class="status-dot"></span>Активна</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if not s.revoked %}
             <form action="/admin/sessions/{{ s.id }}/revoke" method="post" style="display:inline;">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-              <button type="submit" class="btn btn-danger">Отозвать</button>
+              <button type="submit" class="btn btn-danger" onclick="return confirm('Отозвать сессию #{{ s.id }}?')">Отозвать</button>
             </form>
+            {% else %}
+            <span style="color:var(--gray-dark); font-size:12px;">—</span>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  {% else %}
+  <div style="text-align:center; padding:48px 32px; color:var(--gray-dark);">
+    <div style="font-size:48px; margin-bottom:16px; opacity:.4;">🔑</div>
+    <h3 style="color:var(--gray);">Сессий нет</h3>
+  </div>
+  {% endif %}
+</div>
 {% endblock %}
