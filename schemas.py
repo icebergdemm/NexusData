@@ -35,7 +35,6 @@ class KitOut(BaseModel):
 class PlayerDataBase(BaseModel):
     player_last_time_name: str = Field(min_length=1, max_length=255)
     player_steamid: str = Field(min_length=17, max_length=18)
-    play_time: int = Field(default=0, ge=0, description="Play time in seconds")
     rank_id: int = Field(default=0, ge=0)
     kit_level: int = Field(default=0, ge=0)
     achievements: List[str] = Field(default_factory=list)
@@ -58,6 +57,7 @@ class PlayerDataBase(BaseModel):
 
 
 class PlayerDataCreate(PlayerDataBase):
+    play_time: Optional[int] = Field(None, ge=0, description="Play time in seconds (None preserves existing)")
     last_login_time: Optional[str] = None
     last_ip: Optional[str] = Field(None, max_length=45, description="Last IP address")
     last_subnet: Optional[str] = Field(None, max_length=45, description="Last subnet (e.g., 192.168.1.0/24)")

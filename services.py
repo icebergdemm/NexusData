@@ -251,17 +251,23 @@ class EventDispatcherService:
             self.stats_service.upsert_stats(player.player_id, stats_create)
         
         # Обновить общее время игры (вычисляем из сессии, не полагаясь на клиента)
+        current_play_time = player.play_time or 0
+        duration_seconds = session.session_duration or 0
+        
         if play_time_this_session:
-            current_play_time = player.play_time or 0
-            new_play_time = current_play_time + int(play_time_this_session)
+            added_time = int(play_time_this_session)
+            new_play_time = current_play_time + added_time
         else:
             # Если клиент не отправил play_time, вычисляем из session_duration
-            duration_seconds = session.session_duration or 0
-            current_play_time = player.play_time or 0
-            new_play_time = current_play_time + duration_seconds
+            added_time = duration_seconds
+            new_play_time = current_play_time + added_time
 
-        if new_play_time > 0:
+        # Обновляем play_time если было добавлено время в эту сессию
+        if added_time > 0:
             self.player_service.player_repo.update(player.player_id, {"play_time": new_play_time})
+            logger.info(f"Updated player {player.player_id} play_time: {current_play_time}s -> {new_play_time}s (+{added_time}s)")
+        
+        return {"session_id": session.id, "player_id": player.player_id, "duration_seconds": session.session_duration or 0}
         
         return {"session_id": session.id, "player_id": player.player_id, "duration_seconds": session.session_duration or 0}
 
@@ -343,9 +349,12 @@ class PlayerService:
             # Update existing player
             update_data = {
                 "player_last_time_name": player_data.player_last_time_name,
-                "play_time": player_data.play_time,
                 "achievements": safe_get_list(player_data.achievements),
             }
+            
+            # Only update play_time if explicitly provided (not None)
+            if player_data.play_time is not None:
+                update_data["play_time"] = player_data.play_time
             
             # Only update rank_id and kit_level if explicitly provided (not None)
             if player_data.rank_id is not None:
@@ -382,7 +391,7 @@ class PlayerService:
         new_player = PlayerData(
             player_last_time_name=player_data.player_last_time_name,
             player_steamid=player_data.player_steamid,
-            play_time=safe_get_int(player_data.play_time),
+            play_time=player_data.play_time if player_data.play_time is not None else 0,
             rank_id=player_data.rank_id if player_data.rank_id is not None else 0,
             kit_level=player_data.kit_level if player_data.kit_level is not None else 0,
             achievements=safe_get_list(player_data.achievements),

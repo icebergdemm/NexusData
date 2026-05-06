@@ -415,6 +415,8 @@ class PlayerSessionRepository(BaseRepository):
             return None
         
         session.logout_time = logout_time
+        # Calculate session duration in seconds
+        session.session_duration = int((logout_time - session.login_time).total_seconds())
         self.commit()
         self.refresh(session)
         logger.info(f"Closed session: {session_id}")
