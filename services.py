@@ -344,10 +344,14 @@ class PlayerService:
             update_data = {
                 "player_last_time_name": player_data.player_last_time_name,
                 "play_time": player_data.play_time,
-                "rank_id": player_data.rank_id,
-                "kit_level": player_data.kit_level,
                 "achievements": safe_get_list(player_data.achievements),
             }
+            
+            # Only update rank_id and kit_level if explicitly provided (not None)
+            if player_data.rank_id is not None:
+                update_data["rank_id"] = player_data.rank_id
+            if player_data.kit_level is not None:
+                update_data["kit_level"] = player_data.kit_level
             
             if player_data.last_login_time:
                 try:
@@ -379,8 +383,8 @@ class PlayerService:
             player_last_time_name=player_data.player_last_time_name,
             player_steamid=player_data.player_steamid,
             play_time=safe_get_int(player_data.play_time),
-            rank_id=player_data.rank_id,
-            kit_level=player_data.kit_level,
+            rank_id=player_data.rank_id if player_data.rank_id is not None else 0,
+            kit_level=player_data.kit_level if player_data.kit_level is not None else 0,
             achievements=safe_get_list(player_data.achievements),
             last_ip=player_data.last_ip,
             last_subnet=player_data.last_subnet,

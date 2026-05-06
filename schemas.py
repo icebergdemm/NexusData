@@ -63,6 +63,9 @@ class PlayerDataCreate(PlayerDataBase):
     last_subnet: Optional[str] = Field(None, max_length=45, description="Last subnet (e.g., 192.168.1.0/24)")
     first_login: Optional[str] = None
     avg_ping: Optional[int] = Field(None, ge=0, description="Average ping")
+    # These fields are optional for upsert (preserve existing if not provided)
+    rank_id: Optional[int] = Field(None, ge=0, description="Rank ID (None preserves existing)")
+    kit_level: Optional[int] = Field(None, ge=0, description="Kit level (None preserves existing)")
 
 
 class PlayerDataUpdate(BaseModel):
