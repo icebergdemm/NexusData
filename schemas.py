@@ -79,6 +79,7 @@ class PlayerDataUpdate(BaseModel):
 
 class PlayerDataOut(PlayerDataBase):
     player_id: int
+    play_time: int = Field(default=0, ge=0, description="Play time in seconds")
     last_login_time: datetime
     rank_name: Optional[str] = None
     kit_name: Optional[str] = None
