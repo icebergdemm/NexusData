@@ -4,9 +4,11 @@ from fastapi import HTTPException
 import logging
 import os
 import httpx
+from datetime import datetime
 from models import (
     PlayerData, PlayerStats, AdminUser, PlayerKill, PlayerRoleAction,
-    PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, ServerPlayerPrivilege
+    PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, ServerPlayerPrivilege,
+    ServerOnlinePlayer, AnticheatEvent, ServerActionQueue
 )
 from schemas import (
     PlayerDataCreate, PlayerStatsCreate, PaginationParams, PlayerDataOut, MessageEnvelope, MessageProcessResult,
@@ -1024,4 +1026,191 @@ class ServerPlayerPrivilegeService:
         """Update privileges for a player"""
         return self.grant_privilege(steamid, privileges, reason=reason)
 
+
+class ServerModerationService:
+    """Business logic for server moderation: online players, anticheat, action queue."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ── Online players ──────────────────────────────────────────────────────
+
+    def replace_online_players(self, players_in: list) -> int:
+        """Replace the entire online players snapshot atomically."""
+        from models import ServerOnlinePlayer
+        from datetime import timezone
+
+        # Delete all current records
+        self.db.query(ServerOnlinePlayer).delete()
+
+        now = datetime.utcnow()
+        for p in players_in:
+            record = ServerOnlinePlayer(
+                player_steamid=p.steamid,
+                player_name=p.name,
+                character_name=p.character_name,
+                ping=p.ping,
+                join_time=p.join_time,
+                updated_at=now,
+            )
+            self.db.add(record)
+
+        self.db.commit()
+        return len(players_in)
+
+    def get_online_players(self) -> list:
+        """Return enriched list of online players."""
+        from models import ServerOnlinePlayer, PlayerData, PlayerSession
+        from sqlalchemy import func as sqlfunc
+
+        rows = self.db.query(ServerOnlinePlayer).order_by(ServerOnlinePlayer.join_time).all()
+        result = []
+        for row in rows:
+            player_db = self.db.query(PlayerData).filter(
+                PlayerData.player_steamid == row.player_steamid
+            ).first()
+
+            player_id = player_db.player_id if player_db else None
+            total_play_time = player_db.play_time if player_db else None
+
+            # is_new_player: total playtime < 2 hours (7200 s)
+            is_new = bool(total_play_time is not None and total_play_time < 7200)
+
+            result.append({
+                "id": row.id,
+                "player_steamid": row.player_steamid,
+                "player_name": row.player_name,
+                "character_name": row.character_name,
+                "ping": row.ping,
+                "join_time": row.join_time,
+                "updated_at": row.updated_at,
+                "player_id": player_id,
+                "total_play_time": total_play_time,
+                "is_new_player": is_new,
+            })
+        return result
+
+    # ── Anticheat events ────────────────────────────────────────────────────
+
+    def add_anticheat_event(self, event_in) -> "AnticheatEvent":
+        from models import AnticheatEvent, PlayerData
+        from datetime import timezone
+
+        player_db = self.db.query(PlayerData).filter(
+            PlayerData.player_steamid == event_in.steamid
+        ).first()
+
+        event = AnticheatEvent(
+            player_steamid=event_in.steamid,
+            player_name=event_in.player_name,
+            player_id=player_db.player_id if player_db else None,
+            event_type=event_in.event_type,
+            details=event_in.details,
+            occurred_at=event_in.occurred_at or datetime.utcnow(),
+            reviewed=0,
+        )
+        self.db.add(event)
+        self.db.commit()
+        self.db.refresh(event)
+        return event
+
+    def get_anticheat_events(self, limit: int = 200, offset: int = 0, reviewed: Optional[int] = None) -> list:
+        from models import AnticheatEvent
+        q = self.db.query(AnticheatEvent)
+        if reviewed is not None:
+            q = q.filter(AnticheatEvent.reviewed == reviewed)
+        return q.order_by(AnticheatEvent.occurred_at.desc()).offset(offset).limit(limit).all()
+
+    def mark_reviewed(self, event_id: int) -> bool:
+        from models import AnticheatEvent
+        ev = self.db.query(AnticheatEvent).filter(AnticheatEvent.id == event_id).first()
+        if not ev:
+            return False
+        ev.reviewed = 1
+        self.db.commit()
+        return True
+
+    # ── Action queue ────────────────────────────────────────────────────────
+
+    def enqueue_action(self, action_in, admin_id: Optional[int] = None) -> "ServerActionQueue":
+        from models import ServerActionQueue
+        action = ServerActionQueue(
+            action_type=action_in.action_type,
+            target_steamid=action_in.target_steamid,
+            reason=action_in.reason,
+            duration_minutes=action_in.duration_minutes,
+            message_text=action_in.message_text,
+            admin_id=admin_id,
+            status="pending",
+        )
+        self.db.add(action)
+        self.db.commit()
+        self.db.refresh(action)
+        return action
+
+    def get_pending_actions(self) -> list:
+        from models import ServerActionQueue
+        return (
+            self.db.query(ServerActionQueue)
+            .filter(ServerActionQueue.status == "pending")
+            .order_by(ServerActionQueue.created_at)
+            .all()
+        )
+
+    def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None) -> bool:
+        from models import ServerActionQueue
+        action = self.db.query(ServerActionQueue).filter(ServerActionQueue.id == action_id).first()
+        if not action:
+            return False
+        action.status = "executed" if success else "failed"
+        action.executed_at = datetime.utcnow()
+        action.error_message = error_message
+        self.db.commit()
+        return True
+
+    # ── Recent players (for Banhammer tab) ─────────────────────────────────
+
+    def get_recent_offline_players(self, limit: int = 50) -> list:
+        """Players who recently logged out (last open session closed), not currently online."""
+        from models import PlayerSession, PlayerData, ServerOnlinePlayer
+        from sqlalchemy import desc
+
+        # Get steamids of currently online players
+        online_steamids = {
+            r.player_steamid
+            for r in self.db.query(ServerOnlinePlayer.player_steamid).all()
+        }
+
+        # Get recent closed sessions
+        recent_sessions = (
+            self.db.query(PlayerSession)
+            .filter(PlayerSession.logout_time != None)
+            .order_by(desc(PlayerSession.logout_time))
+            .limit(limit * 3)
+            .all()
+        )
+
+        seen_player_ids = set()
+        result = []
+        for session in recent_sessions:
+            if session.player_id in seen_player_ids:
+                continue
+            player = self.db.query(PlayerData).filter(
+                PlayerData.player_id == session.player_id
+            ).first()
+            if not player:
+                continue
+            if player.player_steamid in online_steamids:
+                continue
+            seen_player_ids.add(session.player_id)
+            result.append({
+                "player_id": player.player_id,
+                "player_steamid": player.player_steamid,
+                "player_name": player.player_last_time_name,
+                "play_time": player.play_time,
+                "last_seen": session.logout_time,
+            })
+            if len(result) >= limit:
+                break
+        return result
 

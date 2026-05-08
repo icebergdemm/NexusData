@@ -41,6 +41,9 @@
         {% if "read" in admin.permissions or "write" in admin.permissions %}
         <li><a href="/admin/players">Игроки</a></li>
         {% endif %}
+        {% if "admin" in admin.permissions or "write" in admin.permissions %}
+        <li><a href="/admin/moderation">Модерирование сервера</a></li>
+        {% endif %}
         {% if "admin" in admin.permissions %}
         <li><a href="/admin/sessions">Сессии</a></li>
         {% endif %}

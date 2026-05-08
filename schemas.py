@@ -256,3 +256,98 @@ class MessageProcessResult(BaseModel):
     trace_id: Optional[str] = None
     data: Dict[str, Any] = Field(default_factory=dict)
 
+
+# ─── Server Moderation Schemas ────────────────────────────────────────────────
+
+class OnlinePlayerIn(BaseModel):
+    """Single player entry sent by the game server."""
+    steamid: str = Field(min_length=17, max_length=50)
+    name: str = Field(min_length=1, max_length=255)
+    character_name: Optional[str] = Field(None, max_length=255)
+    ping: Optional[int] = Field(None, ge=0)
+    join_time: Optional[datetime] = None
+
+
+class ServerPlayersReport(BaseModel):
+    """Full snapshot of online players sent by the game server."""
+    players: List[OnlinePlayerIn]
+
+
+class ServerPlayersReportResult(BaseModel):
+    status: str = "ok"
+    count: int
+
+
+class OnlinePlayerOut(BaseModel):
+    """Online player as returned to the admin panel."""
+    id: int
+    player_steamid: str
+    player_name: str
+    character_name: Optional[str]
+    ping: Optional[int]
+    join_time: Optional[datetime]
+    updated_at: datetime
+    # Enriched from players_data
+    player_id: Optional[int] = None
+    total_play_time: Optional[int] = None   # seconds in DB
+    is_new_player: bool = False             # total sessions < 2h
+
+    class Config:
+        from_attributes = True
+
+
+class AnticheatEventIn(BaseModel):
+    """Single anticheat event reported by the game server."""
+    steamid: str = Field(min_length=17, max_length=50)
+    player_name: Optional[str] = Field(None, max_length=255)
+    event_type: str = Field(min_length=1, max_length=100)
+    details: Optional[Dict[str, Any]] = None
+    occurred_at: Optional[datetime] = None
+
+
+class AnticheatEventOut(BaseModel):
+    id: int
+    player_steamid: str
+    player_name: Optional[str]
+    player_id: Optional[int]
+    event_type: str
+    details: Optional[Dict[str, Any]]
+    occurred_at: datetime
+    reviewed: int
+
+    class Config:
+        from_attributes = True
+
+
+class ServerActionOut(BaseModel):
+    """Pending action to be executed by the game server."""
+    id: int
+    action_type: str
+    target_steamid: str
+    reason: Optional[str]
+    duration_minutes: Optional[int]
+    message_text: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class ServerActionAck(BaseModel):
+    """Acknowledgement from the game server after executing an action."""
+    success: bool
+    error_message: Optional[str] = None
+
+
+class QueueActionIn(BaseModel):
+    """Request from the admin panel to enqueue a moderation action."""
+    action_type: str = Field(pattern=r"^(kick|ban|message)$")
+    target_steamid: str = Field(min_length=17, max_length=50)
+    reason: Optional[str] = Field(None, max_length=500)
+    duration_minutes: Optional[int] = Field(None, ge=1)
+    message_text: Optional[str] = Field(None, max_length=1000)
+
+
+class QueueActionResult(BaseModel):
+    status: str = "queued"
+    action_id: int
+

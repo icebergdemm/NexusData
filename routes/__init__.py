@@ -4,6 +4,7 @@ from .players import router as players_router
 from .stats import router as stats_router
 from .admin import router as admin_router
 from .events import router as events_router
+from .moderation import api_router as moderation_api_router, panel_router as moderation_panel_router
 
 __all__ = [
     "status_router",
@@ -12,4 +13,6 @@ __all__ = [
     "stats_router",
     "admin_router",
     "events_router",
+    "moderation_api_router",
+    "moderation_panel_router",
 ]
