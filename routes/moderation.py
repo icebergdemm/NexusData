@@ -162,6 +162,38 @@ async def moderation_page(
     # Banhammer: online + recently offline + search
     recent_offline = svc.get_recent_offline_players(limit=50)
 
+    # Enrich recent_offline with last session logout time
+    if recent_offline:
+        from models import PlayerSession
+        pid_list = [p.player_id for p in recent_offline]
+        last_sessions = (
+            db.query(PlayerSession)
+            .filter(
+                PlayerSession.player_id.in_(pid_list),
+                PlayerSession.logout_time.isnot(None),
+            )
+            .order_by(PlayerSession.logout_time.desc())
+            .all()
+        )
+        last_logout_map: dict = {}
+        for s in last_sessions:
+            if s.player_id not in last_logout_map:
+                last_logout_map[s.player_id] = s.logout_time
+        
+        # Convert times to Moscow timezone and attach
+        from datetime import timezone, timedelta
+        MSK = timezone(timedelta(hours=3))
+        for p in recent_offline:
+            logout_dt = last_logout_map.get(p.player_id)
+            if logout_dt and logout_dt.tzinfo is None:
+                # Assume UTC if naive, convert to MSK
+                logout_dt = logout_dt.replace(tzinfo=timezone.utc).astimezone(MSK)
+            p.last_session_logout = logout_dt
+            
+            # Also convert last_login_time to MSK
+            if p.last_login_time and p.last_login_time.tzinfo is None:
+                p.last_login_time = p.last_login_time.replace(tzinfo=timezone.utc).astimezone(MSK)
+
     # Search across all players (for Banhammer)
     search_results = []
     if search:

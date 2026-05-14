@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Категории меток — Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.pg-header { display:flex; align-items:center; gap:var(--spacing-16); margin-bottom:var(--spacing-24); flex-wrap:wrap; }
+.pg-header a.back-btn {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:8px 14px; border-radius:var(--border-radius-8);
+  border:1px solid var(--stroke-01); background:var(--card-bg);
+  color:var(--gray); font-size:13px; text-decoration:none;
+  transition:var(--transition-03);
+}
+.pg-header a.back-btn:hover { color:var(--white); border-color:var(--primary-blue); }
+.pg-header h2 { color:var(--white); font-size:20px; font-weight:700; }
+
+.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; margin-bottom:var(--spacing-24); }
+.block-card-header { padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; }
+.block-card-header h3 { color:var(--white); font-size:15px; font-weight:600; }
+.block-card-body { padding:var(--spacing-24); }
+
+.cats-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; }
+.cat-card {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px 18px; background:var(--dark-blue-bg);
+  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8);
+  gap:12px;
+}
+.cat-info { display:flex; align-items:center; gap:10px; }
+.cat-dot { width:14px; height:14px; border-radius:50%; flex-shrink:0; }
+.cat-icon { font-size:18px; }
+.cat-name { font-size:14px; font-weight:600; color:var(--white); }
+.cat-count { font-size:11px; color:var(--gray-dark); margin-top:2px; }
+
+.btn { display:inline-flex; align-items:center; gap:6px; padding:9px 18px; border-radius:var(--border-radius-8); font-size:13px; font-weight:600; cursor:pointer; border:none; text-decoration:none; font-family:inherit; transition:var(--transition-03); }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#1460d4; }
+.btn-danger { background:transparent; border:1px solid rgba(183,12,70,.4); color:#ff4d80; }
+.btn-danger:hover { background:rgba(183,12,70,.15); }
+.btn-sm { padding:5px 12px; font-size:12px; }
+
+.form-group { display:flex; flex-direction:column; gap:6px; margin-bottom:var(--spacing-16); }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group input {
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); color:var(--white);
+  padding:10px 14px; font-size:13px; font-family:inherit; width:100%;
+  box-sizing:border-box; transition:var(--transition-03);
+}
+.form-group input:focus { outline:none; border-color:var(--primary-blue); }
+.form-row { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-16); }
+
+.flash { padding:12px 18px; border-radius:var(--border-radius-8); margin-bottom:var(--spacing-16); font-size:13px; font-weight:500; }
+.flash.success { background:rgba(3,123,54,.15); border:1px solid var(--success); color:var(--success); }
+.flash.error   { background:rgba(183,12,70,.15); border:1px solid #ff4d80; color:#ff4d80; }
+
+.empty-hint { text-align:center; padding:32px; color:var(--gray-dark); font-size:13px; }
+</style>
+
+{% for f in flashes %}
+<div class="flash {{ f.type }}">{{ f.message }}</div>
+{% endfor %}
+
+<div class="pg-header">
+  <a href="/admin/players" class="back-btn">← Игроки</a>
+  <h2>🏷 Категории меток</h2>
+</div>
+
+<!-- Existing categories -->
+<div class="block-card">
+  <div class="block-card-header">
+    <h3>Все категории</h3>
+    <span style="font-size:12px; color:var(--gray);">{{ categories|length }}</span>
+  </div>
+  <div class="block-card-body">
+    {% if categories %}
+    <div class="cats-grid">
+      {% for cat in categories %}
+      <div class="cat-card">
+        <div class="cat-info">
+          <span class="cat-icon">{{ cat.icon or '🏷' }}</span>
+          <div class="cat-dot" style="background:{{ cat.color or '#888' }};"></div>
+          <div>
+            <div class="cat-name">{{ cat.name }}</div>
+            <div class="cat-count">ID #{{ cat.id }}</div>
+          </div>
+        </div>
+        <form method="post" action="/admin/label-categories/{{ cat.id }}/delete"
+              onsubmit="return confirm('Удалить категорию «{{ cat.name }}»? Все метки этой категории будут удалены.')">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+          <button type="submit" class="btn btn-danger btn-sm">🗑</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-hint">Категории не созданы. Создайте первую ниже.</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Create new category -->
+<div class="block-card">
+  <div class="block-card-header"><h3>➕ Новая категория</h3></div>
+  <div class="block-card-body">
+    <form method="post" action="/admin/label-categories/create">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Название</label>
+          <input type="text" name="name" placeholder="Например: Токсик" required>
+        </div>
+        <div class="form-group">
+          <label>Иконка (эмодзи)</label>
+          <input type="text" name="icon" placeholder="🏷" value="🏷" maxlength="8">
+        </div>
+        <div class="form-group">
+          <label>Цвет</label>
+          <input type="color" name="color" value="#1a68de" style="height:44px; padding:4px 8px; cursor:pointer;">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary">💾 Создать</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

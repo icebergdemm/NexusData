@@ -91,7 +91,7 @@ async def verify_api_key_dependency(
         client_ip = request.client.host
 
     # Блок разрешённых IP без проверки ключа
-    if client_ip and client_ip in settings.allowed_ips:
+    if client_ip and client_ip in settings.allowed_ips_list:
         return {"authenticated": True, "client_ip": client_ip}
 
     api_key = None

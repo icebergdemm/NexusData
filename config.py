@@ -1,99 +1,131 @@
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-from typing import List, Dict
+from typing import List, Dict, Any
 import json
 import os
+
+
+def _str_to_list(value: Any, default: List[str]) -> List[str]:
+    """Convert a raw .env string (JSON array or comma-separated) to List[str]."""
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    if not isinstance(value, str) or not value.strip():
+        return default
+    v = value.strip()
+    if v.startswith("["):
+        try:
+            parsed = json.loads(v)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except json.JSONDecodeError:
+            pass
+    return [x.strip() for x in v.split(",") if x.strip()]
 
 
 class Settings(BaseSettings):
     app_name: str = "Barotrauma RoundManager API"
     app_version: str = "3.0"
     debug: bool = False
-    
+
     # Database
     database_url: str = "mysql+pymysql://python_fastapi:pfa0471B-@localhost:3306/barotrauma"
-    
+
     # Server
     server_host: str = "0.0.0.0"
     server_port: int = 8000
-    
-    # CORS
-    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+
+    # CORS — stored as plain str to avoid pydantic-settings JSON pre-parsing errors;
+    # converted to List[str] in __init__
+    cors_origins: str = "http://localhost:3000,http://localhost:8000"
+    cors_origins_list: List[str] = []          # populated in __init__
     cors_credentials: bool = True
     cors_methods: List[str] = ["GET", "POST", "PUT", "DELETE"]
     cors_headers: List[str] = ["*"]
-    
+
     # Security
     secret_key: str = Field("your-secret-key-change-in-production", env="SECRET_KEY")
     api_key: str = Field("your-api-key-change-in-production", env="API_KEY")
     require_auth: bool = True
-    allowed_ips: List[str] = ["92.38.222.172"]  # whitelist для пропуска api_key проверки
+    # stored as plain str; converted to List[str] in __init__
+    allowed_ips: str = "92.38.222.172"
+    allowed_ips_list: List[str] = []           # populated in __init__
+
     # Sessions
     session_max_age: int = 60 * 60 * 24 * 7  # 7 days
     session_cookie_name: str = "session"
 
     # CSRF
     csrf_cookie_name: str = "csrf_token"
-    
+
     # Pagination
     default_page_size: int = 50
     max_page_size: int = 1000
-    
+
     # Rate Limiting
     rate_limit_enabled: bool = True
-    rate_limit_requests: int = 100  # requests per window
-    rate_limit_window: int = 60  # seconds
-    
+    rate_limit_requests: int = 100
+    rate_limit_window: int = 60
+
     # Logging
-    log_level: str = "DEBUG" if debug else "INFO"
-    
+    log_level: str = "INFO"
+
     # Discord OAuth
     discord_client_id: str = ""
     discord_client_secret: str = ""
     discord_redirect_uri: str = "https://nd.rp-asper.ru/auth/discord/callback"
-    
+
     # Discord Proxy
     use_discord_proxy: bool = False
     discord_proxy_url: str = "http://localhost:8001"
-    
-    # Ranks and Kits mappings
+
+    # Discord Trap Webhook
+    discord_trap_webhook_url: str = ""
+
+    # Ranks and Kits mappings (populated from JSON files in __init__)
     ranks_mapping: Dict[str, str] = {}
     kits_mapping: Dict[str, str] = {}
     roles_mapping: Dict[str, List[str]] = {}
-    
-    # Server permissions configuration (for managing moderator/admin privileges)
+
+    # Server permissions configuration
     server_permissions_mapping: Dict[str, Dict] = Field(default_factory=lambda: {
-        "mute": {"name": "Мут", "description": "Возможность выдавать мут"},
-        "kick": {"name": "Кик", "description": "Возможность кикать игроков"},
-        "ban": {"name": "Бан", "description": "Возможность банить игроков"},
-        "manage_whitelist": {"name": "Управление вайтлистом", "description": "Возможность управлять вайтлистом"},
-        "manage_moderators": {"name": "Управление модераторами", "description": "Возможность добавлять/удалять модераторов"},
-        "manage_admins": {"name": "Управление администраторами", "description": "Возможность управлять администраторами"},
+        "mute":             {"name": "Мут",                      "description": "Возможность выдавать мут"},
+        "kick":             {"name": "Кик",                      "description": "Возможность кикать игроков"},
+        "ban":              {"name": "Бан",                      "description": "Возможность банить игроков"},
+        "manage_whitelist": {"name": "Управление вайтлистом",    "description": "Возможность управлять вайтлистом"},
+        "manage_moderators":{"name": "Управление модераторами",  "description": "Возможность добавлять/удалять модераторов"},
+        "manage_admins":    {"name": "Управление администраторами","description": "Возможность управлять администраторами"},
     })
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        config_dir = os.path.join(os.path.dirname(__file__), 'config')
-        ranks_file = os.path.join(config_dir, 'ranks.json')
-        kits_file = os.path.join(config_dir, 'kits.json')
-        
-        if os.path.exists(ranks_file):
-            with open(ranks_file, 'r', encoding='utf-8') as f:
-                self.ranks_mapping = json.load(f)
-        
-        if os.path.exists(kits_file):
-            with open(kits_file, 'r', encoding='utf-8') as f:
-                self.kits_mapping = json.load(f)
-        
-        roles_file = os.path.join(config_dir, 'roles.json')
-        if os.path.exists(roles_file):
-            with open(roles_file, 'r', encoding='utf-8') as f:
-                self.roles_mapping = json.load(f)
-    
+
+        # Convert str fields to lists
+        object.__setattr__(self, "cors_origins_list", _str_to_list(
+            self.cors_origins,
+            ["http://localhost:3000", "http://localhost:8000"],
+        ))
+        object.__setattr__(self, "allowed_ips_list", _str_to_list(
+            self.allowed_ips,
+            ["92.38.222.172"],
+        ))
+
+        # Load JSON config files
+        config_dir = os.path.join(os.path.dirname(__file__), "config")
+        for attr, filename in [
+            ("ranks_mapping", "ranks.json"),
+            ("kits_mapping",  "kits.json"),
+            ("roles_mapping",  "roles.json"),
+        ]:
+            path = os.path.join(config_dir, filename)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    object.__setattr__(self, attr, json.load(f))
+
     model_config = {
         "env_file": ".env",
-        "case_sensitive": False
+        "case_sensitive": False,
+        "env_ignore_empty": True,
     }
 
 

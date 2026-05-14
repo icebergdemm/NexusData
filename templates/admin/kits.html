@@ -534,7 +534,7 @@
         <span class="kit-level-badge level-{{ kit.kit_level }}">Lv {{ kit.kit_level }}</span>
         <div class="kit-card-actions">
           <button type="button" class="btn btn-sm btn-secondary" onclick="toggleEdit({{ kit.id }})" title="Редактировать">✏️</button>
-          <button type="button" class="btn btn-sm btn-danger" onclick="confirmDelete({{ kit.id }}, '{{ kit.job_id }}', {{ kit.kit_level }})" title="Удалить">🗑️</button>
+          <button type="button" class="btn btn-sm btn-danger" onclick="confirmDelete('kits', {{ kit.id }}, '{{ kit.job_id }}', {{ kit.kit_level }})" title="Удалить">🗑️</button>
         </div>
       </div>
     </div>
@@ -619,6 +619,164 @@
 </div>
 {% endif %}
 
+<!-- ═══════════════════════════════════════════════════════════════
+     КВАЛИФИКАЦИОННЫЕ КИТЫ
+═══════════════════════════════════════════════════════════════ -->
+<div id="qual" style="margin-top:48px;">
+
+<div class="kits-header">
+  <div>
+    <h2>🎓 Квалификационные киты</h2>
+  </div>
+</div>
+
+<div class="kits-stats-row">
+  <div class="kits-stat-chip">
+    <div class="stat-value">{{ qual_kits | length }}</div>
+    <div class="stat-label">Квал-китов</div>
+  </div>
+  <div class="kits-stat-chip">
+    <div class="stat-value">{{ all_qual_base_jobs | length }}</div>
+    <div class="stat-label">Профессий</div>
+  </div>
+</div>
+
+<!-- ADD QUAL KIT FORM -->
+<div class="add-kit-card">
+  <div class="add-kit-card-header" id="addQualToggle" onclick="toggleAddQual()">
+    <h3>Добавить квалификационный кит</h3>
+    <span class="toggle-arrow" id="addQualArrow">▾</span>
+  </div>
+  <div class="add-kit-card-body" id="addQualBody">
+    <form method="post" action="/admin/qual-kits/add">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Профессия (без _k)</label>
+          <input type="text" name="base_job" placeholder="например: assistant" maxlength="13" required>
+          <span class="form-hint">Суффикс _k будет добавлен автоматически</span>
+        </div>
+        <div class="form-group">
+          <label>Уровень квалификации</label>
+          <select name="kit_level" required>
+            <option value="1">I — первый уровень</option>
+            <option value="2">II — второй уровень</option>
+            <option value="3">III — третий уровень</option>
+            <option value="4">IV — четвёртый уровень</option>
+            <option value="5">V — пятый уровень</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Предметы (JSON-объект)</label>
+        <textarea name="items" class="json-editor" id="qual-add-items"
+                  oninput="validateJson(this)">{
+  "item_id_1": 1,
+  "item_id_2": 2,
+  "ar_delete": {
+    "item_to_remove": 1
+  }
+}</textarea>
+        <div class="json-status" id="status-qual-add"></div>
+        <span class="form-hint">JSON-объект. Ключи — предметы для добавления (значение = количество). Ключ <code>ar_delete</code> — предметы для удаления.</span>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">💾 Создать</button>
+        <button type="button" class="btn btn-secondary" onclick="toggleAddQual()">Отмена</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% set qual_level_names = {1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V'} %}
+
+{% if qual_kits %}
+<div class="kits-grid">
+  {% for kit in qual_kits %}
+  {% set base_job = kit.job_id[:-2] if kit.job_id.endswith('_k') else kit.job_id %}
+  {% set lvl_name = qual_level_names.get(kit.kit_level, kit.kit_level|string) %}
+  <div class="kit-card">
+    <div class="kit-card-header" style="background:rgba(174,0,122,0.06);">
+      <div class="kit-card-meta">
+        <span class="kit-card-job">{{ base_job }} <span style="color:rgba(174,0,122,0.8); font-size:11px;">квалификация</span></span>
+        <span class="kit-card-level">{{ lvl_name }} уровень · <code style="font-size:10px; color:var(--gray-dark);">{{ kit.job_id }}</code></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="kit-level-badge level-{{ [kit.kit_level - 1, 4] | min }}" style="background:rgba(174,0,122,0.2); color:rgba(220,80,200,1);">{{ lvl_name }}</span>
+        <div class="kit-card-actions">
+          <button type="button" class="btn btn-sm btn-secondary" onclick="toggleQualEdit({{ kit.id }})" title="Редактировать">✏️</button>
+          <button type="button" class="btn btn-sm btn-danger" onclick="confirmDelete('qual-kits', {{ kit.id }}, '{{ base_job }}_k', {{ kit.kit_level }})" title="Удалить">🗑️</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="kit-card-body" id="qkit-preview-{{ kit.id }}">
+      {% if kit.items is mapping and kit.items %}
+      <div class="kit-items-preview">
+        {% for k, v in kit.items.items() %}
+        {% if k == 'ar_delete' %}
+          {% if v is mapping %}{% for dk, dv in v.items() %}
+          <span class="item-tag" style="background:rgba(183,12,70,.15); border-color:rgba(183,12,70,.3); color:#ff8080;">
+            🗑 {{ dk }}{% if dv != 1 %} x{{ dv }}{% endif %}
+          </span>
+          {% endfor %}{% endif %}
+        {% else %}
+          <span class="item-tag">{{ k }}{% if v is mapping %} [nested]{% elif v != 1 %} x{{ v }}{% endif %}</span>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% set del_count = kit.items.get('ar_delete', {}) | length if kit.items.get('ar_delete') is mapping else 0 %}
+      {% set norm_count = (kit.items | length) - (1 if 'ar_delete' in kit.items else 0) %}
+      <div class="kit-items-count">
+        {{ norm_count }} {% if norm_count == 1 %}предмет{% elif norm_count in [2,3,4] %}предмета{% else %}предметов{% endif %} добавляется
+        {% if del_count %} · <span style="color:#ff8080;">{{ del_count }} удаляется</span>{% endif %}
+      </div>
+      {% else %}
+      <div class="kit-items-count" style="color: var(--gray-dark); font-style:italic;">Нет предметов</div>
+      {% endif %}
+    </div>
+
+    <div class="kit-edit-form" id="qkit-edit-{{ kit.id }}">
+      <form method="post" action="/admin/qual-kits/{{ kit.id }}/update">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <div class="form-group">
+          <label>Уровень квалификации</label>
+          <select name="kit_level" required>
+            <option value="1" {% if kit.kit_level == 1 %}selected{% endif %}>I - первый уровень</option>
+            <option value="2" {% if kit.kit_level == 2 %}selected{% endif %}>II - второй уровень</option>
+            <option value="3" {% if kit.kit_level == 3 %}selected{% endif %}>III - третий уровень</option>
+            <option value="4" {% if kit.kit_level == 4 %}selected{% endif %}>IV - четвёртый уровень</option>
+            <option value="5" {% if kit.kit_level == 5 %}selected{% endif %}>V - пятый уровень</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Предметы (JSON-объект)</label>
+          <textarea name="items" class="json-editor" id="qitems-textarea-{{ kit.id }}"
+                    oninput="validateJson(this)">{{ kit.items | tojson(indent=2) }}</textarea>
+          <div class="json-status" id="status-qkit-{{ kit.id }}"></div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+          <button type="button" class="btn btn-secondary" onclick="toggleQualEdit({{ kit.id }})">Отмена</button>
+          <button type="button" class="btn btn-secondary" onclick="formatQualJson({{ kit.id }})">🔧 Форматировать</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="add-kit-card" style="border-style: dashed;">
+  <div class="kits-empty">
+    <div class="kits-empty-icon">🎓</div>
+    <h3>Квалификационных китов пока нет</h3>
+    <p>Создайте первый квал-кит, нажав «Добавить квалификационный кит» выше.</p>
+  </div>
+</div>
+{% endif %}
+
+</div>
+
 <!-- Delete Confirmation Modal -->
 <div id="deleteModal" style="
   display:none; position:fixed; inset:0; z-index:2000;
@@ -701,11 +859,52 @@ document.querySelectorAll('.json-editor').forEach(ta => {
 });
 
 // ===== DELETE MODAL =====
-function confirmDelete(kitId, jobId, level) {
+function confirmDelete(prefix, kitId, jobId, level) {
   document.getElementById('deleteModalText').textContent =
     'Кит "' + jobId + '" (уровень ' + level + ') будет удалён без возможности восстановления.';
-  document.getElementById('deleteModalForm').action = '/admin/kits/' + kitId + '/delete';
+  document.getElementById('deleteModalForm').action = '/admin/' + prefix + '/' + kitId + '/delete';
   document.getElementById('deleteModal').style.display = 'flex';
+}
+
+// ===== QUAL KITS =====
+let addQualOpen = false;
+function toggleAddQual() {
+  addQualOpen = !addQualOpen;
+  document.getElementById('addQualBody').classList.toggle('visible', addQualOpen);
+  document.getElementById('addQualToggle').classList.toggle('open', addQualOpen);
+  document.getElementById('addQualArrow').classList.toggle('rotated', addQualOpen);
+}
+
+let openQualEditId = null;
+function toggleQualEdit(kitId) {
+  if (openQualEditId !== null && openQualEditId !== kitId) {
+    document.getElementById('qkit-edit-' + openQualEditId).classList.remove('visible');
+    document.getElementById('qkit-preview-' + openQualEditId).style.display = '';
+  }
+  const form = document.getElementById('qkit-edit-' + kitId);
+  const preview = document.getElementById('qkit-preview-' + kitId);
+  const isOpen = form.classList.contains('visible');
+  if (isOpen) {
+    form.classList.remove('visible');
+    preview.style.display = '';
+    openQualEditId = null;
+  } else {
+    form.classList.add('visible');
+    preview.style.display = 'none';
+    openQualEditId = kitId;
+    const ta = document.getElementById('qitems-textarea-' + kitId);
+    if (ta) validateJson(ta);
+  }
+}
+
+function formatQualJson(kitId) {
+  const ta = document.getElementById('qitems-textarea-' + kitId);
+  if (!ta) return;
+  try { ta.value = JSON.stringify(JSON.parse(ta.value), null, 2); validateJson(ta); } catch (e) {}
+}
+
+if (window.location.hash === '#qual') {
+  setTimeout(() => document.getElementById('qual')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 }
 function closeDeleteModal() {
   document.getElementById('deleteModal').style.display = 'none';

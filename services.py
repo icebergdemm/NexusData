@@ -1,14 +1,29 @@
 from sqlalchemy.orm import Session
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from fastapi import HTTPException
 import logging
 import os
 import httpx
+import threading
+from datetime import datetime, timezone, timedelta
+
+MSK = timezone(timedelta(hours=3))
+
+def _now_msk() -> datetime:
+    """Current time in Moscow timezone (naive datetime for display)."""
+    return datetime.now(tz=MSK).replace(tzinfo=None)
+
 from models import (
     PlayerData, PlayerStats, AdminUser, PlayerKill, PlayerRoleAction,
     PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, ServerPlayerPrivilege,
-    ServerOnlinePlayer, AnticheatEvent, ServerActionQueue
+    AnticheatEvent, ServerActionQueue,
+    PlayerNote, LabelCategory, PlayerLabel, PlayerTrap
 )
+
+# ── In-memory online players store ───────────────────────────────────────────
+# steamid -> {steamid, player_name, job_id, ping, player_id, last_seen}
+_online_players: Dict[str, dict] = {}
+_online_players_lock = threading.Lock()
 from schemas import (
     PlayerDataCreate, PlayerStatsCreate, PaginationParams, PlayerDataOut, MessageEnvelope, MessageProcessResult,
     PlayerKillCreate, PlayerRoleActionCreate, PlayerIPCreate, PlayerNameCreate, PlayerRoleStatCreate, PlayerSessionCreate
@@ -1020,9 +1035,660 @@ class ServerPlayerPrivilegeService:
         
         return privilege in privilege_record.privileges
     
-    def update_privileges(self, steamid: str, privileges: List[str], 
+    def update_privileges(self, steamid: str, privileges: List[str],
                          reason: str = None) -> ServerPlayerPrivilege:
         """Update privileges for a player"""
         return self.grant_privilege(steamid, privileges, reason=reason)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+class ServerModerationService:
+    """Business logic for game-server moderation: online players, anticheat, action queue."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ── Online players snapshot (in-memory) ────────────────────────────────────────────────
+
+    def replace_online_players(self, players) -> int:
+        """Replace the full online-players snapshot in memory. Returns new player count."""
+        now = _now_msk()
+        new_snapshot: Dict[str, dict] = {}
+
+        # Collect all steamids to batch-query DB
+        player_list = []
+        for p in players:
+            steamid = p.steamid if hasattr(p, "steamid") else p.get("steamid", "")
+            if not steamid:
+                continue
+            player_list.append((steamid, p))
+
+        if not player_list:
+            with _online_players_lock:
+                _online_players.clear()
+            return 0
+
+        steamids = [sid for sid, _ in player_list]
+
+        # Batch fetch PlayerData
+        pd_rows = {
+            r.player_steamid: r
+            for r in self.db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
+        }
+
+        with _online_players_lock:
+            prev_snapshot = dict(_online_players)
+
+        for steamid, p in player_list:
+            player_name = p.player_name if hasattr(p, "player_name") else p.get("player_name")
+            job_id = p.job_id if hasattr(p, "job_id") else p.get("job_id")
+            ping = p.ping if hasattr(p, "ping") else p.get("ping")
+
+            pd = pd_rows.get(steamid)
+            play_time = pd.play_time if pd else 0
+            player_id = pd.player_id if pd else None
+            db_name = pd.player_last_time_name if pd else None
+            character_name = db_name if db_name and db_name != player_name else None
+
+            # Preserve join_time if player was already online, else record now
+            join_time = prev_snapshot[steamid]["join_time"] if steamid in prev_snapshot else now
+
+            new_snapshot[steamid] = {
+                "player_steamid": steamid,
+                "player_name": player_name or db_name or steamid,
+                "character_name": character_name,
+                "job_id": job_id,
+                "ping": ping,
+                "player_id": player_id,
+                "last_seen": now,
+                "join_time": join_time,
+                "total_play_time": play_time,
+                "is_new_player": play_time < 7200,
+            }
+
+        with _online_players_lock:
+            _online_players.clear()
+            _online_players.update(new_snapshot)
+
+        # ── Trap check ─────────────────────────────────────────────────────────
+        # Fire Discord webhook if any newly-joined player has an active trap.
+        newly_joined = set(new_snapshot.keys()) - set(prev_snapshot.keys())
+        if newly_joined:
+            try:
+                active_traps = (
+                    self.db.query(PlayerTrap)
+                    .filter(PlayerTrap.active == 1, PlayerTrap.target_steamid.in_(list(newly_joined)))
+                    .all()
+                )
+                if active_traps:
+                    from config import get_settings
+                    webhook_url = get_settings().discord_trap_webhook_url
+                    for trap in active_traps:
+                        pinfo = new_snapshot.get(trap.target_steamid, {})
+                        pname = pinfo.get("player_name", trap.target_steamid)
+                        msg = (
+                            f"🪤 **Ловушка сработала!**\n"
+                            f"**Игрок:** {pname}\n"
+                            f"**SteamID:** `{trap.target_steamid}`\n"
+                            f"**Player ID:** {trap.player_id}\n"
+                            f"**Причина ловушки:** {trap.reason or '—'}"
+                        )
+                        if webhook_url:
+                            try:
+                                with httpx.Client(timeout=5) as client:
+                                    client.post(webhook_url, json={"content": msg})
+                            except Exception as e:
+                                logging.warning(f"Trap webhook failed: {e}")
+                        else:
+                            logging.info(f"[TRAP] {msg.replace(chr(10), ' | ')}")
+                        # Mark trap as triggered
+                        trap.active = 0
+                        trap.triggered_at = _now_msk()
+                    self.db.commit()
+            except Exception as e:
+                logging.warning(f"Trap check error: {e}")
+
+        return len(new_snapshot)
+
+    def get_online_players(self) -> List[dict]:
+        with _online_players_lock:
+            result = sorted(_online_players.values(), key=lambda x: (x.get("player_name") or ""))
+        return result
+
+    def get_recent_offline_players(self, limit: int = 50) -> List[PlayerData]:
+        with _online_players_lock:
+            online_steamids = set(_online_players.keys())
+        q = self.db.query(PlayerData)
+        if online_steamids:
+            q = q.filter(~PlayerData.player_steamid.in_(online_steamids))
+        return q.order_by(PlayerData.last_login_time.desc()).limit(limit).all()
+
+    # ── Anticheat events ────────────────────────────────────────────────────────────
+
+    def add_anticheat_event(self, event) -> AnticheatEvent:
+        player_steamid = event.player_steamid if hasattr(event, "player_steamid") else event.get("player_steamid", "")
+        pd = self.db.query(PlayerData).filter(PlayerData.player_steamid == player_steamid).first()
+        occurred_at = event.occurred_at if hasattr(event, "occurred_at") else None
+        row = AnticheatEvent(
+            player_steamid=player_steamid,
+            player_name=event.player_name if hasattr(event, "player_name") else event.get("player_name"),
+            player_id=pd.player_id if pd else None,
+            event_type=event.event_type if hasattr(event, "event_type") else event.get("event_type", ""),
+            details=event.details if hasattr(event, "details") else event.get("details"),
+            occurred_at=occurred_at or datetime.utcnow(),
+            reviewed=0,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def get_anticheat_events(self, limit: int = 200, reviewed: Optional[bool] = None) -> List[AnticheatEvent]:
+        q = self.db.query(AnticheatEvent)
+        if reviewed is not None:
+            q = q.filter(AnticheatEvent.reviewed == (1 if reviewed else 0))
+        return q.order_by(AnticheatEvent.occurred_at.desc()).limit(limit).all()
+
+    def mark_reviewed(self, event_id: int) -> bool:
+        ev = self.db.query(AnticheatEvent).filter(AnticheatEvent.id == event_id).first()
+        if not ev:
+            return False
+        ev.reviewed = 1
+        self.db.commit()
+        return True
+
+    # ── Action queue ───────────────────────────────────────────────────────────────
+
+    def enqueue_action(self, action_in, admin_id: Optional[int] = None) -> ServerActionQueue:
+        from datetime import datetime
+        row = ServerActionQueue(
+            action_type=action_in.action_type if hasattr(action_in, "action_type") else action_in["action_type"],
+            target_steamid=action_in.target_steamid if hasattr(action_in, "target_steamid") else action_in["target_steamid"],
+            reason=action_in.reason if hasattr(action_in, "reason") else action_in.get("reason"),
+            duration_minutes=action_in.duration_minutes if hasattr(action_in, "duration_minutes") else action_in.get("duration_minutes"),
+            message_text=action_in.message_text if hasattr(action_in, "message_text") else action_in.get("message_text"),
+            queued_by_admin_id=admin_id,
+            queued_at=datetime.utcnow(),
+            executed=0,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def get_pending_actions(self) -> List[ServerActionQueue]:
+        return self.db.query(ServerActionQueue).filter(
+            ServerActionQueue.executed == 0
+        ).order_by(ServerActionQueue.queued_at).all()
+
+    def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None) -> bool:
+        from datetime import datetime
+        row = self.db.query(ServerActionQueue).filter(ServerActionQueue.id == action_id).first()
+        if not row:
+            return False
+        row.executed = 1 if success else 2
+        row.executed_at = datetime.utcnow()
+        row.error_message = error_message
+        self.db.commit()
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Player Notes (Personal File)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PlayerNoteService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_notes(self, player_id: int) -> List[PlayerNote]:
+        return (self.db.query(PlayerNote)
+                .filter(PlayerNote.player_id == player_id)
+                .order_by(PlayerNote.created_at.desc())
+                .all())
+
+    def save_note(self, player_id: int, admin_id: int, content: str) -> PlayerNote:
+        existing = (self.db.query(PlayerNote)
+                    .filter(PlayerNote.player_id == player_id)
+                    .first())
+        if existing:
+            existing.content = content
+            existing.admin_id = admin_id
+            existing.updated_at = datetime.utcnow()
+            self.db.commit()
+            return existing
+        note = PlayerNote(player_id=player_id, admin_id=admin_id, content=content)
+        self.db.add(note)
+        self.db.commit()
+        self.db.refresh(note)
+        return note
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Label Categories
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LabelCategoryService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_all(self) -> List[LabelCategory]:
+        return self.db.query(LabelCategory).order_by(LabelCategory.name).all()
+
+    def create(self, name: str, color: str, icon: str, admin_id: int) -> LabelCategory:
+        cat = LabelCategory(name=name, color=color, icon=icon, created_by_admin_id=admin_id)
+        self.db.add(cat)
+        self.db.commit()
+        self.db.refresh(cat)
+        return cat
+
+    def update(self, cat_id: int, name: str, color: str, icon: str) -> Optional[LabelCategory]:
+        cat = self.db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
+        if not cat:
+            return None
+        cat.name = name
+        cat.color = color
+        cat.icon = icon
+        self.db.commit()
+        return cat
+
+    def delete(self, cat_id: int) -> bool:
+        cat = self.db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
+        if not cat:
+            return False
+        # remove all label assignments for this category first
+        self.db.query(PlayerLabel).filter(PlayerLabel.category_id == cat_id).delete()
+        self.db.delete(cat)
+        self.db.commit()
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Player Labels
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PlayerLabelService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_labels(self, player_id: int) -> List:
+        """Returns list of (PlayerLabel, LabelCategory) tuples."""
+        return (self.db.query(PlayerLabel, LabelCategory)
+                .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
+                .filter(PlayerLabel.player_id == player_id)
+                .all())
+
+    def assign(self, player_id: int, category_id: int, note: Optional[str], admin_id: int) -> PlayerLabel:
+        # prevent duplicate
+        existing = (self.db.query(PlayerLabel)
+                    .filter(PlayerLabel.player_id == player_id,
+                            PlayerLabel.category_id == category_id)
+                    .first())
+        if existing:
+            existing.note = note
+            existing.assigned_by_admin_id = admin_id
+            self.db.commit()
+            return existing
+        lbl = PlayerLabel(player_id=player_id, category_id=category_id,
+                          note=note, assigned_by_admin_id=admin_id)
+        self.db.add(lbl)
+        self.db.commit()
+        self.db.refresh(lbl)
+        return lbl
+
+    def remove(self, label_id: int) -> bool:
+        lbl = self.db.query(PlayerLabel).filter(PlayerLabel.id == label_id).first()
+        if not lbl:
+            return False
+        self.db.delete(lbl)
+        self.db.commit()
+        return True
+
+    def get_labeled_players(self, category_id: Optional[int] = None,
+                             search: Optional[str] = None) -> List:
+        """Returns list of (PlayerLabel, LabelCategory, PlayerData) tuples."""
+        q = (self.db.query(PlayerLabel, LabelCategory, PlayerData)
+             .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
+             .join(PlayerData, PlayerLabel.player_id == PlayerData.player_id))
+        if category_id:
+            q = q.filter(PlayerLabel.category_id == category_id)
+        if search:
+            q = q.filter(
+                PlayerData.player_last_time_name.ilike(f"%{search}%") |
+                PlayerData.player_steamid.ilike(f"%{search}%")
+            )
+        return q.order_by(PlayerLabel.assigned_at.desc()).all()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Player Traps
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PlayerTrapService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_traps(self, player_id: int) -> List[PlayerTrap]:
+        return (self.db.query(PlayerTrap)
+                .filter(PlayerTrap.player_id == player_id)
+                .order_by(PlayerTrap.set_at.desc())
+                .all())
+
+    def set_trap(self, player_id: int, steamid: str, reason: Optional[str],
+                 admin_id: int) -> PlayerTrap:
+        # deactivate existing active traps for this player
+        (self.db.query(PlayerTrap)
+         .filter(PlayerTrap.player_id == player_id, PlayerTrap.active == 1)
+         .update({"active": 0}))
+        trap = PlayerTrap(player_id=player_id, target_steamid=steamid,
+                          reason=reason, set_by_admin_id=admin_id, active=1)
+        self.db.add(trap)
+        self.db.commit()
+        self.db.refresh(trap)
+        return trap
+
+    def deactivate(self, trap_id: int) -> bool:
+        trap = self.db.query(PlayerTrap).filter(PlayerTrap.id == trap_id).first()
+        if not trap:
+            return False
+        trap.active = 0
+        self.db.commit()
+        return True
+
+    def get_active_traps(self) -> List[PlayerTrap]:
+        return self.db.query(PlayerTrap).filter(PlayerTrap.active == 1).all()
+
+    def trigger(self, trap_id: int) -> bool:
+        trap = self.db.query(PlayerTrap).filter(PlayerTrap.id == trap_id).first()
+        if not trap:
+            return False
+        trap.active = 0
+        trap.triggered_at = datetime.utcnow()
+        self.db.commit()
+        return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Twink Detection
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TwinkDetectionService:
+    """Detects possible alt accounts (twinks) based on shared IPs, subnets, names."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def analyze(self, player_id: int) -> List[dict]:
+        """
+        Returns list of suspect players with match reasons.
+        Checks:
+          1. Shared IP address
+          2. Shared subnet
+          3. Similar name (prefix match >= 6 chars)
+        """
+        from models import PlayerIP, PlayerName
+        target = self.db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+        if not target:
+            return []
+
+        # Get target IPs and subnets
+        target_ips_rows = (self.db.query(PlayerIP)
+                           .filter(PlayerIP.player_id == player_id).all())
+        target_ips = {r.ip for r in target_ips_rows}
+        target_subnets = {r.subnet for r in target_ips_rows}
+
+        # Get target names
+        target_name_rows = (self.db.query(PlayerName)
+                            .filter(PlayerName.player_id == player_id).all())
+        target_names = {n.nickname.lower() for n in target_name_rows}
+        if target.player_last_time_name:
+            target_names.add(target.player_last_time_name.lower())
+
+        suspects: Dict[int, dict] = {}  # player_id -> result
+
+        def _add(pid: int, reason: str):
+            if pid == player_id:
+                return
+            if pid not in suspects:
+                suspects[pid] = {"player_id": pid, "reasons": [], "player": None}
+            suspects[pid]["reasons"].append(reason)
+
+        # 1. Shared IPs
+        if target_ips:
+            shared_ip_rows = (self.db.query(PlayerIP)
+                              .filter(PlayerIP.ip.in_(target_ips),
+                                      PlayerIP.player_id != player_id).all())
+            for r in shared_ip_rows:
+                _add(r.player_id, f"Одинаковый IP: {r.ip}")
+
+        # 2. Shared subnets (weaker signal, only add if not already IP-matched)
+        if target_subnets:
+            shared_subnet_rows = (self.db.query(PlayerIP)
+                                  .filter(PlayerIP.subnet.in_(target_subnets),
+                                          PlayerIP.player_id != player_id).all())
+            for r in shared_subnet_rows:
+                already_ip = any("Одинаковый IP" in reason
+                                  for reason in suspects.get(r.player_id, {}).get("reasons", []))
+                if not already_ip:
+                    _add(r.player_id, f"Одинаковая подсеть: {r.subnet}")
+
+        # 3. Similar names (prefix >= 6 chars)
+        for tname in target_names:
+            if len(tname) < 6:
+                continue
+            prefix = tname[:6]
+            similar_names = (self.db.query(PlayerName)
+                             .filter(PlayerName.nickname.ilike(f"{prefix}%"),
+                                     PlayerName.player_id != player_id).all())
+            for n in similar_names:
+                _add(n.player_id, f"Похожее имя: \u00ab{n.nickname}\u00bb")
+
+        if not suspects:
+            return []
+
+        # Fetch PlayerData for all suspects
+        pids = list(suspects.keys())
+        players = {p.player_id: p for p in
+                   self.db.query(PlayerData).filter(PlayerData.player_id.in_(pids)).all()}
+        result = []
+        for pid, info in suspects.items():
+            pd = players.get(pid)
+            result.append({
+                "player_id": pid,
+                "name": pd.player_last_time_name if pd else str(pid),
+                "steamid": pd.player_steamid if pd else "",
+                "play_time": pd.play_time if pd else 0,
+                "reasons": info["reasons"],
+                "reason_count": len(info["reasons"]),
+            })
+        # Sort by number of matching reasons (strongest suspicion first)
+        result.sort(key=lambda x: -x["reason_count"])
+        return result
+
+    def get_all_twink_pairs(self, min_signals: int = 1) -> List[dict]:
+        """
+        Global analysis: find all player pairs sharing IPs or subnets.
+        Returns list of groups (cluster) keyed by representative player.
+        Performance: uses a single JOIN on player_ips, then groups in Python.
+        """
+        from models import PlayerIP
+        from sqlalchemy import text
+
+        # Self-join: find all (A, B) sharing the same IP
+        ip_pairs = self.db.execute(text(
+            "SELECT a.player_id AS pid_a, b.player_id AS pid_b, a.ip AS shared_ip "
+            "FROM player_ips a JOIN player_ips b "
+            "ON a.ip = b.ip AND a.player_id < b.player_id"
+        )).fetchall()
+
+        # Self-join by subnet (weaker signal)
+        subnet_pairs = self.db.execute(text(
+            "SELECT a.player_id AS pid_a, b.player_id AS pid_b, a.subnet AS shared_subnet "
+            "FROM player_ips a JOIN player_ips b "
+            "ON a.subnet = b.subnet AND a.player_id < b.player_id"
+        )).fetchall()
+
+        # Build edge map: pair -> set of reasons
+        edges: Dict[tuple, list] = {}
+        for row in ip_pairs:
+            key = (row.pid_a, row.pid_b)
+            edges.setdefault(key, []).append(f"Одинаковый IP: {row.shared_ip}")
+        for row in subnet_pairs:
+            key = (row.pid_a, row.pid_b)
+            # Skip if IP reason already added for this pair (subnet is weaker)
+            if not any("Одинаковый IP" in r for r in edges.get(key, [])):
+                edges.setdefault(key, []).append(f"Подсеть: {row.shared_subnet}")
+
+        if not edges:
+            return []
+
+        # Filter by min_signals
+        edges = {k: v for k, v in edges.items() if len(v) >= min_signals}
+
+        # Collect all player IDs involved
+        all_pids = set()
+        for a, b in edges:
+            all_pids.add(a)
+            all_pids.add(b)
+
+        players = {p.player_id: p for p in
+                   self.db.query(PlayerData).filter(PlayerData.player_id.in_(list(all_pids))).all()}
+
+        result = []
+        for (pid_a, pid_b), reasons in edges.items():
+            pa = players.get(pid_a)
+            pb = players.get(pid_b)
+            result.append({
+                "player_a": {
+                    "player_id": pid_a,
+                    "name": pa.player_last_time_name if pa else str(pid_a),
+                    "steamid": pa.player_steamid if pa else "",
+                    "play_time": pa.play_time if pa else 0,
+                },
+                "player_b": {
+                    "player_id": pid_b,
+                    "name": pb.player_last_time_name if pb else str(pid_b),
+                    "steamid": pb.player_steamid if pb else "",
+                    "play_time": pb.play_time if pb else 0,
+                },
+                "reasons": reasons,
+                "signal_count": len(reasons),
+            })
+
+        result.sort(key=lambda x: -x["signal_count"])
+        return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Punishment Service
+# ══════════════════════════════════════════════════════════════════════════════
+
+PUNISHMENT_TYPES = ("warning", "reprimand", "kick", "ban")
+
+PUNISHMENT_TYPE_LABELS = {
+    "warning":   "Предупреждение",
+    "reprimand": "Выговор",
+    "kick":      "Кик",
+    "ban":       "Бан",
+}
+
+
+class PunishmentService:
+    """CRUD for player_punishments."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        from models import PlayerPunishment
+        self._model = PlayerPunishment
+
+    # ── Queries ────────────────────────────────────────────────────────────────
+
+    def get_by_id(self, punishment_id: int):
+        return self.db.query(self._model).filter(self._model.id == punishment_id).first()
+
+    def get_for_player(self, player_id: int):
+        return (self.db.query(self._model)
+                .filter(self._model.player_id == player_id)
+                .order_by(self._model.issued_at.desc())
+                .all())
+
+    def list_by_type(self, ptype: str, search: str = "", limit: int = 100, offset: int = 0):
+        """Return paginated punishments of given type, optionally filtered by player name/steamid."""
+        from models import PlayerData
+        q = (self.db.query(self._model, PlayerData)
+             .outerjoin(PlayerData, PlayerData.player_id == self._model.player_id)
+             .filter(self._model.type == ptype))
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                PlayerData.player_last_time_name.ilike(like) |
+                PlayerData.player_steamid.ilike(like) |
+                self._model.player_steamid.ilike(like) |
+                self._model.reason.ilike(like) |
+                self._model.issued_by_name.ilike(like)
+            )
+        total = q.count()
+        rows = q.order_by(self._model.issued_at.desc()).offset(offset).limit(limit).all()
+        return rows, total
+
+    # ── Mutations ─────────────────────────────────────────────────────────────
+
+    def create(self, player_id: int, player_steamid: str, player_ip: Optional[str],
+               ptype: str, reason: Optional[str], issued_by_admin_id: int,
+               issued_by_name: str, expires_at: Optional[datetime],
+               notes: Optional[str] = None):
+        from models import PlayerPunishment
+        p = PlayerPunishment(
+            player_id=player_id,
+            player_steamid=player_steamid,
+            player_ip=player_ip,
+            type=ptype,
+            reason=reason,
+            issued_by_admin_id=issued_by_admin_id,
+            issued_by_name=issued_by_name,
+            issued_at=_now_msk(),
+            expires_at=expires_at,
+            is_active=1,
+            notes=notes,
+        )
+        self.db.add(p)
+        self.db.commit()
+        self.db.refresh(p)
+        return p
+
+    def update(self, punishment_id: int, **fields) -> bool:
+        p = self.get_by_id(punishment_id)
+        if not p:
+            return False
+        for k, v in fields.items():
+            if hasattr(p, k):
+                setattr(p, k, v)
+        self.db.commit()
+        return True
+
+    def delete(self, punishment_id: int) -> bool:
+        p = self.get_by_id(punishment_id)
+        if not p:
+            return False
+        self.db.delete(p)
+        self.db.commit()
+        return True
+
+    def set_void(self, punishment_id: int) -> bool:
+        """Mark punishment as inactive (void/irrelevant)."""
+        return self.update(punishment_id, is_active=0)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def is_expired(self, punishment) -> bool:
+        if not punishment.expires_at:
+            return False
+        return punishment.expires_at < _now_msk()
+
+    def effective_status(self, punishment) -> str:
+        """'active' | 'expired' | 'void'"""
+        if not punishment.is_active:
+            return "void"
+        if self.is_expired(punishment):
+            return "expired"
+        return "active"

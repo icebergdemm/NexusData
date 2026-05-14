@@ -1,0 +1,441 @@
+{% extends "base.html" %}
+{% block title %}Наказания — Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+/* ── Layout ── */
+.pg-header { display:flex; align-items:center; gap:var(--spacing-16); margin-bottom:var(--spacing-24); flex-wrap:wrap; }
+.pg-header h2 { color:var(--white); font-size:22px; font-weight:700; }
+
+/* ── Tabs ── */
+.type-tabs { display:flex; gap:4px; flex-wrap:wrap; }
+.type-tab {
+  padding:7px 20px; border-radius:20px; font-size:13px; font-weight:700;
+  cursor:pointer; text-decoration:none; border:1px solid var(--stroke-01);
+  color:var(--gray); background:transparent; transition:var(--transition-03);
+}
+.type-tab:hover { border-color:var(--primary-blue); color:var(--white); }
+.type-tab.active { background:var(--primary-blue); border-color:var(--primary-blue); color:#fff; }
+.type-tab.warning-tab.active { background:#b87d00; border-color:#b87d00; }
+.type-tab.reprimand-tab.active { background:#7a1a8c; border-color:#7a1a8c; }
+.type-tab.kick-tab.active { background:#b84a00; border-color:#b84a00; }
+.type-tab.ban-tab.active { background:#8c0c28; border-color:#8c0c28; }
+
+/* ── Cards ── */
+.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; margin-bottom:var(--spacing-24); }
+.block-card-header { padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+.block-card-header h3 { color:var(--white); font-size:15px; font-weight:600; margin:0; }
+.block-card-body { padding:var(--spacing-24); }
+
+/* ── Search ── */
+.search-row { display:flex; gap:10px; flex-wrap:wrap; }
+.search-input {
+  flex:1; min-width:220px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); color:var(--white); padding:10px 14px;
+  font-size:13px; font-family:inherit; box-sizing:border-box; transition:var(--transition-03);
+}
+.search-input:focus { outline:none; border-color:var(--primary-blue); }
+
+/* ── Data table ── */
+.data-table { width:100%; border-collapse:collapse; }
+.data-table thead { background:var(--dark-blue-bg); }
+.data-table th { padding:10px 14px; text-align:left; color:var(--gray); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; }
+.data-table td { padding:11px 14px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; vertical-align:middle; }
+.data-table tbody tr:last-child td { border-bottom:none; }
+.data-table tbody tr:hover { background:rgba(26,104,222,.04); }
+.mono-cell { font-family:'Courier New',monospace; font-size:11px; color:var(--gray); }
+.empty-row td { text-align:center; padding:40px; color:var(--gray-dark); }
+
+/* ── Status badges ── */
+.status-badge {
+  display:inline-block; padding:2px 10px; border-radius:12px;
+  font-size:11px; font-weight:700;
+}
+.status-active   { background:rgba(3,123,54,.15);   color:var(--success); border:1px solid rgba(3,123,54,.3); }
+.status-expired  { background:rgba(120,120,120,.12); color:#aaa;          border:1px solid rgba(120,120,120,.3); }
+.status-void     { background:rgba(183,12,70,.08);   color:#ff4d80;       border:1px solid rgba(183,12,70,.2); }
+
+/* ── Action buttons ── */
+.btn { display:inline-flex; align-items:center; gap:5px; padding:6px 13px; border-radius:var(--border-radius-8); font-size:12px; font-weight:600; cursor:pointer; border:none; text-decoration:none; font-family:inherit; transition:var(--transition-03); }
+.btn-sm { padding:4px 10px; font-size:11px; }
+.btn-primary  { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#1460d4; }
+.btn-secondary { background:transparent; border:1px solid var(--stroke-01); color:var(--gray); }
+.btn-secondary:hover { border-color:var(--primary-blue); color:var(--white); }
+.btn-danger   { background:transparent; border:1px solid rgba(183,12,70,.4); color:#ff4d80; }
+.btn-danger:hover { background:rgba(183,12,70,.15); }
+.btn-warn     { background:transparent; border:1px solid rgba(180,125,0,.4); color:#ffaa44; }
+.btn-warn:hover { background:rgba(180,125,0,.1); }
+
+/* ── Pagination ── */
+.pagination { display:flex; align-items:center; gap:6px; padding-top:var(--spacing-16); flex-wrap:wrap; }
+.page-link { padding:6px 12px; border-radius:var(--border-radius-8); font-size:12px; font-weight:600; text-decoration:none; border:1px solid var(--stroke-01); color:var(--gray); background:transparent; transition:var(--transition-03); }
+.page-link:hover { border-color:var(--primary-blue); color:var(--white); }
+.page-link.active { background:var(--primary-blue); border-color:var(--primary-blue); color:#fff; }
+.page-link.disabled { opacity:.35; pointer-events:none; }
+
+/* ── Create form ── */
+.create-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-16) var(--spacing-20); }
+@media(max-width:700px){ .create-form-grid { grid-template-columns:1fr; } }
+.form-group { display:flex; flex-direction:column; gap:6px; }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group input[type=text], .form-group input[type=number], .form-group select, .form-group textarea {
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); color:var(--white); padding:10px 14px;
+  font-size:13px; font-family:inherit; width:100%; box-sizing:border-box; transition:var(--transition-03);
+}
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline:none; border-color:var(--primary-blue); }
+.form-group-full { grid-column:1/-1; }
+.form-group select option { background:#141e35; }
+.hint { font-size:11px; color:var(--gray-dark); }
+.section-count { font-size:12px; color:var(--gray-dark); padding:3px 10px; border-radius:12px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); }
+
+/* ── Modal ── */
+.modal-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:200; align-items:center; justify-content:center; }
+.modal-backdrop.open { display:flex; }
+.modal { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:var(--spacing-24); width:100%; max-width:520px; max-height:90vh; overflow-y:auto; position:relative; }
+.modal h3 { color:var(--white); font-size:16px; font-weight:700; margin:0 0 var(--spacing-16); }
+.modal-close { position:absolute; top:16px; right:16px; background:none; border:none; color:var(--gray); font-size:20px; cursor:pointer; line-height:1; }
+.modal-close:hover { color:var(--white); }
+.modal-footer { display:flex; gap:10px; justify-content:flex-end; margin-top:var(--spacing-20); }
+</style>
+
+{% for f in flashes %}
+<div class="flash {{ f.type }}">{{ f.message }}</div>
+{% endfor %}
+
+<div class="pg-header">
+  <h2>⚖️ Наказания</h2>
+  {% if "write" in admin.permissions or "admin" in admin.permissions %}
+  <button class="btn btn-primary" onclick="openModal('create-modal')">＋ Создать наказание</button>
+  {% endif %}
+</div>
+
+<!-- ── Type tabs ── -->
+<div class="type-tabs" style="margin-bottom:var(--spacing-20);">
+  {% for ptype in punishment_types %}
+  <a href="?tab={{ ptype }}&search={{ search }}"
+     class="type-tab {{ ptype }}-tab {% if tab == ptype %}active{% endif %}">
+    {% if ptype == 'warning' %}⚠️{% elif ptype == 'reprimand' %}📋{% elif ptype == 'kick' %}👟{% else %}🔨{% endif %}
+    {{ type_labels[ptype] }}
+  </a>
+  {% endfor %}
+</div>
+
+<!-- ── List ── -->
+<div class="block-card">
+  <div class="block-card-header">
+    <h3>
+      {% if tab == 'warning' %}⚠️{% elif tab == 'reprimand' %}📋{% elif tab == 'kick' %}👟{% else %}🔨{% endif %}
+      {{ type_labels[tab] }}
+    </h3>
+    <span class="section-count">{{ total }}</span>
+  </div>
+  <div class="block-card-body">
+
+    <!-- Search -->
+    <form method="get" class="search-row" style="margin-bottom:var(--spacing-16);">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <input type="text" name="search" class="search-input" placeholder="Поиск по имени, SteamID, причине, администратору…" value="{{ search }}">
+      <button type="submit" class="btn btn-primary">Найти</button>
+      {% if search %}
+      <a href="?tab={{ tab }}" class="btn btn-secondary">✕ Сбросить</a>
+      {% endif %}
+    </form>
+
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Игрок</th>
+            <th>SteamID</th>
+            <th>IP</th>
+            <th>Причина</th>
+            <th>Кто выдал</th>
+            <th>Когда</th>
+            <th>Истекает</th>
+            <th>Статус</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if rows %}
+          {% for item in rows %}
+          {% set p = item.p %}
+          {% set player = item.player %}
+          <tr>
+            <td style="color:var(--gray-dark); font-size:12px;">{{ p.id }}</td>
+            <td>
+              {% if p.player_id %}
+              <a href="/admin/players/{{ p.player_id }}" style="color:var(--primary-blue); text-decoration:none; font-weight:600;">
+                {{ player.player_last_time_name if player else p.player_id }}
+              </a>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if p.player_steamid %}
+              <a href="https://steamcommunity.com/profiles/{{ p.player_steamid }}" target="_blank" class="mono-cell" style="color:var(--primary-blue);">
+                {{ p.player_steamid }} 🔗
+              </a>
+              {% else %}<span class="mono-cell">—</span>{% endif %}
+            </td>
+            <td><span class="mono-cell">{{ p.player_ip or '—' }}</span></td>
+            <td style="max-width:200px; word-break:break-word;">{{ p.reason or '—' }}</td>
+            <td>{{ p.issued_by_name or '—' }}</td>
+            <td class="mono-cell">{{ p.issued_at.strftime('%d.%m.%Y %H:%M') if p.issued_at else '—' }}</td>
+            <td class="mono-cell">
+              {% if p.expires_at %}
+              {{ p.expires_at.strftime('%d.%m.%Y %H:%M') }}
+              {% else %}<span style="color:var(--gray-dark);">Постоянно</span>{% endif %}
+            </td>
+            <td>
+              {% if item.status == 'active' %}
+              <span class="status-badge status-active">Активно</span>
+              {% elif item.status == 'expired' %}
+              <span class="status-badge status-expired">Истекло</span>
+              {% else %}
+              <span class="status-badge status-void">Неактуально</span>
+              {% endif %}
+            </td>
+            <td>
+              <div style="display:flex; gap:5px; flex-wrap:wrap;">
+                {% if "write" in admin.permissions or "admin" in admin.permissions %}
+                <button class="btn btn-sm btn-secondary"
+                  onclick="openEditModal({{ p.id }}, '{{ (p.reason or '') | replace("'","&#39;") }}', '{{ (p.notes or '') | replace("'","&#39;") }}')">
+                  ✏️
+                </button>
+                {% if item.status == 'active' %}
+                <form method="post" action="/admin/punishments/{{ p.id }}/void" style="display:inline;">
+                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+                  <button type="submit" class="btn btn-sm btn-warn" title="Сделать неактуальным">🚫</button>
+                </form>
+                {% endif %}
+                {% endif %}
+                {% if "admin" in admin.permissions %}
+                <form method="post" action="/admin/punishments/{{ p.id }}/delete"
+                  onsubmit="return confirm('Удалить наказание #{{ p.id }}?');" style="display:inline;">
+                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+                  <button type="submit" class="btn btn-sm btn-danger" title="Удалить">🗑</button>
+                </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          {% else %}
+          <tr class="empty-row"><td colspan="10">Нет записей</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if pages > 1 %}
+    <div class="pagination">
+      <a href="?tab={{ tab }}&search={{ search }}&page={{ page - 1 }}"
+         class="page-link {% if page <= 1 %}disabled{% endif %}">← Пред.</a>
+      {% for pg in range(1, pages + 1) %}
+        {% if pg == page or pg == 1 or pg == pages or (pg >= page - 2 and pg <= page + 2) %}
+        <a href="?tab={{ tab }}&search={{ search }}&page={{ pg }}"
+           class="page-link {% if pg == page %}active{% endif %}">{{ pg }}</a>
+        {% elif pg == page - 3 or pg == page + 3 %}
+        <span style="color:var(--gray-dark); padding:0 4px;">…</span>
+        {% endif %}
+      {% endfor %}
+      <a href="?tab={{ tab }}&search={{ search }}&page={{ page + 1 }}"
+         class="page-link {% if page >= pages %}disabled{% endif %}">След. →</a>
+      <span style="font-size:12px; color:var(--gray-dark); margin-left:8px;">
+        {{ page }} / {{ pages }} · всего {{ total }}
+      </span>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+<!-- ══════════════════ CREATE MODAL ══════════════════ -->
+<div class="modal-backdrop" id="create-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('create-modal')">×</button>
+    <h3>＋ Создать наказание</h3>
+    <form method="post" action="/admin/punishments/create">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <div class="create-form-grid">
+
+        <!-- Player steamid + search -->
+        <div class="form-group form-group-full">
+          <label>SteamID игрока *</label>
+          <input type="text" name="player_steamid" id="create-steamid-input" autocomplete="off"
+            placeholder="76561198000000000"
+            style="width:100%; box-sizing:border-box; font-family:'Courier New',monospace;"
+            oninput="validateCreateForm()" required>
+          <span class="hint">Steam64 ID игрока (17 цифр). Используйте поиск ниже для автозаполнения.</span>
+        </div>
+        <div class="form-group form-group-full" style="margin-top:-8px;">
+          <div style="position:relative;">
+            <input type="text" id="player-search-input" autocomplete="off"
+              placeholder="🔍 Поиск по нику или SteamID для автозаполнения…"
+              style="width:100%; box-sizing:border-box;"
+              oninput="playerSearchInput(this.value)">
+            <div id="player-search-dropdown"
+              style="display:none; position:absolute; top:100%; left:0; right:0; z-index:300;
+                     background:var(--card-bg); border:1px solid var(--stroke-01);
+                     border-radius:var(--border-radius-8); overflow:hidden;
+                     box-shadow:0 8px 24px rgba(0,0,0,.4); max-height:220px; overflow-y:auto;">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Тип наказания *</label>
+          <select name="ptype">
+            {% for pt in punishment_types %}
+            <option value="{{ pt }}" {% if pt == tab %}selected{% endif %}>{{ type_labels[pt] }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Срок (дней)</label>
+          <input type="number" name="expires_days" min="1" placeholder="Пусто = постоянно">
+          <span class="hint">Для баней: пусто = навсегда</span>
+        </div>
+
+        <div class="form-group form-group-full">
+          <label>Причина</label>
+          <textarea name="reason" rows="3" placeholder="Укажите причину…"></textarea>
+        </div>
+
+        <div class="form-group form-group-full">
+          <label>Внутренние заметки</label>
+          <input type="text" name="notes" placeholder="Только для администраторов">
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('create-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary" id="create-submit-btn"
+          disabled style="opacity:.5; cursor:not-allowed;"
+          onclick="return validateCreateForm()">Создать</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ══════════════════ EDIT MODAL ══════════════════ -->
+<div class="modal-backdrop" id="edit-modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('edit-modal')">×</button>
+    <h3>✏️ Редактировать наказание</h3>
+    <form method="post" id="edit-form" action="">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <div class="create-form-grid">
+        <div class="form-group form-group-full">
+          <label>Причина</label>
+          <textarea name="reason" id="edit-reason" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Продлить/изменить срок (дней от сейчас)</label>
+          <input type="number" name="expires_days" min="1" placeholder="Пусто = без изменений/постоянно">
+        </div>
+        <div class="form-group">
+          <label>Внутренние заметки</label>
+          <input type="text" name="notes" id="edit-notes">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('edit-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+  if (id === 'create-modal') clearPlayerSelection();
+}
+
+function openEditModal(punishmentId, reason, notes) {
+  document.getElementById('edit-form').action = '/admin/punishments/' + punishmentId + '/edit';
+  document.getElementById('edit-reason').value = reason;
+  document.getElementById('edit-notes').value = notes;
+  openModal('edit-modal');
+}
+
+// close on backdrop click
+document.querySelectorAll('.modal-backdrop').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+});
+
+// ── Player search ──────────────────────────────────────────────────────────
+let searchTimer = null;
+
+function playerSearchInput(val) {
+  clearTimeout(searchTimer);
+  const dropdown = document.getElementById('player-search-dropdown');
+  if (val.length < 2) { dropdown.style.display = 'none'; return; }
+  searchTimer = setTimeout(() => fetchPlayers(val), 300);
+}
+
+async function fetchPlayers(q) {
+  const dropdown = document.getElementById('player-search-dropdown');
+  try {
+    const resp = await fetch('/admin/api/players/search?q=' + encodeURIComponent(q));
+    const data = await resp.json();
+    if (!data.length) {
+      dropdown.innerHTML = '<div style="padding:12px 16px; color:var(--gray-dark); font-size:13px;">Ничего не найдено</div>';
+    } else {
+      dropdown.innerHTML = data.map(p => {
+        const sid = escHtml(p.steamid);
+        const nm  = escHtml(p.name);
+        return `<div style="padding:10px 16px; cursor:pointer; border-bottom:1px solid var(--stroke-01); transition:background .15s;"
+          onmouseover="this.style.background='rgba(26,104,222,.15)'"
+          onmouseout="this.style.background=''"
+          onclick="fillSteamId('${sid}', this.closest('#player-search-dropdown').parentElement)">
+          <div style="font-weight:700; color:var(--white); font-size:13px;">${nm}</div>
+          <div style="font-size:11px; color:var(--gray-dark); font-family:'Courier New',monospace;">#${p.id} &middot; ${sid}</div>
+        </div>`;
+      }).join('');
+    }
+    dropdown.style.display = 'block';
+  } catch(e) {
+    dropdown.style.display = 'none';
+  }
+}
+
+function fillSteamId(steamid, container) {
+  document.getElementById('create-steamid-input').value = steamid;
+  document.getElementById('player-search-input').value = '';
+  document.getElementById('player-search-dropdown').style.display = 'none';
+  validateCreateForm();
+}
+
+function validateCreateForm() {
+  const sid = (document.getElementById('create-steamid-input') || {}).value || '';
+  const btn = document.getElementById('create-submit-btn');
+  if (!btn) return true;
+  const ok = sid.trim().length > 0;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '.5';
+  btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+  return ok;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// hide dropdown when clicking outside
+document.addEventListener('click', e => {
+  const inp = document.getElementById('player-search-input');
+  const dd  = document.getElementById('player-search-dropdown');
+  if (inp && dd && !inp.contains(e.target) && !dd.contains(e.target)) {
+    dd.style.display = 'none';
+  }
+});
+</script>
+{% endblock %}

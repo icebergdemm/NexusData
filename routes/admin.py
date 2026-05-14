@@ -9,9 +9,16 @@ from database import get_db
 from services import (
     AdminService, DiscordAuthService, PlayerService,
     PlayerKillService, PlayerRoleActionService, PlayerIPService,
-    PlayerNameService, PlayerRoleStatService, PlayerSessionService
+    PlayerNameService, PlayerRoleStatService, PlayerSessionService,
+    PlayerNoteService, PlayerLabelService, PlayerTrapService,
+    LabelCategoryService, TwinkDetectionService, ServerModerationService,
+    PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
 )
-from models import AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData
+from models import (
+    AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
+    LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
+    PlayerPunishment,
+)
 from config import get_settings
 import logging
 
@@ -612,7 +619,30 @@ async def admin_player_detail(
             }
         },
     )
-    
+
+    # Notes, labels, traps, twink analysis, qual-kits
+    note_svc = PlayerNoteService(db)
+    label_svc = PlayerLabelService(db)
+    trap_svc = PlayerTrapService(db)
+    cat_svc = LabelCategoryService(db)
+    punishment_svc = PunishmentService(db)
+
+    notes = note_svc.get_notes(player_id)
+    label_pairs = label_svc.get_labels(player_id)  # list of (PlayerLabel, LabelCategory)
+    traps = trap_svc.get_traps(player_id)
+    label_categories = cat_svc.get_all()
+    punishments_raw = punishment_svc.get_for_player(player_id)
+    punishments = [{"p": p, "status": punishment_svc.effective_status(p)} for p in punishments_raw]
+
+    # Qual-kits assigned to this player (by kit_level)
+    qual_kits_assigned = db.query(Kit).filter(Kit.job_id.like("%_k"), Kit.kit_level == player.kit_level).all()
+    # All qual-kits available
+    all_qual_kits = db.query(Kit).filter(Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
+
+    from services import _online_players, _online_players_lock
+    with _online_players_lock:
+        is_online = player.player_steamid in _online_players
+
     return templates.TemplateResponse("admin/player_detail.html", {
         "request": request,
         "admin": current_admin,
@@ -627,6 +657,15 @@ async def admin_player_detail(
         "ranks": settings.ranks_mapping,
         "kits": settings.kits_mapping,
         "flashes": pop_flashes(request),
+        "notes": notes,
+        "label_pairs": label_pairs,
+        "traps": traps,
+        "label_categories": label_categories,
+        "punishments": punishments,
+        "type_labels": PUNISHMENT_TYPE_LABELS,
+        "qual_kits_assigned": qual_kits_assigned,
+        "all_qual_kits": all_qual_kits,
+        "is_online": is_online,
     })
 
 
@@ -1229,16 +1268,25 @@ async def admin_kits_list(
     if kit_level is not None:
         query = query.filter(Kit.kit_level == kit_level)
 
-    kits = query.order_by(Kit.job_id, Kit.kit_level).all()
+    # Base kits: job_id does NOT end with _k
+    kits = query.filter(~Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
 
-    # Unique job_ids for filter dropdown
-    all_job_ids = [row[0] for row in db.query(Kit.job_id).distinct().order_by(Kit.job_id).all()]
+    # Qualification kits: job_id ends with _k
+    qual_kits = db.query(Kit).filter(Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
+
+    # Unique job_ids for filter dropdown (base only)
+    all_job_ids = [row[0] for row in db.query(Kit.job_id).filter(~Kit.job_id.like("%_k")).distinct().order_by(Kit.job_id).all()]
+
+    # Unique base job names for qual kits (strip _k suffix)
+    all_qual_base_jobs = sorted(set(k.job_id[:-2] for k in qual_kits))
 
     return templates.TemplateResponse("admin/kits.html", {
         "request": request,
         "admin": current_admin,
         "kits": kits,
+        "qual_kits": qual_kits,
         "all_job_ids": all_job_ids,
+        "all_qual_base_jobs": all_qual_base_jobs,
         "kits_mapping": settings.kits_mapping,
         "selected_job_id": job_id or "",
         "selected_kit_level": kit_level if kit_level is not None else "",
@@ -1424,3 +1472,821 @@ async def admin_kits_delete(
         push_flash(request, "error", "Не удалось удалить кит")
 
     return RedirectResponse(url="/admin/kits", status_code=302)
+
+
+# ── Qualification kit routes ──────────────────────────────────────────────────
+
+@router.post("/admin/qual-kits/add")
+async def admin_qual_kits_add(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Create a new qualification kit (job_id ends with _k, kit_level 1-5)"""
+    _require_kits_permission(current_admin)
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        form = await request.form()
+
+        base_job = form.get("base_job", "").strip()
+        kit_level_raw = form.get("kit_level", "1")
+        items_raw = form.get("items", "{}").strip()
+
+        if not base_job:
+            push_flash(request, "error", "Профессия не может быть пустой")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        job_id = base_job if base_job.endswith("_k") else base_job + "_k"
+
+        try:
+            kit_level = int(kit_level_raw)
+            if kit_level not in range(1, 6):
+                raise ValueError
+        except (TypeError, ValueError):
+            push_flash(request, "error", "Уровень квалификации должен быть от 1 до 5")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        try:
+            items = json.loads(items_raw)
+            if not isinstance(items, dict):
+                raise ValueError("items must be a JSON object")
+        except (json.JSONDecodeError, ValueError) as e:
+            push_flash(request, "error", f"Некорректный JSON: {e}")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        existing = db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first()
+        if existing:
+            push_flash(request, "error", f"Квал-кит '{job_id}' уровня {kit_level} уже существует")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
+        db.add(new_kit)
+        db.commit()
+        db.refresh(new_kit)
+
+        log_admin_action(db, current_admin.id, "create_qual_kit", {
+            "kit_id": new_kit.id, "job_id": job_id, "kit_level": kit_level,
+        })
+        push_flash(request, "success", f"Квал-кит '{job_id}' (уровень {kit_level}) создан")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Create qual kit failed: %s", exc)
+        push_flash(request, "error", "Не удалось создать квал-кит")
+
+    return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+
+@router.post("/admin/qual-kits/{kit_id}/update")
+async def admin_qual_kits_update(
+    request: Request,
+    kit_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Update a qualification kit"""
+    _require_kits_permission(current_admin)
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        form = await request.form()
+
+        kit = db.query(Kit).filter(Kit.id == kit_id, Kit.job_id.like("%_k")).first()
+        if not kit:
+            push_flash(request, "error", "Квал-кит не найден")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        kit_level_raw = form.get("kit_level", str(kit.kit_level))
+        items_raw = form.get("items", "{}").strip()
+
+        try:
+            kit_level = int(kit_level_raw)
+            if kit_level not in range(1, 6):
+                raise ValueError
+        except (TypeError, ValueError):
+            push_flash(request, "error", "Уровень квалификации должен быть от 1 до 5")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        try:
+            items = json.loads(items_raw)
+            if not isinstance(items, dict):
+                raise ValueError("items must be a JSON object")
+        except (json.JSONDecodeError, ValueError) as e:
+            push_flash(request, "error", f"Некорректный JSON: {e}")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        conflict = db.query(Kit).filter(
+            Kit.job_id == kit.job_id, Kit.kit_level == kit_level, Kit.id != kit_id
+        ).first()
+        if conflict:
+            push_flash(request, "error", f"Квал-кит '{kit.job_id}' уровня {kit_level} уже существует")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        kit.kit_level = kit_level
+        kit.items = items
+        db.commit()
+
+        log_admin_action(db, current_admin.id, "update_qual_kit", {"kit_id": kit_id})
+        push_flash(request, "success", "Квал-кит обновлён")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Update qual kit failed: %s", exc)
+        push_flash(request, "error", "Не удалось обновить квал-кит")
+
+    return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+
+@router.post("/admin/qual-kits/{kit_id}/delete")
+async def admin_qual_kits_delete(
+    request: Request,
+    kit_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Delete a qualification kit"""
+    _require_kits_permission(current_admin)
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+
+        kit = db.query(Kit).filter(Kit.id == kit_id, Kit.job_id.like("%_k")).first()
+        if not kit:
+            push_flash(request, "error", "Квал-кит не найден")
+            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+        job_id = kit.job_id
+        level = kit.kit_level
+        db.delete(kit)
+        db.commit()
+
+        log_admin_action(db, current_admin.id, "delete_qual_kit", {
+            "kit_id": kit_id, "job_id": job_id, "kit_level": level,
+        })
+        push_flash(request, "success", f"Квал-кит '{job_id}' (уровень {level}) удалён")
+    except HTTPException as exc:
+        push_flash(request, "error", f"Ошибка: {exc.detail}")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Delete qual kit failed: %s", exc)
+        push_flash(request, "error", "Не удалось удалить квал-кит")
+
+    return RedirectResponse(url="/admin/kits#qual", status_code=302)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PLAYER NOTES
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/admin/players/{player_id}/notes/save")
+async def save_player_note(
+    request: Request,
+    player_id: int,
+    content: str = Form(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    PlayerNoteService(db).save_note(player_id, current_admin.id, content)
+    log_admin_action(db, current_admin.id, "save_player_note", {"player_id": player_id})
+    push_flash(request, "success", "Личное дело сохранено")
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LABELS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/admin/players/{player_id}/labels/assign")
+async def assign_label(
+    request: Request,
+    player_id: int,
+    category_id: int = Form(...),
+    note: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    PlayerLabelService(db).assign(player_id, category_id, note, current_admin.id)
+    log_admin_action(db, current_admin.id, "assign_label", {"player_id": player_id, "category_id": category_id})
+    push_flash(request, "success", "Метка установлена")
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+@router.post("/admin/players/{player_id}/labels/{label_id}/remove")
+async def remove_label(
+    request: Request,
+    player_id: int,
+    label_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    PlayerLabelService(db).remove(label_id)
+    log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
+    push_flash(request, "success", "Метка снята")
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+@router.get("/admin/label-categories")
+async def label_categories_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+    cats = LabelCategoryService(db).get_all()
+    return templates.TemplateResponse("admin/label_categories.html", {
+        "request": request, "admin": current_admin,
+        "categories": cats, "flashes": pop_flashes(request),
+    })
+
+
+@router.post("/admin/label-categories/create")
+async def create_label_category(
+    request: Request,
+    name: str = Form(...),
+    color: str = Form(default="#888888"),
+    icon: str = Form(default="🏷"),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    LabelCategoryService(db).create(name.strip(), color, icon, current_admin.id)
+    push_flash(request, "success", f"Категория «{name}» создана")
+    return RedirectResponse(url="/admin/label-categories", status_code=302)
+
+
+@router.post("/admin/label-categories/{cat_id}/delete")
+async def delete_label_category(
+    request: Request,
+    cat_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    ok = LabelCategoryService(db).delete(cat_id)
+    push_flash(request, "success" if ok else "error",
+               "Категория удалена" if ok else "Категория не найдена")
+    return RedirectResponse(url="/admin/label-categories", status_code=302)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRAPS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/admin/players/{player_id}/traps/set")
+async def set_trap(
+    request: Request,
+    player_id: int,
+    reason: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404)
+    PlayerTrapService(db).set_trap(player_id, player.player_steamid, reason, current_admin.id)
+    log_admin_action(db, current_admin.id, "set_trap", {"player_id": player_id})
+    push_flash(request, "success", "Ловушка установлена")
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+@router.post("/admin/players/{player_id}/traps/{trap_id}/deactivate")
+async def deactivate_trap(
+    request: Request,
+    player_id: int,
+    trap_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    PlayerTrapService(db).deactivate(trap_id)
+    push_flash(request, "success", "Ловушка деактивирована")
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMINISTRATION PAGE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/administration", response_class=HTMLResponse)
+async def admin_administration(
+    request: Request,
+    period: str = Query("day"),          # day | week | month | all
+    twink_page: int = Query(1),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Administration: online stats, config editor, global twink analysis."""
+    if "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    from sqlalchemy import func, text
+    from models import PlayerSession
+
+    # ── Period boundary ──────────────────────────────────────────────────────
+    now = datetime.utcnow()
+    period_map = {
+        "day":   now - timedelta(days=1),
+        "week":  now - timedelta(weeks=1),
+        "month": now - timedelta(days=30),
+        "all":   None,
+    }
+    since = period_map.get(period, period_map["day"])
+
+    # ── Online stats ──────────────────────────────────────────────────────────
+    sess_q = db.query(PlayerSession)
+    if since:
+        sess_q = sess_q.filter(PlayerSession.login_time >= since)
+
+    sessions = sess_q.all()
+
+    unique_players = len({s.player_id for s in sessions})
+    total_sessions = len(sessions)
+    total_play_secs = sum((s.session_duration or 0) for s in sessions)
+    avg_session_mins = round(total_play_secs / 60 / max(total_sessions, 1))
+
+    # Peak concurrent players per hour
+    # Build timeline: +1 at login_time, -1 at logout_time
+    events = []
+    for s in sessions:
+        events.append((s.login_time, +1))
+        if s.logout_time:
+            events.append((s.logout_time, -1))
+    events.sort(key=lambda x: x[0])
+    peak_concurrent = 0
+    current_count = 0
+    for _, delta in events:
+        current_count += delta
+        if current_count > peak_concurrent:
+            peak_concurrent = current_count
+
+    # Concurrent online chart: peak / avg / min per time slot
+    if period == "day":
+        slot_count = 24
+        slot_delta = timedelta(hours=1)
+        label_fmt = "%H:%M"
+    elif period == "week":
+        slot_count = 7 * 6  # 4-hour slots
+        slot_delta = timedelta(hours=4)
+        label_fmt = "%d.%m %H:%M"
+    elif period == "month":
+        slot_count = 30
+        slot_delta = timedelta(days=1)
+        label_fmt = "%d.%m"
+    else:
+        slot_count = 52
+        slot_delta = timedelta(weeks=1)
+        label_fmt = "%d.%m.%y"
+
+    slot_start_global = since if since else (now - slot_delta * slot_count)
+    chart_labels = []
+    peak_values = []
+    avg_values = []
+    min_values = []
+
+    N_SAMPLES = 10  # sample points within each slot
+    for i in range(slot_count):
+        sl_start = slot_start_global + slot_delta * i
+        sl_end   = sl_start + slot_delta
+        active = [
+            s for s in sessions
+            if s.login_time < sl_end and (s.logout_time is None or s.logout_time > sl_start)
+        ]
+        chart_labels.append(sl_start.strftime(label_fmt))
+        if not active:
+            peak_values.append(0)
+            avg_values.append(0)
+            min_values.append(0)
+            continue
+        slot_secs = slot_delta.total_seconds()
+        samples = []
+        for j in range(N_SAMPLES):
+            t = sl_start + timedelta(seconds=slot_secs * j / N_SAMPLES)
+            cnt = sum(
+                1 for s in active
+                if s.login_time <= t and (s.logout_time is None or s.logout_time >= t)
+            )
+            samples.append(cnt)
+        peak_values.append(max(samples))
+        avg_values.append(round(sum(samples) / len(samples), 1))
+        min_values.append(min(samples))
+
+    # Top active players in period
+    top_players_raw = db.execute(text(
+        "SELECT ps.player_id, pd.player_last_time_name, pd.player_steamid, "
+        "       SUM(ps.session_duration) as total_secs, COUNT(*) as sessions "
+        "FROM player_sessions ps "
+        "LEFT JOIN players_data pd ON pd.player_id = ps.player_id "
+        + ("WHERE ps.login_time >= :since " if since else "")
+        + "GROUP BY ps.player_id ORDER BY total_secs DESC LIMIT 20"
+    ), {"since": since} if since else {}).fetchall()
+
+    # ── Config (editable fields only) ────────────────────────────────────────
+    editable_cfg = _get_editable_config()
+
+    # ── Global twink pairs ────────────────────────────────────────────────────
+    twink_svc = TwinkDetectionService(db)
+    all_twinks = twink_svc.get_all_twink_pairs(min_signals=1)
+    twink_per_page = 30
+    twink_total = len(all_twinks)
+    twink_pages = max(1, (twink_total + twink_per_page - 1) // twink_per_page)
+    twink_page = max(1, min(twink_page, twink_pages))
+    twinks_paged = all_twinks[(twink_page - 1) * twink_per_page: twink_page * twink_per_page]
+
+    return templates.TemplateResponse("admin/administration.html", {
+        "request": request,
+        "admin": current_admin,
+        "flashes": pop_flashes(request),
+        "period": period,
+        # Stats
+        "unique_players": unique_players,
+        "total_sessions": total_sessions,
+        "avg_session_mins": avg_session_mins,
+        "peak_concurrent": peak_concurrent,
+        "chart_labels": chart_labels,
+        "peak_values": peak_values,
+        "avg_values": avg_values,
+        "min_values": min_values,
+        "top_players": top_players_raw,
+        # Config
+        "editable_cfg": editable_cfg,
+        # Twinks
+        "twinks": twinks_paged,
+        "twink_page": twink_page,
+        "twink_pages": twink_pages,
+        "twink_total": twink_total,
+    })
+
+
+def _get_editable_config() -> dict:
+    """Return dict of editable config fields and their current values."""
+    import os as _os, json as _json
+    # Patch broken list fields in .env before loading Settings
+    env_path = ".env"
+    list_keys = {"CORS_ORIGINS", "ALLOWED_IPS"}
+    if _os.path.exists(env_path):
+        lines = []
+        changed = False
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if "=" in stripped and not stripped.startswith("#"):
+                    k, _, v = stripped.partition("=")
+                    k = k.strip()
+                    v = v.strip()
+                    if k in list_keys and v and not v.startswith("["):
+                        # comma-separated → JSON array
+                        items = [x.strip() for x in v.split(",") if x.strip()]
+                        lines.append(f"{k}={_json.dumps(items)}\n")
+                        changed = True
+                        continue
+                lines.append(line if line.endswith("\n") else line + "\n")
+        if changed:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            from config import reset_settings_cache
+            reset_settings_cache()
+
+    s = get_settings()
+    return {
+        "debug": s.debug,
+        "discord_trap_webhook_url": s.discord_trap_webhook_url,
+        "discord_client_id": s.discord_client_id,
+        "discord_client_secret": s.discord_client_secret,
+        "discord_redirect_uri": s.discord_redirect_uri,
+        "use_discord_proxy": s.use_discord_proxy,
+        "discord_proxy_url": s.discord_proxy_url,
+        "allowed_ips": ",".join(s.allowed_ips_list) if s.allowed_ips_list else s.allowed_ips,
+        "rate_limit_enabled": s.rate_limit_enabled,
+        "rate_limit_requests": s.rate_limit_requests,
+        "rate_limit_window": s.rate_limit_window,
+        "cors_origins": ",".join(s.cors_origins_list) if s.cors_origins_list else s.cors_origins,
+    }
+
+
+@router.post("/admin/administration/config")
+async def admin_administration_config_save(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Save editable config fields to .env file."""
+    if "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    form = await request.form()
+
+    # Build new .env content
+    env_path = ".env"
+    import os
+
+    # Read existing .env lines (preserve unknown keys)
+    existing: dict = {}
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+
+    # Map form fields → env keys
+    field_map = {
+        "debug": "DEBUG",
+        "discord_trap_webhook_url": "DISCORD_TRAP_WEBHOOK_URL",
+        "discord_client_id": "DISCORD_CLIENT_ID",
+        "discord_client_secret": "DISCORD_CLIENT_SECRET",
+        "discord_redirect_uri": "DISCORD_REDIRECT_URI",
+        "use_discord_proxy": "USE_DISCORD_PROXY",
+        "discord_proxy_url": "DISCORD_PROXY_URL",
+        "allowed_ips": "ALLOWED_IPS",
+        "rate_limit_enabled": "RATE_LIMIT_ENABLED",
+        "rate_limit_requests": "RATE_LIMIT_REQUESTS",
+        "rate_limit_window": "RATE_LIMIT_WINDOW",
+        "cors_origins": "CORS_ORIGINS",
+    }
+
+    for field, env_key in field_map.items():
+        val = form.get(field)
+        if val is None:
+            # checkboxes that are unchecked won't appear in form
+            if field in ("debug", "use_discord_proxy", "rate_limit_enabled"):
+                val = "false"
+        else:
+            # normalize checkboxes
+            if val in ("on", "1", "true", "yes"):
+                val = "true"
+            elif val in ("off", "0", "false", "no"):
+                val = "false"
+
+        # List fields: store as JSON array in .env
+        if field in ("cors_origins", "allowed_ips"):
+            raw = (val or "").strip()
+            items = [x.strip() for x in raw.split(",") if x.strip()]
+            import json as _json
+            existing[env_key] = _json.dumps(items)
+        else:
+            existing[env_key] = val or ""
+
+    # Write back
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            for k, v in existing.items():
+                f.write(f"{k}={v}\n")
+        # Invalidate settings cache
+        from config import reset_settings_cache
+        reset_settings_cache()
+        push_flash(request, "success", "Конфигурация сохранена. Перезапустите сервер для применения части настроек.")
+    except Exception as e:
+        push_flash(request, "error", f"Ошибка сохранения: {e}")
+
+    log_admin_action(db, current_admin.id, "save_config", {})
+    return RedirectResponse(url="/admin/administration", status_code=302)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PUNISHMENTS
+# ════════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/api/players/search")
+async def api_players_search(
+    q: str = Query("", min_length=2),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import or_
+    if not q or len(q) < 2:
+        return JSONResponse([])
+    like = f"%{q}%"
+    rows = (
+        db.query(PlayerData)
+        .filter(or_(
+            PlayerData.player_last_time_name.ilike(like),
+            PlayerData.player_steamid.ilike(like),
+        ))
+        .order_by(PlayerData.player_last_time_name)
+        .limit(15)
+        .all()
+    )
+    return JSONResponse([
+        {
+            "id": r.player_id,
+            "name": r.player_last_time_name or "",
+            "steamid": r.player_steamid or "",
+        }
+        for r in rows
+    ])
+
+
+@router.get("/admin/punishments")
+async def admin_punishments(
+    request: Request,
+    tab: str = Query("warning"),
+    search: str = Query(""),
+    page: int = Query(1),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "read" not in current_admin.permissions and "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    if tab not in PUNISHMENT_TYPES:
+        tab = "warning"
+
+    per_page = 50
+    svc = PunishmentService(db)
+    rows, total = svc.list_by_type(tab, search=search, limit=per_page, offset=(page - 1) * per_page)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, pages))
+
+    # annotate status
+    enriched = []
+    for p, player in rows:
+        enriched.append({
+            "p": p,
+            "player": player,
+            "status": svc.effective_status(p),
+        })
+
+    return templates.TemplateResponse("admin/punishments.html", {
+        "request": request,
+        "admin": current_admin,
+        "flashes": pop_flashes(request),
+        "tab": tab,
+        "search": search,
+        "rows": enriched,
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "type_labels": PUNISHMENT_TYPE_LABELS,
+        "punishment_types": PUNISHMENT_TYPES,
+    })
+
+
+@router.post("/admin/punishments/create")
+async def admin_punishment_create(
+    request: Request,
+    player_steamid: str = Form(...),
+    ptype: str = Form(...),
+    reason: str = Form(""),
+    expires_days: Optional[int] = Form(None),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions and "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    if ptype not in PUNISHMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid type")
+
+    player_steamid = player_steamid.strip()
+    if not player_steamid:
+        raise HTTPException(status_code=400, detail="SteamID is required")
+
+    # Convert Steam64 → STEAM2 for server actions; store Steam64 as-is
+    from utils import steam64_to_steam2
+    steam2 = steam64_to_steam2(player_steamid)
+
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == player_steamid).first()
+    player_id = player.player_id if player else 0
+
+    from services import _now_msk
+    expires_at = None
+    if expires_days and expires_days > 0:
+        from datetime import timedelta
+        expires_at = _now_msk() + timedelta(days=expires_days)
+
+    svc = PunishmentService(db)
+    punishment = svc.create(
+        player_id=player_id,
+        player_steamid=player_steamid,
+        player_ip=player.last_ip if player else None,
+        ptype=ptype,
+        reason=reason or None,
+        issued_by_admin_id=current_admin.id,
+        issued_by_name=current_admin.discord_username,
+        expires_at=expires_at,
+        notes=notes or None,
+    )
+
+    # For bans — queue server action
+    if ptype == "ban":
+        from models import ServerActionQueue
+        action = ServerActionQueue(
+            action_type="ban",
+            target_steamid=steam2 or player_steamid,
+            reason=reason or "Бан через панель",
+            queued_by_admin_id=current_admin.id,
+        )
+        db.add(action)
+        db.commit()
+
+    log_admin_action(db, current_admin.id, "punishment_create",
+                     {"punishment_id": punishment.id, "type": ptype, "player_id": player_id})
+    push_flash(request, "success", f"{PUNISHMENT_TYPE_LABELS.get(ptype, ptype)} выдан(о).")
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+@router.post("/admin/punishments/{punishment_id}/edit")
+async def admin_punishment_edit(
+    request: Request,
+    punishment_id: int,
+    reason: str = Form(""),
+    expires_days: Optional[int] = Form(None),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions and "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+
+    from services import _now_msk
+    expires_at = None
+    if expires_days and expires_days > 0:
+        from datetime import timedelta
+        expires_at = _now_msk() + timedelta(days=expires_days)
+
+    svc.update(punishment_id,
+               reason=reason or None,
+               expires_at=expires_at,
+               notes=notes or None)
+
+    log_admin_action(db, current_admin.id, "punishment_edit", {"punishment_id": punishment_id})
+    push_flash(request, "success", "Наказание обновлено.")
+    tab = p.type
+    return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
+
+
+@router.post("/admin/punishments/{punishment_id}/void")
+async def admin_punishment_void(
+    request: Request,
+    punishment_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "write" not in current_admin.permissions and "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+    tab = p.type
+    svc.set_void(punishment_id)
+    log_admin_action(db, current_admin.id, "punishment_void", {"punishment_id": punishment_id})
+    push_flash(request, "info", "Наказание помечено неактуальным.")
+    return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
+
+
+@router.post("/admin/punishments/{punishment_id}/delete")
+async def admin_punishment_delete(
+    request: Request,
+    punishment_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if "admin" not in current_admin.permissions:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+    tab = p.type
+    svc.delete(punishment_id)
+    log_admin_action(db, current_admin.id, "punishment_delete", {"punishment_id": punishment_id})
+    push_flash(request, "success", "Наказание удалено.")
+    return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)

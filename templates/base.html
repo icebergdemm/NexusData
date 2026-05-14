@@ -56,6 +56,12 @@
         {% if "admin" in admin.permissions or "write" in admin.permissions %}
         <li><a href="/admin/kits">Редактирование китов</a></li>
         {% endif %}
+        {% if "admin" in admin.permissions %}
+        <li><a href="/admin/administration">Администрирование</a></li>
+        {% endif %}
+        {% if "read" in admin.permissions or "write" in admin.permissions or "admin" in admin.permissions %}
+        <li><a href="/admin/punishments">Наказания</a></li>
+        {% endif %}
       </ul>
     </nav>
 

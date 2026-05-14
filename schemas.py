@@ -38,6 +38,15 @@ class PlayerDataBase(BaseModel):
     rank_id: int = Field(default=0, ge=0)
     kit_level: int = Field(default=0, ge=0)
     achievements: List[str] = Field(default_factory=list)
+
+    @field_validator('achievements', mode='before')
+    @classmethod
+    def coerce_achievements(cls, v):
+        if isinstance(v, dict):
+            return list(v.values()) if v else []
+        if v is None:
+            return []
+        return v
     
     @field_validator('player_steamid')
     def validate_steamid(cls, v: str) -> str:
@@ -75,6 +84,13 @@ class PlayerDataUpdate(BaseModel):
     rank_id: Optional[int] = Field(None, ge=0)
     kit_level: Optional[int] = Field(None, ge=0)
     achievements: Optional[List[str]] = None
+
+    @field_validator('achievements', mode='before')
+    @classmethod
+    def coerce_achievements_update(cls, v):
+        if isinstance(v, dict):
+            return list(v.values()) if v else []
+        return v
 
 
 class PlayerDataOut(PlayerDataBase):
@@ -256,4 +272,75 @@ class MessageProcessResult(BaseModel):
     message_type: str
     trace_id: Optional[str] = None
     data: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Server moderation schemas ────────────────────────────────────────────────────────────────────
+
+class OnlinePlayerInfo(BaseModel):
+    steamid: str
+    player_name: Optional[str] = None
+    job_id: Optional[str] = None
+    ping: Optional[int] = None
+
+
+class ServerPlayersReport(BaseModel):
+    players: List[OnlinePlayerInfo]
+
+
+class ServerPlayersReportResult(BaseModel):
+    status: str
+    count: int
+
+
+class AnticheatEventIn(BaseModel):
+    player_steamid: str
+    player_name: Optional[str] = None
+    event_type: str
+    details: Optional[Dict[str, Any]] = None
+    occurred_at: Optional[datetime] = None
+
+
+class AnticheatEventOut(BaseModel):
+    id: int
+    player_steamid: str
+    player_name: Optional[str] = None
+    player_id: Optional[int] = None
+    event_type: str
+    details: Optional[Dict[str, Any]] = None
+    occurred_at: Optional[datetime] = None
+    reviewed: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class ServerActionOut(BaseModel):
+    id: int
+    action_type: str
+    target_steamid: str
+    reason: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    message_text: Optional[str] = None
+    queued_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ServerActionAck(BaseModel):
+    success: bool
+    error_message: Optional[str] = None
+
+
+class QueueActionIn(BaseModel):
+    action_type: str
+    target_steamid: str
+    reason: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    message_text: Optional[str] = None
+
+
+class QueueActionResult(BaseModel):
+    status: str
+    action_id: int
 

@@ -14,6 +14,16 @@
 }
 .pg-header a.back-btn:hover { color:var(--white); border-color:var(--primary-blue); }
 .pg-header h2 { color:var(--white); font-size:20px; font-weight:700; }
+.pg-header-right { margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+/* ── Online badge ── */
+.online-badge {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:5px 12px; border-radius:20px; font-size:12px; font-weight:700;
+  background:rgba(3,123,54,.15); border:1px solid var(--success); color:var(--success);
+}
+.online-dot { width:7px; height:7px; border-radius:50%; background:var(--success); animation:pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
 
 /* ── Cards ── */
 .block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
@@ -21,15 +31,18 @@
 .block-card-header h3 { color:var(--white); font-size:15px; font-weight:600; }
 .block-card-body { padding:var(--spacing-24); }
 
-/* ── Hero ── */
-.hero-card { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-24); }
-@media(max-width:840px){ .hero-card { grid-template-columns:1fr; } }
+/* ── Main layout: left info + right actions ── */
+.detail-layout { display:grid; grid-template-columns:1fr 340px; gap:var(--spacing-24); align-items:start; }
+@media(max-width:960px){ .detail-layout { grid-template-columns:1fr; } }
 
+/* ── Info grid ── */
 .player-info-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 24px; }
 .info-row { display:flex; flex-direction:column; gap:4px; }
 .info-label { font-size:11px; color:var(--gray-dark); font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
-.info-value { font-size:14px; color:var(--white); font-weight:500; }
+.info-value { font-size:14px; color:var(--white); font-weight:500; word-break:break-all; }
 .info-value.mono { font-family:'Courier New',monospace; font-size:12px; color:var(--gray); }
+.info-value a { color:var(--primary-blue); text-decoration:none; }
+.info-value a:hover { text-decoration:underline; }
 
 .rank-badge {
   display:inline-block; padding:4px 10px; border-radius:6px;
@@ -60,7 +73,7 @@
 /* scrollable table wrapper */
 .table-scroll-wrap { overflow-x:auto; }
 .table-scroll-body {
-  max-height:430px; /* ~10 rows */
+  max-height:340px;
   overflow-y:auto;
   scrollbar-width:thin;
   scrollbar-color:var(--primary-blue) var(--dark-blue-bg);
@@ -68,7 +81,6 @@
 .table-scroll-body::-webkit-scrollbar { width:5px; }
 .table-scroll-body::-webkit-scrollbar-track { background:var(--dark-blue-bg); border-radius:4px; }
 .table-scroll-body::-webkit-scrollbar-thumb { background:var(--primary-blue); border-radius:4px; }
-.table-scroll-body::-webkit-scrollbar-thumb:hover { background:#1460d4; }
 .table-scroll-body .data-table { border-collapse:separate; border-spacing:0; }
 .table-scroll-body .data-table thead { position:sticky; top:0; z-index:2; }
 
@@ -77,8 +89,20 @@
 .sections-grid .full { grid-column:1/-1; }
 @media(max-width:960px){ .sections-grid { grid-template-columns:1fr; } }
 
+/* ── Buttons ── */
+.btn { display:inline-flex; align-items:center; gap:6px; padding:9px 18px; border-radius:var(--border-radius-8); font-size:13px; font-weight:600; cursor:pointer; border:none; text-decoration:none; font-family:inherit; transition:var(--transition-03); }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#1460d4; }
+.btn-secondary { background:transparent; border:1px solid var(--stroke-01); color:var(--gray); }
+.btn-secondary:hover { border-color:var(--primary-blue); color:var(--white); }
+.btn-danger { background:transparent; border:1px solid rgba(183,12,70,.4); color:#ff4d80; }
+.btn-danger:hover { background:rgba(183,12,70,.15); }
+.btn-warning { background:transparent; border:1px solid rgba(255,140,0,.4); color:#ffaa44; }
+.btn-warning:hover { background:rgba(255,140,0,.1); }
+.btn-sm { padding:5px 12px; font-size:12px; }
+.btn-block { width:100%; justify-content:center; margin-bottom:10px; }
+
 /* ── Form ── */
-.form-row { display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-16); }
 .form-group { display:flex; flex-direction:column; gap:6px; }
 .form-group label { font-size:12px; color:var(--gray); font-weight:600; }
 .form-group select, .form-group input, .form-group textarea {
@@ -90,17 +114,63 @@
 .form-group select:focus, .form-group input:focus, .form-group textarea:focus {
   outline:none; border-color:var(--primary-blue);
 }
-textarea { resize:vertical; min-height:100px; }
+textarea { resize:vertical; min-height:80px; }
 
-/* ── Buttons ── */
-.btn { display:inline-flex; align-items:center; gap:6px; padding:9px 18px; border-radius:var(--border-radius-8); font-size:13px; font-weight:600; cursor:pointer; border:none; text-decoration:none; font-family:inherit; transition:var(--transition-03); }
-.btn-primary { background:var(--primary-blue); color:#fff; }
-.btn-primary:hover { background:#1460d4; }
-.btn-secondary { background:transparent; border:1px solid var(--stroke-01); color:var(--gray); }
-.btn-secondary:hover { border-color:var(--primary-blue); color:var(--white); }
-.btn-danger { background:transparent; border:1px solid rgba(183,12,70,.4); color:#ff4d80; }
-.btn-danger:hover { background:rgba(183,12,70,.15); }
-.btn-sm { padding:5px 12px; font-size:12px; }
+/* ── Modal ── */
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.75); backdrop-filter:blur(4px);
+  z-index:1000; display:none; align-items:center; justify-content:center;
+  padding:16px;
+}
+.modal-overlay.open { display:flex; }
+.modal-box {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); width:100%; max-width:760px;
+  max-height:90vh; display:flex; flex-direction:column; overflow:hidden;
+}
+.modal-box.narrow { max-width:480px; }
+.modal-header { padding:var(--spacing-20) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; }
+.modal-header h3 { color:var(--white); font-size:16px; font-weight:600; }
+.modal-close { background:none; border:none; color:var(--gray); cursor:pointer; font-size:20px; line-height:1; padding:0 4px; }
+.modal-close:hover { color:var(--white); }
+.modal-body { padding:var(--spacing-24); overflow-y:auto; flex:1; }
+.modal-tabs { display:flex; gap:0; border-bottom:1px solid var(--stroke-01); margin-bottom:var(--spacing-20); }
+.modal-tab { padding:10px 20px; font-size:13px; font-weight:600; cursor:pointer; color:var(--gray); border:none; background:none; border-bottom:2px solid transparent; transition:var(--transition-03); font-family:inherit; }
+.modal-tab.active { color:var(--primary-blue); border-bottom-color:var(--primary-blue); }
+.tab-panel { display:none; }
+.tab-panel.active { display:block; }
+
+/* ── Qual-kits ── */
+.qualkit-list { display:flex; flex-direction:column; gap:8px; }
+.qualkit-item {
+  display:flex; align-items:center; gap:10px;
+  padding:10px 14px; background:var(--dark-blue-bg);
+  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8);
+}
+.qualkit-job { font-size:12px; font-weight:700; color:#88b8ff; min-width:80px; }
+.qualkit-name { font-size:13px; color:var(--white); font-weight:600; }
+.qualkit-level { font-size:11px; color:var(--gray-dark); }
+
+/* ── Labels ── */
+.label-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:3px 10px; border-radius:12px; font-size:12px; font-weight:700;
+  border:1px solid rgba(255,255,255,.1);
+}
+.labels-row { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+
+/* ── Trap status ── */
+.trap-active-box {
+  display:flex; align-items:flex-start; gap:8px;
+  padding:10px 14px; background:rgba(255,140,0,.08);
+  border:1px solid rgba(255,140,0,.3); border-radius:var(--border-radius-8);
+  font-size:13px; color:#ffaa44; margin-bottom:10px;
+}
+.trap-triggered-row {
+  font-size:11px; color:var(--gray-dark); padding:6px 10px;
+  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8);
+  margin-bottom:6px; display:flex; justify-content:space-between;
+}
 
 /* ── Achievements ── */
 .ach-list { display:flex; flex-direction:column; gap:8px; }
@@ -115,40 +185,15 @@ textarea { resize:vertical; min-height:100px; }
 .ach-item-id   { font-size:11px; color:var(--gray-dark); font-family:'Courier New',monospace; }
 .ach-note      { font-size:12px; color:var(--gray); margin-top:2px; }
 
-/* ── Modal ── */
-.modal-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.7); backdrop-filter:blur(4px);
-  z-index:1000; display:none; align-items:center; justify-content:center;
-  padding:16px;
-}
-.modal-overlay.open { display:flex; }
-.modal-box {
-  background:var(--card-bg); border:1px solid var(--stroke-01);
-  border-radius:var(--border-radius-12); width:100%; max-width:740px;
-  max-height:90vh; display:flex; flex-direction:column; overflow:hidden;
-}
-.modal-header { padding:var(--spacing-20) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; }
-.modal-header h3 { color:var(--white); font-size:16px; font-weight:600; }
-.modal-close { background:none; border:none; color:var(--gray); cursor:pointer; font-size:20px; line-height:1; padding:0 4px; }
-.modal-close:hover { color:var(--white); }
-.modal-body { padding:var(--spacing-24); overflow-y:auto; flex:1; }
-.modal-tabs { display:flex; gap:0; border-bottom:1px solid var(--stroke-01); margin-bottom:var(--spacing-20); }
-.modal-tab { padding:10px 20px; font-size:13px; font-weight:600; cursor:pointer; color:var(--gray); border:none; background:none; border-bottom:2px solid transparent; transition:var(--transition-03); font-family:inherit; }
-.modal-tab.active { color:var(--primary-blue); border-bottom-color:var(--primary-blue); }
-.tab-panel { display:none; }
-.tab-panel.active { display:block; }
-
-.packs-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; margin-bottom:var(--spacing-20); }
+.packs-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; margin-bottom:var(--spacing-20); }
 .pack-card {
   background:var(--dark-blue-bg); border:2px solid var(--stroke-01);
   border-radius:var(--border-radius-8); padding:12px; cursor:pointer;
   transition:var(--transition-03); user-select:none;
 }
 .pack-card:hover { border-color:var(--primary-blue); }
-.pack-card.selected { border-color:var(--primary-blue); background:rgba(26,104,222,.1); }
 .pack-name { font-size:13px; font-weight:700; color:var(--white); }
 .pack-count { font-size:11px; color:var(--gray-dark); margin-top:2px; }
-
 .config-ach-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:8px; }
 .config-ach-item {
   background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
@@ -160,16 +205,28 @@ textarea { resize:vertical; min-height:100px; }
 .config-ach-item.owned { border-color:var(--success); background:rgba(3,123,54,.08); cursor:default; opacity:.6; }
 .ach-check { width:18px; height:18px; flex-shrink:0; }
 .ach-label-text { font-size:12px; color:var(--white); line-height:1.3; }
-
 .manual-form { display:flex; flex-direction:column; gap:14px; }
 .manual-form input { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:10px 14px; font-size:13px; font-family:inherit; box-sizing:border-box; width:100%; }
 .manual-form input:focus { outline:none; border-color:var(--primary-blue); }
 
-/* flashes */
+/* ── Flash ── */
 .flash { padding:12px 18px; border-radius:var(--border-radius-8); margin-bottom:var(--spacing-16); font-size:13px; font-weight:500; }
 .flash.success { background:rgba(3,123,54,.15); border:1px solid var(--success); color:var(--success); }
 .flash.error   { background:rgba(183,12,70,.15); border:1px solid #ff4d80; color:#ff4d80; }
 .flash.info    { background:rgba(26,104,222,.12); border:1px solid var(--primary-blue); color:#88b8ff; }
+
+/* ── Right panel ── */
+.right-panel { display:flex; flex-direction:column; gap:var(--spacing-16); }
+.right-panel .block-card-body { padding:var(--spacing-16); }
+.right-section-title { font-size:11px; font-weight:700; color:var(--gray-dark); text-transform:uppercase; letter-spacing:.5px; margin-bottom:10px; }
+
+/* ── Note preview ── */
+.note-preview {
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-8); padding:12px 14px;
+  font-size:13px; color:var(--gray); min-height:60px; white-space:pre-wrap;
+  line-height:1.5; word-break:break-word;
+}
 </style>
 
 {% for f in flashes %}
@@ -179,6 +236,14 @@ textarea { resize:vertical; min-height:100px; }
 <div class="pg-header">
   <a href="/admin/players" class="back-btn">← Игроки</a>
   <h2>Профиль игрока #{{ player.player_id }}</h2>
+  <div class="pg-header-right">
+    {% if is_online %}
+    <span class="online-badge"><span class="online-dot"></span>Онлайн</span>
+    {% endif %}
+    {% if "write" in admin.permissions %}
+    <button class="btn btn-danger btn-sm" onclick="openModal('ban-modal')">🔨 Забанить</button>
+    {% endif %}
+  </div>
 </div>
 
 <!-- ── Stats chips ── -->
@@ -205,78 +270,421 @@ textarea { resize:vertical; min-height:100px; }
     <span class="chip-icon">⚔️</span>
     <div><div class="chip-label">Убито игроков</div><div class="chip-value">{{ stats.killed_players or 0 }}</div></div>
   </div>
-  <div class="chip">
-    <span class="chip-icon">🤖</span>
-    <div><div class="chip-label">Убито NPC</div><div class="chip-value">{{ stats.killed_npc or 0 }}</div></div>
-  </div>
   {% endif %}
 </div>
 
-<!-- ── Hero card: info + edit ── -->
-<div class="hero-card" style="margin-bottom:var(--spacing-24);">
-  <!-- Info -->
-  <div class="block-card">
-    <div class="block-card-header"><h3>Информация</h3></div>
-    <div class="block-card-body">
-      <div class="player-info-grid">
-        <div class="info-row">
-          <span class="info-label">Имя</span>
-          <span class="info-value">{{ player.player_last_time_name or '—' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">ID</span>
-          <span class="info-value">#{{ player.player_id }}</span>
-        </div>
-        <div class="info-row" style="grid-column:1/-1;">
-          <span class="info-label">SteamID</span>
-          <span class="info-value mono">{{ player.player_steamid or '—' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">Ранг</span>
-          <span class="info-value">
-            {% if player.rank_id is not none %}
-            <span class="rank-badge">{{ ranks.get(player.rank_id | string, player.rank_id) }}</span>
-            {% else %}—{% endif %}
-          </span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">Уровень кита</span>
-          <span class="info-value">
-            {% if player.kit_level is not none %}
-            {{ kits.get(player.kit_level | string, player.kit_level) }}
-            {% else %}—{% endif %}
-          </span>
-        </div>
-        {% if player.last_ip %}
-        <div class="info-row">
-          <span class="info-label">Последний IP</span>
-          <span class="info-value mono">{{ player.last_ip }}</span>
-        </div>
+<!-- ── Main detail layout ── -->
+<div class="detail-layout" style="margin-bottom:var(--spacing-24);">
+
+  <!-- LEFT: Info + Qual-kits -->
+  <div style="display:flex; flex-direction:column; gap:var(--spacing-20);">
+
+    <!-- Info card -->
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>Информация</h3>
+        {% if "write" in admin.permissions %}
+        <button class="btn btn-secondary btn-sm" onclick="openModal('edit-modal')">✏️ Редактировать</button>
         {% endif %}
-        {% if player.first_login %}
-        <div class="info-row">
-          <span class="info-label">Регистрация</span>
-          <span class="info-value">{{ player.first_login.strftime('%d.%m.%Y') }}</span>
+      </div>
+      <div class="block-card-body">
+        <div class="player-info-grid">
+          <div class="info-row">
+            <span class="info-label">Имя</span>
+            <span class="info-value">{{ player.player_last_time_name or '—' }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">ID</span>
+            <span class="info-value">#{{ player.player_id }}</span>
+          </div>
+          <div class="info-row" style="grid-column:1/-1;">
+            <span class="info-label">SteamID</span>
+            <span class="info-value mono">
+              {% if player.player_steamid %}
+              <a href="https://steamcommunity.com/profiles/{{ player.player_steamid }}" target="_blank" rel="noopener">
+                {{ player.player_steamid }} 🔗
+              </a>
+              {% else %}—{% endif %}
+            </span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Ранг</span>
+            <span class="info-value">
+              {% if player.rank_id is not none %}
+              <span class="rank-badge">{{ ranks.get(player.rank_id | string, player.rank_id) }}</span>
+              {% else %}—{% endif %}
+            </span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Уровень кита</span>
+            <span class="info-value">
+              {% if player.kit_level is not none %}
+              {{ kits.get(player.kit_level | string, player.kit_level) }}
+              {% else %}—{% endif %}
+            </span>
+          </div>
+          {% if player.last_ip %}
+          <div class="info-row">
+            <span class="info-label">Последний IP</span>
+            <span class="info-value mono">{{ player.last_ip }}</span>
+          </div>
+          {% endif %}
+          {% if player.first_login %}
+          <div class="info-row">
+            <span class="info-label">Регистрация</span>
+            <span class="info-value">{{ player.first_login.strftime('%d.%m.%Y') }}</span>
+          </div>
+          {% endif %}
+          {% if player.last_login_time %}
+          <div class="info-row">
+            <span class="info-label">Последний вход</span>
+            <span class="info-value">{{ player.last_login_time.strftime('%d.%m.%Y %H:%M') }}</span>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Qual-kits card -->
+    {% if all_qual_kits %}
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>⚙️ Квал-киты</h3>
+        <a href="/admin/kits#qual" class="btn btn-secondary btn-sm">Управление</a>
+      </div>
+      <div class="block-card-body">
+        {% if qual_kits_assigned %}
+        <div class="qualkit-list">
+          {% for qk in qual_kits_assigned %}
+          <div class="qualkit-item">
+            <span class="qualkit-job">{{ qk.job_id or '—' }}</span>
+            <div>
+              <div class="qualkit-name">{{ qk.kit_name or qk.kit_id }}</div>
+              <div class="qualkit-level">Уровень {{ qk.kit_level }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div style="text-align:center; padding:16px; color:var(--gray-dark); font-size:13px;">Квал-киты не назначены</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>{# /LEFT #}
+
+  <!-- RIGHT panel -->
+  <div class="right-panel">
+
+    <!-- Labels -->
+    <div class="block-card">
+      <div class="block-card-header"><h3>🏷 Метки</h3></div>
+      <div class="block-card-body">
+        {% if label_pairs %}
+        <div class="labels-row">
+          {% for lbl, cat in label_pairs %}
+          <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
+            {{ cat.icon }} {{ cat.name }}
+            {% if "write" in admin.permissions %}
+            <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
+                  style="display:inline; margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+              <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
+            </form>
+            {% endif %}
+          </span>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div style="font-size:12px; color:var(--gray-dark); margin-bottom:12px;">Меток нет</div>
+        {% endif %}
+
+        {% if "write" in admin.permissions %}
+          {% if label_categories %}
+          <form method="post" action="/admin/players/{{ player.player_id }}/labels/assign">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <select name="category_id" style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; box-sizing:border-box;">
+                {% for cat in label_categories %}
+                <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="btn btn-primary btn-sm">+ Добавить</button>
+            </div>
+          </form>
+          {% else %}
+          <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center;">
+            + Создать категории меток
+          </a>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Personal notes (Личное дело) -->
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>📂 Личное дело</h3>
+        {% if "write" in admin.permissions %}
+        <button class="btn btn-secondary btn-sm" onclick="openModal('notes-modal')">✏️ Редактировать</button>
+        {% endif %}
+      </div>
+      <div class="block-card-body">
+        <div class="note-preview">{% if notes %}{{ notes[0].content }}{% endif %}</div>
+      </div>
+    </div>
+
+    <!-- Trap -->
+    {% if "write" in admin.permissions %}
+    <div class="block-card">
+      <div class="block-card-header"><h3>🪤 Ловушка</h3></div>
+      <div class="block-card-body">
+        {% set active_trap = namespace(val=none) %}
+        {% for trap in traps %}
+          {% if trap.active == 1 %}
+            {% set active_trap.val = trap %}
+          {% endif %}
+        {% endfor %}
+
+        {% if active_trap.val %}
+        <div class="trap-active-box">
+          <span style="font-size:18px;">🟠</span>
+          <div>
+            <div style="font-weight:700; margin-bottom:2px;">Ловушка активна</div>
+            {% if active_trap.val.reason %}<div style="font-size:12px;">{{ active_trap.val.reason }}</div>{% endif %}
+            <div style="font-size:11px; color:var(--gray-dark); margin-top:2px;">
+              Установлена: {{ active_trap.val.set_at.strftime('%d.%m.%Y %H:%M') if active_trap.val.set_at else '—' }}
+            </div>
+          </div>
+        </div>
+        <form method="post" action="/admin/players/{{ player.player_id }}/traps/{{ active_trap.val.id }}/deactivate">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+          <button type="submit" class="btn btn-warning btn-sm btn-block">🔓 Снять ловушку</button>
+        </form>
+        {% else %}
+        <form method="post" action="/admin/players/{{ player.player_id }}/traps/set">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+          <div class="form-group" style="margin-bottom:10px;">
+            <label>Причина (необязательно)</label>
+            <input type="text" name="reason" placeholder="Подозрение...">
+          </div>
+          <button type="submit" class="btn btn-warning btn-sm btn-block">🪤 Установить ловушку</button>
+        </form>
+        {% endif %}
+
+        {% if traps %}
+        <div style="margin-top:12px;">
+          <div class="right-section-title">История ловушек</div>
+          {% for trap in traps %}
+          {% if trap.active != 1 %}
+          <div class="trap-triggered-row">
+            <span>{{ trap.set_at.strftime('%d.%m') if trap.set_at else '—' }}</span>
+            <span>{% if trap.triggered_at %}🎯 {{ trap.triggered_at.strftime('%d.%m %H:%M') }}{% else %}снята вручную{% endif %}</span>
+          </div>
+          {% endif %}
+          {% endfor %}
         </div>
         {% endif %}
       </div>
     </div>
+    {% endif %}
+
+    <!-- Achievements quick-open -->
+    {% if "write" in admin.permissions %}
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>🏆 Достижения</h3>
+        <span style="font-size:12px; color:var(--gray);">{{ (player.achievements or []) | length }}</span>
+      </div>
+      <div class="block-card-body">
+        <button class="btn btn-secondary btn-sm btn-block" onclick="openModal('ach-modal');loadConfig();">
+          ✏️ Редактор достижений
+        </button>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Punishment history -->
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>⚖️ История наказаний</h3>
+        <span style="font-size:12px; color:var(--gray);">{{ punishments | length }}</span>
+      </div>
+      <div class="block-card-body" style="padding:0;">
+        {% if punishments %}
+        <div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead style="background:var(--dark-blue-bg);">
+              <tr>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Тип</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase;">Причина</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Кто</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Дата</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in punishments %}
+              {% set p = item.p %}
+              <tr style="border-bottom:1px solid var(--stroke-01);">
+                <td style="padding:8px 12px; white-space:nowrap;">
+                  {% if p.type == 'warning' %}<span style="color:#ffaa44;">⚠️ Предупр.</span>
+                  {% elif p.type == 'reprimand' %}<span style="color:#c77dff;">📋 Выговор</span>
+                  {% elif p.type == 'kick' %}<span style="color:#ff8c42;">👟 Кик</span>
+                  {% else %}<span style="color:#ff4d80;">🔨 Бан</span>{% endif %}
+                </td>
+                <td style="padding:8px 12px; color:var(--gray); max-width:160px; word-break:break-word;">{{ p.reason or '—' }}</td>
+                <td style="padding:8px 12px; color:var(--gray); white-space:nowrap;">{{ p.issued_by_name or '—' }}</td>
+                <td style="padding:8px 12px; color:var(--gray-dark); font-family:'Courier New',monospace; white-space:nowrap; font-size:11px;">
+                  {{ p.issued_at.strftime('%d.%m.%y %H:%M') if p.issued_at else '—' }}
+                </td>
+                <td style="padding:8px 12px;">
+                  {% if item.status == 'active' %}
+                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(3,123,54,.15); color:var(--success); border:1px solid rgba(3,123,54,.3);">Активно</span>
+                  {% elif item.status == 'expired' %}
+                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(120,120,120,.12); color:#aaa; border:1px solid rgba(120,120,120,.3);">Истекло</span>
+                  {% else %}
+                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(183,12,70,.08); color:#ff4d80; border:1px solid rgba(183,12,70,.2);">Неактуально</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:10px 14px;">
+          <a href="/admin/punishments?tab=warning&search={{ player.player_steamid or '' }}"
+             style="font-size:12px; color:var(--primary-blue); text-decoration:none;">
+            Все наказания →
+          </a>
+        </div>
+        {% else %}
+        <div style="text-align:center; padding:20px; color:var(--gray-dark); font-size:13px;">Наказаний не найдено</div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div>{# /RIGHT #}
+</div>
+
+<!-- ── Data sections ── -->
+<div class="sections-grid">
+
+  <div class="block-card">
+    <div class="block-card-header"><h3>⚔️ Убийства</h3><span style="font-size:12px;color:var(--gray);">{{ kills|length }}</span></div>
+    <div class="table-scroll-wrap"><div class="table-scroll-body">
+    <table class="data-table">
+      <thead><tr><th>Монстр / Тип</th><th>Кол-во</th></tr></thead>
+      <tbody>
+        {% if kills %}{% for k in kills %}<tr><td>{{ k.monster_type or '—' }}</td><td>{{ k.kills_count or 0 }}</td></tr>{% endfor %}
+        {% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
+      </tbody>
+    </table>
+    </div></div>
   </div>
 
-  <!-- Edit -->
-  {% if "write" in admin.permissions %}
   <div class="block-card">
-    <div class="block-card-header"><h3>Редактирование</h3></div>
-    <div class="block-card-body">
+    <div class="block-card-header"><h3>📋 Действия по ролям</h3><span style="font-size:12px;color:var(--gray);">{{ role_actions|length }}</span></div>
+    <div class="table-scroll-wrap"><div class="table-scroll-body">
+    <table class="data-table">
+      <thead><tr><th>Роль</th><th>Тип</th><th>Значение</th></tr></thead>
+      <tbody>
+        {% if role_actions %}{% for ra in role_actions %}
+        <tr><td class="mono-cell">{{ ra.role or '—' }}</td><td>{{ ra.action_type or '—' }}</td><td class="mono-cell">{{ ra.value or '—' }}</td></tr>
+        {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+
+  <div class="block-card">
+    <div class="block-card-header"><h3>🌐 IP-адреса</h3><span style="font-size:12px;color:var(--gray);">{{ ips|length }}</span></div>
+    <div class="table-scroll-wrap"><div class="table-scroll-body">
+    <table class="data-table">
+      <thead><tr><th>IP</th><th>Первый вход</th><th>Последний</th></tr></thead>
+      <tbody>
+        {% if ips %}{% for ip in ips %}
+        <tr>
+          <td class="mono-cell">{{ ip.ip }}</td>
+          <td class="mono-cell">{{ ip.first_seen.strftime('%d.%m.%Y') if ip.first_seen else '—' }}</td>
+          <td class="mono-cell">{{ ip.last_seen.strftime('%d.%m.%Y') if ip.last_seen else '—' }}</td>
+        </tr>
+        {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+
+  <div class="block-card">
+    <div class="block-card-header"><h3>📝 История имён</h3><span style="font-size:12px;color:var(--gray);">{{ names|length }}</span></div>
+    <div class="table-scroll-wrap"><div class="table-scroll-body">
+    <table class="data-table">
+      <thead><tr><th>Имя</th><th>Впервые</th></tr></thead>
+      <tbody>
+        {% if names %}{% for n in names %}
+        <tr><td>{{ n.nickname }}</td><td class="mono-cell">{{ n.first_seen.strftime('%d.%m.%Y') if n.first_seen else '—' }}</td></tr>
+        {% endfor %}{% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+
+  <div class="block-card">
+    <div class="block-card-header"><h3>📊 Статистика по ролям</h3><span style="font-size:12px;color:var(--gray);">{{ role_stats|length }}</span></div>
+    <div class="table-scroll-wrap"><div class="table-scroll-body">
+    <table class="data-table">
+      <thead><tr><th>Роль</th><th>Раундов</th><th>MVP Score</th></tr></thead>
+      <tbody>
+        {% if role_stats %}{% for rs in role_stats %}
+        <tr><td class="mono-cell">{{ rs.role or '—' }}</td><td>{{ rs.rounds_played or 0 }}</td><td>{{ rs.mvp_score or 0 }}</td></tr>
+        {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+
+  <div class="block-card">
+    <div class="block-card-header"><h3>🔐 Сессии</h3><span style="font-size:12px;color:var(--gray);">{{ sessions|length }}</span></div>
+    <div class="table-scroll-wrap"><div class="table-scroll-body">
+    <table class="data-table">
+      <thead><tr><th>Начало</th><th>Конец</th><th>Время</th></tr></thead>
+      <tbody>
+        {% if sessions %}{% for s in sessions %}
+        <tr>
+          <td class="mono-cell">{{ s.login_time.strftime('%d.%m.%Y %H:%M') if s.login_time else '—' }}</td>
+          <td class="mono-cell">{% if s.logout_time %}{{ s.logout_time.strftime('%d.%m.%Y %H:%M') }}{% else %}<span style="color:var(--success)">онлайн</span>{% endif %}</td>
+          <td>{% if s.session_duration %}{{ (s.session_duration // 60) }} мин{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+
+</div>
+
+<!-- ════════════════════════ MODALS ════════════════════════ -->
+
+{% if "write" in admin.permissions %}
+
+<!-- Edit modal -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal-box narrow">
+    <div class="modal-header">
+      <h3>✏️ Редактирование</h3>
+      <button class="modal-close" onclick="closeModal('edit-modal')">✕</button>
+    </div>
+    <div class="modal-body">
       <form method="post" action="/admin/players/{{ player.player_id }}/update">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-        <div style="display:flex; flex-direction:column; gap:var(--spacing-16);">
+        <div style="display:flex;flex-direction:column;gap:var(--spacing-16);">
           <div class="form-group">
             <label>Ранг</label>
             <select name="rank_id">
               <option value="">— Без ранга —</option>
-              {% for rank_id, rank_name in ranks.items() %}
-              <option value="{{ rank_id }}" {% if player.rank_id | string == rank_id %}selected{% endif %}>{{ rank_name }}</option>
+              {% for rid, rname in ranks.items() %}
+              <option value="{{ rid }}" {% if player.rank_id | string == rid %}selected{% endif %}>{{ rname }}</option>
               {% endfor %}
             </select>
           </div>
@@ -284,312 +692,168 @@ textarea { resize:vertical; min-height:100px; }
             <label>Уровень кита</label>
             <select name="kit_level">
               <option value="">— Без кита —</option>
-              {% for kit_id, kit_name in kits.items() %}
-              <option value="{{ kit_id }}" {% if player.kit_level | string == kit_id %}selected{% endif %}>{{ kit_name }}</option>
+              {% for kid, kname in kits.items() %}
+              <option value="{{ kid }}" {% if player.kit_level | string == kid %}selected{% endif %}>{{ kname }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="form-group">
             <label>Достижения (JSON)</label>
-            <textarea name="achievements" rows="4" placeholder='["ach_id_1", "ach_id_2"]'>{% if player.achievements %}{{ player.achievements | tojson(indent=2) }}{% endif %}</textarea>
+            <textarea name="achievements" rows="4" placeholder='["ach_id_1"]'>{% if player.achievements %}{{ player.achievements | tojson(indent=2) }}{% endif %}</textarea>
           </div>
-          <div style="display:flex; gap:10px; align-items:center;">
-            <button type="submit" class="btn btn-primary">💾 Сохранить</button>
-            {% if "write" in admin.permissions %}
-            <button type="button" class="btn btn-secondary" onclick="document.getElementById('ach-modal').classList.add('open')">🏆 Редактор достижений</button>
-            {% endif %}
-          </div>
+          <button type="submit" class="btn btn-primary">💾 Сохранить</button>
         </div>
       </form>
     </div>
   </div>
-  {% endif %}
 </div>
 
-<!-- ── Data sections ── -->
-<div class="sections-grid">
-
-  <!-- Kills -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>⚔️ Убийства</h3>
-      <span style="font-size:12px; color:var(--gray);">{{ kills|length }}</span>
+<!-- Notes modal -->
+<div class="modal-overlay" id="notes-modal">
+  <div class="modal-box narrow">
+    <div class="modal-header">
+      <h3>📂 Личное дело</h3>
+      <button class="modal-close" onclick="closeModal('notes-modal')">✕</button>
     </div>
-    <div class="table-scroll-wrap">
-      <div class="table-scroll-body">
-      <table class="data-table">
-        <thead><tr><th>Монстр / Тип</th><th>Кол-во убийств</th></tr></thead>
-        <tbody>
-          {% if kills %}
-          {% for k in kills %}
-          <tr>
-            <td>{{ k.monster_type or '—' }}</td>
-            <td><span style="font-size:12px; color:var(--gray);">{{ k.kills_count or 0 }}</span></td>
-          </tr>
-          {% endfor %}
-          {% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
+    <div class="modal-body">
+      <form method="post" action="/admin/players/{{ player.player_id }}/notes/save">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <div class="form-group" style="margin-bottom:var(--spacing-16);">
+          <label>Заметки об игроке</label>
+          <textarea name="content" rows="8" placeholder="Введите заметки...">{% if notes %}{{ notes[0].content }}{% endif %}</textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+      </form>
     </div>
   </div>
-
-  <!-- Role Actions -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>📋 Действия по ролям</h3>
-      <span style="font-size:12px; color:var(--gray);">{{ role_actions|length }}</span>
-    </div>
-    <div class="table-scroll-wrap">
-      <div class="table-scroll-body">
-      <table class="data-table">
-        <thead><tr><th>Роль</th><th>Тип действия</th><th>Значение</th></tr></thead>
-        <tbody>
-          {% if role_actions %}
-          {% for ra in role_actions %}
-          <tr>
-            <td class="mono-cell">{{ ra.role or '—' }}</td>
-            <td>{{ ra.action_type or '—' }}</td>
-            <td class="mono-cell">{{ ra.value or '—' }}</td>
-          </tr>
-          {% endfor %}
-          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- IPs -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>🌐 IP-адреса</h3>
-      <span style="font-size:12px; color:var(--gray);">{{ ips|length }}</span>
-    </div>
-    <div class="table-scroll-wrap">
-      <div class="table-scroll-body">
-      <table class="data-table">
-        <thead><tr><th>IP</th><th>Первый вход</th><th>Последний вход</th></tr></thead>
-        <tbody>
-          {% if ips %}
-          {% for ip in ips %}
-          <tr>
-            <td class="mono-cell">{{ ip.ip }}</td>
-            <td class="mono-cell">{{ ip.first_seen.strftime('%d.%m.%Y') if ip.first_seen else '—' }}</td>
-            <td class="mono-cell">{{ ip.last_seen.strftime('%d.%m.%Y') if ip.last_seen else '—' }}</td>
-          </tr>
-          {% endfor %}
-          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Names -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>📝 История имён</h3>
-      <span style="font-size:12px; color:var(--gray);">{{ names|length }}</span>
-    </div>
-    <div class="table-scroll-wrap">
-      <div class="table-scroll-body">
-      <table class="data-table">
-        <thead><tr><th>Имя</th><th>Впервые замечено</th></tr></thead>
-        <tbody>
-          {% if names %}
-          {% for n in names %}
-          <tr>
-            <td>{{ n.nickname }}</td>
-            <td class="mono-cell">{{ n.first_seen.strftime('%d.%m.%Y') if n.first_seen else '—' }}</td>
-          </tr>
-          {% endfor %}
-          {% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Role Stats -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>📊 Статистика по ролям</h3>
-      <span style="font-size:12px; color:var(--gray);">{{ role_stats|length }}</span>
-    </div>
-    <div class="table-scroll-wrap">
-      <div class="table-scroll-body">
-      <table class="data-table">
-        <thead><tr><th>Роль</th><th>Сыграно раундов</th><th>MVP Score</th></tr></thead>
-        <tbody>
-          {% if role_stats %}
-          {% for rs in role_stats %}
-          <tr>
-            <td class="mono-cell">{{ rs.role or '—' }}</td>
-            <td>{{ rs.rounds_played or 0 }}</td>
-            <td>{{ rs.mvp_score or 0 }}</td>
-          </tr>
-          {% endfor %}
-          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Sessions -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>🔐 Сессии</h3>
-      <span style="font-size:12px; color:var(--gray);">{{ sessions|length }}</span>
-    </div>
-    <div class="table-scroll-wrap">
-      <div class="table-scroll-body">
-      <table class="data-table">
-        <thead><tr><th>Начало</th><th>Конец</th><th>Время</th></tr></thead>
-        <tbody>
-          {% if sessions %}
-          {% for s in sessions %}
-          <tr>
-            <td class="mono-cell">{{ s.login_time.strftime('%d.%m.%Y %H:%M') if s.login_time else '—' }}</td>
-            <td class="mono-cell">{% if s.logout_time %}{{ s.logout_time.strftime('%d.%m.%Y %H:%M') }}{% else %}<span style="color:var(--success)">онлайн</span>{% endif %}</td>
-            <td>
-              {% if s.session_duration %}
-              {{ (s.session_duration // 60) }} мин
-              {% else %}—{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-          {% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  </div>
-
 </div>
 
-<!-- ── Achievements Modal ── -->
-{% if "write" in admin.permissions %}
+<!-- Ban modal -->
+<div class="modal-overlay" id="ban-modal">
+  <div class="modal-box narrow">
+    <div class="modal-header">
+      <h3>🔨 Выдать бан</h3>
+      <button class="modal-close" onclick="closeModal('ban-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form method="post" action="/admin/ban">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <input type="hidden" name="player_id" value="{{ player.player_id }}">
+        <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
+        <div style="display:flex;flex-direction:column;gap:var(--spacing-16);">
+          <div class="form-group">
+            <label>Причина</label>
+            <input type="text" name="reason" placeholder="Причина бана..." required>
+          </div>
+          <div class="form-group">
+            <label>Длительность (минуты, 0 = навсегда)</label>
+            <input type="number" name="minutes" min="0" value="0">
+          </div>
+          <button type="submit" class="btn btn-danger">🔨 Выдать бан</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Achievements modal -->
 <div class="modal-overlay" id="ach-modal">
   <div class="modal-box">
     <div class="modal-header">
       <h3>🏆 Редактор достижений</h3>
-      <button class="modal-close" onclick="document.getElementById('ach-modal').classList.remove('open')">✕</button>
+      <button class="modal-close" onclick="closeModal('ach-modal')">✕</button>
     </div>
     <div class="modal-body">
       <div class="modal-tabs">
-        <button class="modal-tab active" onclick="switchTab('config')">Из конфига</button>
-        <button class="modal-tab" onclick="switchTab('manual')">Вручную</button>
+        <button class="modal-tab active" onclick="switchAchTab('config',this)">Из конфига</button>
+        <button class="modal-tab" onclick="switchAchTab('manual',this)">Вручную</button>
       </div>
 
-      <!-- Tab: config -->
       <div class="tab-panel active" id="tab-config">
         <div id="packs-grid" class="packs-grid"></div>
         <div id="config-ach-grid" class="config-ach-grid" style="display:none;"></div>
-        <div id="config-tab-actions" style="display:none; margin-top:var(--spacing-16); display:flex; gap:10px; flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" onclick="backToPacks()">← Назад к пакетам</button>
-          <button class="btn btn-primary btn-sm" id="add-pack-btn" onclick="addPackAchievements()">✅ Добавить выбранные</button>
+        <div id="config-tab-actions" style="display:none; margin-top:var(--spacing-16); gap:10px; flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="backToPacks()">← Назад</button>
+          <button class="btn btn-primary btn-sm" onclick="addPackAchievements()">✅ Добавить выбранные</button>
         </div>
       </div>
 
-      <!-- Tab: manual -->
       <div class="tab-panel" id="tab-manual">
         <div class="manual-form">
-          <div class="form-group">
-            <label>ID достижения</label>
-            <input type="text" id="manual-ach-id" placeholder="achievement_id">
-          </div>
-          <div class="form-group">
-            <label>Примечание (необязательно)</label>
-            <input type="text" id="manual-ach-note" placeholder="За что выдано...">
-          </div>
+          <div class="form-group"><label>ID достижения</label><input type="text" id="manual-ach-id" placeholder="achievement_id"></div>
+          <div class="form-group"><label>Примечание (необязательно)</label><input type="text" id="manual-ach-note" placeholder="За что выдано..."></div>
           <button class="btn btn-primary btn-sm" onclick="addManualAchievement()">➕ Добавить</button>
         </div>
       </div>
 
-      <!-- Current achievements -->
       <div style="margin-top:var(--spacing-24);">
-        <h4 style="color:var(--white); font-size:14px; font-weight:600; margin-bottom:12px;">Текущие достижения</h4>
+        <h4 style="color:var(--white);font-size:14px;font-weight:600;margin-bottom:12px;">Текущие достижения</h4>
         <div class="ach-list" id="current-ach-list">
           {% set current_achs = player.achievements or [] %}
           {% for ach in current_achs %}
-          {% if ach is mapping %}
-          <div class="ach-item" data-id="{{ ach.get('id','') }}">
-            <div class="ach-item-info">
-              <span class="ach-item-name">{{ ach.get('name', ach.get('id','—')) }}</span>
-              <span class="ach-item-id">{{ ach.get('id','') }}</span>
-              {% if ach.get('note') %}<span class="ach-note">{{ ach.note }}</span>{% endif %}
+            {% if ach is mapping %}
+            <div class="ach-item" data-id="{{ ach.get('id','') }}">
+              <div class="ach-item-info">
+                <span class="ach-item-name">{{ ach.get('name', ach.get('id','—')) }}</span>
+                <span class="ach-item-id">{{ ach.get('id','') }}</span>
+                {% if ach.get('note') %}<span class="ach-note">{{ ach.note }}</span>{% endif %}
+              </div>
+              <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach.get('id','') }}')">🗑</button>
             </div>
-            <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach.get('id','') }}')">🗑</button>
-          </div>
-          {% else %}
-          <div class="ach-item" data-id="{{ ach }}">
-            <div class="ach-item-info">
-              <span class="ach-item-name">{{ ach }}</span>
-              <span class="ach-item-id">{{ ach }}</span>
+            {% else %}
+            <div class="ach-item" data-id="{{ ach }}">
+              <div class="ach-item-info">
+                <span class="ach-item-name">{{ ach }}</span>
+                <span class="ach-item-id">{{ ach }}</span>
+              </div>
+              <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach }}')">🗑</button>
             </div>
-            <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach }}')">🗑</button>
-          </div>
-          {% endif %}
+            {% endif %}
           {% endfor %}
           {% if not current_achs %}
-          <div id="ach-empty" style="text-align:center; padding:24px; color:var(--gray-dark);">Нет достижений</div>
+          <div id="ach-empty" style="text-align:center;padding:24px;color:var(--gray-dark);">Нет достижений</div>
           {% endif %}
         </div>
       </div>
     </div>
   </div>
 </div>
+
+{% endif %}{# /write #}
 
 <script>
 const PLAYER_ID = {{ player.player_id }};
 const CSRF_TOKEN = "{{ request.session.get('csrf_token','') }}";
 
-// Tab switching
-function switchTab(name) {
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');
-  event.currentTarget.classList.add('active');
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(m => {
+  m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); });
+});
+
+function switchAchTab(name, btn) {
+  document.querySelectorAll('#ach-modal .tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('#ach-modal .modal-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
 }
 
-// Close modal on backdrop click
-document.getElementById('ach-modal').addEventListener('click', function(e) {
-  if (e.target === this) this.classList.remove('open');
-});
-
-// Load achievements config on modal open
-let configData = null;
-let selectedPack = null;
-let ownedIds = [];
-
-document.querySelector('[onclick*="ach-modal"]')?.addEventListener('click', loadConfig);
-// also trigger when the edit button opens modal
-document.querySelectorAll('button').forEach(btn => {
-  if (btn.textContent.includes('Редактор достижений')) {
-    btn.addEventListener('click', loadConfig);
-  }
-});
+let configData = null, selectedPack = null, ownedIds = [];
 
 async function loadConfig() {
   if (configData) return;
   try {
     const r = await fetch('/admin/achievements/config');
     configData = await r.json();
-    // get current owned ids
-    ownedIds = Array.from(document.querySelectorAll('#current-ach-list .ach-item'))
-      .map(el => el.dataset.id);
+    ownedIds = Array.from(document.querySelectorAll('#current-ach-list .ach-item')).map(el => el.dataset.id);
     renderPacksGrid();
-  } catch(e) {
-    console.error('Failed to load achievements config', e);
-  }
+  } catch(e) { console.error('Ошибка загрузки конфига достижений', e); }
 }
 
 function renderPacksGrid() {
   const grid = document.getElementById('packs-grid');
   grid.innerHTML = '';
-  if (!configData || !configData.packs) return;
+  if (!configData?.packs) return;
   configData.packs.forEach(pack => {
     const card = document.createElement('div');
     card.className = 'pack-card';
@@ -613,13 +877,8 @@ function showPack(pack) {
     const item = document.createElement('div');
     item.className = 'config-ach-item' + (owned ? ' owned' : '');
     item.dataset.id = ach.id;
-    item.innerHTML = `
-      <input type="checkbox" class="ach-check" id="ach_${ach.id}" ${owned?'checked disabled':''}>
-      <label for="ach_${ach.id}" class="ach-label-text">${ach.name||ach.id}</label>`;
-    if (!owned) item.onclick = () => {
-      const cb = item.querySelector('input');
-      cb.checked = !cb.checked;
-    };
+    item.innerHTML = `<input type="checkbox" class="ach-check" id="ach_${ach.id}" ${owned?'checked disabled':''}><label for="ach_${ach.id}" class="ach-label-text">${ach.name||ach.id}</label>`;
+    if (!owned) item.onclick = () => { const cb = item.querySelector('input'); cb.checked = !cb.checked; };
     grid.appendChild(item);
   });
 }
@@ -632,12 +891,9 @@ function backToPacks() {
 }
 
 async function addPackAchievements() {
-  const checked = Array.from(document.querySelectorAll('#config-ach-grid .ach-check:checked:not(:disabled)'))
-    .map(cb => cb.id.replace('ach_',''));
+  const checked = Array.from(document.querySelectorAll('#config-ach-grid .ach-check:checked:not(:disabled)')).map(cb => cb.id.replace('ach_',''));
   if (!checked.length) return;
-  for (const id of checked) {
-    await addAchievement(id, '');
-  }
+  for (const id of checked) { await addAchievement(id, ''); }
   backToPacks();
 }
 
@@ -657,27 +913,17 @@ async function addAchievement(achId, note) {
   fd.append('note', note);
   const r = await fetch(`/admin/players/${PLAYER_ID}/achievements/add`, { method:'POST', body:fd });
   if (r.ok) {
-    const data = await r.json();
     appendAchItem(achId, achId, note);
     ownedIds.push(achId);
     document.getElementById('ach-empty')?.remove();
-  } else {
-    alert('Ошибка при добавлении достижения');
-  }
+  } else { alert('Ошибка при добавлении достижения'); }
 }
 
 function appendAchItem(id, name, note) {
   const list = document.getElementById('current-ach-list');
   const item = document.createElement('div');
-  item.className = 'ach-item';
-  item.dataset.id = id;
-  item.innerHTML = `
-    <div class="ach-item-info">
-      <span class="ach-item-name">${name}</span>
-      <span class="ach-item-id">${id}</span>
-      ${note ? `<span class="ach-note">${note}</span>` : ''}
-    </div>
-    <button class="btn btn-danger btn-sm" onclick="deleteAchievement('${id}')">🗑</button>`;
+  item.className = 'ach-item'; item.dataset.id = id;
+  item.innerHTML = `<div class="ach-item-info"><span class="ach-item-name">${name}</span><span class="ach-item-id">${id}</span>${note?`<span class="ach-note">${note}</span>`:''}</div><button class="btn btn-danger btn-sm" onclick="deleteAchievement('${id}')">🗑</button>`;
   list.appendChild(item);
 }
 
@@ -691,13 +937,9 @@ async function deleteAchievement(achId) {
     document.querySelector(`.ach-item[data-id="${achId}"]`)?.remove();
     ownedIds = ownedIds.filter(i => i !== achId);
     if (!document.querySelectorAll('#current-ach-list .ach-item').length) {
-      document.getElementById('current-ach-list').innerHTML =
-        '<div id="ach-empty" style="text-align:center;padding:24px;color:var(--gray-dark);">Нет достижений</div>';
+      document.getElementById('current-ach-list').innerHTML = '<div id="ach-empty" style="text-align:center;padding:24px;color:var(--gray-dark);">Нет достижений</div>';
     }
-  } else {
-    alert('Ошибка при удалении достижения');
-  }
+  } else { alert('Ошибка при удалении достижения'); }
 }
 </script>
-{% endif %}
 {% endblock %}

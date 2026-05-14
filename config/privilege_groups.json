@@ -1,0 +1,20 @@
+{
+  "default": {
+    "name": "Default",
+    "description": "Базовый набор разрешений (пустой)",
+    "commands": [],
+    "allowed_action_ids": []
+  },
+  "moderator": {
+    "name": "Moderator",
+    "description": "Набор для модераторов: мут, кик",
+    "commands": ["/mute", "/kick"],
+    "allowed_action_ids": [100, 101]
+  },
+  "event_manager": {
+    "name": "Event Manager",
+    "description": "Разрешения для управления мероприятиями",
+    "commands": ["/teleport", "/giveitem"],
+    "allowed_action_ids": [200, 201, 202]
+  }
+}

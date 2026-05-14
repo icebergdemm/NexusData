@@ -32,6 +32,24 @@ def safe_get_list(value: Optional[list], default: Optional[list] = None) -> list
     return value if value is not None else (default or [])
 
 
+def steam64_to_steam2(steam64: str) -> Optional[str]:
+    """
+    Convert Steam64 ID (76561198xxxxxxxxx) to STEAM_0:Y:Z format.
+    Returns None if the input is not a valid Steam64 ID.
+    """
+    try:
+        val = int(str(steam64).strip())
+    except (ValueError, TypeError):
+        return None
+    base = 76561197960265728
+    if val < base:
+        return None
+    auth_id = val - base
+    w = auth_id % 2
+    z = (auth_id - w) // 2
+    return f"STEAM_1:{w}:{z}"
+
+
 def validate_steamid(steamid: str) -> bool:
     """
     Validate SteamID format
