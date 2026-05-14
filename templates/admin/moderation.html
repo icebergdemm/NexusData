@@ -1,0 +1,563 @@
+{% extends "base.html" %}
+
+{% block title %}Модерирование сервера — Nexus Data{% endblock %}
+
+{% block content %}
+<div class="card" style="margin-bottom: var(--spacing-8);">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <h2 style="margin:0;">Модерирование сервера</h2>
+    <span class="badge-online">● Онлайн: {{ online_count }}</span>
+  </div>
+</div>
+
+{# ── Tab navigation ─────────────────────────────────────────────────────── #}
+<nav class="mod-tabs">
+  <a href="/admin/moderation?tab=status"     class="mod-tab {% if active_tab == 'status'     %}active{% endif %}">Состояние сервера</a>
+  <a href="/admin/moderation?tab=banhammer"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
+  <a href="/admin/moderation?tab=logs"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
+  <a href="/admin/moderation?tab=anticheat"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
+</nav>
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# TAB: Состояние сервера                                                  #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% if active_tab == 'status' %}
+<div class="card">
+  <h3 style="margin-bottom:var(--spacing-16);">Игроки на сервере ({{ online_count }})</h3>
+  {% if online_players %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Имя игрока</th>
+          <th>SteamID</th>
+          <th>Персонаж</th>
+          <th>Ping</th>
+          <th>На сервере с</th>
+          <th>Общее время</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in online_players %}
+        <tr class="{% if p.is_new_player %}row-new-player{% endif %}">
+          <td>
+            {{ p.player_name }}
+            {% if p.is_new_player %}<span class="badge-new" title="Новичок: менее 2 часов">новичок</span>{% endif %}
+          </td>
+          <td><code>{{ p.player_steamid }}</code></td>
+          <td>{{ p.character_name or '—' }}</td>
+          <td>{{ p.ping if p.ping is not none else '—' }}</td>
+          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '—' }}</td>
+          <td>{{ fmt_playtime(p.total_play_time) }}</td>
+          <td>
+            <div class="action-group">
+              {% if p.player_id %}
+              <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost" title="Профиль">Профиль</a>
+              {% endif %}
+              <button type="button"
+                class="btn btn-sm btn-warn"
+                onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','status')"
+                title="Кик">Кик</button>
+              <button type="button"
+                class="btn btn-sm btn-danger"
+                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','status')"
+                title="Бан">Бан</button>
+              <button type="button"
+                class="btn btn-sm btn-primary"
+                onclick="openActionModal('message','{{ p.player_steamid }}','{{ p.player_name | e }}','status')"
+                title="Написать">Сообщение</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">Нет данных об онлайн игроках. Сервер ещё не отправил снапшот.</p>
+  {% endif %}
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# TAB: Банхамер                                                           #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% elif active_tab == 'banhammer' %}
+<div class="card">
+  <form method="get" action="/admin/moderation" class="search-form" style="margin-bottom:var(--spacing-24);">
+    <input type="hidden" name="tab" value="banhammer">
+    <input type="text" name="search" class="form-control" placeholder="Поиск по имени / SteamID / IP…"
+           value="{{ search_query or '' }}" style="min-width:320px;">
+    <button type="submit" class="btn btn-primary">Найти</button>
+    {% if search_query %}
+    <a href="/admin/moderation?tab=banhammer" class="btn btn-ghost">Сбросить</a>
+    {% endif %}
+  </form>
+
+  {% if search_query %}
+    <h3 style="margin-bottom:var(--spacing-12);">Результаты поиска ({{ search_results | length }})</h3>
+    {% if search_results %}
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Имя</th><th>SteamID</th><th>Время игры</th><th>Действия</th></tr></thead>
+        <tbody>
+          {% for p in search_results %}
+          <tr>
+            <td>{{ p.player_last_time_name }}</td>
+            <td><code>{{ p.player_steamid }}</code></td>
+            <td>{{ fmt_playtime(p.play_time) }}</td>
+            <td>
+              <div class="action-group">
+                <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
+                {% set online_ids = online_players | map(attribute='player_steamid') | list %}
+                {% if p.player_steamid in online_ids %}
+                <button type="button" class="btn btn-sm btn-warn"
+                  onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer')">Кик</button>
+                {% endif %}
+                <button type="button" class="btn btn-sm btn-danger"
+                  onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer')">Бан</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty-state">Ничего не найдено.</p>
+    {% endif %}
+  {% else %}
+
+  {# Online section #}
+  <h3 style="margin-bottom:var(--spacing-12);">Сейчас на сервере ({{ online_count }})</h3>
+  {% if online_players %}
+  <div class="table-wrap" style="margin-bottom:var(--spacing-32);">
+    <table class="data-table">
+      <thead><tr><th>Имя</th><th>SteamID</th><th>Время игры</th><th>Ping</th><th>Действия</th></tr></thead>
+      <tbody>
+        {% for p in online_players %}
+        <tr class="{% if p.is_new_player %}row-new-player{% endif %}">
+          <td>
+            {{ p.player_name }}
+            {% if p.is_new_player %}<span class="badge-new">новичок</span>{% endif %}
+          </td>
+          <td><code>{{ p.player_steamid }}</code></td>
+          <td>{{ fmt_playtime(p.total_play_time) }}</td>
+          <td>{{ p.ping if p.ping is not none else '—' }}</td>
+          <td>
+            <div class="action-group">
+              {% if p.player_id %}<a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>{% endif %}
+              <button type="button" class="btn btn-sm btn-warn"
+                onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer')">Кик</button>
+              <button type="button" class="btn btn-sm btn-danger"
+                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer')">Бан</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state" style="margin-bottom:var(--spacing-32);">Нет игроков на сервере.</p>
+  {% endif %}
+
+  {# Offline section #}
+  <h3 style="margin-bottom:var(--spacing-12);">Недавно вышедшие ({{ recent_offline | length }})</h3>
+  {% if recent_offline %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Имя</th><th>SteamID</th><th>Время игры</th><th>Последний онлайн</th><th>Действия</th></tr></thead>
+      <tbody>
+        {% for p in recent_offline %}
+        <tr>
+          <td>{{ p.player_name }}</td>
+          <td><code>{{ p.player_steamid }}</code></td>
+          <td>{{ fmt_playtime(p.play_time) }}</td>
+          <td>{{ p.last_seen.strftime('%d.%m %H:%M') if p.last_seen else '—' }}</td>
+          <td>
+            <div class="action-group">
+              <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
+              <button type="button" class="btn btn-sm btn-danger"
+                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer')">Бан</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">Нет данных о недавно вышедших игроках.</p>
+  {% endif %}
+
+  {% endif %}{# /search_query #}
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# TAB: Логи                                                               #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% elif active_tab == 'logs' %}
+<div class="card" style="text-align:center;padding:var(--spacing-48);">
+  <div style="font-size:48px;margin-bottom:var(--spacing-16);">📋</div>
+  <h3>Логи сервера</h3>
+  <p class="empty-state" style="margin-top:var(--spacing-12);">Раздел в разработке. Скоро здесь появятся серверные логи.</p>
+</div>
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# TAB: Античит                                                            #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% elif active_tab == 'anticheat' %}
+<div class="card">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--spacing-16);">
+    <h3 style="margin:0;">Срабатывания античита</h3>
+    <span style="color:var(--gray);font-size:13px;">Всего записей: {{ ac_events | length }}</span>
+  </div>
+  {% if ac_events %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Время</th>
+          <th>Игрок</th>
+          <th>SteamID</th>
+          <th>Тип события</th>
+          <th>Детали</th>
+          <th>Статус</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ev in ac_events %}
+        <tr class="{% if ev.reviewed == 0 %}row-ac-new{% endif %}">
+          <td style="white-space:nowrap;">{{ ev.occurred_at.strftime('%d.%m %H:%M:%S') }}</td>
+          <td>{{ ev.player_name or '—' }}</td>
+          <td><code>{{ ev.player_steamid }}</code></td>
+          <td><span class="badge-event-type">{{ ev.event_type }}</span></td>
+          <td>
+            {% if ev.details %}
+            <details>
+              <summary style="cursor:pointer;color:var(--primary-blue);">Показать</summary>
+              <pre class="details-pre">{{ ev.details | tojson(indent=2) }}</pre>
+            </details>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if ev.reviewed == 0 %}
+            <span class="badge-status badge-pending">Новое</span>
+            {% else %}
+            <span class="badge-status badge-done">Проверено</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="action-group">
+              {% if ev.player_id %}
+              <a href="/admin/players/{{ ev.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
+              {% endif %}
+              <button type="button" class="btn btn-sm btn-warn"
+                onclick="openActionModal('kick','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat')">Кик</button>
+              <button type="button" class="btn btn-sm btn-danger"
+                onclick="openActionModal('ban','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat')">Бан</button>
+              {% if ev.reviewed == 0 %}
+              <form method="post" action="/admin/moderation/anticheat/{{ ev.id }}/review" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-sm btn-ghost">✓ Проверено</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty-state">Срабатываний античита не зафиксировано.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# MODAL: Action form (kick / ban / message)                               #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+<div id="action-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="modal-title">Действие над игроком</h3>
+      <button type="button" class="modal-close" onclick="closeActionModal()" aria-label="Закрыть">×</button>
+    </div>
+    <form method="post" action="/admin/moderation/action" id="action-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action_type" id="modal-action-type">
+      <input type="hidden" name="target_steamid" id="modal-steamid">
+      <input type="hidden" name="redirect_tab" id="modal-redirect-tab">
+
+      <div class="form-group">
+        <label class="form-label">Игрок</label>
+        <p id="modal-player-name" style="color:var(--white);font-weight:600;"></p>
+        <p style="color:var(--gray);font-size:12px;font-family:monospace;" id="modal-steamid-display"></p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="modal-reason">Причина</label>
+        <input type="text" name="reason" id="modal-reason" class="form-control" maxlength="500" placeholder="Укажите причину…">
+      </div>
+
+      <div class="form-group" id="modal-duration-group" style="display:none;">
+        <label class="form-label" for="modal-duration">Длительность бана (минуты; пусто = навсегда)</label>
+        <input type="number" name="duration_minutes" id="modal-duration" class="form-control" min="1" placeholder="навсегда">
+      </div>
+
+      <div class="form-group" id="modal-message-group" style="display:none;">
+        <label class="form-label" for="modal-message">Текст сообщения</label>
+        <textarea name="message_text" id="modal-message" class="form-control" rows="3" maxlength="1000" placeholder="Введите сообщение…"></textarea>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeActionModal()">Отмена</button>
+        <button type="submit" class="btn" id="modal-submit-btn">Подтвердить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+/* ── Moderation-specific styles ── */
+.badge-online {
+  background: rgba(0,255,136,0.12);
+  border: 1px solid rgba(0,255,136,0.35);
+  color: var(--success);
+  border-radius: var(--border-radius-8);
+  padding: 4px 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mod-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: var(--spacing-16);
+  border-bottom: 1px solid var(--stroke-01);
+}
+
+.mod-tab {
+  text-decoration: none;
+  color: var(--gray);
+  padding: 10px 24px;
+  border-radius: var(--border-radius-8) var(--border-radius-8) 0 0;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+  border-bottom: none;
+  margin-bottom: -1px;
+}
+
+.mod-tab:hover { color: var(--white); background: var(--white-003); }
+
+.mod-tab.active {
+  color: var(--white);
+  background: var(--card-bg);
+  border-color: var(--stroke-01);
+  border-bottom-color: var(--card-bg);
+}
+
+/* New player row highlight */
+.row-new-player { background: rgba(255, 170, 0, 0.07) !important; }
+.row-new-player:hover { background: rgba(255, 170, 0, 0.12) !important; }
+
+/* AC new event highlight */
+.row-ac-new { background: rgba(183, 12, 70, 0.06) !important; }
+.row-ac-new:hover { background: rgba(183, 12, 70, 0.10) !important; }
+
+.badge-new {
+  display: inline-block;
+  background: rgba(255,170,0,0.18);
+  border: 1px solid rgba(255,170,0,0.4);
+  color: var(--warning);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge-event-type {
+  display: inline-block;
+  background: rgba(174,0,122,0.15);
+  border: 1px solid rgba(174,0,122,0.4);
+  color: #e872cc;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-status { padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.badge-pending { background: rgba(255,170,0,0.15); color: var(--warning); border: 1px solid rgba(255,170,0,0.4); }
+.badge-done    { background: rgba(0,255,136,0.10); color: var(--success);  border: 1px solid rgba(0,255,136,0.3); }
+
+.details-pre {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--stroke-01);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--gray);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-top: 6px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.action-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+.btn-warn   { background: rgba(255,170,0,0.15);  color: var(--warning); border: 1px solid rgba(255,170,0,0.4);  }
+.btn-warn:hover   { background: rgba(255,170,0,0.25); }
+.btn-danger { background: rgba(183,12,70,0.15);  color: #e06090;        border: 1px solid rgba(183,12,70,0.5);  }
+.btn-danger:hover { background: rgba(183,12,70,0.28); }
+.btn-primary { background: rgba(26,104,222,0.18); color: #80b0ff;       border: 1px solid rgba(26,104,222,0.45); }
+.btn-primary:hover { background: rgba(26,104,222,0.30); }
+.btn-ghost  { background: transparent; color: var(--gray); border: 1px solid var(--stroke-01); }
+.btn-ghost:hover  { color: var(--white); border-color: var(--gray); }
+
+.btn {
+  border-radius: var(--border-radius-8);
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  padding: 7px 16px;
+  transition: all 0.2s;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(1,9,38,0.75);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.modal-box {
+  background: var(--card-bg);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-12);
+  width: min(96vw, 480px);
+  box-shadow: 0 24px 60px rgba(1,9,38,0.6);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--spacing-16) var(--spacing-24);
+  border-bottom: 1px solid var(--stroke-01);
+}
+
+.modal-header h3 { margin: 0; color: var(--white); font-size: 16px; }
+
+.modal-close {
+  background: transparent; border: 0; color: var(--gray);
+  font-size: 22px; cursor: pointer; padding: 0 4px; line-height: 1;
+}
+.modal-close:hover { color: var(--white); }
+
+#action-form { padding: var(--spacing-24); }
+
+.form-group { margin-bottom: var(--spacing-16); }
+
+.form-label { display: block; font-size: 13px; color: var(--gray); margin-bottom: 6px; }
+
+.form-control {
+  width: 100%; padding: 9px 12px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--stroke-01);
+  border-radius: var(--border-radius-8);
+  color: var(--white); font-family: inherit; font-size: 14px;
+  outline: none; transition: border 0.2s;
+}
+.form-control:focus { border-color: var(--primary-blue); }
+
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 10px;
+  margin-top: var(--spacing-24);
+}
+
+.empty-state { color: var(--gray-dark); font-style: italic; }
+
+.search-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+.table-wrap { overflow-x: auto; }
+</style>
+
+<script>
+function openActionModal(actionType, steamid, playerName, tab) {
+  const modal   = document.getElementById('action-modal');
+  const typeIn  = document.getElementById('modal-action-type');
+  const steamIn = document.getElementById('modal-steamid');
+  const tabIn   = document.getElementById('modal-redirect-tab');
+  const nameEl  = document.getElementById('modal-player-name');
+  const sidEl   = document.getElementById('modal-steamid-display');
+  const titleEl = document.getElementById('modal-title');
+  const submitBtn = document.getElementById('modal-submit-btn');
+  const durGroup  = document.getElementById('modal-duration-group');
+  const msgGroup  = document.getElementById('modal-message-group');
+
+  typeIn.value  = actionType;
+  steamIn.value = steamid;
+  tabIn.value   = tab;
+  nameEl.textContent = playerName;
+  sidEl.textContent  = steamid;
+
+  // Reset extra fields
+  document.getElementById('modal-reason').value   = '';
+  document.getElementById('modal-duration').value = '';
+  document.getElementById('modal-message').value  = '';
+  durGroup.style.display = 'none';
+  msgGroup.style.display = 'none';
+
+  if (actionType === 'kick') {
+    titleEl.textContent     = 'Кик игрока';
+    submitBtn.textContent   = 'Кикнуть';
+    submitBtn.className     = 'btn btn-warn';
+  } else if (actionType === 'ban') {
+    titleEl.textContent     = 'Бан игрока';
+    submitBtn.textContent   = 'Забанить';
+    submitBtn.className     = 'btn btn-danger';
+    durGroup.style.display  = 'block';
+  } else if (actionType === 'message') {
+    titleEl.textContent     = 'Личное сообщение';
+    submitBtn.textContent   = 'Отправить';
+    submitBtn.className     = 'btn btn-primary';
+    msgGroup.style.display  = 'block';
+  }
+
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeActionModal() {
+  document.getElementById('action-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Close on overlay click
+document.getElementById('action-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeActionModal();
+});
+
+// Close on Escape
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeActionModal();
+});
+</script>
+{% endblock %}

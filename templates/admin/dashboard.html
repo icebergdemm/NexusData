@@ -25,9 +25,9 @@
     {% endif %}
     {% if "admin" in admin.permissions %}
     <div class="stat-card">
-      <h3>Статистика</h3>
-      <p>Просмотр статистики системы</p>
-      <a href="#">Скоро</a>
+      <h3>Модерирование сервера</h3>
+      <p>Онлайн, банхамер, античит и логи сервера</p>
+      <a href="/admin/moderation">Перейти</a>
     </div>
     {% endif %}
     {% if "admin" in admin.permissions or "manage_admins" in admin.server_permissions or "manage_moderators" in admin.server_permissions %}

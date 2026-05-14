@@ -161,3 +161,47 @@ class ServerPlayerPrivilege(Base):
     granted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     granted_at = Column(DateTime, default=func.now())
     expires_at = Column(DateTime, nullable=True)  # Optional expiration
+
+
+class ServerOnlinePlayer(Base):
+    """Snapshot of currently online players on the game server."""
+    __tablename__ = "server_online_players"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_steamid = Column(String(50), unique=True, nullable=False, index=True)
+    player_name = Column(String(255), nullable=False)
+    character_name = Column(String(255), nullable=True)
+    ping = Column(Integer, nullable=True)
+    join_time = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class AnticheatEvent(Base):
+    """Anticheat trigger events reported by the game server."""
+    __tablename__ = "anticheat_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_steamid = Column(String(50), nullable=False, index=True)
+    player_name = Column(String(255), nullable=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
+    event_type = Column(String(100), nullable=False, index=True)
+    details = Column(String, nullable=True)
+    occurred_at = Column(DateTime, default=func.now(), nullable=False)
+    reviewed = Column(Integer, default=0)  # 0 = new, 1 = reviewed
+
+
+class ServerActionQueue(Base):
+    """Queue of moderation actions (kick/ban/message) to be executed by the game server."""
+    __tablename__ = "server_action_queue"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String(20), nullable=False)   # kick | ban | message
+    target_steamid = Column(String(50), nullable=False, index=True)
+    reason = Column(String(500), nullable=True)
+    duration_minutes = Column(Integer, nullable=True)  # for ban; None = permanent
+    message_text = Column(String(1000), nullable=True)  # for message action
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    executed_at = Column(DateTime, nullable=True)
+    status = Column(String(20), default="pending")  # pending | executed | failed
+    error_message = Column(String(500), nullable=True)

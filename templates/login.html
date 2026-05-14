@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="/static/admin/admin_styles.css">
 </head>
 <body class="login-page">
-    <video id="login-bg-video" class="login-bg-video" muted playsinline preload="auto">
+    <video id="login-bg-video" class="login-bg-video" autoplay muted playsinline preload="auto" loop>
         <source src="/static/admin/login-bg.mp4" type="video/mp4">
     </video>
 
@@ -55,59 +55,37 @@
 
             if (!video) return;
 
-            // ── Video loop via requestAnimationFrame (60 fps polling) ─────
-            // timeupdate fires too rarely (~4 Hz) and can miss the loop point.
-            // rAF is called every frame, so we catch the boundary reliably.
-
-            const LOOP_THRESHOLD = 0.18; // seconds before end → jump
-            let started  = false;
-            let jumping  = false;
+            // ── Custom loop point via native loop interception ────────────────────
+            // We use video.loop=true so the browser handles all the loop timing
+            // at the native level — no rAF polling, no threshold arithmetic.
+            //
+            // Strategy: intercept the `seeking` event that fires when the browser
+            // loops (seeks back to 0). The `seeking` event fires synchronously,
+            // BEFORE any frame is decoded or painted, so redirecting currentTime
+            // here is invisible to the viewer.
+            //
+            // We guard with `didPlayPastStart` so we don't redirect the very first
+            // play-from-0 at page load.
 
             const getLoopStart = () => {
                 const s = Math.max(0, Number(LOGIN_SCENE_CONFIG.videoLoopStart) || 0);
                 if (!video.duration || !isFinite(video.duration)) return s;
-                return Math.min(s, video.duration - 0.25);
+                return Math.min(s, video.duration - 0.1);
             };
 
-            const doLoop = () => {
-                if (jumping) return;
-                jumping = true;
-                video.currentTime = getLoopStart();
-                video.play().catch(() => {});
-                // Release lock after seek settles (250 ms is safe margin)
-                setTimeout(() => { jumping = false; }, 250);
-            };
+            let didPlayPastStart = false;
 
-            const tick = () => {
-                if (
-                    !video.paused &&
-                    video.duration  &&
-                    isFinite(video.duration) &&
-                    video.currentTime >= video.duration - LOOP_THRESHOLD
-                ) {
-                    doLoop();
+            video.addEventListener('timeupdate', () => {
+                if (video.currentTime > 1) didPlayPastStart = true;
+            }, { passive: true });
+
+            video.addEventListener('seeking', () => {
+                // Native loop reset: video jumped from end back to 0.
+                // Redirect to our custom loop start instead.
+                if (didPlayPastStart && video.currentTime < 1) {
+                    video.currentTime = getLoopStart();
                 }
-                requestAnimationFrame(tick);
-            };
-
-            // `ended` as a hard safety net in case rAF somehow misses
-            video.addEventListener('ended', doLoop);
-
-            const startVideo = () => {
-                if (started) return;
-                started = true;
-                video.muted       = true;
-                video.loop        = false;
-                video.currentTime = 0;
-                video.play().catch(() => {});
-                requestAnimationFrame(tick);
-            };
-
-            video.addEventListener('loadedmetadata', startVideo, { once: true });
-            video.addEventListener('canplay',        startVideo, { once: true });
-
-            // Hard fallback: if metadata never fires (cached/instant load)
-            setTimeout(() => { if (!started) startVideo(); }, 1500);
+            });
         })();
     </script>
 </body>
