@@ -1,451 +1,433 @@
-{% extends "base.html" %}
-
-{% block title %}Привилегии игроков — Nexus Data{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Серверные привилегии — Nexus Data{% endblock %}
 
 {% block content %}
-  <div class="card">
-    <h2>Управление привилегиями игроков</h2>
-    <p>Выдача серверных привилегий игрокам (мут, кик, бан и т.д.) по их SteamID.</p>
+<style>
+.pg-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--spacing-16);margin-bottom:var(--spacing-24);}
+.pg-header h2{color:var(--white);font-size:22px;font-weight:700;}
+.pg-header p{color:var(--gray);font-size:14px;margin-top:4px;}
+.tab-bar{display:flex;gap:4px;background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:4px;width:fit-content;margin-bottom:var(--spacing-24);}
+.tab-btn{padding:8px 20px;border-radius:var(--border-radius-8);font-size:13px;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--gray);font-family:'Manrope',sans-serif;transition:all var(--transition-03);}
+.tab-btn.active{background:var(--primary-blue);color:var(--white);}
+.tab-pane{display:none;}.tab-pane.active{display:block;}
+.block-card{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);overflow:hidden;}
+.block-card-header{display:flex;align-items:center;justify-content:space-between;padding:var(--spacing-16) var(--spacing-24);border-bottom:1px solid var(--stroke-01);}
+.block-card-header h3{color:var(--white);font-size:16px;font-weight:600;}
+.block-card-body{padding:20px var(--spacing-24);}
+.form-group{display:flex;flex-direction:column;gap:6px;margin-bottom:var(--spacing-16);}
+.form-group label{font-size:12px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.4px;}
+.form-group input,.form-group select,.form-group textarea{background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-8);color:var(--white);padding:10px 12px;font-size:13px;font-family:'Manrope',sans-serif;transition:border-color var(--transition-03);width:100%;box-sizing:border-box;}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:var(--primary-blue);box-shadow:0 0 0 2px rgba(26,104,222,.15);}
+.form-group select option{background:var(--dark-blue-bg);}
+.form-group textarea{resize:vertical;min-height:80px;}
+.form-hint{font-size:11px;color:var(--gray);margin-top:3px;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:var(--border-radius-8);font-size:13px;font-weight:600;font-family:'Manrope',sans-serif;cursor:pointer;border:1px solid transparent;transition:all var(--transition-03);text-decoration:none;}
+.btn-primary{background:var(--primary-blue);color:var(--white);border-color:var(--primary-blue);}
+.btn-primary:hover{background:#1557c0;}
+.btn-sm{padding:5px 12px;font-size:12px;}
+.btn-secondary{background:transparent;color:var(--gray);border-color:var(--stroke-01);}
+.btn-secondary:hover{background:var(--stroke-01);color:var(--white);}
+.btn-danger{background:rgba(183,12,70,.15);color:#ff4d80;border-color:rgba(183,12,70,.35);}
+.btn-danger:hover{background:rgba(183,12,70,.3);}
+.data-table{width:100%;border-collapse:collapse;}
+.data-table thead{background:var(--dark-blue-bg);}
+.data-table th{padding:11px 16px;text-align:left;color:var(--gray);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;}
+.data-table td{padding:12px 16px;border-bottom:1px solid var(--stroke-01);color:var(--white);font-size:13px;vertical-align:middle;}
+.data-table tbody tr:last-child td{border-bottom:none;}
+.data-table tbody tr:hover{background:var(--blue-010);}
+.inline-select{background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-8);color:var(--white);padding:5px 10px;font-size:12px;font-family:'Manrope',sans-serif;}
+.badge{display:inline-block;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;}
+.badge-blue{background:rgba(26,104,222,.15);color:#4d9fff;border:1px solid rgba(26,104,222,.25);}
+.badge-green{background:rgba(0,197,120,.12);color:var(--success);border:1px solid rgba(0,197,120,.25);}
+.badge-gray{background:rgba(163,171,184,.1);color:var(--gray);}
+.steamid{font-family:'Courier New',monospace;font-size:11px;color:var(--gray);}
+.groups-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:var(--spacing-16);}
+.group-card{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:20px;transition:border-color var(--transition-03);}
+.group-card:hover{border-color:var(--primary-blue);}
+.group-card-name{font-size:15px;font-weight:700;color:var(--white);margin-bottom:4px;}
+.group-card-key{font-family:'Courier New',monospace;font-size:11px;color:var(--primary-blue);margin-bottom:6px;}
+.group-card-meta{font-size:11px;color:var(--gray);margin-bottom:10px;}
+.group-card-desc{font-size:12px;color:var(--gray);margin-bottom:12px;line-height:1.5;}
+.cmd-list{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px;}
+.cmd-chip{font-size:11px;padding:3px 9px;border-radius:12px;background:rgba(26,104,222,.12);color:#4d9fff;border:1px solid rgba(26,104,222,.2);font-family:'Courier New',monospace;}
+.aid-chip{font-size:11px;padding:3px 9px;border-radius:12px;background:rgba(0,197,120,.1);color:var(--success);border:1px solid rgba(0,197,120,.2);}
+.group-card-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+.search-bar{display:flex;gap:10px;margin-bottom:var(--spacing-16);}
+.search-bar input{background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-8);color:var(--white);padding:9px 14px;font-size:13px;font-family:'Manrope',sans-serif;flex:1;}
+.search-bar input:focus{outline:none;border-color:var(--primary-blue);}
+.pagination{display:flex;align-items:center;gap:8px;justify-content:center;margin-top:var(--spacing-16);}
+.page-btn{padding:6px 14px;border-radius:var(--border-radius-8);font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--stroke-01);background:transparent;color:var(--gray);font-family:'Manrope',sans-serif;text-decoration:none;}
+.page-btn:hover,.page-btn.active{background:var(--primary-blue);color:var(--white);border-color:var(--primary-blue);}
+.modal-overlay{display:none;position:fixed;inset:0;z-index:1000;background:rgba(7,15,29,.7);backdrop-filter:blur(4px);align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);width:100%;max-width:560px;max-height:90vh;overflow-y:auto;}
+.modal-wide{max-width:680px;}
+.modal-header-block{padding:20px var(--spacing-24);border-bottom:1px solid var(--stroke-01);display:flex;align-items:center;justify-content:space-between;}
+.modal-header-block h3{font-size:16px;font-weight:700;color:var(--white);}
+.modal-close{background:none;border:none;color:var(--gray);cursor:pointer;font-size:20px;line-height:1;padding:0;}
+.modal-close:hover{color:var(--white);}
+.modal-body-block{padding:20px var(--spacing-24);}
+.modal-footer{padding:16px var(--spacing-24);border-top:1px solid var(--stroke-01);display:flex;justify-content:flex-end;gap:10px;}
+</style>
+
+{% for flash in flashes %}
+<div class="flash-message flash-{{ flash.level }}" style="margin-bottom:var(--spacing-16);">{{ flash.message }}</div>
+{% endfor %}
+
+<div class="pg-header">
+  <div>
+    <h2>&#x1F511; Серверные привилегии</h2>
+    <p>Группы серверных привилегий и назначения игрокам по SteamID.</p>
+  </div>
+</div>
+
+<div class="tab-bar">
+  <button class="tab-btn" id="tab-groups-btn" onclick="switchTab('groups')">&#x1F4CB; Группы привилегий</button>
+  <button class="tab-btn" id="tab-players-btn" onclick="switchTab('players')">&#x1F464; Игроки</button>
+</div>
+
+<!-- ═══════ TAB: ГРУППЫ ПРИВИЛЕГИЙ ═══════ -->
+<div class="tab-pane" id="tab-groups">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:var(--spacing-16);">
+    <button class="btn btn-primary" onclick="openModal('create-group-modal')">Создать группу</button>
+  </div>
+
+  {% if priv_groups_data %}
+  <div class="groups-grid">
+    {% for item in priv_groups_data %}{% set g = item.group %}
+    <div class="group-card">
+      <div class="group-card-name">{{ g.name }}</div>
+      <div class="group-card-key">{{ g.group_key }}</div>
+      <div class="group-card-meta">{{ item.member_count }} игрок(ов) &nbsp;·&nbsp; ID {{ g.id }}</div>
+      {% if g.description %}<div class="group-card-desc">{{ g.description }}</div>{% endif %}
+      {% if g.commands %}
+      <div style="font-size:11px;font-weight:700;color:var(--gray);margin-bottom:5px;">Команды:</div>
+      <div class="cmd-list">
+        {% for cmd in g.commands %}<span class="cmd-chip">{{ cmd }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% if g.allowed_action_ids %}
+      <div style="font-size:11px;font-weight:700;color:var(--gray);margin-bottom:5px;">Разрешения (ID):</div>
+      <div class="cmd-list">
+        {% for aid in g.allowed_action_ids %}<span class="aid-chip">{{ aid }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="group-card-actions">
+        <button class="btn btn-sm btn-secondary"
+          data-gid="{{ g.id }}"
+          data-gname="{{ g.name|e }}"
+          data-gkey="{{ g.group_key|e }}"
+          data-gdesc="{{ g.description|e if g.description else '' }}"
+          data-gcmds="{{ g.commands|join('\n')|e }}"
+          data-gaids="{{ g.allowed_action_ids|join(' ')|e }}"
+          onclick="openEditGroup(this)">
+          Редактировать
+        </button>
+        <form action="/admin/server-privilege-groups/{{ g.id }}/delete" method="post" style="display:contents;">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+          <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить группу «{{ g.name }}»?')">Удалить</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="block-card" style="padding:var(--spacing-24);text-align:center;color:var(--gray);">
+    Групп привилегий ещё нет. Создайте первую, нажав кнопку выше.
+  </div>
+  {% endif %}
+</div>
+
+<!-- ═══════ TAB: ИГРОКИ ═══════ -->
+<div class="tab-pane" id="tab-players">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:var(--spacing-16);">
+    <button class="btn btn-primary" onclick="openModal('assign-modal')">Назначить привилегии</button>
   </div>
 
   <!-- Search -->
-  <div class="card">
-    <h3>Поиск</h3>
-    <form method="get" class="search-form">
-      <input type="text" name="search" placeholder="Поиск по SteamID или имени игрока..." value="{{ search }}">
-      <button type="submit" class="btn">Поиск</button>
-      {% if search %}
-      <a href="/admin/server-privileges" class="btn btn-secondary">Очистить</a>
-      {% endif %}
-    </form>
-  </div>
-
-  <!-- Add New Privilege -->
-  <div class="card">
-    <h3>Выдать новые привилегии</h3>
-    <form method="post" action="/admin/server-privileges/add" class="privilege-form">
-      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-      
-      <div class="form-group compact-field">
-        <label for="steamid">SteamID *</label>
-        <input type="text" id="steamid" name="steamid" placeholder="76561198000000000" required>
-      </div>
-
-      <div class="form-group compact-field">
-        <label for="reason">Причина (опционально)</label>
-        <textarea id="reason" name="reason" placeholder="Например: нарушение правил..." rows="2"></textarea>
-      </div>
-
-      <div class="form-group">
-        <label>Привилегии:</label>
-        <div class="permissions-grid">
-          {% for priv_id, priv_info in server_privileges.items() %}
-          <div class="permission-item">
-            <label class="permission-checkbox">
-              <input type="checkbox" name="privileges" value="{{ priv_id }}">
-              <span class="permission-name">{{ priv_info.name }}</span>
-            </label>
-            <p class="permission-desc">{{ priv_info.description }}</p>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
-
-      <div class="player-edit-actions">
-        <button type="submit" class="btn">Выдать привилегии</button>
-      </div>
-    </form>
-  </div>
-
-  <!-- Privileges List -->
-  <div class="card">
-    <h3>Список привилегий ({{ total }} записей)</h3>
-    
-    {% if privileges %}
-    <div class="privileges-list">
-      {% for privilege in privileges %}
-      <div class="privilege-record">
-        <div class="privilege-record-header">
-          <div class="privilege-steamid">
-            <strong>SteamID:</strong> {{ privilege.steamid }}
-            {% if privilege.player_id %}
-            <span class="player-linked">✓ Привязан к игроку</span>
-            {% endif %}
-          </div>
-          <div class="privilege-date">
-            <small>Выдано: {{ privilege.granted_at.strftime('%d.%m.%Y %H:%M') if privilege.granted_at else 'N/A' }}</small>
-          </div>
-        </div>
-
-        <div class="privilege-record-content">
-          {% if privilege.reason %}
-          <p class="privilege-reason"><strong>Причина:</strong> {{ privilege.reason }}</p>
-          {% endif %}
-
-          <div class="privilege-tags">
-            {% for priv in privilege.privileges %}
-            <span class="tag tag-privilege">{{ server_privileges.get(priv, {}).get('name', priv) }}</span>
-            {% endfor %}
-          </div>
-
-          {% if privilege.expires_at %}
-          <p class="privilege-expires">
-            <strong>Истекает:</strong> {{ privilege.expires_at.strftime('%d.%m.%Y %H:%M') }}
-          </p>
-          {% endif %}
-        </div>
-
-        <div class="privilege-record-actions">
-          <button type="button" class="btn btn-sm btn-edit" onclick="openEditForm({{ privilege.id }})">Редактировать</button>
-          <form method="post" action="/admin/server-privileges/{{ privilege.id }}/delete" style="display: inline;">
-            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Вы уверены?')">Удалить</button>
-          </form>
-        </div>
-
-        <!-- Edit Form (hidden by default) -->
-        <div class="privilege-edit-form" id="edit-form-{{ privilege.id }}" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
-          <form method="post" action="/admin/server-privileges/{{ privilege.id }}/update">
-            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-            
-            <div class="form-group">
-              <label>Привилегии:</label>
-              <div class="permissions-grid">
-                {% for priv_id, priv_info in server_privileges.items() %}
-                <div class="permission-item">
-                  <label class="permission-checkbox">
-                    <input 
-                      type="checkbox" 
-                      name="privileges" 
-                      value="{{ priv_id }}"
-                      {% if priv_id in privilege.privileges %}checked{% endif %}
-                    >
-                    <span class="permission-name">{{ priv_info.name }}</span>
-                  </label>
-                  <p class="permission-desc">{{ priv_info.description }}</p>
-                </div>
-                {% endfor %}
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="reason-{{ privilege.id }}">Причина (опционально)</label>
-              <textarea id="reason-{{ privilege.id }}" name="reason" placeholder="Причина..." rows="2">{{ privilege.reason or '' }}</textarea>
-            </div>
-
-            <div class="form-actions">
-              <button type="submit" class="btn btn-primary">Сохранить</button>
-              <button type="button" class="btn btn-secondary" onclick="closeEditForm({{ privilege.id }})">Отмена</button>
-            </div>
-          </form>
-        </div>
-      </div>
-      {% endfor %}
+  <form method="get" action="/admin/server-privileges" style="margin-bottom:var(--spacing-16);">
+    <input type="hidden" name="tab" value="players">
+    <div class="search-bar">
+      <input type="text" name="search" value="{{ search }}" placeholder="Поиск по SteamID или нику...">
+      <button type="submit" class="btn btn-secondary">Найти</button>
+      {% if search %}<a href="/admin/server-privileges?tab=players" class="btn btn-secondary">Сбросить</a>{% endif %}
     </div>
+  </form>
 
+  <div class="block-card">
+    <div class="block-card-header">
+      <h3>Назначенные привилегии</h3>
+      <span style="font-size:13px;color:var(--gray);">{{ total }} записей</span>
+    </div>
+    {% if privileges %}
+    <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Steam ID</th>
+            <th>Группа</th>
+            <th>Команды</th>
+            <th>Action IDs</th>
+            <th>Причина</th>
+            <th>Выдано</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for priv in privileges %}
+          <tr>
+            <td class="steamid">{{ priv.steamid }}</td>
+            <td>
+              {% if priv.server_group_id %}
+                {% set grp = priv_groups_data | selectattr('group.id', 'equalto', priv.server_group_id) | map(attribute='group') | first %}
+                {% if grp %}<span class="badge badge-blue">{{ grp.name }}</span>
+                {% else %}<span class="badge badge-gray">ID {{ priv.server_group_id }}</span>{% endif %}
+              {% else %}<span style="color:var(--gray);font-size:12px;">—</span>{% endif %}
+            </td>
+            <td>
+              {% if priv.commands %}
+              <div class="cmd-list">{% for c in priv.commands %}<span class="cmd-chip">{{ c }}</span>{% endfor %}</div>
+              {% else %}<span style="color:var(--gray);font-size:12px;">—</span>{% endif %}
+            </td>
+            <td>
+              {% if priv.allowed_action_ids %}
+              <div class="cmd-list">{% for a in priv.allowed_action_ids %}<span class="aid-chip">{{ a }}</span>{% endfor %}</div>
+              {% else %}<span style="color:var(--gray);font-size:12px;">—</span>{% endif %}
+            </td>
+            <td style="font-size:12px;color:var(--gray);max-width:180px;">{{ priv.reason or '—' }}</td>
+            <td style="font-size:11px;color:var(--gray);">{{ priv.granted_at.strftime('%d.%m.%Y') if priv.granted_at else '—' }}</td>
+            <td>
+              <div style="display:flex;gap:6px;">
+                <button class="btn btn-sm btn-secondary"
+                  data-pid="{{ priv.id }}"
+                  data-steamid="{{ priv.steamid|e }}"
+                  data-sgid="{{ priv.server_group_id or '' }}"
+                  data-cmds="{{ priv.commands|join('\n')|e if priv.commands else '' }}"
+                  data-aids="{{ priv.allowed_action_ids|join(' ')|e if priv.allowed_action_ids else '' }}"
+                  data-reason="{{ priv.reason|e if priv.reason else '' }}"
+                  onclick="openEditPriv(this)">
+                  Изменить
+                </button>
+                <form action="/admin/server-privileges/{{ priv.id }}/delete" method="post" style="display:contents;">
+                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+                  <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить привилегии игрока {{ priv.steamid }}?')">Удалить</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     <!-- Pagination -->
     {% if total_pages > 1 %}
-    <div class="pagination">
+    <div class="pagination" style="padding:var(--spacing-16);">
       {% if page > 1 %}
-      <a href="/admin/server-privileges?page=1{% if search %}&search={{ search }}{% endif %}" class="btn btn-sm">← Первая</a>
-      <a href="/admin/server-privileges?page={{ page - 1 }}{% if search %}&search={{ search }}{% endif %}" class="btn btn-sm">← Предыдущая</a>
+      <a href="/admin/server-privileges?tab=players&page={{ page-1 }}&search={{ search }}" class="page-btn">&#8592;</a>
       {% endif %}
-
-      <span class="pagination-info">Страница {{ page }} из {{ total_pages }}</span>
-
+      {% for p in range(1, total_pages+1) %}
+      <a href="/admin/server-privileges?tab=players&page={{ p }}&search={{ search }}" class="page-btn {% if p==page %}active{% endif %}">{{ p }}</a>
+      {% endfor %}
       {% if page < total_pages %}
-      <a href="/admin/server-privileges?page={{ page + 1 }}{% if search %}&search={{ search }}{% endif %}" class="btn btn-sm">Следующая →</a>
-      <a href="/admin/server-privileges?page={{ total_pages }}{% if search %}&search={{ search }}{% endif %}" class="btn btn-sm">Последняя →</a>
+      <a href="/admin/server-privileges?tab=players&page={{ page+1 }}&search={{ search }}" class="page-btn">&#8594;</a>
       {% endif %}
     </div>
     {% endif %}
     {% else %}
-    <p class="empty-message">Привилегии не найдены</p>
+    <div style="padding:var(--spacing-24);text-align:center;color:var(--gray);">
+      {% if search %}Ничего не найдено по запросу «{{ search }}».{% else %}Нет назначенных привилегий.{% endif %}
+    </div>
     {% endif %}
   </div>
+</div>
 
-  <style>
-    .search-form {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 20px;
-    }
 
-    .search-form input {
-      flex: 1;
-      padding: 8px 12px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      font-size: 14px;
-    }
+<!-- MODAL: CREATE GROUP -->
+<div class="modal-overlay" id="create-group-modal">
+  <div class="modal modal-wide">
+    <div class="modal-header-block">
+      <h3>Новая группа привилегий</h3>
+      <button class="modal-close" onclick="closeModal('create-group-modal')">&#x2715;</button>
+    </div>
+    <form action="/admin/server-privilege-groups/create" method="post">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="modal-body-block">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-16);">
+          <div class="form-group">
+            <label>Название группы *</label>
+            <input type="text" name="name" required placeholder="Например: Модератор сервера">
+          </div>
+          <div class="form-group">
+            <label>Буквенный ID (group_key) *</label>
+            <input type="text" name="group_key" required placeholder="moderator" pattern="[a-z0-9_]+">
+            <span class="form-hint">Только строчные буквы, цифры и _</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Описание</label>
+          <input type="text" name="description" placeholder="Краткое описание (необязательно)">
+        </div>
+        <div class="form-group">
+          <label>Команды (одна на строку)</label>
+          <textarea name="commands" rows="4" placeholder="/mute&#10;/kick&#10;/teleport"></textarea>
+          <span class="form-hint">Список команд, доступных игрокам в этой группе</span>
+        </div>
+        <div class="form-group">
+          <label>Разрешения — Action IDs (через пробел или запятую)</label>
+          <input type="text" name="allowed_action_ids" placeholder="100 101 200">
+          <span class="form-hint">Числовые коды действий, разрешённых для группы</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('create-group-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Создать группу</button>
+      </div>
+    </form>
+  </div>
+</div>
 
-    .permissions-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: var(--spacing-16);
-      margin: var(--spacing-16) 0;
-    }
+<!-- MODAL: EDIT GROUP -->
+<div class="modal-overlay" id="edit-group-modal">
+  <div class="modal modal-wide">
+    <div class="modal-header-block">
+      <h3>Редактировать группу</h3>
+      <button class="modal-close" onclick="closeModal('edit-group-modal')">&#x2715;</button>
+    </div>
+    <form id="edit-group-form" method="post">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="modal-body-block">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-16);">
+          <div class="form-group">
+            <label>Название группы *</label>
+            <input type="text" name="name" id="eg-name" required>
+          </div>
+          <div class="form-group">
+            <label>Буквенный ID (group_key)</label>
+            <input type="text" name="group_key" id="eg-key" pattern="[a-z0-9_]+">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Описание</label>
+          <input type="text" name="description" id="eg-desc">
+        </div>
+        <div class="form-group">
+          <label>Команды (одна на строку)</label>
+          <textarea name="commands" id="eg-cmds" rows="4"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Action IDs (через пробел)</label>
+          <input type="text" name="allowed_action_ids" id="eg-aids">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('edit-group-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
 
-    .permission-item {
-      padding: var(--spacing-16);
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      background: var(--dark-blue-bg);
-      transition: all var(--transition-03);
-    }
+<!-- MODAL: ASSIGN PRIVILEGES TO PLAYER -->
+<div class="modal-overlay" id="assign-modal">
+  <div class="modal modal-wide">
+    <div class="modal-header-block">
+      <h3 id="assign-modal-title">Назначить привилегии игроку</h3>
+      <button class="modal-close" onclick="closeModal('assign-modal')">&#x2715;</button>
+    </div>
+    <form id="assign-priv-form" action="/admin/server-privileges/assign" method="post">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="modal-body-block">
+        <div class="form-group">
+          <label>Steam ID *</label>
+          <input type="text" name="steamid" id="ap-steamid" required placeholder="76561198XXXXXXXXX">
+        </div>
+        <div class="form-group">
+          <label>Группа привилегий</label>
+          <select name="server_group_id" id="ap-group">
+            <option value="">— Без группы (только индивидуальные) —</option>
+            {% for item in priv_groups_data %}
+            <option value="{{ item.group.id }}">{{ item.group.name }} ({{ item.group.group_key }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Дополнительные команды (одна на строку)</label>
+          <textarea name="commands" id="ap-cmds" rows="3" placeholder="/specialcmd"></textarea>
+          <span class="form-hint">Добавляются к командам группы</span>
+        </div>
+        <div class="form-group">
+          <label>Дополнительные Action IDs</label>
+          <input type="text" name="allowed_action_ids" id="ap-aids" placeholder="100 200">
+        </div>
+        <div class="form-group">
+          <label>Причина</label>
+          <input type="text" name="reason" id="ap-reason" placeholder="Необязательно">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('assign-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
 
-    .permission-item:hover {
-      background: var(--blue-010);
-      border-color: var(--primary-blue);
-    }
+<script>
+// ── tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('tab-' + name + '-btn').classList.add('active');
+  history.replaceState(null, '', '?tab=' + name);
+}
+(function(){
+  const tab = (new URLSearchParams(window.location.search)).get('tab') || '{{ tab }}';
+  switchTab(tab);
+})();
 
-    .permission-checkbox {
-      display: flex;
-      align-items: center;
-      gap: var(--spacing-12);
-      cursor: pointer;
-      user-select: none;
-    }
+// ── modals ─────────────────────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', function(e){ if(e.target===this) closeModal(this.id); });
+});
 
-    .permission-checkbox input[type="checkbox"] {
-      appearance: none;
-      -webkit-appearance: none;
-      width: 20px;
-      height: 20px;
-      border: 2px solid var(--stroke-01);
-      border-radius: 4px;
-      background: transparent;
-      cursor: pointer;
-      transition: all var(--transition-03);
-      position: relative;
-    }
+// ── edit group ─────────────────────────────────────────────────────────────────
+function openEditGroup(btn) {
+  document.getElementById('edit-group-form').action =
+    '/admin/server-privilege-groups/' + btn.dataset.gid + '/edit';
+  document.getElementById('eg-name').value  = btn.dataset.gname;
+  document.getElementById('eg-key').value   = btn.dataset.gkey;
+  document.getElementById('eg-desc').value  = btn.dataset.gdesc;
+  document.getElementById('eg-cmds').value  = btn.dataset.gcmds;
+  document.getElementById('eg-aids').value  = btn.dataset.gaids;
+  openModal('edit-group-modal');
+}
 
-    .permission-checkbox input[type="checkbox"]:hover {
-      border-color: var(--primary-blue);
-      background: var(--blue-010);
-    }
+// ── edit player priv ───────────────────────────────────────────────────────────
+function openEditPriv(btn) {
+  document.getElementById('assign-modal-title').textContent = 'Изменить привилегии: ' + btn.dataset.steamid;
+  const form = document.getElementById('assign-priv-form');
+  form.action = '/admin/server-privileges/assign';
+  document.getElementById('ap-steamid').value  = btn.dataset.steamid;
+  document.getElementById('ap-steamid').readOnly = true;
+  document.getElementById('ap-group').value    = btn.dataset.sgid || '';
+  document.getElementById('ap-cmds').value     = btn.dataset.cmds;
+  document.getElementById('ap-aids').value     = btn.dataset.aids;
+  document.getElementById('ap-reason').value   = btn.dataset.reason;
+  openModal('assign-modal');
+}
 
-    .permission-checkbox input[type="checkbox"]:checked {
-      background: var(--primary-blue);
-      border-color: var(--primary-blue);
-    }
-
-    .permission-checkbox input[type="checkbox"]:checked::after {
-      content: '✓';
-      position: absolute;
-      top: -2px;
-      left: 3px;
-      color: var(--white);
-      font-weight: bold;
-      font-size: 14px;
-    }
-
-    .permission-name {
-      font-weight: 600;
-      color: var(--white);
-      font-size: 14px;
-    }
-
-    .permission-desc {
-      font-size: 12px;
-      color: var(--gray);
-      margin: var(--spacing-8) 0 0 32px;
-      line-height: 1.4;
-    }
-
-    .privileges-list {
-      display: flex;
-      flex-direction: column;
-      gap: var(--spacing-16);
-    }
-
-    .privilege-record {
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      padding: var(--spacing-16);
-      background: var(--dark-blue-bg);
-      transition: all var(--transition-03);
-    }
-
-    .privilege-record:hover {
-      background: var(--blue-010);
-    }
-
-    .privilege-record-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: var(--spacing-12);
-    }
-
-    .privilege-steamid {
-      display: flex;
-      gap: var(--spacing-12);
-      align-items: center;
-      font-size: 14px;
-      color: var(--white);
-    }
-
-    .player-linked {
-      display: inline-block;
-      padding: 2px 8px;
-      background: var(--green);
-      color: white;
-      border-radius: 3px;
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    .privilege-date {
-      color: var(--gray);
-      font-size: 12px;
-    }
-
-    .privilege-reason {
-      margin: var(--spacing-12) 0;
-      font-size: 13px;
-      color: var(--gray);
-    }
-
-    .privilege-tags {
-      display: flex;
-      gap: var(--spacing-8);
-      flex-wrap: wrap;
-      margin: var(--spacing-12) 0;
-    }
-
-    .tag {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 3px;
-      font-size: 12px;
-      font-weight: 500;
-    }
-
-    .tag-privilege {
-      background: var(--primary-blue);
-      color: var(--white);
-    }
-
-    .privilege-expires {
-      font-size: 13px;
-      color: var(--warning);
-      margin-top: var(--spacing-8);
-    }
-
-    .privilege-record-actions {
-      display: flex;
-      gap: var(--spacing-8);
-      margin-top: var(--spacing-12);
-    }
-
-    .btn-sm {
-      padding: var(--spacing-8) var(--spacing-12);
-      font-size: 12px;
-      border: none;
-      border-radius: var(--border-radius-8);
-      cursor: pointer;
-      transition: all var(--transition-03);
-      font-weight: 600;
-    }
-
-    .btn-edit {
-      background: var(--warning);
-      color: var(--white);
-    }
-
-    .btn-edit:hover {
-      opacity: 0.8;
-    }
-
-    .btn-danger {
-      background: var(--error);
-      color: var(--white);
-    }
-
-    .btn-danger:hover {
-      opacity: 0.8;
-    }
-
-    .privilege-edit-form {
-      background: var(--dark-blue-bg);
-      padding: var(--spacing-16);
-      border-radius: var(--border-radius-8);
-      border: 1px solid var(--stroke-01);
-      margin-top: var(--spacing-16);
-    }
-
-    .form-group {
-      margin-bottom: var(--spacing-16);
-    }
-
-    .form-group label {
-      display: block;
-      margin-bottom: var(--spacing-8);
-      font-weight: 600;
-      font-size: 14px;
-      color: var(--white);
-    }
-
-    .form-group input[type="text"],
-    .form-group textarea {
-      width: 100%;
-      padding: var(--spacing-12);
-      border: 1px solid var(--stroke-01);
-      border-radius: var(--border-radius-8);
-      font-size: 14px;
-      font-family: inherit;
-      background: var(--card-bg);
-      color: var(--white);
-      transition: all var(--transition-03);
-    }
-
-    .form-group input[type="text"]::placeholder,
-    .form-group textarea::placeholder {
-      color: var(--gray);
-    }
-
-    .form-group input[type="text"]:focus,
-    .form-group textarea:focus {
-      outline: none;
-      border-color: var(--primary-blue);
-      box-shadow: 0 0 0 3px var(--blue-010);
-    }
-
-    .form-actions {
-      display: flex;
-      gap: var(--spacing-12);
-    }
-
-    .pagination {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: var(--spacing-12);
-      margin-top: var(--spacing-24);
-      padding-top: var(--spacing-16);
-      border-top: 1px solid var(--stroke-01);
-    }
-
-    .pagination-info {
-      font-size: 14px;
-      color: var(--gray);
-    }
-
-    .empty-message {
-      text-align: center;
-      color: var(--gray);
-      padding: var(--spacing-24);
-    }
-  </style>
-
-  <script>
-    function openEditForm(privilegeId) {
-      document.getElementById('edit-form-' + privilegeId).style.display = 'block';
-    }
-
-    function closeEditForm(privilegeId) {
-      document.getElementById('edit-form-' + privilegeId).style.display = 'none';
-    }
-  </script>
+// Reset steamid readonly when opening fresh
+document.querySelector('[onclick="openModal(\'assign-modal\')"]')?.addEventListener('click', function() {
+  document.getElementById('ap-steamid').readOnly = false;
+  document.getElementById('ap-steamid').value = '';
+  document.getElementById('ap-group').value = '';
+  document.getElementById('ap-cmds').value = '';
+  document.getElementById('ap-aids').value = '';
+  document.getElementById('ap-reason').value = '';
+  document.getElementById('assign-modal-title').textContent = 'Назначить привилегии игроку';
+});
+</script>
 {% endblock %}

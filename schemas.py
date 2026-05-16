@@ -37,7 +37,23 @@ class PlayerDataBase(BaseModel):
     player_steamid: str = Field(min_length=17, max_length=18)
     rank_id: int = Field(default=0, ge=0)
     kit_level: int = Field(default=0, ge=0)
-    achievements: Optional[Any] = Field(default=None)
+    achievements: List[str] = Field(default_factory=list, description="List of achievement IDs (for .NET API compatibility)")
+    
+    @field_validator('achievements', mode='before')
+    def normalize_achievements(cls, v):
+        """Convert achievements to list of strings for .NET API compatibility.
+        In DB, achievements may be stored as dict (reward structure) but API expects List[str]."""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            # Filter to strings only
+            return [str(x) for x in v if isinstance(x, (str, int))]
+        if isinstance(v, dict):
+            # If it's a dict (reward structure), return empty list for API
+            return []
+        if isinstance(v, str):
+            return [v]
+        return []
     
     @field_validator('player_steamid')
     def validate_steamid(cls, v: str) -> str:
@@ -74,7 +90,7 @@ class PlayerDataUpdate(BaseModel):
     play_time: Optional[int] = Field(None, ge=0)
     rank_id: Optional[int] = Field(None, ge=0)
     kit_level: Optional[int] = Field(None, ge=0)
-    achievements: Optional[Any] = None
+    achievements: Optional[List[str]] = None
 
 
 class PlayerDataOut(PlayerDataBase):

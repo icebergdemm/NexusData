@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Диагностика — Nexus Data{% endblock %}
+
+{% block content %}
+<h1>Диагностика</h1>
+
+<h2>Admin Info</h2>
+<pre>
+discord_username: {{ admin.discord_username }}
+privilege_group_id: {{ admin.privilege_group_id }}
+privilege_group: {{ admin.privilege_group }}
+is_superuser: {{ admin.is_superuser }}
+permissions: {{ admin.permissions }}
+</pre>
+
+<h2>Permission Tests</h2>
+<ul>
+  <li>admin.view: {{ check_permission(admin, 'admin', 'view') }}</li>
+  <li>players.view: {{ check_permission(admin, 'players', 'view') }}</li>
+  <li>sessions.view: {{ check_permission(admin, 'sessions', 'view') }}</li>
+  <li>punishments.view: {{ check_permission(admin, 'punishments', 'view') }}</li>
+</ul>
+
+{% endblock %}

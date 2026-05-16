@@ -1,147 +1,486 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block title %}Пользователи Nexus Data — Nexus Data{% endblock %}
 
 {% block content %}
+{# ── PERM ROWS MACRO — must be defined before first call ── #}
+{% macro _perm_rows(mode) %}
+{% set pages_cfg = [
+  {"key":"players",     "label":"Игроки",           "desc":"Просмотр и управление профилями"},
+  {"key":"moderation",  "label":"Модерирование",     "desc":"Баны, киклисты, жалобы"},
+  {"key":"sessions",    "label":"Сессии",            "desc":"История игровых сессий"},
+  {"key":"kits",        "label":"Киты",              "desc":"Управление наборами предметов"},
+  {"key":"admin",       "label":"Администрирование", "desc":"Управление пользователями"},
+  {"key":"stats",       "label":"Статистика",        "desc":"Статистика и аналитика"},
+  {"key":"audit",       "label":"Аудит",             "desc":"Журнал действий"},
+  {"key":"punishments", "label":"Наказания",         "desc":"Управление наказаниями"},
+  {"key":"privileges",  "label":"Привилегии",        "desc":"Серверные привилегии игроков"},
+] %}
+<div class="perm-matrix">
+  <div class="perm-row">
+    <div style="font-size:11px;font-weight:700;color:var(--gray);">Раздел</div>
+    <div class="perm-cb-head">Просмотр</div>
+    <div class="perm-cb-head">Правка</div>
+    <div class="perm-cb-head">Удаление</div>
+  </div>
+  {% for p in pages_cfg %}
+  <div class="perm-row">
+    <div class="perm-row-label">{{ p.label }}<span>{{ p.desc }}</span></div>
+    <div class="perm-cb-cell"><input type="checkbox" class="perm-cb" data-page="{{ p.key }}" data-action="view"   id="{{ mode }}-{{ p.key }}-view"></div>
+    <div class="perm-cb-cell"><input type="checkbox" class="perm-cb" data-page="{{ p.key }}" data-action="edit"   id="{{ mode }}-{{ p.key }}-edit"></div>
+    <div class="perm-cb-cell"><input type="checkbox" class="perm-cb" data-page="{{ p.key }}" data-action="delete" id="{{ mode }}-{{ p.key }}-delete"></div>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}
 <style>
-.pg-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--spacing-16); margin-bottom:var(--spacing-24); }
-.pg-header h2 { color:var(--white); font-size:22px; font-weight:700; }
-.pg-header p  { color:var(--gray); font-size:14px; margin-top:4px; }
-.two-col { display:grid; grid-template-columns:380px 1fr; gap:var(--spacing-24); align-items:start; }
-.block-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
-.block-card-header { display:flex; align-items:center; justify-content:space-between; padding:var(--spacing-16) var(--spacing-24); border-bottom:1px solid var(--stroke-01); }
-.block-card-header h3 { color:var(--white); font-size:16px; font-weight:600; }
-.block-card-body { padding:var(--spacing-20,20px) var(--spacing-24); }
-.form-group { display:flex; flex-direction:column; gap:6px; margin-bottom:var(--spacing-16); }
-.form-group label { font-size:12px; font-weight:700; color:var(--gray); text-transform:uppercase; letter-spacing:.4px; }
-.form-group input, .form-group select {
-  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
-  border-radius:var(--border-radius-8); color:var(--white);
-  padding:10px 12px; font-size:13px; font-family:'Manrope',sans-serif;
-  transition:border-color var(--transition-03); width:100%;
-}
-.form-group input:focus, .form-group select:focus { outline:none; border-color:var(--primary-blue); box-shadow:0 0 0 2px rgba(26,104,222,.15); }
-.form-group select option { background:var(--dark-blue-bg); }
-.btn { display:inline-flex; align-items:center; gap:6px; padding:9px 18px; border-radius:var(--border-radius-8); font-size:13px; font-weight:600; font-family:'Manrope',sans-serif; cursor:pointer; border:1px solid transparent; transition:all var(--transition-03); text-decoration:none; }
-.btn-primary { background:var(--primary-blue); color:var(--white); border-color:var(--primary-blue); }
-.btn-primary:hover { background:#1557c0; }
-.btn-sm { padding:5px 12px; font-size:12px; }
-.btn-secondary { background:transparent; color:var(--gray); border-color:var(--stroke-01); }
-.btn-secondary:hover { background:var(--stroke-01); color:var(--white); }
-.btn-danger { background:rgba(183,12,70,.15); color:#ff4d80; border-color:rgba(183,12,70,.35); }
-.btn-danger:hover { background:rgba(183,12,70,.3); }
-.data-table { width:100%; border-collapse:collapse; }
-.data-table thead { background:var(--dark-blue-bg); }
-.data-table th { padding:11px 16px; text-align:left; color:var(--gray); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
-.data-table td { padding:12px 16px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; vertical-align:middle; }
-.data-table tbody tr:last-child td { border-bottom:none; }
-.data-table tbody tr:hover { background:var(--blue-010); }
-.role-badge { display:inline-block; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
-.role-Администратор { background:rgba(174,0,122,.2); color:#ff6fd8; }
-.role-Управляющий   { background:rgba(26,104,222,.2); color:#4d9fff; }
-.role-Смотритель    { background:rgba(163,171,184,.15); color:#a3abb8; }
-.inline-form { display:flex; align-items:center; gap:8px; }
-.inline-select { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:5px 10px; font-size:12px; font-family:'Manrope',sans-serif; }
-.admin-avatar { width:32px; height:32px; border-radius:50%; background:rgba(26,104,222,.2); display:inline-flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; color:var(--primary-blue); flex-shrink:0; }
-.admin-cell { display:flex; align-items:center; gap:10px; }
-.admin-name { font-weight:600; color:var(--white); font-size:13px; }
-.admin-id   { font-size:11px; color:var(--gray); }
-.discord-id { font-family:'Courier New',monospace; font-size:11px; color:var(--gray); }
-.self-badge { display:inline-block; padding:2px 7px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(0,255,136,.12); color:var(--success); margin-left:6px; }
-@media(max-width:900px){ .two-col{ grid-template-columns:1fr; } }
+/* ── page header ─────────────────────────────────── */
+.pg-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--spacing-16);margin-bottom:var(--spacing-24);}
+.pg-header h2{color:var(--white);font-size:22px;font-weight:700;}
+.pg-header p{color:var(--gray);font-size:14px;margin-top:4px;}
+/* ── tabs ────────────────────────────────────────── */
+.tab-bar{display:flex;gap:4px;background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:4px;width:fit-content;margin-bottom:var(--spacing-24);}
+.tab-btn{padding:8px 20px;border-radius:var(--border-radius-8);font-size:13px;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--gray);font-family:'Manrope',sans-serif;transition:all var(--transition-03);}
+.tab-btn.active{background:var(--primary-blue);color:var(--white);}
+.tab-pane{display:none;}.tab-pane.active{display:block;}
+/* ── layout ─────────────────────────────────────── */
+.two-col{display:grid;grid-template-columns:380px 1fr;gap:var(--spacing-24);align-items:start;}
+@media(max-width:900px){.two-col{grid-template-columns:1fr;}}
+/* ── cards ───────────────────────────────────────── */
+.block-card{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);overflow:hidden;}
+.block-card-header{display:flex;align-items:center;justify-content:space-between;padding:var(--spacing-16) var(--spacing-24);border-bottom:1px solid var(--stroke-01);}
+.block-card-header h3{color:var(--white);font-size:16px;font-weight:600;}
+.block-card-body{padding:20px var(--spacing-24);}
+/* ── forms ───────────────────────────────────────── */
+.form-group{display:flex;flex-direction:column;gap:6px;margin-bottom:var(--spacing-16);}
+.form-group label{font-size:12px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.4px;}
+.form-group input,.form-group select,.form-group textarea{background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-8);color:var(--white);padding:10px 12px;font-size:13px;font-family:'Manrope',sans-serif;transition:border-color var(--transition-03);width:100%;box-sizing:border-box;}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:var(--primary-blue);box-shadow:0 0 0 2px rgba(26,104,222,.15);}
+.form-group select option{background:var(--dark-blue-bg);}
+.form-group textarea{resize:vertical;min-height:80px;}
+.form-hint{font-size:11px;color:var(--gray);margin-top:3px;}
+/* ── buttons ─────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:var(--border-radius-8);font-size:13px;font-weight:600;font-family:'Manrope',sans-serif;cursor:pointer;border:1px solid transparent;transition:all var(--transition-03);text-decoration:none;}
+.btn-primary{background:var(--primary-blue);color:var(--white);border-color:var(--primary-blue);}
+.btn-primary:hover{background:#1557c0;}
+.btn-sm{padding:5px 12px;font-size:12px;}
+.btn-secondary{background:transparent;color:var(--gray);border-color:var(--stroke-01);}
+.btn-secondary:hover{background:var(--stroke-01);color:var(--white);}
+.btn-danger{background:rgba(183,12,70,.15);color:#ff4d80;border-color:rgba(183,12,70,.35);}
+.btn-danger:hover{background:rgba(183,12,70,.3);}
+.btn-success{background:rgba(0,197,120,.12);color:var(--success);border-color:rgba(0,197,120,.3);}
+.btn-success:hover{background:rgba(0,197,120,.22);}
+/* ── table ───────────────────────────────────────── */
+.data-table{width:100%;border-collapse:collapse;}
+.data-table thead{background:var(--dark-blue-bg);}
+.data-table th{padding:11px 16px;text-align:left;color:var(--gray);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;}
+.data-table td{padding:12px 16px;border-bottom:1px solid var(--stroke-01);color:var(--white);font-size:13px;vertical-align:middle;}
+.data-table tbody tr:last-child td{border-bottom:none;}
+.data-table tbody tr:hover{background:var(--blue-010);}
+.inline-form{display:flex;align-items:center;gap:8px;}
+.inline-select{background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-8);color:var(--white);padding:5px 10px;font-size:12px;font-family:'Manrope',sans-serif;}
+/* ── badges ──────────────────────────────────────── */
+.role-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;}
+.role-Администратор{background:rgba(174,0,122,.2);color:#ff6fd8;}
+.role-Управляющий{background:rgba(26,104,222,.2);color:#4d9fff;}
+.role-Смотритель{background:rgba(163,171,184,.15);color:#a3abb8;}
+.group-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(0,197,120,.12);color:var(--success);}
+.super-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(255,200,0,.12);color:#ffd740;}
+.self-badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;background:rgba(0,255,136,.12);color:var(--success);margin-left:6px;}
+/* ── admin avatar ─────────────────────────────────── */
+.admin-avatar{width:32px;height:32px;border-radius:50%;background:rgba(26,104,222,.2);display:inline-flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--primary-blue);flex-shrink:0;}
+.admin-cell{display:flex;align-items:center;gap:10px;}
+.admin-name{font-weight:600;color:var(--white);font-size:13px;}
+.admin-id{font-size:11px;color:var(--gray);}
+.discord-id{font-family:'Courier New',monospace;font-size:11px;color:var(--gray);}
+/* ── group cards ─────────────────────────────────── */
+.groups-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:var(--spacing-16);}
+.group-card{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:20px;transition:border-color var(--transition-03);}
+.group-card:hover{border-color:var(--primary-blue);}
+.group-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:12px;}
+.group-card-name{font-size:15px;font-weight:700;color:var(--white);}
+.group-card-meta{font-size:11px;color:var(--gray);margin-bottom:10px;}
+.group-card-desc{font-size:12px;color:var(--gray);margin-bottom:12px;line-height:1.5;}
+.perm-list{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px;}
+.perm-chip{font-size:11px;padding:3px 9px;border-radius:12px;background:rgba(26,104,222,.15);color:#4d9fff;border:1px solid rgba(26,104,222,.25);}
+.group-card-actions{display:flex;gap:8px;flex-wrap:wrap;}
+/* ── permission matrix ───────────────────────────── */
+.perm-matrix{display:grid;gap:3px;}
+.perm-row{display:grid;grid-template-columns:1fr repeat(3,40px);align-items:center;gap:4px;padding:5px 8px;border-radius:6px;}
+.perm-row:nth-child(odd){background:rgba(255,255,255,.03);}
+.perm-row-label{font-size:12px;color:var(--gray);}
+.perm-row-label span{display:block;font-size:10px;color:rgba(163,171,184,.6);}
+.perm-cb-head{font-size:10px;font-weight:700;color:var(--gray);text-align:center;}
+.perm-cb-cell{display:flex;align-items:center;justify-content:center;}
+.perm-cb-cell input[type=checkbox]{accent-color:var(--primary-blue);width:15px;height:15px;cursor:pointer;}
+/* ── modal ───────────────────────────────────────── */
+.modal-overlay{display:none;position:fixed;inset:0;z-index:1000;background:rgba(7,15,29,.7);backdrop-filter:blur(4px);align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);width:100%;max-width:560px;max-height:90vh;overflow-y:auto;}
+.modal-wide{max-width:720px;}
+.modal-header-block{padding:20px var(--spacing-24);border-bottom:1px solid var(--stroke-01);display:flex;align-items:center;justify-content:space-between;}
+.modal-header-block h3{font-size:16px;font-weight:700;color:var(--white);}
+.modal-close{background:none;border:none;color:var(--gray);cursor:pointer;font-size:20px;line-height:1;padding:0;}
+.modal-close:hover{color:var(--white);}
+.modal-body-block{padding:20px var(--spacing-24);}
+.modal-footer{padding:16px var(--spacing-24);border-top:1px solid var(--stroke-01);display:flex;justify-content:flex-end;gap:10px;}
 </style>
+
+{% for flash in flashes %}
+<div class="flash-message flash-{{ flash.level }}" style="margin-bottom:var(--spacing-16);">{{ flash.message }}</div>
+{% endfor %}
 
 <div class="pg-header">
   <div>
-    <h2>🛡️ Пользователи Nexus Data</h2>
-    <p>Управление учётными записями администраторов панели.</p>
+    <h2>&#x1F6E1; Пользователи Nexus Data</h2>
+    <p>Управление учётными записями администраторов и группами прав.</p>
   </div>
 </div>
 
-<div class="two-col">
-  <!-- Add form -->
-  {% if "admin" in admin.permissions %}
-  <div class="block-card">
-    <div class="block-card-header"><h3>➕ Добавить администратора</h3></div>
-    <div class="block-card-body">
-      <form action="/admin/users" method="post">
-        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-        <div class="form-group">
-          <label for="discord_id">Discord ID</label>
-          <input type="text" id="discord_id" name="discord_id" placeholder="123456789012345678" required>
+<div class="tab-bar">
+  <button class="tab-btn" id="tab-users-btn" onclick="switchTab('users')">&#x1F464; Администраторы</button>
+  <button class="tab-btn" id="tab-groups-btn" onclick="switchTab('groups')">&#x1F511; Группы привилегий</button>
+</div>
+
+<!-- ═══════ TAB: АДМИНИСТРАТОРЫ ═══════ -->
+<div class="tab-pane" id="tab-users">
+  <div class="two-col">
+    {% if check_permission(admin, 'admin', 'edit') %}
+    <div class="block-card">
+      <div class="block-card-header"><h3>Добавить администратора</h3></div>
+      <div class="block-card-body">
+        <form action="/admin/users" method="post">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+          <div class="form-group">
+            <label>Discord ID</label>
+            <input type="text" name="discord_id" placeholder="123456789012345678" required>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%">Добавить администратора</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>Список администраторов</h3>
+        <span style="font-size:13px;color:var(--gray);">{{ admins|length }} чел.</span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Пользователь</th>
+              <th>Discord ID</th>
+              <th>Группа прав</th>
+              {% if check_permission(admin, 'admin', 'edit') %}<th>Действия</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in admins %}
+            <tr>
+              <td>
+                <div class="admin-cell">
+                  <div class="admin-avatar">{{ u.discord_username[0].upper() if u.discord_username else '?' }}</div>
+                  <div>
+                    <div class="admin-name">
+                      {{ u.discord_username }}
+                      {% if u.id == admin.id %}<span class="self-badge">Это вы</span>{% endif %}
+                      {% if u.is_superuser %}<span class="super-badge">&#x2B50; Super</span>{% endif %}
+                    </div>
+                    <div class="admin-id">ID {{ u.id }}</div>
+                  </div>
+                </div>
+              </td>
+              <td class="discord-id">{{ u.discord_id }}</td>
+              <td>
+                {% if u.privilege_group %}
+                  <span class="group-badge">{{ u.privilege_group.name }}</span>
+                {% elif u.is_superuser %}
+                  <span class="super-badge">&#x2B50; Суперпользователь</span>
+                {% else %}
+                  <span style="color:var(--gray);font-size:12px;">—</span>
+                {% endif %}
+              </td>
+              {% if check_permission(admin, 'admin', 'edit') %}
+              <td>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                  {% if not u.is_superuser or admin.is_superuser %}
+                  <button class="btn btn-sm btn-success btn-assign-group"
+                    data-uid="{{ u.id }}"
+                    data-uname="{{ u.discord_username|e }}"
+                    data-ugid="{{ u.privilege_group_id or '' }}"
+                    data-usu="{{ 'true' if u.is_superuser else 'false' }}">
+                    Группа
+                  </button>
+                  {% if u.id != admin.id %}
+                  <form action="/admin/users/{{ u.id }}/delete" method="post" style="display:contents;">
+                    <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить пользователя?')">Удалить</button>
+                  </form>
+                  {% endif %}
+                  {% else %}
+                  <span style="color:var(--gray);font-size:11px;">Только суперпользователь может изменить</span>
+                  {% endif %}
+                </div>
+              </td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ TAB: ГРУППЫ ПРИВИЛЕГИЙ ═══════ -->
+<div class="tab-pane" id="tab-groups">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:var(--spacing-16);">
+    <button class="btn btn-primary" onclick="openModal('create-group-modal')">Создать группу</button>
+  </div>
+
+  {% if groups_data %}
+  <div class="groups-grid">
+    {% for item in groups_data %}{% set g = item.group %}
+    <div class="group-card">
+      <div class="group-card-header">
+        <div>
+          <div class="group-card-name">{{ g.name }}</div>
+          <div class="group-card-meta">{{ item.member_count }} участн. &nbsp;·&nbsp; ID {{ g.id }}</div>
         </div>
+      </div>
+      {% if g.description %}<div class="group-card-desc">{{ g.description }}</div>{% endif %}
+      {% if g.permissions %}
+      <div class="perm-list">
+        {% for page_key, perms in g.permissions.items() %}{% for action, allowed in perms.items() %}{% if allowed %}
+        <span class="perm-chip">{{ page_key }}:{{ action }}</span>
+        {% endif %}{% endfor %}{% endfor %}
+      </div>
+      {% endif %}
+      <div class="group-card-meta">Лимит: {{ g.rate_limit_count }} / {{ g.rate_limit_window_secs }}с</div>
+      <div class="group-card-actions" style="margin-top:12px;">
+        <button class="btn btn-sm btn-secondary"
+          data-gid="{{ g.id }}"
+          data-gname="{{ g.name|e }}"
+          data-gdesc="{{ g.description|e if g.description else '' }}"
+          data-grl-count="{{ g.rate_limit_count }}"
+          data-grl-window="{{ g.rate_limit_window_secs }}"
+          data-gperms="{{ g.permissions|tojson|e }}"
+          onclick="openEditGroup(this)">
+          Редактировать
+        </button>
+        <form action="/admin/privilege-groups/{{ g.id }}/delete" method="post" style="display:contents;">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+          <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить группу?')">Удалить</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="block-card" style="padding:var(--spacing-24);text-align:center;color:var(--gray);">
+    Групп привилегий ещё нет. Нажмите «Создать группу», чтобы добавить первую.
+  </div>
+  {% endif %}
+</div>
+
+
+<!-- MODAL: ASSIGN GROUP -->
+<div class="modal-overlay" id="assign-modal">
+  <div class="modal modal-wide">
+    <div class="modal-header-block">
+      <h3>Управление правами: <span id="assign-username"></span></h3>
+      <button class="modal-close" onclick="closeModal('assign-modal')">&#x2715;</button>
+    </div>
+    <form id="assign-form" method="post">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="modal-body-block">
         <div class="form-group">
-          <label for="role">Роль</label>
-          <select id="role" name="role">
-            {% for r in roles %}
-            <option value="{{ r }}">{{ r }}</option>
+          <label>Группа привилегий</label>
+          <select name="privilege_group_id" id="assign-group-select">
+            <option value="">— Без группы —</option>
+            {% for item in groups_data %}
+            <option value="{{ item.group.id }}">{{ item.group.name }}</option>
             {% endfor %}
           </select>
         </div>
-        <button type="submit" class="btn btn-primary" style="width:100%">Добавить администратора</button>
-      </form>
-    </div>
-  </div>
-  {% endif %}
-
-  <!-- List -->
-  <div class="block-card">
-    <div class="block-card-header">
-      <h3>Список администраторов</h3>
-      <span style="font-size:13px; color:var(--gray);">{{ admins|length }} чел.</span>
-    </div>
-    <div style="overflow-x:auto;">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Пользователь</th>
-            <th>Discord ID</th>
-            <th>Роль</th>
-            {% if "admin" in admin.permissions %}<th>Действия</th>{% endif %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for u in admins %}
-          <tr>
-            <td>
-              <div class="admin-cell">
-                <div class="admin-avatar">{{ u.discord_username[0].upper() if u.discord_username else '?' }}</div>
-                <div>
-                  <div class="admin-name">
-                    {{ u.discord_username }}
-                    {% if u.id == admin.id %}<span class="self-badge">Это вы</span>{% endif %}
-                  </div>
-                  <div class="admin-id">ID {{ u.id }}</div>
-                </div>
-              </div>
-            </td>
-            <td class="discord-id">{{ u.discord_id }}</td>
-            <td><span class="role-badge role-{{ u.role }}">{{ u.role }}</span></td>
-            {% if "admin" in admin.permissions %}
-            <td>
-              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <form action="/admin/users/{{ u.id }}/update" method="post" style="display:contents;">
-                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-                  <select name="role" class="inline-select">
-                    {% for r in roles %}
-                    <option value="{{ r }}" {% if r==u.role %}selected{% endif %}>{{ r }}</option>
-                    {% endfor %}
-                  </select>
-                  <button type="submit" class="btn btn-sm btn-secondary">Сохранить</button>
-                </form>
-                {% if u.id != admin.id %}
-                <form action="/admin/users/{{ u.id }}/delete" method="post" style="display:contents;">
-                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
-                  <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить {{ u.discord_username }}?')">Удалить</button>
-                </form>
-                {% endif %}
-              </div>
-            </td>
-            {% endif %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+        {% if admin.is_superuser %}
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;cursor:pointer;">
+            <input type="checkbox" name="is_superuser" value="1" id="assign-superuser" style="width:auto;accent-color:var(--primary-blue);">
+            Суперпользователь (полный доступ)
+          </label>
+        </div>
+        {% endif %}
+        <div class="form-group">
+          <label>Индивидуальные разрешения (JSON, необязательно)</label>
+          <textarea name="individual_permissions" id="assign-ind-perms" rows="4" placeholder='{"players": {"view": true, "edit": false}}'></textarea>
+          <span class="form-hint">Переопределяют группу. Оставьте пустым для использования только групповых прав.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('assign-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
   </div>
 </div>
+
+<!-- MODAL: CREATE GROUP -->
+<div class="modal-overlay" id="create-group-modal">
+  <div class="modal modal-wide">
+    <div class="modal-header-block">
+      <h3>Новая группа привилегий</h3>
+      <button class="modal-close" onclick="closeModal('create-group-modal')">&#x2715;</button>
+    </div>
+    <form action="/admin/privilege-groups/create" method="post" onsubmit="buildPermissionsJson('create')">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <input type="hidden" name="permissions" id="create-permissions-json" value="{}">
+      <div class="modal-body-block">
+        <div class="form-group">
+          <label>Название группы *</label>
+          <input type="text" name="name" required placeholder="Например: Редактор контента">
+        </div>
+        <div class="form-group">
+          <label>Описание</label>
+          <input type="text" name="description" placeholder="Краткое описание (необязательно)">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-16);">
+          <div class="form-group">
+            <label>Лимит запросов (кол-во)</label>
+            <input type="number" name="rate_limit_count" value="0" min="0">
+            <span class="form-hint">0 = без лимита</span>
+          </div>
+          <div class="form-group">
+            <label>Окно лимита (секунды)</label>
+            <input type="number" name="rate_limit_window_secs" value="3600" min="1">
+          </div>
+        </div>
+        <div style="font-size:12px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;">Матрица разрешений</div>
+        <div id="create-perm-matrix">{{ _perm_rows('create') }}</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('create-group-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Создать группу</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- MODAL: EDIT GROUP -->
+<div class="modal-overlay" id="edit-group-modal">
+  <div class="modal modal-wide">
+    <div class="modal-header-block">
+      <h3>Редактировать группу</h3>
+      <button class="modal-close" onclick="closeModal('edit-group-modal')">&#x2715;</button>
+    </div>
+    <form id="edit-group-form" method="post" onsubmit="buildPermissionsJson('edit')">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <input type="hidden" name="permissions" id="edit-permissions-json" value="{}">
+      <div class="modal-body-block">
+        <div class="form-group">
+          <label>Название группы *</label>
+          <input type="text" name="name" id="edit-group-name" required>
+        </div>
+        <div class="form-group">
+          <label>Описание</label>
+          <input type="text" name="description" id="edit-group-desc">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-16);">
+          <div class="form-group">
+            <label>Лимит запросов</label>
+            <input type="number" name="rate_limit_count" id="edit-rl-count" value="0" min="0">
+          </div>
+          <div class="form-group">
+            <label>Окно лимита (сек.)</label>
+            <input type="number" name="rate_limit_window_secs" id="edit-rl-window" value="3600" min="1">
+          </div>
+        </div>
+        <div style="font-size:12px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;">Матрица разрешений</div>
+        <div id="edit-perm-matrix">{{ _perm_rows('edit') }}</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('edit-group-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить изменения</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// ── tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('tab-' + name + '-btn').classList.add('active');
+  history.replaceState(null, '', '?tab=' + name);
+}
+(function(){
+  const tab = (new URLSearchParams(window.location.search)).get('tab') || 'users';
+  switchTab(tab);
+})();
+
+// ── modals ─────────────────────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', function(e){ if(e.target===this) closeModal(this.id); });
+});
+
+// ── assign group modal ─────────────────────────────────────────────────────────
+function openAssignModal(btn) {
+  const userId      = btn.dataset.uid;
+  const username    = btn.dataset.uname;
+  const currentGid  = btn.dataset.ugid || '';
+  const isSuperuser = btn.dataset.usu === 'true';
+  document.getElementById('assign-username').textContent = username;
+  document.getElementById('assign-form').action = '/admin/users/' + userId + '/assign-group';
+  const sel = document.getElementById('assign-group-select');
+  sel.value = currentGid;
+  const superCb = document.getElementById('assign-superuser');
+  if (superCb) superCb.checked = isSuperuser;
+  document.getElementById('assign-ind-perms').value = '';
+  openModal('assign-modal');
+}
+document.querySelectorAll('.btn-assign-group').forEach(function(btn) {
+  btn.addEventListener('click', function() { openAssignModal(this); });
+});
+
+// ── edit group modal ───────────────────────────────────────────────────────────
+function openEditGroup(btn) {
+  const gid  = btn.dataset.gid;
+  const gname = btn.dataset.gname;
+  const gdesc = btn.dataset.gdesc;
+  const rlc   = btn.dataset.grlCount;
+  const rlw   = btn.dataset.grlWindow;
+  let perms = {};
+  try { perms = JSON.parse(btn.dataset.gperms || '{}'); } catch(e) {}
+
+  document.getElementById('edit-group-form').action = '/admin/privilege-groups/' + gid + '/edit';
+  document.getElementById('edit-group-name').value  = gname;
+  document.getElementById('edit-group-desc').value  = gdesc;
+  document.getElementById('edit-rl-count').value    = rlc;
+  document.getElementById('edit-rl-window').value   = rlw;
+
+  document.querySelectorAll('#edit-perm-matrix .perm-cb').forEach(cb => {
+    const pg = cb.dataset.page, ac = cb.dataset.action;
+    cb.checked = !!(perms[pg] && perms[pg][ac]);
+  });
+  openModal('edit-group-modal');
+}
+
+// ── build permissions JSON before submit ───────────────────────────────────────
+function buildPermissionsJson(mode) {
+  const matrix = document.getElementById(mode + '-perm-matrix');
+  if (!matrix) return;
+  const perms = {};
+  matrix.querySelectorAll('.perm-cb').forEach(cb => {
+    const pg = cb.dataset.page, ac = cb.dataset.action;
+    if (!perms[pg]) perms[pg] = {};
+    perms[pg][ac] = cb.checked;
+  });
+  document.getElementById(mode + '-permissions-json').value = JSON.stringify(perms);
+}
+</script>
 {% endblock %}

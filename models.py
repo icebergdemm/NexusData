@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -59,12 +59,47 @@ class AdminUser(Base):
     discord_username = Column(String(255))
     discord_avatar = Column(String(255), nullable=True)
     role = Column(String(50), default="admin")  # "Администратор", "Управляющий", "Смотритель"
-    # Permissions for admin panel: read, write, admin
-    permissions = Column(JSON, default=lambda: ["read"])  # list of permissions
+    # Legacy flat permissions list: no longer used, kept for backwards compatibility
+    permissions = Column(JSON, default=lambda: [])
     # Server-side permissions for managing moderator/admin privileges
-    server_permissions = Column(JSON, default=lambda: [])  # list of server privilege permissions
+    server_permissions = Column(JSON, default=lambda: [])
+    # --- Privilege system ---
+    privilege_group_id = Column(Integer, ForeignKey("admin_privilege_groups.id"), nullable=True)
+    # Individual permission overrides — dict {"page": {"view": True/False, ...}}
+    individual_permissions = Column(JSON, nullable=True)
+    is_superuser = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())
     last_login = Column(DateTime, nullable=True)
+
+    privilege_group = relationship("AdminPrivilegeGroup", back_populates="members", foreign_keys=[privilege_group_id])
+
+
+class AdminPrivilegeGroup(Base):
+    """Named group of permissions that can be assigned to admin users."""
+    __tablename__ = "admin_privilege_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True)
+    description = Column(String(500), nullable=True)
+    # Dict: {"pages": {"players":{"view":True,"edit":False}, ...}, ...}
+    permissions = Column(JSON, default=lambda: {})
+    # Rate limiting: max actions per window (0 = unlimited)
+    rate_limit_count = Column(Integer, default=0)
+    rate_limit_window_secs = Column(Integer, default=3600)
+    created_at = Column(DateTime, default=func.now())
+
+    members = relationship("AdminUser", back_populates="privilege_group", foreign_keys="AdminUser.privilege_group_id")
+
+
+class AdminRateLimit(Base):
+    """Tracks action counts per admin for rate limiting."""
+    __tablename__ = "admin_rate_limits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), index=True)
+    action = Column(String(100), default="general")
+    count = Column(Integer, default=0)
+    window_start = Column(DateTime, default=func.now())
 
 
 class AdminSession(Base):
@@ -150,6 +185,20 @@ class PlayerSession(Base):
     avg_ping = Column(Integer, nullable=True)
 
 
+class ServerPrivilegeGroup(Base):
+    """Named server privilege group (DB-managed, shown in UI)."""
+    __tablename__ = "server_privilege_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(String(500), nullable=True)
+    # Letter/string ID used by the game server (e.g. "moderator", "event_manager")
+    group_key = Column(String(64), unique=True, nullable=False)
+    commands = Column(JSON, default=lambda: [])           # e.g. ["/mute", "/kick"]
+    allowed_action_ids = Column(JSON, default=lambda: []) # e.g. [100, 101]
+    created_at = Column(DateTime, default=func.now())
+
+
 class ServerPlayerPrivilege(Base):
     """Server-side privileges for regular players (by SteamID)"""
     __tablename__ = "server_player_privileges"
@@ -157,7 +206,9 @@ class ServerPlayerPrivilege(Base):
     id = Column(Integer, primary_key=True, index=True)
     steamid = Column(String(50), unique=True, nullable=False, index=True)
     player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
-    # group_id: optional link to a named group defined in config/privilege_groups.json
+    # FK to ServerPrivilegeGroup (nullable — can have only individual commands)
+    server_group_id = Column(Integer, ForeignKey("server_privilege_groups.id"), nullable=True, index=True)
+    # Legacy string group_id from config/privilege_groups.json
     group_id = Column(String(64), nullable=True, index=True)
 
     # Directly assigned commands and action IDs for the player (overrides/extends group)
@@ -165,10 +216,10 @@ class ServerPlayerPrivilege(Base):
     allowed_action_ids = Column(JSON, default=lambda: [])
 
     privileges = Column(JSON, default=lambda: [])  # legacy list of privilege keys
-    reason = Column(String(500), nullable=True)  # Why this privilege was given
+    reason = Column(String(500), nullable=True)
     granted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     granted_at = Column(DateTime, default=func.now())
-    expires_at = Column(DateTime, nullable=True)  # Optional expiration
+    expires_at = Column(DateTime, nullable=True)
 
 
 class AnticheatEvent(Base):

@@ -131,3 +131,93 @@ async def verify_external_api_key_dependency(request: Request) -> dict:
 def generate_api_key() -> str:
     """Generate random API key"""
     return secrets.token_urlsafe(32)
+
+
+# ── Privilege helpers ────────────────────────────────────────────────────────
+
+def check_permission(admin, page: str, action: str = "view") -> bool:
+    """Check if admin has a specific page permission.
+
+    Resolution order:
+    1. is_superuser → always True
+    2. individual_permissions override (if key present)
+    3. privilege_group.permissions
+    4. legacy flat permissions list fallback
+    """
+    if admin.is_superuser:
+        return True
+
+    # Individual overrides
+    ind = admin.individual_permissions or {}
+    ind_pages = ind.get("pages", {})
+    if page in ind_pages and action in ind_pages[page]:
+        return bool(ind_pages[page][action])
+
+    # Group permissions
+    grp = getattr(admin, "privilege_group", None)
+    if grp and grp.permissions:
+        raw = grp.permissions
+        # Support both {"pages": {page: {action: bool}}} and flat {page: {action: bool}}
+        grp_pages = raw.get("pages", raw)
+        if page in grp_pages and action in grp_pages[page]:
+            return bool(grp_pages[page][action])
+
+    # No group or permission found
+    return False
+
+
+def require_permission(admin, page: str, action: str = "view"):
+    """Raise HTTPException(403) if permission is missing."""
+    if not check_permission(admin, page, action):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+
+def check_rate_limit(db, admin, action: str = "general") -> bool:
+    """Return True if admin is within rate limit. Increments counter.
+
+    Returns False (over limit) if admin's group has rate_limit_count > 0
+    and the admin has exceeded it within rate_limit_window_secs.
+    Superusers bypass rate limiting.
+    """
+    if admin.is_superuser:
+        return True
+
+    grp = getattr(admin, "privilege_group", None)
+    if not grp or grp.rate_limit_count <= 0:
+        return True  # unlimited
+
+    from models import AdminRateLimit
+
+    window_secs = grp.rate_limit_window_secs
+    max_count = grp.rate_limit_count
+    window_start_cutoff = datetime.utcnow() - timedelta(seconds=window_secs)
+
+    record = (
+        db.query(AdminRateLimit)
+        .filter(
+            AdminRateLimit.admin_id == admin.id,
+            AdminRateLimit.action == action,
+            AdminRateLimit.window_start >= window_start_cutoff,
+        )
+        .first()
+    )
+
+    if record is None:
+        record = AdminRateLimit(admin_id=admin.id, action=action, count=1, window_start=datetime.utcnow())
+        db.add(record)
+        db.commit()
+        return True
+
+    if record.count >= max_count:
+        return False  # over limit
+
+    record.count += 1
+    db.commit()
+    return True
+
+
+def enforce_rate_limit(db, admin, action: str = "general"):
+    """Raise HTTPException(429) if over rate limit."""
+    if not check_rate_limit(db, admin, action):
+        raise HTTPException(status_code=429, detail="Превышен лимит действий. Попробуйте позже.")
+

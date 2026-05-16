@@ -1,48 +1,276 @@
 {% extends "base.html" %}
 
-{% block title %}Панель управления — Nexus Data{% endblock %}
+{% block title %}Главная — Nexus Data{% endblock %}
 
 {% block content %}
-  <div class="card">
-    <h2>Панель управления</h2>
-    <p>Добро пожаловать в систему управления Nexus Data.</p>
-  </div>
+<style>
+/* ── Dashboard ── */
+.dash-welcome {
+  display:flex; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:16px; margin-bottom:32px;
+}
+.dash-welcome-text h2 {
+  font-size:24px; font-weight:700; color:var(--white); margin:0 0 4px;
+}
+.dash-welcome-text p { font-size:14px; color:var(--gray); margin:0; }
+.dash-avatar {
+  width:48px; height:48px; border-radius:50%;
+  border:2px solid var(--primary-blue); object-fit:cover;
+}
+.dash-avatar-placeholder {
+  width:48px; height:48px; border-radius:50%;
+  background:var(--primary-blue); display:flex; align-items:center;
+  justify-content:center; font-size:20px; font-weight:700; color:#fff;
+}
 
-  <div class="stats">
-    {% if "read" in admin.permissions or "write" in admin.permissions %}
-    <div class="stat-card">
-      <h3>Игроки</h3>
-      <p>Управление данными игроков</p>
-      <a href="/admin/players">Перейти</a>
-    </div>
-    {% endif %}
-    {% if "admin" in admin.permissions %}
-    <div class="stat-card">
-      <h3>Админы</h3>
-      <p>Управление пользователями админки</p>
-      <a href="/admin/users">Перейти</a>
-    </div>
-    {% endif %}
-    {% if "admin" in admin.permissions %}
-    <div class="stat-card">
-      <h3>Модерирование сервера</h3>
-      <p>Онлайн, банхамер, античит и логи сервера</p>
-      <a href="/admin/moderation">Перейти</a>
-    </div>
-    {% endif %}
-    {% if "admin" in admin.permissions or "manage_admins" in admin.server_permissions or "manage_moderators" in admin.server_permissions %}
-    <div class="stat-card">
-      <h3>Привилегии сервера</h3>
-      <p>Управление правами модераторов и администраторов</p>
-      <a href="/admin/server-privileges">Перейти</a>
-    </div>
-    {% endif %}
-    {% if "admin" in admin.permissions or "write" in admin.permissions %}
-    <div class="stat-card">
-      <h3>⚙️ Редактирование китов</h3>
-      <p>Управление стартовыми наборами предметов по профессиям и уровням</p>
-      <a href="/admin/kits">Перейти</a>
-    </div>
-    {% endif %}
+/* ── Stats row ── */
+.stat-chips { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:28px; }
+.stat-chip {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); padding:16px 22px;
+  display:flex; flex-direction:column; gap:4px; flex:1; min-width:140px;
+}
+.stat-chip .chip-label { font-size:11px; color:var(--gray); text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
+.stat-chip .chip-value { font-size:28px; font-weight:700; color:var(--white); line-height:1; }
+.stat-chip .chip-sub   { font-size:12px; color:var(--gray); }
+.chip-online .chip-value { color:#22d06f; }
+
+/* ── Chart card ── */
+.chart-card {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); overflow:hidden;
+  margin-bottom:28px;
+}
+.chart-card-header {
+  padding:16px 24px; border-bottom:1px solid var(--stroke-01);
+  display:flex; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:10px; background:rgba(255,255,255,.015);
+}
+.chart-card-header h3 { font-size:15px; font-weight:700; color:var(--white); margin:0; }
+.chart-card-header .chart-hint { font-size:12px; color:var(--gray); }
+.chart-card-body { padding:20px 24px; }
+
+/* ── Sections grid ── */
+.sections-header { font-size:13px; font-weight:700; color:var(--gray); text-transform:uppercase; letter-spacing:.5px; margin-bottom:14px; }
+.sections-grid {
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+  gap:14px; margin-bottom:32px;
+}
+.section-card {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); padding:20px 22px;
+  text-decoration:none; display:flex; flex-direction:column; gap:10px;
+  transition:var(--transition-03); position:relative; overflow:hidden;
+  min-height:140px; justify-content:flex-start;
+}
+.section-card:hover {
+  border-color:var(--primary-blue); background:rgba(26,104,222,.06);
+  transform:translateY(-2px);
+}
+.section-card::before {
+  content:''; position:absolute; inset:0; left:0; top:0; bottom:0;
+  width:3px; background:var(--primary-blue); opacity:0;
+  transition:var(--transition-03);
+}
+.section-card:hover::before { opacity:1; }
+.sc-icon { font-size:26px; line-height:1; }
+.sc-title { font-size:15px; font-weight:700; color:var(--white); }
+.sc-desc  { font-size:12px; color:var(--gray); line-height:1.5; }
+.sc-badge {
+  align-self:flex-start; background:var(--primary-blue);
+  color:#fff; font-size:11px; font-weight:700;
+  padding:2px 10px; border-radius:12px;
+}
+.sc-badge.green { background:rgba(3,123,54,.7); }
+.sc-badge.orange { background:rgba(180,125,0,.7); }
+</style>
+
+<!-- ── Welcome ── -->
+<div class="dash-welcome">
+  <div class="dash-welcome-text">
+    <h2>👋 Добро пожаловать, {{ admin.discord_username or 'Администратор' }}</h2>
+    <p>Панель управления Nexus Data — ASPER Barotrauma</p>
   </div>
+  {% if admin.discord_avatar %}
+  <img class="dash-avatar"
+       src="https://cdn.discordapp.com/avatars/{{ admin.discord_id }}/{{ admin.discord_avatar }}.png?size=96"
+       alt="avatar">
+  {% else %}
+  <div class="dash-avatar-placeholder">{{ (admin.discord_username or 'A')[0]|upper }}</div>
+  {% endif %}
+</div>
+
+<!-- ── Stat chips ── -->
+<div class="stat-chips">
+  <div class="stat-chip chip-online">
+    <span class="chip-label">Онлайн сейчас</span>
+    <span class="chip-value">{{ current_online }}</span>
+    <span class="chip-sub">игроков на сервере</span>
+  </div>
+  <div class="stat-chip">
+    <span class="chip-label">Сегодня зашли</span>
+    <span class="chip-value">{{ unique_today }}</span>
+    <span class="chip-sub">уникальных игроков</span>
+  </div>
+  <div class="stat-chip">
+    <span class="chip-label">Всего игроков</span>
+    <span class="chip-value">{{ total_players }}</span>
+    <span class="chip-sub">в базе данных</span>
+  </div>
+</div>
+
+<!-- ── Online chart ── -->
+<div class="chart-card">
+  <div class="chart-card-header">
+    <h3>📈 Онлайн за последние 24 часа</h3>
+    <span class="chart-hint">По часам · UTC</span>
+  </div>
+  <div class="chart-card-body">
+    <canvas id="onlineChart" height="80"></canvas>
+  </div>
+</div>
+
+<!-- ── Sections ── -->
+<div class="sections-header">Разделы системы</div>
+<div class="sections-grid">
+
+  {% if check_permission(admin, 'players', 'view') %}
+  <a href="/admin/players" class="section-card">
+    <div class="sc-icon">🎮</div>
+    <div class="sc-title">Игроки</div>
+    <div class="sc-desc">Профили, история сессий, метки, заметки, ловушки и кастомные награды</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'admin', 'view') %}
+  <a href="/admin/users" class="section-card">
+    <div class="sc-icon">👤</div>
+    <div class="sc-title">Пользователи Nexus Data</div>
+    <div class="sc-desc">Управление аккаунтами администраторов: роли, права, аудит входов</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'moderation', 'edit') %}
+  <a href="/admin/moderation" class="section-card">
+    <div class="sc-icon">🛡️</div>
+    <div class="sc-title">Модерирование сервера</div>
+    <div class="sc-desc">Онлайн-игроки, банхаммер, логи сервера и инструменты античита</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'punishments', 'view') %}
+  <a href="/admin/punishments" class="section-card">
+    <div class="sc-icon">⚖️</div>
+    <div class="sc-title">Наказания</div>
+    <div class="sc-desc">Предупреждения, выговоры, кики и баны — с историей и редактированием</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'privileges', 'view') %}
+  <a href="/admin/server-privileges" class="section-card">
+    <div class="sc-icon">🔑</div>
+    <div class="sc-title">Привилегии сервера</div>
+    <div class="sc-desc">Управление правами модераторов и администраторов на игровом сервере</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'kits', 'edit') %}
+  <a href="/admin/kits" class="section-card">
+    <div class="sc-icon">🎒</div>
+    <div class="sc-title">Редактирование китов</div>
+    <div class="sc-desc">Стартовые наборы предметов: настройка по профессиям и уровням рейтинга</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'sessions', 'view') %}
+  <a href="/admin/sessions" class="section-card">
+    <div class="sc-icon">🕐</div>
+    <div class="sc-title">Сессии</div>
+    <div class="sc-desc">Журнал игровых сессий: время входа/выхода, продолжительность, IP</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'audit', 'view') %}
+  <a href="/admin/audit" class="section-card">
+    <div class="sc-icon">📋</div>
+    <div class="sc-title">Аудит</div>
+    <div class="sc-desc">Журнал действий администраторов: кто, что и когда изменил</div>
+  </a>
+  {% endif %}
+
+  {% if check_permission(admin, 'admin', 'edit') %}
+  <a href="/admin/administration" class="section-card">
+    <div class="sc-icon">📊</div>
+    <div class="sc-title">Администрирование</div>
+    <div class="sc-desc">Детальная статистика онлайна, пики и средние значения за разные периоды</div>
+  </a>
+  {% endif %}
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+  const labels = {{ chart_labels | tojson }};
+  const peak   = {{ peak_values  | tojson }};
+  const avg    = {{ avg_values   | tojson }};
+
+  const ctx = document.getElementById('onlineChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Пик',
+          data: peak,
+          borderColor: '#1a68de',
+          backgroundColor: 'rgba(26,104,222,.12)',
+          borderWidth: 2,
+          pointRadius: 3,
+          fill: true,
+          tension: 0.35,
+        },
+        {
+          label: 'Среднее',
+          data: avg,
+          borderColor: '#22d06f',
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          pointRadius: 2,
+          borderDash: [4,4],
+          tension: 0.35,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode:'index', intersect:false },
+      plugins: {
+        legend: {
+          labels: { color:'#7a8aa0', font:{ size:12 }, boxWidth:12 }
+        },
+        tooltip: {
+          backgroundColor:'#0e1625',
+          borderColor:'rgba(255,255,255,.1)',
+          borderWidth:1,
+          titleColor:'#fff',
+          bodyColor:'#7a8aa0',
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color:'#7a8aa0', font:{ size:11 }, maxTicksLimit:12 },
+          grid:  { color:'rgba(255,255,255,.04)' }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color:'#7a8aa0', font:{ size:11 }, stepSize:1 },
+          grid:  { color:'rgba(255,255,255,.06)' }
+        }
+      }
+    }
+  });
+})();
+</script>
 {% endblock %}

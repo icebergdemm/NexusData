@@ -118,7 +118,7 @@ textarea { resize:vertical; min-height:80px; }
 
 /* ── Modal ── */
 .modal-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,.75); backdrop-filter:blur(4px);
+  position:fixed; inset:0; background:rgba(0,0,0,.82); backdrop-filter:blur(6px);
   z-index:1000; display:none; align-items:center; justify-content:center;
   padding:16px;
 }
@@ -127,15 +127,34 @@ textarea { resize:vertical; min-height:80px; }
   background:var(--card-bg); border:1px solid var(--stroke-01);
   border-radius:var(--border-radius-12); width:100%; max-width:760px;
   max-height:90vh; display:flex; flex-direction:column; overflow:hidden;
+  box-shadow:0 24px 64px rgba(0,0,0,.55);
 }
-.modal-box.narrow { max-width:480px; }
-.modal-header { padding:var(--spacing-20) var(--spacing-24); border-bottom:1px solid var(--stroke-01); display:flex; align-items:center; justify-content:space-between; }
-.modal-header h3 { color:var(--white); font-size:16px; font-weight:600; }
-.modal-close { background:none; border:none; color:var(--gray); cursor:pointer; font-size:20px; line-height:1; padding:0 4px; }
-.modal-close:hover { color:var(--white); }
+.modal-box.narrow { max-width:520px; }
+.modal-header {
+  padding:20px var(--spacing-24); border-bottom:1px solid var(--stroke-01);
+  display:flex; align-items:center; justify-content:space-between;
+  background:rgba(255,255,255,.02);
+}
+.modal-header h3 { color:var(--white); font-size:16px; font-weight:700; }
+.modal-close {
+  background:none; border:1px solid transparent; color:var(--gray);
+  cursor:pointer; font-size:18px; line-height:1; padding:4px 8px;
+  border-radius:6px; transition:var(--transition-03);
+}
+.modal-close:hover { color:var(--white); border-color:var(--stroke-01); background:rgba(255,255,255,.06); }
 .modal-body { padding:var(--spacing-24); overflow-y:auto; flex:1; }
-.modal-tabs { display:flex; gap:0; border-bottom:1px solid var(--stroke-01); margin-bottom:var(--spacing-20); }
-.modal-tab { padding:10px 20px; font-size:13px; font-weight:600; cursor:pointer; color:var(--gray); border:none; background:none; border-bottom:2px solid transparent; transition:var(--transition-03); font-family:inherit; }
+.modal-body .form-group + .form-group { margin-top:16px; }
+.modal-tabs {
+  display:flex; gap:0; border-bottom:1px solid var(--stroke-01);
+  margin-bottom:var(--spacing-24); overflow-x:auto;
+}
+.modal-tab {
+  padding:12px 20px; font-size:13px; font-weight:600; cursor:pointer;
+  color:var(--gray); border:none; background:none;
+  border-bottom:2px solid transparent; transition:var(--transition-03);
+  font-family:inherit; white-space:nowrap;
+}
+.modal-tab:hover { color:var(--white); }
 .modal-tab.active { color:var(--primary-blue); border-bottom-color:var(--primary-blue); }
 .tab-panel { display:none; }
 .tab-panel.active { display:block; }
@@ -173,18 +192,28 @@ textarea { resize:vertical; min-height:80px; }
 }
 
 /* ── Reward items ── */
-.reward-list { display:flex; flex-direction:column; gap:6px; }
+.reward-list { display:flex; flex-direction:column; gap:8px; }
 .reward-row {
   display:flex; align-items:center; justify-content:space-between;
-  padding:8px 12px; background:var(--dark-blue-bg);
-  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); gap:10px;
+  padding:12px 16px; background:var(--dark-blue-bg);
+  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); gap:12px;
+  transition:border-color var(--transition-03);
 }
-.reward-row-info { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; }
+.reward-row:hover { border-color:rgba(26,104,222,.4); }
+.reward-row-info { display:flex; flex-direction:column; gap:3px; flex:1; min-width:0; }
 .reward-row-main { font-size:13px; color:var(--white); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .reward-row-sub  { font-size:11px; color:var(--gray-dark); font-family:'Courier New',monospace; }
-.reward-add-row { display:grid; gap:8px; align-items:end; margin-top:14px; padding-top:14px; border-top:1px solid var(--stroke-01); }
-.reward-add-row.cols-2 { grid-template-columns:1fr 1fr auto; }
-.reward-add-row.cols-3 { grid-template-columns:1fr 1fr 1fr auto; }
+.reward-add-section {
+  margin-top:20px; padding-top:20px;
+  border-top:1px solid var(--stroke-01);
+}
+.reward-add-label {
+  font-size:11px; font-weight:700; color:var(--gray-dark); text-transform:uppercase;
+  letter-spacing:.5px; margin-bottom:12px;
+}
+.reward-add-row { display:grid; gap:12px; align-items:end; }
+.reward-add-row.cols-2 { grid-template-columns:1fr 1fr; }
+.reward-add-row.cols-3 { grid-template-columns:1fr 1fr 1fr; }
 
 /* ── Flash ── */
 .flash { padding:12px 18px; border-radius:var(--border-radius-8); margin-bottom:var(--spacing-16); font-size:13px; font-weight:500; }
@@ -217,7 +246,7 @@ textarea { resize:vertical; min-height:80px; }
     {% if is_online %}
     <span class="online-badge"><span class="online-dot"></span>Онлайн</span>
     {% endif %}
-    {% if "write" in admin.permissions %}
+    {% if check_permission(admin, 'players', 'edit') %}
     <button class="btn btn-danger btn-sm" onclick="openModal('ban-modal')">🔨 Забанить</button>
     {% endif %}
   </div>
@@ -254,7 +283,7 @@ textarea { resize:vertical; min-height:80px; }
 <div class="detail-layout" style="margin-bottom:var(--spacing-24);">
 
   <!-- LEFT: Info + Qual-kits -->
-  <div style="display:flex; flex-direction:column; gap:var(--spacing-20);">
+  <div style="display:flex; flex-direction:column; gap:20px;">
 
     <!-- Info card -->
     <div class="block-card">
@@ -302,7 +331,7 @@ textarea { resize:vertical; min-height:80px; }
         </div>
 
         <!-- Inline rank / kit editing -->
-        {% if "write" in admin.permissions %}
+        {% if check_permission(admin, 'players', 'edit') %}
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
           <form method="post" action="/admin/players/{{ player.player_id }}/update">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
@@ -354,7 +383,7 @@ textarea { resize:vertical; min-height:80px; }
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <div class="right-section-title" style="margin-bottom:0;">Квал-киты</div>
-            {% if "write" in admin.permissions %}
+            {% if check_permission(admin, 'players', 'edit') %}
             <button class="btn btn-secondary btn-sm" onclick="openRewards('kval-kits')">✏️ Управление</button>
             {% endif %}
           </div>
@@ -437,68 +466,18 @@ textarea { resize:vertical; min-height:80px; }
       </div>
     </div>
 
-    <!-- Labels + Personal notes (2-column) -->
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-16);">
-
-      <!-- Labels -->
-      <div class="block-card">
-        <div class="block-card-header"><h3>🏷 Метки</h3></div>
-        <div class="block-card-body">
-          {% if label_pairs %}
-          <div class="labels-row">
-            {% for lbl, cat in label_pairs %}
-            <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
-              {{ cat.icon }} {{ cat.name }}
-              {% if "write" in admin.permissions %}
-              <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
-                    style="display:inline; margin:0;">
-                <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-                <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
-              </form>
-              {% endif %}
-            </span>
-            {% endfor %}
-          </div>
-          {% else %}
-          <div style="font-size:12px; color:var(--gray-dark); margin-bottom:12px;">Меток нет</div>
-          {% endif %}
-
-          {% if "write" in admin.permissions %}
-            {% if label_categories %}
-            <form method="post" action="/admin/players/{{ player.player_id }}/labels/assign">
-              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <select name="category_id" style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; box-sizing:border-box;">
-                  {% for cat in label_categories %}
-                  <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
-                  {% endfor %}
-                </select>
-                <button type="submit" class="btn btn-primary btn-sm">+ Добавить</button>
-              </div>
-            </form>
-            {% else %}
-            <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center;">
-              + Создать категории меток
-            </a>
-            {% endif %}
-          {% endif %}
-        </div>
+    <!-- Personal notes (Личное дело) -->
+    <div class="block-card">
+      <div class="block-card-header">
+        <h3>📂 Личное дело</h3>
+        {% if check_permission(admin, 'players', 'edit') %}
+        <button class="btn btn-secondary btn-sm" onclick="openModal('notes-modal')">✏️ Редактировать</button>
+        {% endif %}
       </div>
-
-      <!-- Personal notes (Личное дело) -->
-      <div class="block-card">
-        <div class="block-card-header">
-          <h3>📂 Личное дело</h3>
-          {% if "write" in admin.permissions %}
-          <button class="btn btn-secondary btn-sm" onclick="openModal('notes-modal')">✏️ Редактировать</button>
-          {% endif %}
-        </div>
-        <div class="block-card-body">
-          <div class="note-preview">{% if notes %}{{ notes[0].content }}{% endif %}</div>
-        </div>
+      <div class="block-card-body">
+        <div class="note-preview">{% if notes %}{{ notes[0].content }}{% endif %}</div>
       </div>
-
-    </div>{# /2-col labels+notes #}
+    </div>
 
   </div>{# /LEFT #}
 
@@ -506,7 +485,7 @@ textarea { resize:vertical; min-height:80px; }
   <div class="right-panel">
 
     <!-- Trap -->
-    {% if "write" in admin.permissions %}
+    {% if check_permission(admin, 'players', 'edit') %}
     <div class="block-card">
       <div class="block-card-header"><h3>🪤 Ловушка</h3></div>
       <div class="block-card-body">
@@ -561,7 +540,7 @@ textarea { resize:vertical; min-height:80px; }
     {% endif %}
 
     <!-- Custom Rewards -->
-    {% if "write" in admin.permissions %}
+    {% if check_permission(admin, 'players', 'edit') %}
     <div class="block-card">
       <div class="block-card-header">
         <h3>🎁 Кастомные награды</h3>
@@ -582,6 +561,51 @@ textarea { resize:vertical; min-height:80px; }
       </div>
     </div>
     {% endif %}
+
+    <!-- Labels -->
+    <div class="block-card">
+      <div class="block-card-header"><h3>🏷 Метки</h3></div>
+      <div class="block-card-body">
+        {% if label_pairs %}
+        <div class="labels-row">
+          {% for lbl, cat in label_pairs %}
+          <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
+            {{ cat.icon }} {{ cat.name }}
+            {% if check_permission(admin, 'players', 'edit') %}
+            <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
+                  style="display:inline; margin:0;">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+              <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
+            </form>
+            {% endif %}
+          </span>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div style="font-size:12px; color:var(--gray-dark); margin-bottom:12px;">Меток нет</div>
+        {% endif %}
+
+        {% if check_permission(admin, 'players', 'edit') %}
+          {% if label_categories %}
+          <form method="post" action="/admin/players/{{ player.player_id }}/labels/assign">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px;">
+              <select name="category_id" style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; box-sizing:border-box; min-width:0;">
+                {% for cat in label_categories %}
+                <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="btn btn-primary btn-sm">+ Добавить</button>
+            </div>
+          </form>
+          {% else %}
+          <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center; margin-top:10px;">
+            + Создать категории меток
+          </a>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
 
   </div>{# /RIGHT #}
 </div>
@@ -684,7 +708,7 @@ textarea { resize:vertical; min-height:80px; }
 
 <!-- ════════════════════════ MODALS ════════════════════════ -->
 
-{% if "write" in admin.permissions %}
+{% if check_permission(admin, 'players', 'edit') %}
 
 <!-- Edit (rank/kit) modal — REMOVED: editing is now inline in the Information card -->
 
@@ -698,11 +722,14 @@ textarea { resize:vertical; min-height:80px; }
     <div class="modal-body">
       <form method="post" action="/admin/players/{{ player.player_id }}/notes/save">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-        <div class="form-group" style="margin-bottom:var(--spacing-16);">
+        <div class="form-group">
           <label>Заметки об игроке</label>
-          <textarea name="content" rows="8" placeholder="Введите заметки...">{% if notes %}{{ notes[0].content }}{% endif %}</textarea>
+          <textarea name="content" rows="10" placeholder="Введите заметки об игроке...">{% if notes %}{{ notes[0].content }}{% endif %}</textarea>
         </div>
-        <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+        <div style="margin-top:20px; display:flex; gap:10px; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('notes-modal')">Отмена</button>
+          <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+        </div>
       </form>
     </div>
   </div>
@@ -720,15 +747,16 @@ textarea { resize:vertical; min-height:80px; }
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <input type="hidden" name="player_id" value="{{ player.player_id }}">
         <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
-        <div style="display:flex;flex-direction:column;gap:var(--spacing-16);">
-          <div class="form-group">
-            <label>Причина</label>
-            <input type="text" name="reason" placeholder="Причина бана..." required>
-          </div>
-          <div class="form-group">
-            <label>Длительность (минуты, 0 = навсегда)</label>
-            <input type="number" name="minutes" min="0" value="0">
-          </div>
+        <div class="form-group">
+          <label>Причина</label>
+          <input type="text" name="reason" placeholder="Укажите причину бана..." required>
+        </div>
+        <div class="form-group" style="margin-top:16px;">
+          <label>Длительность (минуты, 0 = навсегда)</label>
+          <input type="number" name="minutes" min="0" value="0">
+        </div>
+        <div style="margin-top:24px; display:flex; gap:10px; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('ban-modal')">Отмена</button>
           <button type="submit" class="btn btn-danger">🔨 Выдать бан</button>
         </div>
       </form>
@@ -755,56 +783,66 @@ textarea { resize:vertical; min-height:80px; }
       <div class="tab-panel active" id="rtab-kval-kits">
         <div class="reward-list" id="rlist-kval-kits"></div>
         {% if available_kval_kits %}
-        <div class="reward-add-row cols-2">
-          <div class="form-group" style="grid-column:1/-1;">
+        <div class="reward-add-section">
+          <div class="reward-add-label">Назначить квал-кит</div>
+          <div class="form-group" style="margin-bottom:12px;">
             <label>Квал-кит</label>
-            <select id="rn-kval-kit" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; width:100%; box-sizing:border-box;">
+            <select id="rn-kval-kit" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:10px 14px; font-size:13px; font-family:inherit; width:100%; box-sizing:border-box;">
               {% for kk in available_kval_kits %}
               <option value="{{ kk.job }}|{{ kk.level }}">{{ kk.label }}</option>
               {% endfor %}
             </select>
           </div>
-          <button class="btn btn-primary btn-sm" style="grid-column:1/-1;" onclick="rewardAddKval()">➕ Назначить</button>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="rewardAddKval()">➕ Назначить</button>
         </div>
         {% else %}
-        <div style="text-align:center;padding:20px;color:var(--gray-dark);font-size:13px;">Квал-китов не найдено в базе. Добавьте их через <a href="/admin/kits" style="color:var(--primary-blue)">редактор китов</a> с суффиксом <code>_k</code>.</div>
+        <div style="text-align:center;padding:32px 20px;color:var(--gray-dark);font-size:13px;line-height:1.6;">Квал-китов не найдено в базе.<br>Добавьте их через <a href="/admin/kits" style="color:var(--primary-blue)">редактор китов</a> с суффиксом <code>_k</code>.</div>
         {% endif %}
       </div>
 
       <!-- ── Items tab ── -->
       <div class="tab-panel" id="rtab-items">
         <div class="reward-list" id="rlist-items"></div>
-        <div class="reward-add-row cols-2">
-          <div class="form-group"><label>ID предмета</label><input type="text" id="rn-item-id" placeholder="wendingtool"></div>
-          <div class="form-group"><label>Количество</label><input type="number" id="rn-item-qty" min="1" value="1"></div>
-          <button class="btn btn-primary btn-sm" style="align-self:end;" onclick="rewardAddItem()">➕</button>
+        <div class="reward-add-section">
+          <div class="reward-add-label">Добавить предмет</div>
+          <div class="reward-add-row cols-2" style="margin-bottom:12px;">
+            <div class="form-group"><label>ID предмета</label><input type="text" id="rn-item-id" placeholder="wendingtool"></div>
+            <div class="form-group"><label>Количество</label><input type="number" id="rn-item-qty" min="1" value="1"></div>
+          </div>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="rewardAddItem()">➕ Добавить</button>
         </div>
       </div>
 
       <!-- ── Stats tab ── -->
       <div class="tab-panel" id="rtab-stats">
         <div class="reward-list" id="rlist-stats"></div>
-        <div class="reward-add-row cols-3">
-          <div class="form-group">
-            <label>Профессия / «all»</label>
-            <input type="text" id="rn-stat-job" placeholder="captain или all">
+        <div class="reward-add-section">
+          <div class="reward-add-label">Добавить стат</div>
+          <div class="reward-add-row cols-3" style="margin-bottom:12px;">
+            <div class="form-group">
+              <label>Профессия / «all»</label>
+              <input type="text" id="rn-stat-job" placeholder="captain или all">
+            </div>
+            <div class="form-group">
+              <label>Ключ стата (пусто = all)</label>
+              <input type="text" id="rn-stat-key" placeholder="mechanic">
+            </div>
+            <div class="form-group"><label>Значение</label><input type="number" id="rn-stat-val" value="0"></div>
           </div>
-          <div class="form-group">
-            <label>Ключ стата (пусто для «all»)</label>
-            <input type="text" id="rn-stat-key" placeholder="mechanic">
-          </div>
-          <div class="form-group"><label>Значение</label><input type="number" id="rn-stat-val" value="0"></div>
-          <button class="btn btn-primary btn-sm" style="align-self:end;" onclick="rewardAddStat()">➕</button>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="rewardAddStat()">➕ Добавить</button>
         </div>
       </div>
 
       <!-- ── Talents tab ── -->
       <div class="tab-panel" id="rtab-talents">
         <div class="reward-list" id="rlist-talents"></div>
-        <div class="reward-add-row cols-2">
-          <div class="form-group"><label>Профессия / «all»</label><input type="text" id="rn-tal-job" placeholder="captain или all"></div>
-          <div class="form-group"><label>ID таланта</label><input type="text" id="rn-tal-id" placeholder="talentid1"></div>
-          <button class="btn btn-primary btn-sm" style="align-self:end;" onclick="rewardAddTalent()">➕</button>
+        <div class="reward-add-section">
+          <div class="reward-add-label">Добавить талант</div>
+          <div class="reward-add-row cols-2" style="margin-bottom:12px;">
+            <div class="form-group"><label>Профессия / «all»</label><input type="text" id="rn-tal-job" placeholder="captain или all"></div>
+            <div class="form-group"><label>ID таланта</label><input type="text" id="rn-tal-id" placeholder="talentid1"></div>
+          </div>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="rewardAddTalent()">➕ Добавить</button>
         </div>
       </div>
     </div>

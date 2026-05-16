@@ -22,6 +22,7 @@ import secrets
 from datetime import datetime
 
 from database import get_db
+from security import check_permission
 from config import get_settings
 from security import verify_external_api_key_dependency
 from services import ServerModerationService, PlayerService
@@ -37,6 +38,7 @@ import logging
 settings = get_settings()
 logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="templates")
+templates.env.globals.update(check_permission=check_permission)
 
 # ── Reusable helpers (copied from admin.py pattern) ──────────────────────────
 
@@ -48,7 +50,13 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
             AdminSession.token == token, AdminSession.revoked == 0
         ).first()
         if session and (session.expires_at is None or session.expires_at > now):
-            admin = db.query(AdminUser).filter(AdminUser.id == session.admin_id).first()
+            from sqlalchemy.orm import joinedload
+            admin = (
+                db.query(AdminUser)
+                .options(joinedload(AdminUser.privilege_group))
+                .filter(AdminUser.id == session.admin_id)
+                .first()
+            )
             if admin:
                 request.session["username"] = admin.discord_username
                 return admin
@@ -244,7 +252,7 @@ async def enqueue_moderation_action(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Enqueue a kick / ban / message action from the admin panel."""
-    if "write" not in current_admin.permissions and "admin" not in current_admin.permissions:
+    if not check_permission(current_admin, "moderation", "edit"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     await ensure_csrf(request, db)

@@ -35,31 +35,32 @@
     <nav class="nav">
       <ul>
         <li><a href="/admin">Главная</a></li>
-        {% if "read" in admin.permissions or "write" in admin.permissions %}
+        {% if check_permission(admin, 'admin', 'view') %}
         <li><a href="/admin/users">Пользователи Nexus Data</a></li>
         {% endif %}
-        {% if "read" in admin.permissions or "write" in admin.permissions %}
+        {% if check_permission(admin, 'players', 'view') %}
         <li><a href="/admin/players">Игроки</a></li>
         {% endif %}
-        {% if "admin" in admin.permissions or "write" in admin.permissions %}
+        {% if check_permission(admin, 'moderation', 'edit') %}
         <li><a href="/admin/moderation">Модерирование сервера</a></li>
         {% endif %}
-        {% if "admin" in admin.permissions %}
+        {% if check_permission(admin, 'sessions', 'view') %}
         <li><a href="/admin/sessions">Сессии</a></li>
         {% endif %}
-        {% if "admin" in admin.permissions %}
+        {% if check_permission(admin, 'audit', 'view') %}
         <li><a href="/admin/audit">Аудит</a></li>
         {% endif %}
-        {% if "admin" in admin.permissions or "manage_admins" in admin.server_permissions %}
-        <li><a href="/admin/server-privileges">Привилегии игроков</a></li>
+        {% if check_permission(admin, 'privileges', 'view') %}
+        <li><a href="/admin/server-privileges">Серверные привилегии</a></li>
         {% endif %}
-        {% if "admin" in admin.permissions or "write" in admin.permissions %}
+        {% if check_permission(admin, 'kits', 'edit') %}
         <li><a href="/admin/kits">Редактирование китов</a></li>
         {% endif %}
-        {% if "admin" in admin.permissions %}
+        {% if check_permission(admin, 'admin', 'edit') %}
         <li><a href="/admin/administration">Администрирование</a></li>
         {% endif %}
-        {% if "read" in admin.permissions or "write" in admin.permissions or "admin" in admin.permissions %}
+
+        {% if check_permission(admin, 'punishments', 'view') %}
         <li><a href="/admin/punishments">Наказания</a></li>
         {% endif %}
       </ul>
