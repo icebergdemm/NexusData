@@ -303,6 +303,55 @@ class PlayerTrap(Base):
     triggered_at = Column(DateTime, nullable=True)
 
 
+class SubProject(Base):
+    """Sub-map project (submarine/ship) with metadata."""
+    __tablename__ = "sub_projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
+    project_type = Column(String(100), nullable=True)  # Корабль, Станция, etc.
+    crew = Column(String(100), nullable=True)  # e.g. "7-10-12"
+    weapons = Column(String(1000), nullable=True)
+    has_reactor = Column(String(10), nullable=True)  # Да/Нет
+    fabricator_medfab = Column(String(50), nullable=True)  # Да/Да, Нет/Нет, etc.
+    has_deconstructor = Column(String(10), nullable=True)
+    docking_ports = Column(String(200), nullable=True)
+    decks = Column(String(50), nullable=True)
+    max_speed = Column(String(50), nullable=True)
+    extra_equipment = Column(String(1000), nullable=True)
+    features = Column(String(4000), nullable=True)  # Особенности
+    description = Column(String(4000), nullable=True)  # Краткое описание
+    author = Column(String(255), nullable=False)
+    image_filename = Column(String(500), nullable=True)  # uploaded image file
+    # Discord embed tracking
+    discord_message_id = Column(String(64), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    versions = relationship("SubProjectVersion", back_populates="project", order_by="SubProjectVersion.version_number.desc()")
+
+
+class SubProjectVersion(Base):
+    """Version of a .sub file for a project."""
+    __tablename__ = "sub_project_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("sub_projects.id"), nullable=False, index=True)
+    version_number = Column(Integer, nullable=False)
+    filename = Column(String(500), nullable=False)  # original filename
+    stored_filename = Column(String(500), nullable=False)  # filename on disk
+    file_size = Column(Integer, nullable=True)
+    changelog = Column(String(2000), nullable=True)
+    # Deployment status per server
+    deployed_server_1 = Column(Integer, default=0)  # 0=not deployed, 1=deployed
+    deployed_server_2 = Column(Integer, default=0)
+    uploaded_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    uploaded_at = Column(DateTime, default=func.now())
+
+    project = relationship("SubProject", back_populates="versions")
+
+
 class PlayerPunishment(Base):
     """Unified punishment record: warning, reprimand, kick, ban."""
     __tablename__ = "player_punishments"

@@ -63,6 +63,10 @@
         {% if check_permission(admin, 'punishments', 'view') %}
         <li><a href="/admin/punishments">Наказания</a></li>
         {% endif %}
+
+        {% if check_permission(admin, 'sub_projects', 'view') %}
+        <li><a href="/admin/sub-projects">Sub-карты</a></li>
+        {% endif %}
       </ul>
     </nav>
 

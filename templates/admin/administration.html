@@ -321,6 +321,79 @@ input:checked + .slider:before { transform:translateX(20px); background:#fff; }
           <span class="hint">Срабатывает при входе игрока с активной ловушкой</span>
         </div>
 
+        <div class="form-group form-group-full">
+          <label>🚢 Webhook для sub-проектов</label>
+          <input type="url" name="sub_projects_webhook_url" value="{{ editable_cfg.sub_projects_webhook_url }}" placeholder="https://discord.com/api/webhooks/...">
+          <span class="hint">Глобальный webhook для публикации embed-сообщений sub-карт</span>
+        </div>
+
+        {% if admin.is_superuser %}
+        <!-- SFTP Settings (superuser only) -->
+        <div class="form-group form-group-full" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--stroke-01);">
+          <h4 style="color:var(--white); font-size:14px; margin-bottom:8px;">🔐 SFTP Сервер 1</h4>
+        </div>
+        <div class="form-group">
+          <label>Название</label>
+          <input type="text" name="sftp_server_1_name" value="{{ editable_cfg.sftp_server_1_name }}">
+        </div>
+        <div class="form-group">
+          <label>Хост</label>
+          <input type="text" name="sftp_server_1_host" value="{{ editable_cfg.sftp_server_1_host }}" placeholder="192.168.1.100">
+        </div>
+        <div class="form-group">
+          <label>Порт</label>
+          <input type="number" name="sftp_server_1_port" value="{{ editable_cfg.sftp_server_1_port }}" min="1" max="65535">
+        </div>
+        <div class="form-group">
+          <label>Пользователь</label>
+          <input type="text" name="sftp_server_1_username" value="{{ editable_cfg.sftp_server_1_username }}">
+        </div>
+        <div class="form-group">
+          <label>Пароль</label>
+          <input type="password" name="sftp_server_1_password" value="{{ editable_cfg.sftp_server_1_password }}">
+        </div>
+        <div class="form-group">
+          <label>Путь к ключу (необязательно)</label>
+          <input type="text" name="sftp_server_1_key_path" value="{{ editable_cfg.sftp_server_1_key_path }}">
+        </div>
+        <div class="form-group form-group-full">
+          <label>Удалённая директория</label>
+          <input type="text" name="sftp_server_1_remote_dir" value="{{ editable_cfg.sftp_server_1_remote_dir }}" placeholder="/home/baro/Submarines">
+        </div>
+
+        <div class="form-group form-group-full" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--stroke-01);">
+          <h4 style="color:var(--white); font-size:14px; margin-bottom:8px;">🔐 SFTP Сервер 2</h4>
+        </div>
+        <div class="form-group">
+          <label>Название</label>
+          <input type="text" name="sftp_server_2_name" value="{{ editable_cfg.sftp_server_2_name }}">
+        </div>
+        <div class="form-group">
+          <label>Хост</label>
+          <input type="text" name="sftp_server_2_host" value="{{ editable_cfg.sftp_server_2_host }}" placeholder="192.168.1.101">
+        </div>
+        <div class="form-group">
+          <label>Порт</label>
+          <input type="number" name="sftp_server_2_port" value="{{ editable_cfg.sftp_server_2_port }}" min="1" max="65535">
+        </div>
+        <div class="form-group">
+          <label>Пользователь</label>
+          <input type="text" name="sftp_server_2_username" value="{{ editable_cfg.sftp_server_2_username }}">
+        </div>
+        <div class="form-group">
+          <label>Пароль</label>
+          <input type="password" name="sftp_server_2_password" value="{{ editable_cfg.sftp_server_2_password }}">
+        </div>
+        <div class="form-group">
+          <label>Путь к ключу (необязательно)</label>
+          <input type="text" name="sftp_server_2_key_path" value="{{ editable_cfg.sftp_server_2_key_path }}">
+        </div>
+        <div class="form-group form-group-full">
+          <label>Удалённая директория</label>
+          <input type="text" name="sftp_server_2_remote_dir" value="{{ editable_cfg.sftp_server_2_remote_dir }}" placeholder="/home/baro/Submarines">
+        </div>
+        {% endif %}
+
       </div><!-- /config-grid -->
       <div style="margin-top:var(--spacing-24);">
         <button type="submit" class="btn btn-primary">💾 Сохранить конфигурацию</button>

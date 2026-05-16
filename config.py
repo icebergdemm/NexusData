@@ -82,6 +82,30 @@ class Settings(BaseSettings):
     # Discord Trap Webhook
     discord_trap_webhook_url: str = ""
 
+    # Sub-projects Discord Webhook (for embed publishing)
+    sub_projects_webhook_url: str = ""
+
+    # Sub-projects file storage
+    sub_projects_upload_dir: str = "uploads/sub_projects"
+
+    # SFTP Server 1
+    sftp_server_1_host: str = ""
+    sftp_server_1_port: int = 22
+    sftp_server_1_username: str = ""
+    sftp_server_1_password: str = ""
+    sftp_server_1_key_path: str = ""
+    sftp_server_1_remote_dir: str = ""
+    sftp_server_1_name: str = "Сервер 1"
+
+    # SFTP Server 2
+    sftp_server_2_host: str = ""
+    sftp_server_2_port: int = 22
+    sftp_server_2_username: str = ""
+    sftp_server_2_password: str = ""
+    sftp_server_2_key_path: str = ""
+    sftp_server_2_remote_dir: str = ""
+    sftp_server_2_name: str = "Сервер 2"
+
     # Ranks and Kits mappings (populated from JSON files in __init__)
     ranks_mapping: Dict[str, str] = {}
     kits_mapping: Dict[str, str] = {}

@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — Sub-карты{% endblock %}
+
+{% block content %}
+<style>
+.sp-detail-header { display:flex; align-items:center; gap:16px; margin-bottom:24px; flex-wrap:wrap; }
+.sp-detail-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.sp-back { color:var(--gray); text-decoration:none; font-size:13px; }
+.sp-back:hover { color:var(--white); }
+
+.sp-detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:32px; }
+@media(max-width:900px) { .sp-detail-grid { grid-template-columns:1fr; } }
+
+.sp-info-card, .sp-versions-card, .sp-actions-card {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); padding:20px; overflow:hidden;
+}
+.sp-info-card { grid-column:1/-1; }
+
+.sp-img-wrap { float:right; margin:0 0 16px 20px; max-width:360px; }
+.sp-img-wrap img { width:100%; border-radius:8px; border:1px solid var(--stroke-01); }
+
+.sp-fields { display:grid; grid-template-columns:1fr 1fr; gap:10px 24px; }
+@media(max-width:700px) { .sp-fields { grid-template-columns:1fr; } }
+.sp-field { display:flex; flex-direction:column; gap:2px; }
+.sp-field-label { font-size:11px; color:var(--gray); font-weight:700; text-transform:uppercase; letter-spacing:.3px; }
+.sp-field-value { font-size:14px; color:var(--white); white-space:pre-wrap; word-break:break-word; }
+.sp-field.full { grid-column:1/-1; }
+
+/* Versions */
+.sp-versions-card h3, .sp-actions-card h3 { font-size:15px; font-weight:700; color:var(--white); margin-bottom:16px; }
+.version-list { display:flex; flex-direction:column; gap:10px; }
+.version-item {
+  background:var(--bg); border:1px solid var(--stroke-01); border-radius:8px;
+  padding:12px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+}
+.version-num { font-size:14px; font-weight:700; color:var(--primary-blue); min-width:40px; }
+.version-info { flex:1; min-width:200px; }
+.version-info .vf-name { font-size:13px; color:var(--white); }
+.version-info .vf-meta { font-size:11px; color:var(--gray); }
+.version-badges { display:flex; gap:4px; flex-wrap:wrap; }
+.vb { font-size:10px; padding:2px 7px; border-radius:8px; font-weight:600; }
+.vb-s1 { background:rgba(26,104,222,.2); color:#5b9cf5; }
+.vb-s2 { background:rgba(174,0,122,.2); color:#e06cc0; }
+.version-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.version-actions form { display:inline; }
+.btn-xs { padding:4px 10px; font-size:11px; border-radius:4px; cursor:pointer; border:none; font-weight:600; }
+.btn-deploy { background:var(--green); color:#fff; }
+.btn-undeploy { background:var(--red); color:#fff; }
+.btn-download { background:var(--stroke-01); color:var(--white); text-decoration:none; display:inline-block; }
+.btn-delete { background:var(--red); color:#fff; }
+
+/* Upload form */
+.upload-form { margin-top:16px; padding-top:16px; border-top:1px solid var(--stroke-01); }
+.upload-form h4 { font-size:13px; color:var(--gray); margin-bottom:10px; }
+
+/* Actions card */
+.sp-actions-card { grid-column:1/-1; }
+.action-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+
+/* Edit modal */
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.active { display:flex; }
+.modal-box {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); padding:32px; width:90%; max-width:700px;
+  max-height:90vh; overflow-y:auto;
+}
+.modal-box h3 { font-size:18px; font-weight:700; color:var(--white); margin-bottom:20px; }
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.form-grid .full { grid-column:1/-1; }
+.form-group { display:flex; flex-direction:column; gap:4px; }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group input, .form-group textarea, .form-group select {
+  background:var(--bg); border:1px solid var(--stroke-01); border-radius:6px;
+  padding:8px 12px; color:var(--white); font-size:13px; font-family:inherit;
+}
+.form-group textarea { resize:vertical; min-height:80px; }
+.form-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+.btn { padding:8px 18px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; border:none; transition:var(--transition-03); }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#2b7af0; }
+.btn-secondary { background:var(--stroke-01); color:var(--gray); }
+.btn-secondary:hover { background:#3a4a6a; color:#fff; }
+.btn-danger { background:var(--red); color:#fff; }
+.btn-danger:hover { background:#d01050; }
+.btn-discord { background:#5865F2; color:#fff; }
+.btn-discord:hover { background:#4752c4; }
+</style>
+
+<a href="/admin/sub-projects" class="sp-back">← Назад к списку</a>
+
+<div class="sp-detail-header">
+  <h2>🚢 {{ project.name }}</h2>
+  {% if check_permission(admin, 'sub_projects', 'edit') %}
+  <button class="btn btn-primary" onclick="document.getElementById('editModal').classList.add('active')">✏️ Редактировать</button>
+  {% endif %}
+</div>
+
+<!-- Info Card -->
+<div class="sp-info-card" style="margin-bottom:24px;">
+  {% if project.image_filename %}
+  <div class="sp-img-wrap">
+    <img src="/sub_projects/images/{{ project.image_filename }}" alt="{{ project.name }}">
+  </div>
+  {% endif %}
+
+  <div class="sp-fields">
+    <div class="sp-field"><span class="sp-field-label">Тип проекта</span><span class="sp-field-value">{{ project.project_type or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Экипаж</span><span class="sp-field-value">{{ project.crew or '—' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Вооружение</span><span class="sp-field-value">{{ project.weapons or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Реактор</span><span class="sp-field-value">{{ project.has_reactor or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Фабрикатор / Мед. фабрикатор</span><span class="sp-field-value">{{ project.fabricator_medfab or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Деконструктор</span><span class="sp-field-value">{{ project.has_deconstructor or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Стыковочные порты</span><span class="sp-field-value">{{ project.docking_ports or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Палубы</span><span class="sp-field-value">{{ project.decks or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Максимальная скорость</span><span class="sp-field-value">{{ project.max_speed or '—' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Доп. оборудование</span><span class="sp-field-value">{{ project.extra_equipment or '—' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Особенности</span><span class="sp-field-value">{{ project.features or '—' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Краткое описание</span><span class="sp-field-value">{{ project.description or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Автор</span><span class="sp-field-value">{{ project.author }}</span></div>
+  </div>
+  <div style="clear:both;"></div>
+</div>
+
+<div class="sp-detail-grid">
+  <!-- Versions -->
+  <div class="sp-versions-card" style="grid-column:1/-1;">
+    <h3>📦 Версии файлов (.sub)</h3>
+
+    {% if versions %}
+    <div class="version-list">
+      {% for v in versions %}
+      <div class="version-item">
+        <div class="version-num">v{{ v.version_number }}</div>
+        <div class="version-info">
+          <div class="vf-name">{{ v.filename }}</div>
+          <div class="vf-meta">
+            {{ (v.file_size / 1024)|round(1) if v.file_size else '?' }} KB
+            · {{ v.uploaded_at.strftime('%d.%m.%Y %H:%M') if v.uploaded_at else '' }}
+            {% if v.changelog %} · {{ v.changelog }}{% endif %}
+          </div>
+        </div>
+        <div class="version-badges">
+          {% if v.deployed_server_1 %}<span class="vb vb-s1">{{ sftp_server_1_name }}</span>{% endif %}
+          {% if v.deployed_server_2 %}<span class="vb vb-s2">{{ sftp_server_2_name }}</span>{% endif %}
+        </div>
+        <div class="version-actions">
+          <a href="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/download" class="btn-xs btn-download">⬇️</a>
+
+          {% if check_permission(admin, 'sub_projects', 'edit') %}
+            {% if not v.deployed_server_1 %}
+            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+              <input type="hidden" name="server" value="1">
+              <button type="submit" class="btn-xs btn-deploy" title="Развернуть на {{ sftp_server_1_name }}">▶ С1</button>
+            </form>
+            {% else %}
+            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+              <input type="hidden" name="server" value="1">
+              <button type="submit" class="btn-xs btn-undeploy" title="Удалить с {{ sftp_server_1_name }}">⏹ С1</button>
+            </form>
+            {% endif %}
+
+            {% if not v.deployed_server_2 %}
+            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+              <input type="hidden" name="server" value="2">
+              <button type="submit" class="btn-xs btn-deploy" title="Развернуть на {{ sftp_server_2_name }}">▶ С2</button>
+            </form>
+            {% else %}
+            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+              <input type="hidden" name="server" value="2">
+              <button type="submit" class="btn-xs btn-undeploy" title="Удалить с {{ sftp_server_2_name }}">⏹ С2</button>
+            </form>
+            {% endif %}
+
+            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/delete" method="post"
+                  onsubmit="return confirm('Удалить версию {{ v.version_number }}?')">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+              <button type="submit" class="btn-xs btn-delete">🗑</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--gray); font-size:13px;">Версий пока нет. Загрузите первый .sub файл.</p>
+    {% endif %}
+
+    {% if check_permission(admin, 'sub_projects', 'edit') %}
+    <div class="upload-form">
+      <h4>Загрузить новую версию</h4>
+      <form action="/admin/sub-projects/{{ project.id }}/versions/upload" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <div class="form-group" style="flex:1; min-width:200px;">
+          <label>.sub файл</label>
+          <input type="file" name="sub_file" accept=".sub" required>
+        </div>
+        <div class="form-group" style="flex:1; min-width:200px;">
+          <label>Changelog (необязательно)</label>
+          <input type="text" name="changelog" placeholder="Что изменилось...">
+        </div>
+        <button type="submit" class="btn btn-primary">Загрузить</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Actions -->
+  <div class="sp-actions-card">
+    <h3>⚡ Действия</h3>
+
+    {% if check_permission(admin, 'sub_projects', 'edit') %}
+    <div class="action-row">
+      <form action="/admin/sub-projects/{{ project.id }}/discord/publish" method="post">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" class="btn btn-discord">
+          {% if project.discord_message_id %}📝 Обновить embed в Discord{% else %}📤 Опубликовать в Discord{% endif %}
+        </button>
+      </form>
+
+      {% if project.discord_message_id %}
+      <form action="/admin/sub-projects/{{ project.id }}/discord/delete" method="post"
+            onsubmit="return confirm('Удалить сообщение из Discord?')">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" class="btn btn-danger">🗑 Удалить из Discord</button>
+      </form>
+      <span style="font-size:11px; color:var(--gray);">Message ID: {{ project.discord_message_id }}</span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if check_permission(admin, 'sub_projects', 'delete') %}
+    <div class="action-row" style="margin-top:20px; padding-top:16px; border-top:1px solid var(--stroke-01);">
+      <form action="/admin/sub-projects/{{ project.id }}/delete" method="post"
+            onsubmit="return confirm('Удалить проект «{{ project.name }}» и все его версии? Это действие необратимо.')">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" class="btn btn-danger">🗑 Удалить проект</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal-box">
+    <h3>Редактировать проект</h3>
+    <form action="/admin/sub-projects/{{ project.id }}/update" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Название *</label>
+          <input type="text" name="name" required value="{{ project.name }}">
+        </div>
+        <div class="form-group">
+          <label>Автор *</label>
+          <input type="text" name="author" required value="{{ project.author }}">
+        </div>
+        <div class="form-group">
+          <label>Тип проекта</label>
+          <input type="text" name="project_type" value="{{ project.project_type or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Экипаж</label>
+          <input type="text" name="crew" value="{{ project.crew or '' }}">
+        </div>
+        <div class="form-group full">
+          <label>Вооружение</label>
+          <textarea name="weapons">{{ project.weapons or '' }}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Реактор</label>
+          <input type="text" name="has_reactor" value="{{ project.has_reactor or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Фабрикатор / Мед. фабрикатор</label>
+          <input type="text" name="fabricator_medfab" value="{{ project.fabricator_medfab or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Деконструктор</label>
+          <input type="text" name="has_deconstructor" value="{{ project.has_deconstructor or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Стыковочные порты</label>
+          <input type="text" name="docking_ports" value="{{ project.docking_ports or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Палубы</label>
+          <input type="text" name="decks" value="{{ project.decks or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Максимальная скорость</label>
+          <input type="text" name="max_speed" value="{{ project.max_speed or '' }}">
+        </div>
+        <div class="form-group full">
+          <label>Доп. оборудование</label>
+          <input type="text" name="extra_equipment" value="{{ project.extra_equipment or '' }}">
+        </div>
+        <div class="form-group full">
+          <label>Особенности</label>
+          <textarea name="features">{{ project.features or '' }}</textarea>
+        </div>
+        <div class="form-group full">
+          <label>Краткое описание</label>
+          <textarea name="description">{{ project.description or '' }}</textarea>
+        </div>
+        <div class="form-group full">
+          <label>Новое изображение (оставьте пустым чтобы сохранить текущее)</label>
+          <input type="file" name="image" accept="image/*">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('editModal').classList.remove('active')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+document.getElementById('editModal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('active');
+});
+</script>
+{% endblock %}

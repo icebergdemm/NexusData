@@ -206,6 +206,14 @@
   </a>
   {% endif %}
 
+  {% if check_permission(admin, 'sub_projects', 'view') %}
+  <a href="/admin/sub-projects" class="section-card">
+    <div class="sc-icon">🚢</div>
+    <div class="sc-title">Sub-карты</div>
+    <div class="sc-desc">Управление проектами подводных лодок: версии файлов, деплой на серверы, Discord-публикации</div>
+  </a>
+  {% endif %}
+
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>

@@ -52,3 +52,6 @@ Thumbs.db
 
 # Media files (optional - adjust as needed)
 *.mp4
+
+# Uploaded files
+uploads/

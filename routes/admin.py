@@ -2684,6 +2684,21 @@ def _get_editable_config() -> dict:
         "rate_limit_requests": s.rate_limit_requests,
         "rate_limit_window": s.rate_limit_window,
         "cors_origins": ",".join(s.cors_origins_list) if s.cors_origins_list else s.cors_origins,
+        "sub_projects_webhook_url": s.sub_projects_webhook_url,
+        "sftp_server_1_name": s.sftp_server_1_name,
+        "sftp_server_1_host": s.sftp_server_1_host,
+        "sftp_server_1_port": s.sftp_server_1_port,
+        "sftp_server_1_username": s.sftp_server_1_username,
+        "sftp_server_1_password": s.sftp_server_1_password,
+        "sftp_server_1_key_path": s.sftp_server_1_key_path,
+        "sftp_server_1_remote_dir": s.sftp_server_1_remote_dir,
+        "sftp_server_2_name": s.sftp_server_2_name,
+        "sftp_server_2_host": s.sftp_server_2_host,
+        "sftp_server_2_port": s.sftp_server_2_port,
+        "sftp_server_2_username": s.sftp_server_2_username,
+        "sftp_server_2_password": s.sftp_server_2_password,
+        "sftp_server_2_key_path": s.sftp_server_2_key_path,
+        "sftp_server_2_remote_dir": s.sftp_server_2_remote_dir,
     }
 
 
@@ -2728,6 +2743,21 @@ async def admin_administration_config_save(
         "rate_limit_requests": "RATE_LIMIT_REQUESTS",
         "rate_limit_window": "RATE_LIMIT_WINDOW",
         "cors_origins": "CORS_ORIGINS",
+        "sub_projects_webhook_url": "SUB_PROJECTS_WEBHOOK_URL",
+        "sftp_server_1_name": "SFTP_SERVER_1_NAME",
+        "sftp_server_1_host": "SFTP_SERVER_1_HOST",
+        "sftp_server_1_port": "SFTP_SERVER_1_PORT",
+        "sftp_server_1_username": "SFTP_SERVER_1_USERNAME",
+        "sftp_server_1_password": "SFTP_SERVER_1_PASSWORD",
+        "sftp_server_1_key_path": "SFTP_SERVER_1_KEY_PATH",
+        "sftp_server_1_remote_dir": "SFTP_SERVER_1_REMOTE_DIR",
+        "sftp_server_2_name": "SFTP_SERVER_2_NAME",
+        "sftp_server_2_host": "SFTP_SERVER_2_HOST",
+        "sftp_server_2_port": "SFTP_SERVER_2_PORT",
+        "sftp_server_2_username": "SFTP_SERVER_2_USERNAME",
+        "sftp_server_2_password": "SFTP_SERVER_2_PASSWORD",
+        "sftp_server_2_key_path": "SFTP_SERVER_2_KEY_PATH",
+        "sftp_server_2_remote_dir": "SFTP_SERVER_2_REMOTE_DIR",
     }
 
     for field, env_key in field_map.items():

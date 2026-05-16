@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Управление sub-картами — Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.sp-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:24px; }
+.sp-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.sp-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px; margin-bottom:32px; }
+.sp-card {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); overflow:hidden;
+  transition:var(--transition-03); text-decoration:none; display:flex; flex-direction:column;
+}
+.sp-card:hover { border-color:var(--primary-blue); transform:translateY(-2px); }
+.sp-card-img { width:100%; height:180px; object-fit:cover; background:#0a0f1f; }
+.sp-card-img-placeholder { width:100%; height:180px; background:#0a0f1f; display:flex; align-items:center; justify-content:center; font-size:48px; color:var(--stroke-01); }
+.sp-card-body { padding:16px; flex:1; display:flex; flex-direction:column; gap:8px; }
+.sp-card-title { font-size:16px; font-weight:700; color:var(--white); }
+.sp-card-meta { font-size:12px; color:var(--gray); }
+.sp-card-meta span { margin-right:12px; }
+.sp-card-badges { display:flex; gap:6px; flex-wrap:wrap; margin-top:auto; padding-top:8px; }
+.sp-badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600; }
+.sp-badge-type { background:rgba(26,104,222,.2); color:#5b9cf5; }
+.sp-badge-versions { background:rgba(34,208,111,.15); color:#22d06f; }
+
+/* Create modal */
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.active { display:flex; }
+.modal-box {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); padding:32px; width:90%; max-width:700px;
+  max-height:90vh; overflow-y:auto;
+}
+.modal-box h3 { font-size:18px; font-weight:700; color:var(--white); margin-bottom:20px; }
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.form-grid .full { grid-column:1/-1; }
+.form-group { display:flex; flex-direction:column; gap:4px; }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group input, .form-group textarea, .form-group select {
+  background:var(--bg); border:1px solid var(--stroke-01); border-radius:6px;
+  padding:8px 12px; color:var(--white); font-size:13px; font-family:inherit;
+}
+.form-group textarea { resize:vertical; min-height:80px; }
+.form-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+.btn { padding:8px 18px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; border:none; transition:var(--transition-03); }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#2b7af0; }
+.btn-secondary { background:var(--stroke-01); color:var(--gray); }
+.btn-secondary:hover { background:#3a4a6a; color:#fff; }
+</style>
+
+<div class="sp-header">
+  <h2>🚢 Управление sub-картами</h2>
+  {% if check_permission(admin, 'sub_projects', 'edit') %}
+  <button class="btn btn-primary" onclick="document.getElementById('createModal').classList.add('active')">+ Новый проект</button>
+  {% endif %}
+</div>
+
+{% if not projects_data %}
+<div style="text-align:center; padding:60px 20px; color:var(--gray);">
+  <div style="font-size:48px; margin-bottom:16px;">🚢</div>
+  <p>Проектов пока нет. Создайте первый!</p>
+</div>
+{% else %}
+<div class="sp-grid">
+  {% for item in projects_data %}
+  <a href="/admin/sub-projects/{{ item.project.id }}" class="sp-card">
+    {% if item.project.image_filename %}
+    <img class="sp-card-img" src="/sub_projects/images/{{ item.project.image_filename }}" alt="{{ item.project.name }}">
+    {% else %}
+    <div class="sp-card-img-placeholder">🚢</div>
+    {% endif %}
+    <div class="sp-card-body">
+      <div class="sp-card-title">{{ item.project.name }}</div>
+      <div class="sp-card-meta">
+        <span>👤 {{ item.project.author }}</span>
+        {% if item.project.crew %}<span>👥 {{ item.project.crew }}</span>{% endif %}
+      </div>
+      <div class="sp-card-badges">
+        {% if item.project.project_type %}
+        <span class="sp-badge sp-badge-type">{{ item.project.project_type }}</span>
+        {% endif %}
+        <span class="sp-badge sp-badge-versions">{{ item.version_count }} версий</span>
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Create Modal -->
+<div class="modal-overlay" id="createModal">
+  <div class="modal-box">
+    <h3>Создать новый проект</h3>
+    <form action="/admin/sub-projects/create" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Название *</label>
+          <input type="text" name="name" required placeholder="Акула">
+        </div>
+        <div class="form-group">
+          <label>Автор *</label>
+          <input type="text" name="author" required placeholder="Велес">
+        </div>
+        <div class="form-group">
+          <label>Тип проекта</label>
+          <input type="text" name="project_type" placeholder="Корабль">
+        </div>
+        <div class="form-group">
+          <label>Экипаж</label>
+          <input type="text" name="crew" placeholder="7-10-12">
+        </div>
+        <div class="form-group full">
+          <label>Вооружение</label>
+          <textarea name="weapons" placeholder="3 цепных пушки, 1 модифицированный импульсный лазер"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Реактор</label>
+          <input type="text" name="has_reactor" placeholder="Да">
+        </div>
+        <div class="form-group">
+          <label>Фабрикатор / Мед. фабрикатор</label>
+          <input type="text" name="fabricator_medfab" placeholder="Да/Да">
+        </div>
+        <div class="form-group">
+          <label>Деконструктор</label>
+          <input type="text" name="has_deconstructor" placeholder="Да">
+        </div>
+        <div class="form-group">
+          <label>Стыковочные порты</label>
+          <input type="text" name="docking_ports" placeholder="1 сверху">
+        </div>
+        <div class="form-group">
+          <label>Палубы</label>
+          <input type="text" name="decks" placeholder="3">
+        </div>
+        <div class="form-group">
+          <label>Максимальная скорость</label>
+          <input type="text" name="max_speed" placeholder="11 км/ч">
+        </div>
+        <div class="form-group full">
+          <label>Доп. оборудование</label>
+          <input type="text" name="extra_equipment" placeholder="Нет">
+        </div>
+        <div class="form-group full">
+          <label>Особенности</label>
+          <textarea name="features" placeholder="Модифицированный лазер..."></textarea>
+        </div>
+        <div class="form-group full">
+          <label>Краткое описание</label>
+          <textarea name="description" placeholder="Акула - средний корабль..."></textarea>
+        </div>
+        <div class="form-group full">
+          <label>Изображение проекта</label>
+          <input type="file" name="image" accept="image/*">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('createModal').classList.remove('active')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Создать</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+document.getElementById('createModal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('active');
+});
+</script>
+{% endblock %}
