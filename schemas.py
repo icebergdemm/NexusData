@@ -37,16 +37,7 @@ class PlayerDataBase(BaseModel):
     player_steamid: str = Field(min_length=17, max_length=18)
     rank_id: int = Field(default=0, ge=0)
     kit_level: int = Field(default=0, ge=0)
-    achievements: List[str] = Field(default_factory=list)
-
-    @field_validator('achievements', mode='before')
-    @classmethod
-    def coerce_achievements(cls, v):
-        if isinstance(v, dict):
-            return list(v.values()) if v else []
-        if v is None:
-            return []
-        return v
+    achievements: Optional[Any] = Field(default=None)
     
     @field_validator('player_steamid')
     def validate_steamid(cls, v: str) -> str:
@@ -83,14 +74,7 @@ class PlayerDataUpdate(BaseModel):
     play_time: Optional[int] = Field(None, ge=0)
     rank_id: Optional[int] = Field(None, ge=0)
     kit_level: Optional[int] = Field(None, ge=0)
-    achievements: Optional[List[str]] = None
-
-    @field_validator('achievements', mode='before')
-    @classmethod
-    def coerce_achievements_update(cls, v):
-        if isinstance(v, dict):
-            return list(v.values()) if v else []
-        return v
+    achievements: Optional[Any] = None
 
 
 class PlayerDataOut(PlayerDataBase):

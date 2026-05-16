@@ -172,42 +172,19 @@ textarea { resize:vertical; min-height:80px; }
   margin-bottom:6px; display:flex; justify-content:space-between;
 }
 
-/* ── Achievements ── */
-.ach-list { display:flex; flex-direction:column; gap:8px; }
-.ach-item {
+/* ── Reward items ── */
+.reward-list { display:flex; flex-direction:column; gap:6px; }
+.reward-row {
   display:flex; align-items:center; justify-content:space-between;
-  padding:10px 14px; background:var(--dark-blue-bg);
-  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8);
-  gap:12px;
+  padding:8px 12px; background:var(--dark-blue-bg);
+  border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); gap:10px;
 }
-.ach-item-info { display:flex; flex-direction:column; gap:2px; }
-.ach-item-name { font-size:13px; color:var(--white); font-weight:600; }
-.ach-item-id   { font-size:11px; color:var(--gray-dark); font-family:'Courier New',monospace; }
-.ach-note      { font-size:12px; color:var(--gray); margin-top:2px; }
-
-.packs-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; margin-bottom:var(--spacing-20); }
-.pack-card {
-  background:var(--dark-blue-bg); border:2px solid var(--stroke-01);
-  border-radius:var(--border-radius-8); padding:12px; cursor:pointer;
-  transition:var(--transition-03); user-select:none;
-}
-.pack-card:hover { border-color:var(--primary-blue); }
-.pack-name { font-size:13px; font-weight:700; color:var(--white); }
-.pack-count { font-size:11px; color:var(--gray-dark); margin-top:2px; }
-.config-ach-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:8px; }
-.config-ach-item {
-  background:var(--dark-blue-bg); border:1px solid var(--stroke-01);
-  border-radius:var(--border-radius-8); padding:10px 12px;
-  display:flex; align-items:center; gap:10px; cursor:pointer;
-  transition:var(--transition-03);
-}
-.config-ach-item:hover { border-color:var(--primary-blue); }
-.config-ach-item.owned { border-color:var(--success); background:rgba(3,123,54,.08); cursor:default; opacity:.6; }
-.ach-check { width:18px; height:18px; flex-shrink:0; }
-.ach-label-text { font-size:12px; color:var(--white); line-height:1.3; }
-.manual-form { display:flex; flex-direction:column; gap:14px; }
-.manual-form input { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:10px 14px; font-size:13px; font-family:inherit; box-sizing:border-box; width:100%; }
-.manual-form input:focus { outline:none; border-color:var(--primary-blue); }
+.reward-row-info { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; }
+.reward-row-main { font-size:13px; color:var(--white); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.reward-row-sub  { font-size:11px; color:var(--gray-dark); font-family:'Courier New',monospace; }
+.reward-add-row { display:grid; gap:8px; align-items:end; margin-top:14px; padding-top:14px; border-top:1px solid var(--stroke-01); }
+.reward-add-row.cols-2 { grid-template-columns:1fr 1fr auto; }
+.reward-add-row.cols-3 { grid-template-columns:1fr 1fr 1fr auto; }
 
 /* ── Flash ── */
 .flash { padding:12px 18px; border-radius:var(--border-radius-8); margin-bottom:var(--spacing-16); font-size:13px; font-weight:500; }
@@ -283,9 +260,6 @@ textarea { resize:vertical; min-height:80px; }
     <div class="block-card">
       <div class="block-card-header">
         <h3>Информация</h3>
-        {% if "write" in admin.permissions %}
-        <button class="btn btn-secondary btn-sm" onclick="openModal('edit-modal')">✏️ Редактировать</button>
-        {% endif %}
       </div>
       <div class="block-card-body">
         <div class="player-info-grid">
@@ -304,22 +278,6 @@ textarea { resize:vertical; min-height:80px; }
               <a href="https://steamcommunity.com/profiles/{{ player.player_steamid }}" target="_blank" rel="noopener">
                 {{ player.player_steamid }} 🔗
               </a>
-              {% else %}—{% endif %}
-            </span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Ранг</span>
-            <span class="info-value">
-              {% if player.rank_id is not none %}
-              <span class="rank-badge">{{ ranks.get(player.rank_id | string, player.rank_id) }}</span>
-              {% else %}—{% endif %}
-            </span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Уровень кита</span>
-            <span class="info-value">
-              {% if player.kit_level is not none %}
-              {{ kits.get(player.kit_level | string, player.kit_level) }}
               {% else %}—{% endif %}
             </span>
           </div>
@@ -342,98 +300,210 @@ textarea { resize:vertical; min-height:80px; }
           </div>
           {% endif %}
         </div>
+
+        <!-- Inline rank / kit editing -->
+        {% if "write" in admin.permissions %}
+        <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
+          <form method="post" action="/admin/players/{{ player.player_id }}/update">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div class="form-group">
+                <label>Звание</label>
+                <select name="rank_id">
+                  <option value="">— Без звания —</option>
+                  {% for rid, rname in ranks.items() %}
+                  <option value="{{ rid }}" {% if player.rank_id | string == rid %}selected{% endif %}>{{ rname }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Набор</label>
+                <select name="kit_level">
+                  <option value="">— Без набора —</option>
+                  {% for kid, kname in kits.items() %}
+                  <option value="{{ kid }}" {% if player.kit_level | string == kid %}selected{% endif %}>{{ kname }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" style="margin-top:12px;">💾 Сохранить</button>
+          </form>
+        </div>
+        {% else %}
+        <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
+          <div class="player-info-grid">
+            <div class="info-row">
+              <span class="info-label">Звание</span>
+              <span class="info-value">
+                {% if player.rank_id is not none %}
+                <span class="rank-badge">{{ ranks.get(player.rank_id | string, player.rank_id) }}</span>
+                {% else %}—{% endif %}
+              </span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Набор</span>
+              <span class="info-value">
+                {% if player.kit_level is not none %}{{ kits.get(player.kit_level | string, player.kit_level) }}{% else %}—{% endif %}
+              </span>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- Kval-kits section -->
+        <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div class="right-section-title" style="margin-bottom:0;">Квал-киты</div>
+            {% if "write" in admin.permissions %}
+            <button class="btn btn-secondary btn-sm" onclick="openRewards('kval-kits')">✏️ Управление</button>
+            {% endif %}
+          </div>
+          {% if kval_kits %}
+          <div class="qualkit-list" id="info-kval-list">
+            {% for job_id, level in kval_kits.items() %}
+            <div class="qualkit-item">
+              <span class="qualkit-job">{{ job_id }}</span>
+              <div>
+                <div class="qualkit-name">Уровень {{ level }}</div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div id="info-kval-list" style="font-size:13px; color:var(--gray-dark);">Не назначены</div>
+          {% endif %}
+        </div>
+
       </div>
     </div>
 
-    <!-- Qual-kits card -->
-    {% if all_qual_kits %}
+    <!-- Punishment history (under Info card) -->
     <div class="block-card">
       <div class="block-card-header">
-        <h3>⚙️ Квал-киты</h3>
-        <a href="/admin/kits#qual" class="btn btn-secondary btn-sm">Управление</a>
+        <h3>⚖️ История наказаний</h3>
+        <span style="font-size:12px; color:var(--gray);">{{ punishments | length }}</span>
       </div>
-      <div class="block-card-body">
-        {% if qual_kits_assigned %}
-        <div class="qualkit-list">
-          {% for qk in qual_kits_assigned %}
-          <div class="qualkit-item">
-            <span class="qualkit-job">{{ qk.job_id or '—' }}</span>
-            <div>
-              <div class="qualkit-name">{{ qk.kit_name or qk.kit_id }}</div>
-              <div class="qualkit-level">Уровень {{ qk.kit_level }}</div>
-            </div>
-          </div>
-          {% endfor %}
+      <div class="block-card-body" style="padding:0;">
+        {% if punishments %}
+        <div style="overflow-x:auto; max-height:340px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--primary-blue) var(--dark-blue-bg);">
+          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead style="background:var(--dark-blue-bg); position:sticky; top:0; z-index:2;">
+              <tr>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Тип</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; min-width:200px;">Причина</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Кто</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Дата</th>
+                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in punishments %}
+              {% set p = item.p %}
+              <tr style="border-bottom:1px solid var(--stroke-01);">
+                <td style="padding:8px 12px; white-space:nowrap;">
+                  {% if p.type == 'warning' %}<span style="color:#ffaa44;">⚠️ Предупр.</span>
+                  {% elif p.type == 'reprimand' %}<span style="color:#c77dff;">📋 Выговор</span>
+                  {% elif p.type == 'kick' %}<span style="color:#ff8c42;">👟 Кик</span>
+                  {% else %}<span style="color:#ff4d80;">🔨 Бан</span>{% endif %}
+                </td>
+                <td style="padding:8px 12px; color:var(--gray); min-width:200px; word-break:break-word; white-space:pre-wrap;">{{ p.reason or '—' }}</td>
+                <td style="padding:8px 12px; color:var(--gray); white-space:nowrap;">{{ p.issued_by_name or '—' }}</td>
+                <td style="padding:8px 12px; color:var(--gray-dark); font-family:'Courier New',monospace; white-space:nowrap; font-size:11px;">
+                  {{ p.issued_at.strftime('%d.%m.%y %H:%M') if p.issued_at else '—' }}
+                </td>
+                <td style="padding:8px 12px;">
+                  {% if item.status == 'active' %}
+                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(3,123,54,.15); color:var(--success); border:1px solid rgba(3,123,54,.3);">Активно</span>
+                  {% elif item.status == 'expired' %}
+                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(120,120,120,.12); color:#aaa; border:1px solid rgba(120,120,120,.3);">Истекло</span>
+                  {% else %}
+                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(183,12,70,.08); color:#ff4d80; border:1px solid rgba(183,12,70,.2);">Неактуально</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:10px 14px;">
+          <a href="/admin/punishments?tab=warning&search={{ player.player_steamid or '' }}"
+             style="font-size:12px; color:var(--primary-blue); text-decoration:none;">
+            Все наказания →
+          </a>
         </div>
         {% else %}
-        <div style="text-align:center; padding:16px; color:var(--gray-dark); font-size:13px;">Квал-киты не назначены</div>
+        <div style="text-align:center; padding:20px; color:var(--gray-dark); font-size:13px;">Наказаний не найдено</div>
         {% endif %}
       </div>
     </div>
-    {% endif %}
+
+    <!-- Labels + Personal notes (2-column) -->
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--spacing-16);">
+
+      <!-- Labels -->
+      <div class="block-card">
+        <div class="block-card-header"><h3>🏷 Метки</h3></div>
+        <div class="block-card-body">
+          {% if label_pairs %}
+          <div class="labels-row">
+            {% for lbl, cat in label_pairs %}
+            <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
+              {{ cat.icon }} {{ cat.name }}
+              {% if "write" in admin.permissions %}
+              <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
+                    style="display:inline; margin:0;">
+                <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+                <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
+              </form>
+              {% endif %}
+            </span>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div style="font-size:12px; color:var(--gray-dark); margin-bottom:12px;">Меток нет</div>
+          {% endif %}
+
+          {% if "write" in admin.permissions %}
+            {% if label_categories %}
+            <form method="post" action="/admin/players/{{ player.player_id }}/labels/assign">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <select name="category_id" style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; box-sizing:border-box;">
+                  {% for cat in label_categories %}
+                  <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-primary btn-sm">+ Добавить</button>
+              </div>
+            </form>
+            {% else %}
+            <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center;">
+              + Создать категории меток
+            </a>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Personal notes (Личное дело) -->
+      <div class="block-card">
+        <div class="block-card-header">
+          <h3>📂 Личное дело</h3>
+          {% if "write" in admin.permissions %}
+          <button class="btn btn-secondary btn-sm" onclick="openModal('notes-modal')">✏️ Редактировать</button>
+          {% endif %}
+        </div>
+        <div class="block-card-body">
+          <div class="note-preview">{% if notes %}{{ notes[0].content }}{% endif %}</div>
+        </div>
+      </div>
+
+    </div>{# /2-col labels+notes #}
 
   </div>{# /LEFT #}
 
-  <!-- RIGHT panel -->
+  <!-- RIGHT panel: Trap + Custom Rewards -->
   <div class="right-panel">
-
-    <!-- Labels -->
-    <div class="block-card">
-      <div class="block-card-header"><h3>🏷 Метки</h3></div>
-      <div class="block-card-body">
-        {% if label_pairs %}
-        <div class="labels-row">
-          {% for lbl, cat in label_pairs %}
-          <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
-            {{ cat.icon }} {{ cat.name }}
-            {% if "write" in admin.permissions %}
-            <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
-                  style="display:inline; margin:0;">
-              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-              <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
-            </form>
-            {% endif %}
-          </span>
-          {% endfor %}
-        </div>
-        {% else %}
-        <div style="font-size:12px; color:var(--gray-dark); margin-bottom:12px;">Меток нет</div>
-        {% endif %}
-
-        {% if "write" in admin.permissions %}
-          {% if label_categories %}
-          <form method="post" action="/admin/players/{{ player.player_id }}/labels/assign">
-            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-              <select name="category_id" style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; box-sizing:border-box;">
-                {% for cat in label_categories %}
-                <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
-                {% endfor %}
-              </select>
-              <button type="submit" class="btn btn-primary btn-sm">+ Добавить</button>
-            </div>
-          </form>
-          {% else %}
-          <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center;">
-            + Создать категории меток
-          </a>
-          {% endif %}
-        {% endif %}
-      </div>
-    </div>
-
-    <!-- Personal notes (Личное дело) -->
-    <div class="block-card">
-      <div class="block-card-header">
-        <h3>📂 Личное дело</h3>
-        {% if "write" in admin.permissions %}
-        <button class="btn btn-secondary btn-sm" onclick="openModal('notes-modal')">✏️ Редактировать</button>
-        {% endif %}
-      </div>
-      <div class="block-card-body">
-        <div class="note-preview">{% if notes %}{{ notes[0].content }}{% endif %}</div>
-      </div>
-    </div>
 
     <!-- Trap -->
     {% if "write" in admin.permissions %}
@@ -490,80 +560,28 @@ textarea { resize:vertical; min-height:80px; }
     </div>
     {% endif %}
 
-    <!-- Achievements quick-open -->
+    <!-- Custom Rewards -->
     {% if "write" in admin.permissions %}
     <div class="block-card">
       <div class="block-card-header">
-        <h3>🏆 Достижения</h3>
-        <span style="font-size:12px; color:var(--gray);">{{ (player.achievements or []) | length }}</span>
+        <h3>🎁 Кастомные награды</h3>
       </div>
-      <div class="block-card-body">
-        <button class="btn btn-secondary btn-sm btn-block" onclick="openModal('ach-modal');loadConfig();">
-          ✏️ Редактор достижений
+      <div class="block-card-body" style="display:flex; flex-direction:column; gap:8px;">
+        <button class="btn btn-secondary btn-sm btn-block" onclick="openRewards('kval-kits')">⚙️ Квал-киты
+          <span style="margin-left:auto; font-size:11px; color:var(--gray);">{{ kval_kits | length }}</span>
+        </button>
+        <button class="btn btn-secondary btn-sm btn-block" onclick="openRewards('items')">📦 Предметы
+          <span style="margin-left:auto; font-size:11px; color:var(--gray);">{{ custom_items | length }}</span>
+        </button>
+        <button class="btn btn-secondary btn-sm btn-block" onclick="openRewards('stats')">📊 Статы
+          <span style="margin-left:auto; font-size:11px; color:var(--gray);">{{ custom_stats | length }}</span>
+        </button>
+        <button class="btn btn-secondary btn-sm btn-block" onclick="openRewards('talents')">✨ Таланты
+          <span style="margin-left:auto; font-size:11px; color:var(--gray);">{{ custom_talents | length }}</span>
         </button>
       </div>
     </div>
     {% endif %}
-
-    <!-- Punishment history -->
-    <div class="block-card">
-      <div class="block-card-header">
-        <h3>⚖️ История наказаний</h3>
-        <span style="font-size:12px; color:var(--gray);">{{ punishments | length }}</span>
-      </div>
-      <div class="block-card-body" style="padding:0;">
-        {% if punishments %}
-        <div style="overflow-x:auto;">
-          <table style="width:100%; border-collapse:collapse; font-size:12px;">
-            <thead style="background:var(--dark-blue-bg);">
-              <tr>
-                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Тип</th>
-                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase;">Причина</th>
-                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Кто</th>
-                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Дата</th>
-                <th style="padding:8px 12px; text-align:left; color:var(--gray); font-size:10px; text-transform:uppercase; white-space:nowrap;">Статус</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for item in punishments %}
-              {% set p = item.p %}
-              <tr style="border-bottom:1px solid var(--stroke-01);">
-                <td style="padding:8px 12px; white-space:nowrap;">
-                  {% if p.type == 'warning' %}<span style="color:#ffaa44;">⚠️ Предупр.</span>
-                  {% elif p.type == 'reprimand' %}<span style="color:#c77dff;">📋 Выговор</span>
-                  {% elif p.type == 'kick' %}<span style="color:#ff8c42;">👟 Кик</span>
-                  {% else %}<span style="color:#ff4d80;">🔨 Бан</span>{% endif %}
-                </td>
-                <td style="padding:8px 12px; color:var(--gray); max-width:160px; word-break:break-word;">{{ p.reason or '—' }}</td>
-                <td style="padding:8px 12px; color:var(--gray); white-space:nowrap;">{{ p.issued_by_name or '—' }}</td>
-                <td style="padding:8px 12px; color:var(--gray-dark); font-family:'Courier New',monospace; white-space:nowrap; font-size:11px;">
-                  {{ p.issued_at.strftime('%d.%m.%y %H:%M') if p.issued_at else '—' }}
-                </td>
-                <td style="padding:8px 12px;">
-                  {% if item.status == 'active' %}
-                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(3,123,54,.15); color:var(--success); border:1px solid rgba(3,123,54,.3);">Активно</span>
-                  {% elif item.status == 'expired' %}
-                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(120,120,120,.12); color:#aaa; border:1px solid rgba(120,120,120,.3);">Истекло</span>
-                  {% else %}
-                  <span style="display:inline-block; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(183,12,70,.08); color:#ff4d80; border:1px solid rgba(183,12,70,.2);">Неактуально</span>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <div style="padding:10px 14px;">
-          <a href="/admin/punishments?tab=warning&search={{ player.player_steamid or '' }}"
-             style="font-size:12px; color:var(--primary-blue); text-decoration:none;">
-            Все наказания →
-          </a>
-        </div>
-        {% else %}
-        <div style="text-align:center; padding:20px; color:var(--gray-dark); font-size:13px;">Наказаний не найдено</div>
-        {% endif %}
-      </div>
-    </div>
 
   </div>{# /RIGHT #}
 </div>
@@ -668,45 +686,7 @@ textarea { resize:vertical; min-height:80px; }
 
 {% if "write" in admin.permissions %}
 
-<!-- Edit modal -->
-<div class="modal-overlay" id="edit-modal">
-  <div class="modal-box narrow">
-    <div class="modal-header">
-      <h3>✏️ Редактирование</h3>
-      <button class="modal-close" onclick="closeModal('edit-modal')">✕</button>
-    </div>
-    <div class="modal-body">
-      <form method="post" action="/admin/players/{{ player.player_id }}/update">
-        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-        <div style="display:flex;flex-direction:column;gap:var(--spacing-16);">
-          <div class="form-group">
-            <label>Ранг</label>
-            <select name="rank_id">
-              <option value="">— Без ранга —</option>
-              {% for rid, rname in ranks.items() %}
-              <option value="{{ rid }}" {% if player.rank_id | string == rid %}selected{% endif %}>{{ rname }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Уровень кита</label>
-            <select name="kit_level">
-              <option value="">— Без кита —</option>
-              {% for kid, kname in kits.items() %}
-              <option value="{{ kid }}" {% if player.kit_level | string == kid %}selected{% endif %}>{{ kname }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Достижения (JSON)</label>
-            <textarea name="achievements" rows="4" placeholder='["ach_id_1"]'>{% if player.achievements %}{{ player.achievements | tojson(indent=2) }}{% endif %}</textarea>
-          </div>
-          <button type="submit" class="btn btn-primary">💾 Сохранить</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
+<!-- Edit (rank/kit) modal — REMOVED: editing is now inline in the Information card -->
 
 <!-- Notes modal -->
 <div class="modal-overlay" id="notes-modal">
@@ -756,63 +736,75 @@ textarea { resize:vertical; min-height:80px; }
   </div>
 </div>
 
-<!-- Achievements modal -->
-<div class="modal-overlay" id="ach-modal">
-  <div class="modal-box">
+<!-- Rewards modal -->
+<div class="modal-overlay" id="rewards-modal">
+  <div class="modal-box" style="max-width:680px;">
     <div class="modal-header">
-      <h3>🏆 Редактор достижений</h3>
-      <button class="modal-close" onclick="closeModal('ach-modal')">✕</button>
+      <h3>🎁 Кастомные награды</h3>
+      <button class="modal-close" onclick="closeModal('rewards-modal')">✕</button>
     </div>
     <div class="modal-body">
       <div class="modal-tabs">
-        <button class="modal-tab active" onclick="switchAchTab('config',this)">Из конфига</button>
-        <button class="modal-tab" onclick="switchAchTab('manual',this)">Вручную</button>
+        <button class="modal-tab active" id="rtab-btn-kval-kits" onclick="switchRewardsTabBtn('kval-kits',this)">⚙️ Квал-киты</button>
+        <button class="modal-tab" id="rtab-btn-items"     onclick="switchRewardsTabBtn('items',this)">📦 Предметы</button>
+        <button class="modal-tab" id="rtab-btn-stats"     onclick="switchRewardsTabBtn('stats',this)">📊 Статы</button>
+        <button class="modal-tab" id="rtab-btn-talents"   onclick="switchRewardsTabBtn('talents',this)">✨ Таланты</button>
       </div>
 
-      <div class="tab-panel active" id="tab-config">
-        <div id="packs-grid" class="packs-grid"></div>
-        <div id="config-ach-grid" class="config-ach-grid" style="display:none;"></div>
-        <div id="config-tab-actions" style="display:none; margin-top:var(--spacing-16); gap:10px; flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-sm" onclick="backToPacks()">← Назад</button>
-          <button class="btn btn-primary btn-sm" onclick="addPackAchievements()">✅ Добавить выбранные</button>
+      <!-- ── Kval-kits tab ── -->
+      <div class="tab-panel active" id="rtab-kval-kits">
+        <div class="reward-list" id="rlist-kval-kits"></div>
+        {% if available_kval_kits %}
+        <div class="reward-add-row cols-2">
+          <div class="form-group" style="grid-column:1/-1;">
+            <label>Квал-кит</label>
+            <select id="rn-kval-kit" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; width:100%; box-sizing:border-box;">
+              {% for kk in available_kval_kits %}
+              <option value="{{ kk.job }}|{{ kk.level }}">{{ kk.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <button class="btn btn-primary btn-sm" style="grid-column:1/-1;" onclick="rewardAddKval()">➕ Назначить</button>
+        </div>
+        {% else %}
+        <div style="text-align:center;padding:20px;color:var(--gray-dark);font-size:13px;">Квал-китов не найдено в базе. Добавьте их через <a href="/admin/kits" style="color:var(--primary-blue)">редактор китов</a> с суффиксом <code>_k</code>.</div>
+        {% endif %}
+      </div>
+
+      <!-- ── Items tab ── -->
+      <div class="tab-panel" id="rtab-items">
+        <div class="reward-list" id="rlist-items"></div>
+        <div class="reward-add-row cols-2">
+          <div class="form-group"><label>ID предмета</label><input type="text" id="rn-item-id" placeholder="wendingtool"></div>
+          <div class="form-group"><label>Количество</label><input type="number" id="rn-item-qty" min="1" value="1"></div>
+          <button class="btn btn-primary btn-sm" style="align-self:end;" onclick="rewardAddItem()">➕</button>
         </div>
       </div>
 
-      <div class="tab-panel" id="tab-manual">
-        <div class="manual-form">
-          <div class="form-group"><label>ID достижения</label><input type="text" id="manual-ach-id" placeholder="achievement_id"></div>
-          <div class="form-group"><label>Примечание (необязательно)</label><input type="text" id="manual-ach-note" placeholder="За что выдано..."></div>
-          <button class="btn btn-primary btn-sm" onclick="addManualAchievement()">➕ Добавить</button>
+      <!-- ── Stats tab ── -->
+      <div class="tab-panel" id="rtab-stats">
+        <div class="reward-list" id="rlist-stats"></div>
+        <div class="reward-add-row cols-3">
+          <div class="form-group">
+            <label>Профессия / «all»</label>
+            <input type="text" id="rn-stat-job" placeholder="captain или all">
+          </div>
+          <div class="form-group">
+            <label>Ключ стата (пусто для «all»)</label>
+            <input type="text" id="rn-stat-key" placeholder="mechanic">
+          </div>
+          <div class="form-group"><label>Значение</label><input type="number" id="rn-stat-val" value="0"></div>
+          <button class="btn btn-primary btn-sm" style="align-self:end;" onclick="rewardAddStat()">➕</button>
         </div>
       </div>
 
-      <div style="margin-top:var(--spacing-24);">
-        <h4 style="color:var(--white);font-size:14px;font-weight:600;margin-bottom:12px;">Текущие достижения</h4>
-        <div class="ach-list" id="current-ach-list">
-          {% set current_achs = player.achievements or [] %}
-          {% for ach in current_achs %}
-            {% if ach is mapping %}
-            <div class="ach-item" data-id="{{ ach.get('id','') }}">
-              <div class="ach-item-info">
-                <span class="ach-item-name">{{ ach.get('name', ach.get('id','—')) }}</span>
-                <span class="ach-item-id">{{ ach.get('id','') }}</span>
-                {% if ach.get('note') %}<span class="ach-note">{{ ach.note }}</span>{% endif %}
-              </div>
-              <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach.get('id','') }}')">🗑</button>
-            </div>
-            {% else %}
-            <div class="ach-item" data-id="{{ ach }}">
-              <div class="ach-item-info">
-                <span class="ach-item-name">{{ ach }}</span>
-                <span class="ach-item-id">{{ ach }}</span>
-              </div>
-              <button class="btn btn-danger btn-sm" onclick="deleteAchievement('{{ ach }}')">🗑</button>
-            </div>
-            {% endif %}
-          {% endfor %}
-          {% if not current_achs %}
-          <div id="ach-empty" style="text-align:center;padding:24px;color:var(--gray-dark);">Нет достижений</div>
-          {% endif %}
+      <!-- ── Talents tab ── -->
+      <div class="tab-panel" id="rtab-talents">
+        <div class="reward-list" id="rlist-talents"></div>
+        <div class="reward-add-row cols-2">
+          <div class="form-group"><label>Профессия / «all»</label><input type="text" id="rn-tal-job" placeholder="captain или all"></div>
+          <div class="form-group"><label>ID таланта</label><input type="text" id="rn-tal-id" placeholder="talentid1"></div>
+          <button class="btn btn-primary btn-sm" style="align-self:end;" onclick="rewardAddTalent()">➕</button>
         </div>
       </div>
     </div>
@@ -831,115 +823,208 @@ document.querySelectorAll('.modal-overlay').forEach(m => {
   m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); });
 });
 
-function switchAchTab(name, btn) {
-  document.querySelectorAll('#ach-modal .tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('#ach-modal .modal-tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
+// ── Rewards modal ─────────────────────────────────────────────────────────
+// Initial data from server
+const rewardsData = {
+  "kval_kits":  {{ kval_kits   | tojson }},
+  "items":      {{ custom_items | tojson }},
+  "stats":      {{ custom_stats | tojson }},
+  "talents":    {{ custom_talents | tojson }},
+};
+
+function openRewards(tab) {
+  openModal('rewards-modal');
+  switchRewardsTabBtn(tab, document.getElementById('rtab-btn-' + tab));
+  renderAllRewards();
+}
+
+function switchRewardsTabBtn(name, btn) {
+  document.querySelectorAll('#rewards-modal .tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('#rewards-modal .modal-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('rtab-' + name).classList.add('active');
   btn.classList.add('active');
 }
 
-let configData = null, selectedPack = null, ownedIds = [];
-
-async function loadConfig() {
-  if (configData) return;
-  try {
-    const r = await fetch('/admin/achievements/config');
-    configData = await r.json();
-    ownedIds = Array.from(document.querySelectorAll('#current-ach-list .ach-item')).map(el => el.dataset.id);
-    renderPacksGrid();
-  } catch(e) { console.error('Ошибка загрузки конфига достижений', e); }
+function renderAllRewards() {
+  renderKvalKits();
+  renderItems();
+  renderStats();
+  renderTalents();
 }
 
-function renderPacksGrid() {
-  const grid = document.getElementById('packs-grid');
-  grid.innerHTML = '';
-  if (!configData?.packs) return;
-  configData.packs.forEach(pack => {
-    const card = document.createElement('div');
-    card.className = 'pack-card';
-    card.innerHTML = `<div class="pack-name">${pack.name}</div><div class="pack-count">${pack.achievements?.length||0} достижений</div>`;
-    card.onclick = () => showPack(pack);
-    grid.appendChild(card);
-  });
-  document.getElementById('config-ach-grid').style.display = 'none';
-  document.getElementById('config-tab-actions').style.display = 'none';
+// ── Kval-kits ─────────────────────────────
+function renderKvalKits() {
+  const list = document.getElementById('rlist-kval-kits');
+  list.innerHTML = '';
+  const kk = rewardsData.kval_kits;
+  if (!Object.keys(kk).length) {
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray-dark);">Квал-киты не назначены</div>';
+    return;
+  }
+  for (const [job, lvl] of Object.entries(kk)) {
+    const row = document.createElement('div');
+    row.className = 'reward-row';
+    row.innerHTML = `<div class="reward-row-info"><span class="reward-row-main">${job}</span><span class="reward-row-sub">Уровень ${lvl}</span></div>
+      <button class="btn btn-danger btn-sm" onclick="rewardDelKval('${job}')">🗑</button>`;
+    list.appendChild(row);
+  }
 }
-
-function showPack(pack) {
-  selectedPack = pack;
-  document.getElementById('packs-grid').style.display = 'none';
-  const grid = document.getElementById('config-ach-grid');
-  grid.style.display = 'grid';
-  document.getElementById('config-tab-actions').style.display = 'flex';
-  grid.innerHTML = '';
-  (pack.achievements || []).forEach(ach => {
-    const owned = ownedIds.includes(ach.id);
-    const item = document.createElement('div');
-    item.className = 'config-ach-item' + (owned ? ' owned' : '');
-    item.dataset.id = ach.id;
-    item.innerHTML = `<input type="checkbox" class="ach-check" id="ach_${ach.id}" ${owned?'checked disabled':''}><label for="ach_${ach.id}" class="ach-label-text">${ach.name||ach.id}</label>`;
-    if (!owned) item.onclick = () => { const cb = item.querySelector('input'); cb.checked = !cb.checked; };
-    grid.appendChild(item);
-  });
+async function rewardAddKval() {
+  const sel = document.getElementById('rn-kval-kit');
+  if (!sel) { alert('Нет доступных квал-китов'); return; }
+  const [job, lvlStr] = sel.value.split('|');
+  const lvl = parseInt(lvlStr);
+  if (!job || isNaN(lvl)) { alert('Выберите квал-кит из списка'); return; }
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/kval-kits`, 'POST', {job_id: job, level: lvl});
+  if (r) { rewardsData.kval_kits = r.kval_kits; renderKvalKits(); refreshKvalKitsInfoCard(); }
 }
-
-function backToPacks() {
-  selectedPack = null;
-  document.getElementById('packs-grid').style.display = 'grid';
-  document.getElementById('config-ach-grid').style.display = 'none';
-  document.getElementById('config-tab-actions').style.display = 'none';
+async function rewardDelKval(job) {
+  if (!confirm(`Удалить квал-кит "${job}"?`)) return;
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/kval-kits?job_id=${encodeURIComponent(job)}`, 'DELETE');
+  if (r) { rewardsData.kval_kits = r.kval_kits; renderKvalKits(); refreshKvalKitsInfoCard(); }
 }
-
-async function addPackAchievements() {
-  const checked = Array.from(document.querySelectorAll('#config-ach-grid .ach-check:checked:not(:disabled)')).map(cb => cb.id.replace('ach_',''));
-  if (!checked.length) return;
-  for (const id of checked) { await addAchievement(id, ''); }
-  backToPacks();
-}
-
-async function addManualAchievement() {
-  const id = document.getElementById('manual-ach-id').value.trim();
-  const note = document.getElementById('manual-ach-note').value.trim();
-  if (!id) return;
-  await addAchievement(id, note);
-  document.getElementById('manual-ach-id').value = '';
-  document.getElementById('manual-ach-note').value = '';
-}
-
-async function addAchievement(achId, note) {
-  const fd = new FormData();
-  fd.append('csrf_token', CSRF_TOKEN);
-  fd.append('achievement_id', achId);
-  fd.append('note', note);
-  const r = await fetch(`/admin/players/${PLAYER_ID}/achievements/add`, { method:'POST', body:fd });
-  if (r.ok) {
-    appendAchItem(achId, achId, note);
-    ownedIds.push(achId);
-    document.getElementById('ach-empty')?.remove();
-  } else { alert('Ошибка при добавлении достижения'); }
-}
-
-function appendAchItem(id, name, note) {
-  const list = document.getElementById('current-ach-list');
-  const item = document.createElement('div');
-  item.className = 'ach-item'; item.dataset.id = id;
-  item.innerHTML = `<div class="ach-item-info"><span class="ach-item-name">${name}</span><span class="ach-item-id">${id}</span>${note?`<span class="ach-note">${note}</span>`:''}</div><button class="btn btn-danger btn-sm" onclick="deleteAchievement('${id}')">🗑</button>`;
-  list.appendChild(item);
-}
-
-async function deleteAchievement(achId) {
-  if (!confirm(`Удалить достижение "${achId}"?`)) return;
-  const fd = new FormData();
-  fd.append('csrf_token', CSRF_TOKEN);
-  fd.append('achievement_id', achId);
-  const r = await fetch(`/admin/players/${PLAYER_ID}/achievements/delete`, { method:'POST', body:fd });
-  if (r.ok) {
-    document.querySelector(`.ach-item[data-id="${achId}"]`)?.remove();
-    ownedIds = ownedIds.filter(i => i !== achId);
-    if (!document.querySelectorAll('#current-ach-list .ach-item').length) {
-      document.getElementById('current-ach-list').innerHTML = '<div id="ach-empty" style="text-align:center;padding:24px;color:var(--gray-dark);">Нет достижений</div>';
+function refreshKvalKitsInfoCard() {
+  // Refresh the kval-kits display in the info card without page reload
+  const container = document.querySelector('.qualkit-list') || document.querySelector('[data-kval-container]');
+  // Simple: update by re-rendering the list
+  const kk = rewardsData.kval_kits;
+  const infoKvalArea = document.getElementById('info-kval-list');
+  if (infoKvalArea) {
+    if (!Object.keys(kk).length) {
+      infoKvalArea.innerHTML = '<div style="font-size:13px; color:var(--gray-dark);">Не назначены</div>';
+    } else {
+      infoKvalArea.innerHTML = Object.entries(kk).map(([j,l]) =>
+        `<div class="qualkit-item"><span class="qualkit-job">${j}</span><div><div class="qualkit-name">Уровень ${l}</div></div></div>`
+      ).join('');
     }
-  } else { alert('Ошибка при удалении достижения'); }
+  }
+}
+
+// ── Items ─────────────────────────────────
+function renderItems() {
+  const list = document.getElementById('rlist-items');
+  list.innerHTML = '';
+  const items = rewardsData.items;
+  if (!Object.keys(items).length) {
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray-dark);">Предметы не назначены</div>';
+    return;
+  }
+  for (const [iid, qty] of Object.entries(items)) {
+    const row = document.createElement('div');
+    row.className = 'reward-row';
+    row.innerHTML = `<div class="reward-row-info"><span class="reward-row-main">${iid}</span><span class="reward-row-sub">Количество: ${qty}</span></div>
+      <button class="btn btn-danger btn-sm" onclick="rewardDelItem('${iid}')">🗑</button>`;
+    list.appendChild(row);
+  }
+}
+async function rewardAddItem() {
+  const iid = document.getElementById('rn-item-id').value.trim();
+  const qty = parseInt(document.getElementById('rn-item-qty').value);
+  if (!iid || isNaN(qty) || qty < 1) { alert('Укажите ID предмета и количество'); return; }
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/items`, 'POST', {item_id: iid, quantity: qty});
+  if (r) { rewardsData.items = r.items; renderItems(); document.getElementById('rn-item-id').value = ''; }
+}
+async function rewardDelItem(iid) {
+  if (!confirm(`Удалить предмет "${iid}"?`)) return;
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/items?item_id=${encodeURIComponent(iid)}`, 'DELETE');
+  if (r) { rewardsData.items = r.items; renderItems(); }
+}
+
+// ── Stats ─────────────────────────────────
+function renderStats() {
+  const list = document.getElementById('rlist-stats');
+  list.innerHTML = '';
+  const stats = rewardsData.stats;
+  if (!Object.keys(stats).length) {
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray-dark);">Статы не назначены</div>';
+    return;
+  }
+  for (const [job, val] of Object.entries(stats)) {
+    if (job === 'all') {
+      const row = document.createElement('div');
+      row.className = 'reward-row';
+      row.innerHTML = `<div class="reward-row-info"><span class="reward-row-main">Для всех</span><span class="reward-row-sub">+${val}</span></div>
+        <button class="btn btn-danger btn-sm" onclick="rewardDelStat('all', null)">🗑</button>`;
+      list.appendChild(row);
+    } else if (typeof val === 'object') {
+      for (const [sk, sv] of Object.entries(val)) {
+        const row = document.createElement('div');
+        row.className = 'reward-row';
+        row.innerHTML = `<div class="reward-row-info"><span class="reward-row-main">${job} → ${sk}</span><span class="reward-row-sub">+${sv}</span></div>
+          <button class="btn btn-danger btn-sm" onclick="rewardDelStat('${job}', '${sk}')">🗑</button>`;
+        list.appendChild(row);
+      }
+    }
+  }
+}
+async function rewardAddStat() {
+  const job = document.getElementById('rn-stat-job').value.trim();
+  const sk  = document.getElementById('rn-stat-key').value.trim() || null;
+  const val = parseInt(document.getElementById('rn-stat-val').value);
+  if (!job || isNaN(val)) { alert('Укажите профессию и значение'); return; }
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/stats`, 'POST', {job_id: job, stat_key: sk, value: val});
+  if (r) { rewardsData.stats = r.stats; renderStats(); }
+}
+async function rewardDelStat(job, sk) {
+  let url = `/api/v1/admin/players/${PLAYER_ID}/rewards/stats?job_id=${encodeURIComponent(job)}`;
+  if (sk) url += `&stat_key=${encodeURIComponent(sk)}`;
+  if (!confirm(`Удалить стат${sk ? ` "${sk}"` : ''} для "${job}"?`)) return;
+  const r = await apiFetch(url, 'DELETE');
+  if (r) { rewardsData.stats = r.stats; renderStats(); }
+}
+
+// ── Talents ───────────────────────────────
+function renderTalents() {
+  const list = document.getElementById('rlist-talents');
+  list.innerHTML = '';
+  const talents = rewardsData.talents;
+  if (!Object.keys(talents).length) {
+    list.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray-dark);">Таланты не назначены</div>';
+    return;
+  }
+  for (const [job, ids] of Object.entries(talents)) {
+    for (const tid of ids) {
+      const row = document.createElement('div');
+      row.className = 'reward-row';
+      row.innerHTML = `<div class="reward-row-info"><span class="reward-row-main">${tid}</span><span class="reward-row-sub">${job === 'all' ? 'Для всех' : job}</span></div>
+        <button class="btn btn-danger btn-sm" onclick="rewardDelTalent('${job}','${tid}')">🗑</button>`;
+      list.appendChild(row);
+    }
+  }
+}
+async function rewardAddTalent() {
+  const job = document.getElementById('rn-tal-job').value.trim();
+  const tid = document.getElementById('rn-tal-id').value.trim();
+  if (!job || !tid) { alert('Укажите профессию и ID таланта'); return; }
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/talents`, 'POST', {job_id: job, talent_id: tid});
+  if (r) { rewardsData.talents = r.talents; renderTalents(); document.getElementById('rn-tal-id').value = ''; }
+}
+async function rewardDelTalent(job, tid) {
+  if (!confirm(`Удалить талант "${tid}" (${job})?`)) return;
+  const r = await apiFetch(`/api/v1/admin/players/${PLAYER_ID}/rewards/talents?job_id=${encodeURIComponent(job)}&talent_id=${encodeURIComponent(tid)}`, 'DELETE');
+  if (r) { rewardsData.talents = r.talents; renderTalents(); }
+}
+
+// ── Common fetch helper ────────────────────
+async function apiFetch(url, method, body) {
+  try {
+    const opts = {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF_TOKEN },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    // Attach CSRF to GET/DELETE via header; for POST body already has it
+    const resp = await fetch(url, opts);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('Ошибка: ' + (err.detail || resp.statusText));
+      return null;
+    }
+    return await resp.json();
+  } catch(e) {
+    alert('Сетевая ошибка: ' + e.message);
+    return null;
+  }
 }
 </script>
 {% endblock %}

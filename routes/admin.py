@@ -634,10 +634,26 @@ async def admin_player_detail(
     punishments_raw = punishment_svc.get_for_player(player_id)
     punishments = [{"p": p, "status": punishment_svc.effective_status(p)} for p in punishments_raw]
 
-    # Qual-kits assigned to this player (by kit_level)
-    qual_kits_assigned = db.query(Kit).filter(Kit.job_id.like("%_k"), Kit.kit_level == player.kit_level).all()
-    # All qual-kits available
-    all_qual_kits = db.query(Kit).filter(Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
+    # Parse achievements JSON into structured reward categories
+    raw_achievements = player.achievements or {}
+    if isinstance(raw_achievements, list):
+        raw_achievements = {}  # migrate from old list format
+    kval_kits = raw_achievements.get("kval_kits", {})
+    custom_items = raw_achievements.get("items", {})
+    custom_stats = raw_achievements.get("stats", {})
+    custom_talents = raw_achievements.get("talents", {})
+
+    # Available qual-kits from Kit table (job_id ending with _k)
+    _raw_kval_kits = (
+        db.query(Kit)
+        .filter(Kit.job_id.like("%_k"))
+        .order_by(Kit.job_id, Kit.kit_level)
+        .all()
+    )
+    available_kval_kits = [
+        {"job": k.job_id[:-2], "level": k.kit_level, "label": f"{k.job_id[:-2]} | ур.{k.kit_level}"}
+        for k in _raw_kval_kits
+    ]
 
     from services import _online_players, _online_players_lock
     with _online_players_lock:
@@ -663,8 +679,11 @@ async def admin_player_detail(
         "label_categories": label_categories,
         "punishments": punishments,
         "type_labels": PUNISHMENT_TYPE_LABELS,
-        "qual_kits_assigned": qual_kits_assigned,
-        "all_qual_kits": all_qual_kits,
+        "kval_kits": kval_kits,
+        "custom_items": custom_items,
+        "custom_stats": custom_stats,
+        "custom_talents": custom_talents,
+        "available_kval_kits": available_kval_kits,
         "is_online": is_online,
     })
 
@@ -692,7 +711,6 @@ async def update_player(
 
         rank_raw = form.get("rank_id")
         kit_raw = form.get("kit_level")
-        achievements_raw = form.get("achievements")
 
         try:
             new_rank_id = None if rank_raw in (None, "") else int(rank_raw)
@@ -706,26 +724,14 @@ async def update_player(
             push_flash(request, "error", "Некорректное значение набора")
             return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
 
-        new_achievements = player.achievements
-        if achievements_raw is not None:
-            import json
-            try:
-                new_achievements = json.loads(achievements_raw)
-            except json.JSONDecodeError:
-                push_flash(request, "error", "Некорректный JSON в поле достижений")
-                return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
-
         old_rank_id = player.rank_id
         old_kit_level = player.kit_level
-        old_achievements = player.achievements
 
         changes = []
         if old_rank_id != new_rank_id:
             changes.append({"field": "rank_id", "from": old_rank_id, "to": new_rank_id})
         if old_kit_level != new_kit_level:
             changes.append({"field": "kit_level", "from": old_kit_level, "to": new_kit_level})
-        if old_achievements != new_achievements:
-            changes.append({"field": "achievements", "from": old_achievements, "to": new_achievements})
 
         if not changes:
             push_flash(request, "info", "Изменений не обнаружено")
@@ -733,7 +739,6 @@ async def update_player(
 
         player.rank_id = new_rank_id
         player.kit_level = new_kit_level
-        player.achievements = new_achievements
 
         db.commit()
         db.refresh(player)
@@ -1234,6 +1239,283 @@ async def delete_achievement(
     except Exception as e:
         logger.error(f"Error deleting achievement: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ============================================
+# REWARDS API (kval_kits, items, stats, talents)
+# ============================================
+
+def _get_rewards_player(player_id: int, db: Session) -> "PlayerData":
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+    return player
+
+
+def _get_achievements_dict(player: "PlayerData") -> dict:
+    raw = player.achievements or {}
+    if isinstance(raw, list):
+        raw = {}
+    return dict(raw)
+
+
+@router.post("/api/v1/admin/players/{player_id}/rewards/kval-kits")
+async def set_kval_kit(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Set (add or update) a kval-kit for a profession in player achievements."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    job_id = body.get("job_id", "").strip()
+    level = body.get("level")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id required")
+    try:
+        level = int(level)
+        if level < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="level must be a positive integer")
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    kval_kits = dict(ach.get("kval_kits", {}))
+    kval_kits[job_id] = level
+    ach["kval_kits"] = kval_kits
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "set_kval_kit", {"player_id": player_id, "job_id": job_id, "level": level})
+    return JSONResponse({"status": "ok", "kval_kits": ach["kval_kits"]})
+
+
+@router.delete("/api/v1/admin/players/{player_id}/rewards/kval-kits")
+async def remove_kval_kit(
+    request: Request,
+    player_id: int,
+    job_id: str = Query(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Remove a kval-kit entry for a profession from player achievements."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    kval_kits = dict(ach.get("kval_kits", {}))
+    if job_id not in kval_kits:
+        raise HTTPException(status_code=404, detail="kval-kit not found")
+    del kval_kits[job_id]
+    ach["kval_kits"] = kval_kits
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "remove_kval_kit", {"player_id": player_id, "job_id": job_id})
+    return JSONResponse({"status": "ok", "kval_kits": ach["kval_kits"]})
+
+
+@router.post("/api/v1/admin/players/{player_id}/rewards/items")
+async def set_reward_item(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Set (add or update) a custom item for a player."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    item_id = body.get("item_id", "").strip()
+    quantity = body.get("quantity")
+    if not item_id:
+        raise HTTPException(status_code=400, detail="item_id required")
+    try:
+        quantity = int(quantity)
+        if quantity < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="quantity must be a positive integer")
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    items = dict(ach.get("items", {}))
+    items[item_id] = quantity
+    ach["items"] = items
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "set_reward_item", {"player_id": player_id, "item_id": item_id, "quantity": quantity})
+    return JSONResponse({"status": "ok", "items": ach["items"]})
+
+
+@router.delete("/api/v1/admin/players/{player_id}/rewards/items")
+async def remove_reward_item(
+    request: Request,
+    player_id: int,
+    item_id: str = Query(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Remove a custom item from player achievements."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    items = dict(ach.get("items", {}))
+    if item_id not in items:
+        raise HTTPException(status_code=404, detail="Item not found")
+    del items[item_id]
+    ach["items"] = items
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "remove_reward_item", {"player_id": player_id, "item_id": item_id})
+    return JSONResponse({"status": "ok", "items": ach["items"]})
+
+
+@router.post("/api/v1/admin/players/{player_id}/rewards/stats")
+async def set_reward_stat(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Set a stat bonus. For 'all': {job_id:'all', value:5}. Per-profession: {job_id:'captain', stat_key:'mechanic', value:25}."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    job_id = body.get("job_id", "").strip()
+    stat_key = body.get("stat_key", "").strip() if body.get("stat_key") else None
+    value = body.get("value")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id required")
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="value must be an integer")
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    stats = dict(ach.get("stats", {}))
+    if job_id == "all":
+        stats["all"] = value
+    else:
+        if not stat_key:
+            raise HTTPException(status_code=400, detail="stat_key required for per-profession stats")
+        job_stats = dict(stats.get(job_id, {}))
+        job_stats[stat_key] = value
+        stats[job_id] = job_stats
+    ach["stats"] = stats
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "set_reward_stat", {"player_id": player_id, "job_id": job_id, "stat_key": stat_key, "value": value})
+    return JSONResponse({"status": "ok", "stats": ach["stats"]})
+
+
+@router.delete("/api/v1/admin/players/{player_id}/rewards/stats")
+async def remove_reward_stat(
+    request: Request,
+    player_id: int,
+    job_id: str = Query(...),
+    stat_key: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Remove a stat. For 'all': just job_id=all. Per-profession: job_id=captain&stat_key=mechanic."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    stats = dict(ach.get("stats", {}))
+    if job_id == "all":
+        if "all" not in stats:
+            raise HTTPException(status_code=404, detail="Stat not found")
+        del stats["all"]
+    else:
+        if job_id not in stats:
+            raise HTTPException(status_code=404, detail="Job not found in stats")
+        if stat_key:
+            job_stats = dict(stats[job_id])
+            if stat_key not in job_stats:
+                raise HTTPException(status_code=404, detail="Stat key not found")
+            del job_stats[stat_key]
+            if job_stats:
+                stats[job_id] = job_stats
+            else:
+                del stats[job_id]
+        else:
+            del stats[job_id]
+    ach["stats"] = stats
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "remove_reward_stat", {"player_id": player_id, "job_id": job_id, "stat_key": stat_key})
+    return JSONResponse({"status": "ok", "stats": ach["stats"]})
+
+
+@router.post("/api/v1/admin/players/{player_id}/rewards/talents")
+async def add_reward_talent(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Add a talent. {job_id:'captain'|'all', talent_id:'talentid1'}."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    job_id = body.get("job_id", "").strip()
+    talent_id = body.get("talent_id", "").strip()
+    if not job_id or not talent_id:
+        raise HTTPException(status_code=400, detail="job_id and talent_id required")
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    talents = dict(ach.get("talents", {}))
+    job_talents = list(talents.get(job_id, []))
+    if talent_id not in job_talents:
+        job_talents.append(talent_id)
+    talents[job_id] = job_talents
+    ach["talents"] = talents
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "add_reward_talent", {"player_id": player_id, "job_id": job_id, "talent_id": talent_id})
+    return JSONResponse({"status": "ok", "talents": ach["talents"]})
+
+
+@router.delete("/api/v1/admin/players/{player_id}/rewards/talents")
+async def remove_reward_talent(
+    request: Request,
+    player_id: int,
+    job_id: str = Query(...),
+    talent_id: str = Query(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Remove a talent from a player's achievements."""
+    if "write" not in current_admin.permissions:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = _get_rewards_player(player_id, db)
+    ach = _get_achievements_dict(player)
+    talents = dict(ach.get("talents", {}))
+    if job_id not in talents:
+        raise HTTPException(status_code=404, detail="Job not found in talents")
+    job_talents = list(talents[job_id])
+    if talent_id not in job_talents:
+        raise HTTPException(status_code=404, detail="Talent not found")
+    job_talents.remove(talent_id)
+    if job_talents:
+        talents[job_id] = job_talents
+    else:
+        del talents[job_id]
+    ach["talents"] = talents
+    player.achievements = ach
+    db.commit()
+    log_admin_action(db, current_admin.id, "remove_reward_talent", {"player_id": player_id, "job_id": job_id, "talent_id": talent_id})
+    return JSONResponse({"status": "ok", "talents": ach["talents"]})
 
 
 # ============================================
