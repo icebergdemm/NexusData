@@ -62,6 +62,11 @@ def _apply_migrations():
         ("server_player_privileges", "group_id", "VARCHAR(64)"),
         ("server_player_privileges", "commands", "JSON"),
         ("server_player_privileges", "allowed_action_ids", "JSON"),
+        # server_action_queue: multi-server support
+        ("server_action_queue", "server_name", "VARCHAR(100)"),
+        # server_action_queue: per-server ACK tracking
+        ("server_action_queue", "ack_asper1", "TINYINT DEFAULT 0"),
+        ("server_action_queue", "ack_asper2", "TINYINT DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:

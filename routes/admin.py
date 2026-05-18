@@ -544,45 +544,67 @@ async def admin_players_list(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None, min_length=2),
+    label_id: Optional[int] = Query(None, description="Фильтр по категории метки"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin)
 ):
-    """List players with optional search"""
-    # Only users with read or write permissions can view players
+    """List players with optional search and label filter"""
     if not check_permission(current_admin, "players", "view"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    
-    # Initialize CSRF token if not exists
+
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
-    
+
     player_service = PlayerService(db)
-    
-    # If search query provided, perform full search
-    if search:
+
+    # Load all label categories for filter UI
+    from models import LabelCategory, PlayerLabel
+    from services import LabelCategoryService
+    label_categories = LabelCategoryService(db).get_all()
+    selected_label = None
+    if label_id:
+        selected_label = db.query(LabelCategory).filter(LabelCategory.id == label_id).first()
+
+    # Label filter: get player_ids that have this label
+    if label_id:
+        labeled_player_ids = [
+            row.player_id for row in
+            db.query(PlayerLabel.player_id).filter(PlayerLabel.category_id == label_id).all()
+        ]
+        if not labeled_player_ids:
+            players, total = [], 0
+            total_pages = 1
+            search_query = None
+        else:
+            from models import PlayerData as PD
+            from sqlalchemy import or_
+            q = db.query(PD).filter(PD.player_id.in_(labeled_player_ids))
+            if search:
+                q = q.filter(
+                    or_(
+                        PD.player_last_time_name.ilike(f"%{search}%"),
+                        PD.player_steamid.ilike(f"%{search}%"),
+                    )
+                )
+            total = q.count()
+            raw = q.offset((page - 1) * page_size).limit(page_size).all()
+            from schemas import PlayerDataOut
+            players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
+            total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+            search_query = search
+    elif search:
         from models import PlayerName, PlayerIP
         from sqlalchemy import or_
-        
-        query_lower = f"%{search.lower()}%"
-        # Perform comprehensive search
-        player_ids = set()
-        results = []
-        
-        # Search in PlayerData
         player_results = player_service.search_players(search, limit=1000)
-        results.extend(player_results)
-        player_ids.update(p.player_id for p in player_results)
-        
-        total = len(results)
-        players = results[:page_size]
+        total = len(player_results)
+        players = player_results[:page_size]
         total_pages = (total + page_size - 1) // page_size if total > 0 else 1
         search_query = search
     else:
-        # Normal pagination
         players, total = player_service.get_all_players(page, page_size)
         total_pages = (total + page_size - 1) // page_size
         search_query = None
-    
+
     return templates.TemplateResponse("admin/players.html", {
         "request": request,
         "admin": current_admin,
@@ -592,6 +614,9 @@ async def admin_players_list(
         "total": total,
         "total_pages": total_pages,
         "search_query": search_query,
+        "label_categories": label_categories,
+        "selected_label_id": label_id,
+        "selected_label": selected_label,
         "flashes": pop_flashes(request),
     })
 
@@ -2885,6 +2910,7 @@ async def admin_punishment_create(
     reason: str = Form(""),
     expires_days: Optional[int] = Form(None),
     notes: str = Form(""),
+    server_name: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -2920,7 +2946,7 @@ async def admin_punishment_create(
         ptype=ptype,
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
-        issued_by_name=current_admin.discord_username,
+        issued_by_name=f"ND. {current_admin.discord_username}",
         expires_at=expires_at,
         notes=notes or None,
     )
@@ -2932,6 +2958,7 @@ async def admin_punishment_create(
             action_type="ban",
             target_steamid=steam2 or player_steamid,
             reason=reason or "Бан через панель",
+            server_name=server_name or None,
             queued_by_admin_id=current_admin.id,
         )
         db.add(action)
@@ -3001,6 +3028,58 @@ async def admin_punishment_void(
     return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
 
 
+@router.post("/admin/punishments/{punishment_id}/unban")
+async def admin_punishment_unban(
+    request: Request,
+    punishment_id: int,
+    server_name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """
+    Разбанить игрока: пометить бан неактивным + поставить задачу 'unban' в очередь действий.
+    server_name: имя сервера (ASPER1/ASPER2/null=все).
+    """
+    if not check_permission(current_admin, "punishments", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+    if p.type != "ban":
+        push_flash(request, "error", "Разбан возможен только для банов")
+        return RedirectResponse(url=f"/admin/punishments?tab={p.type}", status_code=302)
+
+    from utils import steam64_to_steam2
+    steamid = p.player_steamid or ""
+    steam2 = steam64_to_steam2(steamid) if steamid else None
+
+    svc.set_void(punishment_id)
+
+    from models import ServerActionQueue
+    action = ServerActionQueue(
+        action_type="unban",
+        target_steamid=steam2 or steamid,
+        reason=f"Unban by ND. {current_admin.discord_username}",
+        server_name=server_name or None,
+        queued_by_admin_id=current_admin.id,
+    )
+    db.add(action)
+    db.commit()
+
+    srv_label = f" → {server_name}" if server_name else " → все серверы"
+    log_admin_action(db, current_admin.id, "punishment_unban", {
+        "punishment_id": punishment_id,
+        "steamid": steamid,
+        "server_name": server_name,
+        "action_id": action.id,
+    })
+    push_flash(request, "success", f"Разбан поставлен в очередь (action_id={action.id}){srv_label}")
+    return RedirectResponse(url=f"/admin/punishments?tab=ban", status_code=302)
+
+
 @router.post("/admin/punishments/{punishment_id}/delete")
 async def admin_punishment_delete(
     request: Request,
@@ -3064,7 +3143,7 @@ async def admin_debug(
     diagnostics["privilege_group"] = grp_info
     
     # Test all permission checks with detailed tracing
-    pages = ["players", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges"]
+    pages = ["players", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects"]
     actions = ["view", "edit", "delete"]
     
     permission_tests = {}

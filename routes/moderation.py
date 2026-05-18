@@ -103,11 +103,12 @@ api_router = APIRouter(
 @api_router.post("/players", response_model=ServerPlayersReportResult)
 def report_online_players(
     report: ServerPlayersReport,
+    server_name: Optional[str] = Query(None, description="Имя сервера-отправителя"),
     db: Session = Depends(get_db),
 ):
     """Replace the full snapshot of currently online players."""
     svc = ServerModerationService(db)
-    count = svc.replace_online_players(report.players)
+    count = svc.replace_online_players(report.players, server_name=server_name)
     return ServerPlayersReportResult(status="ok", count=count)
 
 
@@ -123,10 +124,13 @@ def report_anticheat_event(
 
 
 @api_router.get("/actions", response_model=List[ServerActionOut])
-def get_pending_actions(db: Session = Depends(get_db)):
-    """Return all pending moderation actions for the game server to execute."""
+def get_pending_actions(
+    server_name: Optional[str] = Query(None, description="Имя сервера — получить только свои задачи"),
+    db: Session = Depends(get_db),
+):
+    """Return pending moderation actions. If server_name provided, returns only actions for that server (+ actions with server_name=null which target all servers)."""
     svc = ServerModerationService(db)
-    return svc.get_pending_actions()
+    return svc.get_pending_actions(server_name=server_name)
 
 
 @api_router.post("/actions/{action_id}/ack")
@@ -135,9 +139,10 @@ def acknowledge_action(
     ack: ServerActionAck,
     db: Session = Depends(get_db),
 ):
-    """Acknowledge that the game server executed (or failed) a queued action."""
+    """Acknowledge that the game server executed (or failed) a queued action.
+    Include server_name in the body so NexusData can track per-server completion for broadcast actions."""
     svc = ServerModerationService(db)
-    ok = svc.acknowledge_action(action_id, ack.success, ack.error_message)
+    ok = svc.acknowledge_action(action_id, ack.success, ack.error_message, server_name=ack.server_name)
     if not ok:
         raise HTTPException(status_code=404, detail="Action not found")
     return {"status": "ok"}
@@ -154,6 +159,7 @@ panel_router = APIRouter()
 async def moderation_page(
     request: Request,
     tab: str = Query("status", pattern=r"^(status|banhammer|logs|anticheat)$"),
+    server: Optional[str] = Query(None, description="Фильтр по серверу: ASPER1 или ASPER2"),
     search: Optional[str] = Query(None, min_length=2),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -164,8 +170,10 @@ async def moderation_page(
 
     svc = ServerModerationService(db)
 
-    online_players = svc.get_online_players()
+    online_players = svc.get_online_players(server_name=server)
     online_count = len(online_players)
+    online_servers = svc.get_online_servers()
+    selected_server = server
 
     # Banhammer: online + recently offline + search
     recent_offline = svc.get_recent_offline_players(limit=50)
@@ -230,6 +238,8 @@ async def moderation_page(
         "active_tab": tab,
         "online_players": online_players,
         "online_count": online_count,
+        "online_servers": online_servers,
+        "selected_server": selected_server,
         "recent_offline": recent_offline,
         "search_results": search_results,
         "search_query": search,
@@ -247,17 +257,18 @@ async def enqueue_moderation_action(
     reason: Optional[str] = Form(None),
     duration_minutes: Optional[int] = Form(None),
     message_text: Optional[str] = Form(None),
+    server_name: Optional[str] = Form(None),
     redirect_tab: str = Form("status"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Enqueue a kick / ban / message action from the admin panel."""
+    """Enqueue a kick / ban / unban / message action from the admin panel."""
     if not check_permission(current_admin, "moderation", "edit"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     await ensure_csrf(request, db)
 
-    if action_type not in ("kick", "ban", "message"):
+    if action_type not in ("kick", "ban", "unban", "message"):
         raise HTTPException(status_code=400, detail="Invalid action_type")
 
     from schemas import QueueActionIn
@@ -267,22 +278,46 @@ async def enqueue_moderation_action(
         reason=reason or None,
         duration_minutes=duration_minutes or None,
         message_text=message_text or None,
+        server_name=server_name or None,
     )
 
     svc = ServerModerationService(db)
     action = svc.enqueue_action(action_in, admin_id=current_admin.id)
     logger.info(
-        "Admin %s queued %s for %s (action_id=%s)",
-        current_admin.discord_username, action_type, target_steamid, action.id,
+        "Admin %s queued %s for %s on server=%s (action_id=%s)",
+        current_admin.discord_username, action_type, target_steamid,
+        server_name or "all", action.id,
     )
+
+    # For bans — also create a punishment record
+    if action_type == "ban":
+        from models import PlayerData, PlayerPunishment
+        from services import _now_msk
+        player = db.query(PlayerData).filter(PlayerData.player_steamid == target_steamid).first()
+        punishment = PlayerPunishment(
+            player_id=player.player_id if player else 0,
+            player_steamid=target_steamid,
+            player_ip=player.last_ip if player else None,
+            type="ban",
+            reason=reason or None,
+            issued_by_admin_id=current_admin.id,
+            issued_by_name=f"ND. {current_admin.discord_username}",
+            issued_at=_now_msk(),
+            expires_at=None,
+            is_active=1,
+        )
+        db.add(punishment)
+        db.commit()
 
     from routes.admin import log_admin_action, push_flash
     log_admin_action(db, current_admin.id, f"moderation.{action_type}", {
         "target_steamid": target_steamid,
         "reason": reason,
+        "server_name": server_name,
         "action_id": action.id,
     })
-    push_flash(request, "success", f"Действие «{action_type}» поставлено в очередь для {target_steamid}")
+    srv_label = f" → {server_name}" if server_name else " → все серверы"
+    push_flash(request, "success", f"Действие «{action_type}» поставлено в очередь для {target_steamid}{srv_label}")
     return RedirectResponse(url=f"/admin/moderation?tab={redirect_tab}", status_code=302)
 
 

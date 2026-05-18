@@ -82,24 +82,66 @@
 
 <!-- Search -->
 <div class="block-card" style="overflow:visible;">
-  <div class="block-card-header"><h3>🔍 Поиск</h3></div>
+  <div class="block-card-header"><h3>🔍 Поиск и фильтры</h3></div>
   <div class="block-card-body">
-    {% if search_query %}
+    {% if search_query or selected_label_id %}
     <div class="search-active">
-      <span>Результаты по: <strong>«{{ search_query }}»</strong></span>
+      {% if selected_label and search_query %}
+        <span>Метка: <strong>{{ selected_label.icon }} {{ selected_label.name }}</strong> · Поиск: <strong>«{{ search_query }}»</strong></span>
+      {% elif selected_label %}
+        <span>Метка: <strong>{{ selected_label.icon }} {{ selected_label.name }}</strong></span>
+      {% else %}
+        <span>Результаты по: <strong>«{{ search_query }}»</strong></span>
+      {% endif %}
       <a href="/admin/players" title="Сбросить">✕</a>
     </div>
     {% endif %}
-    <div class="search-wrapper">
-      <input type="text" id="search-input" class="search-field"
-             placeholder="Поиск по нику, SteamID, IP адресу..."
-             value="{{ search_query or '' }}" autocomplete="off">
-      <span class="search-icon">🔍</span>
-      <div id="search-dropdown" class="search-dropdown"></div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
+      <div class="search-wrapper" style="flex:1; min-width:240px;">
+        <input type="text" id="search-input" class="search-field"
+               placeholder="Поиск по нику, SteamID, IP адресу..."
+               value="{{ search_query or '' }}" autocomplete="off">
+        <span class="search-icon">🔍</span>
+        <div id="search-dropdown" class="search-dropdown"></div>
+      </div>
+
+      {% if label_categories %}
+      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        <span style="font-size:11px; color:var(--gray); font-weight:600; white-space:nowrap;">🏷 По метке:</span>
+        <a href="/admin/players{% if search_query %}?search={{ search_query }}{% endif %}"
+           class="label-filter-btn {% if not selected_label_id %}active{% endif %}">
+          Все
+        </a>
+        {% for cat in label_categories %}
+        <a href="/admin/players?label_id={{ cat.id }}{% if search_query %}&search={{ search_query }}{% endif %}"
+           class="label-filter-btn {% if selected_label_id == cat.id %}active{% endif %}"
+           style="--cat-color: {{ cat.color }};">
+          {{ cat.icon }} {{ cat.name }}
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
     <p class="search-hint">💡 Начните вводить для живого поиска · Enter — показать все результаты на странице</p>
   </div>
 </div>
+
+<style>
+.label-filter-btn {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:5px 12px; border-radius:20px; font-size:12px; font-weight:700;
+  text-decoration:none; border:1px solid var(--stroke-01);
+  color:var(--gray); background:transparent; transition:.2s; white-space:nowrap;
+}
+.label-filter-btn:hover { border-color:var(--primary-blue); color:var(--white); }
+.label-filter-btn.active { background:var(--primary-blue); border-color:var(--primary-blue); color:#fff; }
+.label-filter-btn[style*="--cat-color"].active {
+  background:color-mix(in srgb, var(--cat-color) 20%, transparent);
+  border-color:var(--cat-color);
+  color:var(--cat-color);
+}
+</style>
 
 <!-- Table -->
 <div class="block-card">
@@ -148,18 +190,17 @@
 
   {% if total_pages > 1 %}
   <div class="pagination">
-    {# First page #}
+    {% set lp = "&label_id=" ~ selected_label_id if selected_label_id else "" %}
     {% if page > 1 %}
-    <a href="?page=1&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav" title="Первая страница">«</a>
-    <a href="?page={{ page - 1 }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav">‹ Назад</a>
+    <a href="?page=1&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}{{ lp }}" class="pg-btn nav" title="Первая страница">«</a>
+    <a href="?page={{ page - 1 }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}{{ lp }}" class="pg-btn nav">‹ Назад</a>
     {% endif %}
 
-    {# Page numbers with ellipsis #}
     {% set ns = namespace(show_dots=false) %}
     {% for p in range(1, total_pages + 1) %}
       {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
         {% set ns.show_dots = false %}
-        <a href="?page={{ p }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}"
+        <a href="?page={{ p }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}{{ lp }}"
            class="pg-btn {% if p == page %}active{% endif %}">{{ p }}</a>
       {% else %}
         {% if not ns.show_dots %}
@@ -169,10 +210,9 @@
       {% endif %}
     {% endfor %}
 
-    {# Last page #}
     {% if page < total_pages %}
-    <a href="?page={{ page + 1 }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav">Вперёд ›</a>
-    <a href="?page={{ total_pages }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}" class="pg-btn nav" title="Последняя страница">»</a>
+    <a href="?page={{ page + 1 }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}{{ lp }}" class="pg-btn nav">Вперёд ›</a>
+    <a href="?page={{ total_pages }}&page_size={{ page_size }}{% if search_query %}&search={{ search_query }}{% endif %}{{ lp }}" class="pg-btn nav" title="Последняя страница">»</a>
     {% endif %}
   </div>
   {% endif %}

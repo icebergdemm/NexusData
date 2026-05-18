@@ -3,6 +3,9 @@
 
 {% block content %}
 <style>
+/* ── Wider container for punishments page ── */
+.container { max-width: 1600px !important; }
+
 /* ── Layout ── */
 .pg-header {
   display:flex; align-items:center; gap:var(--spacing-16);
@@ -292,6 +295,13 @@
                   <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
                   <button type="submit" class="btn btn-sm btn-warn" title="Сделать неактуальным">🚫</button>
                 </form>
+                {% if p.type == 'ban' %}
+                <form method="post" action="/admin/punishments/{{ p.id }}/unban"
+                  onsubmit="return confirm('Разбанить игрока и поставить задачу разбана в очередь сервера?');" style="display:inline;">
+                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+                  <button type="submit" class="btn btn-sm btn-primary" title="Разбанить (отправить на все серверы)">🔓</button>
+                </form>
+                {% endif %}
                 {% endif %}
                 {% endif %}
                 {% if check_permission(admin, 'punishments', 'delete') %}

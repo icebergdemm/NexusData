@@ -237,20 +237,25 @@ class AnticheatEvent(Base):
 
 
 class ServerActionQueue(Base):
-    """Queued moderation actions (kick / ban / message) for the game server."""
+    """Queued moderation actions (kick / ban / message / unban / trap) for the game server."""
     __tablename__ = "server_action_queue"
 
     id = Column(Integer, primary_key=True, index=True)
-    action_type = Column(String(32), nullable=False)   # kick | ban | message
+    action_type = Column(String(32), nullable=False)   # kick | ban | unban | message | trap
     target_steamid = Column(String(50), nullable=False, index=True)
     reason = Column(String(500), nullable=True)
     duration_minutes = Column(Integer, nullable=True)
     message_text = Column(String(1000), nullable=True)
+    server_name = Column(String(100), nullable=True, index=True)  # target server (null = all servers)
     queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     queued_at = Column(DateTime, default=func.now())
     executed = Column(Integer, default=0)    # 0 = pending, 1 = done, 2 = failed
     executed_at = Column(DateTime, nullable=True)
     error_message = Column(String(500), nullable=True)
+    # Per-server ACK tracking (for broadcast actions, server_name=null)
+    # 0 = pending, 1 = success, 2 = failed
+    ack_asper1 = Column(Integer, default=0, nullable=False)
+    ack_asper2 = Column(Integer, default=0, nullable=False)
 
 
 class PlayerNote(Base):

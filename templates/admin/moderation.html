@@ -6,16 +6,35 @@
 <div class="card" style="margin-bottom: var(--spacing-8);">
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
     <h2 style="margin:0;">Модерирование сервера</h2>
-    <span class="badge-online">● Онлайн: {{ online_count }}</span>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <div style="display:flex; gap:4px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:3px;">
+        <a href="/admin/moderation?tab={{ active_tab }}&server=ASPER1"
+           style="padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; text-decoration:none; transition:.2s;
+                  {% if selected_server == 'ASPER1' %}background:var(--primary-blue); color:#fff;{% else %}color:var(--gray);{% endif %}">
+          ASPER1
+        </a>
+        <a href="/admin/moderation?tab={{ active_tab }}&server=ASPER2"
+           style="padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; text-decoration:none; transition:.2s;
+                  {% if selected_server == 'ASPER2' %}background:var(--primary-blue); color:#fff;{% else %}color:var(--gray);{% endif %}">
+          ASPER2
+        </a>
+        <a href="/admin/moderation?tab={{ active_tab }}"
+           style="padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; text-decoration:none; transition:.2s;
+                  {% if not selected_server %}background:var(--primary-blue); color:#fff;{% else %}color:var(--gray);{% endif %}">
+          Все
+        </a>
+      </div>
+      <span class="badge-online">● Онлайн: {{ online_count }}</span>
+    </div>
   </div>
 </div>
 
 {# ── Tab navigation ─────────────────────────────────────────────────────── #}
 <nav class="mod-tabs">
-  <a href="/admin/moderation?tab=status"     class="mod-tab {% if active_tab == 'status'     %}active{% endif %}">Состояние сервера</a>
-  <a href="/admin/moderation?tab=banhammer"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
-  <a href="/admin/moderation?tab=logs"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
-  <a href="/admin/moderation?tab=anticheat"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
+  <a href="/admin/moderation?tab=status{% if selected_server %}&server={{ selected_server }}{% endif %}"     class="mod-tab {% if active_tab == 'status'     %}active{% endif %}">Состояние сервера</a>
+  <a href="/admin/moderation?tab=banhammer{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
+  <a href="/admin/moderation?tab=logs{% if selected_server %}&server={{ selected_server }}{% endif %}"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
+  <a href="/admin/moderation?tab=anticheat{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
 </nav>
 
 {# ════════════════════════════════════════════════════════════════════════ #}
@@ -31,6 +50,7 @@
         <tr>
           <th>Имя игрока</th>
           <th>SteamID</th>
+          {% if not selected_server %}<th>Сервер</th>{% endif %}
           <th>Персонаж</th>
           <th>Ping</th>
           <th>На сервере с</th>
@@ -46,6 +66,13 @@
             {% if p.is_new_player %}<span class="badge-new" title="Новичок: менее 2 часов">новичок</span>{% endif %}
           </td>
           <td><code>{{ p.player_steamid }}</code></td>
+          {% if not selected_server %}
+          <td>
+            {% if p.server_name %}
+            <span style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; background:rgba(26,104,222,.2); color:#5b9cf5;">{{ p.server_name }}</span>
+            {% else %}—{% endif %}
+          </td>
+          {% endif %}
           <td>{{ p.character_name or '—' }}</td>
           <td>{{ p.ping if p.ping is not none else '—' }}</td>
           <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '—' }}</td>
@@ -57,15 +84,15 @@
               {% endif %}
               <button type="button"
                 class="btn btn-sm btn-warn"
-                onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','status')"
+                onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','status','{{ p.server_name or '' }}')"
                 title="Кик">Кик</button>
               <button type="button"
                 class="btn btn-sm btn-danger"
-                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','status')"
+                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','status','{{ p.server_name or '' }}')"
                 title="Бан">Бан</button>
               <button type="button"
                 class="btn btn-sm btn-primary"
-                onclick="openActionModal('message','{{ p.player_steamid }}','{{ p.player_name | e }}','status')"
+                onclick="openActionModal('message','{{ p.player_steamid }}','{{ p.player_name | e }}','status','{{ p.server_name or '' }}')"
                 title="Написать">Сообщение</button>
             </div>
           </td>
@@ -112,10 +139,10 @@
                 {% set online_ids = online_players | map(attribute='player_steamid') | list %}
                 {% if p.player_steamid in online_ids %}
                 <button type="button" class="btn btn-sm btn-warn"
-                  onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer')">Кик</button>
+                  onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer','')">Кик</button>
                 {% endif %}
                 <button type="button" class="btn btn-sm btn-danger"
-                  onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer')">Бан</button>
+                  onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer','')">Бан</button>
               </div>
             </td>
           </tr>
@@ -149,9 +176,9 @@
             <div class="action-group">
               {% if p.player_id %}<a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>{% endif %}
               <button type="button" class="btn btn-sm btn-warn"
-                onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer')">Кик</button>
+                onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer','{{ p.server_name or '' }}')">Кик</button>
               <button type="button" class="btn btn-sm btn-danger"
-                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer')">Бан</button>
+                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer','{{ p.server_name or '' }}')">Бан</button>
             </div>
           </td>
         </tr>
@@ -180,7 +207,7 @@
             <div class="action-group">
               <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
               <button type="button" class="btn btn-sm btn-danger"
-                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer')">Бан</button>
+                onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer','')">Бан</button>
             </div>
           </td>
         </tr>
@@ -256,9 +283,9 @@
               <a href="/admin/players/{{ ev.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
               {% endif %}
               <button type="button" class="btn btn-sm btn-warn"
-                onclick="openActionModal('kick','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat')">Кик</button>
+                onclick="openActionModal('kick','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat','')">Кик</button>
               <button type="button" class="btn btn-sm btn-danger"
-                onclick="openActionModal('ban','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat')">Бан</button>
+                onclick="openActionModal('ban','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat','')">Бан</button>
               {% if ev.reviewed == 0 %}
               <form method="post" action="/admin/moderation/anticheat/{{ ev.id }}/review" style="display:inline;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -302,6 +329,15 @@
       <div class="form-group">
         <label class="form-label" for="modal-reason">Причина</label>
         <input type="text" name="reason" id="modal-reason" class="form-control" maxlength="500" placeholder="Укажите причину…">
+      </div>
+
+      <div class="form-group" id="modal-server-group">
+        <label class="form-label" for="modal-server-name">Сервер</label>
+        <select name="server_name" id="modal-server-name" class="form-control">
+          <option value="">На всех серверах</option>
+          <option value="ASPER1">ASPER1</option>
+          <option value="ASPER2">ASPER2</option>
+        </select>
       </div>
 
       <div class="form-group" id="modal-duration-group" style="display:none;">
@@ -501,7 +537,7 @@
 </style>
 
 <script>
-function openActionModal(actionType, steamid, playerName, tab) {
+function openActionModal(actionType, steamid, playerName, tab, serverName) {
   const modal   = document.getElementById('action-modal');
   const typeIn  = document.getElementById('modal-action-type');
   const steamIn = document.getElementById('modal-steamid');
@@ -512,6 +548,8 @@ function openActionModal(actionType, steamid, playerName, tab) {
   const submitBtn = document.getElementById('modal-submit-btn');
   const durGroup  = document.getElementById('modal-duration-group');
   const msgGroup  = document.getElementById('modal-message-group');
+  const srvGroup  = document.getElementById('modal-server-group');
+  const srvSelect = document.getElementById('modal-server-name');
 
   typeIn.value  = actionType;
   steamIn.value = steamid;
@@ -519,12 +557,16 @@ function openActionModal(actionType, steamid, playerName, tab) {
   nameEl.textContent = playerName;
   sidEl.textContent  = steamid;
 
+  // Pre-select server if known
+  srvSelect.value = serverName || '';
+
   // Reset extra fields
   document.getElementById('modal-reason').value   = '';
   document.getElementById('modal-duration').value = '';
   document.getElementById('modal-message').value  = '';
   durGroup.style.display = 'none';
   msgGroup.style.display = 'none';
+  srvGroup.style.display = 'block'; // always show server selector
 
   if (actionType === 'kick') {
     titleEl.textContent     = 'Кик игрока';

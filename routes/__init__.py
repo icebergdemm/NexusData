@@ -6,6 +6,7 @@ from .admin import router as admin_router
 from .events import router as events_router
 from .moderation import api_router as moderation_api_router, panel_router as moderation_panel_router
 from .sub_projects import router as sub_projects_router
+from .game_api import router as game_api_router
 
 __all__ = [
     "status_router",
@@ -17,4 +18,5 @@ __all__ = [
     "moderation_api_router",
     "moderation_panel_router",
     "sub_projects_router",
+    "game_api_router",
 ]

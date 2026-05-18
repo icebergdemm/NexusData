@@ -12,7 +12,7 @@ import logging
 
 from config import get_settings, reset_settings_cache
 from database import init_db
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router
 from workers import start_playtime_worker
 from datetime import datetime
 
@@ -131,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(moderation_api_router)
     app.include_router(moderation_panel_router)
     app.include_router(sub_projects_router)
+    app.include_router(game_api_router)
 
     # Serve static files from './static' at '/static'
     app.mount("/static", StaticFiles(directory="static"), name="static")

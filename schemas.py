@@ -96,10 +96,10 @@ class PlayerDataUpdate(BaseModel):
 class PlayerDataOut(PlayerDataBase):
     player_id: int
     play_time: int = Field(default=0, ge=0, description="Play time in seconds")
-    play_time: int = Field(default=0, ge=0, description="Play time in seconds")
     last_login_time: datetime
     rank_name: Optional[str] = None
     kit_name: Optional[str] = None
+    achievements_data: Optional[Dict[str, Any]] = Field(default=None, description="Raw achievements/rewards JSON from DB")
 
     @computed_field
     @property
@@ -114,6 +114,16 @@ class PlayerDataOut(PlayerDataBase):
         data = cls.from_orm(obj)
         data.rank_name = ranks_mapping.get(str(obj.rank_id), "N/A") if obj.rank_id is not None else "N/A"
         data.kit_name = kits_mapping.get(str(obj.kit_level), "N/A") if obj.kit_level is not None else "N/A"
+        # Include raw achievements data (dict structure from DB)
+        raw_ach = obj.achievements
+        if raw_ach is None:
+            data.achievements_data = {}
+        elif isinstance(raw_ach, dict):
+            data.achievements_data = raw_ach
+        elif isinstance(raw_ach, list):
+            data.achievements_data = {"legacy_list": raw_ach}
+        else:
+            data.achievements_data = {}
         return data
 
 
@@ -321,7 +331,10 @@ class ServerActionOut(BaseModel):
     reason: Optional[str] = None
     duration_minutes: Optional[int] = None
     message_text: Optional[str] = None
+    server_name: Optional[str] = None
     queued_at: Optional[datetime] = None
+    ack_asper1: int = 0
+    ack_asper2: int = 0
 
     class Config:
         from_attributes = True
@@ -330,6 +343,7 @@ class ServerActionOut(BaseModel):
 class ServerActionAck(BaseModel):
     success: bool
     error_message: Optional[str] = None
+    server_name: Optional[str] = None  # Имя сервера, отправляющего ACK
 
 
 class QueueActionIn(BaseModel):
@@ -338,6 +352,7 @@ class QueueActionIn(BaseModel):
     reason: Optional[str] = None
     duration_minutes: Optional[int] = None
     message_text: Optional[str] = None
+    server_name: Optional[str] = None
 
 
 class QueueActionResult(BaseModel):

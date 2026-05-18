@@ -564,7 +564,12 @@ textarea { resize:vertical; min-height:80px; }
 
     <!-- Labels -->
     <div class="block-card">
-      <div class="block-card-header"><h3>🏷 Метки</h3></div>
+      <div class="block-card-header">
+        <h3>🏷 Метки</h3>
+        {% if admin.is_superuser %}
+        <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="font-size:11px;">⚙ Управление категориями</a>
+        {% endif %}
+      </div>
       <div class="block-card-body">
         {% if label_pairs %}
         <div class="labels-row">
@@ -598,10 +603,21 @@ textarea { resize:vertical; min-height:80px; }
               <button type="submit" class="btn btn-primary btn-sm">+ Добавить</button>
             </div>
           </form>
+          {% if admin.is_superuser %}
+          <div style="margin-top:10px;">
+            <button class="btn btn-secondary btn-sm" onclick="openLabelCatModal()" style="width:100%; justify-content:center;">
+              + Создать новую категорию
+            </button>
+          </div>
+          {% endif %}
           {% else %}
-          <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="width:100%; justify-content:center; margin-top:10px;">
-            + Создать категории меток
-          </a>
+          {% if admin.is_superuser %}
+          <button class="btn btn-secondary btn-sm" onclick="openLabelCatModal()" style="width:100%; justify-content:center; margin-top:10px;">
+            + Создать первую категорию меток
+          </button>
+          {% else %}
+          <div style="font-size:12px; color:var(--gray-dark); margin-top:10px;">Категории меток не созданы. Обратитесь к суперпользователю.</div>
+          {% endif %}
           {% endif %}
         {% endif %}
       </div>
@@ -609,6 +625,49 @@ textarea { resize:vertical; min-height:80px; }
 
   </div>{# /RIGHT #}
 </div>
+
+<!-- ── New label category modal ── -->
+{% if admin.is_superuser %}
+<div class="modal-overlay" id="new-label-cat-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:28px; width:90%; max-width:420px;">
+    <h3 style="color:var(--white); font-size:16px; font-weight:700; margin-bottom:20px;">Создать категорию метки</h3>
+    <form method="post" action="/admin/label-categories/create">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <div class="form-group" style="margin-bottom:12px;">
+        <label style="font-size:12px; color:var(--gray); font-weight:600;">Название *</label>
+        <input type="text" name="name" required placeholder="Подозрение на читы" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:8px 12px; color:var(--white); font-size:13px; font-family:inherit; width:100%; box-sizing:border-box;">
+      </div>
+      <div style="display:flex; gap:12px; margin-bottom:12px;">
+        <div class="form-group" style="flex:1;">
+          <label style="font-size:12px; color:var(--gray); font-weight:600;">Цвет</label>
+          <input type="color" name="color" value="#ff4444" style="width:100%; height:38px; border-radius:6px; border:1px solid var(--stroke-01); background:var(--dark-blue-bg); cursor:pointer;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label style="font-size:12px; color:var(--gray); font-weight:600;">Иконка (эмодзи)</label>
+          <input type="text" name="icon" value="🏷" maxlength="4" placeholder="🏷" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:8px 12px; color:var(--white); font-size:18px; font-family:inherit; width:100%; box-sizing:border-box; text-align:center;">
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
+        <button type="button" class="btn btn-secondary" onclick="closeLabelCatModal()">Отмена</button>
+        <button type="submit" class="btn btn-primary">Создать</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+document.getElementById('new-label-cat-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.style.display = 'none';
+});
+function openLabelCatModal() {
+  var m = document.getElementById('new-label-cat-modal');
+  m.style.display = 'flex';
+}
+function closeLabelCatModal() {
+  var m = document.getElementById('new-label-cat-modal');
+  m.style.display = 'none';
+}
+</script>
+{% endif %}
 
 <!-- ── Data sections ── -->
 <div class="sections-grid">
@@ -743,17 +802,29 @@ textarea { resize:vertical; min-height:80px; }
       <button class="modal-close" onclick="closeModal('ban-modal')">✕</button>
     </div>
     <div class="modal-body">
-      <form method="post" action="/admin/ban">
+      <form method="post" action="/admin/punishments/create">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-        <input type="hidden" name="player_id" value="{{ player.player_id }}">
         <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
+        <input type="hidden" name="ptype" value="ban">
         <div class="form-group">
           <label>Причина</label>
           <input type="text" name="reason" placeholder="Укажите причину бана..." required>
         </div>
         <div class="form-group" style="margin-top:16px;">
-          <label>Длительность (минуты, 0 = навсегда)</label>
-          <input type="number" name="minutes" min="0" value="0">
+          <label>Длительность (дни, пусто = навсегда)</label>
+          <input type="number" name="expires_days" min="1" placeholder="Навсегда">
+        </div>
+        <div class="form-group" style="margin-top:16px;">
+          <label>Сервер</label>
+          <select name="server_name" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:8px 12px; color:var(--white); font-size:13px; font-family:inherit; width:100%; box-sizing:border-box;">
+            <option value="">На всех серверах</option>
+            <option value="ASPER1">ASPER1</option>
+            <option value="ASPER2">ASPER2</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-top:16px;">
+          <label>Заметки (необязательно)</label>
+          <input type="text" name="notes" placeholder="Внутренние заметки...">
         </div>
         <div style="margin-top:24px; display:flex; gap:10px; justify-content:flex-end;">
           <button type="button" class="btn btn-secondary" onclick="closeModal('ban-modal')">Отмена</button>

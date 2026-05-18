@@ -21,8 +21,10 @@ from models import (
 )
 
 # ── In-memory online players store ───────────────────────────────────────────
-# steamid -> {steamid, player_name, job_id, ping, player_id, last_seen}
-_online_players: Dict[str, dict] = {}
+# Per-server storage: server_name -> {steamid -> player_info_dict}
+# Combined view: all players across all servers (for backward compat)
+_online_players: Dict[str, dict] = {}           # steamid -> info (combined, all servers)
+_online_players_by_server: Dict[str, Dict[str, dict]] = {}  # server_name -> {steamid -> info}
 _online_players_lock = threading.Lock()
 from schemas import (
     PlayerDataCreate, PlayerStatsCreate, PaginationParams, PlayerDataOut, MessageEnvelope, MessageProcessResult,
@@ -1050,7 +1052,7 @@ class ServerModerationService:
 
     # ── Online players snapshot (in-memory) ────────────────────────────────────────────────
 
-    def replace_online_players(self, players) -> int:
+    def replace_online_players(self, players, server_name: Optional[str] = None) -> int:
         """Replace the full online-players snapshot in memory. Returns new player count."""
         now = _now_msk()
         new_snapshot: Dict[str, dict] = {}
@@ -1077,7 +1079,8 @@ class ServerModerationService:
         }
 
         with _online_players_lock:
-            prev_snapshot = dict(_online_players)
+            srv_key = server_name or "__default__"
+            prev_snapshot = dict(_online_players_by_server.get(srv_key, {}))
 
         for steamid, p in player_list:
             player_name = p.player_name if hasattr(p, "player_name") else p.get("player_name")
@@ -1104,11 +1107,17 @@ class ServerModerationService:
                 "join_time": join_time,
                 "total_play_time": play_time,
                 "is_new_player": play_time < 7200,
+                "server_name": server_name,
             }
 
         with _online_players_lock:
+            # Update per-server snapshot
+            srv_key = server_name or "__default__"
+            _online_players_by_server[srv_key] = new_snapshot
+            # Rebuild combined view from all servers
             _online_players.clear()
-            _online_players.update(new_snapshot)
+            for srv_players in _online_players_by_server.values():
+                _online_players.update(srv_players)
 
         # ── Trap check ─────────────────────────────────────────────────────────
         # Fire Discord webhook if any newly-joined player has an active trap.
@@ -1150,10 +1159,20 @@ class ServerModerationService:
 
         return len(new_snapshot)
 
-    def get_online_players(self) -> List[dict]:
+    def get_online_players(self, server_name: Optional[str] = None) -> List[dict]:
         with _online_players_lock:
-            result = sorted(_online_players.values(), key=lambda x: (x.get("player_name") or ""))
+            if server_name:
+                srv_key = server_name
+                source = _online_players_by_server.get(srv_key, {})
+            else:
+                source = _online_players
+            result = sorted(source.values(), key=lambda x: (x.get("player_name") or ""))
         return result
+
+    def get_online_servers(self) -> List[str]:
+        """Return list of server names that have reported players."""
+        with _online_players_lock:
+            return [k for k in _online_players_by_server.keys() if k != "__default__"]
 
     def get_recent_offline_players(self, limit: int = 50) -> List[PlayerData]:
         with _online_players_lock:
@@ -1199,7 +1218,7 @@ class ServerModerationService:
 
     # ── Action queue ───────────────────────────────────────────────────────────────
 
-    def enqueue_action(self, action_in, admin_id: Optional[int] = None) -> ServerActionQueue:
+    def enqueue_action(self, action_in, admin_id: Optional[int] = None, server_name: Optional[str] = None) -> ServerActionQueue:
         from datetime import datetime
         row = ServerActionQueue(
             action_type=action_in.action_type if hasattr(action_in, "action_type") else action_in["action_type"],
@@ -1207,6 +1226,7 @@ class ServerModerationService:
             reason=action_in.reason if hasattr(action_in, "reason") else action_in.get("reason"),
             duration_minutes=action_in.duration_minutes if hasattr(action_in, "duration_minutes") else action_in.get("duration_minutes"),
             message_text=action_in.message_text if hasattr(action_in, "message_text") else action_in.get("message_text"),
+            server_name=server_name or (action_in.server_name if hasattr(action_in, "server_name") else action_in.get("server_name")),
             queued_by_admin_id=admin_id,
             queued_at=datetime.utcnow(),
             executed=0,
@@ -1216,21 +1236,131 @@ class ServerModerationService:
         self.db.refresh(row)
         return row
 
-    def get_pending_actions(self) -> List[ServerActionQueue]:
-        return self.db.query(ServerActionQueue).filter(
+    def get_pending_actions(self, server_name: Optional[str] = None) -> List[ServerActionQueue]:
+        from sqlalchemy import or_
+        query = self.db.query(ServerActionQueue).filter(
             ServerActionQueue.executed == 0
-        ).order_by(ServerActionQueue.queued_at).all()
+        )
+        if server_name:
+            srv_lower = server_name.lower()
+            is_asper1 = "asper1" in srv_lower or srv_lower == "1"
+            is_asper2 = "asper2" in srv_lower or srv_lower == "2"
 
-    def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None) -> bool:
+            # Targeted actions for this server
+            targeted = ServerActionQueue.server_name == server_name
+
+            # Broadcast actions (server_name=null) that this server hasn't ACKed yet
+            if is_asper1:
+                broadcast_pending = (
+                    ServerActionQueue.server_name.is_(None) &
+                    (ServerActionQueue.ack_asper1 == 0)
+                )
+            elif is_asper2:
+                broadcast_pending = (
+                    ServerActionQueue.server_name.is_(None) &
+                    (ServerActionQueue.ack_asper2 == 0)
+                )
+            else:
+                # Unknown server name — return all broadcast
+                broadcast_pending = ServerActionQueue.server_name.is_(None)
+
+            query = query.filter(or_(targeted, broadcast_pending))
+        return query.order_by(ServerActionQueue.queued_at).all()
+
+    def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None, server_name: Optional[str] = None) -> bool:
+        """
+        Acknowledge action execution by a server.
+
+        For targeted actions (server_name set on the action):
+          - Mark as done/failed immediately.
+
+        For broadcast actions (server_name=null on the action):
+          - Record per-server ACK (ack_asper1 / ack_asper2).
+          - Mark as done only when BOTH servers have confirmed success.
+          - Mark as failed immediately if any server reports failure.
+        """
         from datetime import datetime
         row = self.db.query(ServerActionQueue).filter(ServerActionQueue.id == action_id).first()
         if not row:
             return False
-        row.executed = 1 if success else 2
-        row.executed_at = datetime.utcnow()
-        row.error_message = error_message
+
+        is_broadcast = not row.server_name  # null = broadcast to all servers
+
+        if is_broadcast and server_name:
+            # Record per-server ACK
+            ack_value = 1 if success else 2
+            srv_lower = server_name.lower()
+            if "asper1" in srv_lower or srv_lower == "1":
+                row.ack_asper1 = ack_value
+            elif "asper2" in srv_lower or srv_lower == "2":
+                row.ack_asper2 = ack_value
+
+            if not success:
+                # Any failure → mark failed immediately
+                row.executed = 2
+                row.executed_at = datetime.utcnow()
+                row.error_message = error_message
+            elif row.ack_asper1 == 1 and row.ack_asper2 == 1:
+                # Both servers confirmed success → done
+                row.executed = 1
+                row.executed_at = datetime.utcnow()
+            # else: still waiting for the other server — leave executed=0
+        else:
+            # Targeted action or no server_name in ACK — mark immediately
+            row.executed = 1 if success else 2
+            row.executed_at = datetime.utcnow()
+            row.error_message = error_message
+
         self.db.commit()
+
+        # If this was a successful trap action, fire Discord webhook
+        if success and row.action_type == "trap":
+            # Only fire once (when first server ACKs for broadcast, or on targeted ACK)
+            if row.executed == 1 or (is_broadcast and (row.ack_asper1 == 1 or row.ack_asper2 == 1)):
+                self._handle_trap_triggered(row)
+
         return True
+
+    def _handle_trap_triggered(self, action: ServerActionQueue):
+        """Create PlayerTrap record and fire Discord webhook when trap ACK received."""
+        try:
+            steamid = action.target_steamid
+            player = self.db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
+            player_id = player.player_id if player else None
+            player_name = player.player_last_time_name if player else steamid
+
+            # Create trap record (already triggered)
+            trap = PlayerTrap(
+                player_id=player_id,
+                target_steamid=steamid,
+                reason=action.reason,
+                set_by_admin_id=action.queued_by_admin_id,
+                active=0,
+                triggered_at=_now_msk(),
+            )
+            self.db.add(trap)
+            self.db.commit()
+
+            # Fire Discord webhook
+            from config import get_settings
+            webhook_url = get_settings().discord_trap_webhook_url
+            if webhook_url:
+                msg = (
+                    f"🪤 **Ловушка сработала!**\n"
+                    f"**Игрок:** {player_name}\n"
+                    f"**SteamID:** `{steamid}`\n"
+                    f"**Player ID:** {player_id or '—'}\n"
+                    f"**Причина ловушки:** {action.reason or '—'}"
+                )
+                try:
+                    with httpx.Client(timeout=5) as client:
+                        client.post(webhook_url, json={"content": msg})
+                except Exception as e:
+                    logger.warning(f"Trap webhook failed: {e}")
+            else:
+                logger.info(f"[TRAP ACK] {steamid} — no webhook configured")
+        except Exception as e:
+            logger.error(f"_handle_trap_triggered error: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
