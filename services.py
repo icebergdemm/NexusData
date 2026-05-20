@@ -229,6 +229,9 @@ class EventDispatcherService:
         logout_time_str = payload.get("logout_time")
         play_time_this_session = payload.get("play_time_this_session")
         stats = payload.get("stats", {})
+        role_actions = payload.get("role_actions", [])
+        role_stats = payload.get("role_stats", [])
+        kills = payload.get("kills", {})
         
         if not all([player_steamid, logout_time_str]):
             raise HTTPException(status_code=400, detail="player_steamid, logout_time are required")
@@ -256,7 +259,7 @@ class EventDispatcherService:
         # Закрыть сессию
         session = self.session_service.logout(session.id, logout_time)
         
-        # Обновить статистику если передана
+        # Обновить основную статистику если передана
         if stats:
             stats_create = PlayerStatsCreate(
                 killed_monsters=stats.get("killed_monsters", 0),
@@ -268,7 +271,34 @@ class EventDispatcherService:
             )
             self.stats_service.upsert_stats(player.player_id, stats_create)
         
-        # Обновить общее время игры (вычисляем из сессии, не полагаясь на клиента)
+        # Обновить убийства по типам монстров
+        if kills:
+            for monster_type, count in kills.items():
+                self.kill_service.upsert_kill(player.player_id, monster_type, int(count))
+        
+        # Обновить действия по ролям
+        # role_actions: [{"role": "captain", "action_type": "repair_hull", "value": 3.5}, ...]
+        if role_actions:
+            for ra in role_actions:
+                role = ra.get("role", "")
+                action_type = ra.get("action_type", "")
+                value = float(ra.get("value", 1))
+                if role and action_type:
+                    self.role_action_service.create_action(player.player_id, role, action_type, value)
+        
+        # Обновить статистику по ролям
+        # role_stats: [{"role": "captain", "rounds_played": 1, "mvp_score": 2.5}, ...]
+        if role_stats:
+            for rs in role_stats:
+                role = rs.get("role", "")
+                rounds_played = int(rs.get("rounds_played", 0))
+                mvp_score = float(rs.get("mvp_score", 0))
+                if role:
+                    self.role_stats_service.accumulate_role_stat(
+                        player.player_id, role, rounds_played, mvp_score
+                    )
+        
+        # Обновить общее время игры
         current_play_time = player.play_time or 0
         duration_seconds = session.session_duration or 0
         
@@ -276,16 +306,12 @@ class EventDispatcherService:
             added_time = int(play_time_this_session)
             new_play_time = current_play_time + added_time
         else:
-            # Если клиент не отправил play_time, вычисляем из session_duration
             added_time = duration_seconds
             new_play_time = current_play_time + added_time
 
-        # Обновляем play_time если было добавлено время в эту сессию
         if added_time > 0:
             self.player_service.player_repo.update(player.player_id, {"play_time": new_play_time})
             logger.info(f"Updated player {player.player_id} play_time: {current_play_time}s -> {new_play_time}s (+{added_time}s)")
-        
-        return {"session_id": session.id, "player_id": player.player_id, "duration_seconds": session.session_duration or 0}
         
         return {"session_id": session.id, "player_id": player.player_id, "duration_seconds": session.session_duration or 0}
 

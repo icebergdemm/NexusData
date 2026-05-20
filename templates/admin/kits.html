@@ -480,8 +480,8 @@
       <div class="form-row">
         <div class="form-group">
           <label for="add-job-id">Профессия (job_id) *</label>
-          <input type="text" id="add-job-id" name="job_id" placeholder="Например: Captain, Engineer..." maxlength="15" required>
-          <span class="form-hint">Идентификатор профессии, до 15 символов</span>
+          <input type="text" id="add-job-id" name="job_id" placeholder="Например: Captain, Engineer..." maxlength="50" required>
+          <span class="form-hint">Идентификатор профессии, до 50 символов</span>
         </div>
         <div class="form-group">
           <label for="add-kit-level">Уровень кита *</label>
@@ -566,7 +566,7 @@
         <div class="form-row">
           <div class="form-group">
             <label>Профессия (job_id)</label>
-            <input type="text" name="job_id" value="{{ kit.job_id }}" maxlength="15" required>
+            <input type="text" name="job_id" value="{{ kit.job_id }}" maxlength="50" required>
           </div>
           <div class="form-group">
             <label>Уровень кита</label>
@@ -653,8 +653,8 @@
       <div class="form-row">
         <div class="form-group">
           <label>Профессия (без _k)</label>
-          <input type="text" name="base_job" placeholder="например: assistant" maxlength="13" required>
-          <span class="form-hint">Суффикс _k будет добавлен автоматически</span>
+          <input type="text" name="base_job" placeholder="например: assistant" maxlength="48" required>
+          <span class="form-hint">Суффикс _k будет добавлен автоматически (макс 48 символов + _k = 50)</span>
         </div>
         <div class="form-group">
           <label>Уровень квалификации</label>

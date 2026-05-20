@@ -65,8 +65,8 @@ def _apply_migrations():
         # server_action_queue: multi-server support
         ("server_action_queue", "server_name", "VARCHAR(100)"),
         # server_action_queue: per-server ACK tracking
-        ("server_action_queue", "ack_asper1", "TINYINT DEFAULT 0"),
-        ("server_action_queue", "ack_asper2", "TINYINT DEFAULT 0"),
+        ("server_action_queue", "ack_asper1", "TINYINT DEFAULT 0 NOT NULL"),
+        ("server_action_queue", "ack_asper2", "TINYINT DEFAULT 0 NOT NULL"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:
@@ -88,6 +88,23 @@ def _apply_migrations():
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
+
+        # Widen kits.job_id if it's too narrow
+        try:
+            col_type = conn.execute(
+                __import__('sqlalchemy').text(
+                    "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA=:db AND TABLE_NAME='kits' AND COLUMN_NAME='job_id'"
+                ),
+                {"db": db_name},
+            ).scalar()
+            if col_type and int(col_type) < 50:
+                conn.execute(__import__('sqlalchemy').text(
+                    "ALTER TABLE `kits` MODIFY COLUMN `job_id` VARCHAR(50)"
+                ))
+                conn.commit()
+        except Exception:
+            pass
 
 
 def init_db():

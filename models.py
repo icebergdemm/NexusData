@@ -7,7 +7,7 @@ class Kit(Base):
     __tablename__ = "kits"
     
     id = Column(Integer, primary_key=True, index=True)
-    job_id = Column(String(15), index=True)
+    job_id = Column(String(50), index=True)
     kit_level = Column(Integer, default=0)
     items = Column(JSON)
 
