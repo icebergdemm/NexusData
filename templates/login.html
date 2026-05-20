@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -57,7 +57,7 @@
 
             // ── Custom loop point via native loop interception ────────────────────
             // We use video.loop=true so the browser handles all the loop timing
-            // at the native level — no rAF polling, no threshold arithmetic.
+            // at the native level - no rAF polling, no threshold arithmetic.
             //
             // Strategy: intercept the `seeking` event that fires when the browser
             // loops (seeks back to 0). The `seeking` event fires synchronously,

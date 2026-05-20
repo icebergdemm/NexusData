@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% block title %}Наказания — Nexus Data{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Наказания - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -256,19 +256,19 @@
               <a href="/admin/players/{{ p.player_id }}" style="color:var(--primary-blue); text-decoration:none; font-weight:600;">
                 {{ player.player_last_time_name if player else p.player_id }}
               </a>
-              {% else %}—{% endif %}
+              {% else %}-{% endif %}
             </td>
             <td>
               {% if p.player_steamid %}
               <a href="https://steamcommunity.com/profiles/{{ p.player_steamid }}" target="_blank" class="mono-cell" style="color:var(--primary-blue);">
                 {{ p.player_steamid }} 🔗
               </a>
-              {% else %}<span class="mono-cell">—</span>{% endif %}
+              {% else %}<span class="mono-cell">-</span>{% endif %}
             </td>
-            <td><span class="mono-cell">{{ p.player_ip or '—' }}</span></td>
-            <td class="reason-cell">{{ p.reason or '—' }}</td>
-            <td>{{ p.issued_by_name or '—' }}</td>
-            <td class="mono-cell">{{ p.issued_at.strftime('%d.%m.%Y %H:%M') if p.issued_at else '—' }}</td>
+            <td><span class="mono-cell">{{ p.player_ip or '-' }}</span></td>
+            <td class="reason-cell">{{ p.reason or '-' }}</td>
+            <td>{{ p.issued_by_name or '-' }}</td>
+            <td class="mono-cell">{{ p.issued_at.strftime('%d.%m.%Y %H:%M') if p.issued_at else '-' }}</td>
             <td class="mono-cell">
               {% if p.expires_at %}
               {{ p.expires_at.strftime('%d.%m.%Y %H:%M') }}

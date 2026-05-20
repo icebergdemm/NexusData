@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% block title %}Сессии — Nexus Data{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Сессии - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -78,7 +78,7 @@
           <td class="cell-id">#{{ s.id }}</td>
           <td><strong>ID {{ s.admin_id }}</strong></td>
           <td class="cell-mono">{{ s.token[:12] }}…</td>
-          <td class="cell-time">{{ s.created_at.strftime('%d.%m.%Y %H:%M') if s.created_at else '—' }}</td>
+          <td class="cell-time">{{ s.created_at.strftime('%d.%m.%Y %H:%M') if s.created_at else '-' }}</td>
           <td class="cell-time">{{ s.expires_at.strftime('%d.%m.%Y %H:%M') if s.expires_at else '∞' }}</td>
           <td>
             {% if s.revoked %}
@@ -94,7 +94,7 @@
               <button type="submit" class="btn btn-danger" onclick="return confirm('Отозвать сессию #{{ s.id }}?')">Отозвать</button>
             </form>
             {% else %}
-            <span style="color:var(--gray-dark); font-size:12px;">—</span>
+            <span style="color:var(--gray-dark); font-size:12px;">-</span>
             {% endif %}
           </td>
         </tr>

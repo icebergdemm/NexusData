@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
-{% block title %}Модерирование сервера — Nexus Data{% endblock %}
+{% block title %}Модерирование сервера - Nexus Data{% endblock %}
 
 {% block content %}
 <div class="card" style="margin-bottom: var(--spacing-8);">
@@ -70,12 +70,12 @@
           <td>
             {% if p.server_name %}
             <span style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; background:rgba(26,104,222,.2); color:#5b9cf5;">{{ p.server_name }}</span>
-            {% else %}—{% endif %}
+            {% else %}-{% endif %}
           </td>
           {% endif %}
-          <td>{{ p.character_name or '—' }}</td>
-          <td>{{ p.ping if p.ping is not none else '—' }}</td>
-          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '—' }}</td>
+          <td>{{ p.character_name or '-' }}</td>
+          <td>{{ p.ping if p.ping is not none else '-' }}</td>
+          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '-' }}</td>
           <td>{{ fmt_playtime(p.total_play_time) }}</td>
           <td>
             <div class="action-group">
@@ -170,8 +170,8 @@
           </td>
           <td><code>{{ p.player_steamid }}</code></td>
           <td>{{ fmt_playtime(p.total_play_time) }}</td>
-          <td>{{ p.ping if p.ping is not none else '—' }}</td>
-          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '—' }}</td>
+          <td>{{ p.ping if p.ping is not none else '-' }}</td>
+          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '-' }}</td>
           <td>
             <div class="action-group">
               {% if p.player_id %}<a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>{% endif %}
@@ -199,10 +199,10 @@
       <tbody>
         {% for p in recent_offline %}
         <tr>
-          <td>{{ p.player_last_time_name or '—' }}</td>
+          <td>{{ p.player_last_time_name or '-' }}</td>
           <td><code>{{ p.player_steamid }}</code></td>
           <td>{{ fmt_playtime(p.play_time) }}</td>
-          <td>{{ p.last_session_logout.strftime('%d.%m %H:%M') if p.last_session_logout else (p.last_login_time.strftime('%d.%m %H:%M') if p.last_login_time else '—') }}</td>
+          <td>{{ p.last_session_logout.strftime('%d.%m %H:%M') if p.last_session_logout else (p.last_login_time.strftime('%d.%m %H:%M') if p.last_login_time else '-') }}</td>
           <td>
             <div class="action-group">
               <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
@@ -259,7 +259,7 @@
         {% for ev in ac_events %}
         <tr class="{% if ev.reviewed == 0 %}row-ac-new{% endif %}">
           <td style="white-space:nowrap;">{{ ev.occurred_at.strftime('%d.%m %H:%M:%S') }}</td>
-          <td>{{ ev.player_name or '—' }}</td>
+          <td>{{ ev.player_name or '-' }}</td>
           <td><code>{{ ev.player_steamid }}</code></td>
           <td><span class="badge-event-type">{{ ev.event_type }}</span></td>
           <td>
@@ -268,7 +268,7 @@
               <summary style="cursor:pointer;color:var(--primary-blue);">Показать</summary>
               <pre class="details-pre">{{ ev.details | tojson(indent=2) }}</pre>
             </details>
-            {% else %}—{% endif %}
+            {% else %}-{% endif %}
           </td>
           <td>
             {% if ev.reviewed == 0 %}

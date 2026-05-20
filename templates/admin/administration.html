@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% block title %}Администрирование — Nexus Data{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Администрирование - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -203,11 +203,11 @@ input:checked + .slider:before { transform:translateX(20px); background:#fff; }
           <td>
             {% if p.player_id %}
             <a href="/admin/players/{{ p.player_id }}" style="color:var(--primary-blue); text-decoration:none;">
-              {{ p.player_last_time_name or '—' }}
+              {{ p.player_last_time_name or '-' }}
             </a>
-            {% else %}—{% endif %}
+            {% else %}-{% endif %}
           </td>
-          <td class="mono-cell">{{ p.player_steamid or '—' }}</td>
+          <td class="mono-cell">{{ p.player_steamid or '-' }}</td>
           <td>{{ ((p.total_secs or 0) // 3600) }} ч</td>
           <td>{{ p.sessions }}</td>
         </tr>

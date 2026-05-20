@@ -1,5 +1,5 @@
 ﻿{% extends "base.html" %}
-{% block title %}Серверные привилегии — Nexus Data{% endblock %}
+{% block title %}Серверные привилегии - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -182,20 +182,20 @@
                 {% set grp = priv_groups_data | selectattr('group.id', 'equalto', priv.server_group_id) | map(attribute='group') | first %}
                 {% if grp %}<span class="badge badge-blue">{{ grp.name }}</span>
                 {% else %}<span class="badge badge-gray">ID {{ priv.server_group_id }}</span>{% endif %}
-              {% else %}<span style="color:var(--gray);font-size:12px;">—</span>{% endif %}
+              {% else %}<span style="color:var(--gray);font-size:12px;">-</span>{% endif %}
             </td>
             <td>
               {% if priv.commands %}
               <div class="cmd-list">{% for c in priv.commands %}<span class="cmd-chip">{{ c }}</span>{% endfor %}</div>
-              {% else %}<span style="color:var(--gray);font-size:12px;">—</span>{% endif %}
+              {% else %}<span style="color:var(--gray);font-size:12px;">-</span>{% endif %}
             </td>
             <td>
               {% if priv.allowed_action_ids %}
               <div class="cmd-list">{% for a in priv.allowed_action_ids %}<span class="aid-chip">{{ a }}</span>{% endfor %}</div>
-              {% else %}<span style="color:var(--gray);font-size:12px;">—</span>{% endif %}
+              {% else %}<span style="color:var(--gray);font-size:12px;">-</span>{% endif %}
             </td>
-            <td style="font-size:12px;color:var(--gray);max-width:180px;">{{ priv.reason or '—' }}</td>
-            <td style="font-size:11px;color:var(--gray);">{{ priv.granted_at.strftime('%d.%m.%Y') if priv.granted_at else '—' }}</td>
+            <td style="font-size:12px;color:var(--gray);max-width:180px;">{{ priv.reason or '-' }}</td>
+            <td style="font-size:11px;color:var(--gray);">{{ priv.granted_at.strftime('%d.%m.%Y') if priv.granted_at else '-' }}</td>
             <td>
               <div style="display:flex;gap:6px;">
                 <button class="btn btn-sm btn-secondary"
@@ -273,7 +273,7 @@
           <span class="form-hint">Список команд, доступных игрокам в этой группе</span>
         </div>
         <div class="form-group">
-          <label>Разрешения — Action IDs (через пробел или запятую)</label>
+          <label>Разрешения - Action IDs (через пробел или запятую)</label>
           <input type="text" name="allowed_action_ids" placeholder="100 101 200">
           <span class="form-hint">Числовые коды действий, разрешённых для группы</span>
         </div>
@@ -344,7 +344,7 @@
         <div class="form-group">
           <label>Группа привилегий</label>
           <select name="server_group_id" id="ap-group">
-            <option value="">— Без группы (только индивидуальные) —</option>
+            <option value="">- Без группы (только индивидуальные) -</option>
             {% for item in priv_groups_data %}
             <option value="{{ item.group.id }}">{{ item.group.name }} ({{ item.group.group_key }})</option>
             {% endfor %}

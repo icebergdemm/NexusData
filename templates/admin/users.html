@@ -1,8 +1,8 @@
 ﻿{% extends "base.html" %}
-{% block title %}Пользователи Nexus Data — Nexus Data{% endblock %}
+{% block title %}Пользователи Nexus Data - Nexus Data{% endblock %}
 
 {% block content %}
-{# ── PERM ROWS MACRO — must be defined before first call ── #}
+{# ── PERM ROWS MACRO - must be defined before first call ── #}
 {% macro _perm_rows(mode) %}
 {% set pages_cfg = [
   {"key":"players",     "label":"Игроки",           "desc":"Просмотр и управление профилями"},
@@ -199,7 +199,7 @@
                 {% elif u.is_superuser %}
                   <span class="super-badge">&#x2B50; Суперпользователь</span>
                 {% else %}
-                  <span style="color:var(--gray);font-size:12px;">—</span>
+                  <span style="color:var(--gray);font-size:12px;">-</span>
                 {% endif %}
               </td>
               {% if check_permission(admin, 'admin', 'edit') %}
@@ -299,7 +299,7 @@
         <div class="form-group">
           <label>Группа привилегий</label>
           <select name="privilege_group_id" id="assign-group-select">
-            <option value="">— Без группы —</option>
+            <option value="">- Без группы -</option>
             {% for item in groups_data %}
             <option value="{{ item.group.id }}">{{ item.group.name }}</option>
             {% endfor %}

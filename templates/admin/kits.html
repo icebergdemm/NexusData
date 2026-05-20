@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
-{% block title %}Редактирование китов — Nexus Data{% endblock %}
+{% block title %}Редактирование китов - Nexus Data{% endblock %}
 
 {% block content %}
 
@@ -445,7 +445,7 @@
   <div class="filter-group">
     <label for="f-job">Профессия (job_id)</label>
     <select id="f-job" name="job_id">
-      <option value="">— Все профессии —</option>
+      <option value="">- Все профессии -</option>
       {% for jid in all_job_ids %}
       <option value="{{ jid }}" {% if selected_job_id == jid %}selected{% endif %}>{{ jid }}</option>
       {% endfor %}
@@ -454,10 +454,10 @@
   <div class="filter-group">
     <label for="f-level">Уровень кита</label>
     <select id="f-level" name="kit_level">
-      <option value="">— Любой уровень —</option>
+      <option value="">- Любой уровень -</option>
       {% for lvl_id, lvl_name in kits_mapping.items() %}
       <option value="{{ lvl_id }}" {% if selected_kit_level|string == lvl_id|string %}selected{% endif %}>
-        {{ lvl_id }} — {{ lvl_name }}
+        {{ lvl_id }} - {{ lvl_name }}
       </option>
       {% endfor %}
     </select>
@@ -487,7 +487,7 @@
           <label for="add-kit-level">Уровень кита *</label>
           <select id="add-kit-level" name="kit_level" required>
             {% for lvl_id, lvl_name in kits_mapping.items() %}
-            <option value="{{ lvl_id }}">{{ lvl_id }} — {{ lvl_name }}</option>
+            <option value="{{ lvl_id }}">{{ lvl_id }} - {{ lvl_name }}</option>
             {% endfor %}
           </select>
         </div>
@@ -573,7 +573,7 @@
             <select name="kit_level" required>
               {% for lvl_id, lname in kits_mapping.items() %}
               <option value="{{ lvl_id }}" {% if lvl_id|string == kit.kit_level|string %}selected{% endif %}>
-                {{ lvl_id }} — {{ lname }}
+                {{ lvl_id }} - {{ lname }}
               </option>
               {% endfor %}
             </select>
@@ -659,11 +659,11 @@
         <div class="form-group">
           <label>Уровень квалификации</label>
           <select name="kit_level" required>
-            <option value="1">I — первый уровень</option>
-            <option value="2">II — второй уровень</option>
-            <option value="3">III — третий уровень</option>
-            <option value="4">IV — четвёртый уровень</option>
-            <option value="5">V — пятый уровень</option>
+            <option value="1">I - первый уровень</option>
+            <option value="2">II - второй уровень</option>
+            <option value="3">III - третий уровень</option>
+            <option value="4">IV - четвёртый уровень</option>
+            <option value="5">V - пятый уровень</option>
           </select>
         </div>
       </div>
@@ -673,12 +673,21 @@
                   oninput="validateJson(this)">{
   "item_id_1": 1,
   "item_id_2": 2,
-  "ar_delete": {
-    "item_to_remove": 1
+  "ar_delete": ["old_item_to_remove"],
+  "talents": ["talent_id_1"],
+  "stats": {
+    "all": 0,
+    "mechanic": 0
   }
 }</textarea>
         <div class="json-status" id="status-qual-add"></div>
-        <span class="form-hint">JSON-объект. Ключи — предметы для добавления (значение = количество). Ключ <code>ar_delete</code> — предметы для удаления.</span>
+        <span class="form-hint">JSON-объект. Поддерживаемые секции:<br>
+          - Корневые ключи = предметы (значение = количество)<br>
+          - <code>"ar_delete"</code>: массив предметов для удаления из инвентаря<br>
+          - <code>"talents"</code>: массив ID талантов для выдачи<br>
+          - <code>"stats"</code>: объект бонусов к статам (ключ = профессия или "all", значение = число)<br>
+          Пример: <code>{"item1": 1, "ar_delete": ["olditem"], "talents": ["leadership"], "stats": {"mechanic": 25}}</code>
+        </span>
       </div>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">💾 Создать</button>

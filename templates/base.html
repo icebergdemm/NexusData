@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{% block title %}Nexus Data Admin{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
     <link rel="stylesheet" href="/static/admin/admin_styles.css">
   </head>
   <body>
@@ -13,7 +14,7 @@
       {% for flash in flashes %}
       <div class="flash-message flash-{{ flash.level }}" data-flash>
         <span>{{ flash.message }}</span>
-        <button type="button" class="flash-close" data-flash-close aria-label="Закрыть уведомление">×</button>
+        <button type="button" class="flash-close" data-flash-close aria-label="Закрыть уведомление">&times;</button>
       </div>
       {% endfor %}
     </div>
@@ -59,11 +60,9 @@
         {% if check_permission(admin, 'admin', 'edit') %}
         <li><a href="/admin/administration">Администрирование</a></li>
         {% endif %}
-
         {% if check_permission(admin, 'punishments', 'view') %}
         <li><a href="/admin/punishments">Наказания</a></li>
         {% endif %}
-
         {% if check_permission(admin, 'sub_projects', 'view') %}
         <li><a href="/admin/sub-projects">Sub-карты</a></li>
         {% endif %}
@@ -76,29 +75,12 @@
 
     <script>
       (function initFlashToasts() {
-        const root = document.getElementById('flash-root');
+        var root = document.getElementById('flash-root');
         if (!root) return;
-
-        const dismissDelayMs = 4200;
-        const fadeDurationMs = 320;
-
-        const hideFlash = (node) => {
-          if (!node || node.classList.contains('is-leaving')) return;
-          node.classList.add('is-leaving');
-          window.setTimeout(() => {
-            node.remove();
-            if (!root.querySelector('[data-flash]')) {
-              root.remove();
-            }
-          }, fadeDurationMs);
-        };
-
-        root.querySelectorAll('[data-flash]').forEach((item) => {
-          const closeBtn = item.querySelector('[data-flash-close]');
-          if (closeBtn) {
-            closeBtn.addEventListener('click', () => hideFlash(item));
-          }
-          window.setTimeout(() => hideFlash(item), dismissDelayMs);
+        root.querySelectorAll('[data-flash]').forEach(function(item) {
+          var closeBtn = item.querySelector('[data-flash-close]');
+          if (closeBtn) closeBtn.addEventListener('click', function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); });
+          setTimeout(function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); }, 4200);
         });
       })();
     </script>

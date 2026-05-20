@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
-{% block title %}Главная — Nexus Data{% endblock %}
+{% block title %}Главная - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -88,8 +88,8 @@
 <!-- ── Welcome ── -->
 <div class="dash-welcome">
   <div class="dash-welcome-text">
-    <h2>👋 Добро пожаловать, {{ admin.discord_username or 'Администратор' }}</h2>
-    <p>Панель управления Nexus Data — ASPER Barotrauma</p>
+    <h2>👋 Добро пожаловать, {{ admin.discord_username or 'Творец' }}</h2>
+    <p>Nexus Data - шпионская машина, входящая в проект Затмение, адаптированная под благие цели. Зло во имя добра</p>
   </div>
   {% if admin.discord_avatar %}
   <img class="dash-avatar"
@@ -108,9 +108,9 @@
     <span class="chip-sub">игроков на сервере</span>
   </div>
   <div class="stat-chip">
-    <span class="chip-label">Сегодня зашли</span>
-    <span class="chip-value">{{ unique_today }}</span>
-    <span class="chip-sub">уникальных игроков</span>
+    <span class="chip-label">Сегодня прекрасный день товарищ!</span>
+    <span class="chip-value">Славься ASPER! Бойся Затмения!</span>
+    
   </div>
   <div class="stat-chip">
     <span class="chip-label">Всего игроков</span>
@@ -123,7 +123,7 @@
 <div class="chart-card">
   <div class="chart-card-header">
     <h3>📈 Онлайн за последние 24 часа</h3>
-    <span class="chart-hint">По часам · UTC</span>
+    <span class="chart-hint">По часам · МСК</span>
   </div>
   <div class="chart-card-body">
     <canvas id="onlineChart" height="80"></canvas>
@@ -162,7 +162,7 @@
   <a href="/admin/punishments" class="section-card">
     <div class="sc-icon">⚖️</div>
     <div class="sc-title">Наказания</div>
-    <div class="sc-desc">Предупреждения, выговоры, кики и баны — с историей и редактированием</div>
+    <div class="sc-desc">Предупреждения, выговоры, кики и баны - с историей и редактированием</div>
   </a>
   {% endif %}
 

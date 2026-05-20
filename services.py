@@ -1322,17 +1322,15 @@ class ServerModerationService:
                 row.ack_asper2 = ack_value
 
             if not success:
-                # Any failure → mark failed immediately
                 row.executed = 2
                 row.executed_at = datetime.utcnow()
                 row.error_message = error_message
-            elif row.ack_asper1 == 1 and row.ack_asper2 == 1:
-                # Both servers confirmed success → done
+            else:
+                # Mark done on first successful ACK (don't wait for second server)
                 row.executed = 1
                 row.executed_at = datetime.utcnow()
-            # else: still waiting for the other server — leave executed=0
         else:
-            # Targeted action or no server_name in ACK — mark immediately
+            # Targeted action or no server_name in ACK - mark immediately
             row.executed = 1 if success else 2
             row.executed_at = datetime.utcnow()
             row.error_message = error_message

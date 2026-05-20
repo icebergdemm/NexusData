@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% block title %}{{ project.name }} — Sub-карты{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}{{ project.name }} - Sub-карты{% endblock %}
 
 {% block content %}
 <style>
@@ -106,18 +106,18 @@
   {% endif %}
 
   <div class="sp-fields">
-    <div class="sp-field"><span class="sp-field-label">Тип проекта</span><span class="sp-field-value">{{ project.project_type or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Экипаж</span><span class="sp-field-value">{{ project.crew or '—' }}</span></div>
-    <div class="sp-field full"><span class="sp-field-label">Вооружение</span><span class="sp-field-value">{{ project.weapons or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Реактор</span><span class="sp-field-value">{{ project.has_reactor or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Фабрикатор / Мед. фабрикатор</span><span class="sp-field-value">{{ project.fabricator_medfab or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Деконструктор</span><span class="sp-field-value">{{ project.has_deconstructor or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Стыковочные порты</span><span class="sp-field-value">{{ project.docking_ports or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Палубы</span><span class="sp-field-value">{{ project.decks or '—' }}</span></div>
-    <div class="sp-field"><span class="sp-field-label">Максимальная скорость</span><span class="sp-field-value">{{ project.max_speed or '—' }}</span></div>
-    <div class="sp-field full"><span class="sp-field-label">Доп. оборудование</span><span class="sp-field-value">{{ project.extra_equipment or '—' }}</span></div>
-    <div class="sp-field full"><span class="sp-field-label">Особенности</span><span class="sp-field-value">{{ project.features or '—' }}</span></div>
-    <div class="sp-field full"><span class="sp-field-label">Краткое описание</span><span class="sp-field-value">{{ project.description or '—' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Тип проекта</span><span class="sp-field-value">{{ project.project_type or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Экипаж</span><span class="sp-field-value">{{ project.crew or '-' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Вооружение</span><span class="sp-field-value">{{ project.weapons or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Реактор</span><span class="sp-field-value">{{ project.has_reactor or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Фабрикатор / Мед. фабрикатор</span><span class="sp-field-value">{{ project.fabricator_medfab or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Деконструктор</span><span class="sp-field-value">{{ project.has_deconstructor or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Стыковочные порты</span><span class="sp-field-value">{{ project.docking_ports or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Палубы</span><span class="sp-field-value">{{ project.decks or '-' }}</span></div>
+    <div class="sp-field"><span class="sp-field-label">Максимальная скорость</span><span class="sp-field-value">{{ project.max_speed or '-' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Доп. оборудование</span><span class="sp-field-value">{{ project.extra_equipment or '-' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Особенности</span><span class="sp-field-value">{{ project.features or '-' }}</span></div>
+    <div class="sp-field full"><span class="sp-field-label">Краткое описание</span><span class="sp-field-value">{{ project.description or '-' }}</span></div>
     <div class="sp-field"><span class="sp-field-label">Автор</span><span class="sp-field-value">{{ project.author }}</span></div>
   </div>
   <div style="clear:both;"></div>

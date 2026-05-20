@@ -283,12 +283,17 @@ async def admin_dashboard(
 
     from services import _online_players, _online_players_lock
 
-    now = datetime.utcnow()
-    since = now - timedelta(days=1)
+    # Use Moscow time for chart
+    from datetime import timezone
+    MSK = timezone(timedelta(hours=3))
+    now_msk = datetime.now(tz=MSK).replace(tzinfo=None)
+    since = now_msk - timedelta(days=1)
 
-    sessions = db.query(PlayerSession).filter(PlayerSession.login_time >= since).all()
+    # Sessions use UTC in DB, convert boundaries to UTC for query
+    utc_since = since - timedelta(hours=3)
+    sessions = db.query(PlayerSession).filter(PlayerSession.login_time >= utc_since).all()
 
-    # Build 24-slot chart (1h each)
+    # Build 24-slot chart (1h each) in MSK
     chart_labels = []
     peak_values = []
     avg_values = []
@@ -297,9 +302,12 @@ async def admin_dashboard(
     for i in range(24):
         sl_start = since + slot_delta * i
         sl_end = sl_start + slot_delta
+        # Convert slot boundaries to UTC for comparison with DB times
+        sl_start_utc = sl_start - timedelta(hours=3)
+        sl_end_utc = sl_end - timedelta(hours=3)
         active = [
             s for s in sessions
-            if s.login_time < sl_end and (s.logout_time is None or s.logout_time > sl_start)
+            if s.login_time < sl_end_utc and (s.logout_time is None or s.logout_time > sl_start_utc)
         ]
         chart_labels.append(sl_start.strftime("%H:%M"))
         if not active:
@@ -307,7 +315,7 @@ async def admin_dashboard(
             continue
         samples = []
         for j in range(6):
-            t = sl_start + timedelta(minutes=10 * j)
+            t = sl_start_utc + timedelta(minutes=10 * j)
             cnt = sum(1 for s in active if s.login_time <= t and (s.logout_time is None or s.logout_time >= t))
             samples.append(cnt)
         peak_values.append(max(samples))
@@ -315,7 +323,7 @@ async def admin_dashboard(
 
     # Quick stats
     unique_today = len({s.player_id for s in sessions})
-    # Current online
+    # Current online (combined from all servers)
     with _online_players_lock:
         current_online = len(_online_players)
 
@@ -638,7 +646,9 @@ async def admin_player_detail(
         request.session["csrf_token"] = secrets.token_urlsafe(32)
     
     player_service = PlayerService(db)
-    player = player_service.get_player_by_id(player_id)
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
 
     # Get extended player data

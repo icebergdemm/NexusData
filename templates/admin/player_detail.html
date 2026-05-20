@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% block title %}Игрок #{{ player.player_id }} — Nexus Data{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Игрок #{{ player.player_id }} - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -294,7 +294,7 @@ textarea { resize:vertical; min-height:80px; }
         <div class="player-info-grid">
           <div class="info-row">
             <span class="info-label">Имя</span>
-            <span class="info-value">{{ player.player_last_time_name or '—' }}</span>
+            <span class="info-value">{{ player.player_last_time_name or '-' }}</span>
           </div>
           <div class="info-row">
             <span class="info-label">ID</span>
@@ -307,7 +307,7 @@ textarea { resize:vertical; min-height:80px; }
               <a href="https://steamcommunity.com/profiles/{{ player.player_steamid }}" target="_blank" rel="noopener">
                 {{ player.player_steamid }} 🔗
               </a>
-              {% else %}—{% endif %}
+              {% else %}-{% endif %}
             </span>
           </div>
           {% if player.last_ip %}
@@ -331,7 +331,7 @@ textarea { resize:vertical; min-height:80px; }
         </div>
 
         <!-- Inline rank / kit editing -->
-        {% if check_permission(admin, 'players', 'edit') %}
+        {% if check_permission(admin, 'players', 'delete') %}
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
           <form method="post" action="/admin/players/{{ player.player_id }}/update">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
@@ -339,7 +339,7 @@ textarea { resize:vertical; min-height:80px; }
               <div class="form-group">
                 <label>Звание</label>
                 <select name="rank_id">
-                  <option value="">— Без звания —</option>
+                  <option value="">- Без звания -</option>
                   {% for rid, rname in ranks.items() %}
                   <option value="{{ rid }}" {% if player.rank_id | string == rid %}selected{% endif %}>{{ rname }}</option>
                   {% endfor %}
@@ -348,7 +348,7 @@ textarea { resize:vertical; min-height:80px; }
               <div class="form-group">
                 <label>Набор</label>
                 <select name="kit_level">
-                  <option value="">— Без набора —</option>
+                  <option value="">- Без набора -</option>
                   {% for kid, kname in kits.items() %}
                   <option value="{{ kid }}" {% if player.kit_level | string == kid %}selected{% endif %}>{{ kname }}</option>
                   {% endfor %}
@@ -366,13 +366,13 @@ textarea { resize:vertical; min-height:80px; }
               <span class="info-value">
                 {% if player.rank_id is not none %}
                 <span class="rank-badge">{{ ranks.get(player.rank_id | string, player.rank_id) }}</span>
-                {% else %}—{% endif %}
+                {% else %}-{% endif %}
               </span>
             </div>
             <div class="info-row">
               <span class="info-label">Набор</span>
               <span class="info-value">
-                {% if player.kit_level is not none %}{{ kits.get(player.kit_level | string, player.kit_level) }}{% else %}—{% endif %}
+                {% if player.kit_level is not none %}{{ kits.get(player.kit_level | string, player.kit_level) }}{% else %}-{% endif %}
               </span>
             </div>
           </div>
@@ -383,7 +383,7 @@ textarea { resize:vertical; min-height:80px; }
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <div class="right-section-title" style="margin-bottom:0;">Квал-киты</div>
-            {% if check_permission(admin, 'players', 'edit') %}
+            {% if check_permission(admin, 'players', 'delete') %}
             <button class="btn btn-secondary btn-sm" onclick="openRewards('kval-kits')">✏️ Управление</button>
             {% endif %}
           </div>
@@ -435,10 +435,10 @@ textarea { resize:vertical; min-height:80px; }
                   {% elif p.type == 'kick' %}<span style="color:#ff8c42;">👟 Кик</span>
                   {% else %}<span style="color:#ff4d80;">🔨 Бан</span>{% endif %}
                 </td>
-                <td style="padding:8px 12px; color:var(--gray); min-width:200px; word-break:break-word; white-space:pre-wrap;">{{ p.reason or '—' }}</td>
-                <td style="padding:8px 12px; color:var(--gray); white-space:nowrap;">{{ p.issued_by_name or '—' }}</td>
+                <td style="padding:8px 12px; color:var(--gray); min-width:200px; word-break:break-word; white-space:pre-wrap;">{{ p.reason or '-' }}</td>
+                <td style="padding:8px 12px; color:var(--gray); white-space:nowrap;">{{ p.issued_by_name or '-' }}</td>
                 <td style="padding:8px 12px; color:var(--gray-dark); font-family:'Courier New',monospace; white-space:nowrap; font-size:11px;">
-                  {{ p.issued_at.strftime('%d.%m.%y %H:%M') if p.issued_at else '—' }}
+                  {{ p.issued_at.strftime('%d.%m.%y %H:%M') if p.issued_at else '-' }}
                 </td>
                 <td style="padding:8px 12px;">
                   {% if item.status == 'active' %}
@@ -503,7 +503,7 @@ textarea { resize:vertical; min-height:80px; }
             <div style="font-weight:700; margin-bottom:2px;">Ловушка активна</div>
             {% if active_trap.val.reason %}<div style="font-size:12px;">{{ active_trap.val.reason }}</div>{% endif %}
             <div style="font-size:11px; color:var(--gray-dark); margin-top:2px;">
-              Установлена: {{ active_trap.val.set_at.strftime('%d.%m.%Y %H:%M') if active_trap.val.set_at else '—' }}
+              Установлена: {{ active_trap.val.set_at.strftime('%d.%m.%Y %H:%M') if active_trap.val.set_at else '-' }}
             </div>
           </div>
         </div>
@@ -528,7 +528,7 @@ textarea { resize:vertical; min-height:80px; }
           {% for trap in traps %}
           {% if trap.active != 1 %}
           <div class="trap-triggered-row">
-            <span>{{ trap.set_at.strftime('%d.%m') if trap.set_at else '—' }}</span>
+            <span>{{ trap.set_at.strftime('%d.%m') if trap.set_at else '-' }}</span>
             <span>{% if trap.triggered_at %}🎯 {{ trap.triggered_at.strftime('%d.%m %H:%M') }}{% else %}снята вручную{% endif %}</span>
           </div>
           {% endif %}
@@ -540,7 +540,7 @@ textarea { resize:vertical; min-height:80px; }
     {% endif %}
 
     <!-- Custom Rewards -->
-    {% if check_permission(admin, 'players', 'edit') %}
+    {% if check_permission(admin, 'players', 'delete') %}
     <div class="block-card">
       <div class="block-card-header">
         <h3>🎁 Кастомные награды</h3>
@@ -576,7 +576,7 @@ textarea { resize:vertical; min-height:80px; }
           {% for lbl, cat in label_pairs %}
           <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
             {{ cat.icon }} {{ cat.name }}
-            {% if check_permission(admin, 'players', 'edit') %}
+            {% if check_permission(admin, 'players', 'delete') %}
             <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
                   style="display:inline; margin:0;">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
@@ -678,7 +678,7 @@ function closeLabelCatModal() {
     <table class="data-table">
       <thead><tr><th>Монстр / Тип</th><th>Кол-во</th></tr></thead>
       <tbody>
-        {% if kills %}{% for k in kills %}<tr><td>{{ k.monster_type or '—' }}</td><td>{{ k.kills_count or 0 }}</td></tr>{% endfor %}
+        {% if kills %}{% for k in kills %}<tr><td>{{ k.monster_type or '-' }}</td><td>{{ k.kills_count or 0 }}</td></tr>{% endfor %}
         {% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
       </tbody>
     </table>
@@ -692,7 +692,7 @@ function closeLabelCatModal() {
       <thead><tr><th>Роль</th><th>Тип</th><th>Значение</th></tr></thead>
       <tbody>
         {% if role_actions %}{% for ra in role_actions %}
-        <tr><td class="mono-cell">{{ ra.role or '—' }}</td><td>{{ ra.action_type or '—' }}</td><td class="mono-cell">{{ ra.value or '—' }}</td></tr>
+        <tr><td class="mono-cell">{{ ra.role or '-' }}</td><td>{{ ra.action_type or '-' }}</td><td class="mono-cell">{{ ra.value or '-' }}</td></tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
       </tbody>
     </table>
@@ -708,8 +708,8 @@ function closeLabelCatModal() {
         {% if ips %}{% for ip in ips %}
         <tr>
           <td class="mono-cell">{{ ip.ip }}</td>
-          <td class="mono-cell">{{ ip.first_seen.strftime('%d.%m.%Y') if ip.first_seen else '—' }}</td>
-          <td class="mono-cell">{{ ip.last_seen.strftime('%d.%m.%Y') if ip.last_seen else '—' }}</td>
+          <td class="mono-cell">{{ ip.first_seen.strftime('%d.%m.%Y') if ip.first_seen else '-' }}</td>
+          <td class="mono-cell">{{ ip.last_seen.strftime('%d.%m.%Y') if ip.last_seen else '-' }}</td>
         </tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
       </tbody>
@@ -724,7 +724,7 @@ function closeLabelCatModal() {
       <thead><tr><th>Имя</th><th>Впервые</th></tr></thead>
       <tbody>
         {% if names %}{% for n in names %}
-        <tr><td>{{ n.nickname }}</td><td class="mono-cell">{{ n.first_seen.strftime('%d.%m.%Y') if n.first_seen else '—' }}</td></tr>
+        <tr><td>{{ n.nickname }}</td><td class="mono-cell">{{ n.first_seen.strftime('%d.%m.%Y') if n.first_seen else '-' }}</td></tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
       </tbody>
     </table>
@@ -738,7 +738,7 @@ function closeLabelCatModal() {
       <thead><tr><th>Роль</th><th>Раундов</th><th>MVP Score</th></tr></thead>
       <tbody>
         {% if role_stats %}{% for rs in role_stats %}
-        <tr><td class="mono-cell">{{ rs.role or '—' }}</td><td>{{ rs.rounds_played or 0 }}</td><td>{{ rs.mvp_score or 0 }}</td></tr>
+        <tr><td class="mono-cell">{{ rs.role or '-' }}</td><td>{{ rs.rounds_played or 0 }}</td><td>{{ rs.mvp_score or 0 }}</td></tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
       </tbody>
     </table>
@@ -753,9 +753,9 @@ function closeLabelCatModal() {
       <tbody>
         {% if sessions %}{% for s in sessions %}
         <tr>
-          <td class="mono-cell">{{ s.login_time.strftime('%d.%m.%Y %H:%M') if s.login_time else '—' }}</td>
+          <td class="mono-cell">{{ s.login_time.strftime('%d.%m.%Y %H:%M') if s.login_time else '-' }}</td>
           <td class="mono-cell">{% if s.logout_time %}{{ s.logout_time.strftime('%d.%m.%Y %H:%M') }}{% else %}<span style="color:var(--success)">онлайн</span>{% endif %}</td>
-          <td>{% if s.session_duration %}{{ (s.session_duration // 60) }} мин{% else %}—{% endif %}</td>
+          <td>{% if s.session_duration %}{{ (s.session_duration // 60) }} мин{% else %}-{% endif %}</td>
         </tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
       </tbody>
@@ -769,7 +769,7 @@ function closeLabelCatModal() {
 
 {% if check_permission(admin, 'players', 'edit') %}
 
-<!-- Edit (rank/kit) modal — REMOVED: editing is now inline in the Information card -->
+<!-- Edit (rank/kit) modal - REMOVED: editing is now inline in the Information card -->
 
 <!-- Notes modal -->
 <div class="modal-overlay" id="notes-modal">
@@ -836,6 +836,8 @@ function closeLabelCatModal() {
 </div>
 
 <!-- Rewards modal -->
+{% endif %}
+{% if check_permission(admin, 'players', 'delete') %}
 <div class="modal-overlay" id="rewards-modal">
   <div class="modal-box" style="max-width:680px;">
     <div class="modal-header">

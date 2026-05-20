@@ -1,5 +1,5 @@
-{% extends "base.html" %}
-{% block title %}Аудит — Nexus Data{% endblock %}
+﻿{% extends "base.html" %}
+{% block title %}Аудит - Nexus Data{% endblock %}
 
 {% block content %}
 <style>
@@ -111,7 +111,7 @@
               {% if target.get('discord_id') %}<div class="target-line" style="font-family:'Courier New',monospace; font-size:11px;">{{ target.get('discord_id') }}</div>{% endif %}
               {% if target.get('session_id') %}<div class="target-line">Сессия <strong>#{{ target.get('session_id') }}</strong></div>{% endif %}
               {% if target.get('kit_id') %}<div class="target-line">Кит <strong>#{{ target.get('kit_id') }}</strong></div>{% endif %}
-              {% if not target and not d %}<span style="color:var(--gray-dark); font-size:12px;">—</span>{% endif %}
+              {% if not target and not d %}<span style="color:var(--gray-dark); font-size:12px;">-</span>{% endif %}
             </div>
           </td>
           <td>
@@ -135,10 +135,10 @@
               {% if d.get('reason') %}<div>Причина: {{ d.get('reason') }}</div>{% endif %}
             </div>
             {% else %}
-            <span style="color:var(--gray-dark); font-size:12px;">—</span>
+            <span style="color:var(--gray-dark); font-size:12px;">-</span>
             {% endif %}
           </td>
-          <td class="cell-time">{{ log.created_at.strftime('%d.%m.%Y %H:%M:%S') if log.created_at else '—' }}</td>
+          <td class="cell-time">{{ log.created_at.strftime('%d.%m.%Y %H:%M:%S') if log.created_at else '-' }}</td>
         </tr>
         {% endfor %}
       </tbody>
