@@ -273,10 +273,21 @@
           <span class="form-hint">Список команд, доступных игрокам в этой группе</span>
         </div>
         <div class="form-group">
-          <label>Разрешения - Action IDs (через пробел или запятую)</label>
-          <input type="text" name="allowed_action_ids" placeholder="100 101 200">
-          <span class="form-hint">Числовые коды действий, разрешённых для группы</span>
+          <label>Permissions (через пробел)</label>
+          <input type="text" name="allowed_action_ids" placeholder="ManageRound Kick Ban ConsoleCommands ServerLog SpamImmunity">
+          <span class="form-hint">Флаги прав Barotrauma (permissions). Через пробел или запятую.</span>
         </div>
+        {% if admin.is_superuser %}
+        <div class="form-group">
+          <label>Кто может назначать (группы ND)</label>
+          <select name="assignable_by_groups" multiple style="background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-8);color:var(--white);padding:8px;font-size:13px;min-height:80px;width:100%;">
+            {% for ag in admin_priv_groups %}
+            <option value="{{ ag.id }}">{{ ag.name }}</option>
+            {% endfor %}
+          </select>
+          <span class="form-hint">Зажмите Ctrl для выбора нескольких. Пусто = только суперпользователь.</span>
+        </div>
+        {% endif %}
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('create-group-modal')">Отмена</button>

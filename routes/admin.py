@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
+﻿from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -801,8 +801,8 @@ async def update_player(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin)
 ):
-    """Update player data"""
-    if not check_permission(current_admin, "players", "edit"):
+    """Update player data (rank/kit) - requires 'delete' permission"""
+    if not check_permission(current_admin, "players", "delete") and not check_permission(current_admin, "players", "edit"):
         push_flash(request, "error", "Недостаточно прав для редактирования игрока")
         return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
 
@@ -1170,12 +1170,17 @@ async def admin_server_privileges(
 
     total_pages = (total + limit - 1) // limit
 
+    # Admin privilege groups (for assignable_by_groups selector)
+    from models import AdminPrivilegeGroup
+    admin_priv_groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.name).all()
+
     return templates.TemplateResponse("admin/server_privileges.html", {
         "request": request,
         "admin": current_admin,
         "privileges": privileges,
         "server_privileges": server_privileges,
         "priv_groups_data": priv_groups_data,
+        "admin_priv_groups": admin_priv_groups,
         "page": page,
         "total": total,
         "total_pages": total_pages,
@@ -1371,7 +1376,7 @@ async def server_priv_group_create(
     commands_raw = (form.get("commands") or "").strip()
     commands = [c.strip() for c in commands_raw.splitlines() if c.strip()]
     action_ids_raw = (form.get("allowed_action_ids") or "").strip()
-    allowed_action_ids = [int(x) for x in action_ids_raw.replace(",", " ").split() if x.isdigit()]
+    allowed_action_ids = [x.strip() for x in action_ids_raw.replace(",", " ").split() if x.strip()]
 
     grp = ServerPrivilegeGroup(
         name=name,
@@ -1379,6 +1384,7 @@ async def server_priv_group_create(
         description=description,
         commands=commands,
         allowed_action_ids=allowed_action_ids,
+        assignable_by_groups=[int(x) for x in form.getlist("assignable_by_groups") if x.strip().isdigit()],
     )
     db.add(grp)
     db.commit()
@@ -1423,7 +1429,8 @@ async def server_priv_group_edit(
     commands_raw = (form.get("commands") or "").strip()
     grp.commands = [c.strip() for c in commands_raw.splitlines() if c.strip()]
     action_ids_raw = (form.get("allowed_action_ids") or "").strip()
-    grp.allowed_action_ids = [int(x) for x in action_ids_raw.replace(",", " ").split() if x.isdigit()]
+    grp.allowed_action_ids = [x.strip() for x in action_ids_raw.replace(",", " ").split() if x.strip()]
+    grp.assignable_by_groups = [int(x) for x in form.getlist("assignable_by_groups") if x.strip().isdigit()]
 
     db.commit()
     log_admin_action(db, current_admin.id, "server_priv_group_edit", {"id": group_id, "name": grp.name})
@@ -1463,8 +1470,13 @@ async def assign_server_privilege(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Assign server privilege group and/or individual commands to a player by SteamID."""
-    _check_server_priv_perm(current_admin)
+    """Assign server privilege group and/or individual commands to a player by SteamID.
+    Permission check: superuser can assign any group. Non-superuser can only assign
+    groups where their NexusData privilege_group_id is in the group's assignable_by_groups list.
+    """
+    # Basic permission check (must have privileges.edit)
+    if not check_permission(current_admin, "privileges", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
 
     from models import ServerPrivilegeGroup, ServerPlayerPrivilege, PlayerData
@@ -1478,10 +1490,20 @@ async def assign_server_privilege(
     server_group_id_str = (form.get("server_group_id") or "").strip()
     server_group_id = int(server_group_id_str) if server_group_id_str.isdigit() else None
 
+    # Check if admin is allowed to assign this specific server group
+    if server_group_id and not current_admin.is_superuser:
+        target_group = db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.id == server_group_id).first()
+        if target_group:
+            assignable = target_group.assignable_by_groups or []
+            admin_group_id = current_admin.privilege_group_id
+            if admin_group_id not in assignable:
+                push_flash(request, "error", f"У вас нет прав назначать группу «{target_group.name}»")
+                return RedirectResponse(url="/admin/server-privileges?tab=players", status_code=302)
+
     commands_raw = (form.get("commands") or "").strip()
     commands = [c.strip() for c in commands_raw.splitlines() if c.strip()]
     action_ids_raw = (form.get("allowed_action_ids") or "").strip()
-    allowed_action_ids = [int(x) for x in action_ids_raw.replace(",", " ").split() if x.isdigit()]
+    allowed_action_ids = [x.strip() for x in action_ids_raw.replace(",", " ").split() if x.strip()]
     reason = (form.get("reason") or "").strip() or None
 
     record = db.query(ServerPlayerPrivilege).filter(

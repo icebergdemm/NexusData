@@ -194,8 +194,11 @@ class ServerPrivilegeGroup(Base):
     description = Column(String(500), nullable=True)
     # Letter/string ID used by the game server (e.g. "moderator", "event_manager")
     group_key = Column(String(64), unique=True, nullable=False)
-    commands = Column(JSON, default=lambda: [])           # e.g. ["/mute", "/kick"]
-    allowed_action_ids = Column(JSON, default=lambda: []) # e.g. [100, 101]
+    commands = Column(JSON, default=lambda: [])           # e.g. ["kick", "ban"]
+    allowed_action_ids = Column(JSON, default=lambda: []) # e.g. ["ManageRound", "Kick"]
+    # Which NexusData admin privilege groups can assign this server group to players
+    # List of AdminPrivilegeGroup IDs. Empty = only superuser can assign.
+    assignable_by_groups = Column(JSON, default=lambda: [])
     created_at = Column(DateTime, default=func.now())
 
 
