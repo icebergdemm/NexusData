@@ -214,6 +214,14 @@
   </a>
   {% endif %}
 
+  {% if check_permission(admin, 'ratings', 'view') %}
+  <a href="/admin/ratings" class="section-card">
+    <div class="sc-icon">🏆</div>
+    <div class="sc-title">Рейтинг</div>
+    <div class="sc-desc">Таблица лидеров по ролям: капитан, механик, медик, охрана, инженер</div>
+  </a>
+  {% endif %}
+
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>

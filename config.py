@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     ranks_mapping: Dict[str, str] = {}
     kits_mapping: Dict[str, str] = {}
     roles_mapping: Dict[str, List[str]] = {}
+    rank_discord_roles: Dict[str, str] = {}  # rank_id -> discord_role_id
 
     # Server permissions configuration
     server_permissions_mapping: Dict[str, Dict] = Field(default_factory=lambda: {
@@ -140,6 +141,7 @@ class Settings(BaseSettings):
             ("ranks_mapping", "ranks.json"),
             ("kits_mapping",  "kits.json"),
             ("roles_mapping",  "roles.json"),
+            ("rank_discord_roles", "rank_discord_roles.json"),
         ]:
             path = os.path.join(config_dir, filename)
             if os.path.exists(path):

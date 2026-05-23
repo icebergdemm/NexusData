@@ -1156,30 +1156,26 @@ class ServerModerationService:
                     .all()
                 )
                 if active_traps:
-                    from config import get_settings
-                    webhook_url = get_settings().discord_trap_webhook_url
+                    from models import DiscordBotAction
                     for trap in active_traps:
                         pinfo = new_snapshot.get(trap.target_steamid, {})
                         pname = pinfo.get("player_name", trap.target_steamid)
-                        msg = (
-                            f"🪤 **Ловушка сработала!**\n"
-                            f"**Игрок:** {pname}\n"
-                            f"**SteamID:** `{trap.target_steamid}`\n"
-                            f"**Player ID:** {trap.player_id}\n"
-                            f"**Причина ловушки:** {trap.reason or '—'}"
+                        # Queue bot notification
+                        bot_action = DiscordBotAction(
+                            action_type="trap_triggered",
+                            payload={
+                                "player_name": pname,
+                                "steamid": trap.target_steamid,
+                                "player_id": trap.player_id,
+                                "reason": trap.reason,
+                            },
                         )
-                        if webhook_url:
-                            try:
-                                with httpx.Client(timeout=5) as client:
-                                    client.post(webhook_url, json={"content": msg})
-                            except Exception as e:
-                                logging.warning(f"Trap webhook failed: {e}")
-                        else:
-                            logging.info(f"[TRAP] {msg.replace(chr(10), ' | ')}")
+                        self.db.add(bot_action)
                         # Mark trap as triggered
                         trap.active = 0
                         trap.triggered_at = _now_msk()
                     self.db.commit()
+                    logging.info(f"[TRAP] {len(active_traps)} trap(s) triggered, bot notified")
             except Exception as e:
                 logging.warning(f"Trap check error: {e}")
 
@@ -1365,24 +1361,28 @@ class ServerModerationService:
             self.db.add(trap)
             self.db.commit()
 
-            # Fire Discord webhook
-            from config import get_settings
-            webhook_url = get_settings().discord_trap_webhook_url
-            if webhook_url:
-                msg = (
-                    f"🪤 **Ловушка сработала!**\n"
-                    f"**Игрок:** {player_name}\n"
-                    f"**SteamID:** `{steamid}`\n"
-                    f"**Player ID:** {player_id or '—'}\n"
-                    f"**Причина ловушки:** {action.reason or '—'}"
-                )
-                try:
-                    with httpx.Client(timeout=5) as client:
-                        client.post(webhook_url, json={"content": msg})
-                except Exception as e:
-                    logger.warning(f"Trap webhook failed: {e}")
-            else:
-                logger.info(f"[TRAP ACK] {steamid} — no webhook configured")
+            # Queue notification for Discord bot instead of direct webhook
+            from models import DiscordBotAction
+            trap_msg = (
+                f"🪤 **Ловушка сработала!**\n"
+                f"**Игрок:** {player_name}\n"
+                f"**SteamID:** `{steamid}`\n"
+                f"**Player ID:** {player_id or '-'}\n"
+                f"**Причина ловушки:** {action.reason or '-'}"
+            )
+            bot_action = DiscordBotAction(
+                action_type="trap_triggered",
+                payload={
+                    "player_name": player_name,
+                    "steamid": steamid,
+                    "player_id": player_id,
+                    "reason": action.reason,
+                    "message": trap_msg,
+                },
+            )
+            self.db.add(bot_action)
+            self.db.commit()
+            logger.info(f"[TRAP] Queued bot notification for {steamid}")
         except Exception as e:
             logger.error(f"_handle_trap_triggered error: {e}")
 

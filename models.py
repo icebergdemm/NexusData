@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean
+from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -27,6 +27,8 @@ class PlayerData(Base):
     last_subnet = Column(String(45), nullable=True)  # Subnet (e.g., 192.168.1.0/24)
     first_login = Column(DateTime, nullable=True)  # First login time
     avg_ping = Column(Integer, nullable=True)  # Average ping
+    discord_id = Column(String(25), nullable=True, index=True)  # Discord user ID
+    discord_id_confirmed = Column(Integer, default=0)  # 1 = confirmed by admin, 0 = auto-matched
     labels = Column(JSON, default=lambda: [])   # list of label ids assigned to this player
     
     stats = relationship("PlayerStats", backref="player", uselist=False)
@@ -309,6 +311,131 @@ class PlayerTrap(Base):
     set_at = Column(DateTime, default=func.now())
     active = Column(Integer, default=1)       # 1 = active, 0 = triggered / disabled
     triggered_at = Column(DateTime, nullable=True)
+
+
+class DiscordMember(Base):
+    """Discord server member synced by the bot."""
+    __tablename__ = "discord_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    discord_id = Column(String(25), unique=True, nullable=False, index=True)
+    username = Column(String(255), nullable=True)  # Discord username
+    display_name = Column(String(255), nullable=True)  # Server nickname
+    avatar = Column(String(255), nullable=True)
+    joined_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, default=func.now())
+
+
+class DiscordBotAction(Base):
+    """Action queue for the Discord bot (similar to ServerActionQueue)."""
+    __tablename__ = "discord_bot_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String(50), nullable=False)  # send_rating, send_message, kick_member, etc.
+    payload = Column(JSON, default=lambda: {})
+    queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    queued_at = Column(DateTime, default=func.now())
+    executed = Column(Integer, default=0)  # 0=pending, 1=done, 2=failed
+    executed_at = Column(DateTime, nullable=True)
+    error_message = Column(String(500), nullable=True)
+
+
+class DiscordBotConfig(Base):
+    """Bot configuration stored in DB (channels, settings)."""
+    __tablename__ = "discord_bot_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(String(2000), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class DiscordAntiRaidLog(Base):
+    """Anti-raid event log."""
+    __tablename__ = "discord_antiraid_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String(50), nullable=False)  # mass_join, spam, suspicious_account
+    discord_id = Column(String(25), nullable=True)
+    username = Column(String(255), nullable=True)
+    details = Column(JSON, nullable=True)
+    occurred_at = Column(DateTime, default=func.now())
+    resolved = Column(Integer, default=0)
+
+
+class Ticket(Base):
+    """Support ticket linked to a Discord channel."""
+    __tablename__ = "tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_type = Column(String(50), nullable=False)  # help, player_report, bug, admin_report, department_report
+    title = Column(String(255), nullable=False)
+    status = Column(String(20), nullable=False, default="open")  # open, waiting, closed
+    discord_channel_id = Column(String(25), nullable=True, index=True)
+    creator_discord_id = Column(String(25), nullable=False)
+    creator_username = Column(String(255), nullable=True)
+    creator_display_name = Column(String(255), nullable=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True)
+    assigned_role_ids = Column(JSON, default=lambda: [])  # Discord role IDs with access
+    closed_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    closed_at = Column(DateTime, nullable=True)
+    last_message_at = Column(DateTime, nullable=True)
+    awaiting_admin = Column(Integer, default=1)  # 1 = waiting for admin reply
+
+
+class TicketMessage(Base):
+    """Message in a ticket (synced from Discord)."""
+    __tablename__ = "ticket_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)
+    discord_message_id = Column(String(25), nullable=True)
+    author_discord_id = Column(String(25), nullable=False)
+    author_username = Column(String(255), nullable=True)
+    author_display_name = Column(String(255), nullable=True)
+    author_avatar_url = Column(String(500), nullable=True)
+    content = Column(String(4000), nullable=True)
+    attachments = Column(JSON, default=lambda: [])  # [{url, filename, content_type}]
+    is_bot = Column(Integer, default=0)  # 1 = sent from web panel via bot
+    created_at = Column(DateTime, default=func.now())
+
+
+class PlayerRating(Base):
+    """Per-role rating for a player. Logarithmic scale with time decay."""
+    __tablename__ = "player_ratings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(20), nullable=False, index=True)
+    role = Column(String(20), nullable=False, index=True)  # captain, mechanic, medic, security, engineer
+    cumulative_points = Column(Float, nullable=False, default=0.0)
+    current_rating = Column(Float, nullable=False, default=0.0)
+    last_activity_date = Column(DateTime, nullable=True)
+    last_decay_applied_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('steam_id', 'role', name='uq_player_ratings_steam_role'),
+    )
+
+
+class RatingHistory(Base):
+    """Audit log for rating changes."""
+    __tablename__ = "rating_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(20), nullable=False, index=True)
+    role = Column(String(20), nullable=False)
+    event_type = Column(String(30), nullable=False)  # session_update, penalty, decay
+    points_delta = Column(Float, nullable=False)
+    cumulative_points_before = Column(Float, nullable=False)
+    cumulative_points_after = Column(Float, nullable=False)
+    rating_before = Column(Float, nullable=False)
+    rating_after = Column(Float, nullable=False)
+    source_server = Column(String(20), nullable=True)
+    session_trace_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
 
 
 class SubProject(Base):

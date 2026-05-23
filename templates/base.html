@@ -66,6 +66,15 @@
         {% if check_permission(admin, 'sub_projects', 'view') %}
         <li><a href="/admin/sub-projects">Sub-карты</a></li>
         {% endif %}
+        {% if check_permission(admin, 'ratings', 'view') %}
+        <li><a href="/admin/ratings">Рейтинг</a></li>
+        {% endif %}
+        {% if check_permission(admin, 'discord_bot', 'view') %}
+        <li><a href="/admin/discord-bot">Discord бот</a></li>
+        {% endif %}
+        {% if check_permission(admin, 'tickets', 'view') %}
+        <li><a href="/admin/tickets">Тикеты</a></li>
+        {% endif %}
       </ul>
     </nav>
 

@@ -12,7 +12,8 @@ import logging
 
 from config import get_settings, reset_settings_cache
 from database import init_db
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router
+import models  # ensure all models are registered before create_all
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router
 from workers import start_playtime_worker
 from datetime import datetime
 
@@ -132,6 +133,11 @@ def create_app() -> FastAPI:
     app.include_router(moderation_panel_router)
     app.include_router(sub_projects_router)
     app.include_router(game_api_router)
+    app.include_router(ratings_router)
+    app.include_router(discord_bot_api_router)
+    app.include_router(discord_bot_panel_router)
+    app.include_router(tickets_bot_router)
+    app.include_router(tickets_panel_router)
 
     # Serve static files from './static' at '/static'
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -151,6 +157,8 @@ def create_app() -> FastAPI:
         logger.info("Database initialized")
         app.state.start_time = datetime.utcnow()
         start_playtime_worker()
+        from rating_engine import start_rating_worker
+        start_rating_worker()
 
     # HTTP exception handler to render friendly templates for common errors
     @app.exception_handler(StarletteHTTPException)

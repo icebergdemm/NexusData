@@ -401,3 +401,20 @@ def get_player_privilege(steamid: str = Query(...), db: Session = Depends(get_db
         "allowed_action_ids": action_ids,
         "reason": record.reason,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RATINGS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/ratings/{steam_id}")
+def get_player_ratings_endpoint(steam_id: str, db: Session = Depends(get_db)):
+    """
+    Get per-role ratings for a player. Applies lazy time decay on read.
+    """
+    if not steam_id or len(steam_id) < 10:
+        raise HTTPException(status_code=400, detail="Invalid steam_id")
+
+    from rating_engine import get_player_ratings
+    ratings = get_player_ratings(db, steam_id)
+    return {"steam_id": steam_id, "ratings": ratings}

@@ -69,6 +69,9 @@ def _apply_migrations():
         ("server_action_queue", "ack_asper2", "TINYINT DEFAULT 0 NOT NULL"),
         # server_privilege_groups: assignable_by_groups
         ("server_privilege_groups", "assignable_by_groups", "JSON"),
+        # players_data: discord_id
+        ("players_data", "discord_id", "VARCHAR(25)"),
+        ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:

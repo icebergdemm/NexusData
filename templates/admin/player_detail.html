@@ -310,6 +310,34 @@ textarea { resize:vertical; min-height:80px; }
               {% else %}-{% endif %}
             </span>
           </div>
+          <div class="info-row" style="grid-column:1/-1;">
+            <span class="info-label">Discord ID</span>
+            <span class="info-value">
+              {% if player.discord_id %}
+                <span style="font-family:monospace; font-size:12px;">{{ player.discord_id }}</span>
+                {% if not player.discord_id_confirmed %}
+                <span style="font-size:10px; color:var(--warning); margin-left:6px; padding:2px 6px; border-radius:4px; background:rgba(255,170,0,.1); border:1px solid rgba(255,170,0,.3);">Не точный</span>
+                {% else %}
+                <span style="font-size:10px; color:var(--success); margin-left:6px; padding:2px 6px; border-radius:4px; background:rgba(0,255,136,.1); border:1px solid rgba(0,255,136,.3);">Подтверждён</span>
+                {% endif %}
+              {% else %}
+                <span style="color:var(--gray-dark);">-</span>
+              {% endif %}
+              {% if check_permission(admin, 'players', 'edit') %}
+              <button class="btn btn-secondary" style="font-size:10px; padding:3px 8px; margin-left:8px;" onclick="document.getElementById('discord-id-edit').style.display='flex'">✏️</button>
+              {% endif %}
+            </span>
+            {% if check_permission(admin, 'players', 'edit') %}
+            <form id="discord-id-edit" method="post" action="/admin/players/{{ player.player_id }}/discord-id"
+                  style="display:none; gap:6px; align-items:center; margin-top:6px;">
+              <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+              <input type="text" name="discord_id" value="{{ player.discord_id or '' }}" placeholder="Discord ID"
+                     style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:4px; padding:5px 8px; color:var(--white); font-size:12px; font-family:monospace; width:180px;">
+              <button type="submit" class="btn btn-primary" style="font-size:10px; padding:4px 10px;">Сохранить</button>
+              <button type="button" class="btn btn-secondary" style="font-size:10px; padding:4px 8px;" onclick="document.getElementById('discord-id-edit').style.display='none'">Отмена</button>
+            </form>
+            {% endif %}
+          </div>
           {% if player.last_ip %}
           <div class="info-row">
             <span class="info-label">Последний IP</span>

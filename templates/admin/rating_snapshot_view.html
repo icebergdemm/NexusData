@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Снапшот: {{ meta.title }} - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.snap-header { margin-bottom:24px; }
+.snap-header h2 { font-size:20px; font-weight:700; color:var(--white); margin:0 0 8px; }
+.snap-meta { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--gray); }
+.snap-meta span { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); padding:4px 10px; border-radius:6px; }
+.snap-back { color:var(--gray); text-decoration:none; font-size:13px; margin-bottom:12px; display:inline-block; }
+.snap-back:hover { color:var(--white); }
+.role-tabs { display:flex; gap:4px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:3px; flex-wrap:wrap; margin-bottom:20px; }
+.role-tab { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:700; text-decoration:none; color:var(--gray); transition:.2s; }
+.role-tab:hover { color:var(--white); }
+.role-tab.active { background:var(--primary-blue); color:#fff; }
+.lb-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
+.lb-table { width:100%; border-collapse:collapse; }
+.lb-table thead { background:var(--dark-blue-bg); }
+.lb-table th { padding:12px 16px; text-align:left; font-size:11px; font-weight:700; color:var(--gray); text-transform:uppercase; }
+.lb-table td { padding:13px 16px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; }
+.lb-table tbody tr:last-child td { border-bottom:none; }
+.lb-table tbody tr:hover { background:rgba(26,104,222,.05); }
+.rank-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; font-size:12px; font-weight:800; }
+.rank-1 { background:rgba(255,215,0,.2); color:#ffd700; border:1px solid rgba(255,215,0,.4); }
+.rank-2 { background:rgba(192,192,192,.15); color:#c0c0c0; border:1px solid rgba(192,192,192,.3); }
+.rank-3 { background:rgba(205,127,50,.15); color:#cd7f32; border:1px solid rgba(205,127,50,.3); }
+.rank-other { background:var(--dark-blue-bg); color:var(--gray); border:1px solid var(--stroke-01); }
+.rating-value { font-size:16px; font-weight:800; color:var(--primary-blue); }
+.points-value { font-size:12px; color:var(--gray); }
+.summary-chips { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+.summary-chip { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:12px 16px; text-align:center; min-width:100px; }
+.summary-chip .sv { font-size:20px; font-weight:800; color:var(--primary-blue); }
+.summary-chip .sl { font-size:10px; color:var(--gray); margin-top:4px; text-transform:uppercase; }
+</style>
+
+{% set role_icons = {"captain": "🎖", "mechanic": "🔧", "medic": "💊", "security": "🔫", "engineer": "⚡"} %}
+{% set role_names = {"captain": "Капитан", "mechanic": "Механик", "medic": "Медик", "security": "СБ", "engineer": "Инженер"} %}
+
+<a href="/admin/ratings" class="snap-back">&larr; Назад к рейтингу</a>
+
+<div class="snap-header">
+  <h2>📸 {{ meta.title }}</h2>
+  <div class="snap-meta">
+    <span>📅 {{ meta.created_at[:16] if meta.created_at else '' }}</span>
+    <span>👤 {{ meta.created_by or '-' }}</span>
+    {% if meta.date_from %}<span>📊 Период: {{ meta.date_from }} - {{ meta.date_to or 'сейчас' }}</span>{% else %}<span>📊 Текущий рейтинг</span>{% endif %}
+    <span>👥 {{ meta.total_players }} игроков</span>
+    {% if meta.params %}<span>⚙ K={{ meta.params.K }}, S={{ meta.params.S }}</span>{% endif %}
+  </div>
+</div>
+
+<!-- Summary: top-1 per role -->
+<div class="summary-chips">
+  {% for r in roles %}
+  {% set entries = all_leaderboards.get(r, []) %}
+  <div class="summary-chip">
+    <div class="sv">{{ role_icons.get(r, '') }} {{ entries[0].rating if entries else 0 }}</div>
+    <div class="sl">{{ role_names.get(r, r) }}</div>
+    {% if entries %}<div style="font-size:10px; color:var(--gray); margin-top:2px;">{{ entries[0].player_name }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Role tabs -->
+<div class="role-tabs">
+  {% for r in roles %}
+  <a href="/admin/ratings/snapshot/{{ filename }}/view?role={{ r }}" class="role-tab {% if selected_role == r %}active{% endif %}">
+    {{ role_icons.get(r, '') }} {{ role_names.get(r, r) }}
+    <span style="font-size:10px; opacity:.7;">({{ all_leaderboards.get(r, [])|length }})</span>
+  </a>
+  {% endfor %}
+</div>
+
+<!-- Leaderboard -->
+<div class="lb-card">
+  {% if leaderboard %}
+  <table class="lb-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Игрок</th>
+        <th>SteamID</th>
+        <th>Рейтинг</th>
+        <th>Очки</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in leaderboard %}
+      <tr>
+        <td>
+          {% set rank = loop.index %}
+          {% if rank == 1 %}<span class="rank-badge rank-1">1</span>
+          {% elif rank == 2 %}<span class="rank-badge rank-2">2</span>
+          {% elif rank == 3 %}<span class="rank-badge rank-3">3</span>
+          {% else %}<span class="rank-badge rank-other">{{ rank }}</span>{% endif %}
+        </td>
+        <td style="font-weight:600;">{{ entry.player_name }}</td>
+        <td style="font-size:11px; color:var(--gray); font-family:monospace;">{{ entry.steam_id }}</td>
+        <td><span class="rating-value">{{ entry.rating }}</span></td>
+        <td><span class="points-value">{{ entry.cumulative_points }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div style="text-align:center; padding:48px; color:var(--gray);">
+    Нет данных для роли <strong>{{ role_names.get(selected_role, selected_role) }}</strong> в этом снапшоте.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

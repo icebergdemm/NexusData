@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Рейтинг - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.rating-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:24px; }
+.rating-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.role-tabs { display:flex; gap:4px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:3px; flex-wrap:wrap; }
+.role-tab { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:700; text-decoration:none; color:var(--gray); transition:.2s; }
+.role-tab:hover { color:var(--white); }
+.role-tab.active { background:var(--primary-blue); color:#fff; }
+.lb-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
+.lb-table { width:100%; border-collapse:collapse; }
+.lb-table thead { background:var(--dark-blue-bg); }
+.lb-table th { padding:12px 16px; text-align:left; font-size:11px; font-weight:700; color:var(--gray); text-transform:uppercase; letter-spacing:.5px; }
+.lb-table td { padding:13px 16px; border-bottom:1px solid var(--stroke-01); color:var(--white); font-size:13px; }
+.lb-table tbody tr:last-child td { border-bottom:none; }
+.lb-table tbody tr:hover { background:rgba(26,104,222,.05); }
+.rank-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; font-size:12px; font-weight:800; }
+.rank-1 { background:rgba(255,215,0,.2); color:#ffd700; border:1px solid rgba(255,215,0,.4); }
+.rank-2 { background:rgba(192,192,192,.15); color:#c0c0c0; border:1px solid rgba(192,192,192,.3); }
+.rank-3 { background:rgba(205,127,50,.15); color:#cd7f32; border:1px solid rgba(205,127,50,.3); }
+.rank-other { background:var(--dark-blue-bg); color:var(--gray); border:1px solid var(--stroke-01); }
+.rating-value { font-size:16px; font-weight:800; color:var(--primary-blue); }
+.points-value { font-size:12px; color:var(--gray); }
+.player-link { color:var(--white); text-decoration:none; font-weight:600; }
+.player-link:hover { color:var(--primary-blue); }
+.empty-state { text-align:center; padding:48px 20px; color:var(--gray); }
+.search-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:20px; margin-bottom:20px; }
+.search-result-card { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:16px; margin-top:16px; }
+.sr-name { font-size:16px; font-weight:700; color:var(--white); margin-bottom:8px; }
+.sr-ratings { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+.sr-role-chip { padding:6px 12px; border-radius:8px; font-size:12px; font-weight:700; background:var(--card-bg); border:1px solid var(--stroke-01); }
+.sr-role-chip .rv { color:var(--primary-blue); font-size:14px; }
+.admin-tools { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:20px; margin-top:16px; }
+.admin-tools h4 { font-size:14px; font-weight:700; color:var(--white); margin-bottom:12px; }
+.tool-row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px; }
+.tool-row .form-group { display:flex; flex-direction:column; gap:4px; }
+.tool-row label { font-size:11px; color:var(--gray); font-weight:600; }
+.tool-row input, .tool-row select { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 10px; color:var(--white); font-size:12px; font-family:inherit; }
+.btn { padding:7px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; border:none; transition:.2s; }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-danger { background:var(--red); color:#fff; }
+.btn-secondary { background:var(--stroke-01); color:var(--gray); }
+.params-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px 20px; margin-bottom:20px; }
+.params-row { display:flex; gap:20px; flex-wrap:wrap; font-size:12px; color:var(--gray); }
+.params-row span { color:var(--white); font-weight:700; }
+</style>
+
+{% set role_icons = {"captain": "🎖", "mechanic": "🔧", "medic": "💊", "security": "🔫", "engineer": "⚡"} %}
+{% set role_names = {"captain": "Капитан", "mechanic": "Механик", "medic": "Медик", "security": "СБ", "engineer": "Инженер"} %}
+
+<div class="rating-header">
+  <h2>🏆 Рейтинг игроков</h2>
+</div>
+
+<!-- Параметры формулы -->
+<div class="params-card">
+  <div class="params-row">
+    <div>Формула: <span>{{ rating_params.K }} * ln(1 + P / {{ rating_params.S }})</span></div>
+    <div>Decay: <span>{{ (1 - rating_params.decay_rate) * 100 }}%/день</span> после <span>{{ rating_params.decay_threshold_days }}</span> дней</div>
+  </div>
+</div>
+
+<!-- Поиск игрока -->
+<div class="search-card">
+  <form method="get" action="/admin/ratings" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+    <input type="hidden" name="role" value="{{ selected_role }}">
+    <div style="flex:1; min-width:200px;">
+      <input type="text" name="search" value="{{ search_query or '' }}" placeholder="SteamID или ник игрока..."
+             style="width:100%; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:9px 12px; color:var(--white); font-size:13px; font-family:inherit;">
+    </div>
+    <button type="submit" class="btn btn-primary">🔍 Найти</button>
+    {% if search_query %}<a href="/admin/ratings?role={{ selected_role }}" class="btn btn-secondary">Сбросить</a>{% endif %}
+  </form>
+
+  {% if search_result %}
+  <div class="search-result-card">
+    <div class="sr-name">
+      <a href="/admin/players/{{ search_result.player.player_id }}" class="player-link">{{ search_result.player.player_last_time_name }}</a>
+      <span style="font-size:11px; color:var(--gray); margin-left:8px;">{{ search_result.player.player_steamid }}</span>
+    </div>
+    <div class="sr-ratings">
+      {% for r in roles %}
+      {% set rd = search_result.ratings.get(r, {"rating": 0, "points": 0, "last_activity": None}) %}
+      <div class="sr-role-chip">
+        {{ role_icons.get(r, '') }} {{ role_names.get(r, r) }}: <span class="rv">{{ rd.rating }}</span>
+        <span style="font-size:10px; color:var(--gray);">({{ rd.points }} pts)</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if check_permission(admin, 'ratings', 'edit') %}
+    <div class="admin-tools">
+      <h4>⚙ Управление рейтингом</h4>
+
+      <!-- Корректировка очков -->
+      <form method="post" action="/admin/ratings/adjust" style="margin-bottom:16px;">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <input type="hidden" name="steam_id" value="{{ search_result.player.player_steamid }}">
+        <div class="tool-row">
+          <div class="form-group">
+            <label>Роль</label>
+            <select name="role">
+              {% for r in roles %}<option value="{{ r }}">{{ role_names.get(r, r) }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Очки (+/-)</label>
+            <input type="number" name="points_delta" step="0.1" placeholder="100 или -50" required style="width:100px;">
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label>Причина</label>
+            <input type="text" name="reason" placeholder="Необязательно">
+          </div>
+          <button type="submit" class="btn btn-primary">Применить</button>
+        </div>
+      </form>
+
+      <!-- Пересчёт и обнуление -->
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <form method="post" action="/admin/ratings/recalculate" style="display:inline;">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+          <input type="hidden" name="steam_id" value="{{ search_result.player.player_steamid }}">
+          <button type="submit" class="btn btn-secondary">🔄 Пересчитать рейтинг</button>
+        </form>
+
+        <form method="post" action="/admin/ratings/reset" style="display:inline;"
+              onsubmit="return confirm('Обнулить ВСЕ рейтинги этого игрока?');">
+          <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+          <input type="hidden" name="steam_id" value="{{ search_result.player.player_steamid }}">
+          <input type="hidden" name="role" value="all">
+          <button type="submit" class="btn btn-danger">🗑 Обнулить все роли</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% elif search_query %}
+  <div style="margin-top:12px; font-size:13px; color:var(--gray);">Игрок не найден.</div>
+  {% endif %}
+</div>
+
+<!-- Табы ролей -->
+<div class="role-tabs" style="margin-bottom:20px;">
+  {% for r in roles %}
+  <a href="/admin/ratings?role={{ r }}{% if search_query %}&search={{ search_query }}{% endif %}" class="role-tab {% if selected_role == r %}active{% endif %}">
+    {{ role_icons.get(r, '') }} {{ role_names.get(r, r) }}
+  </a>
+  {% endfor %}
+</div>
+
+<!-- Main content: leaderboard + snapshots sidebar -->
+<div style="display:grid; grid-template-columns:1fr 300px; gap:20px; align-items:start;">
+
+<!-- Лидерборд -->
+<div class="lb-card">
+  {% if leaderboard %}
+  <table class="lb-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Игрок</th>
+        <th>Рейтинг</th>
+        <th>Очки</th>
+        <th>Последняя активность</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in leaderboard %}
+      <tr>
+        <td>
+          {% if entry.rank == 1 %}<span class="rank-badge rank-1">1</span>
+          {% elif entry.rank == 2 %}<span class="rank-badge rank-2">2</span>
+          {% elif entry.rank == 3 %}<span class="rank-badge rank-3">3</span>
+          {% else %}<span class="rank-badge rank-other">{{ entry.rank }}</span>{% endif %}
+        </td>
+        <td>
+          {% if entry.player_id %}
+          <a href="/admin/players/{{ entry.player_id }}" class="player-link">{{ entry.player_name }}</a>
+          {% else %}{{ entry.player_name }}{% endif %}
+        </td>
+        <td><span class="rating-value">{{ entry.rating }}</span></td>
+        <td><span class="points-value">{{ entry.cumulative_points }}</span></td>
+        <td style="font-size:12px; color:var(--gray);">
+          {{ entry.last_activity.strftime('%d.%m.%Y %H:%M') if entry.last_activity else '-' }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <div style="font-size:48px; margin-bottom:16px;">🏆</div>
+    <p>Нет данных рейтинга для роли <strong>{{ role_names.get(selected_role, selected_role) }}</strong>.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Snapshots sidebar -->
+<div style="display:flex; flex-direction:column; gap:16px;">
+  {% if check_permission(admin, 'ratings', 'edit') %}
+  <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px;">
+    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📸 Генерация снапшота</h4>
+    <form method="post" action="/admin/ratings/snapshot/generate">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <input type="text" name="title" placeholder="Название (необязательно)"
+               style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 10px; color:var(--white); font-size:12px; font-family:inherit; width:100%; box-sizing:border-box;">
+        <div style="display:flex; gap:6px;">
+          <input type="date" name="date_from" placeholder="От"
+                 style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 8px; color:var(--white); font-size:11px; font-family:inherit;">
+          <input type="date" name="date_to" placeholder="До"
+                 style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 8px; color:var(--white); font-size:11px; font-family:inherit;">
+        </div>
+        <span style="font-size:10px; color:var(--gray);">Пусто = текущий рейтинг. С датами = рейтинг за период.</span>
+        <button type="submit" class="btn btn-primary" style="width:100%;">📸 Сгенерировать</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
+  <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px;">
+    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📋 Сохранённые снапшоты</h4>
+    {% if snapshots %}
+    <div style="display:flex; flex-direction:column; gap:8px; max-height:400px; overflow-y:auto;">
+      {% for snap in snapshots %}
+      <div style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:10px;">
+        <div style="font-size:12px; font-weight:700; color:var(--white); margin-bottom:4px;">{{ snap.title }}</div>
+        <div style="font-size:10px; color:var(--gray); margin-bottom:6px;">
+          {{ snap.created_at[:16] if snap.created_at else '' }}
+          {% if snap.date_from %} | {{ snap.date_from }} - {{ snap.date_to or 'now' }}{% endif %}
+          | {{ snap.total_players }} игроков
+        </div>
+        <div style="display:flex; gap:4px;">
+          <a href="/admin/ratings/snapshot/{{ snap.filename }}/view" class="btn btn-primary" style="font-size:10px; padding:4px 8px;">👁 Смотреть</a>
+          <a href="/admin/ratings/snapshot/{{ snap.filename }}" class="btn btn-secondary" style="font-size:10px; padding:4px 8px;">⬇</a>
+          {% if check_permission(admin, 'ratings', 'edit') %}
+          <form method="post" action="/admin/ratings/snapshot/{{ snap.filename }}/delete" style="display:inline;"
+                onsubmit="return confirm('Удалить снапшот?');">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+            <button type="submit" class="btn btn-danger" style="font-size:10px; padding:4px 8px;">🗑</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="font-size:12px; color:var(--gray); text-align:center; padding:16px 0;">Снапшотов пока нет</div>
+    {% endif %}
+  </div>
+</div>
+
+</div><!-- /grid -->
+{% endblock %}

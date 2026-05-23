@@ -82,11 +82,14 @@
 </div>
 
 <div class="tab-bar">
+  {% if check_permission(admin, 'privileges', 'delete') or admin.is_superuser %}
   <button class="tab-btn" id="tab-groups-btn" onclick="switchTab('groups')">&#x1F4CB; Группы привилегий</button>
+  {% endif %}
   <button class="tab-btn" id="tab-players-btn" onclick="switchTab('players')">&#x1F464; Игроки</button>
 </div>
 
 <!-- ═══════ TAB: ГРУППЫ ПРИВИЛЕГИЙ ═══════ -->
+{% if check_permission(admin, 'privileges', 'delete') or admin.is_superuser %}
 <div class="tab-pane" id="tab-groups">
   <div style="display:flex;justify-content:flex-end;margin-bottom:var(--spacing-16);">
     <button class="btn btn-primary" onclick="openModal('create-group-modal')">Создать группу</button>
@@ -137,6 +140,7 @@
   </div>
   {% endif %}
 </div>
+{% endif %}
 
 <!-- ═══════ TAB: ИГРОКИ ═══════ -->
 <div class="tab-pane" id="tab-players">
@@ -208,10 +212,12 @@
                   onclick="openEditPriv(this)">
                   Изменить
                 </button>
+                {% if check_permission(admin, 'privileges', 'delete') or admin.is_superuser %}
                 <form action="/admin/server-privileges/{{ priv.id }}/delete" method="post" style="display:contents;">
                   <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
                   <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить привилегии игрока {{ priv.steamid }}?')">Удалить</button>
                 </form>
+                {% endif %}
               </div>
             </td>
           </tr>
@@ -361,15 +367,17 @@
             {% endfor %}
           </select>
         </div>
+        {% if check_permission(admin, 'privileges', 'delete') or admin.is_superuser %}
         <div class="form-group">
           <label>Дополнительные команды (одна на строку)</label>
           <textarea name="commands" id="ap-cmds" rows="3" placeholder="/specialcmd"></textarea>
           <span class="form-hint">Добавляются к командам группы</span>
         </div>
         <div class="form-group">
-          <label>Дополнительные Action IDs</label>
-          <input type="text" name="allowed_action_ids" id="ap-aids" placeholder="100 200">
+          <label>Дополнительные Permissions</label>
+          <input type="text" name="allowed_action_ids" id="ap-aids" placeholder="ManageRound Kick">
         </div>
+        {% endif %}
         <div class="form-group">
           <label>Причина</label>
           <input type="text" name="reason" id="ap-reason" placeholder="Необязательно">
@@ -393,7 +401,7 @@ function switchTab(name) {
   history.replaceState(null, '', '?tab=' + name);
 }
 (function(){
-  const tab = (new URLSearchParams(window.location.search)).get('tab') || '{{ tab }}';
+  const tab = (new URLSearchParams(window.location.search)).get('tab') || '{{ tab if (check_permission(admin, "privileges", "delete") or admin.is_superuser) else "players" }}';
   switchTab(tab);
 })();
 

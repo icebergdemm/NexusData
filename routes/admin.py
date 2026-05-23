@@ -848,6 +848,34 @@ async def update_player(
 
         db.commit()
         db.refresh(player)
+
+        # If rank changed and player has confirmed discord_id, queue role update for bot
+        if old_rank_id != new_rank_id and player.discord_id and player.discord_id_confirmed:
+            from models import DiscordBotAction
+            rank_roles = settings.rank_discord_roles or {}
+            old_discord_role = rank_roles.get(str(old_rank_id), "") if old_rank_id is not None else ""
+            new_discord_role = rank_roles.get(str(new_rank_id), "") if new_rank_id is not None else ""
+
+            logger.info(f"[RankChange] discord_id={player.discord_id}, old_rank={old_rank_id}->role={old_discord_role}, new_rank={new_rank_id}->role={new_discord_role}")
+
+            bot_action = DiscordBotAction(
+                action_type="update_rank_role",
+                payload={
+                    "discord_id": player.discord_id,
+                    "remove_role_id": old_discord_role or None,
+                    "add_role_id": new_discord_role or None,
+                    "player_name": player.player_last_time_name,
+                    "old_rank": settings.ranks_mapping.get(str(old_rank_id), ""),
+                    "new_rank": settings.ranks_mapping.get(str(new_rank_id), ""),
+                },
+                queued_by_admin_id=current_admin.id,
+            )
+            db.add(bot_action)
+            db.commit()
+            logger.info(f"[RankChange] Bot action created: {bot_action.id}")
+        elif old_rank_id != new_rank_id:
+            logger.info(f"[RankChange] Skipped: discord_id={player.discord_id}, confirmed={getattr(player, 'discord_id_confirmed', None)}")
+
         log_admin_action(
             db,
             current_admin.id,
@@ -868,6 +896,45 @@ async def update_player(
         db.rollback()
         logger.exception("Update player failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить данные игрока из-за внутренней ошибки")
+
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+@router.post("/admin/players/{player_id}/discord-id")
+async def update_player_discord_id(
+    request: Request,
+    player_id: int,
+    discord_id: str = Form(""),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Update player's Discord ID (confirmed by admin)."""
+    if not check_permission(current_admin, "players", "edit") and not check_permission(current_admin, "players", "delete"):
+        push_flash(request, "error", "Недостаточно прав")
+        return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+    try:
+        await ensure_csrf_or_valid_admin_session(request, db)
+        player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+        if not player:
+            push_flash(request, "error", "Игрок не найден")
+            return RedirectResponse(url="/admin/players", status_code=302)
+
+        new_discord_id = discord_id.strip() or None
+        player.discord_id = new_discord_id
+        player.discord_id_confirmed = 1 if new_discord_id else 0  # Admin-set = confirmed
+        db.commit()
+
+        log_admin_action(db, current_admin.id, "update_discord_id", {
+            "player_id": player_id, "discord_id": new_discord_id
+        })
+        push_flash(request, "success", f"Discord ID обновлён: {new_discord_id or 'удалён'}")
+    except HTTPException as exc:
+        push_flash(request, "error", exc.detail)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Update discord_id failed: %s", exc)
+        push_flash(request, "error", "Ошибка обновления Discord ID")
 
     return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
 
@@ -3175,7 +3242,7 @@ async def admin_debug(
     diagnostics["privilege_group"] = grp_info
     
     # Test all permission checks with detailed tracing
-    pages = ["players", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects"]
+    pages = ["players", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects", "ratings", "discord_bot", "tickets"]
     actions = ["view", "edit", "delete"]
     
     permission_tests = {}
