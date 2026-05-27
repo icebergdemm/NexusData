@@ -39,7 +39,7 @@
         {% if check_permission(admin, 'admin', 'view') %}
         <li><a href="/admin/users">Пользователи Nexus Data</a></li>
         {% endif %}
-        {% if check_permission(admin, 'players', 'view') %}
+        {% if check_permission(admin, 'players', 'view') or check_permission(admin, 'players_special', 'view') %}
         <li><a href="/admin/players">Игроки</a></li>
         {% endif %}
         {% if check_permission(admin, 'moderation', 'edit') %}
@@ -74,6 +74,9 @@
         {% endif %}
         {% if check_permission(admin, 'tickets', 'view') %}
         <li><a href="/admin/tickets">Тикеты</a></li>
+        {% endif %}
+        {% if check_permission(admin, 'meeting', 'view') %}
+        <li><a href="/admin/meeting">Совещание</a></li>
         {% endif %}
       </ul>
     </nav>

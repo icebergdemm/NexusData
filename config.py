@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     sftp_server_2_remote_dir: str = ""
     sftp_server_2_name: str = "Сервер 2"
 
+    # Jitsi Meet (self-hosted)
+    jitsi_domain: str = "meet.jit.si"  # Replace with your self-hosted domain: meet.rp-asper.ru
+
     # Ranks and Kits mappings (populated from JSON files in __init__)
     ranks_mapping: Dict[str, str] = {}
     kits_mapping: Dict[str, str] = {}

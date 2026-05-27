@@ -323,11 +323,11 @@ textarea { resize:vertical; min-height:80px; }
               {% else %}
                 <span style="color:var(--gray-dark);">-</span>
               {% endif %}
-              {% if check_permission(admin, 'players', 'edit') %}
+              {% if has_edit or has_delete or has_special %}
               <button class="btn btn-secondary" style="font-size:10px; padding:3px 8px; margin-left:8px;" onclick="document.getElementById('discord-id-edit').style.display='flex'">✏️</button>
               {% endif %}
             </span>
-            {% if check_permission(admin, 'players', 'edit') %}
+            {% if has_edit or has_delete or has_special %}
             <form id="discord-id-edit" method="post" action="/admin/players/{{ player.player_id }}/discord-id"
                   style="display:none; gap:6px; align-items:center; margin-top:6px;">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
@@ -338,7 +338,7 @@ textarea { resize:vertical; min-height:80px; }
             </form>
             {% endif %}
           </div>
-          {% if player.last_ip %}
+          {% if player.last_ip and (has_edit or has_delete) %}
           <div class="info-row">
             <span class="info-label">Последний IP</span>
             <span class="info-value mono">{{ player.last_ip }}</span>
@@ -359,7 +359,7 @@ textarea { resize:vertical; min-height:80px; }
         </div>
 
         <!-- Inline rank / kit editing -->
-        {% if check_permission(admin, 'players', 'delete') %}
+        {% if has_delete or has_special %}
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
           <form method="post" action="/admin/players/{{ player.player_id }}/update">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
@@ -408,10 +408,11 @@ textarea { resize:vertical; min-height:80px; }
         {% endif %}
 
         <!-- Kval-kits section -->
+        {% if has_edit or has_delete %}
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <div class="right-section-title" style="margin-bottom:0;">Квал-киты</div>
-            {% if check_permission(admin, 'players', 'delete') %}
+            {% if has_delete %}
             <button class="btn btn-secondary btn-sm" onclick="openRewards('kval-kits')">✏️ Управление</button>
             {% endif %}
           </div>
@@ -430,6 +431,7 @@ textarea { resize:vertical; min-height:80px; }
           <div id="info-kval-list" style="font-size:13px; color:var(--gray-dark);">Не назначены</div>
           {% endif %}
         </div>
+        {% endif %}{# end has_edit or has_delete for kval-kits #}
 
       </div>
     </div>
@@ -697,7 +699,8 @@ function closeLabelCatModal() {
 </script>
 {% endif %}
 
-<!-- ── Data sections ── -->
+<!-- ── Data sections (only for edit/delete) ── -->
+{% if has_edit or has_delete %}
 <div class="sections-grid">
 
   <div class="block-card">
@@ -792,6 +795,7 @@ function closeLabelCatModal() {
   </div>
 
 </div>
+{% endif %}{# end has_edit or has_delete for data sections #}
 
 <!-- ════════════════════════ MODALS ════════════════════════ -->
 

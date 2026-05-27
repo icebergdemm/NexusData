@@ -557,7 +557,7 @@ async def admin_players_list(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """List players with optional search and label filter"""
-    if not check_permission(current_admin, "players", "view"):
+    if not (check_permission(current_admin, "players", "view") or check_permission(current_admin, "players_special", "view")):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     if "csrf_token" not in request.session:
@@ -638,7 +638,7 @@ async def admin_player_detail(
 ):
     """Player detail page with extended data"""
     # Only users with read or write permissions can view players
-    if not check_permission(current_admin, "players", "view"):
+    if not (check_permission(current_admin, "players", "view") or check_permission(current_admin, "players_special", "view")):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     
     # Initialize CSRF token if not exists
@@ -765,6 +765,12 @@ async def admin_player_detail(
     with _online_players_lock:
         is_online = player.player_steamid in _online_players
 
+    # Permission flags for template
+    has_view = check_permission(current_admin, "players", "view")
+    has_edit = check_permission(current_admin, "players", "edit")
+    has_delete = check_permission(current_admin, "players", "delete")
+    has_special = check_permission(current_admin, "players_special", "view")
+
     return templates.TemplateResponse("admin/player_detail.html", {
         "request": request,
         "admin": current_admin,
@@ -791,6 +797,9 @@ async def admin_player_detail(
         "custom_talents": custom_talents,
         "available_kval_kits": available_kval_kits,
         "is_online": is_online,
+        "has_edit": has_edit,
+        "has_delete": has_delete,
+        "has_special": has_special,
     })
 
 
@@ -801,8 +810,8 @@ async def update_player(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin)
 ):
-    """Update player data (rank/kit) - requires 'delete' permission"""
-    if not check_permission(current_admin, "players", "delete") and not check_permission(current_admin, "players", "edit"):
+    """Update player data (rank/kit) - requires 'delete' or 'special' permission"""
+    if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players_special", "view")):
         push_flash(request, "error", "Недостаточно прав для редактирования игрока")
         return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
 
@@ -909,7 +918,7 @@ async def update_player_discord_id(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Update player's Discord ID (confirmed by admin)."""
-    if not check_permission(current_admin, "players", "edit") and not check_permission(current_admin, "players", "delete"):
+    if not (check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
         push_flash(request, "error", "Недостаточно прав")
         return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
 
@@ -1164,6 +1173,25 @@ async def admin_debug(request: Request, db: Session = Depends(get_db), current_a
     return templates.TemplateResponse("admin/debug.html", {
         "request": request,
         "admin": current_admin,
+    })
+
+
+@router.get("/admin/meeting", response_class=HTMLResponse)
+async def admin_meeting(
+    request: Request,
+    room: str = Query("asper-general"),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Voice meeting room via Jitsi."""
+    if not check_permission(current_admin, "meeting", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return templates.TemplateResponse("admin/meeting.html", {
+        "request": request,
+        "admin": current_admin,
+        "room_name": room.strip() or "asper-general",
+        "admin_name": current_admin.discord_username or "Admin",
+        "jitsi_domain": settings.jitsi_domain,
     })
 
 
@@ -3242,7 +3270,7 @@ async def admin_debug(
     diagnostics["privilege_group"] = grp_info
     
     # Test all permission checks with detailed tracing
-    pages = ["players", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects", "ratings", "discord_bot", "tickets"]
+    pages = ["players", "players_special", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects", "ratings", "discord_bot", "tickets", "meeting"]
     actions = ["view", "edit", "delete"]
     
     permission_tests = {}

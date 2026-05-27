@@ -6,6 +6,7 @@
 {% macro _perm_rows(mode) %}
 {% set pages_cfg = [
   {"key":"players",     "label":"Игроки",           "desc":"Просмотр и управление профилями"},
+  {"key":"players_special","label":"Игроки (особый)","desc":"Ограниченное управление: звание, набор, Discord ID, метки, дело"},
   {"key":"moderation",  "label":"Модерирование",     "desc":"Баны, киклисты, жалобы"},
   {"key":"sessions",    "label":"Сессии",            "desc":"История игровых сессий"},
   {"key":"kits",        "label":"Киты",              "desc":"Управление наборами предметов"},
@@ -18,6 +19,7 @@
   {"key":"ratings",     "label":"Рейтинг",           "desc":"Просмотр рейтинга игроков по ролям"},
   {"key":"discord_bot","label":"Discord бот",        "desc":"Управление Discord ботом и анти-рейд"},
   {"key":"tickets",    "label":"Тикеты",             "desc":"Система обращений и поддержки"},
+  {"key":"meeting",    "label":"Совещание",           "desc":"Голосовая связь через Jitsi"},
 ] %}
 <div class="perm-matrix">
   <div class="perm-row">

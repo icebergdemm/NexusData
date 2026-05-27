@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Совещание - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.meeting-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:20px; }
+.meeting-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.meeting-container { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; }
+.meeting-iframe { width:100%; height:calc(100vh - 240px); min-height:500px; border:none; }
+.room-selector { display:flex; gap:10px; align-items:center; margin-bottom:16px; flex-wrap:wrap; }
+.room-input { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:9px 14px; color:var(--white); font-size:13px; font-family:inherit; width:250px; }
+.room-input:focus { outline:none; border-color:var(--primary-blue); }
+.btn-join { background:var(--primary-blue); color:#fff; border:none; border-radius:6px; padding:9px 18px; font-size:13px; font-weight:600; cursor:pointer; }
+.btn-join:hover { background:#2b7af0; }
+.quick-rooms { display:flex; gap:8px; flex-wrap:wrap; }
+.quick-room { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:6px 12px; font-size:12px; color:var(--gray); cursor:pointer; text-decoration:none; transition:.2s; }
+.quick-room:hover { border-color:var(--primary-blue); color:var(--white); }
+.quick-room.active { background:var(--primary-blue); border-color:var(--primary-blue); color:#fff; }
+</style>
+
+<div class="meeting-header">
+  <h2>🎙 Совещание</h2>
+</div>
+
+<div class="room-selector">
+  <input type="text" id="room-name" class="room-input" placeholder="Название комнаты..." value="{{ room_name }}">
+  <button class="btn-join" onclick="joinRoom()">Подключиться</button>
+</div>
+
+<div class="quick-rooms" style="margin-bottom:16px;">
+  <span style="font-size:12px; color:var(--gray); align-self:center;">Быстрые комнаты:</span>
+  <a href="/admin/meeting?room=asper-general" class="quick-room {% if room_name == 'asper-general' %}active{% endif %}">Общая</a>
+  <a href="/admin/meeting?room=asper-admins" class="quick-room {% if room_name == 'asper-admins' %}active{% endif %}">Администрация</a>
+  <a href="/admin/meeting?room=asper-moderators" class="quick-room {% if room_name == 'asper-moderators' %}active{% endif %}">Модераторы</a>
+  <a href="/admin/meeting?room=asper-dev" class="quick-room {% if room_name == 'asper-dev' %}active{% endif %}">Разработка</a>
+</div>
+
+<div class="meeting-container">
+  <iframe
+    id="meeting-frame"
+    class="meeting-iframe"
+    src="https://{{ jitsi_domain }}/{{ room_name }}#userInfo.displayName=%22{{ admin_name }}%22&config.prejoinPageEnabled=false"
+    allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
+    allowfullscreen>
+  </iframe>
+</div>
+
+<script>
+function joinRoom() {
+  var name = document.getElementById('room-name').value.trim();
+  if (name) {
+    window.location.href = '/admin/meeting?room=' + encodeURIComponent(name);
+  }
+}
+document.getElementById('room-name').addEventListener('keypress', function(e) {
+  if (e.key === 'Enter') joinRoom();
+});
+</script>
+{% endblock %}
