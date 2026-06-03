@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     sftp_server_2_remote_dir: str = ""
     sftp_server_2_name: str = "Сервер 2"
 
+    # SFTP Logs directories (for server log download)
+    sftp_server_1_logs_dir: str = ""
+    sftp_server_2_logs_dir: str = ""
+
+    # Discord Bot channel for sub-projects publishing
+    sub_projects_discord_channel_id: str = ""
+
     # Jitsi Meet (self-hosted)
     jitsi_domain: str = "meet.jit.si"  # Replace with your self-hosted domain: meet.rp-asper.ru
 

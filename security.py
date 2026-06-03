@@ -177,19 +177,23 @@ def check_rate_limit(db, admin, action: str = "general") -> bool:
 
     Returns False (over limit) if admin's group has rate_limit_count > 0
     and the admin has exceeded it within rate_limit_window_secs.
-    Superusers bypass rate limiting.
+    Superusers bypass rate limiting. rate_limit_count == 0 means unlimited.
     """
     if admin.is_superuser:
         return True
 
     grp = getattr(admin, "privilege_group", None)
-    if not grp or grp.rate_limit_count <= 0:
+    if not grp:
+        return True  # no group = no limit
+
+    # rate_limit_count <= 0 means rate limiting is disabled for this group
+    max_count = grp.rate_limit_count
+    if max_count is None or max_count <= 0:
         return True  # unlimited
 
     from models import AdminRateLimit
 
-    window_secs = grp.rate_limit_window_secs
-    max_count = grp.rate_limit_count
+    window_secs = grp.rate_limit_window_secs or 3600
     window_start_cutoff = datetime.utcnow() - timedelta(seconds=window_secs)
 
     record = (

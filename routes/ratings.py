@@ -92,6 +92,7 @@ async def admin_ratings_page(
     request: Request,
     role: str = Query("captain"),
     search: Optional[str] = Query(None),
+    tab: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -170,6 +171,31 @@ async def admin_ratings_page(
         "search_result": search_result,
         "rating_params": rating_params,
         "snapshots": get_snapshots_list(),
+        "tab": tab or "",
+        "flashes": pop_flashes(request),
+    })
+
+
+@router.get("/admin/ratings/rewards", response_class=HTMLResponse)
+async def admin_rewards_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Rewards configuration page (groups, rating conditions, playtime conditions)."""
+    if not check_permission(current_admin, "ratings", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    from rating_constants import ROLES
+
+    return templates.TemplateResponse("admin/rewards.html", {
+        "request": request,
+        "admin": current_admin,
+        "roles": ROLES,
+        "can_edit": check_permission(current_admin, "ratings", "edit"),
         "flashes": pop_flashes(request),
     })
 

@@ -246,6 +246,27 @@ def set_bot_config(update: ConfigUpdate, db: Session = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SUB-PROJECT MESSAGE ID CALLBACK
+# ══════════════════════════════════════════════════════════════════════════════
+
+from pydantic import BaseModel as _BM
+
+class _SubProjectMsgId(_BM):
+    message_id: str
+
+@router.post("/sub-project/{project_id}/set-message-id")
+def set_sub_project_msg_id(project_id: int, body: _SubProjectMsgId, db: Session = Depends(get_db)):
+    """Bot reports the Discord message_id after sending a sub-project embed."""
+    from models import SubProject
+    project = db.query(SubProject).filter(SubProject.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project.discord_message_id = body.message_id
+    db.commit()
+    return {"status": "ok", "project_id": project_id, "message_id": body.message_id}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # RATINGS (for bot to publish in Discord)
 # ══════════════════════════════════════════════════════════════════════════════
 

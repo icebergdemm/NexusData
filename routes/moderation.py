@@ -106,7 +106,11 @@ def report_online_players(
     server_name: Optional[str] = Query(None, description="Имя сервера-отправителя"),
     db: Session = Depends(get_db),
 ):
-    """Replace the full snapshot of currently online players."""
+    """Replace the full snapshot of currently online players for a server.
+
+    Uses per-player TTL tracking — players age out individually, so one
+    server's report cannot wipe another server's online players.
+    """
     svc = ServerModerationService(db)
     count = svc.replace_online_players(report.players, server_name=server_name)
     return ServerPlayersReportResult(status="ok", count=count)
@@ -158,7 +162,7 @@ panel_router = APIRouter()
 @panel_router.get("/admin/moderation", response_class=HTMLResponse)
 async def moderation_page(
     request: Request,
-    tab: str = Query("status", pattern=r"^(status|banhammer|logs|anticheat)$"),
+    tab: str = Query("status", pattern=r"^(status|banhammer|logs|commands|anticheat)$"),
     server: Optional[str] = Query(None, description="Фильтр по серверу: ASPER1 или ASPER2"),
     search: Optional[str] = Query(None, min_length=2),
     db: Session = Depends(get_db),

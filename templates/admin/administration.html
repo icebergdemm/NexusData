@@ -394,6 +394,29 @@ input:checked + .slider:before { transform:translateX(20px); background:#fff; }
         </div>
         {% endif %}
 
+        {# ── Logs & Discord Bot Settings ── #}
+        <div class="config-section-title" style="grid-column:1/-1;margin-top:24px;padding-top:16px;border-top:1px solid var(--stroke-01);">
+          <h4 style="font-size:14px;font-weight:700;color:var(--white);margin:0;">📋 Директории логов (SFTP)</h4>
+          <p style="font-size:11px;color:var(--gray);margin-top:4px;">Путь на удалённом SFTP-сервере, откуда скачиваются серверные логи</p>
+        </div>
+        <div class="form-group">
+          <label>Логи ASPER1 (SFTP 1)</label>
+          <input type="text" name="sftp_server_1_logs_dir" value="{{ editable_cfg.sftp_server_1_logs_dir }}" placeholder="/home/baro/ServerLogs">
+        </div>
+        <div class="form-group">
+          <label>Логи ASPER2 (SFTP 2)</label>
+          <input type="text" name="sftp_server_2_logs_dir" value="{{ editable_cfg.sftp_server_2_logs_dir }}" placeholder="/home/baro/ServerLogs">
+        </div>
+
+        <div class="config-section-title" style="grid-column:1/-1;margin-top:24px;padding-top:16px;border-top:1px solid var(--stroke-01);">
+          <h4 style="font-size:14px;font-weight:700;color:var(--white);margin:0;">🤖 Discord бот — Sub-карты</h4>
+          <p style="font-size:11px;color:var(--gray);margin-top:4px;">ID канала Discord, куда бот будет публиковать корабли (вместо webhook)</p>
+        </div>
+        <div class="form-group form-group-full">
+          <label>Channel ID для публикации кораблей</label>
+          <input type="text" name="sub_projects_discord_channel_id" value="{{ editable_cfg.sub_projects_discord_channel_id }}" placeholder="1234567890123456789">
+        </div>
+
       </div><!-- /config-grid -->
       <div style="margin-top:var(--spacing-24);">
         <button type="submit" class="btn btn-primary">💾 Сохранить конфигурацию</button>

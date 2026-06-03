@@ -56,6 +56,12 @@
   {% endif %}
 </div>
 
+{% if check_permission(admin, 'sub_projects', 'delete') %}
+{# Two-column layout: projects left, file manager right #}
+<div style="display:grid; grid-template-columns:1fr 380px; gap:20px; align-items:start;">
+{% endif %}
+
+<div>
 {% if not projects_data %}
 <div style="text-align:center; padding:60px 20px; color:var(--gray);">
   <div style="font-size:48px; margin-bottom:16px;">🚢</div>
@@ -86,6 +92,75 @@
   </a>
   {% endfor %}
 </div>
+{% endif %}
+</div>
+
+{% if check_permission(admin, 'sub_projects', 'delete') %}
+{# Right side: SFTP File Manager #}
+<div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px; position:sticky; top:80px;">
+  <h3 style="font-size:14px;font-weight:700;color:var(--white);margin-bottom:12px;">📁 SFTP Файлы</h3>
+
+  <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+    <select id="fmServer" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 8px;color:var(--white);font-size:11px;flex:1;">
+      <option value="1">{{ sftp_server_1_name }}</option>
+      <option value="2">{{ sftp_server_2_name }}</option>
+    </select>
+    <button onclick="fmNavigateUp()" style="background:transparent;border:1px solid var(--stroke-01);border-radius:4px;padding:3px 8px;color:var(--gray);font-size:11px;cursor:pointer;">⬆️</button>
+    <button onclick="fmRefresh()" style="background:transparent;border:1px solid var(--stroke-01);border-radius:4px;padding:3px 8px;color:var(--gray);font-size:11px;cursor:pointer;">🔄</button>
+    <button onclick="document.getElementById('fmUploadInput').click()" style="background:var(--primary-blue);border:none;border-radius:4px;padding:3px 8px;color:#fff;font-size:11px;cursor:pointer;">📤</button>
+    <input type="file" id="fmUploadInput" style="display:none;" onchange="fmUploadFile(this)">
+  </div>
+  <div id="fmPath" style="font-size:10px;color:var(--gray);font-family:monospace;margin-bottom:8px;">/</div>
+
+  <div id="fmFileList" style="max-height:55vh;overflow-y:auto;border:1px solid var(--stroke-01);border-radius:6px;background:var(--bg);">
+    <div style="text-align:center;padding:20px;color:var(--gray);font-size:12px;">Загрузка...</div>
+  </div>
+</div>
+
+<!-- File Editor Modal -->
+<div class="modal-overlay" id="fmEditorModal">
+  <div class="modal-box" style="max-width:900px;">
+    <h3 id="fmEditorTitle">Редактирование файла</h3>
+    <textarea id="fmEditorContent" style="width:100%;min-height:400px;background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:12px;color:var(--white);font-family:monospace;font-size:12px;resize:vertical;"></textarea>
+    <div class="form-actions">
+      <button type="button" class="btn btn-secondary" onclick="document.getElementById('fmEditorModal').classList.remove('active')">Отмена</button>
+      <button type="button" class="btn btn-primary" onclick="fmSaveFile()">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+</div>{# /grid #}
+
+<style>
+.fm-row { display:flex; align-items:center; gap:6px; padding:5px 8px; border-bottom:1px solid var(--stroke-01); cursor:pointer; font-size:11px; }
+.fm-row:hover { background:rgba(255,255,255,.02); }
+.fm-row:last-child { border-bottom:none; }
+.fm-icon { font-size:13px; min-width:16px; }
+.fm-name { flex:1; color:var(--white); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fm-size { color:var(--gray); font-size:10px; min-width:45px; text-align:right; }
+.fm-actions { display:flex; gap:2px; }
+.fm-btn { padding:1px 5px; font-size:10px; border-radius:3px; cursor:pointer; border:1px solid var(--stroke-01); background:transparent; color:var(--gray); }
+.fm-btn:hover { border-color:var(--primary-blue); color:var(--white); }
+</style>
+
+<script>
+let fmCurrentPath='',fmCurrentServer=1,fmEditingPath='';
+function fmLoad(p){fmCurrentPath=p||'';fmCurrentServer=parseInt(document.getElementById('fmServer').value);document.getElementById('fmPath').textContent='/'+fmCurrentPath;fetch('/api/v1/admin/sftp/files?server='+fmCurrentServer+'&path='+encodeURIComponent(fmCurrentPath)).then(r=>r.json()).then(d=>fmRender(d.files)).catch(()=>{document.getElementById('fmFileList').innerHTML='<div style="text-align:center;padding:15px;color:var(--red);font-size:11px;">Ошибка</div>';});}
+function fmRender(files){const c=document.getElementById('fmFileList');if(!files||!files.length){c.innerHTML='<div style="text-align:center;padding:15px;color:var(--gray);font-size:11px;">Пусто</div>';return;}let h='';for(const f of files){const icon=f.is_dir?'📁':(f.name.endsWith('.sub')?'🚢':'📃');const sz=f.is_dir?'':formatSize(f.size);const click=f.is_dir?`fmLoad('${f.path}')`:`fmEditFile('${f.path}')`;h+=`<div class="fm-row"><span class="fm-icon">${icon}</span><span class="fm-name" onclick="${click}">${f.name}</span><span class="fm-size">${sz}</span><span class="fm-actions">${!f.is_dir?`<button class="fm-btn" onclick="fmDownload('${f.path}')">⬇</button><button class="fm-btn" onclick="fmEditFile('${f.path}')">✏</button>`:''}<button class="fm-btn" onclick="fmDelete('${f.path}','${f.name}')">🗑</button></span></div>`;}c.innerHTML=h;}
+function fmNavigateUp(){const p=fmCurrentPath.split('/').filter(Boolean);p.pop();fmLoad(p.join('/'));}
+function fmRefresh(){fmLoad(fmCurrentPath);}
+function fmDownload(p){window.open('/api/v1/admin/sftp/download?server='+fmCurrentServer+'&path='+encodeURIComponent(p),'_blank');}
+function fmEditFile(p){fmEditingPath=p;document.getElementById('fmEditorTitle').textContent=p.split('/').pop();document.getElementById('fmEditorContent').value='Загрузка...';document.getElementById('fmEditorModal').classList.add('active');fetch('/api/v1/admin/sftp/read?server='+fmCurrentServer+'&path='+encodeURIComponent(p)).then(r=>r.json()).then(d=>{document.getElementById('fmEditorContent').value=d.content;}).catch(()=>{document.getElementById('fmEditorContent').value='Ошибка';});}
+function fmSaveFile(){fetch('/api/v1/admin/sftp/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server:fmCurrentServer,path:fmEditingPath,content:document.getElementById('fmEditorContent').value})}).then(r=>r.json()).then(d=>{if(d.status==='ok'){document.getElementById('fmEditorModal').classList.remove('active');fmRefresh();}else alert(d.detail||'Error');}).catch(()=>alert('Ошибка'));}
+function fmDelete(p,n){if(!confirm('Удалить "'+n+'"?'))return;fetch('/api/v1/admin/sftp/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server:fmCurrentServer,path:p})}).then(r=>r.json()).then(d=>{if(d.status==='ok')fmRefresh();}).catch(()=>alert('Ошибка'));}
+function fmUploadFile(i){if(!i.files.length)return;const fd=new FormData();fd.append('file',i.files[0]);fd.append('server',fmCurrentServer);fd.append('path',fmCurrentPath);fetch('/api/v1/admin/sftp/upload',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{if(d.status==='ok')fmRefresh();}).catch(()=>alert('Ошибка'));i.value='';}
+function formatSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(0)+'K';return(b/1048576).toFixed(1)+'M';}
+document.getElementById('fmServer').addEventListener('change',()=>fmLoad(''));
+document.getElementById('fmEditorModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
+document.addEventListener('DOMContentLoaded',()=>{
+  // Don't auto-load file manager - user clicks refresh or navigates manually
+  document.getElementById('fmFileList').innerHTML='<div style="text-align:center;padding:15px;color:var(--gray);font-size:11px;">Нажмите 🔄 для загрузки</div>';
+});
+</script>
 {% endif %}
 
 <!-- Create Modal -->

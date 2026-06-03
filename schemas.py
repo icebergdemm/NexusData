@@ -115,6 +115,7 @@ class PlayerDataOut(PlayerDataBase):
         data.rank_name = ranks_mapping.get(str(obj.rank_id), "N/A") if obj.rank_id is not None else "N/A"
         data.kit_name = kits_mapping.get(str(obj.kit_level), "N/A") if obj.kit_level is not None else "N/A"
         # Include raw achievements data (dict structure from DB)
+        # This is the authoritative source for kval_kits, items, stats, talents
         raw_ach = obj.achievements
         if raw_ach is None:
             data.achievements_data = {}
@@ -124,6 +125,12 @@ class PlayerDataOut(PlayerDataBase):
             data.achievements_data = {"legacy_list": raw_ach}
         else:
             data.achievements_data = {}
+        # Also set the legacy 'achievements' list field for backward compatibility
+        # (extract keys from dict if present)
+        if isinstance(raw_ach, dict):
+            # Provide a flat list of item IDs for .NET clients that read 'achievements' field
+            items = raw_ach.get("items", {})
+            data.achievements = list(items.keys()) if items else []
         return data
 
 

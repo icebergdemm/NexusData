@@ -34,6 +34,9 @@
   <a href="/admin/moderation?tab=status{% if selected_server %}&server={{ selected_server }}{% endif %}"     class="mod-tab {% if active_tab == 'status'     %}active{% endif %}">Состояние сервера</a>
   <a href="/admin/moderation?tab=banhammer{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
   <a href="/admin/moderation?tab=logs{% if selected_server %}&server={{ selected_server }}{% endif %}"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
+  {% if check_permission(admin, 'moderation', 'delete') %}
+  <a href="/admin/moderation?tab=commands{% if selected_server %}&server={{ selected_server }}{% endif %}"   class="mod-tab {% if active_tab == 'commands'   %}active{% endif %}">⚡ Команды</a>
+  {% endif %}
   <a href="/admin/moderation?tab=anticheat{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
 </nav>
 
@@ -226,11 +229,428 @@
 {# TAB: Логи                                                               #}
 {# ════════════════════════════════════════════════════════════════════════ #}
 {% elif active_tab == 'logs' %}
-<div class="card" style="text-align:center;padding:var(--spacing-48);">
-  <div style="font-size:48px;margin-bottom:var(--spacing-16);">📋</div>
-  <h3>Логи сервера</h3>
-  <p class="empty-state" style="margin-top:var(--spacing-12);">Раздел в разработке. Скоро здесь появятся серверные логи.</p>
+
+{% if admin.is_superuser %}
+<div class="card" style="margin-bottom:12px;padding:16px 20px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <div>
+      <span style="font-size:13px;font-weight:600;color:var(--white);">⚙️ Настройки</span>
+      <span id="logStats" style="font-size:11px;color:var(--gray);margin-left:12px;"></span>
+    </div>
+    <button class="btn btn-ghost" onclick="refreshLogs()" id="refreshBtn" style="font-size:11px;padding:4px 12px;">🔄 Обновить</button>
+  </div>
 </div>
+{% endif %}
+
+<div class="card" style="padding:16px 20px;">
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+    <h3 style="margin:0;font-size:15px;">📋 Журнал событий</h3>
+    <span style="color:var(--gray);font-size:12px;" id="logTotalCount"></span>
+  </div>
+
+  <!-- Category tabs -->
+  <div style="display:flex;gap:2px;margin-bottom:12px;">
+    <button class="lcat-btn active" id="lcatPlayer" onclick="setLogCategory('player')">👤 Игроки</button>
+    <button class="lcat-btn" id="lcatTech" onclick="setLogCategory('technical')">🔧 Технические</button>
+    <button class="lcat-btn" id="lcatAll" onclick="setLogCategory('')">Все</button>
+  </div>
+
+  <!-- Compact Filters -->
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--stroke-01);">
+    <input type="text" id="logSearchText" class="form-control" placeholder="🔍 Поиск..." style="font-size:12px;padding:6px 10px;flex:1;min-width:140px;">
+    <input type="text" id="logPlayerFilter" class="form-control" placeholder="Игрок..." list="playersList" style="font-size:12px;padding:6px 10px;width:140px;">
+    <datalist id="playersList"></datalist>
+    <select id="logActionFilter" class="form-control" style="font-size:12px;padding:6px 10px;width:130px;">
+      <option value="all">Все</option>
+      <option value="login">🟢 Вход</option>
+      <option value="logout">🔴 Выход</option>
+      <option value="chat">💬 Чат</option>
+      <option value="console">⚡ Консоль</option>
+      <option value="death">💀 Смерть</option>
+      <option value="picked_up">📦 Подобрал</option>
+      <option value="placed">📥 Положил</option>
+      <option value="equipped">🎒 Экипировка</option>
+      <option value="reactor">⚛️ Реактор</option>
+      <option value="repair">🔧 Ремонт</option>
+      <option value="fabrication">🏭 Крафт</option>
+      <option value="wire">🔌 Провода</option>
+      <option value="pump">💧 Насос</option>
+      <option value="opened">🚪 Двери</option>
+    </select>
+    <input type="datetime-local" id="logTimeFrom" class="form-control" style="font-size:11px;padding:6px 8px;width:150px;" title="С">
+    <input type="datetime-local" id="logTimeTo" class="form-control" style="font-size:11px;padding:6px 8px;width:150px;" title="По">
+    <button class="btn btn-primary" onclick="resetAndLoad()" style="padding:6px 14px;font-size:12px;">Найти</button>
+    <button class="btn btn-ghost" onclick="resetLogFilters()" style="padding:6px 10px;font-size:11px;">✕</button>
+  </div>
+
+  <!-- Log Events (infinite scroll) -->
+  <div id="logEventsContainer" style="max-height:68vh;overflow-y:auto;" onscroll="onLogScroll(this)"></div>
+  <div id="logLoadingMore" style="display:none;text-align:center;padding:8px;color:var(--gray);font-size:11px;">⏳ Загрузка...</div>
+</div>
+
+<style>
+.le { display:grid; grid-template-columns:110px 50px auto; gap:0 10px; padding:5px 8px; border-radius:4px; font-size:12px; line-height:1.6; border-left:2px solid transparent; }
+.le:hover { background:rgba(255,255,255,.02); }
+.le-t { color:var(--gray); font-family:'JetBrains Mono',monospace; font-size:10px; white-space:nowrap; padding-top:1px; }
+.le-s { font-size:9px; font-weight:700; padding:2px 5px; border-radius:6px; text-align:center; height:fit-content; margin-top:1px; }
+.le-s1 { background:rgba(26,104,222,.15); color:#5b9cf5; }
+.le-s2 { background:rgba(174,0,122,.15); color:#e06cc0; }
+.le-d { word-break:break-word; }
+.le-d .le-p { color:#5b9cf5; font-weight:600; cursor:pointer; text-decoration:none; }
+.le-d .le-p:hover { text-decoration:underline; }
+
+/* Barotrauma-inspired colors with sub-shading for readability */
+.le[data-t="chat"] { border-left-color:#e8e8e8; } .le[data-t="chat"] .le-d { color:#e8e8e8; }
+.le[data-t="picked_up"] { border-left-color:#d4a843; } .le[data-t="picked_up"] .le-d { color:#d4a843; }
+.le[data-t="placed"] { border-left-color:#b8923a; } .le[data-t="placed"] .le-d { color:#b8923a; }
+.le[data-t="removed"] { border-left-color:#c99e3f; } .le[data-t="removed"] .le-d { color:#c99e3f; }
+.le[data-t="dropped"] { border-left-color:#a88530; } .le[data-t="dropped"] .le-d { color:#a88530; }
+.le[data-t="equipped"] { border-left-color:#e0b84d; } .le[data-t="equipped"] .le-d { color:#e0b84d; }
+.le[data-t="unequipped"] { border-left-color:#c99e3f; } .le[data-t="unequipped"] .le-d { color:#c99e3f; }
+.le[data-t="opened"] { border-left-color:#7aaa55; } .le[data-t="opened"] .le-d { color:#7aaa55; }
+.le[data-t="closed"] { border-left-color:#5a8a40; } .le[data-t="closed"] .le-d { color:#5a8a40; }
+.le[data-t="activated"] { border-left-color:#55bb55; } .le[data-t="activated"] .le-d { color:#55bb55; }
+.le[data-t="deactivated"] { border-left-color:#888; } .le[data-t="deactivated"] .le-d { color:#888; }
+.le[data-t="death"] { border-left-color:#c83232; } .le[data-t="death"] .le-d { color:#c83232; }
+.le[data-t="attack"] { border-left-color:#c83232; } .le[data-t="attack"] .le-d { color:#c83232; }
+.le[data-t="structure"] { border-left-color:#c83232; } .le[data-t="structure"] .le-d { color:#c86050; }
+.le[data-t="kick"] { border-left-color:#c83232; } .le[data-t="kick"] .le-d { color:#e06050; }
+.le[data-t="name_change"] { border-left-color:#3cc43c; } .le[data-t="name_change"] .le-d { color:#3cc43c; }
+.le[data-t="login"] { border-left-color:#3cc43c; } .le[data-t="login"] .le-d { color:#3cc43c; }
+.le[data-t="logout"] { border-left-color:#e88030; } .le[data-t="logout"] .le-d { color:#e88030; }
+.le[data-t="wire"] { border-left-color:#6a4ec8; } .le[data-t="wire"] .le-d { color:#9b7ee8; }
+.le[data-t="console"] { border-left-color:#3894e0; } .le[data-t="console"] .le-d { color:#3894e0; }
+.le[data-t="reactor"] { border-left-color:#e07830; } .le[data-t="reactor"] .le-d { color:#e07830; }
+.le[data-t="repair"] { border-left-color:#50b8d0; } .le[data-t="repair"] .le-d { color:#50b8d0; }
+.le[data-t="fabrication"] { border-left-color:#c070d0; } .le[data-t="fabrication"] .le-d { color:#c070d0; }
+.le[data-t="fabrication_cancel"] { border-left-color:#a050b0; } .le[data-t="fabrication_cancel"] .le-d { color:#a050b0; }
+.le[data-t="pump"] { border-left-color:#4090cc; } .le[data-t="pump"] .le-d { color:#4090cc; }
+.le[data-t="settings_change"] { border-left-color:#8888aa; } .le[data-t="settings_change"] .le-d { color:#8888aa; }
+.le[data-t="radio"] { border-left-color:#666; } .le[data-t="radio"] .le-d { color:#666; }
+.le[data-t="connection"] { border-left-color:#666; } .le[data-t="connection"] .le-d { color:#666; }
+.le[data-t="other"] { border-left-color:#c83232; } .le[data-t="other"] .le-d { color:#c83232; }
+
+.le-empty { text-align:center; padding:40px; color:var(--gray); font-size:13px; }
+.lcat-btn { padding:5px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; border:1px solid var(--stroke-01); background:transparent; color:var(--gray); transition:.2s; }
+.lcat-btn:hover { border-color:var(--primary-blue); color:var(--white); }
+.lcat-btn.active { background:var(--primary-blue); color:#fff; border-color:var(--primary-blue); }
+</style>
+
+<script>
+let _playerMap = {};
+let _logCategory = 'player';  // default: show player events
+let _logPage = 1;
+let _logTotal = 0;
+let _logLoading = false;
+let _logHasMore = true;
+const LOG_PAGE_SIZE = 150;
+
+function setLogCategory(cat) {
+  _logCategory = cat;
+  document.querySelectorAll('.lcat-btn').forEach(b => b.classList.remove('active'));
+  if (cat === 'player') document.getElementById('lcatPlayer').classList.add('active');
+  else if (cat === 'technical') document.getElementById('lcatTech').classList.add('active');
+  else document.getElementById('lcatAll').classList.add('active');
+  resetAndLoad();
+}
+
+function resetAndLoad() {
+  _logPage = 1;
+  _logHasMore = true;
+  document.getElementById('logEventsContainer').innerHTML = '';
+  loadLogs();
+}
+
+function loadLogs() {
+  if (_logLoading || !_logHasMore) return;
+  _logLoading = true;
+  document.getElementById('logLoadingMore').style.display = 'block';
+
+  const search = document.getElementById('logSearchText').value.trim();
+  const player = document.getElementById('logPlayerFilter').value.trim();
+  const action = document.getElementById('logActionFilter').value;
+  const tf = document.getElementById('logTimeFrom').value;
+  const tt = document.getElementById('logTimeTo').value;
+  const server = '{{ selected_server or "" }}';
+
+  const p = new URLSearchParams({page: _logPage, page_size: LOG_PAGE_SIZE});
+  if (search) p.set('search', search);
+  if (player) p.set('player', player);
+  if (action && action !== 'all') p.set('action_type', action);
+  if (tf) p.set('time_from', tf);
+  if (tt) p.set('time_to', tt);
+  if (server) p.set('server', server);
+  if (_logCategory) p.set('category', _logCategory);
+
+  fetch('/api/v1/admin/logs/events?' + p.toString())
+    .then(r => r.json())
+    .then(data => {
+      _logTotal = data.total;
+      document.getElementById('logTotalCount').textContent = _logTotal.toLocaleString() + ' событий';
+      appendLogs(data.events);
+      _logPage++;
+      _logHasMore = data.page < data.total_pages;
+      _logLoading = false;
+      document.getElementById('logLoadingMore').style.display = 'none';
+      // If container not full yet, load more
+      const c = document.getElementById('logEventsContainer');
+      if (_logHasMore && c.scrollHeight <= c.clientHeight) loadLogs();
+    })
+    .catch(() => {
+      _logLoading = false;
+      document.getElementById('logLoadingMore').style.display = 'none';
+    });
+}
+
+function appendLogs(events) {
+  const c = document.getElementById('logEventsContainer');
+  if (!events || !events.length) {
+    if (_logPage === 1) c.innerHTML = '<div class="le-empty">Нет событий</div>';
+    return;
+  }
+  let html = '';
+  for (const ev of events) {
+    const t = new Date(ev.timestamp).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const sc = ev.server_name && ev.server_name.includes('1') ? 'le-s1' : 'le-s2';
+    const sn = ev.server_name ? ev.server_name.replace(/[^A-Z0-9]/gi,'').substring(0,6) : '?';
+
+    let detail = escapeHtml(ev.details);
+    if (ev.player_name) {
+      const steamid = _playerMap[ev.player_name];
+      const escaped = escapeHtml(ev.player_name);
+      const href = steamid
+        ? `/admin/players?search=${encodeURIComponent(steamid)}`
+        : `/admin/players?search=${encodeURIComponent(ev.player_name)}`;
+      detail = detail.replace(escaped, `<a class="le-p" href="${href}" title="${steamid || ev.player_name}">${escaped}</a>`);
+    }
+    html += `<div class="le" data-t="${ev.action_type}"><span class="le-t">${t}</span><span class="le-s ${sc}">${sn}</span><span class="le-d">${detail}</span></div>`;
+  }
+  c.insertAdjacentHTML('beforeend', html);
+}
+
+function onLogScroll(el) {
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
+    loadLogs();
+  }
+}
+
+function resetLogFilters() {
+  document.getElementById('logSearchText').value = '';
+  document.getElementById('logPlayerFilter').value = '';
+  document.getElementById('logActionFilter').value = 'all';
+  document.getElementById('logTimeFrom').value = '';
+  document.getElementById('logTimeTo').value = '';
+  resetAndLoad();
+}
+
+function refreshLogs() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true; btn.textContent = '⏳...';
+  fetch('/api/v1/admin/logs/refresh', {method:'POST'})
+    .then(() => { btn.textContent = '✅'; setTimeout(() => { btn.disabled = false; btn.textContent = '🔄 Обновить'; }, 2000); })
+    .catch(() => { btn.textContent = '❌'; setTimeout(() => { btn.disabled = false; btn.textContent = '🔄 Обновить'; }, 2000); });
+}
+
+function loadLogStats() {
+  fetch('/api/v1/admin/logs/stats').then(r=>r.json()).then(data => {
+    let h = '';
+    for (const [s, info] of Object.entries(data)) {
+      const r = info.last_refresh ? new Date(info.last_refresh).toLocaleString('ru-RU') : '-';
+      h += `${s}: ${info.event_count || 0} · ${r}  `;
+    }
+    const el = document.getElementById('logStats');
+    if (el) el.textContent = h || 'Нет данных';
+  });
+}
+
+function loadPlayerMap() {
+  fetch('/api/v1/admin/logs/player-map').then(r=>r.json()).then(data => { _playerMap = data; });
+}
+
+function loadPlayersList() {
+  const server = '{{ selected_server or "" }}';
+  fetch('/api/v1/admin/logs/players' + (server ? '?server='+server : ''))
+    .then(r=>r.json()).then(data => {
+      document.getElementById('playersList').innerHTML = data.players.map(p=>`<option value="${p}">`).join('');
+    });
+}
+
+function escapeHtml(t) { const d = document.createElement('span'); d.textContent = t; return d.innerHTML; }
+
+document.getElementById('logSearchText').addEventListener('keydown', e => { if (e.key==='Enter') resetAndLoad(); });
+document.getElementById('logPlayerFilter').addEventListener('keydown', e => { if (e.key==='Enter') resetAndLoad(); });
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadPlayerMap();
+  loadLogs();
+  loadPlayersList();
+  {% if admin.is_superuser %}loadLogStats();{% endif %}
+});
+</script>
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# TAB: Команды (только moderation.delete)                                 #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% elif active_tab == 'commands' %}
+{% if check_permission(admin, 'moderation', 'delete') %}
+<div class="card">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:var(--spacing-16);">
+    <h3 style="margin:0;">⚡ Использованные консольные команды</h3>
+    <span style="color:var(--gray);font-size:13px;" id="cmdTotalCount"></span>
+  </div>
+
+  <div class="cmd-filters" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:var(--spacing-16);padding-bottom:var(--spacing-16);border-bottom:1px solid var(--stroke-01);">
+    <div class="form-group" style="flex:1;min-width:180px;">
+      <label class="form-label">Поиск по команде</label>
+      <input type="text" id="cmdSearchText" class="form-control" placeholder="explosion, teleport..." style="font-size:13px;">
+    </div>
+    <div class="form-group" style="min-width:160px;">
+      <label class="form-label">Игрок</label>
+      <input type="text" id="cmdPlayerFilter" class="form-control" placeholder="Имя игрока..." list="cmdPlayersList" style="font-size:13px;">
+      <datalist id="cmdPlayersList"></datalist>
+    </div>
+    <div class="form-group" style="min-width:150px;">
+      <label class="form-label">С</label>
+      <input type="datetime-local" id="cmdTimeFrom" class="form-control" style="font-size:12px;">
+    </div>
+    <div class="form-group" style="min-width:150px;">
+      <label class="form-label">По</label>
+      <input type="datetime-local" id="cmdTimeTo" class="form-control" style="font-size:12px;">
+    </div>
+    <div class="form-group" style="align-self:flex-end;">
+      <button class="btn btn-primary" onclick="loadCommands(1)" style="padding:8px 16px;">🔍 Найти</button>
+    </div>
+  </div>
+
+  <!-- Commands Timeline -->
+  <div id="cmdEventsContainer" style="max-height:65vh;overflow-y:auto;">
+    <div style="text-align:center;padding:40px;color:var(--gray);">⏳ Загрузка...</div>
+  </div>
+
+  <!-- Pagination -->
+  <div id="cmdPagination" style="display:flex;justify-content:center;gap:8px;margin-top:var(--spacing-16);"></div>
+</div>
+
+<style>
+.cmd-event {
+  display:flex; gap:12px; padding:8px 14px; border-radius:8px;
+  font-size:13px; line-height:1.5; border-left:3px solid #ff4444;
+  margin-bottom:4px; transition:background .15s;
+}
+.cmd-event:hover { background:var(--white-003); }
+.cmd-event .cmd-time { color:var(--gray); font-family:monospace; font-size:11px; white-space:nowrap; min-width:120px; }
+.cmd-event .cmd-server { font-size:10px; font-weight:700; padding:1px 6px; border-radius:8px; white-space:nowrap; }
+.cmd-event .cmd-server-1 { background:rgba(26,104,222,.2); color:#5b9cf5; }
+.cmd-event .cmd-server-2 { background:rgba(174,0,122,.2); color:#e06cc0; }
+.cmd-event .cmd-player { color:var(--primary-blue); font-weight:600; min-width:140px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cmd-event .cmd-player a { color:inherit; text-decoration:none; }
+.cmd-event .cmd-player a:hover { text-decoration:underline; }
+.cmd-event .cmd-command { flex:1; color:#ff8866; font-family:monospace; font-size:12px; background:rgba(255,68,68,.08); padding:2px 8px; border-radius:4px; word-break:break-word; }
+.cmd-empty { text-align:center; padding:40px; color:var(--gray); }
+</style>
+
+<script>
+let cmdCurrentPage = 1;
+
+function loadCommands(page) {
+  cmdCurrentPage = page || 1;
+  const search = document.getElementById('cmdSearchText').value.trim();
+  const player = document.getElementById('cmdPlayerFilter').value.trim();
+  const timeFrom = document.getElementById('cmdTimeFrom').value;
+  const timeTo = document.getElementById('cmdTimeTo').value;
+  const server = '{{ selected_server or "" }}';
+
+  const params = new URLSearchParams({page: cmdCurrentPage, page_size: 100, action_type: 'console'});
+  if (search) params.set('search', search);
+  if (player) params.set('player', player);
+  if (timeFrom) params.set('time_from', timeFrom);
+  if (timeTo) params.set('time_to', timeTo);
+  if (server) params.set('server', server);
+
+  const container = document.getElementById('cmdEventsContainer');
+  container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--gray);">⏳ Загрузка...</div>';
+
+  fetch('/api/v1/admin/logs/events?' + params.toString())
+    .then(r => r.json())
+    .then(data => renderCommands(data.events, data.total, data.page, data.total_pages))
+    .catch(() => { container.innerHTML = '<div class="cmd-empty">❌ Ошибка загрузки</div>'; });
+}
+
+function renderCommands(events, total, page, totalPages) {
+  const container = document.getElementById('cmdEventsContainer');
+  document.getElementById('cmdTotalCount').textContent = `Всего команд: ${total.toLocaleString()}`;
+
+  if (!events || events.length === 0) {
+    container.innerHTML = '<div class="cmd-empty"><div style="font-size:32px;margin-bottom:8px;">⚡</div>Нет использованных команд по заданным фильтрам</div>';
+    document.getElementById('cmdPagination').innerHTML = '';
+    return;
+  }
+
+  let html = '';
+  for (const ev of events) {
+    const time = new Date(ev.timestamp).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const serverClass = ev.server_name && ev.server_name.includes('1') ? 'cmd-server-1' : 'cmd-server-2';
+    // Extract command from details: 'Console command "xxx" executed by Player.'
+    const cmdMatch = ev.details.match(/Console command "(.+?)" executed by (.+)\./);
+    const command = cmdMatch ? cmdMatch[1] : ev.details;
+    const playerName = cmdMatch ? cmdMatch[2] : ev.player_name;
+
+    html += `<div class="cmd-event">
+      <span class="cmd-time">${time}</span>
+      <span class="cmd-server ${serverClass}">${ev.server_name || '?'}</span>
+      <span class="cmd-player" title="${playerName}">${playerName}</span>
+      <span class="cmd-command">${escapeHtmlCmd(command)}</span>
+    </div>`;
+  }
+  container.innerHTML = html;
+
+  // Pagination
+  let pagHtml = '';
+  if (totalPages > 1) {
+    if (page > 1) pagHtml += `<button class="log-page-btn" onclick="loadCommands(${page-1})">←</button>`;
+    const start = Math.max(1, page - 3);
+    const end = Math.min(totalPages, page + 3);
+    for (let i = start; i <= end; i++) {
+      pagHtml += `<button class="log-page-btn ${i===page?'active':''}" onclick="loadCommands(${i})">${i}</button>`;
+    }
+    if (page < totalPages) pagHtml += `<button class="log-page-btn" onclick="loadCommands(${page+1})">→</button>`;
+  }
+  document.getElementById('cmdPagination').innerHTML = pagHtml;
+}
+
+function escapeHtmlCmd(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function loadCmdPlayersList() {
+  const server = '{{ selected_server or "" }}';
+  const params = server ? `?server=${server}` : '';
+  fetch('/api/v1/admin/logs/players' + params)
+    .then(r => r.json())
+    .then(data => {
+      const dl = document.getElementById('cmdPlayersList');
+      dl.innerHTML = data.players.map(p => `<option value="${p}">`).join('');
+    });
+}
+
+document.getElementById('cmdSearchText').addEventListener('keydown', e => { if (e.key === 'Enter') loadCommands(1); });
+document.getElementById('cmdPlayerFilter').addEventListener('keydown', e => { if (e.key === 'Enter') loadCommands(1); });
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadCommands(1);
+  loadCmdPlayersList();
+});
+</script>
+{% else %}
+<div class="card" style="text-align:center;padding:var(--spacing-48);">
+  <div style="font-size:48px;margin-bottom:var(--spacing-16);">🔒</div>
+  <h3>Доступ запрещён</h3>
+  <p class="empty-state" style="margin-top:var(--spacing-12);">У вас нет прав для просмотра этого раздела.</p>
+</div>
+{% endif %}
 
 {# ════════════════════════════════════════════════════════════════════════ #}
 {# TAB: Античит                                                            #}

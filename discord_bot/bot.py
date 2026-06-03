@@ -523,6 +523,51 @@ async def execute_bot_action(action_type: str, payload: dict) -> bool:
                     logger.warning(f"Failed to delete ticket channel: {e}")
                 return True
 
+        elif action_type == "send_sub_project_embed":
+            # Send a new sub-project embed to the configured channel
+            channel_id = int(payload.get("channel_id", 0))
+            embed_data = payload.get("embed", {})
+            project_id = payload.get("project_id")
+            channel = bot.get_channel(channel_id)
+            if channel:
+                embed = discord.Embed.from_dict(embed_data)
+                msg = await channel.send(embed=embed)
+                # Report message_id back to NexusData
+                if project_id:
+                    await api_post(f"/api/v1/bot/sub-project/{project_id}/set-message-id", {
+                        "message_id": str(msg.id)
+                    })
+                return True
+
+        elif action_type == "edit_embed":
+            # Edit an existing embed message
+            channel_id = int(payload.get("channel_id", 0))
+            message_id = payload.get("message_id")
+            embed_data = payload.get("embed", {})
+            channel = bot.get_channel(channel_id)
+            if channel and message_id:
+                try:
+                    msg = await channel.fetch_message(int(message_id))
+                    embed = discord.Embed.from_dict(embed_data)
+                    await msg.edit(embed=embed)
+                    return True
+                except (discord.NotFound, discord.HTTPException) as e:
+                    logger.warning(f"Failed to edit embed: {e}")
+                    return False
+
+        elif action_type == "delete_message":
+            # Delete a message from a channel
+            channel_id = int(payload.get("channel_id", 0))
+            message_id = payload.get("message_id")
+            channel = bot.get_channel(channel_id)
+            if channel and message_id:
+                try:
+                    msg = await channel.fetch_message(int(message_id))
+                    await msg.delete()
+                    return True
+                except (discord.NotFound, discord.HTTPException):
+                    return True  # Already gone
+
         logger.warning(f"Unknown or failed bot action: {action_type}")
         return False
 
@@ -561,6 +606,14 @@ async def cmd_set_traps(ctx, channel: discord.TextChannel):
     """!settraps #channel - Set trap notifications channel."""
     await api_post("/api/v1/bot/config", {"key": "trap_channel_id", "value": str(channel.id)})
     await ctx.send(f"✅ Уведомления о ловушках будут приходить в {channel.mention}")
+
+
+@bot.command(name="setsubprojects")
+@commands.has_permissions(administrator=True)
+async def cmd_set_sub_projects(ctx, channel: discord.TextChannel):
+    """!setsubprojects #channel - Set sub-projects publication channel."""
+    await api_post("/api/v1/bot/config", {"key": "sub_projects_channel_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Корабли будут публиковаться в {channel.mention}")
 
 
 @bot.command(name="publishrating")

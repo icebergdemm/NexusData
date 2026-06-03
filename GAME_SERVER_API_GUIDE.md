@@ -246,6 +246,121 @@ X-API-Key: <ключ>
 
 Типы: `warning`, `reprimand`, `kick`, `ban`.
 
+### Подробная инструкция по созданию наказаний
+
+**Поля запроса:**
+
+| Поле | Тип | Обязательно | Описание |
+|---|---|---|---|
+| `player_steamid` | string | ✅ | SteamID64 игрока |
+| `type` | string | ✅ | Тип наказания: `warning`, `reprimand`, `kick`, `ban` |
+| `reason` | string | ❌ | Причина наказания (до 1000 символов) |
+| `expires_days` | int | ❌ | Срок в днях (null = навсегда, только для `ban`) |
+| `issued_by_name` | string | ❌ | Имя выдавшего (отображается в истории) |
+
+**Типы наказаний:**
+
+| Тип | Описание | Действие на сервере |
+|---|---|---|
+| `warning` | Предупреждение | Только запись в БД |
+| `reprimand` | Выговор | Только запись в БД |
+| `kick` | Кик | Ставит задачу `kick` в очередь действий |
+| `ban` | Бан | Ставит задачу `ban` в очередь действий |
+
+**Пример: Выдать бан на 7 дней:**
+```json
+{
+  "player_steamid": "76561198000000000",
+  "type": "ban",
+  "reason": "Нарушение правил RP",
+  "expires_days": 7,
+  "issued_by_name": "ND. AdminName"
+}
+```
+
+**Пример: Перманентный бан:**
+```json
+{
+  "player_steamid": "76561198000000000",
+  "type": "ban",
+  "reason": "Читы",
+  "expires_days": null,
+  "issued_by_name": "AntiCheat"
+}
+```
+
+**Пример: Предупреждение:**
+```json
+{
+  "player_steamid": "76561198000000000",
+  "type": "warning",
+  "reason": "Мелкое нарушение",
+  "issued_by_name": "ND. ModeratorName"
+}
+```
+
+**Ответ (успех):**
+```json
+{
+  "status": "ok",
+  "punishment_id": 15,
+  "action_id": 52
+}
+```
+
+`action_id` присутствует только для `kick` и `ban` — это ID задачи в очереди действий.
+
+### Как работает система выдачи бана
+
+1. **Создание наказания** → `POST /api/v1/game/punishments` с `type: "ban"`
+2. **NexusData** создаёт запись `PlayerPunishment` в БД (is_active=1)
+3. **NexusData** конвертирует SteamID64 → STEAM2 формат (для ванильной системы Barotrauma)
+4. **NexusData** ставит задачу `ban` в `ServerActionQueue` с `target_steamid` в формате STEAM2
+5. **Игровой сервер** получает задачу через `GET /api/v1/server/actions?server_name=ASPER1`
+6. **Игровой сервер** выполняет `Game.BanPlayer(steamid, reason)`
+7. **Игровой сервер** подтверждает: `POST /api/v1/server/actions/{id}/ack`
+
+### Как работает система разбана
+
+1. **Разбан** → `POST /api/v1/game/unban`
+2. **NexusData** помечает все активные баны игрока как `is_active=0` (void)
+3. **NexusData** ставит задачу `unban` в `ServerActionQueue`
+4. **Игровой сервер** получает задачу и выполняет `Game.UnbanPlayer(steamid)`
+5. **Игровой сервер** подтверждает выполнение через ACK
+
+### Проверка бана при входе игрока
+
+Игровой сервер может проверить бан при входе:
+```
+GET /api/v1/game/bans/check?steamid=76561198000000000
+```
+
+Если `banned: true` — не пускать игрока. NexusData автоматически проверяет `expires_at` и помечает истёкшие баны как неактивные.
+
+### Система Actions — полный цикл
+
+```
+┌─────────────┐     POST /punishments      ┌──────────────┐
+│  Админ-     │ ──────────────────────────► │  NexusData   │
+│  панель     │                             │              │
+└─────────────┘                             │  1. Создаёт  │
+                                            │     наказание│
+                                            │  2. Ставит   │
+                                            │     action   │
+                                            └──────┬───────┘
+                                                   │
+                    GET /server/actions             │
+┌─────────────┐ ◄──────────────────────────────────┘
+│  Игровой    │
+│  сервер     │  Получает: {action_type:"ban", target_steamid:"STEAM_0:1:123"}
+│  (ASPER1)   │
+│             │  Выполняет: Game.BanPlayer(...)
+│             │
+│             │  POST /server/actions/{id}/ack
+│             │ ──────────────────────────────────► NexusData
+└─────────────┘                                    (помечает done)
+```
+
 ---
 
 ## 5. Разбан

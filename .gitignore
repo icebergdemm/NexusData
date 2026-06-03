@@ -55,3 +55,6 @@ Thumbs.db
 
 # Uploaded files
 uploads/
+
+# Logs cache (downloaded from SFTP, stored as JSON)
+data/

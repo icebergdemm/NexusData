@@ -52,6 +52,9 @@
 
 <div class="rating-header">
   <h2>🏆 Рейтинг игроков</h2>
+  {% if check_permission(admin, 'ratings', 'view') %}
+  <a href="/admin/ratings/rewards" class="btn btn-primary" style="text-decoration:none;">🎁 Награды</a>
+  {% endif %}
 </div>
 
 <!-- Параметры формулы -->

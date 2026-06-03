@@ -21,11 +21,37 @@ from models import (
 )
 
 # ── In-memory online players store ───────────────────────────────────────────
-# Per-server storage: server_name -> {steamid -> player_info_dict}
-# Combined view: all players across all servers (for backward compat)
-_online_players: Dict[str, dict] = {}           # steamid -> info (combined, all servers)
-_online_players_by_server: Dict[str, Dict[str, dict]] = {}  # server_name -> {steamid -> info}
+# Flat per-player tracking with TTL. Each player entry has its own `last_seen`.
+# A player is "online" if seen within _ONLINE_TTL_SECONDS.
+# This design has NO bulk-clear operation, so one server's report can NEVER
+# wipe another server's players (fixes the "online overwrite" bug when both
+# servers sit behind the same proxy / don't send a distinct server_name).
+_online_players: Dict[str, dict] = {}           # steamid -> info (includes last_seen, server_name)
 _online_players_lock = threading.Lock()
+
+# A player is considered offline if not refreshed within this many seconds.
+# Should be ~2.5x the game server's report interval (reports every ~30s → 90s TTL).
+_ONLINE_TTL_SECONDS = 90
+
+# Legacy alias kept for any external references; rebuilt on demand.
+_online_players_by_server: Dict[str, Dict[str, dict]] = {}
+_online_players_last_update: Dict[str, "datetime"] = {}
+
+
+def _prune_stale_online(now=None):
+    """Remove players whose last_seen exceeded the TTL. MUST hold the lock."""
+    if now is None:
+        now = _now_msk()
+    stale = []
+    for sid, info in _online_players.items():
+        last_seen = info.get("last_seen")
+        if last_seen is None:
+            stale.append(sid)
+            continue
+        if (now - last_seen).total_seconds() > _ONLINE_TTL_SECONDS:
+            stale.append(sid)
+    for sid in stale:
+        _online_players.pop(sid, None)
 from schemas import (
     PlayerDataCreate, PlayerStatsCreate, PaginationParams, PlayerDataOut, MessageEnvelope, MessageProcessResult,
     PlayerKillCreate, PlayerRoleActionCreate, PlayerIPCreate, PlayerNameCreate, PlayerRoleStatCreate, PlayerSessionCreate
@@ -393,8 +419,12 @@ class PlayerService:
             # Update existing player
             update_data = {
                 "player_last_time_name": player_data.player_last_time_name,
-                "achievements": safe_get_list(player_data.achievements),
             }
+
+            # NEVER overwrite achievements from game server API.
+            # Achievements (kval_kits, items, stats, talents) are managed
+            # exclusively through the admin panel. Game server should not
+            # send achievements data — it will be ignored.
             
             # Only update play_time if explicitly provided (not None)
             if player_data.play_time is not None:
@@ -431,7 +461,8 @@ class PlayerService:
             updated_player = self.player_repo.update(existing.player_id, update_data)
             return PlayerDataOut.from_orm_with_mappings(updated_player, settings.ranks_mapping, settings.kits_mapping)
         
-        # Create new player
+        # Create new player (handle race condition with duplicate key)
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
         new_player = PlayerData(
             player_last_time_name=player_data.player_last_time_name,
             player_steamid=player_data.player_steamid,
@@ -458,13 +489,21 @@ class PlayerService:
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
         
-        created_player = self.player_repo.create(new_player)
-        
-        # Create stats for new player
-        new_stats = PlayerStats(player_id=created_player.player_id)
-        self.stats_repo.create(created_player.player_id, new_stats)
-        
-        return PlayerDataOut.from_orm_with_mappings(created_player, settings.ranks_mapping, settings.kits_mapping)
+        try:
+            created_player = self.player_repo.create(new_player)
+            
+            # Create stats for new player
+            new_stats = PlayerStats(player_id=created_player.player_id)
+            self.stats_repo.create(created_player.player_id, new_stats)
+            
+            return PlayerDataOut.from_orm_with_mappings(created_player, settings.ranks_mapping, settings.kits_mapping)
+        except SAIntegrityError:
+            self.db.rollback()
+            # Another request created this player concurrently — fetch and update
+            existing = self.player_repo.get_by_steamid(player_data.player_steamid)
+            if existing:
+                return PlayerDataOut.from_orm_with_mappings(existing, settings.ranks_mapping, settings.kits_mapping)
+            raise
     
     def search_players(self, query: str, limit: int = 10) -> List[PlayerData]:
         """Search players by name or SteamID"""
@@ -480,19 +519,27 @@ class PlayerService:
         if existing:
             return existing
         
-        # Create new player
-        new_player = PlayerData(
-            player_steamid=steamid,
-            player_last_time_name=player_name or f"Player_{steamid[-8:]}",
-        )
-        created_player = self.player_repo.create(new_player)
-        
-        # Create stats for new player
-        new_stats = PlayerStats(player_id=created_player.player_id)
-        self.stats_repo.create(created_player.player_id, new_stats)
-        
-        logger.info(f"Created new player: {created_player.player_id} ({steamid})")
-        return created_player
+        # Create new player (handle race condition with duplicate key)
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
+        try:
+            new_player = PlayerData(
+                player_steamid=steamid,
+                player_last_time_name=player_name or f"Player_{steamid[-8:]}",
+            )
+            created_player = self.player_repo.create(new_player)
+            
+            # Create stats for new player
+            new_stats = PlayerStats(player_id=created_player.player_id)
+            self.stats_repo.create(created_player.player_id, new_stats)
+            
+            logger.info(f"Created new player: {created_player.player_id} ({steamid})")
+            return created_player
+        except SAIntegrityError:
+            self.db.rollback()
+            existing = self.player_repo.get_by_steamid(steamid)
+            if existing:
+                return existing
+            raise
     
     def update_player(self, player_id: int, update_data: dict) -> PlayerData:
         """Update player data"""
@@ -1079,11 +1126,22 @@ class ServerModerationService:
     # ── Online players snapshot (in-memory) ────────────────────────────────────────────────
 
     def replace_online_players(self, players, server_name: Optional[str] = None) -> int:
-        """Replace the full online-players snapshot in memory. Returns new player count."""
-        now = _now_msk()
-        new_snapshot: Dict[str, dict] = {}
+        """Merge an online-players report into the in-memory store.
 
-        # Collect all steamids to batch-query DB
+        Uses per-player TTL tracking instead of bulk snapshot replacement.
+        Each reported player is refreshed with a new `last_seen`. Players are
+        pruned individually once they exceed the TTL. This makes it impossible
+        for one server's report to wipe another server's online players —
+        the core fix for the "online overwrite" bug.
+
+        Returns the count of players reported in THIS request.
+        """
+        now = _now_msk()
+
+        if server_name:
+            server_name = server_name.strip()
+
+        # Collect valid (steamid, payload) tuples
         player_list = []
         for p in players:
             steamid = p.steamid if hasattr(p, "steamid") else p.get("steamid", "")
@@ -1091,63 +1149,76 @@ class ServerModerationService:
                 continue
             player_list.append((steamid, p))
 
-        if not player_list:
-            with _online_players_lock:
-                _online_players.clear()
-            return 0
-
+        # Batch fetch PlayerData for reported steamids
         steamids = [sid for sid, _ in player_list]
-
-        # Batch fetch PlayerData
-        pd_rows = {
-            r.player_steamid: r
-            for r in self.db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
-        }
-
-        with _online_players_lock:
-            srv_key = server_name or "__default__"
-            prev_snapshot = dict(_online_players_by_server.get(srv_key, {}))
-
-        for steamid, p in player_list:
-            player_name = p.player_name if hasattr(p, "player_name") else p.get("player_name")
-            job_id = p.job_id if hasattr(p, "job_id") else p.get("job_id")
-            ping = p.ping if hasattr(p, "ping") else p.get("ping")
-
-            pd = pd_rows.get(steamid)
-            play_time = pd.play_time if pd else 0
-            player_id = pd.player_id if pd else None
-            db_name = pd.player_last_time_name if pd else None
-            character_name = db_name if db_name and db_name != player_name else None
-
-            # Preserve join_time if player was already online, else record now
-            join_time = prev_snapshot[steamid]["join_time"] if steamid in prev_snapshot else now
-
-            new_snapshot[steamid] = {
-                "player_steamid": steamid,
-                "player_name": player_name or db_name or steamid,
-                "character_name": character_name,
-                "job_id": job_id,
-                "ping": ping,
-                "player_id": player_id,
-                "last_seen": now,
-                "join_time": join_time,
-                "total_play_time": play_time,
-                "is_new_player": play_time < 7200,
-                "server_name": server_name,
+        pd_rows = {}
+        if steamids:
+            pd_rows = {
+                r.player_steamid: r
+                for r in self.db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
             }
 
-        with _online_players_lock:
-            # Update per-server snapshot
-            srv_key = server_name or "__default__"
-            _online_players_by_server[srv_key] = new_snapshot
-            # Rebuild combined view from all servers
-            _online_players.clear()
-            for srv_players in _online_players_by_server.values():
-                _online_players.update(srv_players)
+        newly_joined = set()
 
-        # ── Trap check ─────────────────────────────────────────────────────────
-        # Fire Discord webhook if any newly-joined player has an active trap.
-        newly_joined = set(new_snapshot.keys()) - set(prev_snapshot.keys())
+        with _online_players_lock:
+            # Track which steamids THIS server currently reports
+            reported_now = set()
+
+            for steamid, p in player_list:
+                reported_now.add(steamid)
+                player_name = p.player_name if hasattr(p, "player_name") else p.get("player_name")
+                job_id = p.job_id if hasattr(p, "job_id") else p.get("job_id")
+                ping = p.ping if hasattr(p, "ping") else p.get("ping")
+
+                pd = pd_rows.get(steamid)
+                play_time = pd.play_time if pd else 0
+                player_id = pd.player_id if pd else None
+                db_name = pd.player_last_time_name if pd else None
+                character_name = db_name if db_name and db_name != player_name else None
+
+                existing = _online_players.get(steamid)
+                # Detect newly joined (not previously online OR was on a different server)
+                if existing is None:
+                    newly_joined.add(steamid)
+                    join_time = now
+                else:
+                    join_time = existing.get("join_time", now)
+
+                _online_players[steamid] = {
+                    "player_steamid": steamid,
+                    "player_name": player_name or db_name or steamid,
+                    "character_name": character_name,
+                    "job_id": job_id,
+                    "ping": ping,
+                    "player_id": player_id,
+                    "last_seen": now,
+                    "join_time": join_time,
+                    "total_play_time": play_time,
+                    "is_new_player": play_time < 7200,
+                    "server_name": server_name,
+                }
+
+            # Remove players that THIS server previously reported but no longer does.
+            # Only touch players whose server_name matches this server — never
+            # remove players belonging to a different server.
+            if server_name:
+                to_remove = [
+                    sid for sid, info in _online_players.items()
+                    if info.get("server_name") == server_name and sid not in reported_now
+                ]
+                for sid in to_remove:
+                    _online_players.pop(sid, None)
+
+            # Prune globally stale players (covers servers that stopped reporting,
+            # or players reported without a server_name).
+            _prune_stale_online(now)
+
+            logger.debug(
+                f"Online merge: server={server_name}, reported={len(reported_now)}, "
+                f"total_online={len(_online_players)}"
+            )
+
+        # ── Trap check for newly joined players ────────────────────────────────
         if newly_joined:
             try:
                 active_traps = (
@@ -1158,9 +1229,9 @@ class ServerModerationService:
                 if active_traps:
                     from models import DiscordBotAction
                     for trap in active_traps:
-                        pinfo = new_snapshot.get(trap.target_steamid, {})
+                        with _online_players_lock:
+                            pinfo = _online_players.get(trap.target_steamid, {})
                         pname = pinfo.get("player_name", trap.target_steamid)
-                        # Queue bot notification
                         bot_action = DiscordBotAction(
                             action_type="trap_triggered",
                             payload={
@@ -1171,7 +1242,6 @@ class ServerModerationService:
                             },
                         )
                         self.db.add(bot_action)
-                        # Mark trap as triggered
                         trap.active = 0
                         trap.triggered_at = _now_msk()
                     self.db.commit()
@@ -1179,25 +1249,41 @@ class ServerModerationService:
             except Exception as e:
                 logging.warning(f"Trap check error: {e}")
 
-        return len(new_snapshot)
+        return len(player_list)
 
     def get_online_players(self, server_name: Optional[str] = None) -> List[dict]:
         with _online_players_lock:
+            # Rebuild combined view on read to drop stale server buckets
+            _rebuild_combined_view()
+    def get_online_players(self, server_name: Optional[str] = None) -> List[dict]:
+        with _online_players_lock:
+            # Prune stale players first so counts are always accurate
+            _prune_stale_online()
             if server_name:
-                srv_key = server_name
-                source = _online_players_by_server.get(srv_key, {})
+                sn_lower = server_name.strip().lower()
+                source = {
+                    sid: info for sid, info in _online_players.items()
+                    if (info.get("server_name") or "").lower() == sn_lower
+                }
             else:
-                source = _online_players
+                source = dict(_online_players)
             result = sorted(source.values(), key=lambda x: (x.get("player_name") or ""))
         return result
 
     def get_online_servers(self) -> List[str]:
-        """Return list of server names that have reported players."""
+        """Return list of server names that currently have online players."""
         with _online_players_lock:
-            return [k for k in _online_players_by_server.keys() if k != "__default__"]
+            _prune_stale_online()
+            servers = set()
+            for info in _online_players.values():
+                sn = info.get("server_name")
+                if sn:
+                    servers.add(sn)
+            return sorted(servers)
 
     def get_recent_offline_players(self, limit: int = 50) -> List[PlayerData]:
         with _online_players_lock:
+            _prune_stale_online()
             online_steamids = set(_online_players.keys())
         q = self.db.query(PlayerData)
         if online_steamids:
@@ -1318,13 +1404,16 @@ class ServerModerationService:
                 row.ack_asper2 = ack_value
 
             if not success:
+                # Any failure → mark entire action as failed
                 row.executed = 2
                 row.executed_at = datetime.utcnow()
                 row.error_message = error_message
             else:
-                # Mark done on first successful ACK (don't wait for second server)
-                row.executed = 1
-                row.executed_at = datetime.utcnow()
+                # Only mark done when BOTH servers have ACKed successfully
+                if row.ack_asper1 == 1 and row.ack_asper2 == 1:
+                    row.executed = 1
+                    row.executed_at = datetime.utcnow()
+                # Otherwise leave executed=0, the other server still needs to ACK
         else:
             # Targeted action or no server_name in ACK - mark immediately
             row.executed = 1 if success else 2
@@ -1333,10 +1422,22 @@ class ServerModerationService:
 
         self.db.commit()
 
-        # If this was a successful trap action, fire Discord webhook
+        # If this was a successful trap ACK, fire Discord notification
+        # For traps: trigger on first successful ACK only (check if not already triggered)
         if success and row.action_type == "trap":
-            # Only fire once (when first server ACKs for broadcast, or on targeted ACK)
-            if row.executed == 1 or (is_broadcast and (row.ack_asper1 == 1 or row.ack_asper2 == 1)):
+            # Guard against double-firing: check if trap already created for this action
+            existing_trap = self.db.query(PlayerTrap).filter(
+                PlayerTrap.target_steamid == row.target_steamid,
+                PlayerTrap.active == 0,
+                PlayerTrap.triggered_at.isnot(None),
+            ).order_by(PlayerTrap.triggered_at.desc()).first()
+            # Only fire if no recent trap was triggered for this steamid in last 60 seconds
+            from datetime import timedelta
+            already_fired = False
+            if existing_trap and existing_trap.triggered_at:
+                if (datetime.utcnow() - existing_trap.triggered_at) < timedelta(seconds=60):
+                    already_fired = True
+            if not already_fired:
                 self._handle_trap_triggered(row)
 
         return True

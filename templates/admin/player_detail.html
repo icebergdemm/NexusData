@@ -797,6 +797,113 @@ function closeLabelCatModal() {
 </div>
 {% endif %}{# end has_edit or has_delete for data sections #}
 
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# PLAYER SERVER LOGS (only for users with moderation.delete permission)   #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% if check_permission(admin, 'moderation', 'delete') %}
+<div class="block-card" style="margin-top:var(--spacing-16);">
+  <div class="block-card-header">
+    <h3>📋 Серверные логи игрока</h3>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <select id="playerLogAction" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 8px;color:var(--white);font-size:11px;">
+        <option value="all">Все действия</option>
+        <option value="chat">💬 Чат</option>
+        <option value="console">⚡ Консоль</option>
+        <option value="death">💀 Смерть</option>
+        <option value="picked_up">📦 Подобрал</option>
+        <option value="placed">📥 Положил</option>
+        <option value="equipped">🎒 Экипировал</option>
+        <option value="reactor">⚛️ Реактор</option>
+        <option value="repair">🔧 Ремонт</option>
+        <option value="fabrication">🏭 Фабрикация</option>
+        <option value="wire">🔌 Провода</option>
+        <option value="opened">🚪 Двери</option>
+      </select>
+      <input type="datetime-local" id="playerLogFrom" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 8px;color:var(--white);font-size:11px;width:155px;">
+      <input type="datetime-local" id="playerLogTo" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 8px;color:var(--white);font-size:11px;width:155px;">
+      <button onclick="loadPlayerLogs(1)" style="background:var(--primary-blue);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:11px;cursor:pointer;">🔍</button>
+    </div>
+  </div>
+  <div id="playerLogsContainer" style="max-height:400px;overflow-y:auto;padding:12px;">
+    <div style="text-align:center;color:var(--gray);padding:20px;font-size:13px;">Нажмите 🔍 для загрузки логов</div>
+  </div>
+  <div id="playerLogsPagination" style="display:flex;justify-content:center;gap:6px;padding:8px 12px;border-top:1px solid var(--stroke-01);"></div>
+</div>
+
+<style>
+.pl-event { display:flex; gap:8px; padding:4px 8px; border-radius:4px; font-size:12px; line-height:1.4; }
+.pl-event:hover { background:var(--white-003); }
+.pl-event .pl-time { color:var(--gray); font-family:monospace; font-size:10px; white-space:nowrap; min-width:100px; }
+.pl-event .pl-badge { font-size:9px; padding:1px 5px; border-radius:3px; font-weight:600; white-space:nowrap; }
+.pl-event .pl-detail { color:var(--white); flex:1; word-break:break-word; }
+.pl-event[data-type="chat"] { border-left:2px solid #22d06f; }
+.pl-event[data-type="console"] { border-left:2px solid #ff4444; }
+.pl-event[data-type="death"] { border-left:2px solid #ff0066; }
+.pl-badge-chat { background:rgba(34,208,111,.15); color:#22d06f; }
+.pl-badge-console { background:rgba(255,68,68,.15); color:#ff6666; }
+.pl-badge-death { background:rgba(255,0,102,.15); color:#ff4488; }
+.pl-badge-default { background:rgba(128,128,128,.12); color:var(--gray); }
+.pl-page-btn { padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; border:1px solid var(--stroke-01); background:transparent; color:var(--gray); }
+.pl-page-btn:hover { border-color:var(--primary-blue); color:var(--white); }
+.pl-page-btn.active { background:var(--primary-blue); color:#fff; border-color:var(--primary-blue); }
+</style>
+
+<script>
+let plCurrentPage = 1;
+function loadPlayerLogs(page) {
+  plCurrentPage = page || 1;
+  const action = document.getElementById('playerLogAction').value;
+  const timeFrom = document.getElementById('playerLogFrom').value;
+  const timeTo = document.getElementById('playerLogTo').value;
+
+  {# Build comma-separated list of all known player names for comprehensive search #}
+  const playerNames = '{{ player.player_last_time_name }}{% for n in names %},{{ n.nickname }}{% endfor %}';
+
+  const params = new URLSearchParams({page: plCurrentPage, page_size: 80, player_names: playerNames});
+  if (action && action !== 'all') params.set('action_type', action);
+  if (timeFrom) params.set('time_from', timeFrom);
+  if (timeTo) params.set('time_to', timeTo);
+
+  const container = document.getElementById('playerLogsContainer');
+  container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray);">⏳ Загрузка...</div>';
+
+  fetch('/api/v1/admin/logs/events?' + params.toString())
+    .then(r => r.json())
+    .then(data => renderPlayerLogs(data.events, data.total, data.page, data.total_pages))
+    .catch(() => { container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--red);">Ошибка загрузки</div>'; });
+}
+
+function renderPlayerLogs(events, total, page, totalPages) {
+  const container = document.getElementById('playerLogsContainer');
+  if (!events || events.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--gray);">Нет событий</div>';
+    document.getElementById('playerLogsPagination').innerHTML = '';
+    return;
+  }
+
+  const icons = {'chat':'💬','console':'⚡','death':'💀','picked_up':'📦','placed':'📥','equipped':'🎒','reactor':'⚛️','repair':'🔧','fabrication':'🏭','wire':'🔌','opened':'🚪','closed':'🚪','pump':'💧','other':'·'};
+  let html = '';
+  for (const ev of events) {
+    const t = new Date(ev.timestamp).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const icon = icons[ev.action_type] || '·';
+    const badgeClass = ['chat','console','death'].includes(ev.action_type) ? 'pl-badge-'+ev.action_type : 'pl-badge-default';
+    const d = document.createElement('span'); d.textContent = ev.details;
+    html += `<div class="pl-event" data-type="${ev.action_type}"><span class="pl-time">${t}</span><span class="pl-badge ${badgeClass}">${icon}</span><span class="pl-detail">${d.innerHTML}</span></div>`;
+  }
+  container.innerHTML = html;
+
+  let pagHtml = '';
+  if (totalPages > 1) {
+    if (page > 1) pagHtml += `<button class="pl-page-btn" onclick="loadPlayerLogs(${page-1})">←</button>`;
+    const s = Math.max(1, page-3), e = Math.min(totalPages, page+3);
+    for (let i=s;i<=e;i++) pagHtml += `<button class="pl-page-btn ${i===page?'active':''}" onclick="loadPlayerLogs(${i})">${i}</button>`;
+    if (page < totalPages) pagHtml += `<button class="pl-page-btn" onclick="loadPlayerLogs(${page+1})">→</button>`;
+  }
+  document.getElementById('playerLogsPagination').innerHTML = pagHtml;
+}
+</script>
+{% endif %}
+
 <!-- ════════════════════════ MODALS ════════════════════════ -->
 
 {% if check_permission(admin, 'players', 'edit') %}

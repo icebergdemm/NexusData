@@ -323,8 +323,10 @@ async def admin_dashboard(
 
     # Quick stats
     unique_today = len({s.player_id for s in sessions})
-    # Current online (combined from all servers)
+    # Current online (combined from all servers, pruned of stale entries)
+    from services import _prune_stale_online
     with _online_players_lock:
+        _prune_stale_online()
         current_online = len(_online_players)
 
     # Total players
@@ -761,8 +763,9 @@ async def admin_player_detail(
         for k in _raw_kval_kits
     ]
 
-    from services import _online_players, _online_players_lock
+    from services import _online_players, _online_players_lock, _prune_stale_online
     with _online_players_lock:
+        _prune_stale_online()
         is_online = player.player_steamid in _online_players
 
     # Permission flags for template
@@ -2851,6 +2854,9 @@ def _get_editable_config() -> dict:
         "sftp_server_2_password": s.sftp_server_2_password,
         "sftp_server_2_key_path": s.sftp_server_2_key_path,
         "sftp_server_2_remote_dir": s.sftp_server_2_remote_dir,
+        "sftp_server_1_logs_dir": s.sftp_server_1_logs_dir,
+        "sftp_server_2_logs_dir": s.sftp_server_2_logs_dir,
+        "sub_projects_discord_channel_id": s.sub_projects_discord_channel_id,
     }
 
 
@@ -2910,6 +2916,9 @@ async def admin_administration_config_save(
         "sftp_server_2_password": "SFTP_SERVER_2_PASSWORD",
         "sftp_server_2_key_path": "SFTP_SERVER_2_KEY_PATH",
         "sftp_server_2_remote_dir": "SFTP_SERVER_2_REMOTE_DIR",
+        "sftp_server_1_logs_dir": "SFTP_SERVER_1_LOGS_DIR",
+        "sftp_server_2_logs_dir": "SFTP_SERVER_2_LOGS_DIR",
+        "sub_projects_discord_channel_id": "SUB_PROJECTS_DISCORD_CHANNEL_ID",
     }
 
     for field, env_key in field_map.items():

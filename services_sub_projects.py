@@ -52,21 +52,57 @@ class SFTPManager:
         self.server_number = server_number
 
     def _connect(self) -> paramiko.SFTPClient:
-        """Establish SFTP connection."""
+        """Establish SFTP connection with timeouts to prevent app freezes."""
         if not self.host:
             raise HTTPException(status_code=500, detail=f"SFTP сервер {self.server_number} не настроен")
 
-        transport = paramiko.Transport((self.host, self.port))
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(15)  # 15s connection timeout
+        try:
+            sock.connect((self.host, self.port))
+        except (socket.timeout, OSError) as e:
+            sock.close()
+            raise HTTPException(status_code=504, detail=f"SFTP сервер {self.name} недоступен: {e}")
 
-        if self.key_path and os.path.exists(self.key_path):
-            pkey = paramiko.RSAKey.from_private_key_file(self.key_path)
-            transport.connect(username=self.username, pkey=pkey)
-        elif self.password:
-            transport.connect(username=self.username, password=self.password)
-        else:
-            raise HTTPException(status_code=500, detail=f"Нет учётных данных для SFTP сервера {self.server_number}")
+        transport = paramiko.Transport(sock)
+        transport.set_keepalive(30)  # Keepalive every 30s
+        # Banner/auth timeout
+        transport.banner_timeout = 15
+        transport.auth_timeout = 15
 
-        return paramiko.SFTPClient.from_transport(transport)
+        try:
+            if self.key_path and os.path.exists(self.key_path):
+                pkey = paramiko.RSAKey.from_private_key_file(self.key_path)
+                transport.connect(username=self.username, pkey=pkey)
+            elif self.password:
+                transport.connect(username=self.username, password=self.password)
+            else:
+                transport.close()
+                raise HTTPException(status_code=500, detail=f"Нет учётных данных для SFTP сервера {self.server_number}")
+        except Exception as e:
+            transport.close()
+            raise HTTPException(status_code=500, detail=f"Ошибка аутентификации SFTP {self.name}: {e}")
+
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        sftp.get_channel().settimeout(30)  # 30s per-operation timeout
+        sftp._nd_transport = transport  # Keep reference for cleanup
+        return sftp
+
+    def _close_sftp(self, sftp):
+        """Close SFTP client AND its underlying transport."""
+        if not sftp:
+            return
+        transport = getattr(sftp, '_nd_transport', None)
+        try:
+            sftp.close()
+        except Exception:
+            pass
+        if transport:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     def upload_file(self, local_path: str, remote_filename: str) -> bool:
         """Upload a .sub file to the remote server."""
@@ -81,8 +117,7 @@ class SFTPManager:
             logger.error(f"SFTP upload failed (server {self.server_number}): {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка загрузки на {self.name}: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close_sftp(sftp)
 
     def delete_file(self, remote_filename: str) -> bool:
         """Delete a .sub file from the remote server."""
@@ -100,8 +135,7 @@ class SFTPManager:
             logger.error(f"SFTP delete failed (server {self.server_number}): {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка удаления с {self.name}: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close_sftp(sftp)
 
     def read_filelist_xml(self) -> Optional[str]:
         """Read filelist.xml from the remote server."""
@@ -121,8 +155,7 @@ class SFTPManager:
             logger.error(f"SFTP read filelist.xml failed (server {self.server_number}): {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка чтения filelist.xml с {self.name}: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close_sftp(sftp)
 
     def write_filelist_xml(self, content: str) -> bool:
         """Write filelist.xml to the remote server."""
@@ -138,15 +171,19 @@ class SFTPManager:
             logger.error(f"SFTP write filelist.xml failed (server {self.server_number}): {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка записи filelist.xml на {self.name}: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close_sftp(sftp)
 
     def add_to_filelist(self, sub_filename: str) -> bool:
         """Add a .sub file entry to filelist.xml on the remote server."""
         xml_content = self.read_filelist_xml()
         if xml_content is None:
-            # Create minimal filelist.xml
-            xml_content = '<?xml version="1.0" encoding="utf-8"?>\n<contentpackage>\n</contentpackage>'
+            # Create minimal filelist.xml matching Barotrauma format
+            xml_content = (
+                '<?xml version="1.0" encoding="utf-8"?>\n'
+                '<contentpackage name="Projects_Main" modversion="1.0.0" '
+                'corepackage="False" gameversion="1.11.5.0">\n'
+                '</contentpackage>'
+            )
 
         try:
             root = ET.fromstring(xml_content)
@@ -161,13 +198,25 @@ class SFTPManager:
                 logger.info(f"{sub_filename} already in filelist.xml on server {self.server_number}")
                 return True
 
-        # Add new Sub element
-        sub_elem = ET.SubElement(root, "Sub")
-        sub_elem.set("file", f"Submarines/{sub_filename}")
+        # Add new Submarine element with %ModDir% path
+        sub_elem = ET.SubElement(root, "Submarine")
+        sub_elem.set("file", f"%ModDir%/{sub_filename}")
 
-        # Write back
-        new_xml = ET.tostring(root, encoding='unicode', xml_declaration=True)
+        # Write back with proper formatting
+        new_xml = self._serialize_filelist(root)
         return self.write_filelist_xml(new_xml)
+
+    def _serialize_filelist(self, root: ET.Element) -> str:
+        """Serialize filelist.xml preserving self-closing tags and formatting."""
+        # Build XML manually to get proper self-closing <Submarine ... /> tags
+        attrs = ' '.join(f'{k}="{v}"' for k, v in root.attrib.items())
+        lines = [f'<?xml version="1.0" encoding="utf-8"?>']
+        lines.append(f'<contentpackage {attrs}>' if attrs else '<contentpackage>')
+        for child in root:
+            child_attrs = ' '.join(f'{k}="{v}"' for k, v in child.attrib.items())
+            lines.append(f'  <{child.tag} {child_attrs} />')
+        lines.append('</contentpackage>')
+        return '\n'.join(lines)
 
     def remove_from_filelist(self, sub_filename: str) -> bool:
         """Remove a .sub file entry from filelist.xml on the remote server."""
@@ -192,7 +241,7 @@ class SFTPManager:
             root.remove(elem)
 
         if to_remove:
-            new_xml = ET.tostring(root, encoding='unicode', xml_declaration=True)
+            new_xml = self._serialize_filelist(root)
             return self.write_filelist_xml(new_xml)
 
         return True
@@ -429,7 +478,7 @@ class SubProjectService:
         self.db.commit()
         return True
 
-    # ── Discord Webhook ───────────────────────────────────────────────────────
+    # ── Discord Bot Publishing ────────────────────────────────────────────────
 
     def build_embed(self, project: SubProject, image_url: Optional[str] = None) -> dict:
         """Build a Discord embed dict for the project."""
@@ -467,14 +516,15 @@ class SubProjectService:
         return embed
 
     def publish_to_discord(self, project_id: int, base_url: str) -> Optional[str]:
-        """Publish or update Discord embed for a project. Returns message_id."""
+        """Publish or update Discord embed for a project via the Discord bot.
+        
+        Uses DiscordBotAction queue to send/edit messages through the bot
+        in the configured sub_projects channel. Falls back to webhook if
+        channel is not configured.
+        """
         project = self.get_by_id(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Проект не найден")
-
-        webhook_url = settings.sub_projects_webhook_url
-        if not webhook_url:
-            raise HTTPException(status_code=400, detail="Webhook URL не настроен (SUB_PROJECTS_WEBHOOK_URL)")
 
         # Build image URL
         image_url = None
@@ -483,6 +533,54 @@ class SubProjectService:
 
         embed = self.build_embed(project, image_url)
 
+        # Try bot-based publishing first (via channel)
+        channel_id = settings.sub_projects_discord_channel_id
+        if channel_id:
+            return self._publish_via_bot(project, embed, channel_id)
+
+        # Fallback to webhook
+        webhook_url = settings.sub_projects_webhook_url
+        if not webhook_url:
+            raise HTTPException(status_code=400, detail="Ни канал Discord бота, ни Webhook URL не настроены")
+
+        return self._publish_via_webhook(project, embed, webhook_url)
+
+    def _publish_via_bot(self, project: SubProject, embed: dict, channel_id: str) -> Optional[str]:
+        """Publish embed via Discord bot action queue."""
+        from models import DiscordBotAction
+
+        if project.discord_message_id:
+            # Edit existing message via bot
+            action = DiscordBotAction(
+                action_type="edit_embed",
+                payload={
+                    "channel_id": channel_id,
+                    "message_id": project.discord_message_id,
+                    "embed": embed,
+                },
+            )
+            self.db.add(action)
+            self.db.commit()
+            logger.info(f"Queued edit_embed bot action for project {project.id}")
+            return project.discord_message_id
+        else:
+            # Send new message via bot
+            action = DiscordBotAction(
+                action_type="send_sub_project_embed",
+                payload={
+                    "channel_id": channel_id,
+                    "embed": embed,
+                    "project_id": project.id,
+                },
+            )
+            self.db.add(action)
+            self.db.commit()
+            logger.info(f"Queued send_sub_project_embed bot action for project {project.id}")
+            # Message ID will be set by bot after sending
+            return "pending"
+
+    def _publish_via_webhook(self, project: SubProject, embed: dict, webhook_url: str) -> Optional[str]:
+        """Fallback: publish embed via Discord webhook."""
         if project.discord_message_id:
             # Edit existing message
             edit_url = f"{webhook_url}/messages/{project.discord_message_id}"
@@ -523,6 +621,23 @@ class SubProjectService:
         if not project or not project.discord_message_id:
             return False
 
+        channel_id = settings.sub_projects_discord_channel_id
+        if channel_id:
+            # Delete via bot
+            from models import DiscordBotAction
+            action = DiscordBotAction(
+                action_type="delete_message",
+                payload={
+                    "channel_id": channel_id,
+                    "message_id": project.discord_message_id,
+                },
+            )
+            self.db.add(action)
+            project.discord_message_id = None
+            self.db.commit()
+            return True
+
+        # Fallback to webhook
         webhook_url = settings.sub_projects_webhook_url
         if not webhook_url:
             return False

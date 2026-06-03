@@ -1,0 +1,487 @@
+{% extends "base.html" %}
+{% block title %}Награды рейтинга - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.rw-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:20px; }
+.rw-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.rw-tabs { display:flex; gap:4px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:3px; margin-bottom:20px; flex-wrap:wrap; }
+.rw-tab { padding:8px 18px; border-radius:6px; font-size:13px; font-weight:700; color:var(--gray); cursor:pointer; border:none; background:transparent; transition:.2s; }
+.rw-tab:hover { color:var(--white); }
+.rw-tab.active { background:var(--primary-blue); color:#fff; }
+.rw-panel { display:none; }
+.rw-panel.active { display:block; }
+
+.card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:20px; margin-bottom:16px; }
+.card h3 { font-size:15px; font-weight:700; color:var(--white); margin:0 0 16px; }
+
+.btn { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; border:none; transition:.2s; text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-primary:hover { background:#2b7af0; }
+.btn-secondary { background:var(--stroke-01); color:var(--gray); }
+.btn-secondary:hover { color:#fff; }
+.btn-danger { background:var(--red); color:#fff; }
+.btn-success { background:var(--green, #22d06f); color:#fff; }
+.btn-sm { padding:4px 10px; font-size:11px; }
+
+/* Reward group cards */
+.rg-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:14px; }
+.rg-card { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:10px; padding:16px; display:flex; flex-direction:column; gap:10px; }
+.rg-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.rg-card-title { font-size:15px; font-weight:700; color:var(--white); }
+.rg-card-id { font-size:10px; color:var(--gray); font-family:monospace; background:rgba(0,0,0,.25); padding:2px 6px; border-radius:4px; }
+.rg-section { font-size:11px; color:var(--gray); font-weight:700; text-transform:uppercase; letter-spacing:.4px; margin-top:4px; }
+.rg-chips { display:flex; flex-wrap:wrap; gap:5px; }
+.rg-chip { font-size:11px; padding:3px 8px; border-radius:12px; background:rgba(26,104,222,.12); color:#7fb0ff; border:1px solid rgba(26,104,222,.25); }
+.rg-chip-item { background:rgba(212,168,67,.12); color:#e0b84d; border-color:rgba(212,168,67,.25); }
+.rg-chip-stat { background:rgba(34,208,111,.12); color:#3cd47a; border-color:rgba(34,208,111,.25); }
+.rg-chip-talent { background:rgba(174,0,122,.12); color:#e06cc0; border-color:rgba(174,0,122,.25); }
+.rg-actions { display:flex; gap:6px; margin-top:auto; padding-top:8px; }
+
+/* Modal */
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(1,9,38,.8); backdrop-filter:blur(4px); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.active { display:flex; }
+.modal-box { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:28px; width:92%; max-width:640px; max-height:90vh; overflow-y:auto; }
+.modal-box h3 { font-size:18px; font-weight:700; color:var(--white); margin-bottom:20px; }
+
+.form-group { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group input, .form-group select, .form-group textarea {
+  background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px;
+  padding:8px 12px; color:var(--white); font-size:13px; font-family:inherit;
+}
+.kv-row { display:flex; gap:8px; margin-bottom:6px; align-items:center; }
+.kv-row input { flex:1; }
+.kv-row .kv-key { flex:2; }
+.kv-row .kv-del { background:rgba(183,12,70,.15); color:#e06090; border:1px solid rgba(183,12,70,.4); border-radius:6px; padding:6px 10px; cursor:pointer; font-size:12px; }
+.add-kv-btn { background:transparent; border:1px dashed var(--stroke-01); color:var(--gray); border-radius:6px; padding:6px 12px; cursor:pointer; font-size:12px; width:100%; margin-top:4px; }
+.add-kv-btn:hover { border-color:var(--primary-blue); color:var(--white); }
+.form-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+
+.cond-row { display:flex; gap:10px; align-items:center; padding:12px 14px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:8px; margin-bottom:10px; flex-wrap:wrap; }
+.cond-row select, .cond-row input { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:6px 10px; color:var(--white); font-size:12px; }
+.cond-label { font-size:12px; color:var(--gray); }
+.empty-hint { text-align:center; padding:40px; color:var(--gray); font-size:13px; }
+
+.stat-box { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:10px; padding:16px; }
+.stat-box .sb-val { font-size:24px; font-weight:800; color:var(--primary-blue); }
+.stat-box .sb-lbl { font-size:11px; color:var(--gray); text-transform:uppercase; letter-spacing:.4px; }
+</style>
+
+{% set role_names = {"captain":"Капитан","mechanic":"Механик","medic":"Медик","security":"СБ","engineer":"Инженер"} %}
+
+<div class="rw-header">
+  <h2>🎁 Система наград рейтинга</h2>
+  <a href="/admin/ratings" class="btn btn-secondary">← К рейтингу</a>
+</div>
+
+<div class="rw-tabs">
+  <button class="rw-tab active" data-panel="groups" onclick="switchPanel('groups',this)">📦 Группы наград</button>
+  <button class="rw-tab" data-panel="rating" onclick="switchPanel('rating',this)">🏆 По рейтингу</button>
+  <button class="rw-tab" data-panel="playtime" onclick="switchPanel('playtime',this)">⏱ По времени</button>
+</div>
+
+{# ════════════════════════ PANEL: REWARD GROUPS ════════════════════════ #}
+<div class="rw-panel active" id="panel-groups">
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="margin:0;">📦 Группы наград</h3>
+      {% if can_edit %}<button class="btn btn-primary" onclick="openGroupModal()">+ Создать группу</button>{% endif %}
+    </div>
+    <p style="font-size:12px; color:var(--gray); margin-bottom:16px;">Группы предметов, статов и талантов которые выдаются игрокам по условиям через систему индивидуальных достижений.</p>
+    <div id="groupsList" class="rg-grid"><div class="empty-hint">Загрузка...</div></div>
+  </div>
+</div>
+
+{# ════════════════════════ PANEL: RATING CONDITIONS ════════════════════════ #}
+<div class="rw-panel" id="panel-rating">
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="margin:0;">🏆 Награды по местам в рейтинге</h3>
+      {% if can_edit %}<button class="btn btn-primary" onclick="openRatingModal()">+ Добавить условие</button>{% endif %}
+    </div>
+    <p style="font-size:12px; color:var(--gray); margin-bottom:16px;">Автоматическая выдача групп наград топ-игрокам по каждой профессии. Проверяется каждые N дней.</p>
+    <div id="ratingList"><div class="empty-hint">Загрузка...</div></div>
+  </div>
+</div>
+
+{# ════════════════════════ PANEL: PLAYTIME ════════════════════════ #}
+<div class="rw-panel" id="panel-playtime">
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:16px;">
+    <div class="stat-box"><div class="sb-val" id="ptPlayers">—</div><div class="sb-lbl">Игроков в статистике</div></div>
+    <div class="stat-box"><div class="sb-val" id="ptDate" style="font-size:14px;">—</div><div class="sb-lbl">Последний расчёт</div></div>
+    <div class="stat-box" style="display:flex; flex-direction:column; gap:8px; justify-content:center;">
+      {% if can_edit %}
+      <button class="btn btn-secondary btn-sm" onclick="generatePlaytime()" id="genPtBtn">🔄 Пересчитать сейчас</button>
+      <button class="btn btn-success btn-sm" onclick="applyRewardsNow()" id="applyBtn">🎁 Выдать награды</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="margin:0;">⏱ Награды за наигранное время</h3>
+      {% if can_edit %}<button class="btn btn-primary" onclick="openPlaytimeModal()">+ Добавить условие</button>{% endif %}
+    </div>
+    <p style="font-size:12px; color:var(--gray); margin-bottom:16px;">Выдавать группу наград игрокам, наигравшим заданное время за период (день / неделя / месяц).</p>
+    <div id="playtimeList"><div class="empty-hint">Загрузка...</div></div>
+  </div>
+
+  <div class="card">
+    <h3>📊 Топ игроков по времени (за неделю)</h3>
+    <div id="ptLeaderboard"><div class="empty-hint">Загрузка...</div></div>
+  </div>
+</div>
+
+{# ════════════════════════ MODAL: GROUP EDITOR ════════════════════════ #}
+<div class="modal-overlay" id="groupModal">
+  <div class="modal-box">
+    <h3 id="groupModalTitle">Создать группу наград</h3>
+    <input type="hidden" id="groupEditId">
+    <div class="form-group">
+      <label>Название группы *</label>
+      <input type="text" id="groupName" placeholder="Награда за 1 место">
+    </div>
+    <div class="form-group">
+      <label>Буквенный ID * (латиница, без пробелов)</label>
+      <input type="text" id="groupId" placeholder="top1_reward">
+    </div>
+
+    <div class="rg-section">📦 Предметы (item_id → количество)</div>
+    <div id="itemsContainer"></div>
+    <button class="add-kv-btn" onclick="addKv('items')">+ Добавить предмет</button>
+
+    <div class="rg-section" style="margin-top:14px;">📊 Статы (ключ → значение)</div>
+    <div id="statsContainer"></div>
+    <button class="add-kv-btn" onclick="addKv('stats')">+ Добавить стат</button>
+
+    <div class="rg-section" style="margin-top:14px;">✨ Таланты (профессия → talent_id,talent_id)</div>
+    <div id="talentsContainer"></div>
+    <button class="add-kv-btn" onclick="addKv('talents')">+ Добавить талант</button>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal('groupModal')">Отмена</button>
+      <button class="btn btn-primary" onclick="saveGroup()">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+
+{# ════════════════════════ MODAL: RATING CONDITION ════════════════════════ #}
+<div class="modal-overlay" id="ratingModal">
+  <div class="modal-box">
+    <h3>Условие награды по рейтингу</h3>
+    <input type="hidden" id="ratingEditIdx">
+    <div class="form-group">
+      <label>Профессия</label>
+      <select id="ratingRole">
+        {% for r in roles %}<option value="{{ r }}">{{ role_names.get(r, r) }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Проверять каждые (дней)</label>
+      <input type="number" id="ratingInterval" value="7" min="1">
+    </div>
+    <div class="rg-section">🏅 Награды по местам</div>
+    <div id="placesContainer"></div>
+    <button class="add-kv-btn" onclick="addPlace()">+ Добавить место</button>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal('ratingModal')">Отмена</button>
+      <button class="btn btn-primary" onclick="saveRatingCondition()">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+
+{# ════════════════════════ MODAL: PLAYTIME CONDITION ════════════════════════ #}
+<div class="modal-overlay" id="playtimeModal">
+  <div class="modal-box">
+    <h3>Условие награды по времени</h3>
+    <input type="hidden" id="playtimeEditIdx">
+    <div class="form-group">
+      <label>Период</label>
+      <select id="ptPeriod">
+        <option value="day">За день</option>
+        <option value="week">За неделю</option>
+        <option value="month">За месяц</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Минимум часов</label>
+      <input type="number" id="ptHours" value="10" min="1" step="0.5">
+    </div>
+    <div class="form-group">
+      <label>Группа награды</label>
+      <select id="ptGroup"></select>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal('playtimeModal')">Отмена</button>
+      <button class="btn btn-primary" onclick="savePlaytimeCondition()">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const CAN_EDIT = {{ 'true' if can_edit else 'false' }};
+const ROLE_NAMES = {{ role_names | tojson }};
+let _groups = [], _ratingRewards = [], _playtimeConditions = [];
+
+// ─── Tab switching ───
+function switchPanel(name, btn) {
+  document.querySelectorAll('.rw-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.rw-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+function closeModal(id){ document.getElementById(id).classList.remove('active'); }
+
+// ─── Reward Groups ───
+function loadGroups() {
+  fetch('/api/v1/admin/reward-groups').then(r=>r.json()).then(d=>{ _groups = d || []; renderGroups(); fillGroupSelects(); });
+}
+function renderGroups() {
+  const c = document.getElementById('groupsList');
+  if (!_groups.length) { c.innerHTML = '<div class="empty-hint">Групп пока нет. Создайте первую!</div>'; return; }
+  let h = '';
+  for (let i=0;i<_groups.length;i++) {
+    const g = _groups[i];
+    const items = g.items || {}, stats = g.stats || {}, talents = g.talents || {};
+    let chips = '';
+    for (const [k,v] of Object.entries(items)) chips += `<span class="rg-chip rg-chip-item">${esc(k)} ×${v}</span>`;
+    let statChips = '';
+    for (const [k,v] of Object.entries(stats)) statChips += `<span class="rg-chip rg-chip-stat">${esc(k)}: ${typeof v==='object'?JSON.stringify(v):v}</span>`;
+    let talChips = '';
+    for (const [k,v] of Object.entries(talents)) talChips += `<span class="rg-chip rg-chip-talent">${esc(k)}: ${Array.isArray(v)?v.join(', '):v}</span>`;
+    h += `<div class="rg-card">
+      <div class="rg-card-head"><span class="rg-card-title">${esc(g.name||'?')}</span><span class="rg-card-id">${esc(g.id||'')}</span></div>
+      ${chips?`<div class="rg-section">Предметы</div><div class="rg-chips">${chips}</div>`:''}
+      ${statChips?`<div class="rg-section">Статы</div><div class="rg-chips">${statChips}</div>`:''}
+      ${talChips?`<div class="rg-section">Таланты</div><div class="rg-chips">${talChips}</div>`:''}
+      ${(!chips&&!statChips&&!talChips)?'<div style="font-size:11px;color:var(--gray);">Пустая группа</div>':''}
+      ${CAN_EDIT?`<div class="rg-actions"><button class="btn btn-secondary btn-sm" onclick="editGroup(${i})">✏️ Изменить</button><button class="btn btn-danger btn-sm" onclick="deleteGroup(${i})">🗑</button></div>`:''}
+    </div>`;
+  }
+  c.innerHTML = h;
+}
+function fillGroupSelects() {
+  const opts = '<option value="">— выберите группу —</option>' + _groups.map(g=>`<option value="${esc(g.id)}">${esc(g.name)} (${esc(g.id)})</option>`).join('');
+  document.querySelectorAll('select.group-select, #ptGroup').forEach(s=>{ const cur=s.value; s.innerHTML=opts; s.value=cur; });
+}
+
+function openGroupModal() {
+  document.getElementById('groupModalTitle').textContent = 'Создать группу наград';
+  document.getElementById('groupEditId').value = '';
+  document.getElementById('groupName').value = '';
+  document.getElementById('groupId').value = '';
+  document.getElementById('groupId').disabled = false;
+  document.getElementById('itemsContainer').innerHTML = '';
+  document.getElementById('statsContainer').innerHTML = '';
+  document.getElementById('talentsContainer').innerHTML = '';
+  document.getElementById('groupModal').classList.add('active');
+}
+function editGroup(i) {
+  const g = _groups[i];
+  document.getElementById('groupModalTitle').textContent = 'Изменить группу';
+  document.getElementById('groupEditId').value = g.id;
+  document.getElementById('groupName').value = g.name || '';
+  document.getElementById('groupId').value = g.id || '';
+  document.getElementById('groupId').disabled = true;
+  document.getElementById('itemsContainer').innerHTML = '';
+  document.getElementById('statsContainer').innerHTML = '';
+  document.getElementById('talentsContainer').innerHTML = '';
+  for (const [k,v] of Object.entries(g.items||{})) addKv('items', k, v);
+  for (const [k,v] of Object.entries(g.stats||{})) addKv('stats', k, typeof v==='object'?JSON.stringify(v):v);
+  for (const [k,v] of Object.entries(g.talents||{})) addKv('talents', k, Array.isArray(v)?v.join(','):v);
+  document.getElementById('groupModal').classList.add('active');
+}
+function addKv(type, key='', val='') {
+  const c = document.getElementById(type+'Container');
+  const row = document.createElement('div');
+  row.className = 'kv-row';
+  const ph = type==='talents' ? ['профессия','talent1,talent2'] : (type==='stats'?['ключ (all/job)','значение']:['item_id','кол-во']);
+  row.innerHTML = `<input class="kv-key" placeholder="${ph[0]}" value="${esc(String(key))}"><input class="kv-val" placeholder="${ph[1]}" value="${esc(String(val))}"><button class="kv-del" onclick="this.parentElement.remove()">✕</button>`;
+  c.appendChild(row);
+}
+function collectKv(type) {
+  const out = {};
+  document.querySelectorAll('#'+type+'Container .kv-row').forEach(row=>{
+    const k = row.querySelector('.kv-key').value.trim();
+    const v = row.querySelector('.kv-val').value.trim();
+    if (!k) return;
+    if (type==='items') out[k] = parseInt(v)||1;
+    else if (type==='stats') { const n=parseFloat(v); out[k]= isNaN(n)?v:n; }
+    else if (type==='talents') out[k] = v.split(',').map(x=>x.trim()).filter(Boolean);
+  });
+  return out;
+}
+function saveGroup() {
+  const name = document.getElementById('groupName').value.trim();
+  const id = document.getElementById('groupId').value.trim();
+  if (!name || !id) { alert('Заполните название и ID'); return; }
+  const editId = document.getElementById('groupEditId').value;
+  const grp = { id, name, items: collectKv('items'), stats: collectKv('stats'), talents: collectKv('talents') };
+  if (editId) { const idx=_groups.findIndex(g=>g.id===editId); if(idx>=0)_groups[idx]=grp; }
+  else { if(_groups.some(g=>g.id===id)){alert('Группа с таким ID уже есть');return;} _groups.push(grp); }
+  persistGroups();
+  closeModal('groupModal');
+}
+function deleteGroup(i) {
+  if (!confirm('Удалить группу "'+_groups[i].name+'"?')) return;
+  _groups.splice(i,1); persistGroups();
+}
+function persistGroups() {
+  fetch('/api/v1/admin/reward-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_groups)})
+    .then(r=>r.json()).then(()=>{ renderGroups(); fillGroupSelects(); });
+}
+
+// ─── Rating Conditions ───
+function loadRatingRewards() {
+  fetch('/api/v1/admin/rating-rewards').then(r=>r.json()).then(d=>{ _ratingRewards = d || []; renderRatingRewards(); });
+}
+function renderRatingRewards() {
+  const c = document.getElementById('ratingList');
+  if (!_ratingRewards.length) { c.innerHTML = '<div class="empty-hint">Условий пока нет.</div>'; return; }
+  let h = '';
+  for (let i=0;i<_ratingRewards.length;i++) {
+    const r = _ratingRewards[i];
+    const placesTxt = (r.places||[]).map(p=>{const g=_groups.find(x=>x.id===p.reward_group_id);return `${p.place} место → ${g?esc(g.name):esc(p.reward_group_id)}`;}).join('; ');
+    h += `<div class="cond-row">
+      <span class="cond-label">🎖 <strong>${ROLE_NAMES[r.role]||r.role}</strong></span>
+      <span class="cond-label">каждые <strong>${r.check_interval_days||7}</strong> дн.</span>
+      <span class="cond-label" style="flex:1;">${placesTxt||'—'}</span>
+      ${CAN_EDIT?`<button class="btn btn-secondary btn-sm" onclick="editRating(${i})">✏️</button><button class="btn btn-danger btn-sm" onclick="deleteRating(${i})">🗑</button>`:''}
+    </div>`;
+  }
+  c.innerHTML = h;
+}
+function openRatingModal() {
+  document.getElementById('ratingEditIdx').value = '';
+  document.getElementById('ratingRole').value = '{{ roles[0] if roles else "captain" }}';
+  document.getElementById('ratingInterval').value = 7;
+  document.getElementById('placesContainer').innerHTML = '';
+  addPlace(1);
+  document.getElementById('ratingModal').classList.add('active');
+}
+function editRating(i) {
+  const r = _ratingRewards[i];
+  document.getElementById('ratingEditIdx').value = i;
+  document.getElementById('ratingRole').value = r.role;
+  document.getElementById('ratingInterval').value = r.check_interval_days||7;
+  document.getElementById('placesContainer').innerHTML = '';
+  (r.places||[]).forEach(p=>addPlace(p.place, p.reward_group_id));
+  document.getElementById('ratingModal').classList.add('active');
+}
+function addPlace(place='', groupId='') {
+  const c = document.getElementById('placesContainer');
+  const row = document.createElement('div');
+  row.className = 'kv-row';
+  const opts = '<option value="">— группа —</option>' + _groups.map(g=>`<option value="${esc(g.id)}" ${g.id===groupId?'selected':''}>${esc(g.name)}</option>`).join('');
+  row.innerHTML = `<input class="place-num" type="number" min="1" placeholder="место" value="${esc(String(place))}" style="flex:1;"><select class="place-group" style="flex:2;">${opts}</select><button class="kv-del" onclick="this.parentElement.remove()">✕</button>`;
+  c.appendChild(row);
+}
+function saveRatingCondition() {
+  const role = document.getElementById('ratingRole').value;
+  const interval = parseInt(document.getElementById('ratingInterval').value)||7;
+  const places = [];
+  document.querySelectorAll('#placesContainer .kv-row').forEach(row=>{
+    const p = parseInt(row.querySelector('.place-num').value);
+    const g = row.querySelector('.place-group').value;
+    if (p && g) places.push({place:p, reward_group_id:g});
+  });
+  if (!places.length) { alert('Добавьте хотя бы одно место'); return; }
+  const cond = { role, check_interval_days: interval, places };
+  const idx = document.getElementById('ratingEditIdx').value;
+  if (idx!=='') _ratingRewards[parseInt(idx)] = cond; else _ratingRewards.push(cond);
+  fetch('/api/v1/admin/rating-rewards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ratingRewards)})
+    .then(r=>r.json()).then(()=>{ renderRatingRewards(); closeModal('ratingModal'); });
+}
+function deleteRating(i) {
+  if (!confirm('Удалить условие?')) return;
+  _ratingRewards.splice(i,1);
+  fetch('/api/v1/admin/rating-rewards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_ratingRewards)}).then(()=>renderRatingRewards());
+}
+
+// ─── Playtime Conditions ───
+function loadPlaytimeConditions() {
+  fetch('/api/v1/admin/playtime/conditions').then(r=>r.json()).then(d=>{ _playtimeConditions = d || []; renderPlaytimeConditions(); });
+}
+function renderPlaytimeConditions() {
+  const c = document.getElementById('playtimeList');
+  if (!_playtimeConditions.length) { c.innerHTML = '<div class="empty-hint">Условий пока нет.</div>'; return; }
+  const periodNames = {day:'день', week:'неделю', month:'месяц'};
+  let h = '';
+  for (let i=0;i<_playtimeConditions.length;i++) {
+    const cond = _playtimeConditions[i];
+    const g = _groups.find(x=>x.id===cond.reward_group_id);
+    const hours = (cond.min_seconds/3600).toFixed(1);
+    h += `<div class="cond-row">
+      <span class="cond-label">⏱ <strong>${hours} ч</strong> за <strong>${periodNames[cond.period]||cond.period}</strong></span>
+      <span class="cond-label" style="flex:1;">→ ${g?esc(g.name):esc(cond.reward_group_id)}</span>
+      ${CAN_EDIT?`<button class="btn btn-secondary btn-sm" onclick="editPlaytime(${i})">✏️</button><button class="btn btn-danger btn-sm" onclick="deletePlaytime(${i})">🗑</button>`:''}
+    </div>`;
+  }
+  c.innerHTML = h;
+}
+function openPlaytimeModal() {
+  document.getElementById('playtimeEditIdx').value = '';
+  document.getElementById('ptPeriod').value = 'week';
+  document.getElementById('ptHours').value = 10;
+  fillGroupSelects();
+  document.getElementById('playtimeModal').classList.add('active');
+}
+function editPlaytime(i) {
+  const c = _playtimeConditions[i];
+  document.getElementById('playtimeEditIdx').value = i;
+  document.getElementById('ptPeriod').value = c.period;
+  document.getElementById('ptHours').value = (c.min_seconds/3600);
+  fillGroupSelects();
+  document.getElementById('ptGroup').value = c.reward_group_id;
+  document.getElementById('playtimeModal').classList.add('active');
+}
+function savePlaytimeCondition() {
+  const period = document.getElementById('ptPeriod').value;
+  const hours = parseFloat(document.getElementById('ptHours').value)||1;
+  const group = document.getElementById('ptGroup').value;
+  if (!group) { alert('Выберите группу награды'); return; }
+  const cond = { period, min_seconds: Math.round(hours*3600), reward_group_id: group };
+  const idx = document.getElementById('playtimeEditIdx').value;
+  if (idx!=='') _playtimeConditions[parseInt(idx)] = cond; else _playtimeConditions.push(cond);
+  fetch('/api/v1/admin/playtime/conditions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_playtimeConditions)})
+    .then(r=>r.json()).then(()=>{ renderPlaytimeConditions(); closeModal('playtimeModal'); });
+}
+function deletePlaytime(i) {
+  if (!confirm('Удалить условие?')) return;
+  _playtimeConditions.splice(i,1);
+  fetch('/api/v1/admin/playtime/conditions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_playtimeConditions)}).then(()=>renderPlaytimeConditions());
+}
+
+// ─── Playtime Stats ───
+function loadPlaytimeStats() {
+  fetch('/api/v1/admin/playtime/stats').then(r=>r.json()).then(d=>{
+    document.getElementById('ptPlayers').textContent = Object.keys(d.players||{}).length;
+    document.getElementById('ptDate').textContent = d.generated_at ? new Date(d.generated_at).toLocaleString('ru-RU') : 'никогда';
+    // Leaderboard by week
+    const players = Object.values(d.players||{}).filter(p=>p.week>0).sort((a,b)=>b.week-a.week).slice(0,20);
+    const lb = document.getElementById('ptLeaderboard');
+    if (!players.length) { lb.innerHTML='<div class="empty-hint">Нет данных</div>'; return; }
+    let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="color:var(--gray);text-align:left;"><th style="padding:6px;">#</th><th style="padding:6px;">Игрок</th><th style="padding:6px;">За день</th><th style="padding:6px;">За неделю</th><th style="padding:6px;">За месяц</th></tr></thead><tbody>';
+    players.forEach((p,i)=>{ h+=`<tr style="border-top:1px solid var(--stroke-01);color:var(--white);"><td style="padding:6px;">${i+1}</td><td style="padding:6px;">${esc(p.name||p.steamid)}</td><td style="padding:6px;color:var(--gray);">${fmtH(p.day)}</td><td style="padding:6px;">${fmtH(p.week)}</td><td style="padding:6px;color:var(--gray);">${fmtH(p.month)}</td></tr>`; });
+    h += '</tbody></table>';
+    lb.innerHTML = h;
+  });
+}
+function fmtH(s){ return (s/3600).toFixed(1)+'ч'; }
+function generatePlaytime(){const b=document.getElementById('genPtBtn');b.disabled=true;b.textContent='⏳...';fetch('/api/v1/admin/playtime/generate',{method:'POST'}).then(r=>r.json()).then(()=>{setTimeout(()=>{b.disabled=false;b.textContent='🔄 Пересчитать сейчас';loadPlaytimeStats();},3000);}).catch(()=>{b.disabled=false;b.textContent='🔄 Пересчитать сейчас';});}
+function applyRewardsNow(){const b=document.getElementById('applyBtn');b.disabled=true;b.textContent='⏳...';fetch('/api/v1/admin/rewards/apply-now',{method:'POST'}).then(r=>r.json()).then(()=>{b.textContent='✅ Готово';setTimeout(()=>{b.disabled=false;b.textContent='🎁 Выдать награды';},2500);}).catch(()=>{b.disabled=false;b.textContent='🎁 Выдать награды';});}
+
+function esc(t){const d=document.createElement('span');d.textContent=t;return d.innerHTML;}
+
+// Close modals on backdrop
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');}));
+
+document.addEventListener('DOMContentLoaded',()=>{
+  loadGroups();
+  loadRatingRewards();
+  loadPlaytimeConditions();
+  loadPlaytimeStats();
+});
+</script>
+{% endblock %}
