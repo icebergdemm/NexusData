@@ -302,11 +302,54 @@ class OnlinePlayerInfo(BaseModel):
 
 class ServerPlayersReport(BaseModel):
     players: List[OnlinePlayerInfo]
+    # Optional extended fields (v2)
+    creatures: Optional[List[Dict[str, Any]]] = None  # [{id, hp, x, y}]
+    submarine_health: Optional[int] = None  # 0-100
+    supply_shuttle_eta: Optional[int] = None  # seconds until shuttle
 
 
 class ServerPlayersReportResult(BaseModel):
     status: str
     count: int
+
+
+# ── Dispatch (radio terminal) schemas ────────────────────────────────────────
+
+class DispatchMessageIn(BaseModel):
+    """Message from game server radio terminal."""
+    steamid: Optional[str] = Field(None, description="SteamID64 sender (can be null)")
+    player_name: Optional[str] = None
+    text: str = Field(..., max_length=2000)
+    server_name: Optional[str] = None
+
+
+class DispatchMessageOut(BaseModel):
+    id: int
+    steamid: Optional[str] = None
+    player_name: Optional[str] = None
+    text: str
+    sender_type: str  # "player" or "dispatcher"
+    server_name: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+# ── Round lifecycle schemas ──────────────────────────────────────────────────
+
+class RoundStartIn(BaseModel):
+    """Game server reports round start."""
+    server_name: Optional[str] = None
+    submarine_name: str
+    mission: Optional[str] = None
+    location: Optional[str] = None
+    players: List[Dict[str, str]] = Field(default_factory=list)  # [{steamid, player_name}]
+
+
+class RoundEndIn(BaseModel):
+    """Game server reports round end."""
+    server_name: Optional[str] = None
+    mission_completed: bool = False
+    reached_station: bool = False
+    players: List[Dict[str, str]] = Field(default_factory=list)  # [{steamid, player_name}]
 
 
 class AnticheatEventIn(BaseModel):
@@ -338,13 +381,29 @@ class ServerActionOut(BaseModel):
     reason: Optional[str] = None
     duration_minutes: Optional[int] = None
     message_text: Optional[str] = None
-    server_name: Optional[str] = None
+    server_name: Optional[str] = None  # Backward compat alias for target_server
     queued_at: Optional[datetime] = None
     ack_asper1: int = 0
     ack_asper2: int = 0
 
     class Config:
         from_attributes = True
+
+    @classmethod
+    def from_v2(cls, row):
+        """Convert ServerAction (v2) to the API response format (backward compat)."""
+        return cls(
+            id=row.id,
+            action_type=row.action_type,
+            target_steamid=row.target_steamid,
+            reason=row.reason,
+            duration_minutes=row.duration_minutes,
+            message_text=row.message_text,
+            server_name=row.target_server,
+            queued_at=row.created_at,
+            ack_asper1=row.status_asper1,
+            ack_asper2=row.status_asper2,
+        )
 
 
 class ServerActionAck(BaseModel):

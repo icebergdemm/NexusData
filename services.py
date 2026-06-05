@@ -1326,99 +1326,94 @@ class ServerModerationService:
 
     # ── Action queue ───────────────────────────────────────────────────────────────
 
-    def enqueue_action(self, action_in, admin_id: Optional[int] = None, server_name: Optional[str] = None) -> ServerActionQueue:
+    def enqueue_action(self, action_in, admin_id: Optional[int] = None, server_name: Optional[str] = None) -> "ServerAction":
+        """Create a new server action (v2 table)."""
         from datetime import datetime
-        row = ServerActionQueue(
+        from models import ServerAction
+
+        effective_server = server_name or (action_in.server_name if hasattr(action_in, "server_name") else (action_in.get("server_name") if isinstance(action_in, dict) else None))
+
+        row = ServerAction(
             action_type=action_in.action_type if hasattr(action_in, "action_type") else action_in["action_type"],
             target_steamid=action_in.target_steamid if hasattr(action_in, "target_steamid") else action_in["target_steamid"],
-            reason=action_in.reason if hasattr(action_in, "reason") else action_in.get("reason"),
-            duration_minutes=action_in.duration_minutes if hasattr(action_in, "duration_minutes") else action_in.get("duration_minutes"),
-            message_text=action_in.message_text if hasattr(action_in, "message_text") else action_in.get("message_text"),
-            server_name=server_name or (action_in.server_name if hasattr(action_in, "server_name") else action_in.get("server_name")),
+            reason=action_in.reason if hasattr(action_in, "reason") else (action_in.get("reason") if isinstance(action_in, dict) else None),
+            duration_minutes=action_in.duration_minutes if hasattr(action_in, "duration_minutes") else (action_in.get("duration_minutes") if isinstance(action_in, dict) else None),
+            message_text=action_in.message_text if hasattr(action_in, "message_text") else (action_in.get("message_text") if isinstance(action_in, dict) else None),
+            target_server=effective_server,  # ASPER1, ASPER2, or NULL=both
             queued_by_admin_id=admin_id,
-            queued_at=datetime.utcnow(),
-            executed=0,
+            created_at=datetime.utcnow(),
+            status_asper1=0 if (not effective_server or effective_server.upper() == "ASPER1") else 1,  # 1=not applicable (skip)
+            status_asper2=0 if (not effective_server or effective_server.upper() == "ASPER2") else 1,
         )
+        # If targeted to one server, mark the other as "done" (not applicable)
+        if effective_server and effective_server.upper() == "ASPER1":
+            row.status_asper2 = 1  # ASPER2 doesn't need to do anything
+        elif effective_server and effective_server.upper() == "ASPER2":
+            row.status_asper1 = 1  # ASPER1 doesn't need to do anything
+
         self.db.add(row)
         self.db.commit()
         self.db.refresh(row)
         return row
 
-    def get_pending_actions(self, server_name: Optional[str] = None) -> List[ServerActionQueue]:
-        from sqlalchemy import or_
-        query = self.db.query(ServerActionQueue).filter(
-            ServerActionQueue.executed == 0
-        )
+    def get_pending_actions(self, server_name: Optional[str] = None) -> List:
+        """Get pending actions for a server from the v2 table."""
+        from models import ServerAction
+
+        query = self.db.query(ServerAction)
+
         if server_name:
-            srv_lower = server_name.lower()
-            is_asper1 = "asper1" in srv_lower or srv_lower == "1"
-            is_asper2 = "asper2" in srv_lower or srv_lower == "2"
-
-            # Targeted actions for this server
-            targeted = ServerActionQueue.server_name == server_name
-
-            # Broadcast actions (server_name=null) that this server hasn't ACKed yet
-            if is_asper1:
-                broadcast_pending = (
-                    ServerActionQueue.server_name.is_(None) &
-                    (ServerActionQueue.ack_asper1 == 0)
-                )
-            elif is_asper2:
-                broadcast_pending = (
-                    ServerActionQueue.server_name.is_(None) &
-                    (ServerActionQueue.ack_asper2 == 0)
-                )
+            sn = server_name.strip().upper()
+            if sn == "ASPER1":
+                query = query.filter(ServerAction.status_asper1 == 0)
+            elif sn == "ASPER2":
+                query = query.filter(ServerAction.status_asper2 == 0)
             else:
-                # Unknown server name — return all broadcast
-                broadcast_pending = ServerActionQueue.server_name.is_(None)
+                # Unknown server — return all with any pending
+                from sqlalchemy import or_
+                query = query.filter(or_(ServerAction.status_asper1 == 0, ServerAction.status_asper2 == 0))
+        else:
+            # No server filter — return anything pending
+            from sqlalchemy import or_
+            query = query.filter(or_(ServerAction.status_asper1 == 0, ServerAction.status_asper2 == 0))
 
-            query = query.filter(or_(targeted, broadcast_pending))
-        return query.order_by(ServerActionQueue.queued_at).all()
+        return query.order_by(ServerAction.created_at).all()
 
     def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None, server_name: Optional[str] = None) -> bool:
-        """
-        Acknowledge action execution by a server.
-
-        For targeted actions (server_name set on the action):
-          - Mark as done/failed immediately.
-
-        For broadcast actions (server_name=null on the action):
-          - Record per-server ACK (ack_asper1 / ack_asper2).
-          - Mark as done only when BOTH servers have confirmed success.
-          - Mark as failed immediately if any server reports failure.
-        """
+        """ACK an action from a specific server (v2 table)."""
         from datetime import datetime
-        row = self.db.query(ServerActionQueue).filter(ServerActionQueue.id == action_id).first()
+        from models import ServerAction
+
+        row = self.db.query(ServerAction).filter(ServerAction.id == action_id).first()
         if not row:
             return False
 
-        is_broadcast = not row.server_name  # null = broadcast to all servers
+        # For unban: "not in banlist" = success (goal achieved) but still record the error
+        effective_success = success
+        if not success and row.action_type == "unban" and error_message:
+            if "not in" in error_message.lower() or "not found" in error_message.lower():
+                effective_success = True
 
-        if is_broadcast and server_name:
-            # Record per-server ACK
-            ack_value = 1 if success else 2
-            srv_lower = server_name.lower()
-            if "asper1" in srv_lower or srv_lower == "1":
-                row.ack_asper1 = ack_value
-            elif "asper2" in srv_lower or srv_lower == "2":
-                row.ack_asper2 = ack_value
+        status_val = 1 if effective_success else 2
+        now = datetime.utcnow()
 
-            if not success:
-                # Any failure → mark entire action as failed
-                row.executed = 2
-                row.executed_at = datetime.utcnow()
-                row.error_message = error_message
-            else:
-                # Only mark done when BOTH servers have ACKed successfully
-                if row.ack_asper1 == 1 and row.ack_asper2 == 1:
-                    row.executed = 1
-                    row.executed_at = datetime.utcnow()
-                # Otherwise leave executed=0, the other server still needs to ACK
+        if server_name:
+            sn = server_name.strip().upper()
+            if "ASPER1" in sn or sn == "1":
+                row.status_asper1 = status_val
+                row.error_asper1 = error_message  # Always record error text
+                row.executed_at_asper1 = now
+            elif "ASPER2" in sn or sn == "2":
+                row.status_asper2 = status_val
+                row.error_asper2 = error_message
+                row.executed_at_asper2 = now
         else:
-            # Targeted action or no server_name in ACK - mark immediately
-            row.executed = 1 if success else 2
-            row.executed_at = datetime.utcnow()
-            row.error_message = error_message
+            row.status_asper1 = status_val
+            row.status_asper2 = status_val
+            row.error_asper1 = error_message
+            row.error_asper2 = error_message
+            row.executed_at_asper1 = now
+            row.executed_at_asper2 = now
 
         self.db.commit()
 

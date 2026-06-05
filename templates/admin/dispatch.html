@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Диспетчерская - Nexus Data{% endblock %}
+{% block content %}
+<style>
+.dsp-container { max-width:900px; margin:0 auto; }
+.dsp-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+.dsp-header h2 { font-size:20px; font-weight:700; color:var(--white); margin:0; }
+.dsp-srv-btn { padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; border:none; background:transparent; color:var(--gray); cursor:pointer; transition:.2s; }
+.dsp-srv-btn:hover { color:var(--white); }
+.dsp-srv-btn.active { background:var(--primary-blue); color:#fff; }
+.dsp-chat { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); overflow:hidden; display:flex; flex-direction:column; height:70vh; }
+.dsp-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:8px; }
+.dsp-msg { display:flex; gap:10px; padding:8px 12px; border-radius:8px; font-size:13px; }
+.dsp-msg.player { background:rgba(26,104,222,.06); border-left:3px solid var(--primary-blue); }
+.dsp-msg.dispatcher { background:rgba(34,208,111,.06); border-left:3px solid #22d06f; }
+.dsp-msg .dm-time { font-size:10px; color:var(--gray); font-family:monospace; min-width:55px; padding-top:2px; }
+.dsp-msg .dm-name { font-weight:700; min-width:120px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dsp-msg.player .dm-name { color:#5b9cf5; }
+.dsp-msg.dispatcher .dm-name { color:#22d06f; }
+.dsp-msg .dm-text { color:var(--white); flex:1; word-break:break-word; }
+.dsp-msg .dm-server { font-size:9px; font-weight:700; padding:1px 5px; border-radius:6px; background:rgba(26,104,222,.15); color:#5b9cf5; align-self:start; }
+.dsp-input { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--stroke-01); background:var(--dark-blue-bg); }
+.dsp-input input { flex:1; background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:8px; padding:10px 14px; color:var(--white); font-size:14px; font-family:inherit; }
+.dsp-input input:focus { border-color:var(--primary-blue); outline:none; }
+.dsp-input button { background:var(--primary-blue); color:#fff; border:none; border-radius:8px; padding:10px 20px; font-size:14px; font-weight:600; cursor:pointer; }
+.dsp-input button:hover { background:#2b7af0; }
+.dsp-empty { text-align:center; padding:40px; color:var(--gray); font-size:14px; }
+</style>
+
+<div class="dsp-container">
+  <div class="dsp-header">
+    <h2>📡 Диспетчерская</h2>
+    <div style="display:flex;gap:4px;background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:8px;padding:3px;">
+      <button class="dsp-srv-btn active" id="dspSrv1" onclick="switchDispatchServer('ASPER1')">ASPER1</button>
+      <button class="dsp-srv-btn" id="dspSrv2" onclick="switchDispatchServer('ASPER2')">ASPER2</button>
+      <button class="dsp-srv-btn" id="dspSrvAll" onclick="switchDispatchServer('')">Все</button>
+    </div>
+  </div>
+
+  <div class="dsp-chat">
+    <div class="dsp-messages" id="dspMessages">
+      <div class="dsp-empty">Загрузка сообщений...</div>
+    </div>
+    {% if check_permission(admin, 'moderation', 'edit') %}
+    <div class="dsp-input">
+      <input type="text" id="dspInput" placeholder="Написать как диспетчер..." maxlength="500" autocomplete="off">
+      <button onclick="sendDispatch()" id="dspSendBtn">📤 Отправить</button>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+let _lastMsgId = 0;
+let _polling = true;
+let _currentServer = 'ASPER1';
+
+function switchDispatchServer(srv) {
+  _currentServer = srv;
+  _lastMsgId = 0;
+  document.getElementById('dspMessages').innerHTML = '<div class="dsp-empty">Загрузка...</div>';
+  document.querySelectorAll('.dsp-srv-btn').forEach(b => b.classList.remove('active'));
+  if (srv === 'ASPER1') document.getElementById('dspSrv1').classList.add('active');
+  else if (srv === 'ASPER2') document.getElementById('dspSrv2').classList.add('active');
+  else document.getElementById('dspSrvAll').classList.add('active');
+  loadMessages();
+}
+
+async function loadMessages() {
+  try {
+    const params = new URLSearchParams({limit: '100', server: _currentServer});
+    if (_lastMsgId) params.set('after_id', _lastMsgId);
+    const r = await fetch('/api/v1/admin/dispatch/messages?' + params);
+    const msgs = await r.json();
+    if (msgs.length > 0) {
+      appendMessages(msgs);
+      _lastMsgId = msgs[msgs.length - 1].id;
+    } else if (_lastMsgId === 0) {
+      document.getElementById('dspMessages').innerHTML = '<div class="dsp-empty">Сообщений пока нет</div>';
+    }
+  } catch(e) {}
+  if (_polling) setTimeout(loadMessages, 3000);
+}
+
+function appendMessages(msgs) {
+  const c = document.getElementById('dspMessages');
+  if (c.querySelector('.dsp-empty')) c.innerHTML = '';
+  for (const m of msgs) {
+    const t = m.created_at ? new Date(m.created_at).toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit'}) : '';
+    const cls = m.sender_type === 'dispatcher' ? 'dispatcher' : 'player';
+    const name = m.player_name || m.steamid || '?';
+    c.insertAdjacentHTML('beforeend',
+      `<div class="dsp-msg ${cls}"><span class="dm-time">${t}</span><span class="dm-name" title="${esc(m.steamid||'')}">${esc(name)}</span><span class="dm-text">${esc(m.text)}</span></div>`
+    );
+  }
+  c.scrollTop = c.scrollHeight;
+}
+
+async function sendDispatch() {
+  const input = document.getElementById('dspInput');
+  const btn = document.getElementById('dspSendBtn');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  btn.disabled = true;
+  btn.textContent = '⏳...';
+  input.disabled = true;
+
+  await fetch('/api/v1/admin/dispatch/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text, server_name: _currentServer || null})
+  });
+  pollPending();
+}
+
+async function pollPending() {
+  const btn = document.getElementById('dspSendBtn');
+  const input = document.getElementById('dspInput');
+  try {
+    const r = await fetch('/api/v1/admin/dispatch/pending');
+    const data = await r.json();
+    if (data.pending) { setTimeout(pollPending, 2000); return; }
+  } catch(e) {}
+  btn.disabled = false;
+  btn.textContent = '📤 Отправить';
+  input.disabled = false;
+  input.focus();
+  loadMessages();
+}
+
+document.getElementById('dspInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') sendDispatch(); });
+function esc(t) { const d = document.createElement('span'); d.textContent = t; return d.innerHTML; }
+loadMessages();
+</script>
+{% endblock %}

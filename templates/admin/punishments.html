@@ -296,11 +296,9 @@
                   <button type="submit" class="btn btn-sm btn-warn" title="Сделать неактуальным">🚫</button>
                 </form>
                 {% if p.type == 'ban' %}
-                <form method="post" action="/admin/punishments/{{ p.id }}/unban"
-                  onsubmit="return confirm('Разбанить игрока и поставить задачу разбана в очередь сервера?');" style="display:inline;">
-                  <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
-                  <button type="submit" class="btn btn-sm btn-primary" title="Разбанить (отправить на все серверы)">🔓</button>
-                </form>
+                <button type="button" class="btn btn-sm btn-primary"
+                  onclick="openUnbanModal({{ p.id }})"
+                  title="Разбанить">🔓</button>
                 {% endif %}
                 {% endif %}
                 {% endif %}
@@ -405,6 +403,16 @@
         <div class="form-group form-group-full">
           <label>Внутренние заметки</label>
           <input type="text" name="notes" placeholder="Только для администраторов">
+        </div>
+
+        <div class="form-group form-group-full" id="create-server-group">
+          <label>Сервер (для бана и кика)</label>
+          <select name="server_name">
+            <option value="">На всех серверах</option>
+            <option value="ASPER1">ASPER1</option>
+            <option value="ASPER2">ASPER2</option>
+          </select>
+          <span class="hint">Для warning/reprimand сервер не используется</span>
         </div>
 
       </div>
@@ -538,4 +546,40 @@ document.addEventListener('click', e => {
   }
 });
 </script>
+
+<!-- ══════════════════ UNBAN MODAL ══════════════════ -->
+<div class="modal-backdrop" id="unban-modal">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-header-block">
+      <h3>🔓 Разбан игрока</h3>
+      <button class="modal-close" onclick="closeModal('unban-modal')">×</button>
+    </div>
+    <div class="modal-body-block">
+    <form method="post" id="unban-form" action="">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <p style="font-size:13px; color:var(--gray); margin-bottom:16px;">Выберите сервер для отправки команды разбана. Будет помечено неактуальным в БД на всех серверах.</p>
+      <div class="form-group">
+        <label>Сервер</label>
+        <select name="server_name">
+          <option value="">На всех серверах</option>
+          <option value="ASPER1">ASPER1</option>
+          <option value="ASPER2">ASPER2</option>
+        </select>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('unban-modal')">Отмена</button>
+        <button type="submit" class="btn btn-primary">🔓 Разбанить</button>
+      </div>
+    </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function openUnbanModal(punishmentId) {
+  document.getElementById('unban-form').action = '/admin/punishments/' + punishmentId + '/unban';
+  document.getElementById('unban-modal').classList.add('open');
+}
+</script>
+
 {% endblock %}

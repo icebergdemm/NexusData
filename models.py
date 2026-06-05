@@ -242,25 +242,47 @@ class AnticheatEvent(Base):
 
 
 class ServerActionQueue(Base):
-    """Queued moderation actions (kick / ban / message / unban / trap) for the game server."""
+    """LEGACY — kept for backward compat. Use ServerAction instead."""
     __tablename__ = "server_action_queue"
 
     id = Column(Integer, primary_key=True, index=True)
-    action_type = Column(String(32), nullable=False)   # kick | ban | unban | message | trap
+    action_type = Column(String(32), nullable=False)
     target_steamid = Column(String(50), nullable=False, index=True)
     reason = Column(String(500), nullable=True)
     duration_minutes = Column(Integer, nullable=True)
     message_text = Column(String(1000), nullable=True)
-    server_name = Column(String(100), nullable=True, index=True)  # target server (null = all servers)
+    server_name = Column(String(100), nullable=True, index=True)
     queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     queued_at = Column(DateTime, default=func.now())
-    executed = Column(Integer, default=0)    # 0 = pending, 1 = done, 2 = failed
+    executed = Column(Integer, default=0)
     executed_at = Column(DateTime, nullable=True)
+    status = Column(String(20), default="pending")
     error_message = Column(String(500), nullable=True)
-    # Per-server ACK tracking (for broadcast actions, server_name=null)
-    # 0 = pending, 1 = success, 2 = failed
     ack_asper1 = Column(Integer, default=0, nullable=False)
     ack_asper2 = Column(Integer, default=0, nullable=False)
+
+
+class ServerAction(Base):
+    """Server action v2 — one record, per-server execution tracking."""
+    __tablename__ = "server_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String(32), nullable=False)  # kick|ban|unban|message|trap|dispatch
+    target_steamid = Column(String(50), nullable=False, index=True)
+    reason = Column(String(500), nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
+    message_text = Column(String(2000), nullable=True)
+    target_server = Column(String(20), nullable=True)  # ASPER1|ASPER2|NULL=both
+    queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    # Per-server status: 0=pending, 1=done, 2=failed
+    status_asper1 = Column(Integer, default=0, nullable=False)
+    status_asper2 = Column(Integer, default=0, nullable=False)
+    error_asper1 = Column(String(500), nullable=True)
+    error_asper2 = Column(String(500), nullable=True)
+    executed_at_asper1 = Column(DateTime, nullable=True)
+    executed_at_asper2 = Column(DateTime, nullable=True)
 
 
 class PlayerNote(Base):
@@ -505,3 +527,32 @@ class PlayerPunishment(Base):
     notes = Column(String(2000), nullable=True)            # internal admin notes
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class DispatchMessage(Base):
+    """Radio dispatch messages (game terminal ↔ web dispatcher)."""
+    __tablename__ = "dispatch_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steamid = Column(String(50), nullable=True, index=True)
+    player_name = Column(String(255), nullable=True)
+    text = Column(String(2000), nullable=False)
+    sender_type = Column(String(20), nullable=False, default="player")  # player | dispatcher
+    server_name = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class RoundEvent(Base):
+    """Round start/end events from game servers."""
+    __tablename__ = "round_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String(20), nullable=False)  # start | end
+    server_name = Column(String(100), nullable=True, index=True)
+    submarine_name = Column(String(255), nullable=True)
+    mission = Column(String(500), nullable=True)
+    location = Column(String(255), nullable=True)
+    mission_completed = Column(Integer, nullable=True)
+    reached_station = Column(Integer, nullable=True)
+    players = Column(JSON, default=lambda: [])
+    created_at = Column(DateTime, default=func.now(), index=True)

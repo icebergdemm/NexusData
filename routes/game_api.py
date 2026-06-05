@@ -18,7 +18,7 @@ from security import verify_external_api_key_dependency
 from config import get_settings
 from models import (
     PlayerData, PlayerPunishment,
-    ServerPrivilegeGroup, ServerPlayerPrivilege, ServerActionQueue,
+    ServerPrivilegeGroup, ServerPlayerPrivilege, ServerAction,
 )
 
 settings = get_settings()
@@ -133,14 +133,14 @@ def queue_trap(body: TrapQueueRequest, db: Session = Depends(get_db)):
     """
     steamid = body.player_steamid.strip()
 
-    action = ServerActionQueue(
+    action = ServerAction(
         action_type="trap",
         target_steamid=steamid,
         reason=body.reason,
-        server_name=body.server_name or None,
+        target_server=body.server_name or None,
         queued_by_admin_id=None,
-        queued_at=_now_msk(),
-        executed=0,
+        created_at=_now_msk(),
+        
     )
     db.add(action)
     db.commit()
@@ -261,6 +261,10 @@ def create_punishment(body: PunishmentCreateRequest, db: Session = Depends(get_d
     db.add(punishment)
     db.commit()
     db.refresh(punishment)
+
+    # Queue Discord notification for the punishment
+    _queue_punishment_discord_notification(db, punishment)
+
     return punishment
 
 
@@ -299,14 +303,14 @@ def unban_player(body: UnbanRequest, db: Session = Depends(get_db)):
         steam2 = None
 
     # Queue unban action
-    action = ServerActionQueue(
+    action = ServerAction(
         action_type="unban",
         target_steamid=steam2 or steamid,
         reason=body.reason or f"Unban by {body.issued_by_name}",
-        server_name=body.server_name or None,
+        target_server=body.server_name or None,
         queued_by_admin_id=None,
-        queued_at=_now_msk(),
-        executed=0,
+        created_at=_now_msk(),
+        
     )
     db.add(action)
     db.commit()
@@ -418,3 +422,66 @@ def get_player_ratings_endpoint(steam_id: str, db: Session = Depends(get_db)):
     from rating_engine import get_player_ratings
     ratings = get_player_ratings(db, steam_id)
     return {"steam_id": steam_id, "ratings": ratings}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DISCORD PUNISHMENT NOTIFICATIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _queue_punishment_discord_notification(db, punishment):
+    """Queue a Discord bot action to notify about a new punishment."""
+    from models import DiscordBotAction
+
+    type_labels = {
+        "warning": "⚠️ Предупреждение",
+        "reprimand": "📋 Выговор",
+        "kick": "👢 Кик",
+        "ban": "🔨 Бан",
+    }
+    type_colors = {
+        "warning": 0xffaa00,
+        "reprimand": 0xff8800,
+        "kick": 0xff4400,
+        "ban": 0xcc0000,
+    }
+
+    embed = {
+        "title": type_labels.get(punishment.type, punishment.type),
+        "color": type_colors.get(punishment.type, 0xff0000),
+        "fields": [
+            {"name": "Игрок", "value": f"`{punishment.player_steamid}`", "inline": True},
+            {"name": "Выдал", "value": punishment.issued_by_name or "—", "inline": True},
+            {"name": "Причина", "value": punishment.reason or "Не указана", "inline": False},
+        ],
+        "footer": {"text": "NexusData Moderation"},
+    }
+
+    if punishment.expires_at:
+        embed["fields"].append({
+            "name": "Истекает",
+            "value": punishment.expires_at.strftime("%d.%m.%Y %H:%M"),
+            "inline": True,
+        })
+
+    # Send to punishments channel (all types)
+    action_all = DiscordBotAction(
+        action_type="send_embed",
+        payload={
+            "channel_config_key": "punishment_channel_id",
+            "embed": embed,
+        },
+    )
+    db.add(action_all)
+
+    # Additionally for bans — send to bans-specific channel
+    if punishment.type == "ban":
+        action_ban = DiscordBotAction(
+            action_type="send_embed",
+            payload={
+                "channel_config_key": "ban_channel_id",
+                "embed": embed,
+            },
+        )
+        db.add(action_ban)
+
+    db.commit()

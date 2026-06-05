@@ -127,14 +127,15 @@ def report_anticheat_event(
     return ev
 
 
-@api_router.get("/actions", response_model=List[ServerActionOut])
+@api_router.get("/actions")
 def get_pending_actions(
     server_name: Optional[str] = Query(None, description="Имя сервера — получить только свои задачи"),
     db: Session = Depends(get_db),
 ):
-    """Return pending moderation actions. If server_name provided, returns only actions for that server (+ actions with server_name=null which target all servers)."""
+    """Return pending actions for the specified server."""
     svc = ServerModerationService(db)
-    return svc.get_pending_actions(server_name=server_name)
+    rows = svc.get_pending_actions(server_name=server_name)
+    return [ServerActionOut.from_v2(r) for r in rows]
 
 
 @api_router.post("/actions/{action_id}/ack")

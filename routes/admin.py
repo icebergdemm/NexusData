@@ -3087,16 +3087,23 @@ async def admin_punishment_create(
         notes=notes or None,
     )
 
-    # For bans — queue server action
-    if ptype == "ban":
-        from models import ServerActionQueue
-        action = ServerActionQueue(
-            action_type="ban",
-            target_steamid=steam2 or player_steamid,
-            reason=reason or "Бан через панель",
-            server_name=server_name or None,
+    # For bans and kicks — queue server action
+    if ptype in ("ban", "kick"):
+        from models import ServerAction
+        from utils import steam64_to_steam2
+        steam2_for_action = steam64_to_steam2(player_steamid)
+        action = ServerAction(
+            action_type=ptype,
+            target_steamid=steam2_for_action or player_steamid,
+            reason=reason or f"{PUNISHMENT_TYPE_LABELS.get(ptype, ptype)} через панель",
+            target_server=server_name or None,
             queued_by_admin_id=current_admin.id,
         )
+        # If targeted, mark other server as not applicable
+        if server_name and server_name.upper() == "ASPER1":
+            action.status_asper2 = 1
+        elif server_name and server_name.upper() == "ASPER2":
+            action.status_asper1 = 1
         db.add(action)
         db.commit()
 
@@ -3194,14 +3201,19 @@ async def admin_punishment_unban(
 
     svc.set_void(punishment_id)
 
-    from models import ServerActionQueue
-    action = ServerActionQueue(
+    from models import ServerAction
+    action = ServerAction(
         action_type="unban",
         target_steamid=steam2 or steamid,
         reason=f"Unban by ND. {current_admin.discord_username}",
-        server_name=server_name or None,
+        target_server=server_name or None,
         queued_by_admin_id=current_admin.id,
     )
+    # Mark non-targeted server as not applicable
+    if server_name and server_name.upper() == "ASPER1":
+        action.status_asper2 = 1
+    elif server_name and server_name.upper() == "ASPER2":
+        action.status_asper1 = 1
     db.add(action)
     db.commit()
 

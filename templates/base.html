@@ -42,8 +42,11 @@
         {% if check_permission(admin, 'players', 'view') or check_permission(admin, 'players_special', 'view') %}
         <li><a href="/admin/players">Игроки</a></li>
         {% endif %}
-        {% if check_permission(admin, 'moderation', 'edit') %}
-        <li><a href="/admin/moderation">Модерирование сервера</a></li>
+        {% if check_permission(admin, 'moderation', 'view') %}
+        <li><a href="/admin/moderation">Модерирование</a></li>
+        {% endif %}
+        {% if check_permission(admin, 'moderation', 'view') %}
+        <li><a href="/admin/dispatch">Диспетчерская</a></li>
         {% endif %}
         {% if check_permission(admin, 'sessions', 'view') %}
         <li><a href="/admin/sessions">Сессии</a></li>
@@ -54,7 +57,7 @@
         {% if check_permission(admin, 'privileges', 'view') %}
         <li><a href="/admin/server-privileges">Серверные привилегии</a></li>
         {% endif %}
-        {% if check_permission(admin, 'kits', 'edit') %}
+        {% if check_permission(admin, 'kits', 'view') %}
         <li><a href="/admin/kits">Редактирование китов</a></li>
         {% endif %}
         {% if check_permission(admin, 'admin', 'edit') %}
