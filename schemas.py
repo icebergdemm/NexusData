@@ -26,7 +26,7 @@ class KitOut(BaseModel):
     id: int
     job_id: str
     kit_level: int
-    items: dict
+    items: Any = Field(default_factory=dict)  # Can be dict or list in DB
 
     class Config:
         from_attributes = True

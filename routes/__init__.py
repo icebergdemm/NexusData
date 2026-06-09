@@ -6,7 +6,7 @@ from .admin import router as admin_router
 from .events import router as events_router
 from .moderation import api_router as moderation_api_router, panel_router as moderation_panel_router
 from .sub_projects import router as sub_projects_router
-from .game_api import router as game_api_router
+from .game_api import router as game_api_router, public_router as game_public_router
 from .ratings import router as ratings_router
 from .discord_bot_api import router as discord_bot_api_router, panel_router as discord_bot_panel_router
 from .tickets_api import bot_router as tickets_bot_router, panel_router as tickets_panel_router
@@ -24,6 +24,7 @@ __all__ = [
     "moderation_panel_router",
     "sub_projects_router",
     "game_api_router",
+    "game_public_router",
     "ratings_router",
     "discord_bot_api_router",
     "discord_bot_panel_router",

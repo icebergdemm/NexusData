@@ -144,11 +144,19 @@ async def sub_project_detail(
 
     versions = svc.get_versions(project_id)
 
+    # Load all admins for owner change selector
+    from models import AdminUser as AU
+    all_admins = db.query(AU).order_by(AU.discord_username).all()
+    current_owner = db.query(AU).filter(AU.id == project.created_by_admin_id).first()
+    current_owner_name = current_owner.discord_username if current_owner else None
+
     return templates.TemplateResponse("admin/sub_project_detail.html", {
         "request": request,
         "admin": current_admin,
         "project": project,
         "versions": versions,
+        "all_admins": all_admins,
+        "current_owner_name": current_owner_name,
         "flashes": pop_flashes(request),
         "sftp_server_1_name": settings.sftp_server_1_name,
         "sftp_server_2_name": settings.sftp_server_2_name,
@@ -166,6 +174,9 @@ async def sub_project_create(
     author: str = Form(...),
     project_type: Optional[str] = Form(None),
     crew: Optional[str] = Form(None),
+    crew_min: Optional[int] = Form(None),
+    crew_avg: Optional[int] = Form(None),
+    crew_max: Optional[int] = Form(None),
     weapons: Optional[str] = Form(None),
     has_reactor: Optional[str] = Form(None),
     fabricator_medfab: Optional[str] = Form(None),
@@ -180,16 +191,22 @@ async def sub_project_create(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
+    if not check_permission(current_admin, "sub_projects", "edit") and not check_permission(current_admin, "sub_projects", "view"):
         raise HTTPException(status_code=403)
     await ensure_csrf(request, db)
+
+    # Build crew string from min/avg/max fields (prefer over raw crew string)
+    if crew_min is not None and crew_avg is not None and crew_max is not None:
+        crew_str = f"{crew_min}-{crew_avg}-{crew_max}"
+    else:
+        crew_str = (crew or "").strip() or None
 
     svc = _get_sub_service(db)
     data = {
         "name": name.strip(),
         "author": author.strip(),
         "project_type": (project_type or "").strip() or None,
-        "crew": (crew or "").strip() or None,
+        "crew": crew_str,
         "weapons": (weapons or "").strip() or None,
         "has_reactor": (has_reactor or "").strip() or None,
         "fabricator_medfab": (fabricator_medfab or "").strip() or None,
@@ -225,6 +242,9 @@ async def sub_project_update(
     author: str = Form(...),
     project_type: Optional[str] = Form(None),
     crew: Optional[str] = Form(None),
+    crew_min: Optional[int] = Form(None),
+    crew_avg: Optional[int] = Form(None),
+    crew_max: Optional[int] = Form(None),
     weapons: Optional[str] = Form(None),
     has_reactor: Optional[str] = Form(None),
     fabricator_medfab: Optional[str] = Form(None),
@@ -239,16 +259,34 @@ async def sub_project_update(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
-        raise HTTPException(status_code=403)
+    # With 'edit' permission: can edit own project; with 'delete': any project
+    svc_check = _get_sub_service(db)
+    existing = svc_check.get_by_id(project_id)
+    if not existing:
+        push_flash(request, "error", "Проект не найден")
+        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+
+    can_edit_any = check_permission(current_admin, "sub_projects", "delete")
+    can_edit_own = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "view")
+    is_owner = existing.created_by_admin_id == current_admin.id
+
+    if not can_edit_any and not (can_edit_own and is_owner):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования этого проекта")
+
     await ensure_csrf(request, db)
+
+    # Build crew string
+    if crew_min is not None and crew_avg is not None and crew_max is not None:
+        crew_str = f"{crew_min}-{crew_avg}-{crew_max}"
+    else:
+        crew_str = (crew or "").strip() or None
 
     svc = _get_sub_service(db)
     data = {
         "name": name.strip(),
         "author": author.strip(),
         "project_type": (project_type or "").strip() or None,
-        "crew": (crew or "").strip() or None,
+        "crew": crew_str,
         "weapons": (weapons or "").strip() or None,
         "has_reactor": (has_reactor or "").strip() or None,
         "fabricator_medfab": (fabricator_medfab or "").strip() or None,
@@ -318,15 +356,26 @@ async def sub_project_upload_version(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
+    # view perm + owner OR edit/delete
+    if not check_permission(current_admin, "sub_projects", "view"):
         raise HTTPException(status_code=403)
     await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        push_flash(request, "error", "Проект не найден")
+        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+
+    # With view: only upload to own project. With edit/delete: any project
+    can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
+    if not can_any and project.created_by_admin_id != current_admin.id:
+        raise HTTPException(status_code=403, detail="Вы можете загружать версии только для своих проектов")
 
     if not sub_file.filename or not sub_file.filename.endswith(".sub"):
         push_flash(request, "error", "Файл должен иметь расширение .sub")
         return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
 
-    svc = _get_sub_service(db)
     version = svc.upload_version(project_id, sub_file, changelog or "", current_admin.id)
 
     from routes.admin import log_admin_action
@@ -349,8 +398,8 @@ async def sub_project_delete_version(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
-        raise HTTPException(status_code=403)
+    if not check_permission(current_admin, "sub_projects", "delete"):
+        raise HTTPException(status_code=403, detail="Только пользователи с правом 'удалить' могут удалять версии")
     await ensure_csrf(request, db)
 
     svc = _get_sub_service(db)
@@ -375,8 +424,9 @@ async def sub_project_deploy_version(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
-        raise HTTPException(status_code=403)
+    # edit or delete permission required for deployment
+    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403, detail="Для развёртывания необходимо право 'изменить' или 'удалить'")
     await ensure_csrf(request, db)
 
     if server not in (1, 2):
@@ -407,8 +457,8 @@ async def sub_project_undeploy_version(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
-        raise HTTPException(status_code=403)
+    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403, detail="Для отката необходимо право 'изменить' или 'удалить'")
     await ensure_csrf(request, db)
 
     if server not in (1, 2):
@@ -510,3 +560,46 @@ async def sub_project_download_version(
         filename=version.filename,
         media_type="application/octet-stream",
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHANGE PROJECT OWNER (delete permission only)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/admin/sub-projects/{project_id}/change-owner")
+async def sub_project_change_owner(
+    request: Request,
+    project_id: int,
+    new_owner_admin_id: int = Form(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Change the owner of a project. Only admins with 'delete' permission can do this."""
+    if not check_permission(current_admin, "sub_projects", "delete"):
+        raise HTTPException(status_code=403, detail="Только пользователи с правом 'удалить' могут менять владельца")
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        push_flash(request, "error", "Проект не найден")
+        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+
+    # Verify the new owner exists
+    from models import AdminUser as AU
+    new_owner = db.query(AU).filter(AU.id == new_owner_admin_id).first()
+    if not new_owner:
+        push_flash(request, "error", "Администратор не найден")
+        return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+
+    project.created_by_admin_id = new_owner_admin_id
+    db.commit()
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_change_owner", {
+        "project_id": project_id,
+        "new_owner_id": new_owner_admin_id,
+        "new_owner_name": new_owner.discord_username,
+    })
+    push_flash(request, "success", f"Владелец проекта изменён на {new_owner.discord_username}")
+    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)

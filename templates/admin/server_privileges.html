@@ -168,7 +168,8 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th>Steam ID</th>
+            <th>Игрок / Steam ID</th>
+            <th>Сервер</th>
             <th>Группа</th>
             <th>Команды</th>
             <th>Action IDs</th>
@@ -180,7 +181,19 @@
         <tbody>
           {% for priv in privileges %}
           <tr>
-            <td class="steamid">{{ priv.steamid }}</td>
+            <td>
+              {% if priv.player_last_time_name %}
+              <div style="font-size:13px;font-weight:600;color:var(--white);">{{ priv.player_last_time_name }}</div>
+              {% endif %}
+              <div class="steamid">{{ priv.steamid }}</div>
+            </td>
+            <td>
+              {% if priv.server_scope %}
+              <span class="badge badge-blue">{{ priv.server_scope }}</span>
+              {% else %}
+              <span class="badge badge-gray">Все серверы</span>
+              {% endif %}
+            </td>
             <td>
               {% if priv.server_group_id %}
                 {% set grp = priv_groups_data | selectattr('group.id', 'equalto', priv.server_group_id) | map(attribute='group') | first %}
@@ -206,6 +219,7 @@
                   data-pid="{{ priv.id }}"
                   data-steamid="{{ priv.steamid|e }}"
                   data-sgid="{{ priv.server_group_id or '' }}"
+                  data-scope="{{ priv.server_scope or '' }}"
                   data-cmds="{{ priv.commands|join('\n')|e if priv.commands else '' }}"
                   data-aids="{{ priv.allowed_action_ids|join(' ')|e if priv.allowed_action_ids else '' }}"
                   data-reason="{{ priv.reason|e if priv.reason else '' }}"
@@ -359,6 +373,15 @@
           <input type="text" name="steamid" id="ap-steamid" required placeholder="76561198XXXXXXXXX">
         </div>
         <div class="form-group">
+          <label>Сервер</label>
+          <select name="server_scope" id="ap-server_scope">
+            <option value="">Все серверы</option>
+            <option value="ASPER1">ASPER1</option>
+            <option value="ASPER2">ASPER2</option>
+          </select>
+          <span class="form-hint">Привилегия будет выдана только для выбранного сервера</span>
+        </div>
+        <div class="form-group">
           <label>Группа привилегий</label>
           <select name="server_group_id" id="ap-group">
             <option value="">- Без группы (только индивидуальные) -</option>
@@ -431,6 +454,7 @@ function openEditPriv(btn) {
   form.action = '/admin/server-privileges/assign';
   document.getElementById('ap-steamid').value  = btn.dataset.steamid;
   document.getElementById('ap-steamid').readOnly = true;
+  document.getElementById('ap-server_scope').value = btn.dataset.scope || '';
   document.getElementById('ap-group').value    = btn.dataset.sgid || '';
   document.getElementById('ap-cmds').value     = btn.dataset.cmds;
   document.getElementById('ap-aids').value     = btn.dataset.aids;
@@ -442,6 +466,7 @@ function openEditPriv(btn) {
 document.querySelector('[onclick="openModal(\'assign-modal\')"]')?.addEventListener('click', function() {
   document.getElementById('ap-steamid').readOnly = false;
   document.getElementById('ap-steamid').value = '';
+  document.getElementById('ap-server_scope').value = '';
   document.getElementById('ap-group').value = '';
   document.getElementById('ap-cmds').value = '';
   document.getElementById('ap-aids').value = '';

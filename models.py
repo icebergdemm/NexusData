@@ -225,6 +225,8 @@ class ServerPlayerPrivilege(Base):
     granted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     granted_at = Column(DateTime, default=func.now())
     expires_at = Column(DateTime, nullable=True)
+    # NULL = all servers, 'ASPER1' = only ASPER1, 'ASPER2' = only ASPER2
+    server_scope = Column(String(20), nullable=True, index=True)
 
 
 class AnticheatEvent(Base):

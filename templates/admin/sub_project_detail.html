@@ -92,7 +92,7 @@
 
 <div class="sp-detail-header">
   <h2>🚢 {{ project.name }}</h2>
-  {% if check_permission(admin, 'sub_projects', 'edit') %}
+  {% if check_permission(admin, 'sub_projects', 'delete') or (check_permission(admin, 'sub_projects', 'edit') and project.created_by_admin_id == admin.id) or (check_permission(admin, 'sub_projects', 'view') and project.created_by_admin_id == admin.id) %}
   <button class="btn btn-primary" onclick="document.getElementById('editModal').classList.add('active')">✏️ Редактировать</button>
   {% endif %}
 </div>
@@ -148,14 +148,19 @@
         <div class="version-actions">
           <a href="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/download" class="btn-xs btn-download">⬇️</a>
 
-          {% if check_permission(admin, 'sub_projects', 'edit') %}
-            {% if not v.deployed_server_1 %}
+          {% if check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+            {% set can_deploy = check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+            {% set can_delete_version = check_permission(admin, 'sub_projects', 'delete') %}
+            {% set can_upload = check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+            {% set is_owner = project.created_by_admin_id == admin.id %}
+
+            {% if not v.deployed_server_1 and can_deploy %}
             <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="1">
               <button type="submit" class="btn-xs btn-deploy" title="Развернуть на {{ sftp_server_1_name }}">▶ С1</button>
             </form>
-            {% else %}
+            {% elif v.deployed_server_1 and can_deploy %}
             <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="1">
@@ -163,13 +168,13 @@
             </form>
             {% endif %}
 
-            {% if not v.deployed_server_2 %}
+            {% if not v.deployed_server_2 and can_deploy %}
             <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="2">
               <button type="submit" class="btn-xs btn-deploy" title="Развернуть на {{ sftp_server_2_name }}">▶ С2</button>
             </form>
-            {% else %}
+            {% elif v.deployed_server_2 and can_deploy %}
             <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="2">
@@ -177,11 +182,13 @@
             </form>
             {% endif %}
 
+            {% if can_delete_version %}
             <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/delete" method="post"
                   onsubmit="return confirm('Удалить версию {{ v.version_number }}?')">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <button type="submit" class="btn-xs btn-delete">🗑</button>
             </form>
+            {% endif %}
           {% endif %}
         </div>
       </div>
@@ -191,7 +198,7 @@
     <p style="color:var(--gray); font-size:13px;">Версий пока нет. Загрузите первый .sub файл.</p>
     {% endif %}
 
-    {% if check_permission(admin, 'sub_projects', 'edit') %}
+    {% if check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
     <div class="upload-form">
       <h4>Загрузить новую версию</h4>
       <form action="/admin/sub-projects/{{ project.id }}/versions/upload" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
@@ -242,6 +249,22 @@
         <button type="submit" class="btn btn-danger">🗑 Удалить проект</button>
       </form>
     </div>
+
+    <div class="action-row" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--stroke-01);">
+      <form action="/admin/sub-projects/{{ project.id }}/change-owner" method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <div class="form-group" style="margin:0;">
+          <label style="font-size:12px;color:var(--gray);">Сменить владельца</label>
+          <select name="new_owner_admin_id" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:6px 10px;color:var(--white);font-size:12px;">
+            {% for a in all_admins %}
+            <option value="{{ a.id }}" {% if a.id == project.created_by_admin_id %}selected{% endif %}>{{ a.discord_username }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="btn btn-secondary" style="font-size:12px;padding:6px 14px;">Сменить</button>
+      </form>
+      <span style="font-size:11px;color:var(--gray);">Текущий владелец: {{ current_owner_name or 'неизвестно' }}</span>
+    </div>
     {% endif %}
   </div>
 </div>
@@ -266,8 +289,27 @@
           <input type="text" name="project_type" value="{{ project.project_type or '' }}">
         </div>
         <div class="form-group">
-          <label>Экипаж</label>
-          <input type="text" name="crew" value="{{ project.crew or '' }}">
+          <label>Экипаж (обязательно) *</label>
+          {% set crew_parts = (project.crew or '').split('-') %}
+          {% set crew_min = crew_parts[0] if crew_parts|length >= 1 else '' %}
+          {% set crew_avg = crew_parts[1] if crew_parts|length >= 2 else '' %}
+          {% set crew_max = crew_parts[2] if crew_parts|length >= 3 else '' %}
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+            <div>
+              <label style="font-size:10px;color:var(--gray);">Минимум</label>
+              <input type="number" name="crew_min" required min="1" max="100" value="{{ crew_min }}" placeholder="5">
+            </div>
+            <div>
+              <label style="font-size:10px;color:var(--gray);">Среднее</label>
+              <input type="number" name="crew_avg" required min="1" max="100" value="{{ crew_avg }}" placeholder="7">
+            </div>
+            <div>
+              <label style="font-size:10px;color:var(--gray);">Максимум</label>
+              <input type="number" name="crew_max" required min="1" max="100" value="{{ crew_max }}" placeholder="10">
+            </div>
+          </div>
+          <input type="hidden" name="crew" id="crew_hidden_edit" value="{{ project.crew or '' }}">
+          <span style="font-size:11px;color:var(--gray);">Текущее: {{ project.crew or 'не задан' }}</span>
         </div>
         <div class="form-group full">
           <label>Вооружение</label>
@@ -325,6 +367,15 @@
 <script>
 document.getElementById('editModal').addEventListener('click', function(e) {
   if (e.target === this) this.classList.remove('active');
+});
+// Build crew hidden field before form submit
+document.querySelector('#editModal form').addEventListener('submit', function(e) {
+  const mn = this.querySelector('[name=crew_min]').value;
+  const av = this.querySelector('[name=crew_avg]').value;
+  const mx = this.querySelector('[name=crew_max]').value;
+  if (mn && av && mx) {
+    document.getElementById('crew_hidden_edit').value = mn + '-' + av + '-' + mx;
+  }
 });
 </script>
 {% endblock %}

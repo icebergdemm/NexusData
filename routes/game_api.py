@@ -5,6 +5,7 @@ Game Server API endpoints:
 - Punishments (create)
 - Unban (queue via action system)
 - Server privileges (groups + player assignments)
+- Submarines list (public)
 """
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -27,6 +28,12 @@ router = APIRouter(
     prefix="/api/v1/game",
     tags=["game-api"],
     dependencies=[Depends(verify_external_api_key_dependency)] if settings.require_auth else [],
+)
+
+# Public router (no auth required for submarine list)
+public_router = APIRouter(
+    prefix="/api/v1/public",
+    tags=["public"],
 )
 
 MSK = timezone(timedelta(hours=3))
@@ -102,11 +109,13 @@ class PlayerPrivilegeOut(BaseModel):
     id: int
     steamid: str
     player_id: Optional[int]
+    player_name: Optional[str] = None  # resolved from PlayerData
     server_group_id: Optional[int]
     group_key: Optional[str] = None
     commands: list
     allowed_action_ids: list
     reason: Optional[str]
+    server_scope: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -341,11 +350,33 @@ def get_privilege_groups(db: Session = Depends(get_db)):
 
 
 @router.get("/privileges/players", response_model=List[PlayerPrivilegeOut])
-def get_player_privileges(db: Session = Depends(get_db)):
+def get_player_privileges(
+    server_name: Optional[str] = Query(None, description="Имя сервера (ASPER1 или ASPER2) для фильтрации привилегий"),
+    db: Session = Depends(get_db),
+):
     """
     Получить список всех игроков с серверными привилегиями.
+    Если указан server_name — возвращает только привилегии для этого сервера (и глобальные).
     """
-    records = db.query(ServerPlayerPrivilege).all()
+    from sqlalchemy import or_
+    query = db.query(ServerPlayerPrivilege)
+    if server_name:
+        sn = server_name.strip().upper()
+        query = query.filter(
+            or_(
+                ServerPlayerPrivilege.server_scope.is_(None),
+                ServerPlayerPrivilege.server_scope == sn,
+            )
+        )
+    records = query.all()
+
+    # Batch load player names
+    steamids = [r.steamid for r in records]
+    player_map = {}
+    if steamids:
+        players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
+        player_map = {p.player_steamid: p.player_last_time_name for p in players}
+
     result = []
     for r in records:
         group_key = None
@@ -358,23 +389,38 @@ def get_player_privileges(db: Session = Depends(get_db)):
             id=r.id,
             steamid=r.steamid,
             player_id=r.player_id,
+            player_name=player_map.get(r.steamid),
             server_group_id=r.server_group_id,
             group_key=group_key or r.group_id,
             commands=r.commands or [],
             allowed_action_ids=r.allowed_action_ids or [],
             reason=r.reason,
+            server_scope=r.server_scope,
         ))
     return result
 
 
 @router.get("/privileges/player")
-def get_player_privilege(steamid: str = Query(...), db: Session = Depends(get_db)):
+def get_player_privilege(
+    steamid: str = Query(...),
+    server_name: Optional[str] = Query(None, description="Имя сервера для фильтрации — возвращает привилегии для этого сервера"),
+    db: Session = Depends(get_db),
+):
     """
     Получить привилегии конкретного игрока (объединённые: группа + индивидуальные).
+    Если указан server_name — применяется фильтр по server_scope.
     """
-    record = db.query(ServerPlayerPrivilege).filter(
-        ServerPlayerPrivilege.steamid == steamid
-    ).first()
+    from sqlalchemy import or_
+    query = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == steamid)
+    if server_name:
+        sn = server_name.strip().upper()
+        query = query.filter(
+            or_(
+                ServerPlayerPrivilege.server_scope.is_(None),
+                ServerPlayerPrivilege.server_scope == sn,
+            )
+        )
+    record = query.first()
 
     if not record:
         return {"has_privileges": False, "steamid": steamid}
@@ -396,14 +442,19 @@ def get_player_privilege(steamid: str = Query(...), db: Session = Depends(get_db
                 if aid not in action_ids:
                     action_ids.append(aid)
 
+    # Resolve player name
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
+
     return {
         "has_privileges": True,
         "steamid": steamid,
         "player_id": record.player_id,
+        "player_name": player.player_last_time_name if player else None,
         "group_key": group_key,
         "commands": commands,
         "allowed_action_ids": action_ids,
         "reason": record.reason,
+        "server_scope": record.server_scope,
     }
 
 
@@ -454,6 +505,7 @@ def _queue_punishment_discord_notification(db, punishment):
             {"name": "Причина", "value": punishment.reason or "Не указана", "inline": False},
         ],
         "footer": {"text": "NexusData Moderation"},
+        "timestamp": datetime.now(tz=timezone(timedelta(hours=3))).isoformat(),
     }
 
     if punishment.expires_at:
@@ -463,7 +515,7 @@ def _queue_punishment_discord_notification(db, punishment):
             "inline": True,
         })
 
-    # Send to punishments channel (all types)
+    # Send to all-punishments channel (uses bot config key)
     action_all = DiscordBotAction(
         action_type="send_embed",
         payload={
@@ -485,3 +537,129 @@ def _queue_punishment_discord_notification(db, punishment):
         db.add(action_ban)
 
     db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUBMARINES PUBLIC API
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _parse_crew(crew_str: Optional[str]) -> dict:
+    """Parse crew string in format 'min-avg-max' or legacy free text."""
+    if not crew_str:
+        return {"raw": None, "min": None, "avg": None, "max": None}
+    parts = crew_str.split("-")
+    try:
+        if len(parts) == 3:
+            return {
+                "raw": crew_str,
+                "min": int(parts[0]),
+                "avg": int(parts[1]),
+                "max": int(parts[2]),
+            }
+        elif len(parts) == 2:
+            mn, mx = int(parts[0]), int(parts[1])
+            return {"raw": crew_str, "min": mn, "avg": (mn + mx) // 2, "max": mx}
+        elif len(parts) == 1:
+            val = int(parts[0])
+            return {"raw": crew_str, "min": val, "avg": val, "max": val}
+    except (ValueError, TypeError):
+        pass
+    return {"raw": crew_str, "min": None, "avg": None, "max": None}
+
+
+@public_router.get("/submarines")
+def get_submarines_list(db: Session = Depends(get_db)):
+    """
+    Публичный список кораблей/субмарин с характеристиками экипажа.
+    Поле crew хранится в формате 'min-avg-max' (например '5-7-10').
+    """
+    from models import SubProject, SubProjectVersion
+    from sqlalchemy import desc
+
+    projects = db.query(SubProject).order_by(SubProject.name).all()
+    result = []
+    for p in projects:
+        # Get deployed versions
+        latest_deployed = (
+            db.query(SubProjectVersion)
+            .filter(
+                SubProjectVersion.project_id == p.id,
+                (SubProjectVersion.deployed_server_1 == 1) | (SubProjectVersion.deployed_server_2 == 1),
+            )
+            .order_by(SubProjectVersion.version_number.desc())
+            .first()
+        )
+
+        crew_info = _parse_crew(p.crew)
+        result.append({
+            "id": p.id,
+            "name": p.name,
+            "project_type": p.project_type,
+            "author": p.author,
+            "crew": crew_info,
+            "crew_min": crew_info["min"],
+            "crew_avg": crew_info["avg"],
+            "crew_max": crew_info["max"],
+            "weapons": p.weapons,
+            "has_reactor": p.has_reactor,
+            "max_speed": p.max_speed,
+            "decks": p.decks,
+            "description": p.description,
+            "deployed_server_1": latest_deployed.deployed_server_1 == 1 if latest_deployed else False,
+            "deployed_server_2": latest_deployed.deployed_server_2 == 1 if latest_deployed else False,
+            "latest_version": latest_deployed.version_number if latest_deployed else None,
+            "latest_filename": latest_deployed.filename if latest_deployed else None,
+        })
+
+    return {"submarines": result, "total": len(result)}
+
+
+@public_router.get("/submarines/{submarine_id}")
+def get_submarine_by_id(submarine_id: int, db: Session = Depends(get_db)):
+    """Получить данные конкретного корабля по ID."""
+    from models import SubProject, SubProjectVersion
+
+    project = db.query(SubProject).filter(SubProject.id == submarine_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Submarine not found")
+
+    versions = (
+        db.query(SubProjectVersion)
+        .filter(SubProjectVersion.project_id == submarine_id)
+        .order_by(SubProjectVersion.version_number.desc())
+        .all()
+    )
+
+    crew_info = _parse_crew(project.crew)
+    return {
+        "id": project.id,
+        "name": project.name,
+        "project_type": project.project_type,
+        "author": project.author,
+        "crew": crew_info,
+        "crew_min": crew_info["min"],
+        "crew_avg": crew_info["avg"],
+        "crew_max": crew_info["max"],
+        "weapons": project.weapons,
+        "has_reactor": project.has_reactor,
+        "fabricator_medfab": project.fabricator_medfab,
+        "has_deconstructor": project.has_deconstructor,
+        "docking_ports": project.docking_ports,
+        "decks": project.decks,
+        "max_speed": project.max_speed,
+        "extra_equipment": project.extra_equipment,
+        "features": project.features,
+        "description": project.description,
+        "versions": [
+            {
+                "version_number": v.version_number,
+                "filename": v.filename,
+                "file_size": v.file_size,
+                "changelog": v.changelog,
+                "deployed_server_1": v.deployed_server_1 == 1,
+                "deployed_server_2": v.deployed_server_2 == 1,
+                "uploaded_at": v.uploaded_at.isoformat() if v.uploaded_at else None,
+            }
+            for v in versions
+        ],
+    }

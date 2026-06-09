@@ -17,6 +17,7 @@ from collections import defaultdict
 
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import httpx
 from dotenv import load_dotenv
 
@@ -402,13 +403,32 @@ async def execute_bot_action(action_type: str, payload: dict) -> bool:
                 return True
 
         elif action_type == "send_embed":
-            channel_id = int(payload.get("channel_id", 0))
+            # Supports both direct channel_id and channel_config_key (bot config lookup)
+            channel_id_raw = payload.get("channel_id", 0)
+            channel_config_key = payload.get("channel_config_key")
+
+            if channel_config_key:
+                config = await api_get("/api/v1/bot/config")
+                if config and config.get(channel_config_key):
+                    try:
+                        channel_id_raw = int(config[channel_config_key])
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid channel_id in config key {channel_config_key}")
+                        return True  # Don't fail - channel not configured
+
+            if not channel_id_raw:
+                logger.warning(f"send_embed: no channel_id resolved (config_key={channel_config_key})")
+                return True  # Channel not configured — skip silently
+
+            channel_id = int(channel_id_raw)
             embed_data = payload.get("embed", {})
             channel = bot.get_channel(channel_id)
             if channel:
                 embed = discord.Embed.from_dict(embed_data)
                 await channel.send(embed=embed)
                 return True
+            logger.warning(f"send_embed: channel {channel_id} not found")
+            return True  # Channel might not be in cache yet
 
         elif action_type == "update_rank_role":
             # Update Discord roles when player rank changes
@@ -616,6 +636,38 @@ async def cmd_set_sub_projects(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Корабли будут публиковаться в {channel.mention}")
 
 
+@bot.command(name="setpunishments")
+@commands.has_permissions(administrator=True)
+async def cmd_set_punishments(ctx, channel: discord.TextChannel):
+    """!setpunishments #channel - Set punishments notification channel (all types)."""
+    await api_post("/api/v1/bot/config", {"key": "punishment_channel_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Все наказания будут отправляться в {channel.mention}")
+
+
+@bot.command(name="setbans")
+@commands.has_permissions(administrator=True)
+async def cmd_set_bans(ctx, channel: discord.TextChannel):
+    """!setbans #channel - Set bans-only notification channel."""
+    await api_post("/api/v1/bot/config", {"key": "ban_channel_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Уведомления о банах будут приходить в {channel.mention}")
+
+
+@bot.command(name="setdispatch1")
+@commands.has_permissions(administrator=True)
+async def cmd_set_dispatch1(ctx, channel: discord.TextChannel):
+    """!setdispatch1 #channel - Set dispatch channel for ASPER1."""
+    await api_post("/api/v1/bot/config", {"key": "dispatch_channel_asper1_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Диспетчерская ASPER1 будет в {channel.mention}")
+
+
+@bot.command(name="setdispatch2")
+@commands.has_permissions(administrator=True)
+async def cmd_set_dispatch2(ctx, channel: discord.TextChannel):
+    """!setdispatch2 #channel - Set dispatch channel for ASPER2."""
+    await api_post("/api/v1/bot/config", {"key": "dispatch_channel_asper2_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Диспетчерская ASPER2 будет в {channel.mention}")
+
+
 @bot.command(name="publishrating")
 @commands.has_permissions(administrator=True)
 async def cmd_publish_rating(ctx):
@@ -647,137 +699,119 @@ TICKET_TYPES = {
     "admin_report": {"name": "Жалоба на администрацию", "emoji": "🛡️", "color": 0xcc0044},
     "department_report": {"name": "Жалоба на работу отделов", "emoji": "📋", "color": 0x8844cc},
     "appeal": {"name": "Обжалование наказания", "emoji": "⚖️", "color": 0xffcc00},
+    "construction_bureau": {"name": "Обращение в конструкторское бюро", "emoji": "🔧", "color": 0x4a9eff},
 }
 
+# pending_close[channel_id] = asyncio.Task — задача закрытия тикета
+_pending_close: dict = {}
 
-class TicketModal(discord.ui.Modal):
-    def __init__(self, ticket_type: str):
-        tinfo = TICKET_TYPES.get(ticket_type, {})
-        super().__init__(title=f"{tinfo.get('emoji', '🎫')} {tinfo.get('name', 'Обращение')}")
-        self.ticket_type = ticket_type
-        self.title_input = discord.ui.TextInput(
-            label="Краткое описание проблемы",
-            placeholder="Опишите в нескольких словах...",
-            max_length=200,
-            style=discord.TextStyle.short,
-        )
-        self.add_item(self.title_input)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: str):
+    """Create a ticket channel directly (no modal). Called from button handlers."""
+    await interaction.response.defer(ephemeral=True)
 
-        title = self.title_input.value
-        guild = interaction.guild
-        user = interaction.user
+    guild = interaction.guild
+    user = interaction.user
+    is_admin = user.guild_permissions.administrator if hasattr(user, 'guild_permissions') else False
 
-        # Check if user is admin (skip cooldown)
-        is_admin = user.guild_permissions.administrator if hasattr(user, 'guild_permissions') else False
+    # Check: already has open ticket in this category
+    open_tickets = await api_get("/api/v1/tickets/open")
+    if open_tickets:
+        for t in open_tickets:
+            if t.get("creator_discord_id") == str(user.id) and t.get("type") == ticket_type:
+                await interaction.followup.send(
+                    "❌ У вас уже есть открытое обращение в этой категории.",
+                    ephemeral=True
+                )
+                return
 
-        # Check: already has open ticket in this category
-        open_tickets = await api_get("/api/v1/tickets/open")
-        if open_tickets:
+        # 5-minute cooldown (non-admins only)
+        if not is_admin:
             for t in open_tickets:
-                if t.get("creator_discord_id") == str(user.id) and t.get("type") == self.ticket_type:
-                    await interaction.followup.send(
-                        f"❌ У вас уже есть открытое обращение в этой категории. Закройте его перед созданием нового.",
-                        ephemeral=True
-                    )
-                    return
+                if t.get("creator_discord_id") == str(user.id) and t.get("created_at"):
+                    try:
+                        created = datetime.fromisoformat(t["created_at"])
+                        if datetime.utcnow() - created < timedelta(minutes=5):
+                            await interaction.followup.send(
+                                "❌ Подождите 5 минут перед созданием нового обращения.",
+                                ephemeral=True
+                            )
+                            return
+                    except (ValueError, TypeError):
+                        pass
 
-            # Check: 5 minute cooldown (non-admins only)
-            if not is_admin:
-                from datetime import datetime, timedelta
-                user_tickets = [t for t in open_tickets if t.get("creator_discord_id") == str(user.id)]
-                # Also check recently closed tickets
-                all_user_tickets = [t for t in open_tickets if t.get("creator_discord_id") == str(user.id)]
-                for t in open_tickets:
-                    if t.get("creator_discord_id") == str(user.id) and t.get("created_at"):
-                        try:
-                            created = datetime.fromisoformat(t["created_at"])
-                            if datetime.utcnow() - created < timedelta(minutes=5):
-                                await interaction.followup.send(
-                                    f"❌ Подождите 5 минут перед созданием нового обращения.",
-                                    ephemeral=True
-                                )
-                                return
-                        except (ValueError, TypeError):
-                            pass
+    config = await api_get("/api/v1/tickets/config")
+    bot_config = await api_get("/api/v1/bot/config")
+    if not config:
+        await interaction.followup.send("Ошибка загрузки конфигурации", ephemeral=True)
+        return
 
-        # Load config
-        config = await api_get("/api/v1/tickets/config")
-        bot_config = await api_get("/api/v1/bot/config")
-        if not config:
-            await interaction.followup.send("Ошибка загрузки конфигурации", ephemeral=True)
-            return
+    category_id = (bot_config or {}).get("ticket_category_id") or config.get("category_id")
+    type_config = config.get("types", {}).get(ticket_type, {})
+    ping_roles = type_config.get("ping_roles", [])
+    template = type_config.get("template", "Опишите вашу проблему подробно.")
 
-        # Category from bot config (set via !setticketcategory)
-        category_id = (bot_config or {}).get("ticket_category_id") or config.get("category_id")
-        type_config = config.get("types", {}).get(self.ticket_type, {})
-        ping_roles = type_config.get("ping_roles", [])
-        template = type_config.get("template", "Опишите вашу проблему подробно.")
-
-        # Create channel
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-        }
-
-        # Add ping roles to overwrites
-        for role_id in ping_roles:
-            try:
-                role = guild.get_role(int(role_id))
-                if role:
-                    overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            except (ValueError, TypeError):
-                pass
-
-        category = guild.get_channel(int(category_id)) if category_id else None
-        channel_name = f"ticket-{user.name[:10]}-{self.ticket_type[:8]}"
-
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
+        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+    }
+    for role_id in ping_roles:
         try:
-            channel = await guild.create_text_channel(
-                name=channel_name,
-                category=category,
-                overwrites=overwrites,
-                topic=f"Тикет: {title} | {user.display_name}",
-            )
-        except Exception as e:
-            await interaction.followup.send(f"Ошибка создания канала: {e}", ephemeral=True)
-            return
+            role = guild.get_role(int(role_id))
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        except (ValueError, TypeError):
+            pass
 
-        # Create ticket in NexusData
-        result = await api_post("/api/v1/tickets/create", {
-            "ticket_type": self.ticket_type,
-            "title": title,
-            "creator_discord_id": str(user.id),
-            "creator_username": str(user),
-            "creator_display_name": user.display_name,
-            "discord_channel_id": str(channel.id),
-        })
+    category = guild.get_channel(int(category_id)) if category_id else None
+    channel_name = f"ticket-{user.name[:10]}-{ticket_type[:8]}"
 
-        ticket_id = result.get("ticket_id", "?") if result else "?"
-
-        # Send welcome message with close button
-        tinfo = TICKET_TYPES.get(self.ticket_type, {})
-        # Role pings wrapped in spoiler tags (hidden text), user mention normal
-        silent_pings = " ".join(f"||<@&{rid}>||" for rid in ping_roles if rid)
-
-        embed = discord.Embed(
-            title=f"{tinfo.get('emoji', '🎫')} {tinfo.get('name', 'Обращение')} #{ticket_id}",
-            description=f"{user.mention}, опишите ситуацию в данном канале по следующему шаблону:\n\n```\n{template}\n```\n\nВ случае, если вы ошибочно создали обращение, нажмите кнопку **Закрыть обращение**.",
-            color=tinfo.get("color", 0x2b7af0),
+    try:
+        channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            topic=f"Тикет | {TICKET_TYPES.get(ticket_type, {}).get('name', ticket_type)} | {user.display_name}",
         )
-        embed.set_footer(text=f"Тикет #{ticket_id} | {title}")
+    except Exception as e:
+        await interaction.followup.send(f"Ошибка создания канала: {e}", ephemeral=True)
+        return
 
-        view = TicketCloseView(ticket_id=ticket_id, channel=channel)
-        msg_content = f"{user.mention} {silent_pings}" if silent_pings.strip() else user.mention
-        await channel.send(content=msg_content, embed=embed, view=view)
+    # Use display_name as the title
+    title = f"{TICKET_TYPES.get(ticket_type, {}).get('name', ticket_type)}"
 
-        await interaction.followup.send(f"✅ Обращение создано: {channel.mention}", ephemeral=True)
+    result = await api_post("/api/v1/tickets/create", {
+        "ticket_type": ticket_type,
+        "title": title,
+        "creator_discord_id": str(user.id),
+        "creator_username": str(user),
+        "creator_display_name": user.display_name,
+        "discord_channel_id": str(channel.id),
+    })
 
-        # Update status embed
-        await refresh_ticket_status()
+    ticket_id = result.get("ticket_id", "?") if result else "?"
+
+    tinfo = TICKET_TYPES.get(ticket_type, {})
+    silent_pings = " ".join(f"||<@&{rid}>||" for rid in ping_roles if rid)
+
+    embed = discord.Embed(
+        title=f"{tinfo.get('emoji', '🎫')} {tinfo.get('name', 'Обращение')} #{ticket_id}",
+        description=(
+            f"{user.mention}, опишите вашу ситуацию по шаблону:\n\n"
+            f"```\n{template}\n```\n\n"
+            "Нажмите **Закрыть обращение** если создали ошибочно."
+        ),
+        color=tinfo.get("color", 0x2b7af0),
+    )
+    embed.set_footer(text=f"Тикет #{ticket_id}")
+
+    view = TicketCloseView(ticket_id=ticket_id, channel=channel)
+    msg_content = f"{user.mention} {silent_pings}" if silent_pings.strip() else user.mention
+    await channel.send(content=msg_content, embed=embed, view=view)
+
+    await interaction.followup.send(f"✅ Обращение создано: {channel.mention}", ephemeral=True)
+    await refresh_ticket_status()
 
 
 class TicketCloseView(discord.ui.View):
@@ -791,20 +825,13 @@ class TicketCloseView(discord.ui.View):
         await interaction.response.send_message("🔒 Тикет закрывается...", ephemeral=True)
 
         channel = interaction.channel
-        channel_id = str(channel.id)
-
-        # Close in NexusData (find ticket by channel_id)
-        # Use the stored ticket_id if available, otherwise let API find by channel
         ticket_id = self.ticket_id
         if ticket_id:
             await api_post(f"/api/v1/tickets/{ticket_id}/close", {
                 "closed_by": interaction.user.display_name,
             })
 
-        # Update status embed
         await refresh_ticket_status()
-
-        # Delete channel after short delay
         await asyncio.sleep(3)
         try:
             await channel.delete(reason=f"Ticket closed by {interaction.user}")
@@ -818,27 +845,31 @@ class TicketPanelView(discord.ui.View):
 
     @discord.ui.button(label="Помощь с игрой", style=discord.ButtonStyle.primary, emoji="❓", custom_id="ticket_help")
     async def btn_help(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal("help"))
+        await _create_ticket_channel(interaction, "help")
 
     @discord.ui.button(label="Жалоба на игрока", style=discord.ButtonStyle.secondary, emoji="⚠️", custom_id="ticket_player_report")
     async def btn_player_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal("player_report"))
+        await _create_ticket_channel(interaction, "player_report")
 
     @discord.ui.button(label="Сообщить о баге", style=discord.ButtonStyle.success, emoji="🐛", custom_id="ticket_bug")
     async def btn_bug(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal("bug"))
+        await _create_ticket_channel(interaction, "bug")
 
     @discord.ui.button(label="Жалоба на администрацию", style=discord.ButtonStyle.danger, emoji="🛡️", custom_id="ticket_admin_report")
     async def btn_admin_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal("admin_report"))
+        await _create_ticket_channel(interaction, "admin_report")
 
     @discord.ui.button(label="Жалоба на отделы", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="ticket_department_report")
     async def btn_department_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal("department_report"))
+        await _create_ticket_channel(interaction, "department_report")
 
     @discord.ui.button(label="Обжалование наказания", style=discord.ButtonStyle.secondary, emoji="⚖️", custom_id="ticket_appeal")
     async def btn_appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal("appeal"))
+        await _create_ticket_channel(interaction, "appeal")
+
+    @discord.ui.button(label="Конструкторское бюро", style=discord.ButtonStyle.secondary, emoji="🔧", custom_id="ticket_construction_bureau")
+    async def btn_construction_bureau(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _create_ticket_channel(interaction, "construction_bureau")
 
 
 @bot.command(name="setuptickets")
@@ -855,7 +886,8 @@ async def cmd_setup_tickets(ctx):
             "🐛 **Сообщить о баге** - технические проблемы\n"
             "🛡️ **Жалоба на администрацию** - некорректные действия администраторов\n"
             "📋 **Жалоба на работу отделов** - проблемы с работой отделов\n"
-            "⚖️ **Обжалование наказания** - если считаете наказание несправедливым\n\n"
+            "⚖️ **Обжалование наказания** - если считаете наказание несправедливым\n"
+            "🔧 **Конструкторское бюро** - жалобы и предложения по кораблям/станциям флота\n\n"
             "После создания обращения вам будет создан приватный канал."
         ),
         color=0x1a68de,
@@ -865,6 +897,125 @@ async def cmd_setup_tickets(ctx):
     view = TicketPanelView()
     await ctx.send(embed=embed, view=view)
     await ctx.message.delete()
+
+
+@bot.tree.command(name="close", description="Закрыть тикет через указанное время (только для администраторов)")
+@app_commands.describe(
+    minutes="Через сколько минут закрыть (0 = через 15 секунд)",
+    answer="Итоговый ответ по обращению"
+)
+async def slash_close_ticket(interaction: discord.Interaction, minutes: int, answer: str):
+    """Slash command /close <minutes> <answer> — only for ping roles in ticket channels."""
+    channel = interaction.channel
+
+    # Must be a ticket channel
+    if not channel.name.startswith("ticket-"):
+        await interaction.response.send_message("❌ Эта команда доступна только в тикет-каналах.", ephemeral=True)
+        return
+
+    # Check permissions: user must have admin or be one of the ping roles for this ticket type
+    user = interaction.user
+    has_perm = user.guild_permissions.administrator if hasattr(user, 'guild_permissions') else False
+
+    if not has_perm:
+        # Load ticket config ping roles and check if user has any of them
+        config = await api_get("/api/v1/tickets/config")
+        if config:
+            for ttype, tconf in config.get("types", {}).items():
+                for role_id_str in tconf.get("ping_roles", []):
+                    try:
+                        role = interaction.guild.get_role(int(role_id_str))
+                        if role and role in user.roles:
+                            has_perm = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+                if has_perm:
+                    break
+
+    if not has_perm:
+        await interaction.response.send_message("❌ У вас нет прав для закрытия тикета.", ephemeral=True)
+        return
+
+    channel_id_str = str(channel.id)
+
+    # If there's already a pending close — cancel it (toggle behaviour)
+    if channel_id_str in _pending_close:
+        task = _pending_close.pop(channel_id_str)
+        if not task.done():
+            task.cancel()
+        await interaction.response.send_message(
+            "⏸️ Закрытие тикета приостановлено.",
+            ephemeral=False
+        )
+        return
+
+    # Determine delay
+    delay_seconds = 15 if minutes == 0 else minutes * 60
+    if minutes == 0:
+        time_str = "15 секунд"
+    elif minutes == 1:
+        time_str = "1 минуту"
+    elif 2 <= minutes <= 4:
+        time_str = f"{minutes} минуты"
+    else:
+        time_str = f"{minutes} минут"
+
+    # Find ticket_id by channel
+    open_tickets = await api_get("/api/v1/tickets/open")
+    ticket_id = None
+    ticket_title = "Обращение"
+    creator_discord_id = None
+    if open_tickets:
+        for t in open_tickets:
+            if t.get("discord_channel_id") == channel_id_str:
+                ticket_id = t["id"]
+                ticket_title = t.get("title", "Обращение")
+                creator_discord_id = t.get("creator_discord_id")
+                break
+
+    await interaction.response.send_message(
+        f"🔒 Администратор закрыл тикет, он будет удалён через **{time_str}**...\n"
+        f"💬 Ответ: {answer}",
+        ephemeral=False
+    )
+
+    async def _do_close():
+        await asyncio.sleep(delay_seconds)
+        # Close in NexusData
+        if ticket_id:
+            await api_post(f"/api/v1/tickets/{ticket_id}/close", {
+                "closed_by": user.display_name,
+            })
+        # Send DM to ticket creator
+        if creator_discord_id:
+            try:
+                creator = await bot.fetch_user(int(creator_discord_id))
+                if creator:
+                    dm_embed = discord.Embed(
+                        title="🔒 Ваше обращение закрыто",
+                        description=(
+                            f"Ваш тикет на тему **{ticket_title}** был закрыт администратором.\n\n"
+                            f"**Ответ по вашему запросу:**\n{answer}"
+                        ),
+                        color=0x2b7af0,
+                    )
+                    dm_embed.set_footer(text="Сделано за сухарики")
+                    await creator.send(embed=dm_embed)
+            except Exception as e:
+                logger.warning(f"Failed to send DM to ticket creator {creator_discord_id}: {e}")
+
+        # Delete channel
+        try:
+            await channel.delete(reason=f"Ticket closed by {user}")
+        except Exception as e:
+            logger.warning(f"Failed to delete ticket channel: {e}")
+
+        _pending_close.pop(channel_id_str, None)
+        await refresh_ticket_status()
+
+    task = asyncio.create_task(_do_close())
+    _pending_close[channel_id_str] = task
 
 
 @bot.command(name="setticketcategory")
@@ -982,5 +1133,11 @@ if __name__ == "__main__":
         """Register persistent views so buttons work after restart."""
         bot.add_view(TicketPanelView())
         bot.add_view(TicketCloseView())
+        # Sync slash commands globally
+        try:
+            synced = await bot.tree.sync()
+            logger.info(f"Synced {len(synced)} slash command(s)")
+        except Exception as e:
+            logger.error(f"Failed to sync slash commands: {e}")
 
     bot.run(TOKEN)

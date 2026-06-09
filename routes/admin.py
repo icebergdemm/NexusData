@@ -1268,6 +1268,15 @@ async def admin_server_privileges(
 
     total_pages = (total + limit - 1) // limit
 
+    # Enrich privileges with player names
+    steamids = [p.steamid for p in privileges]
+    player_name_map = {}
+    if steamids:
+        players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
+        player_name_map = {p.player_steamid: p.player_last_time_name for p in players}
+    for priv in privileges:
+        priv.player_last_time_name = player_name_map.get(priv.steamid)
+
     # Admin privilege groups (for assignable_by_groups selector)
     from models import AdminPrivilegeGroup
     admin_priv_groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.name).all()
@@ -1603,6 +1612,8 @@ async def assign_server_privilege(
     action_ids_raw = (form.get("allowed_action_ids") or "").strip()
     allowed_action_ids = [x.strip() for x in action_ids_raw.replace(",", " ").split() if x.strip()]
     reason = (form.get("reason") or "").strip() or None
+    server_scope_raw = (form.get("server_scope") or "").strip().upper() or None
+    server_scope = server_scope_raw if server_scope_raw in ("ASPER1", "ASPER2") else None
 
     record = db.query(ServerPlayerPrivilege).filter(
         ServerPlayerPrivilege.steamid == steamid
@@ -1613,6 +1624,7 @@ async def assign_server_privilege(
         record.commands = commands
         record.allowed_action_ids = allowed_action_ids
         record.reason = reason
+        record.server_scope = server_scope
     else:
         player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
         record = ServerPlayerPrivilege(
@@ -1622,13 +1634,14 @@ async def assign_server_privilege(
             commands=commands,
             allowed_action_ids=allowed_action_ids,
             reason=reason,
+            server_scope=server_scope,
             granted_by_admin_id=current_admin.id,
         )
         db.add(record)
 
     db.commit()
     log_admin_action(db, current_admin.id, "assign_server_privilege",
-                     {"steamid": steamid, "group_id": server_group_id, "commands": commands})
+                     {"steamid": steamid, "group_id": server_group_id, "commands": commands, "server_scope": server_scope})
     push_flash(request, "success", f"Привилегии обновлены для {steamid}")
     return RedirectResponse(url="/admin/server-privileges?tab=players", status_code=302)
 

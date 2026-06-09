@@ -54,7 +54,47 @@ def post_dispatch_message(body: DispatchMessageIn, db: Session = Depends(get_db)
     db.add(msg)
     db.commit()
     db.refresh(msg)
+
+    # Queue Discord notification for dispatch messages
+    _queue_dispatch_discord_notification(db, msg)
+
     return {"status": "ok", "id": msg.id}
+
+
+def _queue_dispatch_discord_notification(db, msg: DispatchMessage):
+    """Send dispatch message to the server-specific Discord channel."""
+    server_name = msg.server_name or ""
+    sn_upper = server_name.upper()
+
+    # Map server name to config key
+    if "1" in sn_upper or sn_upper == "ASPER1":
+        channel_config_key = "dispatch_channel_asper1_id"
+    elif "2" in sn_upper or sn_upper == "ASPER2":
+        channel_config_key = "dispatch_channel_asper2_id"
+    else:
+        # Unknown server — skip notification
+        return
+
+    color = 0x3894e0 if msg.sender_type == "dispatcher" else 0xe8e8e8
+    sender_label = "🎙️ Диспетчер" if msg.sender_type == "dispatcher" else f"📻 {msg.player_name or 'Игрок'}"
+
+    embed = {
+        "description": msg.text,
+        "color": color,
+        "author": {"name": sender_label},
+        "footer": {"text": f"{server_name} · Диспетчерская"},
+        "timestamp": msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+    action = DiscordBotAction(
+        action_type="send_embed",
+        payload={
+            "channel_config_key": channel_config_key,
+            "embed": embed,
+        },
+    )
+    db.add(action)
+    db.commit()
 
 
 @api_router.get("/dispatch")

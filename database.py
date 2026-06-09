@@ -64,11 +64,11 @@ def _apply_migrations():
         ("server_player_privileges", "allowed_action_ids", "JSON"),
         # server_action_queue: multi-server support
         ("server_action_queue", "server_name", "VARCHAR(100)"),
+        # server_player_privileges: multi-server scope
+        ("server_player_privileges", "server_scope", "VARCHAR(20)"),
         # server_action_queue: per-server ACK tracking
         ("server_action_queue", "ack_asper1", "TINYINT DEFAULT 0 NOT NULL"),
         ("server_action_queue", "ack_asper2", "TINYINT DEFAULT 0 NOT NULL"),
-        # server_privilege_groups: assignable_by_groups
-        ("server_privilege_groups", "assignable_by_groups", "JSON"),
         # players_data: discord_id
         ("players_data", "discord_id", "VARCHAR(25)"),
         ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),

@@ -169,7 +169,7 @@ async def moderation_page(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Main server moderation page with four tabs."""
+    """Main server moderation page with five tabs."""
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
 
@@ -179,6 +179,37 @@ async def moderation_page(
     online_count = len(online_players)
     online_servers = svc.get_online_servers()
     selected_server = server
+
+    # Round state: last start event per server
+    from models import RoundEvent
+    from sqlalchemy import desc as _desc
+    round_states = {}
+    for sn in (["ASPER1", "ASPER2"] if not server else [server]):
+        last_start = (
+            db.query(RoundEvent)
+            .filter(RoundEvent.event_type == "start", RoundEvent.server_name == sn)
+            .order_by(_desc(RoundEvent.created_at))
+            .first()
+        )
+        last_end = (
+            db.query(RoundEvent)
+            .filter(RoundEvent.event_type == "end", RoundEvent.server_name == sn)
+            .order_by(_desc(RoundEvent.created_at))
+            .first()
+        )
+        if last_start:
+            is_active = (last_end is None) or (last_start.created_at > last_end.created_at)
+            round_states[sn] = {
+                "active": is_active,
+                "submarine_name": last_start.submarine_name,
+                "mission": last_start.mission,
+                "location": last_start.location,
+                "players": last_start.players or [],
+                "started_at": last_start.created_at,
+                "last_end": last_end,
+            }
+        else:
+            round_states[sn] = {"active": False}
 
     # Banhammer: online + recently offline + search
     recent_offline = svc.get_recent_offline_players(limit=50)
@@ -245,6 +276,7 @@ async def moderation_page(
         "online_count": online_count,
         "online_servers": online_servers,
         "selected_server": selected_server,
+        "round_states": round_states,
         "recent_offline": recent_offline,
         "search_results": search_results,
         "search_query": search,
@@ -313,6 +345,9 @@ async def enqueue_moderation_action(
         )
         db.add(punishment)
         db.commit()
+        # Queue Discord notification for the ban
+        from routes.game_api import _queue_punishment_discord_notification
+        _queue_punishment_discord_notification(db, punishment)
 
     from routes.admin import log_admin_action, push_flash
     log_admin_action(db, current_admin.id, f"moderation.{action_type}", {
