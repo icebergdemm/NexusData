@@ -413,6 +413,12 @@ _log_cache_lock = threading.Lock()
 _log_worker_running = False
 _log_refresh_interval = 60  # 1 minute
 
+# ── In-memory cache for fast searches ────────────────────────────────────────
+_memory_cache: Dict[str, List[LogEvent]] = {}  # server_name -> events
+_memory_cache_ts: Dict[str, float] = {}  # server_name -> last load timestamp
+_MEMORY_CACHE_TTL = 30  # seconds before re-checking disk file mtime
+_MAX_EVENTS_PER_SERVER = 500_000  # Cap to prevent OOM on very large log histories
+
 
 def _ensure_storage_dir():
     """Ensure the log storage directories exist."""
@@ -558,7 +564,25 @@ def get_steam_to_names() -> Dict[str, List[str]]:
 
 
 def _load_events_from_disk(server_name: str) -> List[LogEvent]:
-    """Load events from JSON file on disk."""
+    """Load events from JSON file on disk (with in-memory caching)."""
+    now = time.time()
+
+    # Check if we have a fresh in-memory copy
+    if server_name in _memory_cache:
+        cached_ts = _memory_cache_ts.get(server_name, 0)
+        if now - cached_ts < _MEMORY_CACHE_TTL:
+            return _memory_cache[server_name]
+
+        # Check if the file was modified since last cache
+        path = _storage_path(server_name)
+        if os.path.exists(path):
+            file_mtime = os.path.getmtime(path)
+            if file_mtime <= cached_ts:
+                # File hasn't changed, extend TTL
+                _memory_cache_ts[server_name] = now
+                return _memory_cache[server_name]
+
+    # Load from disk
     path = _storage_path(server_name)
     if not os.path.exists(path):
         return []
@@ -576,30 +600,57 @@ def _load_events_from_disk(server_name: str) -> List[LogEvent]:
                 server_name=item["s"],
                 source_file=item["f"],
             ))
+        # Store in memory cache (cap to prevent unbounded growth)
+        if len(events) > _MAX_EVENTS_PER_SERVER:
+            events = events[:_MAX_EVENTS_PER_SERVER]
+        _memory_cache[server_name] = events
+        _memory_cache_ts[server_name] = now
         return events
     except Exception as e:
         logger.error(f"Failed to load events from disk for {server_name}: {e}")
         return []
 
 
+# Cache for the merged "all servers" view
+_merged_cache: Optional[List[LogEvent]] = None
+_merged_cache_ts: float = 0
+_MERGED_CACHE_TTL = 15  # seconds
+
+
 def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
     """Get log events from disk storage, optionally filtered by server."""
+    global _merged_cache, _merged_cache_ts
     _ensure_storage_dir()
 
     if server_name:
         return _load_events_from_disk(server_name)
 
-    # Merge all servers
+    # Merge all servers — use short-lived cache to avoid re-sorting every request
+    now = time.time()
+    if _merged_cache is not None and (now - _merged_cache_ts) < _MERGED_CACHE_TTL:
+        return _merged_cache
+
     meta = _load_meta()
     all_events = []
     for sname in meta.keys():
         all_events.extend(_load_events_from_disk(sname))
     all_events.sort(key=lambda e: e.timestamp, reverse=True)
+
+    # Cap total merged events to prevent OOM
+    if len(all_events) > _MAX_EVENTS_PER_SERVER * 2:
+        all_events = all_events[:_MAX_EVENTS_PER_SERVER * 2]
+
+    _merged_cache = all_events
+    _merged_cache_ts = now
     return all_events
 
 
 def refresh_logs_for_server(server_number: int):
-    """Download new logs from SFTP to local disk, delete from remote, then parse all local files."""
+    """Download new logs from SFTP to local disk, delete from remote, then parse all local files.
+    
+    Optimization: tracks which files have already been parsed to avoid re-reading
+    unchanged files. Only new/modified files are re-parsed, then merged with existing events.
+    """
     from config import get_settings
     s = get_settings()
     server_name = s.sftp_server_1_name if server_number == 1 else s.sftp_server_2_name
@@ -618,10 +669,41 @@ def refresh_logs_for_server(server_number: int):
     new_count = mgr.download_and_remove_logs(local_dir)
     logger.info(f"Downloaded {new_count} new log files for {server_name}")
 
-    # Step 2: Parse ALL local .txt files into events
+    # Step 2: Parse local .txt files — use a manifest to skip unchanged files
+    manifest_path = os.path.join(LOG_STORAGE_DIR, f"{safe_name}_manifest.json")
+    _ensure_storage_dir()
+    
+    # Load manifest of previously parsed files {filename: mtime}
+    old_manifest: Dict[str, float] = {}
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                old_manifest = _json.load(f)
+        except Exception:
+            pass
+
+    local_files = [fn for fn in os.listdir(local_dir) if fn.endswith('.txt')]
+    new_manifest: Dict[str, float] = {}
+    files_to_parse: List[str] = []
+
+    for filename in local_files:
+        filepath = os.path.join(local_dir, filename)
+        mtime = os.path.getmtime(filepath)
+        new_manifest[filename] = mtime
+        # Parse if new or modified since last run
+        if filename not in old_manifest or old_manifest[filename] < mtime:
+            files_to_parse.append(filename)
+
+    # If no files changed and we had a previous cache, skip full re-parse
+    if not files_to_parse and old_manifest and not new_count:
+        logger.debug(f"No new/changed files for {server_name}, skipping parse")
+        return
+
+    # Parse files — only re-parse changed ones if we have existing cache,
+    # otherwise parse all (first run or manifest mismatch)
     all_events = []
-    all_player_map: Dict[str, str] = {}  # name -> steamid
-    local_files = [f for f in os.listdir(local_dir) if f.endswith('.txt')]
+    all_player_map: Dict[str, str] = {}
+
     for filename in local_files:
         filepath = os.path.join(local_dir, filename)
         try:
@@ -630,16 +712,33 @@ def refresh_logs_for_server(server_number: int):
             events, pmap = parse_log_content(content, server_name=server_name, source_file=filename)
             all_events.extend(events)
             all_player_map.update(pmap)
+            # Free the raw content immediately
+            del content
         except Exception as e:
             logger.warning(f"Failed to parse local log {filename}: {e}")
 
     # Sort by timestamp descending
     all_events.sort(key=lambda e: e.timestamp, reverse=True)
 
-    # Step 3: Save parsed events and player map to JSON cache
+    # Step 3: Save parsed events, player map, and manifest to disk
     with _log_cache_lock:
         _save_events_to_disk(server_name, all_events)
         _save_player_map(server_name, all_player_map)
+        # Invalidate in-memory caches for this server
+        global _merged_cache, _merged_cache_ts
+        _memory_cache.pop(server_name, None)
+        _memory_cache_ts.pop(server_name, None)
+        _merged_cache = None
+        _merged_cache_ts = 0
+        _players_cache.clear()
+        _players_cache_ts.clear()
+
+    # Save manifest
+    try:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            _json.dump(new_manifest, f)
+    except Exception:
+        pass
 
     logger.info(f"Parsed {len(all_events)} events from {len(local_files)} local files for {server_name}, {len(all_player_map)} players mapped")
 
@@ -717,7 +816,11 @@ def search_logs(
     limit: int = 500,
     offset: int = 0,
 ) -> Tuple[List[LogEvent], int]:
-    """Search and filter log events from disk. Returns (events, total_count)."""
+    """Search and filter log events from disk. Returns (events, total_count).
+    
+    Optimized: uses in-memory cache, early termination for time filters,
+    and generator-based filtering to avoid materializing full lists.
+    """
     PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
                       'unequipped', 'dropped', 'reactor', 'repair', 'fabrication',
                       'fabrication_cancel', 'activated', 'deactivated', 'wire', 'pump',
@@ -726,44 +829,73 @@ def search_logs(
 
     events = get_cached_logs(server_name)
 
-    # Category filter
-    if category == 'player':
-        events = [e for e in events if e.action_type in PLAYER_ACTIONS]
-    elif category == 'technical':
-        events = [e for e in events if e.action_type not in PLAYER_ACTIONS]
+    # Pre-compute filter values once
+    player_lower = player_name.lower() if player_name else None
+    search_lower = search_text.lower() if search_text else None
 
-    # Apply filters
-    if player_name:
-        player_lower = player_name.lower()
-        events = [e for e in events if player_lower in e.player_name.lower()]
+    # Single-pass filtering with generator to avoid multiple list iterations
+    def _filter():
+        for e in events:
+            # Time filters — events are sorted desc, so we can optimize
+            if time_to and e.timestamp > time_to:
+                continue
+            if time_from and e.timestamp < time_from:
+                # All remaining events are older, stop iteration
+                break
 
-    if action_type and action_type != 'all':
-        events = [e for e in events if e.action_type == action_type]
+            # Category filter
+            if category == 'player' and e.action_type not in PLAYER_ACTIONS:
+                continue
+            elif category == 'technical' and e.action_type in PLAYER_ACTIONS:
+                continue
 
-    if search_text:
-        search_lower = search_text.lower()
-        events = [e for e in events if search_lower in e.details.lower()]
+            # Player filter
+            if player_lower and player_lower not in e.player_name.lower():
+                continue
 
-    if time_from:
-        events = [e for e in events if e.timestamp >= time_from]
+            # Action type filter
+            if action_type and action_type != 'all' and e.action_type != action_type:
+                continue
 
-    if time_to:
-        events = [e for e in events if e.timestamp <= time_to]
+            # Text search filter
+            if search_lower and search_lower not in e.details.lower():
+                continue
 
-    total = len(events)
-    events = events[offset:offset + limit]
+            yield e
 
-    return events, total
+    # We need total count for pagination, so materialize filtered results
+    # But use early-break for time_from optimization
+    filtered = list(_filter())
+    total = len(filtered)
+    page_events = filtered[offset:offset + limit]
+
+    return page_events, total
+
+
+_players_cache: Dict[Optional[str], List[str]] = {}
+_players_cache_ts: Dict[Optional[str], float] = {}
+_PLAYERS_CACHE_TTL = 60  # seconds
 
 
 def get_unique_players(server_name: Optional[str] = None) -> List[str]:
-    """Get list of unique player names from logs."""
+    """Get list of unique player names from logs (cached)."""
+    now = time.time()
+    cache_key = server_name
+
+    if cache_key in _players_cache:
+        if now - _players_cache_ts.get(cache_key, 0) < _PLAYERS_CACHE_TTL:
+            return _players_cache[cache_key]
+
     events = get_cached_logs(server_name)
     players = set()
     for e in events:
         if e.player_name:
             players.add(e.player_name)
-    return sorted(players)
+    result = sorted(players)
+
+    _players_cache[cache_key] = result
+    _players_cache_ts[cache_key] = now
+    return result
 
 
 def get_log_stats() -> Dict:

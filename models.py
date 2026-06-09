@@ -119,10 +119,10 @@ class AdminActionLog(Base):
     __tablename__ = "admin_action_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    admin_id = Column(Integer)
+    admin_id = Column(Integer, index=True)
     action = Column(String(255))
     details = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=func.now(), index=True)
 
 
 class PlayerKill(Base):

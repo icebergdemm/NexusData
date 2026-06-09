@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
+from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -1200,7 +1200,7 @@ async def admin_meeting(
 
 @router.get("/admin/audit", response_class=HTMLResponse)
 async def admin_audit_list(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    """List audit logs"""
+    """List audit logs - lightweight page shell, data loaded via AJAX"""
     if not check_permission(current_admin, "audit", "view"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -1208,19 +1208,62 @@ async def admin_audit_list(request: Request, db: Session = Depends(get_db), curr
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
 
-    logs = db.query(AdminActionLog).order_by(AdminActionLog.created_at.desc()).limit(200).all()
-    admins = db.query(AdminUser).all()
-    admin_lookup = {a.id: a.discord_username for a in admins}
     return templates.TemplateResponse(
         "admin/audit.html",
         {
             "request": request,
             "admin": current_admin,
-            "logs": logs,
-            "admin_lookup": admin_lookup,
             "flashes": pop_flashes(request),
         },
     )
+
+
+@router.get("/api/v1/admin/audit/logs")
+async def api_audit_logs(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=10, le=200),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """JSON API for audit logs with pagination."""
+    if not check_permission(current_admin, "audit", "view"):
+        raise HTTPException(status_code=403)
+
+    from fastapi.responses import JSONResponse
+
+    offset = (page - 1) * page_size
+    total = db.query(AdminActionLog).count()
+    logs = (
+        db.query(AdminActionLog)
+        .order_by(AdminActionLog.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    # Build admin lookup only for IDs present in this page
+    admin_ids = list(set(log.admin_id for log in logs if log.admin_id))
+    admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
+    admin_lookup = {a.id: a.discord_username for a in admins}
+
+    return JSONResponse({
+        "logs": [
+            {
+                "id": log.id,
+                "admin_id": log.admin_id,
+                "admin_name": admin_lookup.get(log.admin_id, "Неизвестный"),
+                "action": log.action,
+                "details": log.details or {},
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in logs
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total > 0 else 1,
+    })
 
 
 @router.get("/admin/server-privileges", response_class=HTMLResponse)

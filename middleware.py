@@ -10,16 +10,31 @@ from config import get_settings
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Maximum number of tracked IPs before a full cleanup is forced
+_MAX_TRACKED_IPS = 5000
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory rate limiter by IP address"""
+    """Simple in-memory rate limiter by IP address with periodic cleanup."""
     
     def __init__(self, app, requests_per_window: int, window_seconds: int):
         super().__init__(app)
         self.requests_per_window = requests_per_window
         self.window_seconds = window_seconds
         self.request_history = defaultdict(list)
+        self._last_cleanup = time()
+        self._cleanup_interval = 300  # Full cleanup every 5 minutes
     
+    def _cleanup_stale_ips(self, now: float):
+        """Remove IPs with no recent requests to prevent memory growth."""
+        stale_ips = [
+            ip for ip, timestamps in self.request_history.items()
+            if not timestamps or (now - timestamps[-1]) > self.window_seconds
+        ]
+        for ip in stale_ips:
+            del self.request_history[ip]
+        self._last_cleanup = now
+
     async def dispatch(self, request: Request, call_next):
         # Пропусти проверку для /health
         if request.url.path in ["/health", "/status", "/docs", "/redoc", "/openapi.json"]:
@@ -33,8 +48,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Текущее время
         now = time()
+
+        # Periodic cleanup of stale IPs to prevent memory leak
+        if now - self._last_cleanup > self._cleanup_interval or len(self.request_history) > _MAX_TRACKED_IPS:
+            self._cleanup_stale_ips(now)
         
-        # Очисти старые запросы
+        # Очисти старые запросы для этого IP
         self.request_history[client_ip] = [
             req_time for req_time in self.request_history[client_ip]
             if now - req_time < self.window_seconds

@@ -82,6 +82,7 @@ def _worker_loop() -> None:
                 db.rollback()
             finally:
                 db.close()
+                del db  # Help GC
         except Exception:
             logger.exception("PlaytimeWorker: не удалось открыть сессию БД")
 

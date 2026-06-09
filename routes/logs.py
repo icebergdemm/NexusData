@@ -121,31 +121,33 @@ async def api_logs_events(
     offset = (page - 1) * page_size
 
     if names_list:
-        # Search across multiple player names and merge results
-        from services_logs import get_cached_logs
+        # Search across multiple player names — use optimized single-pass filter
         events = get_cached_logs(server if server else None)
-
-        # Filter by any of the names
         names_lower = [n.lower() for n in names_list]
-        events = [e for e in events if any(n in e.player_name.lower() for n in names_lower)]
+        search_lower = search.lower() if search else None
 
-        if category == 'player':
-            events = [e for e in events if e.action_type in PLAYER_ACTIONS]
-        elif category == 'technical':
-            events = [e for e in events if e.action_type in TECHNICAL_ACTIONS]
+        # Single-pass filtering with early time termination (events sorted desc)
+        filtered = []
+        for e in events:
+            if dt_to and e.timestamp > dt_to:
+                continue
+            if dt_from and e.timestamp < dt_from:
+                break  # All remaining events are older
 
-        if action_type and action_type != 'all':
-            events = [e for e in events if e.action_type == action_type]
-        if search:
-            search_lower = search.lower()
-            events = [e for e in events if search_lower in e.details.lower()]
-        if dt_from:
-            events = [e for e in events if e.timestamp >= dt_from]
-        if dt_to:
-            events = [e for e in events if e.timestamp <= dt_to]
+            if not any(n in e.player_name.lower() for n in names_lower):
+                continue
+            if category == 'player' and e.action_type not in PLAYER_ACTIONS:
+                continue
+            if category == 'technical' and e.action_type not in TECHNICAL_ACTIONS:
+                continue
+            if action_type and action_type != 'all' and e.action_type != action_type:
+                continue
+            if search_lower and search_lower not in e.details.lower():
+                continue
+            filtered.append(e)
 
-        total = len(events)
-        events = events[offset:offset + page_size]
+        total = len(filtered)
+        events = filtered[offset:offset + page_size]
     else:
         events, total = search_logs(
             server_name=server if server else None,

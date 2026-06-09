@@ -31,35 +31,42 @@ def compute_rating(cumulative_points: float) -> float:
 def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
     """
     Calculate ratings for ALL players from raw player_role_actions table.
+    Uses batched loading to avoid loading all rows into memory at once.
     Returns: {steam_id: {role: {"points": float, "rating": float}}}
     """
-    # Fetch all role actions grouped by player_id and role
-    all_actions = db.query(PlayerRoleAction).all()
-
-    # Get player_id -> steam_id mapping
-    player_ids = set(a.player_id for a in all_actions)
-    if not player_ids:
+    # Get player_id -> steam_id mapping first (lightweight)
+    players = db.query(PlayerData.player_id, PlayerData.player_steamid).all()
+    if not players:
         return {}
-
-    players = db.query(PlayerData).filter(PlayerData.player_id.in_(player_ids)).all()
     pid_to_steam = {p.player_id: p.player_steamid for p in players}
 
-    # Aggregate weighted points per (steam_id, role)
+    # Aggregate weighted points per (steam_id, role) using batched iteration
     points_by_player_role = defaultdict(lambda: defaultdict(float))
 
-    for action in all_actions:
-        steam_id = pid_to_steam.get(action.player_id)
-        if not steam_id:
-            continue
+    BATCH_SIZE = 5000
+    offset = 0
+    while True:
+        batch = db.query(PlayerRoleAction).offset(offset).limit(BATCH_SIZE).all()
+        if not batch:
+            break
 
-        role = action.role
-        if role not in WEIGHT_MATRIX:
-            continue
+        for action in batch:
+            steam_id = pid_to_steam.get(action.player_id)
+            if not steam_id:
+                continue
 
-        action_type = action.action_type
-        value = float(action.value or 0)
-        weight = WEIGHT_MATRIX.get(role, {}).get(action_type, 0.0)
-        points_by_player_role[steam_id][role] += value * weight
+            role = action.role
+            if role not in WEIGHT_MATRIX:
+                continue
+
+            action_type = action.action_type
+            value = float(action.value or 0)
+            weight = WEIGHT_MATRIX.get(role, {}).get(action_type, 0.0)
+            points_by_player_role[steam_id][role] += value * weight
+
+        # Allow GC to reclaim the batch
+        offset += BATCH_SIZE
+        db.expire_all()
 
     # Compute ratings
     result = {}
@@ -117,6 +124,7 @@ def recalculate_all():
         logger.error(f"[Rating] Recalculation failed: {e}")
         db.rollback()
     finally:
+        db.expire_all()  # Release identity map objects before closing
         db.close()
 
 

@@ -41,6 +41,14 @@
 .ch-to   { color:var(--success); font-size:11px; }
 .raw-pre { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:8px; font-size:11px; color:var(--gray); font-family:'Courier New',monospace; max-width:320px; overflow:auto; white-space:pre-wrap; word-break:break-all; max-height:120px; }
 .cell-time { font-size:12px; color:var(--gray); white-space:nowrap; }
+.audit-pagination { display:flex; align-items:center; justify-content:center; gap:8px; padding:16px; }
+.audit-pagination button { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; color:var(--white); padding:6px 14px; font-size:12px; cursor:pointer; transition:background .15s; }
+.audit-pagination button:hover:not(:disabled) { background:rgba(26,104,222,.2); }
+.audit-pagination button:disabled { opacity:.4; cursor:not-allowed; }
+.audit-pagination span { color:var(--gray); font-size:12px; }
+.audit-loading { text-align:center; padding:48px; color:var(--gray); }
+.audit-loading .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--stroke-01); border-top-color:var(--primary-blue); border-radius:50%; animation:spin .6s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
 @media(max-width:900px){
   .data-table th:nth-child(3),.data-table td:nth-child(3){ display:none; }
 }
@@ -49,106 +57,142 @@
 <div class="pg-header">
   <div>
     <h2>📋 Журнал аудита</h2>
-    <p>История действий администраторов в системе (последние 200 записей).</p>
+    <p>История действий администраторов в системе.</p>
   </div>
 </div>
 
 <div class="block-card">
   <div class="block-card-header">
     <h3>Действия администраторов</h3>
-    <span style="font-size:13px; color:var(--gray);">{{ logs|length }} записей</span>
+    <span id="audit-count" style="font-size:13px; color:var(--gray);">Загрузка...</span>
   </div>
-  {% if logs %}
-  <div style="overflow-x:auto;">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Кто</th>
-          <th>Действие</th>
-          <th>Объект</th>
-          <th>Изменения</th>
-          <th>Время</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for log in logs %}
-        {% set d = log.details or {} %}
-        {% set target = d.get('target') or {} %}
-        {% set changes = d.get('changes') or [] %}
-        {% set action = log.action | lower %}
-        {% if 'create' in action or 'add' in action or 'grant' in action %}
-          {% set badge_cls = 'create' %}
-        {% elif 'delete' in action or 'revoke' in action and 'session' not in action %}
-          {% set badge_cls = 'delete' %}
-        {% elif 'update' in action %}
-          {% set badge_cls = 'update' %}
-        {% elif 'revoke' in action %}
-          {% set badge_cls = 'revoke' %}
-        {% elif 'login' in action %}
-          {% set badge_cls = 'login' %}
-        {% elif 'logout' in action %}
-          {% set badge_cls = 'logout' %}
-        {% elif 'view' in action %}
-          {% set badge_cls = 'view' %}
-        {% else %}
-          {% set badge_cls = '' %}
-        {% endif %}
-        <tr>
-          <td>
-            <div class="actor-block">
-              <span class="actor-name">{{ admin_lookup.get(log.admin_id, 'Неизвестный') }}</span>
-              <span class="actor-id">ID {{ log.admin_id }}</span>
-            </div>
-          </td>
-          <td><span class="action-badge {{ badge_cls }}">{{ log.action }}</span></td>
-          <td>
-            <div class="target-block">
-              {% if target.get('player_id') %}<div class="target-line">Игрок <strong>#{{ target.get('player_id') }}</strong></div>{% endif %}
-              {% if target.get('name') %}<div class="target-line">{{ target.get('name') }}</div>{% endif %}
-              {% if target.get('steamid') %}<div class="target-line" style="font-family:'Courier New',monospace; font-size:11px;">{{ target.get('steamid') }}</div>{% endif %}
-              {% if target.get('admin_id') %}<div class="target-line">Админ <strong>#{{ target.get('admin_id') }}</strong></div>{% endif %}
-              {% if target.get('username') %}<div class="target-line">{{ target.get('username') }}</div>{% endif %}
-              {% if target.get('discord_id') %}<div class="target-line" style="font-family:'Courier New',monospace; font-size:11px;">{{ target.get('discord_id') }}</div>{% endif %}
-              {% if target.get('session_id') %}<div class="target-line">Сессия <strong>#{{ target.get('session_id') }}</strong></div>{% endif %}
-              {% if target.get('kit_id') %}<div class="target-line">Кит <strong>#{{ target.get('kit_id') }}</strong></div>{% endif %}
-              {% if not target and not d %}<span style="color:var(--gray-dark); font-size:12px;">-</span>{% endif %}
-            </div>
-          </td>
-          <td>
-            {% if changes %}
-            <ul class="changes-list">
-              {% for c in changes %}
-              <li>
-                <code>{{ c.get('field') }}</code>
-                <span class="ch-from">{{ c.get('from') if c.get('from') is not none else '∅' }}</span>
-                <span style="color:var(--gray-dark);">→</span>
-                <span class="ch-to">{{ c.get('to') if c.get('to') is not none else '∅' }}</span>
-              </li>
-              {% endfor %}
-            </ul>
-            {% elif d and not target %}
-            <pre class="raw-pre">{{ d | tojson(indent=2) }}</pre>
-            {% elif d.get('privileges') or d.get('steamid') %}
-            <div style="font-size:12px; color:var(--gray);">
-              {% if d.get('steamid') %}<div>SteamID: <code style="font-size:11px; color:#88b8ff;">{{ d.get('steamid') }}</code></div>{% endif %}
-              {% if d.get('privileges') %}<div>Привилегии: {{ d.get('privileges') | join(', ') }}</div>{% endif %}
-              {% if d.get('reason') %}<div>Причина: {{ d.get('reason') }}</div>{% endif %}
-            </div>
-            {% else %}
-            <span style="color:var(--gray-dark); font-size:12px;">-</span>
-            {% endif %}
-          </td>
-          <td class="cell-time">{{ log.created_at.strftime('%d.%m.%Y %H:%M:%S') if log.created_at else '-' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div id="audit-content">
+    <div class="audit-loading"><div class="spinner"></div><p style="margin-top:12px;">Загрузка логов...</p></div>
   </div>
-  {% else %}
-  <div style="text-align:center; padding:48px 32px; color:var(--gray-dark);">
-    <div style="font-size:48px; margin-bottom:16px; opacity:.4;">📋</div>
-    <h3 style="color:var(--gray);">Записей нет</h3>
+  <div class="audit-pagination" id="audit-pagination" style="display:none;">
+    <button id="audit-prev" onclick="auditPage(-1)">← Назад</button>
+    <span id="audit-page-info"></span>
+    <button id="audit-next" onclick="auditPage(1)">Вперёд →</button>
   </div>
-  {% endif %}
 </div>
+
+<script>
+(function() {
+  let currentPage = 1;
+  const pageSize = 50;
+
+  function esc(t) { const d = document.createElement('span'); d.textContent = t; return d.innerHTML; }
+
+  function getBadgeClass(action) {
+    const a = (action || '').toLowerCase();
+    if (a.includes('create') || a.includes('add') || a.includes('grant')) return 'create';
+    if (a.includes('delete') || (a.includes('revoke') && !a.includes('session'))) return 'delete';
+    if (a.includes('update')) return 'update';
+    if (a.includes('revoke')) return 'revoke';
+    if (a.includes('login')) return 'login';
+    if (a.includes('logout')) return 'logout';
+    if (a.includes('view')) return 'view';
+    return '';
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    return d.toLocaleDateString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric'}) + ' ' + d.toLocaleTimeString('ru-RU');
+  }
+
+  function renderTarget(d) {
+    const target = d.target || {};
+    let html = '';
+    if (target.player_id) html += '<div class="target-line">Игрок <strong>#' + esc(String(target.player_id)) + '</strong></div>';
+    if (target.name) html += '<div class="target-line">' + esc(target.name) + '</div>';
+    if (target.steamid) html += '<div class="target-line" style="font-family:monospace;font-size:11px;">' + esc(target.steamid) + '</div>';
+    if (target.admin_id) html += '<div class="target-line">Админ <strong>#' + esc(String(target.admin_id)) + '</strong></div>';
+    if (target.username) html += '<div class="target-line">' + esc(target.username) + '</div>';
+    if (target.discord_id) html += '<div class="target-line" style="font-family:monospace;font-size:11px;">' + esc(target.discord_id) + '</div>';
+    if (target.session_id) html += '<div class="target-line">Сессия <strong>#' + esc(String(target.session_id)) + '</strong></div>';
+    if (target.kit_id) html += '<div class="target-line">Кит <strong>#' + esc(String(target.kit_id)) + '</strong></div>';
+    if (!html && !Object.keys(d).length) return '<span style="color:var(--gray-dark);font-size:12px;">-</span>';
+    return '<div class="target-block">' + html + '</div>';
+  }
+
+  function renderChanges(d) {
+    const changes = d.changes || [];
+    const target = d.target || {};
+    if (changes.length) {
+      let html = '<ul class="changes-list">';
+      for (const c of changes) {
+        const from = c.from !== null && c.from !== undefined ? esc(String(c.from)) : '∅';
+        const to = c.to !== null && c.to !== undefined ? esc(String(c.to)) : '∅';
+        html += '<li><code>' + esc(c.field || '') + '</code><span class="ch-from">' + from + '</span><span style="color:var(--gray-dark);">→</span><span class="ch-to">' + to + '</span></li>';
+      }
+      html += '</ul>';
+      return html;
+    }
+    if (Object.keys(d).length && !Object.keys(target).length) {
+      return '<pre class="raw-pre">' + esc(JSON.stringify(d, null, 2)) + '</pre>';
+    }
+    if (d.privileges || d.steamid) {
+      let html = '<div style="font-size:12px;color:var(--gray);">';
+      if (d.steamid) html += '<div>SteamID: <code style="font-size:11px;color:#88b8ff;">' + esc(d.steamid) + '</code></div>';
+      if (d.privileges) html += '<div>Привилегии: ' + esc(Array.isArray(d.privileges) ? d.privileges.join(', ') : String(d.privileges)) + '</div>';
+      if (d.reason) html += '<div>Причина: ' + esc(d.reason) + '</div>';
+      html += '</div>';
+      return html;
+    }
+    return '<span style="color:var(--gray-dark);font-size:12px;">-</span>';
+  }
+
+  async function loadAudit() {
+    const content = document.getElementById('audit-content');
+    content.innerHTML = '<div class="audit-loading"><div class="spinner"></div><p style="margin-top:12px;">Загрузка...</p></div>';
+
+    try {
+      const r = await fetch('/api/v1/admin/audit/logs?page=' + currentPage + '&page_size=' + pageSize);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+
+      document.getElementById('audit-count').textContent = data.total + ' записей';
+
+      if (!data.logs.length) {
+        content.innerHTML = '<div style="text-align:center;padding:48px 32px;color:var(--gray-dark);"><div style="font-size:48px;margin-bottom:16px;opacity:.4;">📋</div><h3 style="color:var(--gray);">Записей нет</h3></div>';
+        document.getElementById('audit-pagination').style.display = 'none';
+        return;
+      }
+
+      let html = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Кто</th><th>Действие</th><th>Объект</th><th>Изменения</th><th>Время</th></tr></thead><tbody>';
+      for (const log of data.logs) {
+        const d = log.details || {};
+        const badge = getBadgeClass(log.action);
+        html += '<tr>';
+        html += '<td><div class="actor-block"><span class="actor-name">' + esc(log.admin_name) + '</span><span class="actor-id">ID ' + log.admin_id + '</span></div></td>';
+        html += '<td><span class="action-badge ' + badge + '">' + esc(log.action) + '</span></td>';
+        html += '<td>' + renderTarget(d) + '</td>';
+        html += '<td>' + renderChanges(d) + '</td>';
+        html += '<td class="cell-time">' + formatTime(log.created_at) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+      content.innerHTML = html;
+
+      // Pagination
+      const pag = document.getElementById('audit-pagination');
+      pag.style.display = 'flex';
+      document.getElementById('audit-page-info').textContent = 'Стр. ' + data.page + ' из ' + data.total_pages;
+      document.getElementById('audit-prev').disabled = (data.page <= 1);
+      document.getElementById('audit-next').disabled = (data.page >= data.total_pages);
+    } catch (e) {
+      content.innerHTML = '<div style="text-align:center;padding:48px;color:var(--error);">Ошибка загрузки: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  window.auditPage = function(delta) {
+    currentPage += delta;
+    if (currentPage < 1) currentPage = 1;
+    loadAudit();
+  };
+
+  loadAudit();
+})();
+</script>
 {% endblock %}

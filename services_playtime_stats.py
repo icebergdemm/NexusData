@@ -125,6 +125,7 @@ def calculate_playtime_stats():
         logger.error(f"Failed to calculate playtime stats: {e}")
         return None
     finally:
+        db.expire_all()
         db.close()
 
 

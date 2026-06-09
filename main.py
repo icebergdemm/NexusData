@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -55,6 +56,9 @@ def create_app() -> FastAPI:
         allow_methods=settings.cors_methods,
         allow_headers=settings.cors_headers,
     )
+
+    # GZip compression for responses > 500 bytes
+    app.add_middleware(GZipMiddleware, minimum_size=500)
     
     # Exception handlers
     @app.exception_handler(IntegrityError)
@@ -143,8 +147,20 @@ def create_app() -> FastAPI:
     app.include_router(dispatch_api_router)
     app.include_router(dispatch_panel_router)
 
-    # Serve static files from './static' at '/static'
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    # Serve static files from './static' at '/static' with caching
+    from starlette.staticfiles import StaticFiles as _StaticFiles
+    from starlette.responses import Response as _Response
+
+    class CachedStaticFiles(_StaticFiles):
+        """StaticFiles with Cache-Control headers for browser caching."""
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            # Cache static assets for 1 day in browser, 7 days with revalidation
+            if response.status_code == 200:
+                response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
+            return response
+
+    app.mount("/static", CachedStaticFiles(directory="static"), name="static")
 
     # Serve uploaded sub-project images at /sub_projects/images/
     import os
