@@ -146,13 +146,15 @@
           {% if v.deployed_server_2 %}<span class="vb vb-s2">{{ sftp_server_2_name }}</span>{% endif %}
         </div>
         <div class="version-actions">
+          {% set can_any = check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+          {% set is_owner = project.created_by_admin_id == admin.id %}
+          {% if can_any or is_owner %}
           <a href="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/download" class="btn-xs btn-download">⬇️</a>
+          {% endif %}
 
-          {% if check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+          {% if check_permission(admin, 'sub_projects', 'view') or can_any %}
             {% set can_deploy = check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
             {% set can_delete_version = check_permission(admin, 'sub_projects', 'delete') %}
-            {% set can_upload = check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
-            {% set is_owner = project.created_by_admin_id == admin.id %}
 
             {% if not v.deployed_server_1 and can_deploy %}
             <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
@@ -198,7 +200,9 @@
     <p style="color:var(--gray); font-size:13px;">Версий пока нет. Загрузите первый .sub файл.</p>
     {% endif %}
 
-    {% if check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+    {% set can_any_upload = check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+    {% set is_owner_upload = project.created_by_admin_id == admin.id %}
+    {% if can_any_upload or is_owner_upload %}
     <div class="upload-form">
       <h4>Загрузить новую версию</h4>
       <form action="/admin/sub-projects/{{ project.id }}/versions/upload" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">

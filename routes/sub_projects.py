@@ -547,6 +547,15 @@ async def sub_project_download_version(
         raise HTTPException(status_code=403)
 
     svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+
+    # With view-only: can download only from own projects
+    can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
+    if not can_any and project.created_by_admin_id != current_admin.id:
+        raise HTTPException(status_code=403, detail="Скачивание файлов доступно только для своих проектов")
+
     version = svc.get_version_by_id(version_id)
     if not version or version.project_id != project_id:
         raise HTTPException(status_code=404, detail="Версия не найдена")
