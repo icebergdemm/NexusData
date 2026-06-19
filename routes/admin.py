@@ -180,6 +180,11 @@ async def discord_callback(
             logger.warning(f"Unauthorized login attempt for Discord ID {discord_id}")
             return RedirectResponse(url="/login?error=not_authorized", status_code=302)
 
+        # Block deleted admins
+        if getattr(admin, 'is_deleted', 0) == 1:
+            logger.warning(f"Deleted admin login attempt: Discord ID {discord_id}")
+            return RedirectResponse(url="/login?error=not_authorized", status_code=302)
+
         # Refresh Discord display name (global_name = display name, username = unique handle)
         fresh_display_name = user_info.get("global_name") or user_info.get("username", "")
         fresh_avatar = user_info.get("avatar")
@@ -3347,7 +3352,7 @@ async def admin_debug(
     diagnostics["privilege_group"] = grp_info
     
     # Test all permission checks with detailed tracing
-    pages = ["players", "players_special", "moderation", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects", "ratings", "discord_bot", "tickets", "meeting"]
+    pages = ["players", "players_special", "moderation", "dispatch", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects", "replays", "ratings", "discord_bot", "tickets", "meeting"]
     actions = ["view", "edit", "delete"]
     
     permission_tests = {}

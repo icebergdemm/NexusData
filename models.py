@@ -70,6 +70,7 @@ class AdminUser(Base):
     # Individual permission overrides — dict {"page": {"view": True/False, ...}}
     individual_permissions = Column(JSON, nullable=True)
     is_superuser = Column(Boolean, default=False)
+    is_deleted = Column(Integer, default=0)  # 1 = soft-deleted, blocks login
     created_at = Column(DateTime, default=func.now())
     last_login = Column(DateTime, nullable=True)
 
@@ -357,7 +358,7 @@ class DiscordBotAction(Base):
     id = Column(Integer, primary_key=True, index=True)
     action_type = Column(String(50), nullable=False)  # send_rating, send_message, kick_member, etc.
     payload = Column(JSON, default=lambda: {})
-    queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True)
     queued_at = Column(DateTime, default=func.now())
     executed = Column(Integer, default=0)  # 0=pending, 1=done, 2=failed
     executed_at = Column(DateTime, nullable=True)
@@ -558,3 +559,31 @@ class RoundEvent(Base):
     reached_station = Column(Integer, nullable=True)
     players = Column(JSON, default=lambda: [])
     created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class RoundReplay(Base):
+    """Uploaded .barodemo round replay file (stored compressed as .barodemo.zip)."""
+    __tablename__ = "round_replays"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(100), nullable=True, index=True)
+    submarine_name = Column(String(255), nullable=True)
+    level_name = Column(String(255), nullable=True)
+    filename = Column(String(500), nullable=False)        # original filename
+    stored_filename = Column(String(500), nullable=False) # filename on disk (.barodemo.zip)
+    file_size = Column(Integer, nullable=True)            # size in bytes
+    duration_ms = Column(Integer, nullable=True)          # round duration if known
+    has_voice = Column(Integer, default=0)                # 1 = contains voice
+    recorded_at = Column(DateTime, nullable=True)         # round start time
+    uploaded_at = Column(DateTime, default=func.now(), index=True)
+    notes = Column(String(1000), nullable=True)
+
+
+class AppSetting(Base):
+    """Generic runtime key-value settings editable from the admin panel."""
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False, index=True)
+    value = Column(String(2000), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

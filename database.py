@@ -74,6 +74,8 @@ def _apply_migrations():
         # players_data: discord_id
         ("players_data", "discord_id", "VARCHAR(25)"),
         ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),
+        # admin_users: soft-delete
+        ("admin_users", "is_deleted", "TINYINT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:

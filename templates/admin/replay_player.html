@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Реплей #{{ replay.id }} - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.rpv-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;}
+.rpv-top h2{font-size:18px;font-weight:700;color:var(--white);margin:0;}
+.rpv-back{color:var(--gray);text-decoration:none;font-size:13px;}
+.rpv-back:hover{color:var(--white);}
+.rpv-layout{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start;}
+@media(max-width:1000px){.rpv-layout{grid-template-columns:1fr;}}
+.rpv-canvas-wrap{position:relative;background:#0A0E14;border:1px solid var(--stroke-01);border-radius:10px;overflow:hidden;}
+#rpvCanvas{display:block;width:100%;height:70vh;cursor:grab;}
+#rpvCanvas:active{cursor:grabbing;}
+.rpv-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--gray);font-size:14px;background:#0A0E14;z-index:5;}
+.rpv-spinner{width:36px;height:36px;border:3px solid var(--stroke-01);border-top-color:var(--primary-blue);border-radius:50%;animation:rpvspin 0.8s linear infinite;}
+@keyframes rpvspin{to{transform:rotate(360deg);}}
+.rpv-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:10px;margin-top:10px;}
+.rpv-btn{background:var(--dark-blue-bg);border:1px solid var(--stroke-01);color:var(--white);border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;font-weight:600;}
+.rpv-btn:hover{border-color:var(--primary-blue);}
+.rpv-btn.active{background:var(--primary-blue);border-color:var(--primary-blue);}
+.rpv-seek{flex:1;min-width:160px;}
+.rpv-time{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--gray);white-space:nowrap;}
+.rpv-side{display:flex;flex-direction:column;gap:12px;}
+.rpv-panel{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:10px;padding:12px 14px;}
+.rpv-panel h3{font-size:13px;font-weight:700;color:var(--white);margin:0 0 10px;}
+.rpv-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:12px;color:var(--gray);}
+.rpv-row label{display:flex;align-items:center;gap:6px;cursor:pointer;}
+.rpv-slider{width:110px;}
+.rpv-players{display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;}
+.rpv-player{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:var(--dark-blue-bg);font-size:12px;}
+.rpv-player.speaking{box-shadow:0 0 0 2px #22d06f inset;}
+.rpv-pdot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+.rpv-pname{flex:1;color:var(--white);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rpv-pmute{background:none;border:none;cursor:pointer;font-size:13px;opacity:.6;}
+.rpv-pmute:hover{opacity:1;}
+.rpv-pvol{width:60px;}
+.rpv-chat{max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;font-size:12px;}
+.rpv-chat-line{color:var(--gray);}
+.rpv-chat-line b{color:#5b9cf5;}
+.rpv-err{color:#ff4d80;padding:20px;font-size:13px;}
+</style>
+
+<a href="/admin/replays" class="rpv-back">← Назад к списку</a>
+<div class="rpv-top">
+  <h2>🎬 {{ replay.submarine_name or 'Раунд' }} #{{ replay.id }}
+    {% if replay.level_name %}<span style="color:var(--gray);font-weight:400;font-size:14px;">· {{ replay.level_name }}</span>{% endif %}
+  </h2>
+  <span class="rpv-time">{{ replay.recorded_at.strftime('%d.%m.%Y %H:%M') if replay.recorded_at else '' }}</span>
+</div>
+
+<div class="rpv-layout">
+  <div>
+    <div class="rpv-canvas-wrap">
+      <canvas id="rpvCanvas"></canvas>
+      <div class="rpv-loading" id="rpvLoading">
+        <div class="rpv-spinner"></div>
+        <div id="rpvLoadingText">Загрузка реплея...</div>
+      </div>
+    </div>
+
+    <div class="rpv-controls">
+      <button class="rpv-btn" id="rpvPlay">▶</button>
+      <span class="rpv-time" id="rpvTimeLabel">00:00 / 00:00</span>
+      <input type="range" class="rpv-seek" id="rpvSeek" min="0" max="1000" value="0">
+      <div style="display:flex;gap:4px;">
+        <button class="rpv-btn rpv-speed" data-speed="0.5">0.5×</button>
+        <button class="rpv-btn rpv-speed active" data-speed="1">1×</button>
+        <button class="rpv-btn rpv-speed" data-speed="2">2×</button>
+        <button class="rpv-btn rpv-speed" data-speed="4">4×</button>
+      </div>
+      <button class="rpv-btn" id="rpvFollow">📷 Следить за лодкой</button>
+    </div>
+  </div>
+
+  <div class="rpv-side">
+    <div class="rpv-panel">
+      <h3>🔊 Звук</h3>
+      <div class="rpv-row">
+        <label><input type="checkbox" id="rpvVoiceEnable"> Включить голос</label>
+      </div>
+      <div class="rpv-row">
+        <span>Общая громкость</span>
+        <input type="range" class="rpv-slider" id="rpvMasterVol" min="0" max="100" value="100">
+      </div>
+      <div class="rpv-row">
+        <label><input type="checkbox" id="rpvSpatial" checked> Затухание по расстоянию</label>
+      </div>
+      <div class="rpv-row">
+        <span title="Дистанция, на которой голос затухает до нуля">Радиус слышимости</span>
+        <input type="range" class="rpv-slider" id="rpvFalloff" min="500" max="8000" step="100" value="3000">
+      </div>
+    </div>
+
+    <div class="rpv-panel">
+      <h3>👥 Игроки</h3>
+      <div class="rpv-players" id="rpvPlayers"></div>
+    </div>
+
+    <div class="rpv-panel">
+      <h3>💬 Чат</h3>
+      <div class="rpv-chat" id="rpvChat"></div>
+    </div>
+  </div>
+</div>
+
+<!-- fflate for client-side unzip -->
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+<script>
+window.REPLAY_URL = "/admin/replays/{{ replay.id }}/download";
+window.HAS_VOICE = {{ 'true' if replay.has_voice else 'false' }};
+</script>
+<script src="/static/js/replay_player.js"></script>
+{% endblock %}

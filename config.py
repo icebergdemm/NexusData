@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     # Sub-projects file storage
     sub_projects_upload_dir: str = "uploads/sub_projects"
 
+    # Round replays (.barodemo) storage
+    replays_upload_dir: str = "uploads/replays"
+    replays_retention_days: int = 30  # auto-delete demos older than this
+
     # SFTP Server 1
     sftp_server_1_host: str = ""
     sftp_server_1_port: int = 22

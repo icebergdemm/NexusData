@@ -12,6 +12,7 @@ from .discord_bot_api import router as discord_bot_api_router, panel_router as d
 from .tickets_api import bot_router as tickets_bot_router, panel_router as tickets_panel_router
 from .logs import router as logs_router
 from .dispatch import api_router as dispatch_api_router, panel_router as dispatch_panel_router
+from .replays import api_router as replays_api_router, panel_router as replays_panel_router
 
 __all__ = [
     "status_router",
@@ -33,4 +34,6 @@ __all__ = [
     "logs_router",
     "dispatch_api_router",
     "dispatch_panel_router",
+    "replays_api_router",
+    "replays_panel_router",
 ]

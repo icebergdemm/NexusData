@@ -182,7 +182,7 @@ def _get_current_admin(request: Request, db: Session = Depends(get_db)) -> Admin
 @panel_router.get("/admin/dispatch", response_class=HTMLResponse)
 async def dispatch_page(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
     """Dispatch chat page."""
-    if not check_permission(current_admin, "moderation", "view"):
+    if not check_permission(current_admin, "dispatch", "view"):
         raise HTTPException(status_code=403)
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
@@ -200,7 +200,7 @@ async def dispatch_send(request: Request, db: Session = Depends(get_db), current
     sends it in-game, then ACKs. Until ACK is received, the action stays pending
     and the frontend blocks further sends.
     """
-    if not check_permission(current_admin, "moderation", "edit"):
+    if not check_permission(current_admin, "dispatch", "edit"):
         raise HTTPException(status_code=403)
     body = await request.json()
     text = body.get("text", "").strip()
@@ -249,7 +249,7 @@ def dispatch_check_pending(
     """Check if there's a pending dispatch action (not yet ACKed by server).
     Frontend uses this to block/unblock the send button.
     """
-    if not check_permission(current_admin, "moderation", "view"):
+    if not check_permission(current_admin, "dispatch", "view"):
         raise HTTPException(status_code=403)
     pending = db.query(ServerAction).filter(
         ServerAction.action_type == "dispatch",
@@ -267,7 +267,7 @@ def dispatch_get_messages(
     current_admin: AdminUser = Depends(_get_current_admin),
 ):
     """Get dispatch messages for the admin panel, filtered by server."""
-    if not check_permission(current_admin, "moderation", "view"):
+    if not check_permission(current_admin, "dispatch", "view"):
         raise HTTPException(status_code=403)
     q = db.query(DispatchMessage)
     if after_id:

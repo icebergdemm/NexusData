@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Реплеи раундов - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.rp-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;margin-bottom:24px;}
+.rp-header h2{font-size:22px;font-weight:700;color:var(--white);margin:0;}
+.rp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;}
+.rp-card{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:18px;display:flex;flex-direction:column;gap:8px;transition:var(--transition-03);}
+.rp-card:hover{border-color:var(--primary-blue);}
+.rp-title{font-size:15px;font-weight:700;color:var(--white);}
+.rp-meta{font-size:12px;color:var(--gray);display:flex;flex-direction:column;gap:3px;}
+.rp-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;}
+.rp-badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;}
+.rp-badge-server{background:rgba(26,104,222,.2);color:#5b9cf5;}
+.rp-badge-voice{background:rgba(34,208,111,.15);color:#22d06f;}
+.rp-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;text-decoration:none;transition:var(--transition-03);}
+.btn-primary{background:var(--primary-blue);color:#fff;}
+.btn-primary:hover{background:#2b7af0;}
+.btn-ghost{background:transparent;color:var(--gray);border:1px solid var(--stroke-01);}
+.btn-ghost:hover{color:#fff;border-color:var(--primary-blue);}
+.btn-danger{background:rgba(183,12,70,.15);color:#ff4d80;border:1px solid rgba(183,12,70,.35);}
+.btn-danger:hover{background:rgba(183,12,70,.3);}
+.rp-settings{background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:18px 20px;margin-bottom:24px;}
+.rp-settings h3{font-size:14px;font-weight:700;color:var(--white);margin-bottom:12px;}
+.rp-form-row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;}
+.rp-fg{display:flex;flex-direction:column;gap:4px;}
+.rp-fg label{font-size:11px;color:var(--gray);font-weight:600;}
+.rp-fg input{background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;}
+.pagination{display:flex;gap:6px;justify-content:center;margin-top:20px;}
+.page-btn{padding:6px 12px;border-radius:6px;font-size:13px;border:1px solid var(--stroke-01);background:transparent;color:var(--gray);text-decoration:none;}
+.page-btn.active,.page-btn:hover{background:var(--primary-blue);color:#fff;border-color:var(--primary-blue);}
+.server-filter{display:flex;gap:4px;background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:8px;padding:3px;}
+.server-filter a{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;text-decoration:none;color:var(--gray);}
+.server-filter a.active{background:var(--primary-blue);color:#fff;}
+</style>
+
+{% for flash in flashes %}
+<div class="flash-message flash-{{ flash.level }}" style="margin-bottom:16px;">{{ flash.message }}</div>
+{% endfor %}
+
+<div class="rp-header">
+  <h2>🎬 Реплеи раундов</h2>
+  <div class="server-filter">
+    <a href="/admin/replays" class="{% if not selected_server %}active{% endif %}">Все</a>
+    <a href="/admin/replays?server=ASPER1" class="{% if selected_server == 'ASPER1' %}active{% endif %}">ASPER1</a>
+    <a href="/admin/replays?server=ASPER2" class="{% if selected_server == 'ASPER2' %}active{% endif %}">ASPER2</a>
+  </div>
+</div>
+
+{% if admin.is_superuser %}
+<div class="rp-settings">
+  <h3>⬆️ Ручная загрузка реплея (суперпользователь)</h3>
+  <form method="post" action="/admin/replays/upload" enctype="multipart/form-data" class="rp-form-row">
+    <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+    <div class="rp-fg" style="flex:1;min-width:240px;">
+      <label>Файл .barodemo или .barodemo.zip</label>
+      <input type="file" name="file" accept=".barodemo,.zip" required>
+    </div>
+    <div class="rp-fg">
+      <label>Сервер (необязательно)</label>
+      <input type="text" name="server_name" placeholder="ASPER1" style="width:120px;">
+    </div>
+    <div class="rp-fg" style="flex:1;min-width:160px;">
+      <label>Заметка</label>
+      <input type="text" name="notes" placeholder="Необязательно" style="width:100%;">
+    </div>
+    <button type="submit" class="btn btn-primary">Загрузить</button>
+  </form>
+  <p style="font-size:11px;color:var(--gray);margin-top:8px;">Принимаются raw .barodemo и сжатые .barodemo.zip. Raw-файлы сжимаются автоматически.</p>
+</div>
+
+<div class="rp-settings">
+  <h3>⚙️ Настройки хранения (суперпользователь)</h3>
+  <form method="post" action="/admin/replays/settings" class="rp-form-row">
+    <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+    <div class="rp-fg">
+      <label>Срок хранения (дней)</label>
+      <input type="number" name="retention_days" min="1" max="3650" value="{{ retention_days }}" style="width:140px;">
+    </div>
+    <div class="rp-fg" style="flex:1;min-width:240px;">
+      <label>Директория хранения</label>
+      <input type="text" name="upload_dir" value="{{ upload_dir }}" style="width:100%;">
+    </div>
+    <button type="submit" class="btn btn-primary">Сохранить</button>
+  </form>
+  <p style="font-size:11px;color:var(--gray);margin-top:8px;">Реплеи старше {{ retention_days }} дней удаляются автоматически каждые 6 часов.</p>
+</div>
+{% endif %}
+
+{% if not replays %}
+<div style="text-align:center;padding:60px 20px;color:var(--gray);">
+  <div style="font-size:48px;margin-bottom:16px;">🎬</div>
+  <p>Реплеев пока нет. Игровые серверы загружают их автоматически после раунда.</p>
+</div>
+{% else %}
+<div class="rp-grid">
+  {% for r in replays %}
+  <div class="rp-card">
+    <div class="rp-title">{{ r.submarine_name or 'Раунд' }} #{{ r.id }}</div>
+    <div class="rp-meta">
+      {% if r.level_name %}<span>📍 {{ r.level_name }}</span>{% endif %}
+      <span>🕐 {{ r.recorded_at.strftime('%d.%m.%Y %H:%M') if r.recorded_at else r.uploaded_at.strftime('%d.%m.%Y %H:%M') }}</span>
+      <span>💾 {{ fmt_size(r.file_size) }}</span>
+    </div>
+    <div class="rp-badges">
+      {% if r.server_name %}<span class="rp-badge rp-badge-server">{{ r.server_name }}</span>{% endif %}
+      {% if r.has_voice %}<span class="rp-badge rp-badge-voice">🎙 голос</span>{% endif %}
+    </div>
+    <div class="rp-actions">
+      <a href="/admin/replays/{{ r.id }}/view" class="btn btn-primary">▶ Смотреть</a>
+      <a href="/admin/replays/{{ r.id }}/download" class="btn btn-ghost">⬇ Скачать</a>
+      {% if check_permission(admin, 'replays', 'delete') %}
+      <form method="post" action="/admin/replays/{{ r.id }}/delete" style="display:inline;" onsubmit="return confirm('Удалить реплей #{{ r.id }}?')">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" class="btn btn-danger">🗑</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+  {% for p in range(1, total_pages + 1) %}
+  <a href="/admin/replays?page={{ p }}{% if selected_server %}&server={{ selected_server }}{% endif %}"
+     class="page-btn {% if p == page %}active{% endif %}">{{ p }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

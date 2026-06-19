@@ -48,8 +48,11 @@
         {% if check_permission(admin, 'moderation', 'view') %}
         <li><a href="/admin/moderation">Модерирование</a></li>
         {% endif %}
-        {% if check_permission(admin, 'moderation', 'view') %}
+        {% if check_permission(admin, 'dispatch', 'view') %}
         <li><a href="/admin/dispatch">Диспетчерская</a></li>
+        {% endif %}
+        {% if check_permission(admin, 'replays', 'view') %}
+        <li><a href="/admin/replays">Реплеи раундов</a></li>
         {% endif %}
         {% if check_permission(admin, 'sessions', 'view') %}
         <li><a href="/admin/sessions">Сессии</a></li>

@@ -910,8 +910,10 @@ class AdminService:
         self.db = db
     
     def get_all_admins(self) -> List[AdminUser]:
-        """Get all admin users"""
-        return self.db.query(AdminUser).all()
+        """Get all admin users (excluding soft-deleted)"""
+        return self.db.query(AdminUser).filter(
+            (AdminUser.is_deleted == 0) | (AdminUser.is_deleted.is_(None))
+        ).all()
     
     def get_admin_by_discord_id(self, discord_id: str) -> Optional[AdminUser]:
         """Get admin by Discord ID"""
@@ -948,12 +950,28 @@ class AdminService:
         return admin
     
     def delete_admin(self, admin_id: int):
-        """Delete admin user"""
+        """Soft-delete admin user: mark as deleted, revoke sessions, remove privilege group.
+        
+        The record stays in the DB so FK references remain intact,
+        but the admin loses all access (is_deleted=1 blocks authentication).
+        """
         admin = self.db.query(AdminUser).filter(AdminUser.id == admin_id).first()
         if not admin:
             raise HTTPException(status_code=404, detail="Admin not found")
         
-        self.db.delete(admin)
+        # Mark as deleted
+        admin.is_deleted = 1
+        admin.privilege_group_id = None
+        admin.is_superuser = False
+        admin.individual_permissions = None
+        
+        # Revoke all active sessions
+        from models import AdminSession
+        self.db.query(AdminSession).filter(
+            AdminSession.admin_id == admin_id,
+            AdminSession.revoked == 0,
+        ).update({"revoked": 1})
+        
         self.db.commit()
     
     def update_last_login(self, discord_id: str):

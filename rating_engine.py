@@ -124,8 +124,9 @@ def recalculate_all():
         logger.error(f"[Rating] Recalculation failed: {e}")
         db.rollback()
     finally:
-        db.expire_all()  # Release identity map objects before closing
+        db.expire_all()
         db.close()
+        del db  # Help GC
 
 
 def get_player_ratings(db: Session, steam_id: str) -> Dict[str, dict]:
@@ -170,15 +171,15 @@ _worker_running = False
 
 
 def _rating_worker_loop():
-    """Background thread: recalculate ratings every 60 seconds."""
+    """Background thread: recalculate ratings every 5 minutes (was 60s — too aggressive)."""
     global _worker_running
-    logger.info("[Rating] Background worker started (interval: 60s)")
+    logger.info("[Rating] Background worker started (interval: 300s)")
     while _worker_running:
         try:
             recalculate_all()
         except Exception as e:
             logger.error(f"[Rating] Worker error: {e}")
-        time.sleep(60)
+        time.sleep(300)  # 5 minutes — ratings don't need real-time updates
     logger.info("[Rating] Background worker stopped")
 
 

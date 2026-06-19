@@ -411,7 +411,7 @@ LOG_STORAGE_DIR = "data/logs_cache"
 LOG_RAW_DIR = "data/logs_raw"
 _log_cache_lock = threading.Lock()
 _log_worker_running = False
-_log_refresh_interval = 60  # 1 minute
+_log_refresh_interval = 300  # 5 minutes (was 60s — too frequent, heavy SFTP + parse)
 
 # ── In-memory cache for fast searches ────────────────────────────────────────
 _memory_cache: Dict[str, List[LogEvent]] = {}  # server_name -> events
