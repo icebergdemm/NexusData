@@ -5,26 +5,45 @@ import re
 
 def parse_iso_datetime(iso_string: Optional[str]) -> Optional[datetime]:
     """
-    Parse ISO 8601 datetime string with T separator and optional Z.
-    Handles both formats:
+    Parse an ISO 8601 datetime string robustly.
+    Handles:
     - 2024-03-22T10:30:00Z
+    - 2024-03-22T10:30:00.123456+03:00
     - 2024-03-22 10:30:00
+    Returns a naive datetime (tzinfo stripped) for consistent DB storage.
     """
     if not iso_string:
         return None
-    
-    # Replace T with space and strip Z
-    normalized = iso_string.replace('T', ' ').rstrip('Z').strip()
-    
+
+    s = iso_string.strip()
+    # Normalize trailing 'Z' (UTC) to an explicit offset that fromisoformat accepts
+    if s.endswith('Z') or s.endswith('z'):
+        s = s[:-1] + '+00:00'
+
     try:
-        return datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
-    except ValueError as e:
-        raise ValueError(f"Invalid datetime format: {iso_string}") from e
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        # Fallback: legacy strict format without fractional seconds / tz
+        normalized = iso_string.replace('T', ' ').rstrip('Zz').strip()
+        try:
+            dt = datetime.strptime(normalized, "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            raise ValueError(f"Invalid datetime format: {iso_string}") from e
+
+    # Strip timezone info for consistent naive-datetime storage
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
 
 
-def safe_get_int(value: Optional[int], default: int = 0) -> int:
-    """Safely convert optional int, with default fallback"""
-    return value if value is not None else default
+def safe_get_int(value, default: int = 0) -> int:
+    """Safely convert a value to int, with default fallback on failure."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
 
 
 def safe_get_list(value: Optional[list], default: Optional[list] = None) -> list:

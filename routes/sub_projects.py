@@ -88,10 +88,15 @@ def pop_flashes(request: Request):
 @router.get("/admin/sub-projects", response_class=HTMLResponse)
 async def sub_projects_list(
     request: Request,
+    search: Optional[str] = Query(None),
+    author: Optional[str] = Query(None),
+    crew_min: Optional[int] = Query(None),
+    crew_max: Optional[int] = Query(None),
+    category_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """List all sub-projects."""
+    """List all sub-projects with search, filters, and categories."""
     if not check_permission(current_admin, "sub_projects", "view"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -99,16 +104,28 @@ async def sub_projects_list(
         request.session["csrf_token"] = secrets.token_urlsafe(32)
 
     svc = _get_sub_service(db)
-    projects = svc.get_all()
+    projects = svc.get_all(
+        search=search,
+        author=author,
+        crew_min=crew_min,
+        crew_max=crew_max,
+        category_id=category_id,
+    )
 
     projects_data = []
     for p in projects:
         versions = svc.get_versions(p.id)
+        categories = svc.get_project_categories(p.id)
         projects_data.append({
             "project": p,
             "version_count": len(versions),
             "latest_version": versions[0] if versions else None,
+            "categories": categories,
         })
+
+    # Data for filters
+    all_categories = svc.get_all_categories()
+    all_authors = svc.get_unique_authors()
 
     return templates.TemplateResponse("admin/sub_projects.html", {
         "request": request,
@@ -117,6 +134,14 @@ async def sub_projects_list(
         "flashes": pop_flashes(request),
         "sftp_server_1_name": settings.sftp_server_1_name,
         "sftp_server_2_name": settings.sftp_server_2_name,
+        # Filters
+        "search_query": search or "",
+        "filter_author": author or "",
+        "filter_crew_min": crew_min,
+        "filter_crew_max": crew_max,
+        "filter_category_id": category_id,
+        "all_categories": all_categories,
+        "all_authors": all_authors,
     })
 
 
@@ -403,11 +428,11 @@ async def sub_project_delete_version(
     await ensure_csrf(request, db)
 
     svc = _get_sub_service(db)
-    svc.delete_version(version_id)
+    svc.delete_version(version_id, admin_id=current_admin.id)
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_version_delete", {"project_id": project_id, "version_id": version_id})
-    push_flash(request, "success", "Версия удалена")
+    push_flash(request, "success", "Версия помечена как удалённая")
     return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
 
 
@@ -611,4 +636,185 @@ async def sub_project_change_owner(
         "new_owner_name": new_owner.discord_username,
     })
     push_flash(request, "success", f"Владелец проекта изменён на {new_owner.discord_username}")
+    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CATEGORIES MANAGEMENT (superuser or sub_projects.delete permission)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/admin/sub-projects/categories", response_class=HTMLResponse)
+async def sub_project_categories_page(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Category management page."""
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    svc = _get_sub_service(db)
+    categories = svc.get_all_categories()
+
+    return templates.TemplateResponse("admin/sub_project_categories.html", {
+        "request": request,
+        "admin": current_admin,
+        "categories": categories,
+        "flashes": pop_flashes(request),
+    })
+
+
+@router.post("/admin/sub-projects/categories/create")
+async def sub_project_category_create(
+    request: Request,
+    name: str = Form(...),
+    slug: str = Form(""),
+    description: str = Form(""),
+    color: str = Form("#1a68de"),
+    icon: str = Form("🚢"),
+    sort_order: int = Form(0),
+    parent_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    import re
+    final_slug = slug.strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+    svc.create_category(
+        name=name.strip(),
+        slug=final_slug,
+        description=description.strip() or None,
+        color=color,
+        icon=icon,
+        sort_order=sort_order,
+        parent_id=parent_id if parent_id else None,
+        admin_id=current_admin.id,
+    )
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_category_create", {"name": name})
+    push_flash(request, "success", f"Категория «{name}» создана")
+    return RedirectResponse(url="/admin/sub-projects/categories", status_code=302)
+
+
+@router.post("/admin/sub-projects/categories/{cat_id}/update")
+async def sub_project_category_update(
+    request: Request,
+    cat_id: int,
+    name: str = Form(...),
+    slug: str = Form(""),
+    description: str = Form(""),
+    color: str = Form("#1a68de"),
+    icon: str = Form("🚢"),
+    sort_order: int = Form(0),
+    parent_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    import re
+    final_slug = slug.strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+    svc.update_category(cat_id, {
+        "name": name.strip(),
+        "slug": final_slug,
+        "description": description.strip() or None,
+        "color": color,
+        "icon": icon,
+        "sort_order": sort_order,
+        "parent_id": parent_id if parent_id else None,
+    })
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_category_update", {"id": cat_id, "name": name})
+    push_flash(request, "success", f"Категория «{name}» обновлена")
+    return RedirectResponse(url="/admin/sub-projects/categories", status_code=302)
+
+
+@router.post("/admin/sub-projects/categories/{cat_id}/delete")
+async def sub_project_category_delete(
+    request: Request,
+    cat_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    svc.delete_category(cat_id)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_category_delete", {"id": cat_id})
+    push_flash(request, "success", "Категория удалена")
+    return RedirectResponse(url="/admin/sub-projects/categories", status_code=302)
+
+
+@router.post("/admin/sub-projects/{project_id}/categories/assign")
+async def sub_project_assign_category(
+    request: Request,
+    project_id: int,
+    category_id: int = Form(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    svc.assign_category(project_id, category_id)
+    push_flash(request, "success", "Категория назначена")
+    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+
+
+@router.post("/admin/sub-projects/{project_id}/categories/{cat_id}/remove")
+async def sub_project_remove_category(
+    request: Request,
+    project_id: int,
+    cat_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    svc.remove_category(project_id, cat_id)
+    push_flash(request, "success", "Категория снята")
+    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+
+
+@router.post("/admin/sub-projects/{project_id}/versions/{version_id}/restore")
+async def sub_project_restore_version(
+    request: Request,
+    project_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Restore a soft-deleted version."""
+    if not check_permission(current_admin, "sub_projects", "delete"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    svc = _get_sub_service(db)
+    svc.restore_version(version_id)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_version_restore", {"project_id": project_id, "version_id": version_id})
+    push_flash(request, "success", "Версия восстановлена")
     return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)

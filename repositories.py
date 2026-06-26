@@ -126,12 +126,12 @@ class PlayerRepository(BaseRepository):
         
         if remaining_limit > 0:
             from models import PlayerName
-            nickname_results = self.db.query(PlayerData).join(
+            nick_q = self.db.query(PlayerData).join(
                 PlayerName, PlayerData.player_id == PlayerName.player_id
-            ).filter(
-                PlayerName.nickname.ilike(query_lower),
-                PlayerData.player_id.notin_(player_ids) if player_ids else True
-            ).distinct().limit(remaining_limit).all()
+            ).filter(PlayerName.nickname.ilike(query_lower))
+            if player_ids:
+                nick_q = nick_q.filter(PlayerData.player_id.notin_(player_ids))
+            nickname_results = nick_q.distinct().limit(remaining_limit).all()
             
             direct_search.extend(nickname_results)
             player_ids.update(p.player_id for p in nickname_results)
@@ -140,15 +140,17 @@ class PlayerRepository(BaseRepository):
         # If still not enough, search by IP addresses
         if remaining_limit > 0:
             from models import PlayerIP
-            ip_results = self.db.query(PlayerData).join(
+            ip_q = self.db.query(PlayerData).join(
                 PlayerIP, PlayerData.player_id == PlayerIP.player_id
             ).filter(
                 or_(
                     PlayerIP.ip.ilike(query_lower),
                     PlayerIP.subnet.ilike(query_lower),
-                ),
-                PlayerData.player_id.notin_(player_ids) if player_ids else True
-            ).distinct().limit(remaining_limit).all()
+                )
+            )
+            if player_ids:
+                ip_q = ip_q.filter(PlayerData.player_id.notin_(player_ids))
+            ip_results = ip_q.distinct().limit(remaining_limit).all()
             
             direct_search.extend(ip_results)
         
@@ -170,18 +172,24 @@ class PlayerStatsRepository(BaseRepository):
         return stats
     
     def accumulate(self, player_id: int, delta: dict) -> Optional[PlayerStats]:
-        """Accumulate stats by adding delta values"""
+        """Accumulate stats by adding delta values atomically (avoids lost updates)."""
         stats = self.get_by_player_id(player_id)
         if not stats:
             return None
-        
+
+        increments = {}
         for key, value in delta.items():
             if value is not None and value != 0:
-                current = getattr(stats, key, 0)
-                setattr(stats, key, current + value)
-        
-        self.commit()
-        self.refresh(stats)
+                col = getattr(PlayerStats, key, None)
+                if col is not None:
+                    increments[col] = col + value
+
+        if increments:
+            self.db.query(PlayerStats).filter(
+                PlayerStats.player_id == player_id
+            ).update(increments, synchronize_session=False)
+            self.commit()
+            self.db.refresh(stats)
         logger.info(f"Accumulated stats for player: {player_id}")
         return stats
 
@@ -217,11 +225,16 @@ class PlayerKillRepository(BaseRepository):
         return existing
     
     def accumulate(self, player_id: int, monster_type: str, delta: int) -> PlayerKill:
-        """Add delta to kill count"""
+        """Add delta to kill count atomically (avoids lost updates)."""
         existing = self.get_by_player_and_monster(player_id, monster_type)
-        
         if existing:
-            existing.kills_count += delta
+            # Atomic in-DB increment instead of read-modify-write
+            self.db.query(PlayerKill).filter(
+                PlayerKill.id == existing.id
+            ).update({PlayerKill.kills_count: PlayerKill.kills_count + delta},
+                     synchronize_session=False)
+            self.commit()
+            self.db.refresh(existing)
         else:
             existing = PlayerKill(
                 player_id=player_id,
@@ -229,9 +242,8 @@ class PlayerKillRepository(BaseRepository):
                 kills_count=delta
             )
             self.db.add(existing)
-        
-        self.commit()
-        self.refresh(existing)
+            self.commit()
+            self.refresh(existing)
         return existing
 
 
@@ -360,12 +372,17 @@ class PlayerRoleStatRepository(BaseRepository):
         return existing
     
     def accumulate(self, player_id: int, role: str, rounds_delta: int, mvp_delta: float) -> PlayerRoleStat:
-        """Accumulate role stats"""
+        """Accumulate role stats atomically (avoids lost updates)."""
         existing = self.get_by_player_and_role(player_id, role)
-        
         if existing:
-            existing.rounds_played += rounds_delta
-            existing.mvp_score += mvp_delta
+            self.db.query(PlayerRoleStat).filter(
+                PlayerRoleStat.id == existing.id
+            ).update({
+                PlayerRoleStat.rounds_played: PlayerRoleStat.rounds_played + rounds_delta,
+                PlayerRoleStat.mvp_score: PlayerRoleStat.mvp_score + mvp_delta,
+            }, synchronize_session=False)
+            self.commit()
+            self.db.refresh(existing)
         else:
             existing = PlayerRoleStat(
                 player_id=player_id,
@@ -374,9 +391,8 @@ class PlayerRoleStatRepository(BaseRepository):
                 mvp_score=mvp_delta
             )
             self.db.add(existing)
-        
-        self.commit()
-        self.refresh(existing)
+            self.commit()
+            self.refresh(existing)
         return existing
 
 
@@ -415,8 +431,8 @@ class PlayerSessionRepository(BaseRepository):
             return None
         
         session.logout_time = logout_time
-        # Calculate session duration in seconds
-        session.session_duration = int((logout_time - session.login_time).total_seconds())
+        # Calculate session duration in seconds (clamp to avoid negatives on clock skew)
+        session.session_duration = max(0, int((logout_time - session.login_time).total_seconds()))
         self.commit()
         self.refresh(session)
         logger.info(f"Closed session: {session_id}")

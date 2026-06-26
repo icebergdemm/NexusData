@@ -463,6 +463,39 @@ class RatingHistory(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+class SubProjectCategory(Base):
+    """Flexible category system for sub-projects (manageable by superusers/assigned roles)."""
+    __tablename__ = "sub_project_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False)
+    slug = Column(String(128), unique=True, nullable=False)
+    description = Column(String(500), nullable=True)
+    color = Column(String(16), default="#1a68de")
+    icon = Column(String(16), default="🚢")
+    sort_order = Column(Integer, default=0)
+    parent_id = Column(Integer, ForeignKey("sub_project_categories.id"), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    children = relationship("SubProjectCategory", backref="parent", remote_side=[id], foreign_keys=[parent_id])
+
+
+class SubProjectCategoryLink(Base):
+    """Many-to-many link between sub-projects and categories."""
+    __tablename__ = "sub_project_category_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("sub_projects.id"), nullable=False, index=True)
+    category_id = Column(Integer, ForeignKey("sub_project_categories.id"), nullable=False, index=True)
+    assigned_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('project_id', 'category_id', name='uq_spcl_project_cat'),
+    )
+
+
 class SubProject(Base):
     """Sub-map project (submarine/ship) with metadata."""
     __tablename__ = "sub_projects"
@@ -490,6 +523,7 @@ class SubProject(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     versions = relationship("SubProjectVersion", back_populates="project", order_by="SubProjectVersion.version_number.desc()")
+    category_links = relationship("SubProjectCategoryLink", backref="project", cascade="all, delete-orphan")
 
 
 class SubProjectVersion(Base):
@@ -508,6 +542,10 @@ class SubProjectVersion(Base):
     deployed_server_2 = Column(Integer, default=0)
     uploaded_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     uploaded_at = Column(DateTime, default=func.now())
+    # Soft-delete fields (policy: maximum data availability)
+    is_deleted = Column(Integer, default=0)  # 0=active, 1=soft-deleted
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
 
     project = relationship("SubProject", back_populates="versions")
 

@@ -40,13 +40,21 @@ def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
         return {}
     pid_to_steam = {p.player_id: p.player_steamid for p in players}
 
-    # Aggregate weighted points per (steam_id, role) using batched iteration
+    # Aggregate weighted points per (steam_id, role) using keyset (seek) pagination.
+    # OFFSET pagination over a growing table is O(n^2) AND unstable without ORDER BY
+    # (rows can be skipped/double-counted). Seek by primary key is stable + fast.
     points_by_player_role = defaultdict(lambda: defaultdict(float))
 
     BATCH_SIZE = 5000
-    offset = 0
+    last_id = 0
     while True:
-        batch = db.query(PlayerRoleAction).offset(offset).limit(BATCH_SIZE).all()
+        batch = (
+            db.query(PlayerRoleAction)
+            .filter(PlayerRoleAction.id > last_id)
+            .order_by(PlayerRoleAction.id)
+            .limit(BATCH_SIZE)
+            .all()
+        )
         if not batch:
             break
 
@@ -64,8 +72,8 @@ def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
             weight = WEIGHT_MATRIX.get(role, {}).get(action_type, 0.0)
             points_by_player_role[steam_id][role] += value * weight
 
+        last_id = batch[-1].id
         # Allow GC to reclaim the batch
-        offset += BATCH_SIZE
         db.expire_all()
 
     # Compute ratings
@@ -83,34 +91,55 @@ def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
 
 
 def sync_ratings_to_db(db: Session, ratings: Dict[str, Dict[str, dict]]):
-    """Write calculated ratings to player_ratings table."""
+    """Write calculated ratings to player_ratings table.
+
+    Optimized: bulk-loads all existing rows once (no N+1), updates in memory,
+    and resets ratings that are no longer present in the freshly computed set
+    (prevents stale leaderboard ghosts).
+    """
     now = datetime.utcnow()
+
+    # Bulk-load existing rows once, keyed by (steam_id, role)
+    existing_rows = db.query(PlayerRating).all()
+    existing = {(r.steam_id, r.role): r for r in existing_rows}
+
+    # Track which (steam_id, role) pairs are present in new computation
+    computed_keys = set()
+    new_objects = []
 
     for steam_id, roles_dict in ratings.items():
         for role, data in roles_dict.items():
-            record = db.query(PlayerRating).filter(
-                PlayerRating.steam_id == steam_id,
-                PlayerRating.role == role,
-            ).first()
-
+            key = (steam_id, role)
+            computed_keys.add(key)
+            record = existing.get(key)
             if record:
                 record.cumulative_points = data["points"]
                 record.current_rating = data["rating"]
                 record.last_activity_date = now
                 record.updated_at = now
             else:
-                record = PlayerRating(
+                new_objects.append(PlayerRating(
                     steam_id=steam_id,
                     role=role,
                     cumulative_points=data["points"],
                     current_rating=data["rating"],
                     last_activity_date=now,
                     last_decay_applied_at=now,
-                )
-                db.add(record)
+                ))
+
+    # Reset rows that dropped out of the computation (e.g. points went to 0)
+    for key, record in existing.items():
+        if key not in computed_keys and record.current_rating != 0:
+            record.cumulative_points = 0.0
+            record.current_rating = 0.0
+            record.updated_at = now
+
+    if new_objects:
+        db.bulk_save_objects(new_objects)
 
     db.commit()
-    logger.info(f"[Rating] Synced ratings for {len(ratings)} players")
+    logger.info(f"[Rating] Synced ratings for {len(ratings)} players "
+                f"({len(new_objects)} new, {len(existing_rows)} existing)")
 
 
 def recalculate_all():

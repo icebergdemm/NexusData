@@ -294,9 +294,12 @@ async def admin_dashboard(
     now_msk = datetime.now(tz=MSK).replace(tzinfo=None)
     since = now_msk - timedelta(days=1)
 
-    # Sessions use UTC in DB, convert boundaries to UTC for query
+    # Sessions use UTC in DB, convert boundaries to UTC for query.
+    # Only load the columns we need (not full ORM objects) to cut memory.
     utc_since = since - timedelta(hours=3)
-    sessions = db.query(PlayerSession).filter(PlayerSession.login_time >= utc_since).all()
+    sessions = db.query(
+        PlayerSession.login_time, PlayerSession.logout_time, PlayerSession.player_id
+    ).filter(PlayerSession.login_time >= utc_since).all()
 
     # Build 24-slot chart (1h each) in MSK
     chart_labels = []
@@ -580,39 +583,35 @@ async def admin_players_list(
     if label_id:
         selected_label = db.query(LabelCategory).filter(LabelCategory.id == label_id).first()
 
-    # Label filter: get player_ids that have this label
+    # Label filter: join directly instead of materializing all ids + unbounded IN()
     if label_id:
-        labeled_player_ids = [
-            row.player_id for row in
-            db.query(PlayerLabel.player_id).filter(PlayerLabel.category_id == label_id).all()
-        ]
-        if not labeled_player_ids:
-            players, total = [], 0
-            total_pages = 1
-            search_query = None
-        else:
-            from models import PlayerData as PD
-            from sqlalchemy import or_
-            q = db.query(PD).filter(PD.player_id.in_(labeled_player_ids))
-            if search:
-                q = q.filter(
-                    or_(
-                        PD.player_last_time_name.ilike(f"%{search}%"),
-                        PD.player_steamid.ilike(f"%{search}%"),
-                    )
+        from models import PlayerData as PD
+        from sqlalchemy import or_
+        q = db.query(PD).join(PlayerLabel, PlayerLabel.player_id == PD.player_id).filter(
+            PlayerLabel.category_id == label_id
+        )
+        if search:
+            q = q.filter(
+                or_(
+                    PD.player_last_time_name.ilike(f"%{search}%"),
+                    PD.player_steamid.ilike(f"%{search}%"),
                 )
-            total = q.count()
-            raw = q.offset((page - 1) * page_size).limit(page_size).all()
-            from schemas import PlayerDataOut
-            players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
-            total_pages = (total + page_size - 1) // page_size if total > 0 else 1
-            search_query = search
+            )
+        total = q.count()
+        raw = q.offset((page - 1) * page_size).limit(page_size).all()
+        from schemas import PlayerDataOut
+        players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+        search_query = search
     elif search:
         from models import PlayerName, PlayerIP
         from sqlalchemy import or_
+        # search_players returns up to `limit` ranked matches; we paginate that list.
+        # Cap the candidate set, then slice the requested page correctly.
         player_results = player_service.search_players(search, limit=1000)
         total = len(player_results)
-        players = player_results[:page_size]
+        start = (page - 1) * page_size
+        players = player_results[start:start + page_size]
         total_pages = (total + page_size - 1) // page_size if total > 0 else 1
         search_query = search
     else:

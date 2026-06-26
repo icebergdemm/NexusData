@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Категории sub-карт - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.cat-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:24px; }
+.cat-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.cat-list { display:flex; flex-direction:column; gap:10px; margin-bottom:24px; }
+.cat-item {
+  background:var(--card-bg); border:1px solid var(--stroke-01);
+  border-radius:var(--border-radius-12); padding:16px 20px;
+  display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+}
+.cat-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:8px; font-size:13px; font-weight:700; }
+.cat-info { flex:1; min-width:200px; }
+.cat-name { font-size:15px; font-weight:700; color:var(--white); }
+.cat-slug { font-size:11px; color:var(--gray); font-family:monospace; }
+.cat-desc { font-size:12px; color:var(--gray); margin-top:2px; }
+.cat-actions { display:flex; gap:6px; }
+.btn { padding:8px 18px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; border:none; transition:var(--transition-03); text-decoration:none; }
+.btn-primary { background:var(--primary-blue); color:#fff; }
+.btn-secondary { background:var(--stroke-01); color:var(--gray); }
+.btn-danger { background:var(--red); color:#fff; }
+.btn-sm { padding:5px 12px; font-size:12px; }
+
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.active { display:flex; }
+.modal-box { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:32px; width:90%; max-width:520px; max-height:90vh; overflow-y:auto; }
+.modal-box h3 { font-size:18px; font-weight:700; color:var(--white); margin-bottom:20px; }
+.form-group { display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }
+.form-group label { font-size:12px; color:var(--gray); font-weight:600; }
+.form-group input, .form-group select, .form-group textarea { background:var(--bg); border:1px solid var(--stroke-01); border-radius:6px; padding:8px 12px; color:var(--white); font-size:13px; font-family:inherit; width:100%; box-sizing:border-box; }
+.form-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
+</style>
+
+<a href="/admin/sub-projects" style="color:var(--gray);text-decoration:none;font-size:13px;">← Назад к sub-картам</a>
+
+<div class="cat-header">
+  <h2>🏷️ Категории sub-карт</h2>
+  <button class="btn btn-primary" onclick="document.getElementById('createCatModal').classList.add('active')">+ Новая категория</button>
+</div>
+
+{% if categories %}
+<div class="cat-list">
+  {% for cat in categories %}
+  <div class="cat-item">
+    <span class="cat-badge" style="background:{{ cat.color }}22;color:{{ cat.color }};border:1px solid {{ cat.color }}55;">
+      {{ cat.icon }} {{ cat.name }}
+    </span>
+    <div class="cat-info">
+      <div class="cat-slug">{{ cat.slug }}</div>
+      {% if cat.description %}<div class="cat-desc">{{ cat.description }}</div>{% endif %}
+      <div style="font-size:10px;color:var(--gray-dark);margin-top:2px;">Порядок: {{ cat.sort_order }}{% if cat.parent_id %} · Родитель: #{{ cat.parent_id }}{% endif %}</div>
+    </div>
+    <div class="cat-actions">
+      <button class="btn btn-secondary btn-sm" onclick="openEditCat({{ cat.id }},'{{ cat.name }}','{{ cat.slug }}','{{ cat.description or '' }}','{{ cat.color }}','{{ cat.icon }}',{{ cat.sort_order }},{{ cat.parent_id or 'null' }})">✏️</button>
+      <form method="post" action="/admin/sub-projects/categories/{{ cat.id }}/delete" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?')">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" class="btn btn-danger btn-sm">🗑</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div style="text-align:center;padding:60px 20px;color:var(--gray);">
+  <div style="font-size:48px;margin-bottom:16px;">🏷️</div>
+  <p>Категорий пока нет. Создайте первую!</p>
+</div>
+{% endif %}
+
+<!-- Create Modal -->
+<div class="modal-overlay" id="createCatModal">
+  <div class="modal-box">
+    <h3>Создать категорию</h3>
+    <form method="post" action="/admin/sub-projects/categories/create">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-group">
+        <label>Название *</label>
+        <input type="text" name="name" required placeholder="Боевые корабли">
+      </div>
+      <div class="form-group">
+        <label>Slug (авто из названия если пусто)</label>
+        <input type="text" name="slug" placeholder="boevye-korabli">
+      </div>
+      <div class="form-group">
+        <label>Описание</label>
+        <input type="text" name="description" placeholder="Корабли с тяжёлым вооружением">
+      </div>
+      <div style="display:flex;gap:12px;">
+        <div class="form-group" style="flex:1;">
+          <label>Цвет</label>
+          <input type="color" name="color" value="#1a68de" style="height:38px;cursor:pointer;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Иконка (эмодзи)</label>
+          <input type="text" name="icon" value="🚢" maxlength="4" style="text-align:center;font-size:18px;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Порядок</label>
+          <input type="number" name="sort_order" value="0" min="0">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Родительская категория</label>
+        <select name="parent_id">
+          <option value="">— Нет (верхний уровень) —</option>
+          {% for cat in categories %}
+          <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('createCatModal').classList.remove('active')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Создать</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="editCatModal">
+  <div class="modal-box">
+    <h3>Редактировать категорию</h3>
+    <form method="post" id="editCatForm">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-group">
+        <label>Название *</label>
+        <input type="text" name="name" id="editCatName" required>
+      </div>
+      <div class="form-group">
+        <label>Slug</label>
+        <input type="text" name="slug" id="editCatSlug">
+      </div>
+      <div class="form-group">
+        <label>Описание</label>
+        <input type="text" name="description" id="editCatDesc">
+      </div>
+      <div style="display:flex;gap:12px;">
+        <div class="form-group" style="flex:1;">
+          <label>Цвет</label>
+          <input type="color" name="color" id="editCatColor" style="height:38px;cursor:pointer;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Иконка</label>
+          <input type="text" name="icon" id="editCatIcon" maxlength="4" style="text-align:center;font-size:18px;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Порядок</label>
+          <input type="number" name="sort_order" id="editCatOrder" min="0">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Родительская категория</label>
+        <select name="parent_id" id="editCatParent">
+          <option value="">— Нет —</option>
+          {% for cat in categories %}
+          <option value="{{ cat.id }}">{{ cat.icon }} {{ cat.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('editCatModal').classList.remove('active')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+document.getElementById('createCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
+document.getElementById('editCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
+
+function openEditCat(id,name,slug,desc,color,icon,order,parentId){
+  document.getElementById('editCatForm').action='/admin/sub-projects/categories/'+id+'/update';
+  document.getElementById('editCatName').value=name;
+  document.getElementById('editCatSlug').value=slug;
+  document.getElementById('editCatDesc').value=desc;
+  document.getElementById('editCatColor').value=color;
+  document.getElementById('editCatIcon').value=icon;
+  document.getElementById('editCatOrder').value=order;
+  document.getElementById('editCatParent').value=parentId||'';
+  document.getElementById('editCatModal').classList.add('active');
+}
+</script>
+{% endblock %}

@@ -61,9 +61,10 @@ def verify_token(token: str) -> dict:
 
 
 def verify_api_key(api_key: str) -> bool:
-    """Verify API key"""
-    # Simple comparison - в production используй хеширование
-    return api_key == settings.api_key
+    """Verify API key using constant-time comparison (timing-attack safe)."""
+    if not api_key:
+        return False
+    return secrets.compare_digest(str(api_key), str(settings.api_key))
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
@@ -203,6 +204,7 @@ def check_rate_limit(db, admin, action: str = "general") -> bool:
             AdminRateLimit.action == action,
             AdminRateLimit.window_start >= window_start_cutoff,
         )
+        .order_by(AdminRateLimit.window_start.desc())
         .first()
     )
 
@@ -215,7 +217,10 @@ def check_rate_limit(db, admin, action: str = "general") -> bool:
     if record.count >= max_count:
         return False  # over limit
 
-    record.count += 1
+    # Atomic increment to avoid lost-update race between concurrent requests
+    db.query(AdminRateLimit).filter(
+        AdminRateLimit.id == record.id
+    ).update({AdminRateLimit.count: AdminRateLimit.count + 1}, synchronize_session=False)
     db.commit()
     return True
 

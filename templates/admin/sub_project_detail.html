@@ -121,6 +121,43 @@
     <div class="sp-field"><span class="sp-field-label">Автор</span><span class="sp-field-value">{{ project.author }}</span></div>
   </div>
   <div style="clear:both;"></div>
+
+  <!-- Project Categories -->
+  {% set project_categories = [] %}
+  {% if project.category_links %}
+  <div style="border-top:1px solid var(--stroke-01);margin-top:16px;padding-top:16px;">
+    <div style="font-size:11px;color:var(--gray);font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px;">Категории</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+      {% for link in project.category_links %}
+        {% set cat = link.category %}
+        {% if cat %}
+        <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:700;background:{{ cat.color }}22;color:{{ cat.color }};border:1px solid {{ cat.color }}55;">
+          {{ cat.icon }} {{ cat.name }}
+          {% if check_permission(admin, 'sub_projects', 'edit') %}
+          <form method="post" action="/admin/sub-projects/{{ project.id }}/categories/{{ cat.id }}/remove" style="display:inline;margin:0;">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+            <button type="submit" style="background:none;border:none;cursor:pointer;font-size:10px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
+          </form>
+          {% endif %}
+        </span>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if check_permission(admin, 'sub_projects', 'edit') %}
+  <div style="margin-top:10px;">
+    <form method="post" action="/admin/sub-projects/{{ project.id }}/categories/assign" style="display:flex;gap:8px;align-items:center;">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <select name="category_id" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:6px 10px;color:var(--white);font-size:12px;flex:1;">
+        <option value="">+ Добавить категорию</option>
+        {# Note: all_categories not passed yet to detail page — will use inline query or pass from route #}
+      </select>
+      <button type="submit" class="btn btn-primary" style="font-size:11px;padding:6px 12px;">+</button>
+    </form>
+  </div>
+  {% endif %}
 </div>
 
 <div class="sp-detail-grid">

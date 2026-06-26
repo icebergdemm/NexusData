@@ -247,7 +247,25 @@ textarea { resize:vertical; min-height:80px; }
     <span class="online-badge"><span class="online-dot"></span>Онлайн</span>
     {% endif %}
     {% if check_permission(admin, 'players', 'edit') %}
-    <button class="btn btn-danger btn-sm" onclick="openModal('ban-modal')">🔨 Забанить</button>
+      {# Check if player has an active ban #}
+      {% set has_active_ban = namespace(val=false, punishment_id=0) %}
+      {% for item in punishments %}
+        {% if item.p.type == 'ban' and item.status == 'active' %}
+          {% set has_active_ban.val = true %}
+          {% set has_active_ban.punishment_id = item.p.id %}
+        {% endif %}
+      {% endfor %}
+
+      {% if has_active_ban.val %}
+      <form method="post" action="/admin/punishments/{{ has_active_ban.punishment_id }}/unban" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <button type="submit" class="btn btn-primary" style="padding:12px 24px;font-size:15px;" onclick="return confirm('Разбанить игрока?')">🔓 Разбанить</button>
+      </form>
+      {% else %}
+      <button class="btn btn-danger" style="padding:12px 24px;font-size:15px;" onclick="openModal('ban-modal')">🔨 Забанить</button>
+      {% endif %}
+      <button class="btn btn-warning" style="padding:10px 18px;font-size:13px;" onclick="openModal('warn-modal')">⚠️ Варн</button>
+      <button class="btn btn-secondary" style="padding:10px 18px;font-size:13px;border-color:rgba(199,125,255,.4);color:#c77dff;" onclick="openModal('reprimand-modal')">📋 Выговор</button>
     {% endif %}
   </div>
 </div>
@@ -968,6 +986,64 @@ function renderPlayerLogs(events, total, page, totalPages) {
         <div style="margin-top:24px; display:flex; gap:10px; justify-content:flex-end;">
           <button type="button" class="btn btn-secondary" onclick="closeModal('ban-modal')">Отмена</button>
           <button type="submit" class="btn btn-danger">🔨 Выдать бан</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Warning modal -->
+<div class="modal-overlay" id="warn-modal">
+  <div class="modal-box narrow">
+    <div class="modal-header">
+      <h3>⚠️ Выдать предупреждение</h3>
+      <button class="modal-close" onclick="closeModal('warn-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form method="post" action="/admin/punishments/create">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
+        <input type="hidden" name="ptype" value="warning">
+        <div class="form-group">
+          <label>Причина</label>
+          <input type="text" name="reason" placeholder="Укажите причину предупреждения..." required>
+        </div>
+        <div class="form-group" style="margin-top:16px;">
+          <label>Заметки (необязательно)</label>
+          <input type="text" name="notes" placeholder="Внутренние заметки...">
+        </div>
+        <div style="margin-top:24px; display:flex; gap:10px; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('warn-modal')">Отмена</button>
+          <button type="submit" class="btn btn-primary" style="background:#ffaa00;border-color:#ffaa00;color:#000;">⚠️ Выдать варн</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Reprimand modal -->
+<div class="modal-overlay" id="reprimand-modal">
+  <div class="modal-box narrow">
+    <div class="modal-header">
+      <h3>📋 Выдать выговор</h3>
+      <button class="modal-close" onclick="closeModal('reprimand-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <form method="post" action="/admin/punishments/create">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
+        <input type="hidden" name="ptype" value="reprimand">
+        <div class="form-group">
+          <label>Причина</label>
+          <input type="text" name="reason" placeholder="Укажите причину выговора..." required>
+        </div>
+        <div class="form-group" style="margin-top:16px;">
+          <label>Заметки (необязательно)</label>
+          <input type="text" name="notes" placeholder="Внутренние заметки...">
+        </div>
+        <div style="margin-top:24px; display:flex; gap:10px; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('reprimand-modal')">Отмена</button>
+          <button type="submit" class="btn btn-primary" style="background:#c77dff;border-color:#c77dff;color:#000;">📋 Выдать выговор</button>
         </div>
       </form>
     </div>

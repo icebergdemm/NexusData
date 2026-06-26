@@ -162,6 +162,28 @@ def parse_log_content(content: str, server_name: str = "", source_file: str = ""
         action_type = 'other'
         player_name = ''
 
+        # System/technical lines must NOT be treated as player chat.
+        # Anything starting with a [Tag] (e.g. [DemoUploader], [QueueGuard],
+        # [DemoRecorder]) or a numbered spawn-manifest line ("2. Инопланетное
+        # орудие (ID: ...)") is technical noise — classify as 'other' so the
+        # chat-catching regex below doesn't mis-file it into player actions.
+        _is_system = (
+            action_line.startswith('[')
+            or re.match(r'^\d+\.\s', action_line) is not None
+        )
+
+        if _is_system:
+            events.append(LogEvent(
+                timestamp=current_timestamp,
+                player_name='',
+                action_type='other',
+                details=action_line,
+                raw_line=action_line,
+                server_name=server_name,
+                source_file=source_file,
+            ))
+            continue
+
         for pattern, atype in ACTION_PATTERNS:
             m = pattern.match(action_line)
             if m:
@@ -402,345 +424,247 @@ class LogSFTPManager:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# JSON File Storage & Background Worker
+# SQLite Storage & Background Worker
 # ══════════════════════════════════════════════════════════════════════════════
-
+#
+# Logs are stored in a dedicated SQLite database with indexes, NOT in giant JSON
+# files loaded into RAM. Search/filter runs as indexed SQL queries with
+# LIMIT/OFFSET — constant memory regardless of total log volume.
+#
 import json as _json
+import sqlite3
 
 LOG_STORAGE_DIR = "data/logs_cache"
 LOG_RAW_DIR = "data/logs_raw"
+LOG_DB_PATH = os.path.join(LOG_STORAGE_DIR, "logs.db")
 _log_cache_lock = threading.Lock()
 _log_worker_running = False
-_log_refresh_interval = 300  # 5 minutes (was 60s — too frequent, heavy SFTP + parse)
+_log_refresh_interval = 300  # 5 minutes
 
-# ── In-memory cache for fast searches ────────────────────────────────────────
-_memory_cache: Dict[str, List[LogEvent]] = {}  # server_name -> events
-_memory_cache_ts: Dict[str, float] = {}  # server_name -> last load timestamp
-_MEMORY_CACHE_TTL = 30  # seconds before re-checking disk file mtime
-_MAX_EVENTS_PER_SERVER = 500_000  # Cap to prevent OOM on very large log histories
+# Thread-local SQLite connections (sqlite3 objects are not thread-safe to share)
+_tls = threading.local()
 
 
 def _ensure_storage_dir():
-    """Ensure the log storage directories exist."""
     os.makedirs(LOG_STORAGE_DIR, exist_ok=True)
     os.makedirs(LOG_RAW_DIR, exist_ok=True)
 
 
-def _storage_path(server_name: str) -> str:
-    """Get the JSON file path for a server's logs."""
-    safe_name = server_name.replace(' ', '_').replace('/', '_')
-    return os.path.join(LOG_STORAGE_DIR, f"{safe_name}.json")
-
-
-def _meta_path() -> str:
-    """Get the metadata JSON file path."""
-    return os.path.join(LOG_STORAGE_DIR, "_meta.json")
-
-
-def _save_events_to_disk(server_name: str, events: List[LogEvent]):
-    """Save parsed events to a JSON file on disk."""
+def _get_conn() -> sqlite3.Connection:
+    """Get a thread-local SQLite connection with sane pragmas."""
+    conn = getattr(_tls, "conn", None)
+    if conn is not None:
+        return conn
     _ensure_storage_dir()
-    path = _storage_path(server_name)
-    data = [
-        {
-            "ts": e.timestamp.isoformat(),
-            "p": e.player_name,
-            "t": e.action_type,
-            "d": e.details,
-            "s": e.server_name,
-            "f": e.source_file,
-        }
-        for e in events
-    ]
-    with open(path, 'w', encoding='utf-8') as f:
-        _json.dump(data, f, ensure_ascii=False)
-
-    # Update metadata
-    meta = _load_meta()
-    meta[server_name] = {
-        'event_count': len(events),
-        'last_refresh': datetime.utcnow().isoformat(),
-        'oldest_event': events[-1].timestamp.isoformat() if events else None,
-        'newest_event': events[0].timestamp.isoformat() if events else None,
-    }
-    with open(_meta_path(), 'w', encoding='utf-8') as f:
-        _json.dump(meta, f, ensure_ascii=False)
+    conn = sqlite3.connect(LOG_DB_PATH, timeout=30, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")       # concurrent reads while writing
+    conn.execute("PRAGMA synchronous=NORMAL")     # fast, still crash-safe with WAL
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-8000")       # ~8MB page cache (negative = KB)
+    conn.execute("PRAGMA wal_autocheckpoint=1000")  # auto-checkpoint every ~1000 pages (~4MB)
+    conn.execute("PRAGMA busy_timeout=30000")     # wait up to 30s on lock instead of erroring
+    _init_schema(conn)
+    _tls.conn = conn
+    return conn
 
 
-def _load_meta() -> Dict:
-    """Load metadata from disk."""
-    path = _meta_path()
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return _json.load(f)
-        except Exception:
-            pass
-    return {}
+def _init_schema(conn: sqlite3.Connection):
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS log_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          INTEGER NOT NULL,          -- unix ms
+            server      TEXT NOT NULL,
+            player      TEXT,
+            action      TEXT NOT NULL,
+            details     TEXT,
+            source_file TEXT
+        );
+        CREATE INDEX IF NOT EXISTS ix_log_ts      ON log_events(ts);
+        CREATE INDEX IF NOT EXISTS ix_log_server  ON log_events(server, ts);
+        CREATE INDEX IF NOT EXISTS ix_log_player  ON log_events(player);
+        CREATE INDEX IF NOT EXISTS ix_log_action  ON log_events(action);
+
+        CREATE TABLE IF NOT EXISTS log_files (
+            server   TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            mtime    REAL NOT NULL,
+            PRIMARY KEY (server, filename)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_map (
+            name    TEXT PRIMARY KEY,
+            steamid TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS player_names (
+            steamid TEXT NOT NULL,
+            name    TEXT NOT NULL,
+            PRIMARY KEY (steamid, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS log_meta (
+            server        TEXT PRIMARY KEY,
+            event_count   INTEGER,
+            last_refresh  TEXT,
+            oldest_event  TEXT,
+            newest_event  TEXT
+        );
+    """)
+    conn.commit()
 
 
-def _player_map_path(server_name: str) -> str:
-    """Get path for player mapping file."""
-    safe_name = server_name.replace(' ', '_').replace('/', '_')
-    return os.path.join(LOG_STORAGE_DIR, f"{safe_name}_players.json")
+def _ts_to_ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
 
 
-def _save_player_map(server_name: str, player_map: Dict[str, str]):
-    """Save/merge player name→steamid mapping to disk.
-    
-    Stores two structures:
-    - "name_to_steam": {name: steamid} for quick lookup
-    - "steam_to_names": {steamid: [name1, name2, ...]} for name history
-    """
-    _ensure_storage_dir()
-    path = _player_map_path(server_name)
-    # Load existing
-    existing = {"name_to_steam": {}, "steam_to_names": {}}
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                raw = _json.load(f)
-            # Support old format (flat name→steamid dict)
-            if "name_to_steam" in raw:
-                existing = raw
-            else:
-                existing["name_to_steam"] = raw
-        except Exception:
-            pass
+def _ms_to_dt(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000.0)
 
-    # Merge new entries
-    for name, steamid in player_map.items():
-        existing["name_to_steam"][name] = steamid
-        if steamid not in existing["steam_to_names"]:
-            existing["steam_to_names"][steamid] = []
-        if name not in existing["steam_to_names"][steamid]:
-            existing["steam_to_names"][steamid].append(name)
 
-    with open(path, 'w', encoding='utf-8') as f:
-        _json.dump(existing, f, ensure_ascii=False)
+# Action categories (module-level, shared)
+PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
+                  'unequipped', 'dropped', 'reactor', 'repair', 'fabrication',
+                  'fabrication_cancel', 'activated', 'deactivated', 'wire', 'pump',
+                  'settings_change', 'console', 'death', 'chat', 'login', 'logout',
+                  'attack', 'structure', 'kick', 'name_change'}
 
 
 def get_player_map() -> Dict[str, str]:
-    """Get merged player name→steamid mapping from all servers."""
-    _ensure_storage_dir()
-    merged = {}
-    meta = _load_meta()
-    for sname in meta.keys():
-        path = _player_map_path(sname)
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    raw = _json.load(f)
-                if "name_to_steam" in raw:
-                    merged.update(raw["name_to_steam"])
-                else:
-                    merged.update(raw)  # old format fallback
-            except Exception:
-                pass
-    return merged
+    """Get merged player name→steamid mapping from SQLite."""
+    try:
+        conn = _get_conn()
+        rows = conn.execute("SELECT name, steamid FROM player_map").fetchall()
+        return {name: sid for name, sid in rows}
+    except Exception as e:
+        logger.error(f"get_player_map failed: {e}")
+        return {}
 
 
 def get_steam_to_names() -> Dict[str, List[str]]:
     """Get merged steamid→[names] mapping (handles name changes)."""
-    _ensure_storage_dir()
-    merged: Dict[str, List[str]] = {}
-    meta = _load_meta()
-    for sname in meta.keys():
-        path = _player_map_path(sname)
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    raw = _json.load(f)
-                s2n = raw.get("steam_to_names", {})
-                for steamid, names in s2n.items():
-                    if steamid not in merged:
-                        merged[steamid] = []
-                    for n in names:
-                        if n not in merged[steamid]:
-                            merged[steamid].append(n)
-            except Exception:
-                pass
-    return merged
-
-
-def _load_events_from_disk(server_name: str) -> List[LogEvent]:
-    """Load events from JSON file on disk (with in-memory caching)."""
-    now = time.time()
-
-    # Check if we have a fresh in-memory copy
-    if server_name in _memory_cache:
-        cached_ts = _memory_cache_ts.get(server_name, 0)
-        if now - cached_ts < _MEMORY_CACHE_TTL:
-            return _memory_cache[server_name]
-
-        # Check if the file was modified since last cache
-        path = _storage_path(server_name)
-        if os.path.exists(path):
-            file_mtime = os.path.getmtime(path)
-            if file_mtime <= cached_ts:
-                # File hasn't changed, extend TTL
-                _memory_cache_ts[server_name] = now
-                return _memory_cache[server_name]
-
-    # Load from disk
-    path = _storage_path(server_name)
-    if not os.path.exists(path):
-        return []
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = _json.load(f)
-        events = []
-        for item in data:
-            events.append(LogEvent(
-                timestamp=datetime.fromisoformat(item["ts"]),
-                player_name=item["p"],
-                action_type=item["t"],
-                details=item["d"],
-                raw_line=item["d"],
-                server_name=item["s"],
-                source_file=item["f"],
-            ))
-        # Store in memory cache (cap to prevent unbounded growth)
-        if len(events) > _MAX_EVENTS_PER_SERVER:
-            events = events[:_MAX_EVENTS_PER_SERVER]
-        _memory_cache[server_name] = events
-        _memory_cache_ts[server_name] = now
-        return events
+        conn = _get_conn()
+        rows = conn.execute("SELECT steamid, name FROM player_names").fetchall()
+        merged: Dict[str, List[str]] = {}
+        for sid, name in rows:
+            merged.setdefault(sid, []).append(name)
+        return merged
     except Exception as e:
-        logger.error(f"Failed to load events from disk for {server_name}: {e}")
-        return []
+        logger.error(f"get_steam_to_names failed: {e}")
+        return {}
 
-
-# Cache for the merged "all servers" view
-_merged_cache: Optional[List[LogEvent]] = None
-_merged_cache_ts: float = 0
-_MERGED_CACHE_TTL = 15  # seconds
-
-
-def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
-    """Get log events from disk storage, optionally filtered by server."""
-    global _merged_cache, _merged_cache_ts
-    _ensure_storage_dir()
-
-    if server_name:
-        return _load_events_from_disk(server_name)
-
-    # Merge all servers — use short-lived cache to avoid re-sorting every request
-    now = time.time()
-    if _merged_cache is not None and (now - _merged_cache_ts) < _MERGED_CACHE_TTL:
-        return _merged_cache
-
-    meta = _load_meta()
-    all_events = []
-    for sname in meta.keys():
-        all_events.extend(_load_events_from_disk(sname))
-    all_events.sort(key=lambda e: e.timestamp, reverse=True)
-
-    # Cap total merged events to prevent OOM
-    if len(all_events) > _MAX_EVENTS_PER_SERVER * 2:
-        all_events = all_events[:_MAX_EVENTS_PER_SERVER * 2]
-
-    _merged_cache = all_events
-    _merged_cache_ts = now
-    return all_events
 
 
 def refresh_logs_for_server(server_number: int):
-    """Download new logs from SFTP to local disk, delete from remote, then parse all local files.
-    
-    Optimization: tracks which files have already been parsed to avoid re-reading
-    unchanged files. Only new/modified files are re-parsed, then merged with existing events.
+    """Download new logs from SFTP, then incrementally parse & insert into SQLite.
+
+    Only NEW or MODIFIED files are parsed. Events are inserted via executemany
+    in a single transaction — constant memory, no full-history reload.
     """
     from config import get_settings
     s = get_settings()
     server_name = s.sftp_server_1_name if server_number == 1 else s.sftp_server_2_name
-    safe_name = server_name.replace(' ', '_').replace('/', '_')
 
     mgr = LogSFTPManager(server_number)
     if not mgr.is_configured():
         logger.info(f"Logs SFTP not configured for server {server_number}, skipping")
         return
 
-    # Step 1: Download new .txt files to local dir and delete from remote
+    safe_name = server_name.replace(' ', '_').replace('/', '_')
     local_dir = os.path.join(LOG_RAW_DIR, safe_name)
     os.makedirs(local_dir, exist_ok=True)
 
-    logger.info(f"Downloading new logs for {server_name}...")
     new_count = mgr.download_and_remove_logs(local_dir)
-    logger.info(f"Downloaded {new_count} new log files for {server_name}")
+    if new_count:
+        logger.info(f"Downloaded {new_count} new log files for {server_name}")
 
-    # Step 2: Parse local .txt files — use a manifest to skip unchanged files
-    manifest_path = os.path.join(LOG_STORAGE_DIR, f"{safe_name}_manifest.json")
-    _ensure_storage_dir()
-    
-    # Load manifest of previously parsed files {filename: mtime}
-    old_manifest: Dict[str, float] = {}
-    if os.path.exists(manifest_path):
-        try:
-            with open(manifest_path, 'r', encoding='utf-8') as f:
-                old_manifest = _json.load(f)
-        except Exception:
-            pass
+    conn = _get_conn()
+
+    # Determine which files changed since last parse (tracked in log_files table)
+    known = {row[0]: row[1] for row in conn.execute(
+        "SELECT filename, mtime FROM log_files WHERE server=?", (server_name,)
+    ).fetchall()}
 
     local_files = [fn for fn in os.listdir(local_dir) if fn.endswith('.txt')]
-    new_manifest: Dict[str, float] = {}
-    files_to_parse: List[str] = []
-
-    for filename in local_files:
-        filepath = os.path.join(local_dir, filename)
-        mtime = os.path.getmtime(filepath)
-        new_manifest[filename] = mtime
-        # Parse if new or modified since last run
-        if filename not in old_manifest or old_manifest[filename] < mtime:
-            files_to_parse.append(filename)
-
-    # If no files changed and we had a previous cache, skip full re-parse
-    if not files_to_parse and old_manifest and not new_count:
-        logger.debug(f"No new/changed files for {server_name}, skipping parse")
-        return
-
-    # Parse files — only re-parse changed ones if we have existing cache,
-    # otherwise parse all (first run or manifest mismatch)
-    all_events = []
-    all_player_map: Dict[str, str] = {}
-
+    files_to_parse = []
     for filename in local_files:
         filepath = os.path.join(local_dir, filename)
         try:
-            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-            events, pmap = parse_log_content(content, server_name=server_name, source_file=filename)
-            all_events.extend(events)
-            all_player_map.update(pmap)
-            # Free the raw content immediately
-            del content
-        except Exception as e:
-            logger.warning(f"Failed to parse local log {filename}: {e}")
+            mtime = os.path.getmtime(filepath)
+        except OSError:
+            continue
+        if filename not in known or known[filename] < mtime:
+            files_to_parse.append((filename, mtime))
 
-    # Sort by timestamp descending
-    all_events.sort(key=lambda e: e.timestamp, reverse=True)
+    if not files_to_parse:
+        return  # nothing new to parse
 
-    # Step 3: Save parsed events, player map, and manifest to disk
+    total_events = 0
     with _log_cache_lock:
-        _save_events_to_disk(server_name, all_events)
-        _save_player_map(server_name, all_player_map)
-        # Invalidate in-memory caches for this server
-        global _merged_cache, _merged_cache_ts
-        _memory_cache.pop(server_name, None)
-        _memory_cache_ts.pop(server_name, None)
-        _merged_cache = None
-        _merged_cache_ts = 0
+        for filename, mtime in files_to_parse:
+            filepath = os.path.join(local_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                events, pmap = parse_log_content(content, server_name=server_name, source_file=filename)
+                del content  # free raw text immediately
+
+                # Remove any previous rows for this file (re-parse case), then insert
+                conn.execute("DELETE FROM log_events WHERE server=? AND source_file=?",
+                             (server_name, filename))
+                if events:
+                    conn.executemany(
+                        "INSERT INTO log_events (ts, server, player, action, details, source_file) "
+                        "VALUES (?,?,?,?,?,?)",
+                        [(_ts_to_ms(e.timestamp), server_name, e.player_name,
+                          e.action_type, e.details, filename) for e in events]
+                    )
+                    total_events += len(events)
+
+                # Merge player map
+                for name, sid in pmap.items():
+                    conn.execute("INSERT OR REPLACE INTO player_map (name, steamid) VALUES (?,?)", (name, sid))
+                    conn.execute("INSERT OR IGNORE INTO player_names (steamid, name) VALUES (?,?)", (sid, name))
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO log_files (server, filename, mtime) VALUES (?,?,?)",
+                    (server_name, filename, mtime)
+                )
+                # free events list reference
+                events = None
+                # Commit per-file so the transaction & WAL stay small during a
+                # large first-run import of historical logs.
+                conn.commit()
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
+            except Exception as e:
+                conn.rollback()
+                logger.warning(f"Failed to parse local log {filename}: {e}")
+
+        # Update meta for this server
+        row = conn.execute(
+            "SELECT COUNT(*), MIN(ts), MAX(ts) FROM log_events WHERE server=?",
+            (server_name,)
+        ).fetchone()
+        cnt = row[0] or 0
+        oldest = _ms_to_dt(row[1]).isoformat() if row[1] else None
+        newest = _ms_to_dt(row[2]).isoformat() if row[2] else None
+        conn.execute(
+            "INSERT OR REPLACE INTO log_meta (server, event_count, last_refresh, oldest_event, newest_event) "
+            "VALUES (?,?,?,?,?)",
+            (server_name, cnt, datetime.utcnow().isoformat(), oldest, newest)
+        )
+        conn.commit()
+        # Truncate WAL so it doesn't grow unbounded across refresh cycles
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         _players_cache.clear()
         _players_cache_ts.clear()
 
-    # Save manifest
-    try:
-        with open(manifest_path, 'w', encoding='utf-8') as f:
-            _json.dump(new_manifest, f)
-    except Exception:
-        pass
-
-    logger.info(f"Parsed {len(all_events)} events from {len(local_files)} local files for {server_name}, {len(all_player_map)} players mapped")
+    logger.info(f"Indexed {total_events} new events from {len(files_to_parse)} file(s) for {server_name}")
 
 
 def _log_worker_loop():
@@ -749,6 +673,7 @@ def _log_worker_loop():
     _log_worker_running = True
     logger.info("Log worker started")
 
+    _cleanup_counter = 0
     while _log_worker_running:
         try:
             refresh_logs_for_server(1)
@@ -760,6 +685,15 @@ def _log_worker_loop():
         except Exception as e:
             logger.error(f"Log worker error (server 2): {e}")
 
+        # Retention cleanup roughly once per ~6h (every 72 cycles of 5 min)
+        _cleanup_counter += 1
+        if _cleanup_counter >= 72:
+            _cleanup_counter = 0
+            try:
+                cleanup_old_logs()
+            except Exception as e:
+                logger.error(f"Log retention cleanup error: {e}")
+
         # Sleep for refresh interval
         for _ in range(_log_refresh_interval):
             if not _log_worker_running:
@@ -767,6 +701,37 @@ def _log_worker_loop():
             time.sleep(1)
 
     logger.info("Log worker stopped")
+
+
+LOG_RETENTION_DAYS = 60  # delete log events older than this
+
+
+def cleanup_old_logs(retention_days: int = LOG_RETENTION_DAYS):
+    """Delete log events older than retention window and reclaim disk space."""
+    cutoff_ms = _ts_to_ms(datetime.utcnow() - timedelta(days=retention_days))
+    with _log_cache_lock:
+        conn = _get_conn()
+        cur = conn.execute("DELETE FROM log_events WHERE ts < ?", (cutoff_ms,))
+        deleted = cur.rowcount
+        conn.commit()
+        if deleted and deleted > 0:
+            # Reclaim space and refresh meta
+            try:
+                conn.execute("VACUUM")
+            except Exception:
+                pass
+            for srv in [r[0] for r in conn.execute("SELECT DISTINCT server FROM log_events").fetchall()]:
+                row = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM log_events WHERE server=?", (srv,)).fetchone()
+                conn.execute(
+                    "INSERT OR REPLACE INTO log_meta (server, event_count, last_refresh, oldest_event, newest_event) VALUES (?,?,?,?,?)",
+                    (srv, row[0] or 0, datetime.utcnow().isoformat(),
+                     _ms_to_dt(row[1]).isoformat() if row[1] else None,
+                     _ms_to_dt(row[2]).isoformat() if row[2] else None)
+                )
+            conn.commit()
+            _players_cache.clear()
+            _players_cache_ts.clear()
+            logger.info(f"Log retention: deleted {deleted} events older than {retention_days}d")
 
 
 def start_log_worker():
@@ -802,8 +767,43 @@ def force_refresh_logs():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Search & Filter
+# Search & Filter (SQL-backed — constant memory)
 # ══════════════════════════════════════════════════════════════════════════════
+
+_players_cache: Dict[Optional[str], List[str]] = {}
+_players_cache_ts: Dict[Optional[str], float] = {}
+_PLAYERS_CACHE_TTL = 60  # seconds
+
+
+def _build_where(server_name, player_name, action_type, search_text,
+                 time_from, time_to, category, names_list=None):
+    """Build a parameterized WHERE clause + params list for log queries."""
+    clauses, params = [], []
+    if server_name:
+        clauses.append("server = ?"); params.append(server_name)
+    if time_from:
+        clauses.append("ts >= ?"); params.append(_ts_to_ms(time_from))
+    if time_to:
+        clauses.append("ts <= ?"); params.append(_ts_to_ms(time_to))
+    if action_type and action_type != 'all':
+        clauses.append("action = ?"); params.append(action_type)
+    if category == 'player':
+        ph = ",".join("?" * len(PLAYER_ACTIONS))
+        clauses.append(f"action IN ({ph})"); params.extend(PLAYER_ACTIONS)
+    elif category == 'technical':
+        ph = ",".join("?" * len(PLAYER_ACTIONS))
+        clauses.append(f"action NOT IN ({ph})"); params.extend(PLAYER_ACTIONS)
+    if names_list:
+        ors = " OR ".join("player LIKE ?" for _ in names_list)
+        clauses.append(f"({ors})")
+        params.extend([f"%{n}%" for n in names_list])
+    elif player_name:
+        clauses.append("player LIKE ?"); params.append(f"%{player_name}%")
+    if search_text:
+        clauses.append("details LIKE ?"); params.append(f"%{search_text}%")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
 
 def search_logs(
     server_name: Optional[str] = None,
@@ -815,98 +815,96 @@ def search_logs(
     category: Optional[str] = None,
     limit: int = 500,
     offset: int = 0,
+    names_list: Optional[List[str]] = None,
 ) -> Tuple[List[LogEvent], int]:
-    """Search and filter log events from disk. Returns (events, total_count).
-    
-    Optimized: uses in-memory cache, early termination for time filters,
-    and generator-based filtering to avoid materializing full lists.
+    """Search log events via indexed SQL. Returns (events, total_count).
+
+    Constant memory: only `limit` rows are materialized, count is a COUNT(*).
     """
-    PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
-                      'unequipped', 'dropped', 'reactor', 'repair', 'fabrication',
-                      'fabrication_cancel', 'activated', 'deactivated', 'wire', 'pump',
-                      'settings_change', 'console', 'death', 'chat', 'login', 'logout',
-                      'attack', 'structure', 'kick', 'name_change'}
+    try:
+        conn = _get_conn()
+    except Exception as e:
+        logger.error(f"search_logs: DB unavailable: {e}")
+        return [], 0
 
-    events = get_cached_logs(server_name)
+    where, params = _build_where(server_name, player_name, action_type,
+                                 search_text, time_from, time_to, category, names_list)
 
-    # Pre-compute filter values once
-    player_lower = player_name.lower() if player_name else None
-    search_lower = search_text.lower() if search_text else None
+    total = conn.execute(f"SELECT COUNT(*) FROM log_events{where}", params).fetchone()[0]
 
-    # Single-pass filtering with generator to avoid multiple list iterations
-    def _filter():
-        for e in events:
-            # Time filters — events are sorted desc, so we can optimize
-            if time_to and e.timestamp > time_to:
-                continue
-            if time_from and e.timestamp < time_from:
-                # All remaining events are older, stop iteration
-                break
+    rows = conn.execute(
+        f"SELECT ts, player, action, details, server, source_file FROM log_events{where} "
+        f"ORDER BY ts DESC LIMIT ? OFFSET ?",
+        params + [limit, offset]
+    ).fetchall()
 
-            # Category filter
-            if category == 'player' and e.action_type not in PLAYER_ACTIONS:
-                continue
-            elif category == 'technical' and e.action_type in PLAYER_ACTIONS:
-                continue
-
-            # Player filter
-            if player_lower and player_lower not in e.player_name.lower():
-                continue
-
-            # Action type filter
-            if action_type and action_type != 'all' and e.action_type != action_type:
-                continue
-
-            # Text search filter
-            if search_lower and search_lower not in e.details.lower():
-                continue
-
-            yield e
-
-    # We need total count for pagination, so materialize filtered results
-    # But use early-break for time_from optimization
-    filtered = list(_filter())
-    total = len(filtered)
-    page_events = filtered[offset:offset + limit]
-
-    return page_events, total
+    events = [
+        LogEvent(
+            timestamp=_ms_to_dt(r[0]),
+            player_name=r[1] or "",
+            action_type=r[2],
+            details=r[3] or "",
+            raw_line=r[3] or "",
+            server_name=r[4] or "",
+            source_file=r[5] or "",
+        )
+        for r in rows
+    ]
+    return events, total
 
 
-_players_cache: Dict[Optional[str], List[str]] = {}
-_players_cache_ts: Dict[Optional[str], float] = {}
-_PLAYERS_CACHE_TTL = 60  # seconds
+def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
+    """DEPRECATED compatibility shim. Returns a bounded recent slice via SQL.
+
+    Old callers expected the full list; we cap to 5000 most-recent events to
+    avoid loading the entire history into RAM. Prefer search_logs() instead.
+    """
+    events, _ = search_logs(server_name=server_name, limit=5000, offset=0)
+    return events
 
 
 def get_unique_players(server_name: Optional[str] = None) -> List[str]:
-    """Get list of unique player names from logs (cached)."""
+    """Get list of unique player names from logs (SQL DISTINCT, cached)."""
     now = time.time()
     cache_key = server_name
-
-    if cache_key in _players_cache:
-        if now - _players_cache_ts.get(cache_key, 0) < _PLAYERS_CACHE_TTL:
-            return _players_cache[cache_key]
-
-    events = get_cached_logs(server_name)
-    players = set()
-    for e in events:
-        if e.player_name:
-            players.add(e.player_name)
-    result = sorted(players)
-
+    if cache_key in _players_cache and now - _players_cache_ts.get(cache_key, 0) < _PLAYERS_CACHE_TTL:
+        return _players_cache[cache_key]
+    try:
+        conn = _get_conn()
+        if server_name:
+            rows = conn.execute(
+                "SELECT DISTINCT player FROM log_events WHERE server=? AND player IS NOT NULL AND player<>'' ORDER BY player",
+                (server_name,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT player FROM log_events WHERE player IS NOT NULL AND player<>'' ORDER BY player"
+            ).fetchall()
+        result = [r[0] for r in rows]
+    except Exception as e:
+        logger.error(f"get_unique_players failed: {e}")
+        result = []
     _players_cache[cache_key] = result
     _players_cache_ts[cache_key] = now
     return result
 
 
 def get_log_stats() -> Dict:
-    """Get statistics about stored logs."""
-    meta = _load_meta()
-    stats = {}
-    for server, data in meta.items():
-        stats[server] = {
-            'event_count': data.get('event_count', 0),
-            'last_refresh': data.get('last_refresh'),
-            'oldest_event': data.get('oldest_event'),
-            'newest_event': data.get('newest_event'),
+    """Get statistics about stored logs (from log_meta table)."""
+    try:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT server, event_count, last_refresh, oldest_event, newest_event FROM log_meta"
+        ).fetchall()
+        return {
+            r[0]: {
+                'event_count': r[1] or 0,
+                'last_refresh': r[2],
+                'oldest_event': r[3],
+                'newest_event': r[4],
+            }
+            for r in rows
         }
-    return stats
+    except Exception as e:
+        logger.error(f"get_log_stats failed: {e}")
+        return {}

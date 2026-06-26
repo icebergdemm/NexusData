@@ -97,34 +97,89 @@ async def _ensure_csrf(request: Request, db: Session):
 
 @api_router.post("/upload")
 async def upload_replay(
-    file: UploadFile = File(..., description=".barodemo или .barodemo.zip"),
+    request: Request,
+    file: Optional[UploadFile] = File(None, description=".barodemo или .barodemo.zip"),
     server_name: Optional[str] = Query(None, description="Имя сервера-отправителя"),
     notes: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Upload a round replay file via multipart/form-data.
+    """Upload a round replay file.
 
-    Accepts both raw .barodemo and compressed .barodemo.zip.
-    Raw uploads are compressed server-side once to save space.
+    Accepts both:
+    - multipart/form-data with field "file"
+    - raw binary body (application/octet-stream) for simpler game server clients
+
+    Streams to disk in chunks — does NOT load the whole file into RAM.
     """
-    content = await file.read()
-    if not content:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Пустой файл"})
-
-    # Sanity size guard (configurable upper bound 500 MB)
-    if len(content) > 500 * 1024 * 1024:
-        return JSONResponse(status_code=413, content={"success": False, "error": "Файл слишком большой (>500MB)"})
-
     svc = ReplayService(db)
+
+    # Determine upload source: multipart file or raw body
+    content_type = request.headers.get("content-type", "")
+
+    if file and file.filename:
+        # Standard multipart upload
+        logger.info(
+            "Replay upload (multipart): filename=%s, content_type=%s, server=%s",
+            file.filename, file.content_type, server_name,
+        )
+        upload_source = file
+    elif "multipart" not in content_type:
+        # Raw binary body (application/octet-stream or similar)
+        logger.info(
+            "Replay upload (raw body): content_type=%s, server=%s, content_length=%s",
+            content_type, server_name, request.headers.get("content-length", "?"),
+        )
+        # Wrap raw body as a file-like object
+        from io import BytesIO
+        body = await request.body()
+        if not body:
+            return JSONResponse(status_code=400, content={"success": False, "error": "Пустое тело запроса"})
+
+        class _FakeUpload:
+            def __init__(self, data, fname):
+                self._data = data
+                self._pos = 0
+                self.filename = fname
+                self.content_type = content_type
+
+            async def read(self, size=-1):
+                if size < 0:
+                    chunk = self._data[self._pos:]
+                    self._pos = len(self._data)
+                else:
+                    chunk = self._data[self._pos:self._pos + size]
+                    self._pos += len(chunk)
+                return chunk
+
+        # Try to get filename from Content-Disposition header or query
+        disp = request.headers.get("content-disposition", "")
+        fname = "upload.barodemo"
+        if 'filename="' in disp:
+            fname = disp.split('filename="')[1].split('"')[0]
+        elif 'filename=' in disp:
+            fname = disp.split('filename=')[1].split(';')[0].strip()
+
+        upload_source = _FakeUpload(body, fname)
+    else:
+        # Multipart but no file field — log and reject
+        logger.warning(
+            "Replay upload: multipart request but no 'file' field. Headers: %s",
+            dict(request.headers),
+        )
+        return JSONResponse(status_code=400, content={"success": False, "error": "Поле 'file' не найдено в multipart запросе"})
+
     try:
-        replay = svc.save_upload(file.filename or "round.barodemo", content,
-                                 server_name=server_name, notes=notes)
+        replay = await svc.save_upload_stream(upload_source, server_name=server_name, notes=notes)
     except HTTPException as he:
         db.rollback()
+        logger.warning("Replay upload rejected: %s (filename=%s)", he.detail, getattr(upload_source, "filename", None))
         return JSONResponse(status_code=he.status_code, content={"success": False, "error": str(he.detail)})
+    except OSError as oe:
+        logger.exception("Replay upload OS error (disk full / permissions?): %s", oe)
+        db.rollback()
+        return JSONResponse(status_code=507, content={"success": False, "error": f"Ошибка диска: {oe}"})
     except Exception as e:
-        import logging as _lg
-        _lg.getLogger(__name__).exception("Replay upload failed")
+        logger.exception("Replay upload failed")
         db.rollback()
         return JSONResponse(status_code=500, content={"success": False, "error": f"Ошибка сохранения реплея: {e}"})
 
@@ -271,23 +326,10 @@ async def replay_manual_upload(
         raise HTTPException(status_code=403, detail="Только суперпользователь может загружать реплеи вручную")
     await _ensure_csrf(request, db)
 
-    content = await file.read()
-    if not content:
-        flashes = request.session.get("_flashes", [])
-        flashes.append({"level": "error", "message": "Пустой файл"})
-        request.session["_flashes"] = flashes
-        return RedirectResponse(url="/admin/replays", status_code=302)
-
-    if len(content) > 500 * 1024 * 1024:
-        flashes = request.session.get("_flashes", [])
-        flashes.append({"level": "error", "message": "Файл слишком большой (>500MB)"})
-        request.session["_flashes"] = flashes
-        return RedirectResponse(url="/admin/replays", status_code=302)
-
     svc = ReplayService(db)
     try:
-        replay = svc.save_upload(
-            file.filename or "round.barodemo", content,
+        replay = await svc.save_upload_stream(
+            file,
             server_name=(server_name or None),
             notes=(notes or "Загружен вручную через сайт"),
         )

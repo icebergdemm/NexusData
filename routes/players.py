@@ -87,50 +87,54 @@ def search_players(
     from sqlalchemy import or_
     
     results = service.search_players(q, limit)
-    
-    # Enrich results with search context
+
+    # Batch-fetch matching previous-names and IPs for ALL result players at once
+    # (avoids N+1: was 2 queries per result row).
+    player_ids = [p.player_id for p in results]
+    query_lower = q.lower()
+    prev_names_by_pid = {}
+    ips_by_pid = {}
+    if player_ids:
+        for pn in db.query(PlayerName).filter(
+            PlayerName.player_id.in_(player_ids),
+            PlayerName.nickname.ilike(f"%{q}%"),
+        ).all():
+            prev_names_by_pid.setdefault(pn.player_id, []).append(pn.nickname)
+        for ip in db.query(PlayerIP).filter(
+            PlayerIP.player_id.in_(player_ids),
+            or_(PlayerIP.ip.ilike(f"%{q}%"), PlayerIP.subnet.ilike(f"%{q}%")),
+        ).all():
+            ips_by_pid.setdefault(ip.player_id, []).append(ip.ip)
+
     enriched_results = []
     for player in results:
         search_context = []
-        
-        # Check what matched
-        query_lower = q.lower()
-        if query_lower in player.player_last_time_name.lower():
+        name = player.player_last_time_name or ""
+        steamid = player.player_steamid or ""
+        if query_lower in name.lower():
             search_context.append("nickname")
-        if query_lower in player.player_steamid.lower():
+        if query_lower in steamid.lower():
             search_context.append("steamid")
-        
-        # Check if matched by previous nickname
-        prev_names = db.query(PlayerName).filter(
-            PlayerName.player_id == player.player_id,
-            PlayerName.nickname.ilike(f"%{q}%")
-        ).all()
+
+        prev_names = prev_names_by_pid.get(player.player_id, [])
         if prev_names:
             search_context.append("previous_nickname")
-        
-        # Check if matched by IP
-        ips = db.query(PlayerIP).filter(
-            PlayerIP.player_id == player.player_id,
-            or_(
-                PlayerIP.ip.ilike(f"%{q}%"),
-                PlayerIP.subnet.ilike(f"%{q}%")
-            )
-        ).all()
+        ips = ips_by_pid.get(player.player_id, [])
         if ips:
             search_context.append("ip_address")
-        
+
         enriched_results.append({
             "id": player.player_id,
-            "name": player.player_last_time_name,
-            "steamid": player.player_steamid,
-            "play_time_hours": player.play_time / 3600,
+            "name": name,
+            "steamid": steamid,
+            "play_time_hours": (player.play_time or 0) / 3600,
             "rank_id": player.rank_id,
             "kit_level": player.kit_level,
             "match_context": search_context or ["name_or_steamid"],
-            "previous_names": [name.nickname for name in prev_names] if prev_names else [],
-            "ips": [ip.ip for ip in ips] if ips else []
+            "previous_names": prev_names,
+            "ips": ips,
         })
-    
+
     return enriched_results
 
 

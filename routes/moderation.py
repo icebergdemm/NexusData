@@ -315,7 +315,7 @@ async def enqueue_moderation_action(
         reason=reason or None,
         duration_minutes=duration_minutes or None,
         message_text=message_text or None,
-        server_name=server_name or None,
+        server_name=server_name.strip().upper() if server_name and server_name.strip() else None,
     )
 
     svc = ServerModerationService(db)

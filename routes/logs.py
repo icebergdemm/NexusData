@@ -18,7 +18,7 @@ from security import check_permission
 from config import get_settings
 from models import AdminUser, AdminSession
 from services_logs import (
-    search_logs, get_cached_logs, get_unique_players, get_log_stats,
+    search_logs, get_unique_players, get_log_stats,
     force_refresh_logs, LogEvent, get_player_map,
 )
 from services_sftp_filemanager import SFTPFileManager
@@ -120,46 +120,18 @@ async def api_logs_events(
 
     offset = (page - 1) * page_size
 
-    if names_list:
-        # Search across multiple player names — use optimized single-pass filter
-        events = get_cached_logs(server if server else None)
-        names_lower = [n.lower() for n in names_list]
-        search_lower = search.lower() if search else None
-
-        # Single-pass filtering with early time termination (events sorted desc)
-        filtered = []
-        for e in events:
-            if dt_to and e.timestamp > dt_to:
-                continue
-            if dt_from and e.timestamp < dt_from:
-                break  # All remaining events are older
-
-            if not any(n in e.player_name.lower() for n in names_lower):
-                continue
-            if category == 'player' and e.action_type not in PLAYER_ACTIONS:
-                continue
-            if category == 'technical' and e.action_type not in TECHNICAL_ACTIONS:
-                continue
-            if action_type and action_type != 'all' and e.action_type != action_type:
-                continue
-            if search_lower and search_lower not in e.details.lower():
-                continue
-            filtered.append(e)
-
-        total = len(filtered)
-        events = filtered[offset:offset + page_size]
-    else:
-        events, total = search_logs(
-            server_name=server if server else None,
-            player_name=effective_player if effective_player else None,
-            action_type=action_type if action_type else None,
-            search_text=search if search else None,
-            time_from=dt_from,
-            time_to=dt_to,
-            category=category,
-            limit=page_size,
-            offset=offset,
-        )
+    events, total = search_logs(
+        server_name=server if server else None,
+        player_name=effective_player if effective_player else None,
+        action_type=action_type if action_type else None,
+        search_text=search if search else None,
+        time_from=dt_from,
+        time_to=dt_to,
+        category=category,
+        limit=page_size,
+        offset=offset,
+        names_list=names_list,
+    )
 
     return JSONResponse({
         "events": [

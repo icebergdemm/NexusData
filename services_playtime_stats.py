@@ -64,6 +64,15 @@ def calculate_playtime_stats():
             PlayerSession.login_time >= month_start - timedelta(hours=3)  # UTC offset
         ).all()
 
+        # Batch-fetch all involved players ONCE (avoids N+1)
+        pids = {s.player_id for s in all_sessions if s.player_id}
+        pd_map = {}
+        if pids:
+            for pd in db.query(
+                PlayerData.player_id, PlayerData.player_steamid, PlayerData.player_last_time_name
+            ).filter(PlayerData.player_id.in_(pids)).all():
+                pd_map[pd.player_id] = (pd.player_steamid or "", pd.player_last_time_name or "")
+
         # Build per-player stats
         player_stats: Dict[str, Dict] = {}
 
@@ -73,12 +82,11 @@ def calculate_playtime_stats():
 
             pid = str(s.player_id)
             if pid not in player_stats:
-                # Get player info
-                pd = db.query(PlayerData).filter(PlayerData.player_id == s.player_id).first()
+                steamid, name = pd_map.get(s.player_id, ("", ""))
                 player_stats[pid] = {
                     "player_id": s.player_id,
-                    "steamid": pd.player_steamid if pd else "",
-                    "name": pd.player_last_time_name if pd else "",
+                    "steamid": steamid,
+                    "name": name,
                     "day": 0,
                     "week": 0,
                     "month": 0,

@@ -10,6 +10,15 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 import logging
+import os
+import tempfile
+
+# ── Fix "No space left on device" for multipart uploads ──────────────────────
+# Python's tempfile module uses /tmp by default which may have limited space/inodes.
+# Redirect temp files to the application's own data directory.
+_app_tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tmp")
+os.makedirs(_app_tmp_dir, exist_ok=True)
+tempfile.tempdir = _app_tmp_dir
 
 from config import get_settings, reset_settings_cache
 from database import init_db
@@ -61,70 +70,64 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=500)
     
     # Exception handlers
+    from starlette.responses import JSONResponse as _JSONResponse
+
+    def _is_api(request) -> bool:
+        p = str(request.url.path or "")
+        return p.startswith("/api/")
+
+    def _error_response(request, status_code, title, message, details):
+        """Return JSON for API clients, HTML page for browsers (with safe fallback)."""
+        if _is_api(request):
+            return _JSONResponse(status_code=status_code,
+                                 content={"success": False, "error": message, "details": details})
+        try:
+            return templates.TemplateResponse(
+                "error_generic.html",
+                {
+                    "request": request, "title": title, "message": message, "details": details,
+                    "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
+                    "back_text": "Вернуться",
+                },
+                status_code=status_code,
+            )
+        except Exception:
+            return PlainTextResponse(message, status_code=status_code)
+
     @app.exception_handler(IntegrityError)
     async def integrity_exception_handler(request, exc):
         logger.error(f"Integrity error: {exc}")
-        return templates.TemplateResponse(
-            "error_generic.html",
-            {
-                "request": request,
-                "title": "Ошибка целостности данных",
-                "message": "Данный элемент уже существует или нарушены ограничения целостности.",
-                "details": "integrity_error",
-                "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
-                "back_text": "Вернуться",
-            },
-            status_code=409,
-        )
-    
+        return _error_response(request, 409, "Ошибка целостности данных",
+                               "Данный элемент уже существует или нарушены ограничения целостности.",
+                               "integrity_error")
+
     @app.exception_handler(SQLAlchemyError)
     async def db_exception_handler(request, exc):
         logger.error(f"Database error: {exc}")
-        # Don't raise, return response directly to avoid middleware issues
-        return templates.TemplateResponse(
-            "error_generic.html",
-            {
-                "request": request,
-                "title": "Ошибка базы данных",
-                "message": "Не удалось выполнить операцию с базой данных. Пожалуйста, попробуйте позже.",
-                "details": "database_error",
-                "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
-                "back_text": "Вернуться",
-            },
-            status_code=500,
-        )
+        return _error_response(request, 500, "Ошибка базы данных",
+                               "Не удалось выполнить операцию с базой данных. Пожалуйста, попробуйте позже.",
+                               "database_error")
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request, exc):
         logger.warning(f"Validation error on {request.url.path}: {exc}")
-        return templates.TemplateResponse(
-            "error_generic.html",
-            {
-                "request": request,
-                "title": "Некорректный запрос",
-                "message": "Что-то пошло не так. Проверьте данные и попробуйте снова.",
-                "details": "validation_error",
-                "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
-                "back_text": "Вернуться",
-            },
-            status_code=422,
-        )
+        # Return JSON for API endpoints, HTML for admin panel
+        if request.url.path.startswith("/api/"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Некорректный запрос", "details": str(exc)},
+            )
+        return _error_response(request, 422, "Некорректный запрос",
+                               "Что-то пошло не так. Проверьте данные и попробуйте снова.",
+                               "validation_error")
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request, exc):
         logger.exception(f"Unhandled error on {request.url.path}: {exc}")
-        return templates.TemplateResponse(
-            "error_generic.html",
-            {
-                "request": request,
-                "title": "Внутренняя ошибка",
-                "message": "Что-то пошло не так. Мы уже работаем над исправлением.",
-                "details": "internal_error",
-                "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
-                "back_text": "Вернуться",
-            },
-            status_code=500,
-        )
+        return _error_response(request, 500, "Внутренняя ошибка",
+                               "Что-то пошло не так. Мы уже работаем над исправлением.",
+                               "internal_error")
     
     # Include routers
     app.include_router(status_router, prefix="/api/v1")

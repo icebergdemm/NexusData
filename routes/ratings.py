@@ -112,10 +112,12 @@ async def admin_ratings_page(
     search_result = None
     if search and search.strip():
         q = search.strip()
-        # Find player
-        player = db.query(PlayerData).filter(
-            (PlayerData.player_steamid == q) | (PlayerData.player_last_time_name.ilike(f"%{q}%"))
-        ).first()
+        # Prefer exact SteamID match; fall back to name substring only if no SteamID hit.
+        player = db.query(PlayerData).filter(PlayerData.player_steamid == q).first()
+        if not player:
+            player = db.query(PlayerData).filter(
+                PlayerData.player_last_time_name.ilike(f"%{q}%")
+            ).first()
         if player:
             # Get all ratings for this player
             records = db.query(PlayerRating).filter(PlayerRating.steam_id == player.player_steamid).all()

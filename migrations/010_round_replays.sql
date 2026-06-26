@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS `round_replays` (
     `id`              INT           NOT NULL AUTO_INCREMENT,
     `server_name`     VARCHAR(100)  DEFAULT NULL,
     `submarine_name`  VARCHAR(255)  DEFAULT NULL,
-    `level_name`      VARCHAR(255)  DEFAULT NULL,
+    `level_name`      VARCHAR(255)  DEFAULT NULL, б
     `filename`        VARCHAR(500)  NOT NULL,
     `stored_filename` VARCHAR(500)  NOT NULL,
     `file_size`       INT           DEFAULT NULL,

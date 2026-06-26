@@ -152,6 +152,7 @@ class ReplayService:
 
         For a zip: read only the first entry's first ~4KB to parse the header.
         For raw .barodemo: read first ~4KB.
+        For gzip: decompress first ~4KB and parse header.
         """
         try:
             with open(file_path, "rb") as f:
@@ -164,6 +165,12 @@ class ReplayService:
                     with zf.open(names[0], "r") as entry:
                         head = entry.read(4096)  # only header region
                     return cls._parse_demo_header(head)
+            elif sig[:2] == b"\x1f\x8b":
+                # gzip compressed
+                import gzip
+                with gzip.open(file_path, "rb") as gz:
+                    head = gz.read(4096)
+                return cls._parse_demo_header(head)
             elif sig == _MAGIC_DEMO:
                 with open(file_path, "rb") as f:
                     head = f.read(4096)
@@ -244,6 +251,97 @@ class ReplayService:
 
     def get_file_path(self, replay: RoundReplay) -> str:
         return os.path.join(self.upload_dir, replay.stored_filename)
+
+    # ── Streaming save (low memory) ─────────────────────────────────────────────
+
+    async def save_upload_stream(self, upload, server_name=None, notes=None,
+                                 max_bytes: int = 500*1024*1024) -> "RoundReplay":
+        """Save an UploadFile to disk in chunks WITHOUT loading it fully into RAM.
+
+        Reads the first 4 bytes to detect format, then streams the rest to disk.
+        Raw .barodemo is stored as-is (NOT recompressed in memory — recompression
+        of a 500MB file in RAM is what triggered OOM). Browser handles raw too.
+        """
+        import uuid
+        os.makedirs(self.upload_dir, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+
+        # Peek first 4 bytes for signature
+        head = await upload.read(4)
+
+        if not head or len(head) < 4:
+            logger.warning(
+                "Replay upload: file too small or empty (got %d bytes, filename=%s)",
+                len(head) if head else 0, getattr(upload, "filename", None),
+            )
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=400,
+                detail=f"Файл пустой или слишком маленький ({len(head) if head else 0} байт)"
+            )
+
+        if head[:4] == _MAGIC_ZIP:
+            stored_name = f"replay_{ts}.barodemo.zip"
+        elif head[:4] == _MAGIC_DEMO:
+            stored_name = f"replay_{ts}.barodemo"
+        elif head[:2] == b"\x1f\x8b":
+            # gzip-compressed — accept and store as .gz, will decompress on read
+            stored_name = f"replay_{ts}.barodemo.gz"
+        else:
+            logger.warning(
+                "Replay upload: unknown signature %s (filename=%s, size_hint=%s)",
+                head[:4].hex(), getattr(upload, "filename", None),
+                getattr(upload, "size", "?"),
+            )
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=400,
+                detail=f"Файл не является .barodemo или .barodemo.zip (сигнатура: {head[:4].hex()})"
+            )
+
+        stored_path = os.path.join(self.upload_dir, stored_name)
+        total = 0
+        CHUNK = 1024 * 1024  # 1 MB
+        try:
+            with open(stored_path, "wb") as f:
+                f.write(head)
+                total += len(head)
+                while True:
+                    chunk = await upload.read(CHUNK)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        f.close()
+                        os.remove(stored_path)
+                        from fastapi import HTTPException
+                        raise HTTPException(status_code=413, detail="Файл слишком большой (>500MB)")
+                    f.write(chunk)
+        except Exception:
+            if os.path.exists(stored_path):
+                try: os.remove(stored_path)
+                except OSError: pass
+            raise
+
+        file_size = os.path.getsize(stored_path)
+        meta = self._extract_metadata(stored_path)  # reads only ~4KB
+
+        replay = RoundReplay(
+            server_name=server_name or meta.get("server_name"),
+            submarine_name=meta.get("sub_name"),
+            level_name=meta.get("level_name"),
+            filename=getattr(upload, "filename", None) or stored_name,
+            stored_filename=stored_name,
+            file_size=file_size,
+            has_voice=meta.get("has_voice", 0),
+            recorded_at=meta.get("recorded_at"),
+            notes=notes,
+        )
+        self.db.add(replay)
+        self.db.commit()
+        self.db.refresh(replay)
+        logger.info(f"Saved replay {replay.id} (streamed): {stored_name} ({file_size} bytes)")
+        return replay
 
     # ── Retention cleanup ──────────────────────────────────────────────────────
 

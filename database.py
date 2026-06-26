@@ -97,6 +97,10 @@ def _apply_migrations():
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "Migration failed for %s.%s: %s", table, column, e
+                    )
 
         # Widen kits.job_id if it's too narrow
         try:

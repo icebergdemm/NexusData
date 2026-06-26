@@ -266,8 +266,54 @@ class SubProjectService:
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
-    def get_all(self) -> List[SubProject]:
-        return self.db.query(SubProject).order_by(SubProject.name).all()
+    def get_all(
+        self,
+        search: Optional[str] = None,
+        author: Optional[str] = None,
+        crew_min: Optional[int] = None,
+        crew_max: Optional[int] = None,
+        category_id: Optional[int] = None,
+    ) -> List[SubProject]:
+        """Get all sub-projects with optional filters."""
+        from models import SubProjectCategoryLink
+        from sqlalchemy import or_
+
+        q = self.db.query(SubProject)
+
+        # Search by name
+        if search:
+            q = q.filter(SubProject.name.ilike(f"%{search}%"))
+
+        # Filter by author
+        if author:
+            q = q.filter(SubProject.author.ilike(f"%{author}%"))
+
+        # Filter by category
+        if category_id:
+            q = q.join(SubProjectCategoryLink).filter(SubProjectCategoryLink.category_id == category_id)
+
+        projects = q.order_by(SubProject.name).all()
+
+        # Filter by crew range (crew is stored as "min-avg-max" string)
+        if crew_min is not None or crew_max is not None:
+            filtered = []
+            for p in projects:
+                if not p.crew:
+                    continue
+                parts = p.crew.split("-")
+                try:
+                    p_min = int(parts[0]) if len(parts) >= 1 else 0
+                    p_max = int(parts[-1]) if len(parts) >= 1 else 0
+                except (ValueError, IndexError):
+                    continue
+                if crew_min is not None and p_max < crew_min:
+                    continue
+                if crew_max is not None and p_min > crew_max:
+                    continue
+                filtered.append(p)
+            projects = filtered
+
+        return projects
 
     def get_by_id(self, project_id: int) -> Optional[SubProject]:
         return self.db.query(SubProject).filter(SubProject.id == project_id).first()
@@ -364,13 +410,14 @@ class SubProjectService:
 
     # ── Versions ──────────────────────────────────────────────────────────────
 
-    def get_versions(self, project_id: int) -> List[SubProjectVersion]:
-        return (
+    def get_versions(self, project_id: int, include_deleted: bool = False) -> List[SubProjectVersion]:
+        q = (
             self.db.query(SubProjectVersion)
             .filter(SubProjectVersion.project_id == project_id)
-            .order_by(SubProjectVersion.version_number.desc())
-            .all()
         )
+        if not include_deleted:
+            q = q.filter(SubProjectVersion.is_deleted == 0)
+        return q.order_by(SubProjectVersion.version_number.desc()).all()
 
     def get_version_by_id(self, version_id: int) -> Optional[SubProjectVersion]:
         return self.db.query(SubProjectVersion).filter(SubProjectVersion.id == version_id).first()
@@ -416,20 +463,122 @@ class SubProjectService:
         self.db.refresh(version)
         return version
 
-    def delete_version(self, version_id: int) -> bool:
-        """Delete a version and its file."""
+    def delete_version(self, version_id: int, admin_id: Optional[int] = None) -> bool:
+        """Soft-delete a version (mark as deleted, preserve file)."""
         version = self.get_version_by_id(version_id)
         if not version:
             return False
 
-        # Remove local file
-        file_path = os.path.join(settings.sub_projects_upload_dir, "files", version.stored_filename)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-        self.db.delete(version)
+        version.is_deleted = 1
+        version.deleted_at = datetime.utcnow()
+        version.deleted_by_admin_id = admin_id
         self.db.commit()
         return True
+
+    def restore_version(self, version_id: int) -> bool:
+        """Restore a soft-deleted version."""
+        version = self.get_version_by_id(version_id)
+        if not version:
+            return False
+        version.is_deleted = 0
+        version.deleted_at = None
+        version.deleted_by_admin_id = None
+        self.db.commit()
+        return True
+
+    # ── Categories ────────────────────────────────────────────────────────────
+
+    def get_all_categories(self) -> list:
+        """Get all categories ordered by sort_order."""
+        from models import SubProjectCategory
+        return self.db.query(SubProjectCategory).order_by(SubProjectCategory.sort_order, SubProjectCategory.name).all()
+
+    def get_category_by_id(self, cat_id: int):
+        from models import SubProjectCategory
+        return self.db.query(SubProjectCategory).filter(SubProjectCategory.id == cat_id).first()
+
+    def create_category(self, name: str, slug: str, description: Optional[str] = None,
+                        color: str = "#1a68de", icon: str = "🚢",
+                        sort_order: int = 0, parent_id: Optional[int] = None,
+                        admin_id: Optional[int] = None):
+        from models import SubProjectCategory
+        import re
+        if not slug:
+            slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+        cat = SubProjectCategory(
+            name=name, slug=slug, description=description,
+            color=color, icon=icon, sort_order=sort_order,
+            parent_id=parent_id, created_by_admin_id=admin_id,
+        )
+        self.db.add(cat)
+        self.db.commit()
+        self.db.refresh(cat)
+        return cat
+
+    def update_category(self, cat_id: int, data: dict):
+        from models import SubProjectCategory
+        cat = self.get_category_by_id(cat_id)
+        if not cat:
+            return None
+        for field in ("name", "slug", "description", "color", "icon", "sort_order", "parent_id"):
+            if field in data:
+                setattr(cat, field, data[field])
+        self.db.commit()
+        self.db.refresh(cat)
+        return cat
+
+    def delete_category(self, cat_id: int) -> bool:
+        from models import SubProjectCategory, SubProjectCategoryLink
+        cat = self.get_category_by_id(cat_id)
+        if not cat:
+            return False
+        # Remove links first
+        self.db.query(SubProjectCategoryLink).filter(SubProjectCategoryLink.category_id == cat_id).delete()
+        # Unparent children
+        self.db.query(SubProjectCategory).filter(SubProjectCategory.parent_id == cat_id).update({"parent_id": None})
+        self.db.delete(cat)
+        self.db.commit()
+        return True
+
+    def assign_category(self, project_id: int, category_id: int):
+        from models import SubProjectCategoryLink
+        existing = self.db.query(SubProjectCategoryLink).filter(
+            SubProjectCategoryLink.project_id == project_id,
+            SubProjectCategoryLink.category_id == category_id,
+        ).first()
+        if existing:
+            return existing
+        link = SubProjectCategoryLink(project_id=project_id, category_id=category_id)
+        self.db.add(link)
+        self.db.commit()
+        return link
+
+    def remove_category(self, project_id: int, category_id: int) -> bool:
+        from models import SubProjectCategoryLink
+        link = self.db.query(SubProjectCategoryLink).filter(
+            SubProjectCategoryLink.project_id == project_id,
+            SubProjectCategoryLink.category_id == category_id,
+        ).first()
+        if not link:
+            return False
+        self.db.delete(link)
+        self.db.commit()
+        return True
+
+    def get_project_categories(self, project_id: int) -> list:
+        from models import SubProjectCategory, SubProjectCategoryLink
+        return (
+            self.db.query(SubProjectCategory)
+            .join(SubProjectCategoryLink)
+            .filter(SubProjectCategoryLink.project_id == project_id)
+            .order_by(SubProjectCategory.sort_order, SubProjectCategory.name)
+            .all()
+        )
+
+    def get_unique_authors(self) -> list:
+        """Get unique authors for filter dropdown."""
+        rows = self.db.query(SubProject.author).distinct().order_by(SubProject.author).all()
+        return [r[0] for r in rows if r[0]]
 
     # ── SFTP Deployment ───────────────────────────────────────────────────────
 

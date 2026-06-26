@@ -93,7 +93,24 @@ class SFTPFileManager:
 
         sftp = paramiko.SFTPClient.from_transport(transport)
         sftp.get_channel().settimeout(30)
+        sftp._nd_transport = transport  # keep ref so we can close the transport too
         return sftp
+
+    @staticmethod
+    def _close(sftp):
+        """Close SFTP client AND its underlying transport (prevents fd/thread leak)."""
+        if not sftp:
+            return
+        transport = getattr(sftp, '_nd_transport', None)
+        try:
+            sftp.close()
+        except Exception:
+            pass
+        if transport:
+            try:
+                transport.close()
+            except Exception:
+                pass
 
     def _safe_path(self, relative_path: str) -> str:
         """Ensure path stays within base_dir (prevent directory traversal)."""
@@ -137,8 +154,7 @@ class SFTPFileManager:
             logger.error(f"Failed to list directory on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка чтения директории: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def read_file(self, relative_path: str) -> str:
         """Read file content as text."""
@@ -155,8 +171,7 @@ class SFTPFileManager:
             logger.error(f"Failed to read file {relative_path} on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка чтения файла: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def write_file(self, relative_path: str, content: str) -> bool:
         """Write/overwrite file content."""
@@ -172,8 +187,7 @@ class SFTPFileManager:
             logger.error(f"Failed to write file {relative_path} on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка записи файла: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def upload_file(self, relative_path: str, file_data: bytes, filename: str) -> bool:
         """Upload a file to the remote server."""
@@ -190,8 +204,7 @@ class SFTPFileManager:
             logger.error(f"Failed to upload {filename} on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка загрузки файла: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def download_file(self, relative_path: str) -> Optional[bytes]:
         """Download file content as bytes."""
@@ -206,8 +219,7 @@ class SFTPFileManager:
             logger.error(f"Failed to download {relative_path} on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка скачивания файла: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def delete_file(self, relative_path: str) -> bool:
         """Delete a file from the remote server."""
@@ -222,8 +234,7 @@ class SFTPFileManager:
             logger.error(f"Failed to delete {relative_path} on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка удаления файла: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def create_directory(self, relative_path: str) -> bool:
         """Create a directory on the remote server."""
@@ -238,8 +249,7 @@ class SFTPFileManager:
             logger.error(f"Failed to create directory {relative_path} on server {self.server_number}: {e}")
             raise RuntimeError(f"Ошибка создания директории: {e}")
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)
 
     def get_file_info(self, relative_path: str) -> Optional[RemoteFile]:
         """Get info about a specific file."""
@@ -264,5 +274,4 @@ class SFTPFileManager:
             logger.error(f"Failed to get file info {relative_path}: {e}")
             return None
         finally:
-            if sftp:
-                sftp.close()
+            self._close(sftp)

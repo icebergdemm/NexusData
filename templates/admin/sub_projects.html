@@ -51,10 +51,194 @@
 
 <div class="sp-header">
   <h2>🚢 Управление sub-картами</h2>
-  {% if check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
-  <button class="btn btn-primary" onclick="document.getElementById('createModal').classList.add('active')">+ Новый проект</button>
+  <div style="display:flex;gap:10px;align-items:center;">
+    {% if check_permission(admin, 'sub_projects', 'view') or check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
+    <button class="btn btn-primary" onclick="document.getElementById('createModal').classList.add('active')">+ Новый проект</button>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Search & Filters -->
+<div style="background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:16px 20px;margin-bottom:20px;">
+  <form method="get" action="/admin/sub-projects" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+    <div style="flex:2;min-width:200px;">
+      <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Поиск по названию</label>
+      <input type="text" name="search" value="{{ search_query }}" placeholder="Название корабля..." style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+    </div>
+    <div style="min-width:140px;">
+      <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Автор</label>
+      <select name="author" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+        <option value="">Все авторы</option>
+        {% for a in all_authors %}
+        <option value="{{ a }}" {% if filter_author == a %}selected{% endif %}>{{ a }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="min-width:100px;">
+      <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Экипаж от</label>
+      <input type="number" name="crew_min" value="{{ filter_crew_min or '' }}" min="1" max="100" placeholder="мин" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+    </div>
+    <div style="min-width:100px;">
+      <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Экипаж до</label>
+      <input type="number" name="crew_max" value="{{ filter_crew_max or '' }}" min="1" max="100" placeholder="макс" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+    </div>
+    <div style="min-width:140px;">
+      <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Категория</label>
+      <select name="category_id" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+        <option value="">Все категории</option>
+        {% for cat in all_categories %}
+        <option value="{{ cat.id }}" {% if filter_category_id == cat.id %}selected{% endif %}>{{ cat.icon }} {{ cat.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary" style="padding:8px 16px;">🔍 Найти</button>
+    {% if search_query or filter_author or filter_crew_min or filter_crew_max or filter_category_id %}
+    <a href="/admin/sub-projects" class="btn btn-secondary" style="padding:8px 14px;text-decoration:none;">✕ Сбросить</a>
+    {% endif %}
+  </form>
+</div>
+
+<!-- ═══ Categories Management Section ═══ -->
+{% if admin.is_superuser or check_permission(admin, 'sub_projects', 'delete') %}
+<div style="background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:16px 20px;margin-bottom:20px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+    <h3 style="font-size:14px;font-weight:700;color:var(--white);margin:0;">🏷️ Категории</h3>
+    <button class="btn btn-primary" style="font-size:11px;padding:5px 12px;" onclick="document.getElementById('createCatModal').classList.add('active')">+ Новая</button>
+  </div>
+
+  {% if all_categories %}
+  <div style="display:flex;flex-wrap:wrap;gap:8px;">
+    {% for cat in all_categories %}
+    <div style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;background:{{ cat.color }}15;border:1px solid {{ cat.color }}44;font-size:12px;">
+      <span style="color:{{ cat.color }};font-weight:700;">{{ cat.icon }} {{ cat.name }}</span>
+      {% if cat.description %}<span style="color:var(--gray);font-size:10px;">· {{ cat.description }}</span>{% endif %}
+      <button style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--gray);padding:0 2px;" onclick="openEditCat({{ cat.id }},'{{ cat.name }}','{{ cat.slug }}','{{ cat.description or '' }}','{{ cat.color }}','{{ cat.icon }}',{{ cat.sort_order }},{{ cat.parent_id or 'null' }})" title="Редактировать">✏️</button>
+      <form method="post" action="/admin/sub-projects/categories/{{ cat.id }}/delete" style="display:inline;margin:0;" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?')">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+        <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--gray);padding:0 2px;" title="Удалить">🗑</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div style="font-size:12px;color:var(--gray-dark);">Категорий пока нет. Создайте первую для организации sub-карт.</div>
   {% endif %}
 </div>
+
+<!-- Create Category Modal -->
+<div class="modal-overlay" id="createCatModal">
+  <div class="modal-box" style="max-width:520px;">
+    <h3>Создать категорию</h3>
+    <form method="post" action="/admin/sub-projects/categories/create">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-group">
+        <label>Название *</label>
+        <input type="text" name="name" required placeholder="Боевые корабли">
+      </div>
+      <div class="form-group">
+        <label>Slug (авто если пусто)</label>
+        <input type="text" name="slug" placeholder="boevye-korabli">
+      </div>
+      <div class="form-group">
+        <label>Описание</label>
+        <input type="text" name="description" placeholder="Корабли с тяжёлым вооружением">
+      </div>
+      <div style="display:flex;gap:12px;">
+        <div class="form-group" style="flex:1;">
+          <label>Цвет</label>
+          <input type="color" name="color" value="#1a68de" style="height:38px;cursor:pointer;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Иконка</label>
+          <input type="text" name="icon" value="🚢" maxlength="4" style="text-align:center;font-size:18px;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Порядок</label>
+          <input type="number" name="sort_order" value="0" min="0">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Родительская категория</label>
+        <select name="parent_id">
+          <option value="">— Нет (верхний уровень) —</option>
+          {% for c in all_categories %}
+          <option value="{{ c.id }}">{{ c.icon }} {{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('createCatModal').classList.remove('active')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Создать</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Category Modal -->
+<div class="modal-overlay" id="editCatModal">
+  <div class="modal-box" style="max-width:520px;">
+    <h3>Редактировать категорию</h3>
+    <form method="post" id="editCatForm">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
+      <div class="form-group">
+        <label>Название *</label>
+        <input type="text" name="name" id="editCatName" required>
+      </div>
+      <div class="form-group">
+        <label>Slug</label>
+        <input type="text" name="slug" id="editCatSlug">
+      </div>
+      <div class="form-group">
+        <label>Описание</label>
+        <input type="text" name="description" id="editCatDesc">
+      </div>
+      <div style="display:flex;gap:12px;">
+        <div class="form-group" style="flex:1;">
+          <label>Цвет</label>
+          <input type="color" name="color" id="editCatColor" style="height:38px;cursor:pointer;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Иконка</label>
+          <input type="text" name="icon" id="editCatIcon" maxlength="4" style="text-align:center;font-size:18px;">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Порядок</label>
+          <input type="number" name="sort_order" id="editCatOrder" min="0">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Родительская категория</label>
+        <select name="parent_id" id="editCatParent">
+          <option value="">— Нет —</option>
+          {% for c in all_categories %}
+          <option value="{{ c.id }}">{{ c.icon }} {{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('editCatModal').classList.remove('active')">Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+document.getElementById('createCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
+document.getElementById('editCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
+function openEditCat(id,name,slug,desc,color,icon,order,parentId){
+  document.getElementById('editCatForm').action='/admin/sub-projects/categories/'+id+'/update';
+  document.getElementById('editCatName').value=name;
+  document.getElementById('editCatSlug').value=slug;
+  document.getElementById('editCatDesc').value=desc;
+  document.getElementById('editCatColor').value=color;
+  document.getElementById('editCatIcon').value=icon;
+  document.getElementById('editCatOrder').value=order;
+  document.getElementById('editCatParent').value=parentId||'';
+  document.getElementById('editCatModal').classList.add('active');
+}
+</script>
+{% endif %}
 
 {% if check_permission(admin, 'sub_projects', 'delete') %}
 {# Two-column layout: projects left, file manager right #}
@@ -86,6 +270,9 @@
         {% if item.project.project_type %}
         <span class="sp-badge sp-badge-type">{{ item.project.project_type }}</span>
         {% endif %}
+        {% for cat in item.categories %}
+        <span class="sp-badge" style="background:{{ cat.color }}22;color:{{ cat.color }};">{{ cat.icon }} {{ cat.name }}</span>
+        {% endfor %}
         <span class="sp-badge sp-badge-versions">{{ item.version_count }} версий</span>
         {% if item.latest_version %}
           {% if item.latest_version.deployed_server_1 %}

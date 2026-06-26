@@ -26,46 +26,31 @@ def _compensate_playtime(db: Session) -> None:
     Для каждого игрока:
       total_session = SUM(session_duration) по завершённым сессиям
       если play_time < total_session → play_time = total_session
+
+    Реализовано одним UPDATE с коррелированным подзапросом — без N+1.
     """
-    # Считаем суммарное время сессий для каждого игрока одним запросом
-    session_totals = (
-        db.query(
-            PlayerSession.player_id,
-            func.sum(PlayerSession.session_duration).label("total"),
-        )
-        .filter(PlayerSession.session_duration.isnot(None))
-        .group_by(PlayerSession.player_id)
-        .all()
-    )
+    from sqlalchemy import text
 
-    compensated = 0
-    for player_id, total_seconds in session_totals:
-        if not total_seconds:
-            continue
-
-        player: PlayerData | None = (
-            db.query(PlayerData)
-            .filter(PlayerData.player_id == player_id)
-            .with_for_update(skip_locked=True)
-            .first()
-        )
-        if player is None:
-            continue
-
-        current = player.play_time or 0
-        if current < total_seconds:
-            diff = total_seconds - current
-            player.play_time = total_seconds
-            compensated += 1
-            logger.debug(
-                "Компенсация игрок #%d: play_time %d → %d (+%d сек)",
-                player_id, current, total_seconds, diff,
-            )
+    # Single atomic UPDATE: set play_time to session total where it lags behind.
+    # Correlated subquery computes SUM(session_duration) per player.
+    result = db.execute(text("""
+        UPDATE players_data pd
+        JOIN (
+            SELECT player_id, SUM(session_duration) AS total
+            FROM player_sessions
+            WHERE session_duration IS NOT NULL
+            GROUP BY player_id
+        ) st ON st.player_id = pd.player_id
+        SET pd.play_time = st.total
+        WHERE pd.play_time < st.total
+    """))
+    compensated = result.rowcount or 0
 
     if compensated:
         db.commit()
         logger.info("PlaytimeWorker: скомпенсировано %d игроков", compensated)
     else:
+        db.commit()
         logger.debug("PlaytimeWorker: компенсация не требуется")
 
 

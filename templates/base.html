@@ -9,8 +9,63 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap" media="print" onload="this.media='all'">
     <link rel="stylesheet" href="/static/admin/admin_styles.css">
+    <style>
+    /* ── Background Music Player ── */
+    .music-player {
+      position:fixed; bottom:16px; right:16px; z-index:900;
+      display:flex; align-items:center; gap:8px;
+      background:rgba(16,23,51,.92); border:1px solid var(--stroke-01);
+      border-radius:30px; padding:8px 16px; backdrop-filter:blur(8px);
+      box-shadow:0 4px 20px rgba(0,0,0,.4);
+      transition:opacity .3s;
+    }
+    .music-player .mp-btn {
+      background:none; border:none; color:var(--white); cursor:pointer;
+      font-size:18px; padding:4px; line-height:1; transition:.2s;
+    }
+    .music-player .mp-btn:hover { color:var(--primary-blue); transform:scale(1.1); }
+    .music-player .mp-title {
+      font-size:11px; color:var(--gray); max-width:140px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    .music-player .mp-vol {
+      width:60px; height:3px; accent-color:var(--primary-blue);
+    }
+
+    /* ── Red wave effects ── */
+    .wave-effect {
+      position:fixed; top:0; bottom:0; width:80px; pointer-events:none; z-index:800;
+      opacity:0; transition:opacity .6s;
+    }
+    .wave-effect.active { opacity:1; }
+    .wave-effect-left { left:0; background:linear-gradient(to right, rgba(180,20,40,.12), transparent); }
+    .wave-effect-right { right:0; background:linear-gradient(to left, rgba(180,20,40,.12), transparent); }
+    .wave-effect.active .wave-bar {
+      position:absolute; width:3px; border-radius:2px;
+      background:rgba(220,40,60,.35); animation:waveFloat 2s ease-in-out infinite;
+    }
+    @keyframes waveFloat {
+      0%,100% { transform:scaleY(0.3); opacity:.3; }
+      50% { transform:scaleY(1); opacity:.7; }
+    }
+
+    /* ── SPA loading indicator ── */
+    .spa-loading-bar {
+      position:fixed; top:0; left:0; height:2px; background:var(--primary-blue);
+      z-index:9999; transition:width .3s ease; width:0; opacity:0;
+    }
+    .spa-loading-bar.active { opacity:1; width:70%; }
+    .spa-loading-bar.done { width:100%; transition:width .1s, opacity .3s .2s; opacity:0; }
+    </style>
   </head>
   <body>
+    <!-- SPA loading bar -->
+    <div class="spa-loading-bar" id="spaLoadingBar"></div>
+
+    <!-- Red wave effects (edges) -->
+    <div class="wave-effect wave-effect-left" id="waveLeft"></div>
+    <div class="wave-effect wave-effect-right" id="waveRight"></div>
+
     {% set flashes = flashes if flashes is defined else [] %}
     {% if flashes %}
     <div id="flash-root" class="flash-root" aria-live="polite" aria-atomic="true">
@@ -38,72 +93,263 @@
 
     <nav class="nav">
       <ul>
-        <li><a href="/admin">Главная</a></li>
+        <li><a href="/admin" data-spa>Главная</a></li>
         {% if check_permission(admin, 'admin', 'view') %}
-        <li><a href="/admin/users">Пользователи Nexus Data</a></li>
+        <li><a href="/admin/users" data-spa>Пользователи Nexus Data</a></li>
         {% endif %}
         {% if check_permission(admin, 'players', 'view') or check_permission(admin, 'players_special', 'view') %}
-        <li><a href="/admin/players">Игроки</a></li>
+        <li><a href="/admin/players" data-spa>Игроки</a></li>
         {% endif %}
         {% if check_permission(admin, 'moderation', 'view') %}
-        <li><a href="/admin/moderation">Модерирование</a></li>
+        <li><a href="/admin/moderation" data-spa>Модерирование</a></li>
         {% endif %}
         {% if check_permission(admin, 'dispatch', 'view') %}
-        <li><a href="/admin/dispatch">Диспетчерская</a></li>
+        <li><a href="/admin/dispatch" data-spa>Диспетчерская</a></li>
         {% endif %}
         {% if check_permission(admin, 'replays', 'view') %}
-        <li><a href="/admin/replays">Реплеи раундов</a></li>
+        <li><a href="/admin/replays" data-spa>Реплеи раундов</a></li>
         {% endif %}
         {% if check_permission(admin, 'sessions', 'view') %}
-        <li><a href="/admin/sessions">Сессии</a></li>
+        <li><a href="/admin/sessions" data-spa>Сессии</a></li>
         {% endif %}
         {% if check_permission(admin, 'audit', 'view') %}
-        <li><a href="/admin/audit">Аудит</a></li>
+        <li><a href="/admin/audit" data-spa>Аудит</a></li>
         {% endif %}
         {% if check_permission(admin, 'privileges', 'view') %}
-        <li><a href="/admin/server-privileges">Серверные привилегии</a></li>
+        <li><a href="/admin/server-privileges" data-spa>Серверные привилегии</a></li>
         {% endif %}
         {% if check_permission(admin, 'kits', 'view') %}
-        <li><a href="/admin/kits">Редактирование китов</a></li>
+        <li><a href="/admin/kits" data-spa>Редактирование китов</a></li>
         {% endif %}
         {% if check_permission(admin, 'admin', 'edit') %}
-        <li><a href="/admin/administration">Администрирование</a></li>
+        <li><a href="/admin/administration" data-spa>Администрирование</a></li>
         {% endif %}
         {% if check_permission(admin, 'punishments', 'view') %}
-        <li><a href="/admin/punishments">Наказания</a></li>
+        <li><a href="/admin/punishments" data-spa>Наказания</a></li>
         {% endif %}
         {% if check_permission(admin, 'sub_projects', 'view') %}
-        <li><a href="/admin/sub-projects">Sub-карты</a></li>
+        <li><a href="/admin/sub-projects" data-spa>Sub-карты</a></li>
         {% endif %}
         {% if check_permission(admin, 'ratings', 'view') %}
-        <li><a href="/admin/ratings">Рейтинг</a></li>
+        <li><a href="/admin/ratings" data-spa>Рейтинг</a></li>
         {% endif %}
         {% if check_permission(admin, 'discord_bot', 'view') %}
-        <li><a href="/admin/discord-bot">Discord бот</a></li>
+        <li><a href="/admin/discord-bot" data-spa>Discord бот</a></li>
         {% endif %}
         {% if check_permission(admin, 'tickets', 'view') %}
-        <li><a href="/admin/tickets">Тикеты</a></li>
+        <li><a href="/admin/tickets" data-spa>Тикеты</a></li>
         {% endif %}
         {% if check_permission(admin, 'meeting', 'view') %}
-        <li><a href="/admin/meeting">Совещание</a></li>
+        <li><a href="/admin/meeting" data-spa>Совещание</a></li>
         {% endif %}
       </ul>
     </nav>
 
-    <main class="container">
+    <main class="container" id="spa-content">
       {% block content %}{% endblock %}
     </main>
 
+    <!-- Background Music Player -->
+    <div class="music-player" id="musicPlayer">
+      <button class="mp-btn" id="mpPlayBtn" title="Пауза/Воспроизведение">▶</button>
+      <span class="mp-title" id="mpTitle">Ambient</span>
+      <input type="range" class="mp-vol" id="mpVolume" min="0" max="100" value="30" title="Громкость">
+      <button class="mp-btn" id="mpNext" title="Следующий трек">⏭</button>
+    </div>
+
+    <audio id="bgMusic" loop preload="auto"></audio>
+
     <script>
-      (function initFlashToasts() {
-        var root = document.getElementById('flash-root');
-        if (!root) return;
-        root.querySelectorAll('[data-flash]').forEach(function(item) {
-          var closeBtn = item.querySelector('[data-flash-close]');
-          if (closeBtn) closeBtn.addEventListener('click', function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); });
-          setTimeout(function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); }, 4200);
+    /* ═══ Flash toasts ═══ */
+    (function initFlashToasts() {
+      var root = document.getElementById('flash-root');
+      if (!root) return;
+      root.querySelectorAll('[data-flash]').forEach(function(item) {
+        var closeBtn = item.querySelector('[data-flash-close]');
+        if (closeBtn) closeBtn.addEventListener('click', function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); });
+        setTimeout(function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); }, 4200);
+      });
+    })();
+
+    /* ═══ SPA Navigation (dynamic page transitions) ═══ */
+    (function initSPA() {
+      const content = document.getElementById('spa-content');
+      const loadBar = document.getElementById('spaLoadingBar');
+      if (!content) return;
+
+      // Intercept nav link clicks
+      document.addEventListener('click', function(e) {
+        const link = e.target.closest('a[data-spa]');
+        if (!link) return;
+        const url = link.getAttribute('href');
+        if (!url || url.startsWith('http') || url.startsWith('#')) return;
+        e.preventDefault();
+        navigateTo(url);
+      });
+
+      // Handle browser back/forward
+      window.addEventListener('popstate', function() {
+        navigateTo(location.pathname + location.search, true);
+      });
+
+      function navigateTo(url, isPopState) {
+        loadBar.className = 'spa-loading-bar active';
+
+        fetch(url, { headers: { 'X-SPA-Request': '1' } })
+          .then(function(resp) {
+            if (!resp.ok) throw new Error(resp.status);
+            return resp.text();
+          })
+          .then(function(html) {
+            // Parse the response HTML and extract content between <main> tags
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const newContent = doc.querySelector('#spa-content') || doc.querySelector('main.container') || doc.querySelector('main');
+            const newTitle = doc.querySelector('title');
+
+            if (newContent) {
+              content.innerHTML = newContent.innerHTML;
+              // Re-execute inline scripts
+              content.querySelectorAll('script').forEach(function(oldScript) {
+                const newScript = document.createElement('script');
+                if (oldScript.src) {
+                  newScript.src = oldScript.src;
+                } else {
+                  newScript.textContent = oldScript.textContent;
+                }
+                oldScript.parentNode.replaceChild(newScript, oldScript);
+              });
+            }
+
+            if (newTitle) document.title = newTitle.textContent;
+            if (!isPopState) history.pushState(null, '', url);
+
+            // Process flash messages from new page
+            const flashRoot = doc.getElementById('flash-root');
+            if (flashRoot) {
+              let existingFlash = document.getElementById('flash-root');
+              if (existingFlash) existingFlash.remove();
+              document.body.insertBefore(flashRoot, document.body.firstChild);
+              initFlashToasts();
+            }
+
+            loadBar.className = 'spa-loading-bar done';
+            setTimeout(function() { loadBar.className = 'spa-loading-bar'; }, 400);
+            window.scrollTo(0, 0);
+          })
+          .catch(function(err) {
+            // Fallback: full page navigation
+            loadBar.className = 'spa-loading-bar done';
+            window.location.href = url;
+          });
+      }
+    })();
+
+    /* ═══ Background Music Player ═══ */
+    (function initMusicPlayer() {
+      const audio = document.getElementById('bgMusic');
+      const playBtn = document.getElementById('mpPlayBtn');
+      const titleEl = document.getElementById('mpTitle');
+      const volumeEl = document.getElementById('mpVolume');
+      const nextBtn = document.getElementById('mpNext');
+      const waveLeft = document.getElementById('waveLeft');
+      const waveRight = document.getElementById('waveRight');
+
+      // Playlist (add your ambient tracks here)
+      const playlist = [
+        { src: '/static/music/ambient1.mp3', title: 'Deep Abyss' },
+        { src: '/static/music/ambient2.mp3', title: 'Pressure' },
+        { src: '/static/music/ambient3.mp3', title: 'Cold Waters' },
+      ];
+
+      let currentTrack = 0;
+      let userPaused = localStorage.getItem('nd_music_paused') === '1';
+      let savedVolume = parseFloat(localStorage.getItem('nd_music_volume') || '0.3');
+
+      audio.volume = savedVolume;
+      volumeEl.value = Math.round(savedVolume * 100);
+
+      function loadTrack(idx) {
+        if (!playlist.length) return;
+        currentTrack = idx % playlist.length;
+        audio.src = playlist[currentTrack].src;
+        titleEl.textContent = playlist[currentTrack].title;
+      }
+
+      function play() {
+        if (!playlist.length) return;
+        if (!audio.src || audio.src === location.href) loadTrack(currentTrack);
+        audio.play().then(function() {
+          playBtn.textContent = '⏸';
+          userPaused = false;
+          localStorage.setItem('nd_music_paused', '0');
+          activateWaves(true);
+        }).catch(function() {
+          // Autoplay blocked — wait for user interaction
         });
-      })();
+      }
+
+      function pause() {
+        audio.pause();
+        playBtn.textContent = '▶';
+        userPaused = true;
+        localStorage.setItem('nd_music_paused', '1');
+        activateWaves(false);
+      }
+
+      playBtn.addEventListener('click', function() {
+        if (audio.paused) play(); else pause();
+      });
+
+      nextBtn.addEventListener('click', function() {
+        loadTrack(currentTrack + 1);
+        if (!userPaused) play();
+      });
+
+      volumeEl.addEventListener('input', function() {
+        const v = this.value / 100;
+        audio.volume = v;
+        savedVolume = v;
+        localStorage.setItem('nd_music_volume', v.toString());
+      });
+
+      audio.addEventListener('ended', function() {
+        loadTrack(currentTrack + 1);
+        if (!userPaused) play();
+      });
+
+      // Generate wave bars
+      function generateWaveBars(container) {
+        for (let i = 0; i < 8; i++) {
+          const bar = document.createElement('div');
+          bar.className = 'wave-bar';
+          bar.style.cssText = 'left:' + (5 + Math.random() * 60) + 'px;top:' + (5 + Math.random() * 90) + '%;height:' + (20 + Math.random() * 60) + 'px;animation-delay:' + (Math.random() * 2) + 's;animation-duration:' + (1.5 + Math.random() * 1.5) + 's;';
+          container.appendChild(bar);
+        }
+      }
+      generateWaveBars(waveLeft);
+      generateWaveBars(waveRight);
+
+      function activateWaves(on) {
+        waveLeft.classList.toggle('active', on);
+        waveRight.classList.toggle('active', on);
+      }
+
+      // Auto-play on page load if not paused by user
+      if (!userPaused) {
+        loadTrack(0);
+        // Try autoplay — browsers may block without user gesture
+        document.addEventListener('click', function firstClick() {
+          if (!userPaused && audio.paused) play();
+          document.removeEventListener('click', firstClick);
+        }, { once: true });
+        // Also try immediately (some browsers allow after navigation)
+        setTimeout(function() { if (!userPaused && audio.paused) play(); }, 500);
+      } else {
+        loadTrack(0);
+        playBtn.textContent = '▶';
+      }
+    })();
     </script>
   </body>
 </html>

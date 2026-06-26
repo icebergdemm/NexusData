@@ -33,10 +33,6 @@ _online_players_lock = threading.Lock()
 # Should be ~2.5x the game server's report interval (reports every ~30s → 90s TTL).
 _ONLINE_TTL_SECONDS = 90
 
-# Legacy alias kept for any external references; rebuilt on demand.
-_online_players_by_server: Dict[str, Dict[str, dict]] = {}
-_online_players_last_update: Dict[str, "datetime"] = {}
-
 
 def _prune_stale_online(now=None):
     """Remove players whose last_seen exceeded the TTL. MUST hold the lock."""
@@ -227,7 +223,7 @@ class EventDispatcherService:
         
         if old_session:
             old_session.logout_time = login_time
-            old_session.session_duration = (login_time - old_session.login_time).total_seconds()
+            old_session.session_duration = max(0, int((login_time - old_session.login_time).total_seconds()))
             self.db.flush()  # Flush before commit to avoid session conflicts
             self.db.commit()
             logger.warning(f"Closed stale session {old_session.id} for player {player.player_id}")
@@ -1269,10 +1265,6 @@ class ServerModerationService:
 
         return len(player_list)
 
-    def get_online_players(self, server_name: Optional[str] = None) -> List[dict]:
-        with _online_players_lock:
-            # Rebuild combined view on read to drop stale server buckets
-            _rebuild_combined_view()
     def get_online_players(self, server_name: Optional[str] = None) -> List[dict]:
         with _online_players_lock:
             # Prune stale players first so counts are always accurate
