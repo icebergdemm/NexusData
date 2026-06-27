@@ -365,13 +365,13 @@ textarea { resize:vertical; min-height:80px; }
           {% if player.first_login %}
           <div class="info-row">
             <span class="info-label">Регистрация</span>
-            <span class="info-value">{{ player.first_login.strftime('%d.%m.%Y') }}</span>
+            <span class="info-value">{{ player.first_login|msk('%d.%m.%Y') }}</span>
           </div>
           {% endif %}
           {% if player.last_login_time %}
           <div class="info-row">
             <span class="info-label">Последний вход</span>
-            <span class="info-value">{{ player.last_login_time.strftime('%d.%m.%Y %H:%M') }}</span>
+            <span class="info-value">{{ player.last_login_time|msk }}</span>
           </div>
           {% endif %}
         </div>
@@ -486,7 +486,7 @@ textarea { resize:vertical; min-height:80px; }
                 <td style="padding:8px 12px; color:var(--gray); min-width:200px; word-break:break-word; white-space:pre-wrap;">{{ p.reason or '-' }}</td>
                 <td style="padding:8px 12px; color:var(--gray); white-space:nowrap;">{{ p.issued_by_name or '-' }}</td>
                 <td style="padding:8px 12px; color:var(--gray-dark); font-family:'Courier New',monospace; white-space:nowrap; font-size:11px;">
-                  {{ p.issued_at.strftime('%d.%m.%y %H:%M') if p.issued_at else '-' }}
+                  {{ p.issued_at|msk('%d.%m.%y %H:%M') if p.issued_at else '-' }}
                 </td>
                 <td style="padding:8px 12px;">
                   {% if item.status == 'active' %}
@@ -551,7 +551,7 @@ textarea { resize:vertical; min-height:80px; }
             <div style="font-weight:700; margin-bottom:2px;">Ловушка активна</div>
             {% if active_trap.val.reason %}<div style="font-size:12px;">{{ active_trap.val.reason }}</div>{% endif %}
             <div style="font-size:11px; color:var(--gray-dark); margin-top:2px;">
-              Установлена: {{ active_trap.val.set_at.strftime('%d.%m.%Y %H:%M') if active_trap.val.set_at else '-' }}
+              Установлена: {{ active_trap.val.set_at|msk if active_trap.val.set_at else '-' }}
             </div>
           </div>
         </div>
@@ -576,8 +576,8 @@ textarea { resize:vertical; min-height:80px; }
           {% for trap in traps %}
           {% if trap.active != 1 %}
           <div class="trap-triggered-row">
-            <span>{{ trap.set_at.strftime('%d.%m') if trap.set_at else '-' }}</span>
-            <span>{% if trap.triggered_at %}🎯 {{ trap.triggered_at.strftime('%d.%m %H:%M') }}{% else %}снята вручную{% endif %}</span>
+            <span>{{ trap.set_at|msk('%d.%m') if trap.set_at else '-' }}</span>
+            <span>{% if trap.triggered_at %}🎯 {{ trap.triggered_at|msk('%d.%m %H:%M') }}{% else %}снята вручную{% endif %}</span>
           </div>
           {% endif %}
           {% endfor %}
@@ -757,8 +757,8 @@ function closeLabelCatModal() {
         {% if ips %}{% for ip in ips %}
         <tr>
           <td class="mono-cell">{{ ip.ip }}</td>
-          <td class="mono-cell">{{ ip.first_seen.strftime('%d.%m.%Y') if ip.first_seen else '-' }}</td>
-          <td class="mono-cell">{{ ip.last_seen.strftime('%d.%m.%Y') if ip.last_seen else '-' }}</td>
+          <td class="mono-cell">{{ ip.first_seen|msk('%d.%m.%Y') if ip.first_seen else '-' }}</td>
+          <td class="mono-cell">{{ ip.last_seen|msk('%d.%m.%Y') if ip.last_seen else '-' }}</td>
         </tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}
       </tbody>
@@ -773,7 +773,7 @@ function closeLabelCatModal() {
       <thead><tr><th>Имя</th><th>Впервые</th></tr></thead>
       <tbody>
         {% if names %}{% for n in names %}
-        <tr><td>{{ n.nickname }}</td><td class="mono-cell">{{ n.first_seen.strftime('%d.%m.%Y') if n.first_seen else '-' }}</td></tr>
+        <tr><td>{{ n.nickname }}</td><td class="mono-cell">{{ n.first_seen|msk('%d.%m.%Y') if n.first_seen else '-' }}</td></tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="2">Нет данных</td></tr>{% endif %}
       </tbody>
     </table>
@@ -802,8 +802,8 @@ function closeLabelCatModal() {
       <tbody>
         {% if sessions %}{% for s in sessions %}
         <tr>
-          <td class="mono-cell">{{ s.login_time.strftime('%d.%m.%Y %H:%M') if s.login_time else '-' }}</td>
-          <td class="mono-cell">{% if s.logout_time %}{{ s.logout_time.strftime('%d.%m.%Y %H:%M') }}{% else %}<span style="color:var(--success)">онлайн</span>{% endif %}</td>
+          <td class="mono-cell">{{ s.login_time|msk if s.login_time else '-' }}</td>
+          <td class="mono-cell">{% if s.logout_time %}{{ s.logout_time|msk }}{% else %}<span style="color:var(--success)">онлайн</span>{% endif %}</td>
           <td>{% if s.session_duration %}{{ (s.session_duration // 60) }} мин{% else %}-{% endif %}</td>
         </tr>
         {% endfor %}{% else %}<tr class="empty-row"><td colspan="3">Нет данных</td></tr>{% endif %}

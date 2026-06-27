@@ -71,12 +71,12 @@
       {% endif %}
       <div><span style="color:var(--gray);">Игроков в раунде:</span> <span style="color:var(--white);font-weight:600;">{{ rs.players | length }}</span></div>
       {% if rs.started_at %}
-      <div style="grid-column:1/-1;"><span style="color:var(--gray);">Начат:</span> <span style="color:var(--white);">{{ rs.started_at.strftime('%d.%m.%Y %H:%M') }}</span></div>
+      <div style="grid-column:1/-1;"><span style="color:var(--gray);">Начат:</span> <span style="color:var(--white);">{{ rs.started_at|msk }}</span></div>
       {% endif %}
     </div>
     {% elif rs.last_end %}
     <div style="font-size:12px;color:var(--gray);">
-      Последний раунд завершён: {{ rs.last_end.created_at.strftime('%d.%m.%Y %H:%M') if rs.last_end.created_at else '?' }}
+      Последний раунд завершён: {{ rs.last_end.created_at|msk if rs.last_end.created_at else '?' }}
       {% if rs.last_end.mission_completed %}<span style="color:#22d06f;margin-left:6px;">✓ Миссия выполнена</span>{% endif %}
     </div>
     {% else %}
@@ -121,7 +121,7 @@
           {% endif %}
           <td>{{ p.character_name or '-' }}</td>
           <td>{{ p.ping if p.ping is not none else '-' }}</td>
-          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '-' }}</td>
+          <td>{{ p.join_time|msk('%H:%M:%S') if p.join_time else '-' }}</td>
           <td>{{ fmt_playtime(p.total_play_time) }}</td>
           <td>
             <div class="action-group">
@@ -217,7 +217,7 @@
           <td><code>{{ p.player_steamid }}</code></td>
           <td>{{ fmt_playtime(p.total_play_time) }}</td>
           <td>{{ p.ping if p.ping is not none else '-' }}</td>
-          <td>{{ p.join_time.strftime('%H:%M:%S') if p.join_time else '-' }}</td>
+          <td>{{ p.join_time|msk('%H:%M:%S') if p.join_time else '-' }}</td>
           <td>
             <div class="action-group">
               {% if p.player_id %}<a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>{% endif %}
@@ -248,7 +248,7 @@
           <td>{{ p.player_last_time_name or '-' }}</td>
           <td><code>{{ p.player_steamid }}</code></td>
           <td>{{ fmt_playtime(p.play_time) }}</td>
-          <td>{{ p.last_session_logout.strftime('%d.%m %H:%M') if p.last_session_logout else (p.last_login_time.strftime('%d.%m %H:%M') if p.last_login_time else '-') }}</td>
+          <td>{{ p.last_session_logout|msk('%d.%m %H:%M') if p.last_session_logout else (p.last_login_time|msk('%d.%m %H:%M') if p.last_login_time else '-') }}</td>
           <td>
             <div class="action-group">
               <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>

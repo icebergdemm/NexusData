@@ -186,7 +186,7 @@
         <td><span class="rating-value">{{ entry.rating }}</span></td>
         <td><span class="points-value">{{ entry.cumulative_points }}</span></td>
         <td style="font-size:12px; color:var(--gray);">
-          {{ entry.last_activity.strftime('%d.%m.%Y %H:%M') if entry.last_activity else '-' }}
+          {{ entry.last_activity|msk if entry.last_activity else '-' }}
         </td>
       </tr>
       {% endfor %}
@@ -203,42 +203,59 @@
 <!-- Snapshots sidebar -->
 <div style="display:flex; flex-direction:column; gap:16px;">
   {% if check_permission(admin, 'ratings', 'edit') %}
+
+  <!-- ⚡ Моментальный пересчёт -->
+  <div style="background:var(--card-bg); border:1px solid rgba(26,104,222,.5); border-radius:var(--border-radius-12); padding:16px;">
+    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:4px;">⚡ Моментальный пересчёт</h4>
+    <p style="font-size:11px; color:var(--gray); margin-bottom:12px;">Пересчитывает рейтинг всех игроков из сырых данных. Текущий рейтинг автоматически сохраняется в снапшот для отката.</p>
+    <form method="post" action="/admin/ratings/recalculate-all"
+          onsubmit="return confirm('Запустить полный пересчёт рейтинга? Текущее состояние будет сохранено как снапшот.');">
+      <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <input type="text" name="snapshot_title" placeholder="Название снапшота (необязательно)"
+               style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 10px; color:var(--white); font-size:12px; font-family:inherit; width:100%; box-sizing:border-box;">
+        <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--gray); cursor:pointer;">
+          <input type="checkbox" name="save_snapshot" value="1" checked>
+          Сохранить снапшот до пересчёта
+        </label>
+        <button type="submit" class="btn btn-primary" style="width:100%; background:#1a68de;">⚡ Пересчитать всё</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- 📸 Генерация снапшота -->
   <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px;">
-    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📸 Генерация снапшота</h4>
+    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📸 Сохранить снапшот</h4>
     <form method="post" action="/admin/ratings/snapshot/generate">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div style="display:flex; flex-direction:column; gap:8px;">
         <input type="text" name="title" placeholder="Название (необязательно)"
                style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 10px; color:var(--white); font-size:12px; font-family:inherit; width:100%; box-sizing:border-box;">
-        <div style="display:flex; gap:6px;">
-          <input type="date" name="date_from" placeholder="От"
-                 style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 8px; color:var(--white); font-size:11px; font-family:inherit;">
-          <input type="date" name="date_to" placeholder="До"
-                 style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:7px 8px; color:var(--white); font-size:11px; font-family:inherit;">
-        </div>
-        <span style="font-size:10px; color:var(--gray);">Пусто = текущий рейтинг. С датами = рейтинг за период.</span>
-        <button type="submit" class="btn btn-primary" style="width:100%;">📸 Сгенерировать</button>
+        <button type="submit" class="btn btn-primary" style="width:100%;">📸 Сохранить текущий</button>
       </div>
     </form>
   </div>
   {% endif %}
 
   <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px;">
-    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📋 Сохранённые снапшоты</h4>
+    <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📋 Снапшоты</h4>
     {% if snapshots %}
-    <div style="display:flex; flex-direction:column; gap:8px; max-height:400px; overflow-y:auto;">
+    <div style="display:flex; flex-direction:column; gap:8px; max-height:500px; overflow-y:auto;">
       {% for snap in snapshots %}
-      <div style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:10px;">
-        <div style="font-size:12px; font-weight:700; color:var(--white); margin-bottom:4px;">{{ snap.title }}</div>
+      <div style="background:var(--dark-blue-bg); border:1px solid {% if '[авто]' in snap.title %}rgba(255,140,0,.3){% else %}var(--stroke-01){% endif %}; border-radius:6px; padding:10px;">
+        <div style="font-size:12px; font-weight:700; color:{% if '[авто]' in snap.title %}#ffaa44{% else %}var(--white){% endif %}; margin-bottom:4px;">{{ snap.title }}</div>
         <div style="font-size:10px; color:var(--gray); margin-bottom:6px;">
-          {{ snap.created_at[:16] if snap.created_at else '' }}
-          {% if snap.date_from %} | {{ snap.date_from }} - {{ snap.date_to or 'now' }}{% endif %}
-          | {{ snap.total_players }} игроков
+          {{ snap.created_at[:16] if snap.created_at else '' }} | {{ snap.total_players }} игроков
         </div>
-        <div style="display:flex; gap:4px;">
-          <a href="/admin/ratings/snapshot/{{ snap.filename }}/view" class="btn btn-primary" style="font-size:10px; padding:4px 8px;">👁 Смотреть</a>
-          <a href="/admin/ratings/snapshot/{{ snap.filename }}" class="btn btn-secondary" style="font-size:10px; padding:4px 8px;">⬇</a>
+        <div style="display:flex; gap:4px; flex-wrap:wrap;">
+          <a href="/admin/ratings/snapshot/{{ snap.filename }}/view" class="btn btn-primary" style="font-size:10px; padding:4px 8px; text-decoration:none;">👁</a>
+          <a href="/admin/ratings/snapshot/{{ snap.filename }}" class="btn btn-secondary" style="font-size:10px; padding:4px 8px; text-decoration:none;" data-no-spa>⬇</a>
           {% if check_permission(admin, 'ratings', 'edit') %}
+          <form method="post" action="/admin/ratings/snapshot/{{ snap.filename }}/restore" style="display:inline;"
+                onsubmit="return confirm('Откатить рейтинг к снапшоту «{{ snap.title }}»? Текущий рейтинг будет ПЕРЕЗАПИСАН.');">
+            <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+            <button type="submit" class="btn btn-primary" style="font-size:10px; padding:4px 8px; background:#22d06f; border-color:#22d06f;" title="Откатить к этому снапшоту">↩ Откат</button>
+          </form>
           <form method="post" action="/admin/ratings/snapshot/{{ snap.filename }}/delete" style="display:inline;"
                 onsubmit="return confirm('Удалить снапшот?');">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">

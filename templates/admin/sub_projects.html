@@ -60,14 +60,14 @@
 
 <!-- Search & Filters -->
 <div style="background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:16px 20px;margin-bottom:20px;">
-  <form method="get" action="/admin/sub-projects" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+  <form method="get" action="/admin/sub-projects" id="spFilterForm" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
     <div style="flex:2;min-width:200px;">
       <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Поиск по названию</label>
-      <input type="text" name="search" value="{{ search_query }}" placeholder="Название корабля..." style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+      <input type="text" name="search" id="spSearchInput" value="{{ search_query }}" placeholder="Название корабля..." style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
     </div>
     <div style="min-width:140px;">
       <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Автор</label>
-      <select name="author" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+      <select name="author" id="spAuthorFilter" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
         <option value="">Все авторы</option>
         {% for a in all_authors %}
         <option value="{{ a }}" {% if filter_author == a %}selected{% endif %}>{{ a }}</option>
@@ -84,7 +84,7 @@
     </div>
     <div style="min-width:140px;">
       <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Категория</label>
-      <select name="category_id" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
+      <select name="category_id" id="spCategoryFilter" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
         <option value="">Все категории</option>
         {% for cat in all_categories %}
         <option value="{{ cat.id }}" {% if filter_category_id == cat.id %}selected{% endif %}>{{ cat.icon }} {{ cat.name }}</option>
@@ -97,6 +97,32 @@
     {% endif %}
   </form>
 </div>
+
+<script>
+// Dynamic client-side filtering of visible cards (instant, no server request)
+(function() {
+  var searchInput = document.getElementById('spSearchInput');
+  var cards = document.querySelectorAll('.sp-card');
+  var debounceTimer;
+
+  if (!searchInput || !cards.length) return;
+
+  searchInput.addEventListener('input', function() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(filterCards, 150);
+  });
+
+  function filterCards() {
+    var query = searchInput.value.trim().toLowerCase();
+    cards.forEach(function(card) {
+      var title = (card.querySelector('.sp-card-title') || {}).textContent || '';
+      var meta = (card.querySelector('.sp-card-meta') || {}).textContent || '';
+      var text = (title + ' ' + meta).toLowerCase();
+      card.style.display = (!query || text.includes(query)) ? '' : 'none';
+    });
+  }
+})();
+</script>
 
 <!-- ═══ Categories Management Section ═══ -->
 {% if admin.is_superuser or check_permission(admin, 'sub_projects', 'delete') %}
@@ -256,7 +282,7 @@ function openEditCat(id,name,slug,desc,color,icon,order,parentId){
   {% for item in projects_data %}
   <a href="/admin/sub-projects/{{ item.project.id }}" class="sp-card">
     {% if item.project.image_filename %}
-    <img class="sp-card-img" src="/sub_projects/images/{{ item.project.image_filename }}" alt="{{ item.project.name }}">
+    <img class="sp-card-img" src="/sub_projects/thumbs/{{ item.project.image_filename }}" alt="{{ item.project.name }}" loading="lazy">
     {% else %}
     <div class="sp-card-img-placeholder">🚢</div>
     {% endif %}
@@ -283,7 +309,7 @@ function openEditCat(id,name,slug,desc,color,icon,order,parentId){
           {% endif %}
           {% if item.latest_version.deployed_server_1 or item.latest_version.deployed_server_2 %}
           <span class="sp-badge" style="background:rgba(34,208,111,.1);color:#22d06f;font-size:10px;">
-            v{{ item.latest_version.version_number }} · {{ item.latest_version.uploaded_at.strftime('%d.%m.%Y') if item.latest_version.uploaded_at else '?' }}
+            v{{ item.latest_version.version_number }} · {{ item.latest_version.uploaded_at|msk('%d.%m.%Y') if item.latest_version.uploaded_at else '?' }}
           </span>
           {% endif %}
         {% endif %}

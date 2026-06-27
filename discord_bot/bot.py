@@ -288,8 +288,7 @@ async def publish_rating_task():
                 medal = f"**{entry['rank']}.**"
 
             name = entry["player_name"]
-            if entry.get("discord_id"):
-                name = f"<@{entry['discord_id']}>"
+            # Use game nickname instead of Discord mention for cleaner display
 
             lines.append(f"{medal}  {name}  -  **{entry['rating']}**")
 
@@ -302,7 +301,7 @@ async def publish_rating_task():
             description=description,
             color=0x1a68de,
         )
-        now_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M")
+        now_str = (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
         embed.set_footer(text=f"Сделано за сухарики | Обновлено {now_str}")
 
         # Edit existing message or send new

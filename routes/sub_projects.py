@@ -30,6 +30,87 @@ def _get_sub_service(db: Session):
     return services_sub_projects.SubProjectService(db)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# IMAGE THUMBNAIL ENDPOINT (compressed, cached on disk)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_THUMB_DIR = os.path.join(settings.sub_projects_upload_dir, "thumbs")
+os.makedirs(_THUMB_DIR, exist_ok=True)
+
+
+def _generate_thumbnail(source_path: str, thumb_path: str, max_width: int = 400, quality: int = 60):
+    """Generate a compressed thumbnail from the source image, preserving transparency."""
+    try:
+        from PIL import Image
+        img = Image.open(source_path)
+        # Resize maintaining aspect ratio
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_size = (max_width, int(img.height * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+        # If image has alpha channel — save as WebP (supports transparency + good compression)
+        if img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info):
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            img.save(thumb_path, "WEBP", quality=quality, method=4)
+        else:
+            # No transparency — save as JPEG
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(thumb_path, "JPEG", quality=quality, optimize=True)
+    except Exception as e:
+        logger.warning(f"Thumbnail generation failed for {source_path}: {e}")
+        import shutil
+        shutil.copyfile(source_path, thumb_path)
+
+
+@router.get("/sub_projects/thumbs/{filename}")
+async def sub_project_thumbnail(filename: str):
+    """Serve compressed thumbnail of a sub-project image.
+    
+    Generates on first request and caches to disk.
+    - PNG with transparency → WebP (60% quality, preserves alpha)
+    - Other formats → JPEG (60% quality)
+    Max width: 400px.
+    """
+    # Sanitize filename
+    safe_name = os.path.basename(filename)
+    if not safe_name or ".." in safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Check for cached thumbnail (could be .jpg or .webp)
+    thumb_jpg = os.path.join(_THUMB_DIR, f"thumb_{safe_name}.jpg")
+    thumb_webp = os.path.join(_THUMB_DIR, f"thumb_{safe_name}.webp")
+
+    if os.path.exists(thumb_webp):
+        return FileResponse(thumb_webp, media_type="image/webp",
+                            headers={"Cache-Control": "public, max-age=86400"})
+    if os.path.exists(thumb_jpg):
+        return FileResponse(thumb_jpg, media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=86400"})
+
+    # Generate from source
+    source_path = os.path.join(settings.sub_projects_upload_dir, "images", safe_name)
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Detect if source has transparency to choose output format
+    has_alpha = False
+    try:
+        from PIL import Image
+        with Image.open(source_path) as img:
+            has_alpha = img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
+    except Exception:
+        pass
+
+    thumb_path = thumb_webp if has_alpha else thumb_jpg
+    _generate_thumbnail(source_path, thumb_path)
+
+    media_type = "image/webp" if has_alpha else "image/jpeg"
+    return FileResponse(thumb_path, media_type=media_type,
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 # ── Reusable helpers ─────────────────────────────────────────────────────────
 
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
@@ -90,9 +171,9 @@ async def sub_projects_list(
     request: Request,
     search: Optional[str] = Query(None),
     author: Optional[str] = Query(None),
-    crew_min: Optional[int] = Query(None),
-    crew_max: Optional[int] = Query(None),
-    category_id: Optional[int] = Query(None),
+    crew_min: Optional[str] = Query(None),
+    crew_max: Optional[str] = Query(None),
+    category_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -103,13 +184,20 @@ async def sub_projects_list(
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
 
+    # Parse optional int params (HTML forms send "" for empty fields)
+    crew_min_int = int(crew_min) if crew_min and crew_min.strip().isdigit() else None
+    crew_max_int = int(crew_max) if crew_max and crew_max.strip().isdigit() else None
+    category_id_int = int(category_id) if category_id and category_id.strip().isdigit() else None
+    search_str = search.strip() if search and search.strip() else None
+    author_str = author.strip() if author and author.strip() else None
+
     svc = _get_sub_service(db)
     projects = svc.get_all(
-        search=search,
-        author=author,
-        crew_min=crew_min,
-        crew_max=crew_max,
-        category_id=category_id,
+        search=search_str,
+        author=author_str,
+        crew_min=crew_min_int,
+        crew_max=crew_max_int,
+        category_id=category_id_int,
     )
 
     projects_data = []
@@ -135,11 +223,11 @@ async def sub_projects_list(
         "sftp_server_1_name": settings.sftp_server_1_name,
         "sftp_server_2_name": settings.sftp_server_2_name,
         # Filters
-        "search_query": search or "",
-        "filter_author": author or "",
-        "filter_crew_min": crew_min,
-        "filter_crew_max": crew_max,
-        "filter_category_id": category_id,
+        "search_query": search_str or "",
+        "filter_author": author_str or "",
+        "filter_crew_min": crew_min_int,
+        "filter_crew_max": crew_max_int,
+        "filter_category_id": category_id_int,
         "all_categories": all_categories,
         "all_authors": all_authors,
     })

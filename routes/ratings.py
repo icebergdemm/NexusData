@@ -479,3 +479,196 @@ async def admin_rating_snapshot_view(
         "roles": ROLES,
         "all_leaderboards": leaderboards,
     })
+
+
+@router.post("/admin/ratings/snapshot/{filename}/restore")
+async def admin_rating_snapshot_restore(
+    request: Request,
+    filename: str,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Restore player_ratings table from a snapshot file (full rollback)."""
+    if not check_permission(current_admin, "ratings", "edit"):
+        raise HTTPException(status_code=403)
+
+    from rating_constants import ROLES
+    from datetime import datetime
+
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(SNAPSHOTS_DIR, safe_name)
+    if not os.path.exists(filepath):
+        push_flash(request, "error", "Файл снапшота не найден")
+        return RedirectResponse(url="/admin/ratings", status_code=302)
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+
+        leaderboards = snapshot.get("leaderboards", {})
+        now = datetime.utcnow()
+
+        # Clear all current ratings
+        db.query(PlayerRating).delete()
+
+        # Restore from snapshot
+        restored = 0
+        for role, entries in leaderboards.items():
+            if role not in ROLES:
+                continue
+            for entry in entries:
+                steam_id = entry.get("steam_id", "")
+                if not steam_id:
+                    continue
+                rating = entry.get("rating", 0.0)
+                points = entry.get("cumulative_points", 0.0)
+                if rating > 0:
+                    db.add(PlayerRating(
+                        steam_id=steam_id,
+                        role=role,
+                        cumulative_points=float(points),
+                        current_rating=float(rating),
+                        last_activity_date=now,
+                        last_decay_applied_at=now,
+                    ))
+                    restored += 1
+
+        db.commit()
+
+        from routes.admin import log_admin_action
+        log_admin_action(db, current_admin.id, "rating_snapshot_restore", {
+            "filename": safe_name,
+            "restored_records": restored,
+        })
+        push_flash(request, "success",
+                   f"Рейтинг восстановлен из «{snapshot.get('meta', {}).get('title', safe_name)}» ({restored} записей)")
+    except Exception as e:
+        db.rollback()
+        logger.exception("Snapshot restore failed: %s", e)
+        push_flash(request, "error", f"Ошибка восстановления: {e}")
+
+    return RedirectResponse(url="/admin/ratings", status_code=302)
+
+
+@router.post("/admin/ratings/recalculate-all")
+async def admin_rating_recalculate_all(
+    request: Request,
+    save_snapshot: str = Form("1"),
+    snapshot_title: str = Form(""),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Instantly recalculate ALL ratings from raw data.
+
+    Optionally saves an auto-snapshot of the CURRENT state before overwriting,
+    so you can always roll back.
+    """
+    if not check_permission(current_admin, "ratings", "edit"):
+        raise HTTPException(status_code=403)
+
+    from rating_constants import ROLES, K, ROUNDS_CAP
+    from rating_engine import calculate_all_ratings, sync_ratings_to_db
+    from datetime import datetime
+    import uuid
+
+    now = datetime.utcnow()
+
+    # ── Step 1: auto-save snapshot of current state before overwriting ──
+    if save_snapshot == "1":
+        try:
+            existing_records = (
+                db.query(PlayerRating)
+                .filter(PlayerRating.current_rating > 0)
+                .all()
+            )
+            steam_ids = list({r.steam_id for r in existing_records})
+            players_map = {}
+            if steam_ids:
+                prows = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all()
+                players_map = {p.player_steamid: p.player_last_time_name for p in prows}
+
+            leaderboards_pre = {}
+            for role in ROLES:
+                entries = sorted(
+                    [{"steam_id": r.steam_id,
+                      "player_name": players_map.get(r.steam_id, r.steam_id),
+                      "cumulative_points": round(r.cumulative_points, 2),
+                      "rating": round(r.current_rating, 2)}
+                     for r in existing_records if r.role == role and r.current_rating > 0],
+                    key=lambda x: x["rating"], reverse=True
+                )[:100]
+                leaderboards_pre[role] = entries
+
+            pre_title = f"[авто] до пересчёта {now.strftime('%d.%m.%Y %H:%M')}"
+            pre_snap = {
+                "meta": {
+                    "title": pre_title,
+                    "created_at": now.isoformat(),
+                    "created_by": f"auto (before recalc by {current_admin.discord_username})",
+                    "total_players": len(steam_ids),
+                    "params": {"K": K, "ROUNDS_CAP": ROUNDS_CAP},
+                    "is_auto_backup": True,
+                },
+                "leaderboards": leaderboards_pre,
+            }
+            pre_fname = f"rating_snapshot_{now.strftime('%Y%m%d_%H%M%S')}_pre.json"
+            with open(os.path.join(SNAPSHOTS_DIR, pre_fname), "w", encoding="utf-8") as f:
+                json.dump(pre_snap, f, ensure_ascii=False, indent=2)
+            logger.info(f"[Rating] Auto-snapshot saved: {pre_fname}")
+        except Exception as e:
+            logger.warning(f"[Rating] Auto-snapshot failed (non-fatal): {e}")
+
+    # ── Step 2: full recalculation ──
+    try:
+        ratings_data = calculate_all_ratings(db)
+        sync_ratings_to_db(db, ratings_data)
+
+        total_players = len(ratings_data)
+
+        # ── Step 3: save post-recalc snapshot ──
+        try:
+            steam_ids_new = list(ratings_data.keys())
+            prows_new = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids_new)).all()
+            players_map_new = {p.player_steamid: p.player_last_time_name for p in prows_new}
+
+            leaderboards_post = {}
+            for role in ROLES:
+                entries = sorted(
+                    [{"steam_id": sid,
+                      "player_name": players_map_new.get(sid, sid),
+                      "cumulative_points": round(rdata[role]["points"], 2),
+                      "rating": rdata[role]["rating"]}
+                     for sid, rdata in ratings_data.items() if role in rdata],
+                    key=lambda x: x["rating"], reverse=True
+                )[:100]
+                leaderboards_post[role] = entries
+
+            post_title = snapshot_title.strip() or f"Пересчёт {now.strftime('%d.%m.%Y %H:%M')}"
+            post_snap = {
+                "meta": {
+                    "title": post_title,
+                    "created_at": now.isoformat(),
+                    "created_by": current_admin.discord_username,
+                    "total_players": total_players,
+                    "params": {"K": K, "ROUNDS_CAP": ROUNDS_CAP},
+                },
+                "leaderboards": leaderboards_post,
+            }
+            post_fname = f"rating_snapshot_{now.strftime('%Y%m%d_%H%M%S')}.json"
+            with open(os.path.join(SNAPSHOTS_DIR, post_fname), "w", encoding="utf-8") as f:
+                json.dump(post_snap, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"[Rating] Post-recalc snapshot failed (non-fatal): {e}")
+
+        from routes.admin import log_admin_action
+        log_admin_action(db, current_admin.id, "rating_recalculate_all", {
+            "total_players": total_players,
+        })
+        push_flash(request, "success",
+                   f"Рейтинг пересчитан для {total_players} игроков. Снапшот до и после сохранены.")
+    except Exception as e:
+        logger.exception("Full recalculate failed: %s", e)
+        db.rollback()
+        push_flash(request, "error", f"Ошибка пересчёта: {e}")
+
+    return RedirectResponse(url="/admin/ratings?tab=snapshots", status_code=302)

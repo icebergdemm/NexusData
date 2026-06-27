@@ -23,7 +23,7 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router
 from workers import start_playtime_worker
 from datetime import datetime
 
@@ -151,6 +151,38 @@ def create_app() -> FastAPI:
     app.include_router(dispatch_panel_router)
     app.include_router(replays_api_router)
     app.include_router(replays_panel_router)
+    app.include_router(analytics_router)
+
+    # ── Register global Jinja2 filters for MSK time display ──────────────────
+    from utils_time import utc_to_msk, format_msk
+    import jinja2
+
+    def _jinja_filter_msk(dt, fmt="%d.%m.%Y %H:%M"):
+        """Jinja2 filter: {{ some_datetime|msk }} or {{ some_datetime|msk('%H:%M') }}"""
+        return format_msk(dt, fmt)
+
+    # Patch all Jinja2 environments created by route modules
+    for route in app.routes:
+        endpoint = getattr(route, 'endpoint', None)
+        # Also check sub-applications
+    # Global approach: register filter on template module import
+    import importlib
+    for mod_name in ['routes.admin', 'routes.moderation', 'routes.sub_projects',
+                     'routes.replays', 'routes.ratings', 'routes.tickets_api',
+                     'routes.dispatch', 'routes.discord_bot_api', 'routes.logs',
+                     'routes.analytics']:
+        try:
+            mod = importlib.import_module(mod_name)
+            for attr_name in dir(mod):
+                attr = getattr(mod, attr_name)
+                if isinstance(attr, Jinja2Templates):
+                    attr.env.filters['msk'] = _jinja_filter_msk
+                    attr.env.globals['utc_to_msk'] = utc_to_msk
+        except Exception:
+            pass
+    # Also the main templates object
+    templates.env.filters['msk'] = _jinja_filter_msk
+    templates.env.globals['utc_to_msk'] = utc_to_msk
 
     # Serve static files from './static' at '/static' with caching
     from starlette.staticfiles import StaticFiles as _StaticFiles

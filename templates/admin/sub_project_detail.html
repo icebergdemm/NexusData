@@ -101,7 +101,7 @@
 <div class="sp-info-card" style="margin-bottom:24px;">
   {% if project.image_filename %}
   <div class="sp-img-wrap">
-    <img src="/sub_projects/images/{{ project.image_filename }}" alt="{{ project.name }}">
+    <img src="/sub_projects/images/{{ project.image_filename }}" alt="{{ project.name }}" loading="lazy">
   </div>
   {% endif %}
 
@@ -174,7 +174,7 @@
           <div class="vf-name">{{ v.filename }}</div>
           <div class="vf-meta">
             {{ (v.file_size / 1024)|round(1) if v.file_size else '?' }} KB
-            · {{ v.uploaded_at.strftime('%d.%m.%Y %H:%M') if v.uploaded_at else '' }}
+            · {{ v.uploaded_at|msk if v.uploaded_at else '' }}
             {% if v.changelog %} · {{ v.changelog }}{% endif %}
           </div>
         </div>

@@ -1263,6 +1263,24 @@ class ServerModerationService:
             except Exception as e:
                 logging.warning(f"Trap check error: {e}")
 
+        # ── Record online snapshot for analytics ──────────────────────────────
+        try:
+            from models import OnlineSnapshot
+            snapshot = OnlineSnapshot(
+                server_name=server_name or "UNKNOWN",
+                player_count=len(player_list),
+                player_ids=steamids[:200] if steamids else [],  # cap at 200 to avoid huge JSON
+                recorded_at=_now_msk(),
+            )
+            self.db.add(snapshot)
+            self.db.commit()
+        except Exception as e:
+            logging.warning(f"Snapshot recording error: {e}")
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
         return len(player_list)
 
     def get_online_players(self, server_name: Optional[str] = None) -> List[dict]:

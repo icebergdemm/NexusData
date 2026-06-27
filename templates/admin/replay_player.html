@@ -46,7 +46,7 @@
   <h2>🎬 {{ replay.submarine_name or 'Раунд' }} #{{ replay.id }}
     {% if replay.level_name %}<span style="color:var(--gray);font-weight:400;font-size:14px;">· {{ replay.level_name }}</span>{% endif %}
   </h2>
-  <span class="rpv-time">{{ replay.recorded_at.strftime('%d.%m.%Y %H:%M') if replay.recorded_at else '' }}</span>
+  <span class="rpv-time">{{ replay.recorded_at|msk if replay.recorded_at else '' }}</span>
 </div>
 
 <div class="rpv-layout">

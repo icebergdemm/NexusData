@@ -268,10 +268,10 @@
             <td><span class="mono-cell">{{ p.player_ip or '-' }}</span></td>
             <td class="reason-cell">{{ p.reason or '-' }}</td>
             <td>{{ p.issued_by_name or '-' }}</td>
-            <td class="mono-cell">{{ p.issued_at.strftime('%d.%m.%Y %H:%M') if p.issued_at else '-' }}</td>
+            <td class="mono-cell">{{ p.issued_at|msk if p.issued_at else '-' }}</td>
             <td class="mono-cell">
               {% if p.expires_at %}
-              {{ p.expires_at.strftime('%d.%m.%Y %H:%M') }}
+              {{ p.expires_at|msk }}
               {% else %}<span style="color:var(--gray-dark);">Постоянно</span>{% endif %}
             </td>
             <td>

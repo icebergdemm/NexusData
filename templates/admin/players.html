@@ -173,7 +173,7 @@
           <td><span class="badge-rank">{{ player.rank_name or '-' }}</span></td>
           <td class="cell-time">{{ player.kit_name or '-' }}</td>
           <td class="cell-time">{{ "%.1f"|format(player.play_time_hours) }}</td>
-          <td class="cell-time">{{ player.last_login_time.strftime('%d.%m.%Y %H:%M') if player.last_login_time else '-' }}</td>
+          <td class="cell-time">{{ player.last_login_time|msk if player.last_login_time else '-' }}</td>
           <td><a href="/admin/players/{{ player.player_id }}" class="btn btn-outline">Просмотр →</a></td>
         </tr>
         {% endfor %}

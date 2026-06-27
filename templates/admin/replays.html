@@ -101,7 +101,7 @@
     <div class="rp-title">{{ r.submarine_name or 'Раунд' }} #{{ r.id }}</div>
     <div class="rp-meta">
       {% if r.level_name %}<span>📍 {{ r.level_name }}</span>{% endif %}
-      <span>🕐 {{ r.recorded_at.strftime('%d.%m.%Y %H:%M') if r.recorded_at else r.uploaded_at.strftime('%d.%m.%Y %H:%M') }}</span>
+      <span>🕐 {{ r.recorded_at|msk if r.recorded_at else r.uploaded_at|msk }}</span>
       <span>💾 {{ fmt_size(r.file_size) }}</span>
     </div>
     <div class="rp-badges">

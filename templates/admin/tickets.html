@@ -44,8 +44,8 @@
     <div class="ticket-title">#{{ t.id }} - {{ t.title }}</div>
     <div class="ticket-meta">
       {{ t.creator_display_name or t.creator_username or t.creator_discord_id }}
-      - {{ t.created_at.strftime('%d.%m.%Y %H:%M') if t.created_at else '' }}
-      {% if t.last_message_at %} - Последнее сообщение: {{ t.last_message_at.strftime('%d.%m %H:%M') }}{% endif %}
+      - {{ t.created_at|msk if t.created_at else '' }}
+      {% if t.last_message_at %} - Последнее сообщение: {{ t.last_message_at|msk('%d.%m %H:%M') }}{% endif %}
     </div>
   </div>
   {% if t.status == 'closed' %}

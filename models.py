@@ -437,6 +437,9 @@ class PlayerRating(Base):
     current_rating = Column(Float, nullable=False, default=0.0)
     last_activity_date = Column(DateTime, nullable=True)
     last_decay_applied_at = Column(DateTime, nullable=True)
+    # Persistent decay multiplier (0.3-1.0), survives full recalculation
+    decay_factor = Column(Float, nullable=False, default=1.0)
+    last_daily_decay_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -625,3 +628,14 @@ class AppSetting(Base):
     key = Column(String(100), unique=True, nullable=False, index=True)
     value = Column(String(2000), nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class OnlineSnapshot(Base):
+    """Snapshot of online player count, recorded each time game server reports players."""
+    __tablename__ = "online_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(50), nullable=False, index=True)
+    player_count = Column(Integer, nullable=False, default=0)
+    player_ids = Column(JSON, nullable=True)  # list of steamids
+    recorded_at = Column(DateTime, default=func.now(), index=True)

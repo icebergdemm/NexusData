@@ -1,49 +1,57 @@
 """
-Rating Engine: computes per-role ratings from raw player_role_actions data.
-Runs as a background worker every 60 seconds, recalculating all ratings from scratch.
+Rating Engine v3 — power-compressed rating with persistent daily erosion.
+
+Two-layer model:
+  1. RAW rating  = compute_rating(weighted_points)   — from player_role_actions
+  2. FINAL rating = raw_rating * decay_factor          — what players see
+
+The decay_factor (0.30–1.0) is PERSISTENT: it survives full recalculation
+(which rebuilds raw points from scratch). This lets us erode ratings over time
+without the recalc wiping the erosion.
+
+Erosion rules (applied once per day by the worker):
+  - Everyone:   -DAILY_EROSION per day (baseline, keeps leaderboard "alive")
+  - Inactive:   additional -INACTIVE_EXTRA_EROSION per day past threshold
+  - Active play resets decay_factor back toward 1.0 (recovery)
+  - Floor at DECAY_FACTOR_FLOOR so veterans aren't erased
 """
 
-import math
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from database import SessionLocal
-from models import PlayerRating, PlayerRoleAction, PlayerData
-from rating_constants import K, S, WEIGHT_MATRIX, ROLES
+from models import PlayerRating, PlayerRoleAction, PlayerRoleStat, PlayerData
+from rating_constants import (
+    WEIGHT_MATRIX, ROLES, compute_rating,
+    DECAY_THRESHOLD_DAYS, DAILY_EROSION, INACTIVE_EXTRA_EROSION, DECAY_FACTOR_FLOOR,
+)
+
+# Re-export compute_rating so `from rating_engine import compute_rating` works
+__all__ = ["compute_rating", "calculate_all_ratings", "sync_ratings_to_db",
+           "apply_daily_erosion", "recalculate_all", "get_or_create_rating",
+           "insert_history", "get_player_ratings", "start_rating_worker", "stop_rating_worker"]
 
 logger = logging.getLogger(__name__)
 
 
-def compute_rating(cumulative_points: float) -> float:
-    """Compute rating from cumulative points using logarithmic formula."""
-    if cumulative_points <= 0:
-        return 0.0
-    return K * math.log(1 + cumulative_points / S)
-
-
 def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
     """
-    Calculate ratings for ALL players from raw player_role_actions table.
-    Uses batched loading to avoid loading all rows into memory at once.
-    Returns: {steam_id: {role: {"points": float, "rating": float}}}
+    Calculate RAW ratings for all players from player_role_actions.
+    Returns: {steam_id: {role: {"points": float, "rating": float, "rounds": int}}}
+    Note: this is the raw rating BEFORE decay_factor is applied.
     """
-    # Get player_id -> steam_id mapping first (lightweight)
     players = db.query(PlayerData.player_id, PlayerData.player_steamid).all()
     if not players:
         return {}
     pid_to_steam = {p.player_id: p.player_steamid for p in players}
 
-    # Aggregate weighted points per (steam_id, role) using keyset (seek) pagination.
-    # OFFSET pagination over a growing table is O(n^2) AND unstable without ORDER BY
-    # (rows can be skipped/double-counted). Seek by primary key is stable + fast.
-    points_by_player_role = defaultdict(lambda: defaultdict(float))
+    points: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
     BATCH_SIZE = 5000
     last_id = 0
@@ -57,53 +65,57 @@ def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
         )
         if not batch:
             break
-
         for action in batch:
             steam_id = pid_to_steam.get(action.player_id)
             if not steam_id:
                 continue
-
             role = action.role
             if role not in WEIGHT_MATRIX:
                 continue
-
-            action_type = action.action_type
-            value = float(action.value or 0)
-            weight = WEIGHT_MATRIX.get(role, {}).get(action_type, 0.0)
-            points_by_player_role[steam_id][role] += value * weight
-
+            weight = WEIGHT_MATRIX[role].get(action.action_type, 0.0)
+            if weight:
+                points[steam_id][role] += float(action.value or 1) * weight
         last_id = batch[-1].id
-        # Allow GC to reclaim the batch
         db.expire_all()
 
-    # Compute ratings
-    result = {}
-    for steam_id, roles_dict in points_by_player_role.items():
+    # Rounds played (display only)
+    rounds_by_player_role: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for rs in db.query(PlayerRoleStat).all():
+        steam_id = pid_to_steam.get(rs.player_id)
+        if steam_id and rs.role in ROLES:
+            rounds_by_player_role[steam_id][rs.role] = int(rs.rounds_played or 0)
+
+    result: Dict[str, Dict[str, dict]] = {}
+    for steam_id, roles_dict in points.items():
         result[steam_id] = {}
-        for role, points in roles_dict.items():
-            if points > 0:
+        for role, total_pts in roles_dict.items():
+            # total_pts can be negative if penalties outweigh — clamp to 0
+            rating = compute_rating(max(0.0, total_pts))
+            if rating > 0:
                 result[steam_id][role] = {
-                    "points": round(points, 2),
-                    "rating": round(compute_rating(points), 2),
+                    "points": round(max(0.0, total_pts), 2),
+                    "rating": rating,
+                    "rounds": rounds_by_player_role.get(steam_id, {}).get(role, 0),
                 }
 
     return result
 
 
 def sync_ratings_to_db(db: Session, ratings: Dict[str, Dict[str, dict]]):
-    """Write calculated ratings to player_ratings table.
+    """
+    Write calculated RAW ratings to player_ratings, then apply persistent decay_factor.
 
-    Optimized: bulk-loads all existing rows once (no N+1), updates in memory,
-    and resets ratings that are no longer present in the freshly computed set
-    (prevents stale leaderboard ghosts).
+    - cumulative_points / raw rating come from the fresh computation
+    - decay_factor is PRESERVED from the existing row (not reset)
+    - current_rating = raw_rating * decay_factor
+    - players present in the new computation get last_activity_date = now
+      (this drives recovery of decay_factor in the daily erosion pass)
     """
     now = datetime.utcnow()
 
-    # Bulk-load existing rows once, keyed by (steam_id, role)
     existing_rows = db.query(PlayerRating).all()
     existing = {(r.steam_id, r.role): r for r in existing_rows}
 
-    # Track which (steam_id, role) pairs are present in new computation
     computed_keys = set()
     new_objects = []
 
@@ -111,10 +123,12 @@ def sync_ratings_to_db(db: Session, ratings: Dict[str, Dict[str, dict]]):
         for role, data in roles_dict.items():
             key = (steam_id, role)
             computed_keys.add(key)
+            raw_rating = data["rating"]
             record = existing.get(key)
             if record:
+                factor = record.decay_factor if record.decay_factor is not None else 1.0
                 record.cumulative_points = data["points"]
-                record.current_rating = data["rating"]
+                record.current_rating = round(raw_rating * factor, 2)
                 record.last_activity_date = now
                 record.updated_at = now
             else:
@@ -122,12 +136,14 @@ def sync_ratings_to_db(db: Session, ratings: Dict[str, Dict[str, dict]]):
                     steam_id=steam_id,
                     role=role,
                     cumulative_points=data["points"],
-                    current_rating=data["rating"],
+                    current_rating=raw_rating,  # factor = 1.0 for new
                     last_activity_date=now,
                     last_decay_applied_at=now,
+                    decay_factor=1.0,
+                    last_daily_decay_at=now,
                 ))
 
-    # Reset rows that dropped out of the computation (e.g. points went to 0)
+    # Zero out dropped records (no longer have any points)
     for key, record in existing.items():
         if key not in computed_keys and record.current_rating != 0:
             record.cumulative_points = 0.0
@@ -138,24 +154,70 @@ def sync_ratings_to_db(db: Session, ratings: Dict[str, Dict[str, dict]]):
         db.bulk_save_objects(new_objects)
 
     db.commit()
-    logger.info(f"[Rating] Synced ratings for {len(ratings)} players "
-                f"({len(new_objects)} new, {len(existing_rows)} existing)")
+    logger.info(f"[Rating] Synced {len(ratings)} players ({len(new_objects)} new)")
+
+
+def apply_daily_erosion(db: Session):
+    """
+    Apply persistent daily erosion to decay_factor.
+
+    Runs at most once per day per record (guarded by last_daily_decay_at).
+    - baseline erosion for everyone
+    - extra erosion for inactive players
+    - recovery toward 1.0 for recently active players
+    """
+    now = datetime.utcnow()
+    inactive_threshold = now - timedelta(days=DECAY_THRESHOLD_DAYS)
+
+    records = db.query(PlayerRating).filter(PlayerRating.current_rating > 0).all()
+    changed = 0
+
+    for record in records:
+        last = record.last_daily_decay_at or record.last_activity_date or now
+        days_elapsed = (now - last).days
+        if days_elapsed < 1:
+            continue  # already eroded today
+
+        factor = record.decay_factor if record.decay_factor is not None else 1.0
+        is_inactive = (record.last_activity_date or now) < inactive_threshold
+
+        for _ in range(days_elapsed):
+            if is_inactive:
+                factor *= (1.0 - DAILY_EROSION - INACTIVE_EXTRA_EROSION)
+            else:
+                # Active players: tiny baseline erosion, but slowly recover toward 1.0
+                factor *= (1.0 - DAILY_EROSION)
+                factor = min(1.0, factor + 0.005)  # small daily recovery for active
+
+        factor = max(DECAY_FACTOR_FLOOR, min(1.0, factor))
+
+        # Recompute final rating from raw (compute_rating on stored points) * factor
+        raw_rating = compute_rating(record.cumulative_points)
+        record.decay_factor = round(factor, 4)
+        record.current_rating = round(raw_rating * factor, 2)
+        record.last_daily_decay_at = now
+        record.updated_at = now
+        changed += 1
+
+    if changed:
+        db.commit()
+        logger.info(f"[Rating] Daily erosion applied to {changed} records")
 
 
 def recalculate_all():
-    """Full recalculation from raw data. Called by background worker."""
+    """Full recalculation + daily erosion. Called by background worker."""
     db = SessionLocal()
     try:
         ratings = calculate_all_ratings(db)
         if ratings:
             sync_ratings_to_db(db, ratings)
+        apply_daily_erosion(db)
     except Exception as e:
         logger.error(f"[Rating] Recalculation failed: {e}")
         db.rollback()
     finally:
         db.expire_all()
         db.close()
-        del db  # Help GC
 
 
 def get_player_ratings(db: Session, steam_id: str) -> Dict[str, dict]:
@@ -166,29 +228,67 @@ def get_player_ratings(db: Session, steam_id: str) -> Dict[str, dict]:
             PlayerRating.steam_id == steam_id,
             PlayerRating.role == role,
         ).first()
-
         if record is None:
-            result[role] = {"rating": 0.0, "cumulative_points": 0.0, "last_activity_date": None}
+            result[role] = {"rating": 0.0, "cumulative_points": 0.0, "last_activity_date": None, "rounds": 0}
         else:
             result[role] = {
                 "rating": round(record.current_rating, 2),
                 "cumulative_points": round(record.cumulative_points, 2),
                 "last_activity_date": record.last_activity_date.isoformat() if record.last_activity_date else None,
             }
-
     return result
 
 
-def generate_snapshot_from_raw(db: Session, date_from: Optional[datetime] = None,
-                                date_to: Optional[datetime] = None) -> Dict[str, Dict[str, dict]]:
-    """
-    Generate rating snapshot from raw player_role_actions, optionally filtered by date.
-    Note: player_role_actions doesn't have timestamps, so date filtering uses player_sessions.
-    If no dates — uses all data (same as calculate_all_ratings).
-    """
-    # For now, calculate from all raw data (player_role_actions has no timestamp)
-    # Date filtering would require joining with sessions — complex, skip for MVP
+def generate_snapshot_from_raw(db: Session, date_from=None, date_to=None) -> Dict[str, Dict[str, dict]]:
     return calculate_all_ratings(db)
+
+
+# ── Helpers used by admin manual-adjust routes ───────────────────────────────
+
+def get_or_create_rating(db: Session, steam_id: str, role: str) -> PlayerRating:
+    """Fetch a PlayerRating row, creating it if missing."""
+    record = db.query(PlayerRating).filter(
+        PlayerRating.steam_id == steam_id,
+        PlayerRating.role == role,
+    ).first()
+    if record is None:
+        now = datetime.utcnow()
+        record = PlayerRating(
+            steam_id=steam_id,
+            role=role,
+            cumulative_points=0.0,
+            current_rating=0.0,
+            last_activity_date=now,
+            last_decay_applied_at=now,
+            decay_factor=1.0,
+            last_daily_decay_at=now,
+        )
+        db.add(record)
+        db.flush()
+    return record
+
+
+def insert_history(db: Session, steam_id: str, role: str, event_type: str,
+                   points_delta: float, points_before: float, points_after: float,
+                   rating_before: float, rating_after: float,
+                   source_server=None, trace_id=None):
+    """Append a row to rating_history (audit log of rating changes)."""
+    try:
+        from models import RatingHistory
+        db.add(RatingHistory(
+            steam_id=steam_id,
+            role=role,
+            event_type=event_type,
+            points_delta=points_delta,
+            cumulative_points_before=points_before,
+            cumulative_points_after=points_after,
+            rating_before=rating_before,
+            rating_after=rating_after,
+            source_server=source_server,
+            session_trace_id=trace_id,
+        ))
+    except Exception as e:
+        logger.warning(f"[Rating] insert_history failed: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -200,7 +300,6 @@ _worker_running = False
 
 
 def _rating_worker_loop():
-    """Background thread: recalculate ratings every 5 minutes (was 60s — too aggressive)."""
     global _worker_running
     logger.info("[Rating] Background worker started (interval: 300s)")
     while _worker_running:
@@ -208,22 +307,19 @@ def _rating_worker_loop():
             recalculate_all()
         except Exception as e:
             logger.error(f"[Rating] Worker error: {e}")
-        time.sleep(300)  # 5 minutes — ratings don't need real-time updates
+        time.sleep(300)
     logger.info("[Rating] Background worker stopped")
 
 
 def start_rating_worker():
-    """Start the background rating recalculation worker."""
     global _worker_thread, _worker_running
     if _worker_thread and _worker_thread.is_alive():
-        return  # Already running
-
+        return
     _worker_running = True
     _worker_thread = threading.Thread(target=_rating_worker_loop, daemon=True)
     _worker_thread.start()
 
 
 def stop_rating_worker():
-    """Stop the background worker."""
     global _worker_running
     _worker_running = False

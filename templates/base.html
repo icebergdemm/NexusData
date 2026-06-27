@@ -93,54 +93,57 @@
 
     <nav class="nav">
       <ul>
-        <li><a href="/admin" data-spa>Главная</a></li>
+        <li><a href="/admin">Главная</a></li>
         {% if check_permission(admin, 'admin', 'view') %}
-        <li><a href="/admin/users" data-spa>Пользователи Nexus Data</a></li>
+        <li><a href="/admin/users">Пользователи Nexus Data</a></li>
         {% endif %}
         {% if check_permission(admin, 'players', 'view') or check_permission(admin, 'players_special', 'view') %}
-        <li><a href="/admin/players" data-spa>Игроки</a></li>
+        <li><a href="/admin/players">Игроки</a></li>
         {% endif %}
         {% if check_permission(admin, 'moderation', 'view') %}
-        <li><a href="/admin/moderation" data-spa>Модерирование</a></li>
+        <li><a href="/admin/moderation">Модерирование</a></li>
         {% endif %}
         {% if check_permission(admin, 'dispatch', 'view') %}
-        <li><a href="/admin/dispatch" data-spa>Диспетчерская</a></li>
+        <li><a href="/admin/dispatch">Диспетчерская</a></li>
         {% endif %}
         {% if check_permission(admin, 'replays', 'view') %}
-        <li><a href="/admin/replays" data-spa>Реплеи раундов</a></li>
+        <li><a href="/admin/replays">Реплеи раундов</a></li>
         {% endif %}
         {% if check_permission(admin, 'sessions', 'view') %}
-        <li><a href="/admin/sessions" data-spa>Сессии</a></li>
+        <li><a href="/admin/sessions">Сессии</a></li>
         {% endif %}
         {% if check_permission(admin, 'audit', 'view') %}
-        <li><a href="/admin/audit" data-spa>Аудит</a></li>
+        <li><a href="/admin/audit">Аудит</a></li>
         {% endif %}
         {% if check_permission(admin, 'privileges', 'view') %}
-        <li><a href="/admin/server-privileges" data-spa>Серверные привилегии</a></li>
+        <li><a href="/admin/server-privileges">Серверные привилегии</a></li>
         {% endif %}
         {% if check_permission(admin, 'kits', 'view') %}
-        <li><a href="/admin/kits" data-spa>Редактирование китов</a></li>
+        <li><a href="/admin/kits">Редактирование китов</a></li>
         {% endif %}
         {% if check_permission(admin, 'admin', 'edit') %}
-        <li><a href="/admin/administration" data-spa>Администрирование</a></li>
+        <li><a href="/admin/administration">Администрирование</a></li>
         {% endif %}
         {% if check_permission(admin, 'punishments', 'view') %}
-        <li><a href="/admin/punishments" data-spa>Наказания</a></li>
+        <li><a href="/admin/punishments">Наказания</a></li>
         {% endif %}
         {% if check_permission(admin, 'sub_projects', 'view') %}
-        <li><a href="/admin/sub-projects" data-spa>Sub-карты</a></li>
+        <li><a href="/admin/sub-projects">Sub-карты</a></li>
         {% endif %}
         {% if check_permission(admin, 'ratings', 'view') %}
-        <li><a href="/admin/ratings" data-spa>Рейтинг</a></li>
+        <li><a href="/admin/ratings">Рейтинг</a></li>
         {% endif %}
         {% if check_permission(admin, 'discord_bot', 'view') %}
-        <li><a href="/admin/discord-bot" data-spa>Discord бот</a></li>
+        <li><a href="/admin/discord-bot">Discord бот</a></li>
         {% endif %}
         {% if check_permission(admin, 'tickets', 'view') %}
-        <li><a href="/admin/tickets" data-spa>Тикеты</a></li>
+        <li><a href="/admin/tickets">Тикеты</a></li>
         {% endif %}
         {% if check_permission(admin, 'meeting', 'view') %}
-        <li><a href="/admin/meeting" data-spa>Совещание</a></li>
+        <li><a href="/admin/meeting">Совещание</a></li>
+        {% endif %}
+        {% if check_permission(admin, 'admin', 'view') %}
+        <li><a href="/admin/analytics">Аналитика</a></li>
         {% endif %}
       </ul>
     </nav>
@@ -177,12 +180,28 @@
       const loadBar = document.getElementById('spaLoadingBar');
       if (!content) return;
 
-      // Intercept nav link clicks
+      // Intercept ALL internal link clicks (not just)
       document.addEventListener('click', function(e) {
-        const link = e.target.closest('a[data-spa]');
+        const link = e.target.closest('a');
         if (!link) return;
+
+        // Skip: external links, anchors, new tab, download, no-spa opt-out
         const url = link.getAttribute('href');
-        if (!url || url.startsWith('http') || url.startsWith('#')) return;
+        if (!url) return;
+        if (url.startsWith('http') || url.startsWith('//')) return;
+        if (url.startsWith('#')) return;
+        if (url.startsWith('javascript:')) return;
+        if (link.hasAttribute('download')) return;
+        if (link.getAttribute('target') === '_blank') return;
+        if (link.hasAttribute('data-no-spa')) return;
+        // Skip file downloads (direct file links and download endpoints)
+        if (url.match(/\.(zip|sub|mp3|pdf|csv|xlsx|barodemo)(\?|$)/i)) return;
+        if (url.includes('/download')) return;
+        // Skip replay player pages (heavy JS, needs full page load)
+        if (url.match(/\/replays\/\d+\/view/)) return;
+        // Skip logout form submission links
+        if (link.closest('form')) return;
+
         e.preventDefault();
         navigateTo(url);
       });
@@ -209,16 +228,25 @@
 
             if (newContent) {
               content.innerHTML = newContent.innerHTML;
-              // Re-execute inline scripts
-              content.querySelectorAll('script').forEach(function(oldScript) {
-                const newScript = document.createElement('script');
+              // Re-execute scripts (both inline and external) sequentially
+              const scripts = Array.from(content.querySelectorAll('script'));
+              (function runScripts(i) {
+                if (i >= scripts.length) return;
+                var oldScript = scripts[i];
+                var newScript = document.createElement('script');
                 if (oldScript.src) {
+                  // For CDN scripts: always re-create (they won't re-download if cached by browser)
+                  // For local scripts: same
                   newScript.src = oldScript.src;
+                  newScript.onload = function() { runScripts(i + 1); };
+                  newScript.onerror = function() { runScripts(i + 1); };
+                  oldScript.parentNode.replaceChild(newScript, oldScript);
                 } else {
                   newScript.textContent = oldScript.textContent;
+                  oldScript.parentNode.replaceChild(newScript, oldScript);
+                  runScripts(i + 1);
                 }
-                oldScript.parentNode.replaceChild(newScript, oldScript);
-              });
+              })(0);
             }
 
             if (newTitle) document.title = newTitle.textContent;
@@ -243,6 +271,83 @@
             window.location.href = url;
           });
       }
+
+      // Intercept POST forms — submit via fetch, then SPA-navigate to redirect
+      document.addEventListener('submit', function(e) {
+        const form = e.target;
+        if (!form) return;
+        if (form.hasAttribute('data-no-spa')) return;
+        // Skip file upload forms (multipart)
+        if (form.enctype === 'multipart/form-data') return;
+        // Skip logout (needs cookie clearing)
+        if (form.action && form.action.includes('/logout')) return;
+
+        const method = (form.method || 'GET').toUpperCase();
+        const action = form.getAttribute('action') || location.pathname;
+        if (action.startsWith('http') || action.startsWith('//')) return;
+
+        if (method === 'GET') {
+          e.preventDefault();
+          const params = new URLSearchParams(new FormData(form)).toString();
+          navigateTo(params ? action + '?' + params : action);
+          return;
+        }
+
+        if (method === 'POST') {
+          e.preventDefault();
+          loadBar.className = 'spa-loading-bar active';
+          fetch(action, {
+            method: 'POST',
+            body: new URLSearchParams(new FormData(form)),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-SPA-Request': '1' },
+            redirect: 'follow',
+          })
+          .then(function(resp) { return resp.text().then(function(t) { return { html: t, url: resp.url, status: resp.status }; }); })
+          .then(function(data) {
+            // POST usually redirects — navigate to the final URL
+            var finalUrl = new URL(data.url).pathname + new URL(data.url).search;
+            if (finalUrl !== location.pathname + location.search) {
+              history.pushState(null, '', finalUrl);
+            }
+            // Parse and replace content
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(data.html, 'text/html');
+            var newContent = doc.querySelector('#spa-content') || doc.querySelector('main.container') || doc.querySelector('main');
+            var newTitle = doc.querySelector('title');
+            if (newContent) {
+              content.innerHTML = newContent.innerHTML;
+              var scripts = Array.from(content.querySelectorAll('script'));
+              scripts.forEach(function(oldScript) {
+                var newScript = document.createElement('script');
+                if (oldScript.src) {
+                  if (!document.querySelector('script[src="' + oldScript.src + '"]')) {
+                    newScript.src = oldScript.src;
+                  }
+                } else {
+                  newScript.textContent = oldScript.textContent;
+                }
+                oldScript.parentNode.replaceChild(newScript, oldScript);
+              });
+            }
+            if (newTitle) document.title = newTitle.textContent;
+            var flashRoot = doc.getElementById('flash-root');
+            if (flashRoot) {
+              var existingFlash = document.getElementById('flash-root');
+              if (existingFlash) existingFlash.remove();
+              document.body.insertBefore(flashRoot, document.body.firstChild);
+              initFlashToasts();
+            }
+            loadBar.className = 'spa-loading-bar done';
+            setTimeout(function() { loadBar.className = 'spa-loading-bar'; }, 400);
+            window.scrollTo(0, 0);
+          })
+          .catch(function() {
+            // Fallback: submit normally
+            loadBar.className = 'spa-loading-bar done';
+            form.submit();
+          });
+        }
+      });
     })();
 
     /* ═══ Background Music Player ═══ */

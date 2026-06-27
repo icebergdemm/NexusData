@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+{% block title %}Аналитика - Nexus Data{% endblock %}
+
+{% block content %}
+<style>
+.an-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:24px; }
+.an-header h2 { font-size:22px; font-weight:700; color:var(--white); margin:0; }
+.an-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+@media(max-width:900px) { .an-grid { grid-template-columns:1fr; } }
+.an-card { background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:20px; }
+.an-card h3 { font-size:14px; font-weight:700; color:var(--white); margin:0 0 12px; }
+.an-card-full { grid-column:1/-1; }
+.an-controls { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
+.an-btn { padding:4px 12px; border-radius:6px; font-size:11px; font-weight:600; cursor:pointer; border:1px solid var(--stroke-01); background:transparent; color:var(--gray); transition:.2s; }
+.an-btn:hover { border-color:var(--primary-blue); color:var(--white); }
+.an-btn.active { background:var(--primary-blue); color:#fff; border-color:var(--primary-blue); }
+.an-stat-row { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px; }
+.an-stat { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:8px; padding:14px 20px; flex:1; min-width:140px; }
+.an-stat-label { font-size:11px; color:var(--gray); text-transform:uppercase; font-weight:600; }
+.an-stat-value { font-size:24px; font-weight:700; color:var(--white); margin-top:2px; }
+.an-stat-sub { font-size:11px; color:var(--gray-dark); }
+.an-top-list { max-height:300px; overflow-y:auto; }
+.an-top-item { display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--stroke-01); font-size:12px; }
+.an-top-item:last-child { border-bottom:none; }
+.an-top-rank { font-weight:700; color:var(--primary-blue); min-width:24px; }
+.an-top-name { flex:1; color:var(--white); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.an-top-val { color:var(--gray); font-family:monospace; }
+</style>
+
+<div class="an-header">
+  <h2>📊 Аналитика</h2>
+  <div class="an-controls">
+    <button class="an-btn" onclick="setServer('')" id="srv-all">Все серверы</button>
+    <button class="an-btn" onclick="setServer('ASPER1')" id="srv-1">ASPER1</button>
+    <button class="an-btn" onclick="setServer('ASPER2')" id="srv-2">ASPER2</button>
+  </div>
+</div>
+
+<!-- Server comparison stats -->
+<div class="an-stat-row" id="serverStats"></div>
+
+<div class="an-grid">
+  <!-- Online Timeline -->
+  <div class="an-card an-card-full">
+    <h3>📈 Онлайн по времени</h3>
+    <div class="an-controls">
+      <button class="an-btn active" onclick="loadOnline('6h',this)">6ч</button>
+      <button class="an-btn" onclick="loadOnline('24h',this)">24ч</button>
+      <button class="an-btn" onclick="loadOnline('7d',this)">7 дней</button>
+      <button class="an-btn" onclick="loadOnline('30d',this)">30 дней</button>
+    </div>
+    <canvas id="chartOnline" height="70"></canvas>
+  </div>
+
+  <!-- Peak Hours -->
+  <div class="an-card">
+    <h3>🕐 Пиковые часы (МСК)</h3>
+    <canvas id="chartPeakHours" height="140"></canvas>
+  </div>
+
+  <!-- Session Duration -->
+  <div class="an-card">
+    <h3>⏱ Длительность сессий</h3>
+    <div class="an-controls">
+      <button class="an-btn active" onclick="loadSessions('7d',this)">7д</button>
+      <button class="an-btn" onclick="loadSessions('30d',this)">30д</button>
+      <button class="an-btn" onclick="loadSessions('90d',this)">90д</button>
+    </div>
+    <canvas id="chartSessions" height="140"></canvas>
+  </div>
+
+  <!-- Role Popularity -->
+  <div class="an-card">
+    <h3>👤 Популярность профессий</h3>
+    <canvas id="chartRoles" height="140"></canvas>
+  </div>
+
+  <!-- Submarine Popularity -->
+  <div class="an-card">
+    <h3>🚢 Популярность кораблей</h3>
+    <div class="an-controls">
+      <button class="an-btn active" onclick="loadSubs('30d',this)">30д</button>
+      <button class="an-btn" onclick="loadSubs('90d',this)">90д</button>
+      <button class="an-btn" onclick="loadSubs('all',this)">Всё время</button>
+    </div>
+    <canvas id="chartSubs" height="160"></canvas>
+  </div>
+
+  <!-- Player Retention -->
+  <div class="an-card">
+    <h3>🔄 Удержание игроков</h3>
+    <div id="retentionStats" style="padding:10px 0;"></div>
+  </div>
+
+  <!-- Top Players -->
+  <div class="an-card">
+    <h3>🏆 Топ игроков</h3>
+    <div class="an-controls">
+      <button class="an-btn active" onclick="loadTop('playtime',this)">По времени</button>
+      <button class="an-btn" onclick="loadTop('sessions',this)">По сессиям</button>
+      <button class="an-btn" onclick="loadTop('kills',this)">По убийствам</button>
+    </div>
+    <div class="an-top-list" id="topPlayersList"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+var currentServer = '';
+var charts = {};
+
+function setServer(s) {
+  currentServer = s;
+  document.querySelectorAll('#srv-all,#srv-1,#srv-2').forEach(function(b){ b.classList.remove('active'); });
+  document.getElementById(s === 'ASPER1' ? 'srv-1' : s === 'ASPER2' ? 'srv-2' : 'srv-all').classList.add('active');
+  loadAll();
+}
+
+function loadAll() {
+  loadOnline('6h');
+  loadPeakHours();
+  loadSessions('7d');
+  loadRoles();
+  loadSubs('30d');
+  loadRetention();
+  loadTop('playtime');
+  loadServerComparison();
+}
+
+function makeChart(id, type, data, options) {
+  if (charts[id]) charts[id].destroy();
+  var ctx = document.getElementById(id);
+  if (!ctx) return;
+  charts[id] = new Chart(ctx.getContext('2d'), { type: type, data: data, options: options });
+}
+
+var baseOpts = {
+  responsive: true,
+  plugins: { legend: { labels: { color: '#7a8aa0', font: { size: 11 } } } },
+  scales: {
+    x: { ticks: { color: '#7a8aa0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+    y: { beginAtZero: true, ticks: { color: '#7a8aa0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.06)' } }
+  }
+};
+
+function loadOnline(period, btn) {
+  if (btn) { btn.parentElement.querySelectorAll('.an-btn').forEach(function(b){b.classList.remove('active');}); btn.classList.add('active'); }
+  var url = '/api/v1/analytics/online-timeline?period=' + period;
+  if (currentServer) url += '&server=' + currentServer;
+  fetch(url).then(function(r){return r.json();}).then(function(d) {
+    makeChart('chartOnline', 'line', {
+      labels: d.labels,
+      datasets: [
+        { label: 'Пик', data: d.peak, borderColor: '#1a68de', backgroundColor: 'rgba(26,104,222,.1)', fill: true, tension: .3, pointRadius: 2 },
+        { label: 'Среднее', data: d.avg, borderColor: '#22d06f', borderDash: [4,4], tension: .3, pointRadius: 1 }
+      ]
+    }, baseOpts);
+  });
+}
+
+function loadPeakHours() {
+  var url = '/api/v1/analytics/peak-hours';
+  if (currentServer) url += '?server=' + currentServer;
+  fetch(url).then(function(r){return r.json();}).then(function(d) {
+    makeChart('chartPeakHours', 'bar', {
+      labels: d.labels,
+      datasets: [
+        { label: 'Среднее', data: d.avg, backgroundColor: 'rgba(26,104,222,.6)', borderRadius: 3 },
+        { label: 'Пик', data: d.peak, backgroundColor: 'rgba(255,140,0,.4)', borderRadius: 3 }
+      ]
+    }, baseOpts);
+  });
+}
+
+function loadSessions(period, btn) {
+  if (btn) { btn.parentElement.querySelectorAll('.an-btn').forEach(function(b){b.classList.remove('active');}); btn.classList.add('active'); }
+  fetch('/api/v1/analytics/session-duration?period=' + period).then(function(r){return r.json();}).then(function(d) {
+    makeChart('chartSessions', 'bar', {
+      labels: d.labels,
+      datasets: [{ label: 'Сессий', data: d.counts, backgroundColor: 'rgba(34,208,111,.5)', borderRadius: 4 }]
+    }, baseOpts);
+  });
+}
+
+function loadRoles() {
+  fetch('/api/v1/analytics/role-popularity').then(function(r){return r.json();}).then(function(d) {
+    var colors = ['#1a68de','#22d06f','#ff8c42','#c77dff','#ff4d80','#ffaa00','#5b9cf5','#e06cc0'];
+    makeChart('chartRoles', 'doughnut', {
+      labels: d.roles,
+      datasets: [{ data: d.counts, backgroundColor: colors.slice(0, d.roles.length) }]
+    }, { responsive: true, plugins: { legend: { position: 'right', labels: { color: '#7a8aa0', font: { size: 11 } } } } });
+  });
+}
+
+function loadSubs(period, btn) {
+  if (btn) { btn.parentElement.querySelectorAll('.an-btn').forEach(function(b){b.classList.remove('active');}); btn.classList.add('active'); }
+  fetch('/api/v1/analytics/submarine-popularity?period=' + period).then(function(r){return r.json();}).then(function(d) {
+    if (!d.submarines || !d.submarines.length) {
+      var el = document.getElementById('chartSubs');
+      if (el) el.parentElement.insertAdjacentHTML('beforeend', '<div style="text-align:center;color:var(--gray);padding:20px;font-size:12px;">Нет данных о раундах</div>');
+      return;
+    }
+    var colors = d.submarines.map(function(_,i){ return 'hsl(' + (i*25 + 200) + ',55%,55%)'; });
+    makeChart('chartSubs', 'bar', {
+      labels: d.submarines,
+      datasets: [{ label: 'Раундов', data: d.counts, backgroundColor: colors, borderRadius: 4 }]
+    }, {
+      responsive: true,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { beginAtZero: true, ticks: { color: '#7a8aa0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.06)' } },
+        y: { ticks: { color: '#7a8aa0', font: { size: 10 } }, grid: { display: false } }
+      }
+    });
+  }).catch(function(e){ console.error('Subs chart error:', e); });
+}
+
+function loadRetention() {
+  fetch('/api/v1/analytics/player-retention').then(function(r){return r.json();}).then(function(d) {
+    document.getElementById('retentionStats').innerHTML =
+      '<div class="an-stat-row" style="margin:0;">' +
+      '<div class="an-stat"><div class="an-stat-label">Новых (30д)</div><div class="an-stat-value">' + d.total_new_30d + '</div></div>' +
+      '<div class="an-stat"><div class="an-stat-label">Вернулись</div><div class="an-stat-value">' + d.returning_30d + '</div><div class="an-stat-sub">' + d.retention_pct + '%</div></div>' +
+      '<div class="an-stat"><div class="an-stat-label">Активны на неделе</div><div class="an-stat-value">' + d.active_this_week + '</div></div>' +
+      '</div>';
+  });
+}
+
+function loadTop(metric, btn) {
+  if (btn) { btn.parentElement.querySelectorAll('.an-btn').forEach(function(b){b.classList.remove('active');}); btn.classList.add('active'); }
+  fetch('/api/v1/analytics/top-players?metric=' + metric + '&period=7d').then(function(r){return r.json();}).then(function(d) {
+    var html = '';
+    d.players.forEach(function(p, i) {
+      html += '<div class="an-top-item"><span class="an-top-rank">#' + (i+1) + '</span><span class="an-top-name">' + p.name + '</span><span class="an-top-val">' + p.value + ' ' + p.unit + '</span></div>';
+    });
+    document.getElementById('topPlayersList').innerHTML = html || '<div style="padding:20px;color:var(--gray);text-align:center;">Нет данных</div>';
+  });
+}
+
+function loadServerComparison() {
+  fetch('/api/v1/analytics/server-comparison').then(function(r){return r.json();}).then(function(d) {
+    var html = '';
+    for (var sn in d) {
+      html += '<div class="an-stat"><div class="an-stat-label">' + sn + '</div><div class="an-stat-value">' + d[sn].avg_online + '</div><div class="an-stat-sub">avg · пик ' + d[sn].peak_online + ' · ' + d[sn].rounds_week + ' раундов/нед</div></div>';
+    }
+    document.getElementById('serverStats').innerHTML = html;
+  });
+}
+
+// Initial load
+loadAll();
+</script>
+{% endblock %}
