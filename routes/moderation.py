@@ -163,7 +163,7 @@ panel_router = APIRouter()
 @panel_router.get("/admin/moderation", response_class=HTMLResponse)
 async def moderation_page(
     request: Request,
-    tab: str = Query("status", pattern=r"^(status|banhammer|logs|commands|anticheat)$"),
+    tab: str = Query("status", pattern=r"^(status|banhammer|logs|commands|anticheat|sauron)$"),
     server: Optional[str] = Query(None, description="Фильтр по серверу: ASPER1 или ASPER2"),
     search: Optional[str] = Query(None, min_length=2),
     db: Session = Depends(get_db),
@@ -377,3 +377,95 @@ async def review_anticheat_event(
     from routes.admin import push_flash
     push_flash(request, "success", "Событие отмечено как проверенное")
     return RedirectResponse(url="/admin/moderation?tab=anticheat", status_code=302)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SAURON'S EYE — API endpoints (loaded lazily via AJAX)
+# ════════════════════════════════════════════════════════════════════════════
+
+@panel_router.get("/api/v1/sauron/twinks")
+async def sauron_twinks(
+    request: Request,
+    days: int = Query(90, ge=7, le=365),
+    db: Session = Depends(get_db),
+):
+    admin = get_current_admin(request, db)
+    if not check_permission(admin, "moderation", "view"):
+        raise HTTPException(status_code=403)
+
+    from fastapi.responses import JSONResponse
+
+    try:
+        from task_scheduler import scheduler, Priority
+        from workers import task_sauron_twinks
+        task_id = "sauron_twinks"
+        result = scheduler.get_result(task_id)
+        if result and result.status == "done" and result.finished_at:
+            from datetime import datetime
+            age = (datetime.utcnow() - result.finished_at).total_seconds()
+            if age < 600:
+                return JSONResponse(result.data.get("results", []))
+        scheduler.submit(task_sauron_twinks, priority=Priority.NORMAL, task_id=task_id, timeout=90.0)
+        return JSONResponse({"status": "running", "message": "Анализ запущен, обновите через несколько секунд"}, status_code=202)
+    except ImportError:
+        import services_sauron
+        results = services_sauron.detect_all_twink_pairs(db, days=days)
+        return JSONResponse(results)
+
+
+@panel_router.get("/api/v1/sauron/deviant")
+async def sauron_deviant(
+    request: Request,
+    days: int = Query(30, ge=7, le=180),
+    db: Session = Depends(get_db),
+):
+    admin = get_current_admin(request, db)
+    if not check_permission(admin, "moderation", "view"):
+        raise HTTPException(status_code=403)
+
+    from fastapi.responses import JSONResponse
+
+    try:
+        from task_scheduler import scheduler, Priority
+        from workers import task_sauron_deviant
+        task_id = "sauron_deviant"
+        result = scheduler.get_result(task_id)
+        if result and result.status == "done" and result.finished_at:
+            from datetime import datetime
+            age = (datetime.utcnow() - result.finished_at).total_seconds()
+            if age < 600:
+                return JSONResponse(result.data.get("results", []))
+        scheduler.submit(task_sauron_deviant, priority=Priority.NORMAL, task_id=task_id, timeout=90.0)
+        return JSONResponse({"status": "running", "message": "Анализ запущен, обновите через несколько секунд"}, status_code=202)
+    except ImportError:
+        import services_sauron
+        results = services_sauron.detect_deviant_behavior(db, days=days, min_incidents=2)
+        return JSONResponse(results)
+
+
+@panel_router.get("/api/v1/sauron/summary")
+async def sauron_summary(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    admin = get_current_admin(request, db)
+    if not check_permission(admin, "moderation", "view"):
+        raise HTTPException(status_code=403)
+
+    from fastapi.responses import JSONResponse
+
+    try:
+        from task_scheduler import scheduler, Priority
+        from workers import task_sauron_summary
+        task_id = "sauron_summary"
+        result = scheduler.get_result(task_id)
+        if result and result.status == "done" and result.data:
+            from datetime import datetime
+            age = (datetime.utcnow() - result.finished_at).total_seconds() if result.finished_at else 9999
+            if age < 120:
+                return JSONResponse(result.data)
+        scheduler.submit(task_sauron_summary, priority=Priority.NORMAL, task_id=task_id, timeout=30.0)
+        return JSONResponse({"twink_pairs_total": "…", "deviant_total": "…", "twink_high_risk": "…", "deviant_high_risk": "…"})
+    except ImportError:
+        import services_sauron
+        return JSONResponse(services_sauron.get_sauron_summary(db))

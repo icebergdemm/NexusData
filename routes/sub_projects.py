@@ -215,6 +215,28 @@ async def sub_projects_list(
     all_categories = svc.get_all_categories()
     all_authors = svc.get_unique_authors()
 
+    # Superuser: category permission settings
+    from models import AdminPrivilegeGroup, AppSetting
+    nd_privilege_groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.name).all()
+
+    def _get_setting(key, default=""):
+        row = db.query(AppSetting).filter(AppSetting.key == key).first()
+        return row.value if row else default
+
+    cat_create_groups = _get_setting("sub_cat_create_groups", "[]")
+    cat_assign_groups = _get_setting("sub_cat_assign_groups", "[]")
+    cat_default_id = _get_setting("sub_cat_default_id", "")
+
+    import json as _json
+    try:
+        cat_create_groups = [str(x) for x in _json.loads(cat_create_groups)]
+    except Exception:
+        cat_create_groups = []
+    try:
+        cat_assign_groups = [str(x) for x in _json.loads(cat_assign_groups)]
+    except Exception:
+        cat_assign_groups = []
+
     return templates.TemplateResponse("admin/sub_projects.html", {
         "request": request,
         "admin": current_admin,
@@ -230,6 +252,11 @@ async def sub_projects_list(
         "filter_category_id": category_id_int,
         "all_categories": all_categories,
         "all_authors": all_authors,
+        # Category permissions (superuser)
+        "nd_privilege_groups": nd_privilege_groups,
+        "cat_create_groups": cat_create_groups,
+        "cat_assign_groups": cat_assign_groups,
+        "cat_default_id": cat_default_id,
     })
 
 
@@ -336,6 +363,15 @@ async def sub_project_create(
 
     if image and image.filename:
         svc.save_image(project.id, image)
+
+    # Apply default category if configured
+    from models import AppSetting
+    default_cat_row = db.query(AppSetting).filter(AppSetting.key == "sub_cat_default_id").first()
+    if default_cat_row and default_cat_row.value and default_cat_row.value.strip().isdigit():
+        try:
+            svc.assign_category(project.id, int(default_cat_row.value))
+        except Exception:
+            pass
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_create", {"project_id": project.id, "name": project.name})
@@ -906,3 +942,44 @@ async def sub_project_restore_version(
     log_admin_action(db, current_admin.id, "sub_version_restore", {"project_id": project_id, "version_id": version_id})
     push_flash(request, "success", "Версия восстановлена")
     return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+
+
+@router.post("/admin/sub-projects/category-settings")
+async def sub_project_category_settings(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Save category permission settings. Superuser only."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403)
+    await ensure_csrf(request, db)
+
+    from models import AppSetting
+    import json as _json
+
+    form = await request.form()
+    create_groups = [int(x) for x in form.getlist("cat_create_groups") if str(x).isdigit()]
+    assign_groups = [int(x) for x in form.getlist("cat_assign_groups") if str(x).isdigit()]
+    default_id = (form.get("cat_default_id") or "").strip()
+
+    def _set(key, val):
+        row = db.query(AppSetting).filter(AppSetting.key == key).first()
+        if row:
+            row.value = val
+        else:
+            db.add(AppSetting(key=key, value=val))
+
+    _set("sub_cat_create_groups", _json.dumps(create_groups))
+    _set("sub_cat_assign_groups", _json.dumps(assign_groups))
+    _set("sub_cat_default_id", default_id)
+    db.commit()
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_cat_settings", {
+        "create_groups": create_groups,
+        "assign_groups": assign_groups,
+        "default_id": default_id,
+    })
+    push_flash(request, "success", "Настройки категорий сохранены")
+    return RedirectResponse(url="/admin/sub-projects", status_code=302)

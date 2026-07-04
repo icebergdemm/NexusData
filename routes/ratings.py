@@ -558,117 +558,27 @@ async def admin_rating_recalculate_all(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Instantly recalculate ALL ratings from raw data.
-
-    Optionally saves an auto-snapshot of the CURRENT state before overwriting,
-    so you can always roll back.
-    """
+    """Submit full rating recalculation as a background task (HIGH priority)."""
     if not check_permission(current_admin, "ratings", "edit"):
         raise HTTPException(status_code=403)
 
-    from rating_constants import ROLES, K, ROUNDS_CAP
-    from rating_engine import calculate_all_ratings, sync_ratings_to_db
-    from datetime import datetime
-    import uuid
-
-    now = datetime.utcnow()
-
-    # ── Step 1: auto-save snapshot of current state before overwriting ──
-    if save_snapshot == "1":
-        try:
-            existing_records = (
-                db.query(PlayerRating)
-                .filter(PlayerRating.current_rating > 0)
-                .all()
-            )
-            steam_ids = list({r.steam_id for r in existing_records})
-            players_map = {}
-            if steam_ids:
-                prows = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all()
-                players_map = {p.player_steamid: p.player_last_time_name for p in prows}
-
-            leaderboards_pre = {}
-            for role in ROLES:
-                entries = sorted(
-                    [{"steam_id": r.steam_id,
-                      "player_name": players_map.get(r.steam_id, r.steam_id),
-                      "cumulative_points": round(r.cumulative_points, 2),
-                      "rating": round(r.current_rating, 2)}
-                     for r in existing_records if r.role == role and r.current_rating > 0],
-                    key=lambda x: x["rating"], reverse=True
-                )[:100]
-                leaderboards_pre[role] = entries
-
-            pre_title = f"[авто] до пересчёта {now.strftime('%d.%m.%Y %H:%M')}"
-            pre_snap = {
-                "meta": {
-                    "title": pre_title,
-                    "created_at": now.isoformat(),
-                    "created_by": f"auto (before recalc by {current_admin.discord_username})",
-                    "total_players": len(steam_ids),
-                    "params": {"K": K, "ROUNDS_CAP": ROUNDS_CAP},
-                    "is_auto_backup": True,
-                },
-                "leaderboards": leaderboards_pre,
-            }
-            pre_fname = f"rating_snapshot_{now.strftime('%Y%m%d_%H%M%S')}_pre.json"
-            with open(os.path.join(SNAPSHOTS_DIR, pre_fname), "w", encoding="utf-8") as f:
-                json.dump(pre_snap, f, ensure_ascii=False, indent=2)
-            logger.info(f"[Rating] Auto-snapshot saved: {pre_fname}")
-        except Exception as e:
-            logger.warning(f"[Rating] Auto-snapshot failed (non-fatal): {e}")
-
-    # ── Step 2: full recalculation ──
     try:
-        ratings_data = calculate_all_ratings(db)
-        sync_ratings_to_db(db, ratings_data)
-
-        total_players = len(ratings_data)
-
-        # ── Step 3: save post-recalc snapshot ──
+        from task_scheduler import scheduler, Priority
+        from workers import task_recalculate_ratings
+        task_id = scheduler.submit(
+            task_recalculate_ratings,
+            priority=Priority.HIGH,
+            task_id="rating_recalc_manual",
+            deduplicate=False,
+            timeout=300.0,
+        )
+        push_flash(request, "info", "Пересчёт рейтинга запущен в фоновом режиме (HIGH приоритет). Результат появится через 10-60 секунд.")
+    except ImportError:
+        # Fallback: run synchronously if scheduler not available
+        from workers import task_recalculate_ratings
         try:
-            steam_ids_new = list(ratings_data.keys())
-            prows_new = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids_new)).all()
-            players_map_new = {p.player_steamid: p.player_last_time_name for p in prows_new}
-
-            leaderboards_post = {}
-            for role in ROLES:
-                entries = sorted(
-                    [{"steam_id": sid,
-                      "player_name": players_map_new.get(sid, sid),
-                      "cumulative_points": round(rdata[role]["points"], 2),
-                      "rating": rdata[role]["rating"]}
-                     for sid, rdata in ratings_data.items() if role in rdata],
-                    key=lambda x: x["rating"], reverse=True
-                )[:100]
-                leaderboards_post[role] = entries
-
-            post_title = snapshot_title.strip() or f"Пересчёт {now.strftime('%d.%m.%Y %H:%M')}"
-            post_snap = {
-                "meta": {
-                    "title": post_title,
-                    "created_at": now.isoformat(),
-                    "created_by": current_admin.discord_username,
-                    "total_players": total_players,
-                    "params": {"K": K, "ROUNDS_CAP": ROUNDS_CAP},
-                },
-                "leaderboards": leaderboards_post,
-            }
-            post_fname = f"rating_snapshot_{now.strftime('%Y%m%d_%H%M%S')}.json"
-            with open(os.path.join(SNAPSHOTS_DIR, post_fname), "w", encoding="utf-8") as f:
-                json.dump(post_snap, f, ensure_ascii=False, indent=2)
+            result = task_recalculate_ratings()
+            push_flash(request, "success", f"Рейтинг пересчитан для {result.get('players_recalculated', '?')} игроков.")
         except Exception as e:
-            logger.warning(f"[Rating] Post-recalc snapshot failed (non-fatal): {e}")
-
-        from routes.admin import log_admin_action
-        log_admin_action(db, current_admin.id, "rating_recalculate_all", {
-            "total_players": total_players,
-        })
-        push_flash(request, "success",
-                   f"Рейтинг пересчитан для {total_players} игроков. Снапшот до и после сохранены.")
-    except Exception as e:
-        logger.exception("Full recalculate failed: %s", e)
-        db.rollback()
-        push_flash(request, "error", f"Ошибка пересчёта: {e}")
-
+            push_flash(request, "error", f"Ошибка пересчёта: {e}")
     return RedirectResponse(url="/admin/ratings?tab=snapshots", status_code=302)

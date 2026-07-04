@@ -258,9 +258,10 @@
         </div>
       </div>
       {% if g.description %}<div class="group-card-desc">{{ g.description }}</div>{% endif %}
-      {% if g.permissions %}
+      {% set g_perms_flat = g.permissions.pages if g.permissions and g.permissions.pages else g.permissions %}
+      {% if g_perms_flat %}
       <div class="perm-list">
-        {% for page_key, perms in g.permissions.items() %}{% for action, allowed in perms.items() %}{% if allowed %}
+        {% for page_key, perms in g_perms_flat.items() %}{% for action, allowed in perms.items() %}{% if allowed %}
         <span class="perm-chip">{{ page_key }}:{{ action }}</span>
         {% endif %}{% endfor %}{% endfor %}
       </div>
@@ -464,6 +465,9 @@ function openEditGroup(btn) {
   const rlw   = btn.dataset.grlWindow;
   let perms = {};
   try { perms = JSON.parse(btn.dataset.gperms || '{}'); } catch(e) {}
+  // Legacy/seeded groups store permissions nested under "pages" — unwrap so
+  // checkboxes below (which read the flat {page:{action:bool}} shape) find them.
+  if (perms && perms.pages) perms = perms.pages;
 
   document.getElementById('edit-group-form').action = '/admin/privilege-groups/' + gid + '/edit';
   document.getElementById('edit-group-name').value  = gname;

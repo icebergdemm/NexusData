@@ -1445,6 +1445,40 @@ class ServerModerationService:
 
         self.db.commit()
 
+        # ── Send personal notification to the admin who queued this action ──
+        if row.queued_by_admin_id:
+            try:
+                from routes.notifications import create_notification
+                action_labels = {
+                    "ban": "Бан", "kick": "Кик", "unban": "Разбан",
+                    "message": "Сообщение", "trap": "Ловушка",
+                }
+                label = action_labels.get(row.action_type, row.action_type)
+                srv = server_name or "сервер"
+                if effective_success:
+                    create_notification(
+                        self.db,
+                        admin_id=row.queued_by_admin_id,
+                        title=f"{label} исполнен",
+                        body=f"{label} для {row.target_steamid} выполнен на {srv}",
+                        ntype="success",
+                        category="server_action",
+                        icon="✅",
+                        link=None,
+                    )
+                else:
+                    create_notification(
+                        self.db,
+                        admin_id=row.queued_by_admin_id,
+                        title=f"{label} — ошибка",
+                        body=f"{label} для {row.target_steamid} на {srv}: {error_message or 'неизвестная ошибка'}",
+                        ntype="error",
+                        category="server_action",
+                        icon="❌",
+                    )
+            except Exception as _ne:
+                logging.warning(f"Failed to create action notification: {_ne}")
+
         # If this was a successful trap ACK, fire Discord notification
         # For traps: trigger on first successful ACK only (check if not already triggered)
         if success and row.action_type == "trap":

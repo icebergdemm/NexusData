@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Засекречено - Nexus Data{% endblock %}
+
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:center; min-height:60vh; flex-direction:column; gap:20px;">
+  <div style="font-size:72px; font-weight:900; color:#ff2020; text-transform:uppercase; letter-spacing:4px; text-align:center; text-shadow:0 0 40px rgba(255,20,20,.4);">
+    ЗАСЕКРЕЧЕНО
+  </div>
+  <div style="font-size:16px; color:var(--gray); text-align:center; max-width:400px;">
+    Доступ к данному профилю ограничен. У вас недостаточно уровня допуска.
+  </div>
+  <a href="/admin/players" style="color:var(--primary-blue); text-decoration:none; font-size:14px;">← Вернуться к списку игроков</a>
+</div>
+{% endblock %}

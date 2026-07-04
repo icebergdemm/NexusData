@@ -655,6 +655,21 @@ async def admin_player_detail(
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
+
+    # ── Security: "Секретно" status and superuser profile protection ──
+    is_secret = getattr(player, 'is_secret', 0) == 1
+    # Check if this player is linked to a superuser admin account
+    linked_admin = db.query(AdminUser).filter(
+        AdminUser.discord_id == player.discord_id,
+        AdminUser.is_superuser == True
+    ).first() if player.discord_id else None
+
+    if (is_secret or linked_admin) and not current_admin.is_superuser:
+        return templates.TemplateResponse("admin/player_classified.html", {
+            "request": request,
+            "admin": current_admin,
+        })
+
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
 
     # Get extended player data
@@ -913,6 +928,31 @@ async def update_player(
         logger.exception("Update player failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить данные игрока из-за внутренней ошибки")
 
+    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+
+
+@router.post("/admin/players/{player_id}/toggle-secret")
+async def toggle_player_secret(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Toggle 'is_secret' flag on a player profile. Superuser only."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404)
+
+    player.is_secret = 0 if player.is_secret else 1
+    db.commit()
+
+    status = "засекречен" if player.is_secret else "рассекречен"
+    log_admin_action(db, current_admin.id, "toggle_secret", {"player_id": player_id, "is_secret": player.is_secret})
+    push_flash(request, "success", f"Профиль {status}")
     return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
 
 
@@ -1220,6 +1260,188 @@ async def admin_audit_list(request: Request, db: Session = Depends(get_db), curr
             "flashes": pop_flashes(request),
         },
     )
+
+
+@router.get("/api/v1/admin/tasks")
+async def api_task_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Return current status of all background tasks (superuser only)."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403)
+    from fastapi.responses import JSONResponse
+    try:
+        from task_scheduler import scheduler
+        return JSONResponse({
+            "queue_size": scheduler.queue_size(),
+            "tasks": scheduler.list_tasks(),
+        })
+    except ImportError:
+        return JSONResponse({"queue_size": 0, "tasks": [], "note": "task_scheduler not available"})
+
+
+@router.get("/api/v1/admin/health")
+async def api_system_health(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """System health: process metrics, DB stats, scheduler, log cache."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403)
+
+    from fastapi.responses import JSONResponse
+    import os, sys, time
+    from datetime import datetime, timezone
+
+    result = {}
+
+    # ── Process info ──────────────────────────────────────────────────────────
+    try:
+        import psutil
+        proc = psutil.Process(os.getpid())
+        mem = proc.memory_info()
+        result["process"] = {
+            "pid": os.getpid(),
+            "python_version": sys.version.split()[0],
+            "memory_rss_mb": round(mem.rss / 1024 / 1024, 1),
+            "memory_vms_mb": round(mem.vms / 1024 / 1024, 1),
+            "cpu_percent": proc.cpu_percent(interval=0.1),
+            "threads": proc.num_threads(),
+            "open_files": len(proc.open_files()),
+            "connections": len(proc.connections()),
+            "uptime_secs": int(time.time() - proc.create_time()),
+        }
+        # System-wide
+        vm = psutil.virtual_memory()
+        result["system"] = {
+            "total_ram_mb": round(vm.total / 1024 / 1024, 1),
+            "used_ram_mb":  round(vm.used  / 1024 / 1024, 1),
+            "avail_ram_mb": round(vm.available / 1024 / 1024, 1),
+            "ram_pct":      vm.percent,
+            "cpu_pct":      psutil.cpu_percent(interval=0.1),
+            "cpu_cores":    psutil.cpu_count(logical=True),
+            "load_avg":     list(psutil.getloadavg()) if hasattr(psutil, "getloadavg") else [],
+        }
+        # Disk
+        disk = psutil.disk_usage("/")
+        result["disk"] = {
+            "total_gb":  round(disk.total / 1024**3, 1),
+            "used_gb":   round(disk.used  / 1024**3, 1),
+            "free_gb":   round(disk.free  / 1024**3, 1),
+            "used_pct":  disk.percent,
+        }
+    except ImportError:
+        # psutil not installed — basic fallback
+        result["process"] = {"pid": os.getpid(), "python_version": sys.version.split()[0]}
+        result["system"] = {"note": "psutil not installed"}
+        result["disk"] = {}
+
+    # ── Uptime from app.state ─────────────────────────────────────────────────
+    try:
+        from main import app as _app
+        start_time = getattr(_app.state, "start_time", None)
+        if start_time:
+            uptime_s = int((datetime.utcnow() - start_time).total_seconds())
+            h, r = divmod(uptime_s, 3600)
+            m, s = divmod(r, 60)
+            result["uptime"] = {"seconds": uptime_s, "human": f"{h}ч {m}м {s}с"}
+    except Exception:
+        pass
+
+    # ── Database ─────────────────────────────────────────────────────────────
+    try:
+        from sqlalchemy import text
+        db_ok = True
+        db_latency_ms = 0
+        t0 = time.monotonic()
+        db.execute(text("SELECT 1"))
+        db_latency_ms = round((time.monotonic() - t0) * 1000, 1)
+
+        # Table row counts (fast — uses information_schema)
+        counts = {}
+        for tbl in ["players_data", "player_sessions", "player_role_actions",
+                    "server_actions", "player_punishments", "admin_notifications",
+                    "online_snapshots", "player_ratings"]:
+            try:
+                counts[tbl] = db.execute(text(f"SELECT COUNT(*) FROM `{tbl}`")).scalar()
+            except Exception:
+                counts[tbl] = None
+
+        result["database"] = {
+            "status": "ok",
+            "latency_ms": db_latency_ms,
+            "table_counts": counts,
+        }
+    except Exception as e:
+        result["database"] = {"status": "error", "error": str(e)}
+
+    # ── Task Scheduler ────────────────────────────────────────────────────────
+    try:
+        from task_scheduler import scheduler
+        tasks = scheduler.list_tasks()
+        running = [t for t in tasks if t["status"] == "running"]
+        pending_q = scheduler.queue_size()
+        result["scheduler"] = {
+            "available": True,
+            "workers": scheduler._worker_count,
+            "queue_size": pending_q,
+            "total_tasks": len(tasks),
+            "running": len(running),
+            "running_tasks": [t["task_id"] for t in running],
+            "recent_tasks": sorted(tasks, key=lambda x: x.get("finished_at") or "", reverse=True)[:10],
+        }
+    except ImportError:
+        result["scheduler"] = {"available": False, "note": "task_scheduler.py not deployed"}
+    except Exception as e:
+        result["scheduler"] = {"available": False, "error": str(e)}
+
+    # ── Log cache ─────────────────────────────────────────────────────────────
+    try:
+        import services_logs
+        log_conn = services_logs._get_conn()
+        meta_rows = log_conn.execute("SELECT server, event_count, last_refresh, oldest_event, newest_event FROM log_meta").fetchall()
+        log_size = 0
+        try:
+            import os as _os
+            log_size = round(_os.path.getsize(services_logs.LOG_DB_PATH) / 1024 / 1024, 2)
+        except Exception:
+            pass
+        result["log_cache"] = {
+            "db_size_mb": log_size,
+            "servers": [
+                {
+                    "server": r[0],
+                    "events": r[1],
+                    "last_refresh": r[2],
+                    "oldest": r[3],
+                    "newest": r[4],
+                }
+                for r in meta_rows
+            ],
+        }
+    except Exception as e:
+        result["log_cache"] = {"error": str(e)}
+
+    # ── Session cache (online players) ───────────────────────────────────────
+    try:
+        from services import _online_players, _online_players_lock, _prune_stale_online
+        with _online_players_lock:
+            _prune_stale_online()
+            result["online_players"] = {
+                "total": len(_online_players),
+                "by_server": {},
+            }
+            for info in _online_players.values():
+                sn = info.get("server_name", "?")
+                result["online_players"]["by_server"][sn] = result["online_players"]["by_server"].get(sn, 0) + 1
+    except Exception as e:
+        result["online_players"] = {"error": str(e)}
+
+    result["generated_at"] = datetime.utcnow().isoformat()
+    return JSONResponse(result)
 
 
 @router.get("/api/v1/admin/audit/logs")
@@ -3295,8 +3517,10 @@ async def admin_punishment_delete(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "punishments", "delete"):
-        raise HTTPException(status_code=403)
+    # Only superuser can permanently delete punishments
+    if not current_admin.is_superuser:
+        push_flash(request, "error", "Удаление наказаний доступно только суперпользователю")
+        return RedirectResponse(url="/admin/punishments", status_code=302)
     await ensure_csrf_or_valid_admin_session(request, db)
 
     svc = PunishmentService(db)

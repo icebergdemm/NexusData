@@ -132,6 +132,194 @@ input:checked + .slider:before { transform:translateX(20px); background:#fff; }
 </div>
 
 <!-- ════════════════════════════════════════════════════
+     ЗДОРОВЬЕ СИСТЕМЫ
+════════════════════════════════════════════════════ -->
+<div class="block-card" style="margin-bottom:var(--spacing-24);">
+  <div class="block-card-header">
+    <h3>💚 Здоровье системы</h3>
+    <button onclick="loadHealth()" id="healthRefreshBtn" style="background:transparent;border:1px solid var(--stroke-01);border-radius:6px;padding:4px 12px;color:var(--gray);font-size:12px;cursor:pointer;">🔄 Обновить</button>
+  </div>
+  <div class="block-card-body" id="healthBody">
+    <div style="text-align:center;padding:24px;color:var(--gray);font-size:13px;">⏳ Загрузка...</div>
+  </div>
+</div>
+
+<style>
+.hg { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
+.hc { background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:8px; padding:12px 14px; }
+.hc-lbl { font-size:10px; color:var(--gray-dark); text-transform:uppercase; font-weight:600; letter-spacing:.4px; }
+.hc-val { font-size:20px; font-weight:800; color:var(--white); margin-top:2px; }
+.hc-sub { font-size:11px; color:var(--gray-dark); }
+.hc.warn .hc-val { color:#ffaa44; }
+.hc.crit .hc-val { color:#ff4d80; }
+.hc.ok   .hc-val { color:#22d06f; }
+.hs-title { font-size:12px; font-weight:700; color:var(--gray); text-transform:uppercase; letter-spacing:.4px; margin:16px 0 8px; }
+.task-row { display:flex; align-items:center; gap:8px; padding:5px 10px; border-radius:6px; font-size:12px; }
+.task-row:hover { background:var(--white-003); }
+.task-status { padding:2px 7px; border-radius:6px; font-size:10px; font-weight:700; }
+.ts-done    { background:rgba(34,208,111,.15); color:#22d06f; }
+.ts-running { background:rgba(26,104,222,.15); color:#5b9cf5; }
+.ts-error   { background:rgba(183,12,70,.15); color:#ff4d80; }
+.ts-pending { background:rgba(255,255,255,.05); color:var(--gray); }
+.bar-wrap { height:6px; border-radius:3px; background:var(--stroke-01); overflow:hidden; margin-top:4px; }
+.bar-fill { height:100%; border-radius:3px; transition:.3s; }
+</style>
+
+<script>
+function loadHealth() {
+  var btn = document.getElementById('healthRefreshBtn');
+  btn.textContent = '⏳';
+  btn.disabled = true;
+  fetch('/api/v1/admin/health')
+    .then(function(r) { return r.json(); })
+    .then(function(d) { renderHealth(d); btn.textContent = '🔄 Обновить'; btn.disabled = false; })
+    .catch(function(e) {
+      document.getElementById('healthBody').innerHTML = '<div style="color:#ff4d80;padding:16px;">Ошибка: ' + e.message + '</div>';
+      btn.textContent = '🔄 Обновить'; btn.disabled = false;
+    });
+}
+
+function renderHealth(d) {
+  var h = '';
+
+  // ── Uptime ──
+  if (d.uptime) {
+    h += '<div class="hs-title">⏱ Аптайм</div>';
+    h += '<div class="hg">';
+    h += hcard('Аптайм', d.uptime.human, '', '');
+    if (d.process) {
+      h += hcard('PID', d.process.pid, '', '');
+      h += hcard('Python', d.process.python_version, '', '');
+      h += hcard('Потоки', d.process.threads, '', '');
+    }
+    h += '</div>';
+  }
+
+  // ── RAM / CPU ──
+  if (d.system && !d.system.note) {
+    h += '<div class="hs-title">🖥 Система</div>';
+    h += '<div class="hg">';
+    var ramPct = d.system.ram_pct;
+    var ramClass = ramPct > 85 ? 'crit' : ramPct > 70 ? 'warn' : 'ok';
+    h += hcard('RAM', d.system.avail_ram_mb + ' MB', 'Свободно · ' + ramPct + '% занято', ramClass);
+    if (d.process) h += hcard('RAM процесса', d.process.memory_rss_mb + ' MB', 'RSS', d.process.memory_rss_mb > 512 ? 'warn' : '');
+    var cpuClass = d.system.cpu_pct > 80 ? 'crit' : d.system.cpu_pct > 50 ? 'warn' : '';
+    h += hcard('CPU', d.system.cpu_pct + '%', d.system.cpu_cores + ' ядер', cpuClass);
+    if (d.process) h += hcard('Файловых дескр.', d.process.open_files, '', d.process.open_files > 900 ? 'crit' : d.process.open_files > 700 ? 'warn' : '');
+    h += '</div>';
+    // RAM bar
+    h += '<div class="bar-wrap"><div class="bar-fill" style="width:' + ramPct + '%;background:' + (ramPct > 85 ? '#ff4d80' : ramPct > 70 ? '#ffaa44' : '#22d06f') + ';"></div></div>';
+  } else {
+    h += '<div style="font-size:11px;color:var(--gray-dark);margin-bottom:12px;">psutil не установлен — установите pip install psutil</div>';
+  }
+
+  // ── Disk ──
+  if (d.disk && d.disk.total_gb) {
+    h += '<div class="hs-title">💾 Диск</div>';
+    h += '<div class="hg">';
+    var dpct = d.disk.used_pct;
+    h += hcard('Свободно', d.disk.free_gb + ' GB', 'Всего ' + d.disk.total_gb + ' GB', dpct > 85 ? 'crit' : dpct > 70 ? 'warn' : 'ok');
+    h += hcard('Занято', d.disk.used_gb + ' GB', dpct + '%', dpct > 85 ? 'crit' : '');
+    h += '</div>';
+    h += '<div class="bar-wrap"><div class="bar-fill" style="width:' + dpct + '%;background:' + (dpct > 85 ? '#ff4d80' : dpct > 70 ? '#ffaa44' : '#1a68de') + ';"></div></div>';
+  }
+
+  // ── Database ──
+  if (d.database) {
+    h += '<div class="hs-title">🗄 База данных</div>';
+    h += '<div class="hg">';
+    var dbOk = d.database.status === 'ok';
+    h += hcard('Статус', dbOk ? 'OK' : 'ERROR', '', dbOk ? 'ok' : 'crit');
+    if (dbOk) h += hcard('Latency', d.database.latency_ms + ' ms', '', d.database.latency_ms > 100 ? 'warn' : '');
+    if (d.database.table_counts) {
+      var tc = d.database.table_counts;
+      h += hcard('Игроки', tc.players_data ?? '-', '', '');
+      h += hcard('Сессии', tc.player_sessions ?? '-', '', '');
+      h += hcard('Действия', tc.player_role_actions ?? '-', '', '');
+      h += hcard('Наказания', tc.player_punishments ?? '-', '', '');
+      h += hcard('Рейтинги', tc.player_ratings ?? '-', '', '');
+      h += hcard('Снапшоты', tc.online_snapshots ?? '-', '', '');
+    }
+    h += '</div>';
+  }
+
+  // ── Online players ──
+  if (d.online_players) {
+    h += '<div class="hs-title">🟢 Онлайн игроки</div>';
+    h += '<div class="hg">';
+    h += hcard('Всего онлайн', d.online_players.total, '', d.online_players.total > 0 ? 'ok' : '');
+    if (d.online_players.by_server) {
+      Object.entries(d.online_players.by_server).forEach(function(kv) {
+        h += hcard(kv[0], kv[1], 'игроков', '');
+      });
+    }
+    h += '</div>';
+  }
+
+  // ── Scheduler ──
+  if (d.scheduler) {
+    h += '<div class="hs-title">⚙️ Планировщик задач</div>';
+    if (!d.scheduler.available) {
+      h += '<div style="font-size:12px;color:#ffaa44;padding:8px 12px;background:rgba(255,170,0,.08);border-radius:6px;margin-bottom:12px;">⚠️ ' + (d.scheduler.note || d.scheduler.error || 'Не активен') + '</div>';
+    } else {
+      h += '<div class="hg">';
+      h += hcard('Воркеры', d.scheduler.workers, '', '');
+      h += hcard('Очередь', d.scheduler.queue_size, 'задач в ожидании', d.scheduler.queue_size > 10 ? 'warn' : '');
+      h += hcard('Запущено', d.scheduler.running, '', d.scheduler.running > 0 ? 'ok' : '');
+      h += hcard('Всего задач', d.scheduler.total_tasks, 'в кэше', '');
+      h += '</div>';
+      if (d.scheduler.recent_tasks && d.scheduler.recent_tasks.length) {
+        h += '<div style="border:1px solid var(--stroke-01);border-radius:8px;overflow:hidden;margin-top:8px;">';
+        d.scheduler.recent_tasks.slice(0, 8).forEach(function(t) {
+          var sc = {done:'ts-done',running:'ts-running',error:'ts-error',timeout:'ts-error',pending:'ts-pending'}[t.status] || 'ts-pending';
+          var dur = t.duration_ms ? ' · ' + (t.duration_ms < 1000 ? t.duration_ms + 'ms' : (t.duration_ms/1000).toFixed(1) + 's') : '';
+          var fin = t.finished_at ? new Date(t.finished_at).toLocaleTimeString('ru-RU') : '';
+          h += '<div class="task-row"><span class="task-status ' + sc + '">' + t.status + '</span>'
+            + '<span style="flex:1;color:var(--white);font-family:monospace;font-size:11px;">' + t.task_id + '</span>'
+            + '<span style="color:var(--gray-dark);font-size:10px;">' + fin + dur + '</span>';
+          if (t.error) h += '<span title="' + t.error + '" style="color:#ff4d80;font-size:11px;cursor:help;">⚠</span>';
+          h += '</div>';
+        });
+        h += '</div>';
+      }
+    }
+  }
+
+  // ── Log cache ──
+  if (d.log_cache && !d.log_cache.error) {
+    h += '<div class="hs-title">📋 Кэш логов</div>';
+    h += '<div class="hg">';
+    h += hcard('Размер SQLite', d.log_cache.db_size_mb + ' MB', '', d.log_cache.db_size_mb > 500 ? 'warn' : '');
+    h += '</div>';
+    if (d.log_cache.servers && d.log_cache.servers.length) {
+      d.log_cache.servers.forEach(function(s) {
+        h += '<div style="background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;margin-bottom:6px;font-size:11px;">';
+        h += '<b style="color:var(--white);">' + s.server + '</b>';
+        h += ' · <span style="color:var(--gray);">' + (s.events || 0).toLocaleString() + ' событий</span>';
+        if (s.last_refresh) h += ' · обновлено: <span style="color:var(--gray-dark);">' + new Date(s.last_refresh).toLocaleTimeString('ru-RU') + '</span>';
+        if (s.newest) h += ' · новейшее: <span style="color:var(--gray-dark);">' + new Date(s.newest).toLocaleString('ru-RU') + '</span>';
+        h += '</div>';
+      });
+    }
+  }
+
+  h += '<div style="font-size:10px;color:var(--gray-dark);margin-top:12px;">Обновлено: ' + new Date(d.generated_at).toLocaleTimeString('ru-RU') + '</div>';
+  document.getElementById('healthBody').innerHTML = h;
+}
+
+function hcard(lbl, val, sub, cls) {
+  return '<div class="hc ' + (cls||'') + '"><div class="hc-lbl">' + lbl + '</div>'
+    + '<div class="hc-val">' + val + '</div>'
+    + (sub ? '<div class="hc-sub">' + sub + '</div>' : '')
+    + '</div>';
+}
+
+// Auto-load and refresh every 30s
+loadHealth();
+setInterval(loadHealth, 30000);
+</script>
+
+<!-- ════════════════════════════════════════════════════
      РЕДАКТОР КОНФИГУРАЦИИ
 ════════════════════════════════════════════════════ -->
 <div class="block-card">

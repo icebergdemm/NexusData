@@ -219,39 +219,77 @@
 </div>
 
 <script>
-const si = document.getElementById('search-input');
-const dd = document.getElementById('search-dropdown');
-let tmr;
+(function() {
+  var si = document.getElementById('search-input');
+  var dd = document.getElementById('search-dropdown');
+  if (!si || !dd) return;
 
-si.addEventListener('input', function() {
-  clearTimeout(tmr);
-  const q = this.value.trim();
-  if (q.length < 2) { dd.style.display='none'; return; }
-  tmr = setTimeout(() => doSearch(q), 280);
-});
-si.addEventListener('keydown', function(e) {
-  if (e.key==='Enter') { e.preventDefault(); const q=this.value.trim(); if(q.length>=2) location.href=`/admin/players?search=${encodeURIComponent(q)}`; }
-  if (e.key==='Escape') dd.style.display='none';
-});
-document.addEventListener('click', e => { if(!si.contains(e.target)&&!dd.contains(e.target)) dd.style.display='none'; });
+  var tmr;
 
-async function doSearch(q) {
-  try {
-    const r = await fetch(`/api/v1/players/search?q=${encodeURIComponent(q)}`);
-    renderDD(await r.json());
-  } catch { dd.innerHTML='<div class="sd-item"><span class="sd-sub" style="color:var(--error)">Ошибка поиска</span></div>'; dd.style.display='block'; }
-}
-const esc = t => String(t).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
-function renderDD(res) {
-  if (!res.length) { dd.innerHTML='<div class="sd-item"><span class="sd-name" style="color:var(--gray)">Не найдено</span></div>'; dd.style.display='block'; return; }
-  dd.innerHTML = res.map(p => {
-    const ctx = p.match_context||[];
-    let sub = esc(p.steamid);
-    if (ctx.includes('ip_address')) sub=`<strong>${esc(p.steamid)}</strong> · ${esc(p.name)}`;
-    else if (ctx.includes('steamid')&&p.previous_names?.length) sub=`Ники: ${p.previous_names.slice(0,3).map(esc).join(', ')}`;
-    return `<div class="sd-item" onclick="location.href='/admin/players/${p.id}'"><div class="sd-name">${esc(p.name)}</div><div class="sd-sub">${sub}</div></div>`;
-  }).join('');
-  dd.style.display='block';
-}
+  si.addEventListener('input', function() {
+    clearTimeout(tmr);
+    var q = this.value.trim();
+    if (q.length < 2) { dd.style.display = 'none'; return; }
+    tmr = setTimeout(function() { doSearch(q); }, 280);
+  });
+
+  si.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var q = si.value.trim();
+      if (q.length >= 2) {
+        dd.style.display = 'none';
+        // Use SPA navigation instead of location.href
+        if (window.__spaNavigate) {
+          window.__spaNavigate('/admin/players?search=' + encodeURIComponent(q));
+        } else {
+          location.href = '/admin/players?search=' + encodeURIComponent(q);
+        }
+      }
+    }
+    if (e.key === 'Escape') dd.style.display = 'none';
+  });
+
+  // Use capture:false and remove old listener on SPA re-render (scoped to this closure)
+  var _clickOutside = function(e) {
+    if (!si.contains(e.target) && !dd.contains(e.target)) dd.style.display = 'none';
+  };
+  document.addEventListener('click', _clickOutside);
+
+  async function doSearch(q) {
+    try {
+      var r = await fetch('/api/v1/players/search?q=' + encodeURIComponent(q));
+      renderDD(await r.json());
+    } catch(err) {
+      dd.innerHTML = '<div class="sd-item"><span class="sd-sub" style="color:var(--error)">Ошибка поиска</span></div>';
+      dd.style.display = 'block';
+    }
+  }
+
+  var esc = function(t) {
+    return String(t).replace(/[&<>"']/g, function(m) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m];
+    });
+  };
+
+  function renderDD(res) {
+    if (!Array.isArray(res) || !res.length) {
+      dd.innerHTML = '<div class="sd-item"><span class="sd-name" style="color:var(--gray)">Не найдено</span></div>';
+      dd.style.display = 'block';
+      return;
+    }
+    dd.innerHTML = res.map(function(p) {
+      var ctx = p.match_context || [];
+      var sub = esc(p.steamid || '');
+      if (ctx.indexOf('ip_address') !== -1) sub = '<strong>' + esc(p.steamid) + '</strong> · ' + esc(p.name);
+      else if (ctx.indexOf('steamid') !== -1 && p.previous_names && p.previous_names.length)
+        sub = 'Ники: ' + p.previous_names.slice(0, 3).map(esc).join(', ');
+      return '<div class="sd-item" onclick="if(window.__spaNavigate)window.__spaNavigate(\'/admin/players/' + p.id + '\');else location.href=\'/admin/players/' + p.id + '\'">' +
+             '<div class="sd-name">' + esc(p.name) + '</div>' +
+             '<div class="sd-sub">' + sub + '</div></div>';
+    }).join('');
+    dd.style.display = 'block';
+  }
+})();
 </script>
 {% endblock %}

@@ -1,85 +1,217 @@
 """
 Background workers for Nexus Data.
 
-PlaytimeCompensationWorker — каждые 30 минут сравнивает play_time игрока
-с суммой session_duration из player_sessions. Если play_time < суммы сессий,
-добавляет разницу (компенсирует). Если >= — не трогает.
+All periodic tasks are now registered with the TaskScheduler instead of
+spawning their own threads. This gives us:
+  - Priority control (API requests always win)
+  - Deduplication (no double-runs if a task takes longer than its interval)
+  - Result caching (admin panel can poll completion status)
+  - Unified logging and monitoring
 """
 
 import logging
 import threading
-import time
 
-from sqlalchemy import func
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import PlayerData, PlayerSession
 
 logger = logging.getLogger(__name__)
 
-INTERVAL_SECONDS = 30 * 60  # 30 минут
+# Try to import task_scheduler — if not present, fall back to simple thread model
+try:
+    from task_scheduler import scheduler, Priority
+    _HAS_SCHEDULER = True
+except ImportError:
+    logger.warning("[Workers] task_scheduler not found, falling back to simple thread mode")
+    _HAS_SCHEDULER = False
+    scheduler = None
+    Priority = None
 
 
-def _compensate_playtime(db: Session) -> None:
-    """
-    Для каждого игрока:
-      total_session = SUM(session_duration) по завершённым сессиям
-      если play_time < total_session → play_time = total_session
+# ═══════════════════════════════════════════════════════════════════════
+# TASK IMPLEMENTATIONS (each opens its own DB session)
+# ═══════════════════════════════════════════════════════════════════════
 
-    Реализовано одним UPDATE с коррелированным подзапросом — без N+1.
-    """
-    from sqlalchemy import text
-
-    # Single atomic UPDATE: set play_time to session total where it lags behind.
-    # Correlated subquery computes SUM(session_duration) per player.
-    result = db.execute(text("""
-        UPDATE players_data pd
-        JOIN (
-            SELECT player_id, SUM(session_duration) AS total
-            FROM player_sessions
-            WHERE session_duration IS NOT NULL
-            GROUP BY player_id
-        ) st ON st.player_id = pd.player_id
-        SET pd.play_time = st.total
-        WHERE pd.play_time < st.total
-    """))
-    compensated = result.rowcount or 0
-
-    if compensated:
+def task_compensate_playtime() -> dict:
+    """Sync play_time from session durations. Runs every 30 min."""
+    db = SessionLocal()
+    try:
+        result = db.execute(text("""
+            UPDATE players_data pd
+            JOIN (
+                SELECT player_id, SUM(session_duration) AS total
+                FROM player_sessions
+                WHERE session_duration IS NOT NULL
+                GROUP BY player_id
+            ) st ON st.player_id = pd.player_id
+            SET pd.play_time = st.total
+            WHERE pd.play_time < st.total
+        """))
+        compensated = result.rowcount or 0
         db.commit()
-        logger.info("PlaytimeWorker: скомпенсировано %d игроков", compensated)
+        return {"compensated_players": compensated}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def task_recalculate_ratings() -> dict:
+    """Full rating recalculation. Runs every 5 min."""
+    from rating_engine import calculate_all_ratings, sync_ratings_to_db, apply_daily_erosion
+    db = SessionLocal()
+    try:
+        ratings = calculate_all_ratings(db)
+        if ratings:
+            sync_ratings_to_db(db, ratings)
+        apply_daily_erosion(db)
+        return {"players_recalculated": len(ratings)}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def task_sauron_twinks() -> dict:
+    """Twink detection analysis. Triggered on demand, cached 10 min."""
+    import services_sauron
+    db = SessionLocal()
+    try:
+        results = services_sauron.detect_all_twink_pairs(db, days=90)
+        return {"results": results, "count": len(results)}
+    finally:
+        db.close()
+
+
+def task_sauron_deviant() -> dict:
+    """Deviant behavior detection. Triggered on demand, cached 10 min."""
+    import services_sauron
+    db = SessionLocal()
+    try:
+        results = services_sauron.detect_deviant_behavior(db, days=30, min_incidents=2)
+        return {"results": results, "count": len(results)}
+    finally:
+        db.close()
+
+
+def task_sauron_summary() -> dict:
+    """Lightweight Sauron summary counts."""
+    import services_sauron
+    db = SessionLocal()
+    try:
+        return services_sauron.get_sauron_summary(db)
+    finally:
+        db.close()
+
+
+def task_cleanup_replays() -> dict:
+    """Delete expired replay files. Runs every 6 hours."""
+    import services_replays
+    db = SessionLocal()
+    try:
+        deleted = services_replays.ReplayService(db).cleanup_expired()
+        return {"deleted_replays": deleted}
+    finally:
+        db.close()
+
+
+def task_refresh_logs() -> dict:
+    """Refresh server log cache from SFTP. Runs every 30 min."""
+    try:
+        import services_logs
+        services_logs.refresh_all_logs()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def task_refresh_analytics() -> dict:
+    """Recompute the analytics dashboard's default-view snapshot. Runs every 5 min.
+
+    Serves /admin/analytics so the page doesn't recompute all charts on every visit.
+    """
+    import services_analytics
+    db = SessionLocal()
+    try:
+        return services_analytics.compute_default_snapshot(db)
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# STARTUP: register all periodic tasks and start scheduler
+# ═══════════════════════════════════════════════════════════════════════
+
+def start_playtime_worker():
+    """Legacy entrypoint — now starts the full scheduler with all tasks."""
+    if _HAS_SCHEDULER:
+        _start_scheduler()
     else:
-        db.commit()
-        logger.debug("PlaytimeWorker: компенсация не требуется")
+        _start_simple_workers()
 
 
-def _worker_loop() -> None:
-    """Основной цикл воркера. Запускается в отдельном daemon-потоке."""
-    logger.info("PlaytimeWorker запущен (интервал %d сек)", INTERVAL_SECONDS)
-    while True:
-        try:
-            db: Session = SessionLocal()
+def _start_simple_workers():
+    """Fallback: simple daemon threads without scheduler (when task_scheduler.py is missing)."""
+    import time
+
+    def _loop(fn, interval):
+        while True:
             try:
-                _compensate_playtime(db)
-            except Exception:
-                logger.exception("PlaytimeWorker: ошибка при компенсации")
-                db.rollback()
-            finally:
-                db.close()
-                del db  # Help GC
-        except Exception:
-            logger.exception("PlaytimeWorker: не удалось открыть сессию БД")
+                fn()
+            except Exception as e:
+                logger.error(f"Worker {fn.__name__} error: {e}")
+            time.sleep(interval)
 
-        time.sleep(INTERVAL_SECONDS)
+    for fn, interval in [
+        (task_compensate_playtime, 30 * 60),
+        (task_recalculate_ratings, 5 * 60),
+        (task_cleanup_replays, 6 * 60 * 60),
+    ]:
+        t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
+        t.start()
+        logger.info(f"[Workers] Started fallback worker: {fn.__name__} every {interval}s")
 
 
-def start_playtime_worker() -> threading.Thread:
-    """
-    Создаёт и запускает daemon-поток с воркером.
-    Daemon-поток автоматически завершается вместе с основным процессом.
-    """
-    t = threading.Thread(target=_worker_loop, name="PlaytimeWorker", daemon=True)
-    t.start()
-    logger.info("PlaytimeWorker поток запущен (id=%d)", t.ident)
-    return t
+def _start_scheduler():
+    """Register periodic tasks and start the scheduler."""
+    # Playtime compensation: LOW priority, every 30 min
+    scheduler.register_periodic(
+        task_compensate_playtime,
+        interval_secs=30 * 60,
+        priority=Priority.LOW,
+        task_id="playtime_compensation",
+    )
+
+    # Rating recalculation: LOW priority, every 5 min
+    scheduler.register_periodic(
+        task_recalculate_ratings,
+        interval_secs=5 * 60,
+        priority=Priority.LOW,
+        task_id="rating_recalc",
+    )
+
+    # Replay cleanup: BACKGROUND priority, every 6 hours
+    scheduler.register_periodic(
+        task_cleanup_replays,
+        interval_secs=6 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="replay_cleanup",
+    )
+
+    # Log refresh: handled by services_logs built-in worker (interval set to 60s there)
+    # No need to duplicate in scheduler
+
+    # Analytics dashboard snapshot: LOW priority, every 5 min
+    scheduler.register_periodic(
+        task_refresh_analytics,
+        interval_secs=5 * 60,
+        priority=Priority.LOW,
+        task_id="analytics_refresh",
+    )
+
+    scheduler.start()
+    logger.info("[Workers] All periodic tasks registered and scheduler started")

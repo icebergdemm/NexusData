@@ -29,6 +29,7 @@ class PlayerData(Base):
     avg_ping = Column(Integer, nullable=True)  # Average ping
     discord_id = Column(String(25), nullable=True, index=True)  # Discord user ID
     discord_id_confirmed = Column(Integer, default=0)  # 1 = confirmed by admin, 0 = auto-matched
+    is_secret = Column(Integer, default=0)  # 1 = profile hidden from non-superusers
     labels = Column(JSON, default=lambda: [])   # list of label ids assigned to this player
     
     stats = relationship("PlayerStats", backref="player", uselist=False)
@@ -524,6 +525,9 @@ class SubProject(Base):
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    # Soft-delete
+    is_deleted = Column(Integer, default=0)  # 0=active, 1=deleted
+    deleted_at = Column(DateTime, nullable=True)
 
     versions = relationship("SubProjectVersion", back_populates="project", order_by="SubProjectVersion.version_number.desc()")
     category_links = relationship("SubProjectCategoryLink", backref="project", cascade="all, delete-orphan")
@@ -639,3 +643,20 @@ class OnlineSnapshot(Base):
     player_count = Column(Integer, nullable=False, default=0)
     player_ids = Column(JSON, nullable=True)  # list of steamids
     recorded_at = Column(DateTime, default=func.now(), index=True)
+
+
+class AdminNotification(Base):
+    """Personal notification for an admin user."""
+    __tablename__ = "admin_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    type = Column(String(50), nullable=False, default="info")  # info|success|warning|error
+    category = Column(String(50), nullable=False, default="general")
+    title = Column(String(255), nullable=False)
+    body = Column(String(1000), nullable=True)
+    link = Column(String(500), nullable=True)
+    icon = Column(String(16), nullable=True)
+    is_read = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), index=True)
+    expires_at = Column(DateTime, nullable=True)

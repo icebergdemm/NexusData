@@ -266,6 +266,14 @@ textarea { resize:vertical; min-height:80px; }
       {% endif %}
       <button class="btn btn-warning" style="padding:10px 18px;font-size:13px;" onclick="openModal('warn-modal')">⚠️ Варн</button>
       <button class="btn btn-secondary" style="padding:10px 18px;font-size:13px;border-color:rgba(199,125,255,.4);color:#c77dff;" onclick="openModal('reprimand-modal')">📋 Выговор</button>
+      {% if admin.is_superuser %}
+      <form method="post" action="/admin/players/{{ player.player_id }}/toggle-secret" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
+        <button type="submit" class="btn btn-secondary" style="padding:10px 14px;font-size:12px;border-color:{% if player.is_secret %}rgba(255,20,20,.5);color:#ff4444{% else %}rgba(120,120,120,.4);color:var(--gray){% endif %};">
+          {% if player.is_secret %}🔓 Рассекретить{% else %}🔒 Засекретить{% endif %}
+        </button>
+      </form>
+      {% endif %}
     {% endif %}
   </div>
 </div>

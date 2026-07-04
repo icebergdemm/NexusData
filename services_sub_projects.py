@@ -274,11 +274,11 @@ class SubProjectService:
         crew_max: Optional[int] = None,
         category_id: Optional[int] = None,
     ) -> List[SubProject]:
-        """Get all sub-projects with optional filters."""
+        """Get all sub-projects with optional filters (excludes soft-deleted)."""
         from models import SubProjectCategoryLink
         from sqlalchemy import or_
 
-        q = self.db.query(SubProject)
+        q = self.db.query(SubProject).filter(SubProject.is_deleted == 0)
 
         # Search by name
         if search:
@@ -361,24 +361,13 @@ class SubProjectService:
         return project
 
     def delete(self, project_id: int) -> bool:
+        """Soft-delete a project (mark as deleted, preserve data)."""
         project = self.get_by_id(project_id)
         if not project:
             return False
 
-        # Delete image file
-        if project.image_filename:
-            img_path = os.path.join(settings.sub_projects_upload_dir, "images", project.image_filename)
-            if os.path.exists(img_path):
-                os.remove(img_path)
-
-        # Delete all version files
-        versions = self.get_versions(project_id)
-        for v in versions:
-            file_path = os.path.join(settings.sub_projects_upload_dir, "files", v.stored_filename)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-
-        self.db.delete(project)
+        project.is_deleted = 1
+        project.deleted_at = datetime.utcnow()
         self.db.commit()
         return True
 

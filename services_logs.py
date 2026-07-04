@@ -27,7 +27,7 @@ class LogEvent:
     """Single parsed log event."""
     timestamp: datetime
     player_name: str
-    action_type: str  # picked_up, placed, opened, closed, equipped, unequipped, reactor, chat, connection, fabrication, repair, console, death, wire, pump, radio, dropped, activated, deactivated, login, logout, other
+    action_type: str  # picked_up, placed, opened, closed, equipped, unequipped, reactor, chat, connection, fabrication, repair, console, death, wire, pump, radio, dropped, used, activated, deactivated, login, logout, other
     details: str
     raw_line: str
     server_name: str = ""
@@ -48,6 +48,8 @@ ACTION_PATTERNS = [
     (re.compile(r'^(.+?) equipped (.+)$'), 'equipped'),
     (re.compile(r'^(.+?) unequipped (.+)$'), 'unequipped'),
     (re.compile(r'^(.+?) dropped (.+)$'), 'dropped'),
+    (re.compile(r'^(.+?) used (.+?) on (.+)$'), 'used'),
+    (re.compile(r'^(.+?) used (.+)$'), 'used'),
     (re.compile(r'^(.+?) adjusted reactor settings: (.+)$'), 'reactor'),
     (re.compile(r'^(.+?) started repairing (.+)$'), 'repair'),
     (re.compile(r'^(.+?) started fabricating (.+)$'), 'fabrication'),
@@ -439,7 +441,7 @@ LOG_RAW_DIR = "data/logs_raw"
 LOG_DB_PATH = os.path.join(LOG_STORAGE_DIR, "logs.db")
 _log_cache_lock = threading.Lock()
 _log_worker_running = False
-_log_refresh_interval = 300  # 5 minutes
+_log_refresh_interval = 60  # 1 minute
 
 # Thread-local SQLite connections (sqlite3 objects are not thread-safe to share)
 _tls = threading.local()
@@ -522,7 +524,7 @@ def _ms_to_dt(ms: int) -> datetime:
 
 # Action categories (module-level, shared)
 PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
-                  'unequipped', 'dropped', 'reactor', 'repair', 'fabrication',
+                  'unequipped', 'dropped', 'used', 'reactor', 'repair', 'fabrication',
                   'fabrication_cancel', 'activated', 'deactivated', 'wire', 'pump',
                   'settings_change', 'console', 'death', 'chat', 'login', 'logout',
                   'attack', 'structure', 'kick', 'name_change'}

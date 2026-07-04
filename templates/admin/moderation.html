@@ -35,9 +35,10 @@
   <a href="/admin/moderation?tab=banhammer{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
   <a href="/admin/moderation?tab=logs{% if selected_server %}&server={{ selected_server }}{% endif %}"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
   {% if check_permission(admin, 'moderation', 'delete') %}
-  <a href="/admin/moderation?tab=commands{% if selected_server %}&server={{ selected_server }}{% endif %}"   class="mod-tab {% if active_tab == 'commands'   %}active{% endif %}">⚡ Команды</a>
+  <a href="/admin/moderation?tab=commands{% if selected_server %}&server={{ selected_server }}{% endif %}"   class="mod-tab {% if active_tab == 'commands'   %}active{% endif %}">Команды</a>
   {% endif %}
   <a href="/admin/moderation?tab=anticheat{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
+  <a href="/admin/moderation?tab=sauron{% if selected_server %}&server={{ selected_server }}{% endif %}"    class="mod-tab {% if active_tab == 'sauron'    %}active{% endif %}" style="{% if active_tab == 'sauron' %}{% else %}color:#ff4d80;{% endif %}">👁 Oko Саурона</a>
 </nav>
 
 {# ════════════════════════════════════════════════════════════════════════ #}
@@ -314,6 +315,7 @@
       <option value="picked_up">📦 Подобрал</option>
       <option value="placed">📥 Положил</option>
       <option value="equipped">🎒 Экипировка</option>
+      <option value="used">⚔️ Использовал</option>
       <option value="reactor">⚛️ Реактор</option>
       <option value="repair">🔧 Ремонт</option>
       <option value="fabrication">🏭 Крафт</option>
@@ -351,6 +353,7 @@
 .le[data-t="dropped"] { border-left-color:#a88530; } .le[data-t="dropped"] .le-d { color:#a88530; }
 .le[data-t="equipped"] { border-left-color:#e0b84d; } .le[data-t="equipped"] .le-d { color:#e0b84d; }
 .le[data-t="unequipped"] { border-left-color:#c99e3f; } .le[data-t="unequipped"] .le-d { color:#c99e3f; }
+.le[data-t="used"] { border-left-color:#d06a4e; } .le[data-t="used"] .le-d { color:#d06a4e; }
 .le[data-t="opened"] { border-left-color:#7aaa55; } .le[data-t="opened"] .le-d { color:#7aaa55; }
 .le[data-t="closed"] { border-left-color:#5a8a40; } .le[data-t="closed"] .le-d { color:#5a8a40; }
 .le[data-t="activated"] { border-left-color:#55bb55; } .le[data-t="activated"] .le-d { color:#55bb55; }
@@ -524,12 +527,11 @@ function escapeHtml(t) { const d = document.createElement('span'); d.textContent
 document.getElementById('logSearchText').addEventListener('keydown', e => { if (e.key==='Enter') resetAndLoad(); });
 document.getElementById('logPlayerFilter').addEventListener('keydown', e => { if (e.key==='Enter') resetAndLoad(); });
 
-document.addEventListener('DOMContentLoaded', () => {
-  loadPlayerMap();
-  loadLogs();
-  loadPlayersList();
-  {% if admin.is_superuser %}loadLogStats();{% endif %}
-});
+// Init immediately (works both on full page load and SPA navigation)
+loadPlayerMap();
+loadLogs();
+loadPlayersList();
+{% if admin.is_superuser %}loadLogStats();{% endif %}
 </script>
 
 {# ════════════════════════════════════════════════════════════════════════ #}
@@ -682,10 +684,9 @@ function loadCmdPlayersList() {
 document.getElementById('cmdSearchText').addEventListener('keydown', e => { if (e.key === 'Enter') loadCommands(1); });
 document.getElementById('cmdPlayerFilter').addEventListener('keydown', e => { if (e.key === 'Enter') loadCommands(1); });
 
-document.addEventListener('DOMContentLoaded', () => {
-  loadCommands(1);
-  loadCmdPlayersList();
-});
+// Init immediately
+loadCommands(1);
+loadCmdPlayersList();
 </script>
 {% else %}
 <div class="card" style="text-align:center;padding:var(--spacing-48);">
@@ -766,6 +767,216 @@ document.addEventListener('DOMContentLoaded', () => {
   <p class="empty-state">Срабатываний античита не зафиксировано.</p>
   {% endif %}
 </div>
+{% endif %}
+
+{# ════════════════════════════════════════════════════════════════════════ #}
+{# TAB: Oko Саурона                                                        #}
+{# ════════════════════════════════════════════════════════════════════════ #}
+{% if active_tab == 'sauron' %}
+<style>
+.sauron-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:16px; }
+.risk-badge { display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700; }
+.risk-high { background:rgba(183,12,70,.2);color:#ff4d80;border:1px solid rgba(183,12,70,.4); }
+.risk-medium { background:rgba(255,140,0,.15);color:#ffaa44;border:1px solid rgba(255,140,0,.35); }
+.risk-low { background:rgba(26,104,222,.15);color:#5b9cf5;border:1px solid rgba(26,104,222,.3); }
+.sauron-stat { background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:8px;padding:12px 18px;text-align:center;min-width:120px; }
+.sauron-stat-val { font-size:24px;font-weight:800;color:var(--white); }
+.sauron-stat-lbl { font-size:10px;color:var(--gray);text-transform:uppercase;letter-spacing:.4px; }
+.signal-pill { display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;background:rgba(255,255,255,.05);border:1px solid var(--stroke-01);margin:2px; }
+.sauron-card { background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);margin-bottom:8px;overflow:hidden; }
+.sauron-card-head { display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none; }
+.sauron-card-head:hover { background:rgba(255,255,255,.02); }
+.sauron-card-body { padding:12px 16px;border-top:1px solid var(--stroke-01);display:none; }
+.sauron-card.open .sauron-card-body { display:block; }
+</style>
+
+<!-- Summary stats -->
+<div id="sauronSummary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;">
+  <div class="sauron-stat"><div class="sauron-stat-val" id="ss-twink-total">…</div><div class="sauron-stat-lbl">Пар твинков</div></div>
+  <div class="sauron-stat"><div class="sauron-stat-val" id="ss-twink-high" style="color:#ff4d80;">…</div><div class="sauron-stat-lbl">Высокий риск</div></div>
+  <div class="sauron-stat"><div class="sauron-stat-val" id="ss-dev-total">…</div><div class="sauron-stat-lbl">Девиантных</div></div>
+  <div class="sauron-stat"><div class="sauron-stat-val" id="ss-dev-high" style="color:#ff4d80;">…</div><div class="sauron-stat-lbl">Опасных</div></div>
+</div>
+
+<!-- Controls -->
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+  <div style="display:flex;gap:4px;background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:8px;padding:3px;">
+    <button class="saur-mode-btn active" onclick="setSauronMode('twinks',this)" style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:none;background:var(--primary-blue);color:#fff;">🕵️ Твинки</button>
+    <button class="saur-mode-btn" onclick="setSauronMode('deviant',this)" style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:none;background:transparent;color:var(--gray);">⚠️ Девианты</button>
+  </div>
+  <select id="sauronDays" style="background:var(--dark-blue-bg);border:1px solid var(--stroke-01);border-radius:6px;padding:6px 10px;color:var(--white);font-size:12px;">
+    <option value="30">30 дней</option>
+    <option value="90" selected>90 дней</option>
+    <option value="180">180 дней</option>
+    <option value="365">365 дней</option>
+  </select>
+  <button onclick="loadSauron()" style="background:var(--primary-blue);border:none;border-radius:6px;padding:6px 16px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;">🔍 Обновить</button>
+  <span id="sauronLoading" style="font-size:12px;color:var(--gray);display:none;">⏳ Анализ...</span>
+</div>
+
+<div id="sauronResults"></div>
+
+<script>
+let _sauronMode = 'twinks';
+
+function setSauronMode(mode, btn) {
+  _sauronMode = mode;
+  document.querySelectorAll('.saur-mode-btn').forEach(b => {
+    b.style.background = 'transparent'; b.style.color = 'var(--gray)';
+  });
+  btn.style.background = 'var(--primary-blue)'; btn.style.color = '#fff';
+  loadSauron();
+}
+
+function loadSauron() {
+  const days = document.getElementById('sauronDays').value;
+  const loading = document.getElementById('sauronLoading');
+  const container = document.getElementById('sauronResults');
+  loading.style.display = 'inline';
+  container.innerHTML = '';
+
+  const url = _sauronMode === 'twinks'
+    ? `/api/v1/sauron/twinks?days=${days}`
+    : `/api/v1/sauron/deviant?days=${days}`;
+
+  fetch(url)
+    .then(r => {
+      if (r.status === 202) {
+        // Task submitted, poll for completion
+        return r.json().then(d => {
+          container.innerHTML = `<div style="text-align:center;padding:30px;color:var(--gray);font-size:13px;">⏳ ${d.message || 'Анализ выполняется...'}</div>`;
+          setTimeout(() => loadSauronPoll(url), 3000);
+          return null;
+        });
+      }
+      return r.json();
+    })
+    .then(data => {
+      if (!data) return; // polling, skip
+      loading.style.display = 'none';
+      if (_sauronMode === 'twinks') renderTwinks(data);
+      else renderDeviant(data);
+    })
+    .catch(e => {
+      loading.style.display = 'none';
+      container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--error);">Ошибка: ' + e.message + '</div>';
+    });
+}
+
+function loadSauronPoll(url, attempt) {
+  attempt = attempt || 0;
+  if (attempt > 20) {
+    document.getElementById('sauronResults').innerHTML = '<div style="text-align:center;padding:30px;color:var(--error);">Превышено время ожидания (>60с)</div>';
+    document.getElementById('sauronLoading').style.display = 'none';
+    return;
+  }
+  fetch(url)
+    .then(r => {
+      if (r.status === 202) {
+        setTimeout(() => loadSauronPoll(url, attempt + 1), 3000);
+        return null;
+      }
+      return r.json();
+    })
+    .then(data => {
+      if (!data) return;
+      document.getElementById('sauronLoading').style.display = 'none';
+      if (_sauronMode === 'twinks') renderTwinks(data);
+      else renderDeviant(data);
+    })
+    .catch(() => setTimeout(() => loadSauronPoll(url, attempt + 1), 3000));
+}
+
+function riskBadge(risk) {
+  const map = {high:'🔴 Высокий', medium:'🟠 Средний', low:'🔵 Низкий'};
+  return `<span class="risk-badge risk-${risk}">${map[risk]||risk}</span>`;
+}
+function esc(t){const d=document.createElement('span');d.textContent=t;return d.innerHTML;}
+
+function renderTwinks(data) {
+  const c = document.getElementById('sauronResults');
+  if (!data.length) {
+    c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--success);">✅ Подозрительных пар не обнаружено</div>';
+    return;
+  }
+  let h = `<div style="font-size:12px;color:var(--gray);margin-bottom:12px;">Найдено: ${data.length} пар</div>`;
+  data.forEach((item, idx) => {
+    const signals = (item.signals||[]).map(s => `<span class="signal-pill">${esc(s.label)}</span>`).join('');
+    h += `<div class="sauron-card">
+      <div class="sauron-card-head" onclick="this.parentElement.classList.toggle('open')">
+        <span style="color:var(--gray);font-size:12px;min-width:24px">#${idx+1}</span>
+        ${riskBadge(item.risk)}
+        <span style="font-size:13px;font-weight:700;color:var(--white);">${esc(item.name_a)}</span>
+        <span style="color:var(--gray);">↔</span>
+        <span style="font-size:13px;font-weight:700;color:var(--white);">${esc(item.name_b)}</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--gray);">Score: <b style="color:var(--white)">${item.score}</b></span>
+        <span style="color:var(--gray);font-size:14px;">▾</span>
+      </div>
+      <div class="sauron-card-body">
+        <div style="display:flex;gap:24px;margin-bottom:10px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:10px;color:var(--gray);">Игрок A</div>
+            <a href="/admin/players/${item.pid_a}" style="color:var(--primary-blue);font-size:13px;font-weight:600;">${esc(item.name_a)}</a>
+            <div style="font-size:10px;color:var(--gray-dark);font-family:monospace;">${esc(item.steamid_a||'')}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--gray);">Игрок B</div>
+            <a href="/admin/players/${item.pid_b}" style="color:var(--primary-blue);font-size:13px;font-weight:600;">${esc(item.name_b)}</a>
+            <div style="font-size:10px;color:var(--gray-dark);font-family:monospace;">${esc(item.steamid_b||'')}</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--gray);margin-bottom:6px;font-weight:600;">Основания:</div>
+        <div>${signals || '<span style="color:var(--gray-dark)">Нет деталей</span>'}</div>
+      </div>
+    </div>`;
+  });
+  c.innerHTML = h;
+}
+
+function renderDeviant(data) {
+  const c = document.getElementById('sauronResults');
+  if (!data.length) {
+    c.innerHTML = '<div style="text-align:center;padding:40px;color:var(--success);">✅ Девиантного поведения не обнаружено</div>';
+    return;
+  }
+  let h = `<div style="font-size:12px;color:var(--gray);margin-bottom:12px;">Найдено: ${data.length} игроков</div>`;
+  data.forEach((item, idx) => {
+    const incidents = (item.incidents||[]).map(i =>
+      `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--dark-blue-bg);border-radius:6px;margin-bottom:4px;">
+        <span style="font-size:18px;">${i.icon||'⚠️'}</span>
+        <span style="font-size:12px;color:var(--white);">${esc(i.label)}</span>
+        <span style="margin-left:auto;font-size:10px;color:var(--gray);">+${i.score} очк.</span>
+      </div>`
+    ).join('');
+    h += `<div class="sauron-card">
+      <div class="sauron-card-head" onclick="this.parentElement.classList.toggle('open')">
+        <span style="color:var(--gray);font-size:12px;min-width:24px">#${idx+1}</span>
+        ${riskBadge(item.risk)}
+        <span style="font-size:13px;font-weight:700;color:var(--white);">${esc(item.player_name)}</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--gray);">Риск: <b style="color:var(--white)">${item.total_score}</b></span>
+        <span style="color:var(--gray);font-size:14px;">▾</span>
+      </div>
+      <div class="sauron-card-body">
+        <a href="/admin/players/${item.player_id}" style="font-size:11px;color:var(--primary-blue);font-family:monospace;margin-bottom:10px;display:block;">${esc(item.player_steamid||'')} → Профиль</a>
+        ${incidents || '<span style="color:var(--gray-dark)">Нет инцидентов</span>'}
+      </div>
+    </div>`;
+  });
+  c.innerHTML = h;
+}
+
+// Load summary (lightweight — just counts)
+fetch('/api/v1/sauron/summary').then(r=>r.json()).then(d=>{
+  document.getElementById('ss-twink-total').textContent = d.twink_pairs_total ?? '?';
+  document.getElementById('ss-twink-high').textContent = d.twink_high_risk ?? '?';
+  document.getElementById('ss-dev-total').textContent = d.deviant_total ?? '?';
+  document.getElementById('ss-dev-high').textContent = d.deviant_high_risk ?? '?';
+}).catch(()=>{});
+
+// Do NOT auto-run heavy analysis — wait for user to click "Обновить"
+document.getElementById('sauronResults').innerHTML =
+  '<div style="text-align:center;padding:40px;color:var(--gray);font-size:13px;">Нажмите <b>🔍 Обновить</b> для запуска анализа</div>';
+</script>
 {% endif %}
 
 {# ════════════════════════════════════════════════════════════════════════ #}

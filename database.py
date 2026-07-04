@@ -11,6 +11,15 @@ engine = create_engine(
     pool_recycle=3600,
     pool_size=10,
     max_overflow=20,
+    # Without these, a stalled MySQL connection (network blip, server-side lock/
+    # load spike) blocks the calling thread forever. Background worker tasks run
+    # each on their own thread with only a soft timeout (task_scheduler can't
+    # actually kill a stuck thread) — a query that never returns leaves its DB
+    # session checked out of the pool permanently. Enough of those over time
+    # exhaust the pool and freeze the whole app for every request. These
+    # timeouts guarantee pymysql raises instead of blocking indefinitely, so
+    # the thread unwinds and its connection is released back to the pool.
+    connect_args={"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30},
 )
 
 SessionLocal = sessionmaker(

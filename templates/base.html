@@ -83,6 +83,36 @@
       <div>
         {% if request.session.get('username') %}
         <span>Привет, {{ request.session.get('username') }}!</span>
+        <!-- Notification bell -->
+        <div style="position:relative;display:inline-block;margin-right:8px;">
+          <button id="notifBell" onclick="toggleNotifPanel()"
+                  style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--gray);position:relative;padding:4px 6px;transition:.2s;"
+                  title="Уведомления">
+            🔔
+            <span id="notifBadge" style="display:none;position:absolute;top:0;right:0;
+              background:#ff4d80;color:#fff;font-size:9px;font-weight:800;
+              border-radius:50%;min-width:16px;height:16px;line-height:16px;
+              text-align:center;padding:0 3px;"></span>
+          </button>
+          <!-- Notification panel -->
+          <div id="notifPanel" style="display:none;position:absolute;right:0;top:36px;
+            width:360px;background:var(--card-bg);border:1px solid var(--stroke-01);
+            border-radius:var(--border-radius-12);box-shadow:0 8px 32px rgba(0,0,0,.5);
+            z-index:2000;overflow:hidden;">
+            <div style="display:flex;align-items:center;justify-content:space-between;
+              padding:12px 16px;border-bottom:1px solid var(--stroke-01);">
+              <span style="font-size:13px;font-weight:700;color:var(--white);">🔔 Уведомления</span>
+              <div style="display:flex;gap:6px;">
+                <button onclick="markAllRead()" style="font-size:10px;background:none;border:none;color:var(--gray);cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid var(--stroke-01);">Прочитать все</button>
+                <button onclick="clearRead()" style="font-size:10px;background:none;border:none;color:var(--gray);cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid var(--stroke-01);">Очистить</button>
+                <button onclick="toggleNotifPanel()" style="font-size:14px;background:none;border:none;color:var(--gray);cursor:pointer;">✕</button>
+              </div>
+            </div>
+            <div id="notifList" style="max-height:360px;overflow-y:auto;"></div>
+          </div>
+        </div>
+        <!-- Toast container for new notifs -->
+        <div id="notifToastRoot" style="position:fixed;top:70px;right:16px;z-index:1500;display:flex;flex-direction:column;gap:8px;pointer-events:none;"></div>
         <form action="/logout" method="post" style="display:inline;">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
           <button type="submit" class="logout-btn">Выйти</button>
@@ -139,9 +169,6 @@
         {% if check_permission(admin, 'tickets', 'view') %}
         <li><a href="/admin/tickets">Тикеты</a></li>
         {% endif %}
-        {% if check_permission(admin, 'meeting', 'view') %}
-        <li><a href="/admin/meeting">Совещание</a></li>
-        {% endif %}
         {% if check_permission(admin, 'admin', 'view') %}
         <li><a href="/admin/analytics">Аналитика</a></li>
         {% endif %}
@@ -164,15 +191,25 @@
 
     <script>
     /* ═══ Flash toasts ═══ */
-    (function initFlashToasts() {
+    function initFlashToasts() {
       var root = document.getElementById('flash-root');
       if (!root) return;
       root.querySelectorAll('[data-flash]').forEach(function(item) {
+        if (item._toastInit) return;  // already initialized — skip to prevent double-timers
+        item._toastInit = true;
         var closeBtn = item.querySelector('[data-flash-close]');
-        if (closeBtn) closeBtn.addEventListener('click', function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); });
-        setTimeout(function() { item.classList.add('is-leaving'); setTimeout(function(){item.remove();},320); }, 4200);
+        if (closeBtn) closeBtn.addEventListener('click', function() {
+          item.classList.add('is-leaving');
+          setTimeout(function() { if (item.parentNode) item.remove(); }, 320);
+        });
+        // Auto-dismiss after 4.2s
+        setTimeout(function() {
+          item.classList.add('is-leaving');
+          setTimeout(function() { if (item.parentNode) item.remove(); }, 320);
+        }, 4200);
       });
-    })();
+    }
+    initFlashToasts();
 
     /* ═══ SPA Navigation (dynamic page transitions) ═══ */
     (function initSPA() {
@@ -213,6 +250,8 @@
 
       function navigateTo(url, isPopState) {
         loadBar.className = 'spa-loading-bar active';
+        // Export for use by page scripts
+        window.__spaNavigate = navigateTo;
 
         fetch(url, { headers: { 'X-SPA-Request': '1' } })
           .then(function(resp) {
@@ -350,7 +389,143 @@
       });
     })();
 
-    /* ═══ Background Music Player ═══ */
+    /* ═══ Notification System ═══ */
+    (function initNotifications() {
+      var bell = document.getElementById('notifBell');
+      if (!bell) return;  // not logged in
+
+      var badge   = document.getElementById('notifBadge');
+      var panel   = document.getElementById('notifPanel');
+      var list    = document.getElementById('notifList');
+      var toasts  = document.getElementById('notifToastRoot');
+      var panelOpen = false;
+      var lastSeenId = parseInt(localStorage.getItem('nd_notif_last') || '0');
+      var knownIds = new Set();
+
+      // Close panel on outside click
+      document.addEventListener('click', function(e) {
+        if (panelOpen && !panel.contains(e.target) && !bell.contains(e.target)) {
+          panelOpen = false;
+          panel.style.display = 'none';
+        }
+      });
+
+      window.toggleNotifPanel = function() {
+        panelOpen = !panelOpen;
+        panel.style.display = panelOpen ? 'block' : 'none';
+        if (panelOpen) loadNotifList();
+      };
+
+      window.markAllRead = function() {
+        fetch('/api/v1/notifications/read', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{"all":true}'})
+          .then(function() { badge.style.display='none'; loadNotifList(); });
+      };
+
+      window.clearRead = function() {
+        fetch('/api/v1/notifications/clear', {method:'DELETE'})
+          .then(function() { loadNotifList(); });
+      };
+
+      function loadNotifList() {
+        fetch('/api/v1/notifications/all?page_size=30')
+          .then(function(r){return r.json();})
+          .then(function(data) {
+            if (!data.items || !data.items.length) {
+              list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--gray);font-size:13px;">Уведомлений нет</div>';
+              return;
+            }
+            list.innerHTML = data.items.map(function(n) {
+              var color = {success:'#22d06f',error:'#ff4d80',warning:'#ffaa44',info:'#5b9cf5'}[n.type]||'var(--gray)';
+              var bg = n.is_read ? '' : 'background:rgba(26,104,222,.06);';
+              var click = n.link ? 'onclick="markRead('+n.id+');if(window.__spaNavigate)window.__spaNavigate(\''+n.link+'\');else location.href=\''+n.link+'\'"' : 'onclick="markRead('+n.id+')"';
+              return '<div style="'+bg+'padding:10px 14px;border-bottom:1px solid var(--stroke-01);cursor:pointer;display:flex;gap:10px;align-items:flex-start;" '+click+'>'
+                + '<span style="font-size:18px;flex-shrink:0;">'+(n.icon||'🔔')+'</span>'
+                + '<div style="flex:1;min-width:0;">'
+                + '<div style="font-size:12px;font-weight:'+(n.is_read?'500':'700')+';color:'+(n.is_read?'var(--gray)':color)+';">'+escHtml(n.title)+'</div>'
+                + (n.body ? '<div style="font-size:11px;color:var(--gray-dark);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(n.body)+'</div>' : '')
+                + '<div style="font-size:10px;color:var(--gray-dark);margin-top:2px;">'+fmtAgo(n.created_at)+'</div>'
+                + '</div>'
+                + (n.is_read ? '' : '<span style="width:7px;height:7px;border-radius:50%;background:'+color+';flex-shrink:0;margin-top:4px;"></span>')
+                + '</div>';
+            }).join('');
+          });
+      }
+
+      window.markRead = function(id) {
+        fetch('/api/v1/notifications/read', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids:[id]})});
+      };
+
+      function showToast(n) {
+        if (knownIds.has(n.id)) return;
+        knownIds.add(n.id);
+        var color = {success:'#22d06f',error:'#ff4d80',warning:'#ffaa44',info:'#5b9cf5'}[n.type]||'var(--gray)';
+        var toast = document.createElement('div');
+        toast.style.cssText = 'pointer-events:auto;background:rgba(10,18,46,.95);border:1px solid '+color+';border-radius:10px;'
+          + 'padding:10px 14px;box-shadow:0 4px 20px rgba(0,0,0,.5);max-width:320px;display:flex;gap:10px;align-items:flex-start;'
+          + 'animation:slideInRight .3s ease;backdrop-filter:blur(6px);';
+        toast.innerHTML = '<span style="font-size:18px;">'+(n.icon||'🔔')+'</span>'
+          + '<div style="flex:1;"><div style="font-size:12px;font-weight:700;color:'+color+';">'+escHtml(n.title)+'</div>'
+          + (n.body ? '<div style="font-size:11px;color:var(--gray);margin-top:2px;">'+escHtml(n.body.substring(0,100))+'</div>' : '')
+          + '</div>'
+          + '<button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--gray);cursor:pointer;font-size:14px;flex-shrink:0;">✕</button>';
+        if (n.link) toast.style.cursor='pointer';
+        if (n.link) toast.addEventListener('click', function(e) {
+          if (e.target.tagName==='BUTTON') return;
+          if (window.__spaNavigate) window.__spaNavigate(n.link); else location.href=n.link;
+          toast.remove();
+        });
+        toasts.appendChild(toast);
+        setTimeout(function() { toast.style.opacity='0'; toast.style.transition='opacity .3s'; setTimeout(function(){toast.remove();},320); }, 6000);
+        markRead(n.id);
+      }
+
+      function poll() {
+        fetch('/api/v1/notifications/poll')
+          .then(function(r){return r.json();})
+          .then(function(data) {
+            // Update badge
+            if (data.unread > 0) {
+              badge.style.display = 'block';
+              badge.textContent = data.unread > 99 ? '99+' : data.unread;
+            } else {
+              badge.style.display = 'none';
+            }
+            // Show toast for truly new notifications
+            if (data.recent) {
+              data.recent.forEach(function(n) {
+                if (!n.is_read && n.id > lastSeenId) {
+                  showToast(n);
+                }
+              });
+              var maxId = data.recent.reduce(function(m,n){return Math.max(m,n.id);}, lastSeenId);
+              if (maxId > lastSeenId) {
+                lastSeenId = maxId;
+                localStorage.setItem('nd_notif_last', maxId);
+              }
+            }
+          })
+          .catch(function(){});  // silent fail
+      }
+
+      function escHtml(t) { var d=document.createElement('span');d.textContent=t;return d.innerHTML; }
+      function fmtAgo(iso) {
+        if (!iso) return '';
+        var diff = (Date.now() - new Date(iso).getTime()) / 1000;
+        if (diff < 60) return 'только что';
+        if (diff < 3600) return Math.floor(diff/60)+' мин назад';
+        if (diff < 86400) return Math.floor(diff/3600)+' ч назад';
+        return Math.floor(diff/86400)+' дн. назад';
+      }
+
+      // Poll every 15 seconds
+      poll();
+      setInterval(poll, 15000);
+
+      // Add slideIn animation
+      var style = document.createElement('style');
+      style.textContent = '@keyframes slideInRight{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}';
+      document.head.appendChild(style);
+    })();
     (function initMusicPlayer() {
       const audio = document.getElementById('bgMusic');
       const playBtn = document.getElementById('mpPlayBtn');
