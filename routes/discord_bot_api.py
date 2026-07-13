@@ -246,6 +246,34 @@ def set_bot_config(update: ConfigUpdate, db: Session = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ROUND STATUS (for the auto-updating Discord embed)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/round-status")
+def get_round_status(server_name: str = Query(...), db: Session = Depends(get_db)):
+    """Aggregate live round/location/ship/mission/player-count/shuttle-ETA for one server."""
+    from routes.dispatch import get_round_state
+    from services import ServerModerationService
+    from models import ServerLiveState
+
+    round_state = get_round_state(db, server_name)
+    online_players = ServerModerationService(db).get_online_players(server_name=server_name)
+    live = db.query(ServerLiveState).filter(ServerLiveState.server_name == server_name).first()
+
+    return {
+        "server_name": server_name,
+        "active": round_state["active"],
+        "location": round_state["location"],
+        "submarine_name": round_state["submarine_name"],
+        "mission": round_state["mission"],
+        "started_at": round_state["started_at"].isoformat() if round_state["started_at"] else None,
+        "player_count": len(online_players),
+        "submarine_health": live.submarine_health if live else None,
+        "shuttle_arrival_at": live.shuttle_arrival_at.isoformat() + "Z" if live and live.shuttle_arrival_at else None,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SUB-PROJECT MESSAGE ID CALLBACK
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -474,6 +502,108 @@ async def admin_discord_bot_page(request: Request, db: Session = Depends(get_db)
         "twink_suspects": twink_suspects,
         "flashes": flashes,
     })
+
+
+@panel_router.get("/api/v1/admin/discord-bot")
+async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "view"):
+        raise HTTPException(status_code=403)
+
+    members_count = db.query(DiscordMember).count()
+    pending_actions = db.query(DiscordBotAction).filter(DiscordBotAction.executed == 0).count()
+    last_member = db.query(DiscordMember).order_by(DiscordMember.last_synced_at.desc()).first()
+    last_sync = last_member.last_synced_at.isoformat() if last_member and last_member.last_synced_at else None
+
+    configs = db.query(DiscordBotConfig).all()
+    config = {c.key: c.value for c in configs}
+
+    antiraid_events = db.query(DiscordAntiRaidLog).order_by(DiscordAntiRaidLog.occurred_at.desc()).limit(30).all()
+    ar_list = [
+        {
+            "event_type": e.event_type, "discord_id": e.discord_id, "username": e.username,
+            "details": e.details, "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
+            "resolved": bool(e.resolved),
+        }
+        for e in antiraid_events
+    ]
+
+    twink_suspects = []
+    try:
+        from datetime import timedelta
+        recent_threshold = datetime.utcnow() - timedelta(days=7)
+        recent_members = db.query(DiscordMember).filter(DiscordMember.joined_at >= recent_threshold).all()
+        confirmed_ids = set(
+            p.discord_id for p in db.query(PlayerData).filter(
+                PlayerData.discord_id.isnot(None), PlayerData.discord_id_confirmed == 1
+            ).all()
+        )
+        for member in recent_members:
+            if member.discord_id in confirmed_ids:
+                continue
+            if member.display_name and len(member.display_name) >= 4:
+                similar = db.query(PlayerData).filter(
+                    PlayerData.player_last_time_name.ilike(f"%{member.display_name[:6]}%")
+                ).first()
+                if similar and similar.discord_id and similar.discord_id != member.discord_id:
+                    twink_suspects.append({
+                        "new_discord_id": member.discord_id, "new_username": member.username,
+                        "new_display_name": member.display_name,
+                        "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+                        "similar_player_name": similar.player_last_time_name,
+                    })
+    except Exception:
+        pass
+
+    return {
+        "members_count": members_count, "pending_actions": pending_actions, "last_sync": last_sync,
+        "config": config, "antiraid_events": ar_list, "twink_suspects": twink_suspects,
+        "can_edit": check_permission(admin, "discord_bot", "edit"),
+    }
+
+
+@panel_router.post("/api/v1/admin/discord-bot/config")
+async def api_admin_discord_bot_set_config(request: Request, db: Session = Depends(get_db)):
+    """Set a DiscordBotConfig key/value from the admin-session-authenticated web panel
+    (previously only settable via Discord bang-commands using the bot's own API key)."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "edit"):
+        raise HTTPException(status_code=403)
+
+    body = await request.json()
+    key = (body.get("key") or "").strip()
+    value = body.get("value")
+    if not key:
+        raise HTTPException(status_code=400, detail="key required")
+
+    record = db.query(DiscordBotConfig).filter(DiscordBotConfig.key == key).first()
+    if record:
+        record.value = value
+    else:
+        record = DiscordBotConfig(key=key, value=value)
+        db.add(record)
+    db.commit()
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_bot_config_set", {"key": key})
+    return {"status": "ok", "key": key, "value": value}
+
+
+@panel_router.post("/api/v1/admin/discord-bot/action")
+async def api_admin_discord_bot_send_action(request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "edit"):
+        raise HTTPException(status_code=403)
+
+    body = await request.json()
+    action_type = body.get("action_type")
+    payload = body.get("payload") or {}
+    if not action_type:
+        raise HTTPException(status_code=400, detail="action_type required")
+
+    action = DiscordBotAction(action_type=action_type, payload=payload, queued_by_admin_id=admin.id)
+    db.add(action)
+    db.commit()
+    return {"status": "ok", "action_id": action.id}
 
 
 @panel_router.post("/admin/discord-bot/action")

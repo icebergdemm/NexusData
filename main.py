@@ -23,7 +23,7 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router
 from workers import start_playtime_worker
 from datetime import datetime
 
@@ -153,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(replays_panel_router)
     app.include_router(analytics_router)
     app.include_router(notifications_router)
+    app.include_router(documents_router)
 
     # ── Register global Jinja2 filters for MSK time display ──────────────────
     from utils_time import utc_to_msk, format_msk
@@ -205,7 +206,38 @@ def create_app() -> FastAPI:
     sub_img_dir = os.path.join("uploads", "sub_projects", "images")
     os.makedirs(sub_img_dir, exist_ok=True)
     app.mount("/sub_projects/images", StaticFiles(directory=sub_img_dir), name="sub_project_images")
-    
+
+    # Serve uploaded document editor images at /documents/images/
+    doc_img_dir = os.path.join("uploads", "documents", "images")
+    os.makedirs(doc_img_dir, exist_ok=True)
+    app.mount("/documents/images", StaticFiles(directory=doc_img_dir), name="document_images")
+
+    # ── New React/shadcn SPA (Part 3 of the CRM rewrite), served under /app ──
+    # Coexists with the Jinja2 /admin panel; registered last so it never shadows
+    # any API or /admin route. Guarded so startup doesn't fail before the first
+    # `npm run build` has produced frontend/dist.
+    from fastapi.responses import FileResponse as _FileResponse
+
+    _spa_dist_dir = os.path.join("frontend", "dist")
+    _spa_assets_dir = os.path.join(_spa_dist_dir, "assets")
+    _spa_index_file = os.path.join(_spa_dist_dir, "index.html")
+
+    if os.path.isdir(_spa_assets_dir):
+        app.mount("/app/assets", _StaticFiles(directory=_spa_assets_dir), name="spa-assets")
+
+    async def _spa_index_response():
+        if os.path.isfile(_spa_index_file):
+            return _FileResponse(_spa_index_file)
+        raise StarletteHTTPException(status_code=503, detail="Frontend not built yet — run `npm run build` in frontend/")
+
+    @app.get("/app")
+    async def spa_root():
+        return await _spa_index_response()
+
+    @app.get("/app/{full_path:path}")
+    async def spa_catchall(full_path: str):
+        return await _spa_index_response()
+
     # Startup event
     @app.on_event("startup")
     async def startup():
@@ -226,13 +258,15 @@ def create_app() -> FastAPI:
     # HTTP exception handler to render friendly templates for common errors
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request, exc):
+        path = str(request.url.path or "")
+        if path.startswith("/api/"):
+            return _JSONResponse(status_code=exc.status_code, content={"success": False, "error": str(exc.detail)})
         if exc.status_code == 404:
             return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
         if exc.status_code == 403:
             return templates.TemplateResponse("403.html", {"request": request}, status_code=403)
         if exc.status_code == 401:
             # For admin area requests, redirect unauthenticated users to the login page
-            path = str(request.url.path or "")
             if path.startswith("/admin") or path.startswith("/logout") or path.startswith("/auth"):
                 login_url = f"/login?next={path}"
                 return RedirectResponse(url=login_url, status_code=302)

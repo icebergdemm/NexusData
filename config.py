@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     replays_upload_dir: str = "uploads/replays"
     replays_retention_days: int = 30  # auto-delete demos older than this
 
+    # Document editor: inline image uploads
+    documents_upload_dir: str = "uploads/documents"
+
     # SFTP Server 1
     sftp_server_1_host: str = ""
     sftp_server_1_port: int = 22

@@ -313,6 +313,142 @@ async def admin_ticket_send_message(
     return RedirectResponse(url=f"/admin/tickets/{ticket_id}", status_code=302)
 
 
+def _load_ticket_config() -> dict:
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'tickets.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {"types": {}}
+
+
+def _serialize_ticket(t: Ticket) -> dict:
+    return {
+        "id": t.id,
+        "ticket_type": t.ticket_type,
+        "title": t.title,
+        "status": t.status,
+        "discord_channel_id": t.discord_channel_id,
+        "creator_discord_id": t.creator_discord_id,
+        "creator_username": t.creator_username,
+        "creator_display_name": t.creator_display_name,
+        "player_id": t.player_id,
+        "closed_by": t.closed_by,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None,
+        "awaiting_admin": bool(t.awaiting_admin),
+    }
+
+
+@panel_router.get("/api/v1/admin/tickets")
+async def api_tickets_list(request: Request, status: str = Query("open"), db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "view"):
+        raise HTTPException(status_code=403)
+
+    q = db.query(Ticket)
+    if status == "open":
+        q = q.filter(Ticket.status != "closed")
+    elif status == "closed":
+        q = q.filter(Ticket.status == "closed")
+    tickets = q.order_by(desc(Ticket.created_at)).limit(100).all()
+
+    return {
+        "tickets": [_serialize_ticket(t) for t in tickets],
+        "status_filter": status,
+        "ticket_config": _load_ticket_config(),
+        "can_edit": check_permission(admin, "tickets", "edit"),
+    }
+
+
+@panel_router.get("/api/v1/admin/tickets/{ticket_id}")
+async def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "view"):
+        raise HTTPException(status_code=403)
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404)
+
+    messages = db.query(TicketMessage).filter(TicketMessage.ticket_id == ticket_id).order_by(TicketMessage.created_at).all()
+    player = db.query(PlayerData).filter(PlayerData.player_id == ticket.player_id).first() if ticket.player_id else None
+
+    return {
+        "ticket": _serialize_ticket(ticket),
+        "player": {"player_id": player.player_id, "player_last_time_name": player.player_last_time_name, "player_steamid": player.player_steamid} if player else None,
+        "messages": [
+            {
+                "id": m.id, "author_discord_id": m.author_discord_id, "author_username": m.author_username,
+                "author_display_name": m.author_display_name, "author_avatar_url": m.author_avatar_url,
+                "content": m.content, "attachments": m.attachments or [], "is_bot": bool(m.is_bot),
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in messages
+        ],
+        "ticket_config": _load_ticket_config(),
+        "can_edit": check_permission(admin, "tickets", "edit"),
+    }
+
+
+@panel_router.post("/api/v1/admin/tickets/{ticket_id}/send")
+async def api_ticket_send_message(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "edit"):
+        raise HTTPException(status_code=403)
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404)
+
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+
+    bot_action = DiscordBotAction(
+        action_type="ticket_send_message",
+        payload={"ticket_id": ticket_id, "channel_id": ticket.discord_channel_id, "content": content, "author_name": admin.discord_username},
+        queued_by_admin_id=admin.id,
+    )
+    db.add(bot_action)
+
+    msg = TicketMessage(
+        ticket_id=ticket_id, author_discord_id="system", author_username=admin.discord_username,
+        author_display_name=f"[ND] {admin.discord_username}", content=content, is_bot=1,
+    )
+    db.add(msg)
+    ticket.last_message_at = datetime.utcnow()
+    ticket.awaiting_admin = 0
+    db.commit()
+    return {"status": "ok"}
+
+
+@panel_router.post("/api/v1/admin/tickets/{ticket_id}/close")
+async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "edit"):
+        raise HTTPException(status_code=403)
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404)
+
+    ticket.status = "closed"
+    ticket.closed_by = admin.discord_username
+    ticket.closed_at = datetime.utcnow()
+
+    if ticket.discord_channel_id:
+        db.add(DiscordBotAction(
+            action_type="ticket_close_channel",
+            payload={"ticket_id": ticket_id, "channel_id": ticket.discord_channel_id},
+            queued_by_admin_id=admin.id,
+        ))
+    db.commit()
+    return {"status": "ok"}
+
+
 @panel_router.get("/admin/tickets/{ticket_id}/messages-json")
 async def admin_ticket_messages_json(
     request: Request,

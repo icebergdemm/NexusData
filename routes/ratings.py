@@ -322,6 +322,252 @@ async def admin_rating_recalculate(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# RATINGS JSON API (for the React SPA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/v1/admin/ratings")
+async def api_ratings_page(
+    role: str = Query("captain"),
+    search: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "ratings", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from rating_constants import ROLES, K, S, DECAY_THRESHOLD_DAYS, DECAY_RATE
+    if role not in ROLES:
+        role = "captain"
+
+    search_result = None
+    if search and search.strip():
+        q = search.strip()
+        player = db.query(PlayerData).filter(PlayerData.player_steamid == q).first()
+        if not player:
+            player = db.query(PlayerData).filter(PlayerData.player_last_time_name.ilike(f"%{q}%")).first()
+        if player:
+            records = db.query(PlayerRating).filter(PlayerRating.steam_id == player.player_steamid).all()
+            search_result = {
+                "player_id": player.player_id,
+                "player_name": player.player_last_time_name,
+                "player_steamid": player.player_steamid,
+                "ratings": {
+                    r.role: {
+                        "rating": round(r.current_rating, 2),
+                        "points": round(r.cumulative_points, 1),
+                        "last_activity": r.last_activity_date.isoformat() if r.last_activity_date else None,
+                    }
+                    for r in records
+                },
+            }
+
+    top_records = (
+        db.query(PlayerRating)
+        .filter(PlayerRating.role == role, PlayerRating.current_rating > 0)
+        .order_by(desc(PlayerRating.current_rating))
+        .limit(100)
+        .all()
+    )
+    steam_ids = [r.steam_id for r in top_records]
+    players_map = {}
+    if steam_ids:
+        players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all()
+        players_map = {p.player_steamid: p for p in players}
+
+    leaderboard = []
+    for i, record in enumerate(top_records, 1):
+        player = players_map.get(record.steam_id)
+        leaderboard.append({
+            "rank": i,
+            "steam_id": record.steam_id,
+            "player_name": player.player_last_time_name if player else record.steam_id,
+            "player_id": player.player_id if player else None,
+            "rating": round(record.current_rating, 2),
+            "cumulative_points": round(record.cumulative_points, 1),
+            "last_activity": record.last_activity_date.isoformat() if record.last_activity_date else None,
+        })
+
+    return {
+        "leaderboard": leaderboard,
+        "selected_role": role,
+        "roles": ROLES,
+        "search_query": search,
+        "search_result": search_result,
+        "rating_params": {"K": K, "S": S, "decay_threshold_days": DECAY_THRESHOLD_DAYS, "decay_rate": DECAY_RATE},
+        "snapshots": get_snapshots_list(),
+        "can_edit": check_permission(current_admin, "ratings", "edit"),
+    }
+
+
+@router.post("/api/v1/admin/ratings/snapshot/generate")
+async def api_rating_snapshot_generate(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "ratings", "edit"):
+        raise HTTPException(status_code=403)
+
+    body = await request.json()
+    title = body.get("title") or ""
+    date_from = body.get("date_from")
+    date_to = body.get("date_to")
+
+    from rating_constants import ROLES, K, S
+    from rating_engine import calculate_all_ratings
+
+    now = datetime.utcnow()
+    ratings_data = calculate_all_ratings(db)
+
+    steam_ids = list(ratings_data.keys())
+    players_map = {}
+    if steam_ids:
+        players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all()
+        players_map = {p.player_steamid: p.player_last_time_name for p in players}
+
+    leaderboards = {}
+    for role in ROLES:
+        entries = []
+        for steam_id, roles_dict in ratings_data.items():
+            if role in roles_dict:
+                entries.append({
+                    "steam_id": steam_id, "player_name": players_map.get(steam_id, steam_id),
+                    "cumulative_points": roles_dict[role]["points"], "rating": roles_dict[role]["rating"],
+                })
+        entries.sort(key=lambda x: x.get("rating", 0), reverse=True)
+        leaderboards[role] = entries[:100]
+
+    snapshot_title = title.strip() or f"Рейтинг {now.strftime('%d.%m.%Y %H:%M')}"
+    snapshot = {
+        "meta": {
+            "title": snapshot_title, "created_at": now.isoformat(), "created_by": current_admin.discord_username,
+            "date_from": date_from or None, "date_to": date_to or None,
+            "total_players": len(ratings_data), "params": {"K": K, "S": S},
+        },
+        "leaderboards": leaderboards,
+    }
+    safe_title = now.strftime("%Y%m%d_%H%M%S")
+    filename = f"rating_snapshot_{safe_title}.json"
+    filepath = os.path.join(SNAPSHOTS_DIR, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "rating_snapshot_generate", {
+        "filename": filename, "title": snapshot_title, "players": len(ratings_data)
+    })
+    return {"status": "ok", "filename": filename, "title": snapshot_title, "players": len(ratings_data)}
+
+
+@router.get("/api/v1/admin/ratings/snapshot/{filename}/view")
+async def api_rating_snapshot_view(
+    filename: str,
+    role: str = Query("captain"),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "ratings", "view"):
+        raise HTTPException(status_code=403)
+
+    from rating_constants import ROLES
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(SNAPSHOTS_DIR, safe_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        snapshot = json.load(f)
+    if role not in ROLES:
+        role = "captain"
+
+    return {
+        "meta": snapshot.get("meta", {}),
+        "filename": safe_name,
+        "leaderboard": snapshot.get("leaderboards", {}).get(role, []),
+        "selected_role": role,
+        "roles": ROLES,
+    }
+
+
+@router.delete("/api/v1/admin/ratings/snapshot/{filename}")
+async def api_rating_snapshot_delete(
+    filename: str,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "ratings", "edit"):
+        raise HTTPException(status_code=403)
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(SNAPSHOTS_DIR, safe_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    os.remove(filepath)
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/ratings/snapshot/{filename}/restore")
+async def api_rating_snapshot_restore(
+    filename: str,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "ratings", "edit"):
+        raise HTTPException(status_code=403)
+
+    from rating_constants import ROLES
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(SNAPSHOTS_DIR, safe_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Файл снапшота не найден")
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        snapshot = json.load(f)
+    leaderboards = snapshot.get("leaderboards", {})
+    now = datetime.utcnow()
+
+    db.query(PlayerRating).delete()
+    restored = 0
+    for role, entries in leaderboards.items():
+        if role not in ROLES:
+            continue
+        for entry in entries:
+            steam_id = entry.get("steam_id", "")
+            if not steam_id:
+                continue
+            rating = entry.get("rating", 0.0)
+            points = entry.get("cumulative_points", 0.0)
+            if rating > 0:
+                db.add(PlayerRating(
+                    steam_id=steam_id, role=role, cumulative_points=float(points),
+                    current_rating=float(rating), last_activity_date=now, last_decay_applied_at=now,
+                ))
+                restored += 1
+    db.commit()
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "rating_snapshot_restore", {"filename": safe_name, "restored_records": restored})
+    return {"status": "ok", "restored": restored, "title": snapshot.get("meta", {}).get("title", safe_name)}
+
+
+@router.post("/api/v1/admin/ratings/recalculate-all")
+async def api_rating_recalculate_all(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "ratings", "edit"):
+        raise HTTPException(status_code=403)
+    try:
+        from task_scheduler import scheduler, Priority
+        from workers import task_recalculate_ratings
+        scheduler.submit(task_recalculate_ratings, priority=Priority.HIGH, task_id="rating_recalc_manual", deduplicate=False, timeout=300.0)
+        return {"status": "queued"}
+    except ImportError:
+        from workers import task_recalculate_ratings
+        result = task_recalculate_ratings()
+        return {"status": "ok", "players_recalculated": result.get("players_recalculated")}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SNAPSHOTS
 # ══════════════════════════════════════════════════════════════════════════════
 

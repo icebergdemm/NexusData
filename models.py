@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, UniqueConstraint
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -645,6 +646,22 @@ class OnlineSnapshot(Base):
     recorded_at = Column(DateTime, default=func.now(), index=True)
 
 
+class ServerLiveState(Base):
+    """Current live state per game server (submarine health, supply shuttle ETA).
+
+    One row per server_name, upserted on every /server/players report — unlike
+    OnlineSnapshot (historical log) this only ever holds the latest known values.
+    """
+    __tablename__ = "server_live_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(50), unique=True, nullable=False, index=True)
+    submarine_health = Column(Integer, nullable=True)  # 0-100
+    supply_shuttle_eta_seconds = Column(Integer, nullable=True)  # as last reported
+    shuttle_arrival_at = Column(DateTime, nullable=True)  # computed absolute time
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
 class AdminNotification(Base):
     """Personal notification for an admin user."""
     __tablename__ = "admin_notifications"
@@ -660,3 +677,108 @@ class AdminNotification(Base):
     is_read = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=func.now(), index=True)
     expires_at = Column(DateTime, nullable=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCUMENT EDITOR (shared Google-Docs-like document library)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class DocumentFolder(Base):
+    """Personal folder for organizing documents. Not shared — sharing is per-document."""
+    __tablename__ = "document_folders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    parent_id = Column(Integer, ForeignKey("document_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now())
+
+    owner = relationship("AdminUser", foreign_keys=[owner_admin_id])
+
+
+class Document(Base):
+    """A single document. Content is stored as Tiptap/ProseMirror JSON."""
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), nullable=False, default="Без названия")
+    icon = Column(String(16), nullable=True)  # emoji
+    content = Column(JSON, nullable=True)  # ProseMirror JSON document
+    content_text = Column(LONGTEXT, nullable=True)  # plain-text extract for search
+    folder_id = Column(Integer, ForeignKey("document_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    last_edited_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    version = Column(Integer, nullable=False, default=1)  # optimistic concurrency
+    is_archived = Column(Boolean, nullable=False, default=False)
+    is_deleted = Column(Boolean, nullable=False, default=False, index=True)  # trash
+    deleted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), index=True)
+
+    owner = relationship("AdminUser", foreign_keys=[owner_admin_id])
+    last_editor = relationship("AdminUser", foreign_keys=[last_edited_by_admin_id])
+    folder = relationship("DocumentFolder", foreign_keys=[folder_id])
+    permissions = relationship("DocumentPermission", back_populates="document", cascade="all, delete-orphan")
+    comments = relationship("DocumentComment", back_populates="document", cascade="all, delete-orphan")
+
+
+class DocumentPermission(Base):
+    """Grants view/comment/edit access to a document beyond its owner."""
+    __tablename__ = "document_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    grantee_type = Column(String(20), nullable=False)  # "admin" | "privilege_group" | "everyone"
+    grantee_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    grantee_group_id = Column(Integer, ForeignKey("admin_privilege_groups.id"), nullable=True)
+    level = Column(String(10), nullable=False, default="view")  # "view" | "comment" | "edit"
+    granted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    document = relationship("Document", back_populates="permissions")
+    grantee_admin = relationship("AdminUser", foreign_keys=[grantee_admin_id])
+    grantee_group = relationship("AdminPrivilegeGroup", foreign_keys=[grantee_group_id])
+
+
+class DocumentRevision(Base):
+    """Point-in-time snapshot of a document's content, for version history."""
+    __tablename__ = "document_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=True)
+    content = Column(JSON, nullable=True)
+    version = Column(Integer, nullable=False)
+    saved_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    saved_by = relationship("AdminUser", foreign_keys=[saved_by_admin_id])
+
+
+class DocumentComment(Base):
+    """Inline comment anchored to a highlighted range (via a `comment` mark in the doc)."""
+    __tablename__ = "document_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("document_comments.id", ondelete="CASCADE"), nullable=True, index=True)
+    author_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False)
+    body = Column(String(2000), nullable=False)
+    anchor_text = Column(String(500), nullable=True)  # quoted snippet the comment refers to
+    mark_id = Column(String(64), nullable=True, index=True)  # matches the comment mark's id in the doc JSON
+    resolved = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    document = relationship("Document", back_populates="comments")
+    author = relationship("AdminUser", foreign_keys=[author_admin_id])
+
+
+class DocumentStar(Base):
+    """Per-admin favorite/starred document."""
+    __tablename__ = "document_stars"
+    __table_args__ = (UniqueConstraint("document_id", "admin_id", name="ux_document_star"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now())

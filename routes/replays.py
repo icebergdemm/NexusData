@@ -257,6 +257,110 @@ async def replay_player_page(request: Request, replay_id: int, db: Session = Dep
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# JSON API (for the React SPA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _serialize_replay(r) -> dict:
+    return {
+        "id": r.id, "server_name": r.server_name, "submarine_name": r.submarine_name,
+        "level_name": r.level_name, "filename": r.filename, "file_size": r.file_size,
+        "duration_ms": r.duration_ms, "has_voice": bool(r.has_voice),
+        "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+        "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
+        "notes": r.notes,
+    }
+
+
+@panel_router.get("/api/v1/admin/replays")
+async def api_replays_list(
+    request: Request, page: int = Query(1, ge=1), server: Optional[str] = Query(None), db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    svc = ReplayService(db)
+    page_size = 30
+    rows, total = svc.get_all(limit=page_size, offset=(page - 1) * page_size, server_name=server)
+    total_pages = (total + page_size - 1) // page_size if total else 1
+
+    return {
+        "replays": [_serialize_replay(r) for r in rows],
+        "total": total, "page": page, "total_pages": total_pages, "selected_server": server,
+        "retention_days": services_replays.get_retention_days(db),
+        "upload_dir": services_replays.get_upload_dir(db),
+        "can_delete": check_permission(admin, "replays", "delete"),
+        "is_superuser": admin.is_superuser,
+    }
+
+
+@panel_router.get("/api/v1/admin/replays/{replay_id}")
+async def api_replay_detail(request: Request, replay_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    svc = ReplayService(db)
+    replay = svc.get_by_id(replay_id)
+    if not replay:
+        raise HTTPException(status_code=404, detail="Реплей не найден")
+    return {"replay": _serialize_replay(replay)}
+
+
+@panel_router.delete("/api/v1/admin/replays/{replay_id}")
+async def api_replay_delete(request: Request, replay_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "delete"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    svc = ReplayService(db)
+    if not svc.delete(replay_id):
+        raise HTTPException(status_code=404, detail="Реплей не найден")
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "replay_delete", {"replay_id": replay_id})
+    return {"status": "ok"}
+
+
+@panel_router.post("/api/v1/admin/replays/upload")
+async def api_replay_manual_upload(
+    request: Request, file: UploadFile = File(...), server_name: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None), db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только суперпользователь может загружать реплеи вручную")
+
+    svc = ReplayService(db)
+    replay = await svc.save_upload_stream(file, server_name=(server_name or None), notes=(notes or "Загружен вручную через сайт"))
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "replay_manual_upload", {"replay_id": replay.id})
+    return {"status": "ok", "replay": _serialize_replay(replay)}
+
+
+@panel_router.post("/api/v1/admin/replays/settings")
+async def api_replay_settings(
+    request: Request, db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только суперпользователь может менять настройки")
+
+    body = await request.json()
+    retention_days = max(1, int(body.get("retention_days", 1)))
+    upload_dir = (body.get("upload_dir") or "").strip()
+
+    services_replays.set_setting(db, services_replays.SETTING_RETENTION_DAYS, str(retention_days))
+    if upload_dir:
+        services_replays.set_setting(db, services_replays.SETTING_UPLOAD_DIR, upload_dir)
+        os.makedirs(upload_dir, exist_ok=True)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "replay_settings_update", {"retention_days": retention_days, "upload_dir": upload_dir})
+    return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Download (streams compressed archive to browser)
 # ══════════════════════════════════════════════════════════════════════════════
 

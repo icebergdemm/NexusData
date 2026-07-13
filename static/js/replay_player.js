@@ -588,5 +588,13 @@
       loadingEl.innerHTML='<div class="rpv-err">Ошибка: '+esc(e.message)+'</div>';console.error(e);
     }
   }
-  document.addEventListener("DOMContentLoaded",boot);
+  // Classic full-page load: DOMContentLoaded hasn't fired yet, wait for it.
+  // Dynamically injected (SPA route): the document is already "complete" by
+  // the time this script runs, so DOMContentLoaded already fired and would
+  // never fire again — boot immediately in that case instead.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
 })();

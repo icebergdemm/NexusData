@@ -72,6 +72,34 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+ME_PERMISSION_PAGES = [
+    "admin", "players", "players_special", "moderation", "dispatch", "replays",
+    "sessions", "audit", "privileges", "kits", "punishments", "sub_projects",
+    "ratings", "discord_bot", "tickets", "analytics", "documents",
+]
+
+
+@router.get("/api/v1/me")
+async def get_me(request: Request, current_admin: AdminUser = Depends(get_current_admin)):
+    """Identity + permissions for the React SPA — mirrors what base.html's
+    per-nav-item check_permission() calls do for the Jinja2 admin panel."""
+    permissions = {
+        page: {
+            "view": check_permission(current_admin, page, "view"),
+            "edit": check_permission(current_admin, page, "edit"),
+        }
+        for page in ME_PERMISSION_PAGES
+    }
+    return {
+        "id": current_admin.id,
+        "discord_username": current_admin.discord_username,
+        "discord_avatar": current_admin.discord_avatar,
+        "is_superuser": bool(current_admin.is_superuser),
+        "permissions": permissions,
+        "csrf_token": request.session.get("csrf_token"),
+    }
+
+
 async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
     """Validate CSRF token with a safe fallback to a valid server-side admin session.
 
@@ -99,28 +127,37 @@ async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
     raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
+def _safe_next_path(next_url: Optional[str], default: str = "/admin") -> str:
+    """Only allow same-origin relative paths as a post-login redirect target."""
+    if not next_url or not next_url.startswith("/") or next_url.startswith("//"):
+        return default
+    return next_url
+
+
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, db: Session = Depends(get_db)):
+async def login_page(request: Request, next: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """Discord login page"""
     # Initialize CSRF token if not exists
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
-    
+
+    next_path = _safe_next_path(next)
+
     # Redirect only if server-side admin session exists and is valid.
     token = request.cookies.get("admin_token")
     if token:
         now = datetime.utcnow()
         session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
         if session and (session.expires_at is None or session.expires_at > now):
-            return RedirectResponse(url="/admin", status_code=302)
+            return RedirectResponse(url=next_path, status_code=302)
 
         # Stale/invalid token cookie: clear it to prevent redirect loops.
         request.session.pop("username", None)
-        response = templates.TemplateResponse("login.html", {"request": request, "oauth_url": discord_auth.get_oauth_url()})
+        response = templates.TemplateResponse("login.html", {"request": request, "oauth_url": discord_auth.get_oauth_url(state=next_path)})
         response.delete_cookie("admin_token")
         return response
 
-    oauth_url = discord_auth.get_oauth_url()
+    oauth_url = discord_auth.get_oauth_url(state=next_path)
     return templates.TemplateResponse("login.html", {"request": request, "oauth_url": oauth_url})
 
 
@@ -130,6 +167,7 @@ async def discord_callback(
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     error_description: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Discord OAuth callback"""
@@ -204,7 +242,7 @@ async def discord_callback(
         db.add(admin_session)
         db.commit()
 
-        response = RedirectResponse(url="/admin", status_code=302)
+        response = RedirectResponse(url=_safe_next_path(state), status_code=302)
         response.set_cookie(
             "admin_token",
             token,
@@ -385,6 +423,207 @@ async def admin_users_list(
         "groups_data": groups_data,
         "flashes": pop_flashes(request),
     })
+
+
+def _serialize_admin_user(a: AdminUser) -> dict:
+    return {
+        "id": a.id, "discord_id": a.discord_id, "discord_username": a.discord_username,
+        "discord_avatar": a.discord_avatar, "role": a.role, "is_superuser": bool(a.is_superuser),
+        "privilege_group_id": a.privilege_group_id,
+        "privilege_group_name": a.privilege_group.name if a.privilege_group else None,
+        "individual_permissions": a.individual_permissions,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "last_login": a.last_login.isoformat() if a.last_login else None,
+    }
+
+
+def _serialize_privilege_group(g, member_count: int) -> dict:
+    return {
+        "id": g.id, "name": g.name, "description": g.description, "permissions": g.permissions,
+        "rate_limit_count": g.rate_limit_count, "rate_limit_window_secs": g.rate_limit_window_secs,
+        "member_count": member_count,
+    }
+
+
+@router.get("/api/v1/admin/users")
+async def api_admin_users_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "admin", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    admin_service = AdminService(db)
+    admins = admin_service.get_all_admins()
+
+    from models import AdminPrivilegeGroup
+    groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.id).all()
+    groups_data = [_serialize_privilege_group(g, db.query(AdminUser).filter(AdminUser.privilege_group_id == g.id).count()) for g in groups]
+
+    return {
+        "admins": [_serialize_admin_user(a) for a in admins],
+        "roles": list(settings.roles_mapping.keys()),
+        "groups": groups_data,
+        "can_edit": check_permission(current_admin, "admin", "edit"),
+        "can_delete": check_permission(current_admin, "admin", "delete"),
+        "is_superuser": current_admin.is_superuser,
+    }
+
+
+@router.post("/api/v1/admin/users")
+async def api_create_admin_user(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    discord_id = (body.get("discord_id") or "").strip()
+    role = body.get("role") or "admin"
+    if not discord_id:
+        raise HTTPException(status_code=400, detail="discord_id required")
+
+    admin_service = AdminService(db)
+    if admin_service.get_admin_by_discord_id(discord_id):
+        raise HTTPException(status_code=409, detail="Администратор с таким Discord ID уже существует")
+
+    admin = AdminUser(discord_id=discord_id, discord_username=f"User_{discord_id}", role=role)
+    db.add(admin)
+    db.commit()
+    log_admin_action(db, current_admin.id, "create_admin", {
+        "target": {"admin_id": admin.id, "discord_id": admin.discord_id, "username": admin.discord_username},
+        "changes": [{"field": "role", "from": None, "to": role}],
+    })
+    return {"status": "ok", "admin": _serialize_admin_user(admin)}
+
+
+@router.post("/api/v1/admin/users/{admin_id}")
+async def api_update_admin_user(admin_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    role = body.get("role")
+
+    target_admin = db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+    if not target_admin:
+        raise HTTPException(status_code=404, detail="Администратор не найден")
+
+    old_role = target_admin.role
+    if role and role != old_role:
+        AdminService(db).update_admin_role(admin_id, role)
+        log_admin_action(db, current_admin.id, "update_admin_role", {
+            "target": {"admin_id": target_admin.id, "discord_id": target_admin.discord_id, "username": target_admin.discord_username},
+            "changes": [{"field": "role", "from": old_role, "to": role}],
+        })
+    return {"status": "ok"}
+
+
+@router.delete("/api/v1/admin/users/{admin_id}")
+async def api_delete_admin_user(admin_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "admin", "delete"):
+        raise HTTPException(status_code=403)
+    if current_admin.id == admin_id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить собственную учетную запись")
+
+    target_admin = db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+    if not target_admin:
+        raise HTTPException(status_code=404, detail="Администратор не найден")
+    if target_admin.is_superuser and not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только суперпользователь может удалить суперпользователя")
+
+    AdminService(db).delete_admin(admin_id)
+    log_admin_action(db, current_admin.id, "delete_admin", {
+        "target": {"admin_id": target_admin.id, "discord_id": target_admin.discord_id, "username": target_admin.discord_username},
+    })
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/users/{user_id}/assign-group")
+async def api_admin_user_assign_group(user_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    from security import enforce_rate_limit
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+    enforce_rate_limit(db, current_admin, "user_assign_group")
+
+    target = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if target.is_superuser and not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Нельзя изменить суперпользователя")
+
+    body = await request.json()
+    target.privilege_group_id = body.get("privilege_group_id") or None
+    target.individual_permissions = body.get("individual_permissions") or None
+    if current_admin.is_superuser and "is_superuser" in body:
+        target.is_superuser = bool(body.get("is_superuser"))
+
+    db.commit()
+    log_admin_action(db, current_admin.id, "user_assign_group", {"target_id": user_id, "group_id": target.privilege_group_id})
+    return {"status": "ok", "admin": _serialize_admin_user(target)}
+
+
+@router.post("/api/v1/admin/privilege-groups")
+async def api_privilege_group_create(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    from security import enforce_rate_limit
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+    enforce_rate_limit(db, current_admin, "group_create")
+
+    from models import AdminPrivilegeGroup
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Название группы не может быть пустым")
+    if db.query(AdminPrivilegeGroup).filter(AdminPrivilegeGroup.name == name).first():
+        raise HTTPException(status_code=409, detail=f"Группа '{name}' уже существует")
+
+    grp = AdminPrivilegeGroup(
+        name=name, description=(body.get("description") or "").strip() or None,
+        permissions=body.get("permissions") or {},
+        rate_limit_count=int(body.get("rate_limit_count") or 0),
+        rate_limit_window_secs=int(body.get("rate_limit_window_secs") or 3600),
+    )
+    db.add(grp)
+    db.commit()
+    log_admin_action(db, current_admin.id, "privilege_group_create", {"name": name})
+    return {"status": "ok", "group": _serialize_privilege_group(grp, 0)}
+
+
+@router.post("/api/v1/admin/privilege-groups/{group_id}")
+async def api_privilege_group_edit(group_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    from security import enforce_rate_limit
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+    enforce_rate_limit(db, current_admin, "group_edit")
+
+    from models import AdminPrivilegeGroup
+    grp = db.query(AdminPrivilegeGroup).filter(AdminPrivilegeGroup.id == group_id).first()
+    if not grp:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if name:
+        grp.name = name
+    grp.description = (body.get("description") or "").strip() or None
+    if "permissions" in body:
+        grp.permissions = body.get("permissions") or {}
+    grp.rate_limit_count = int(body.get("rate_limit_count") or 0)
+    grp.rate_limit_window_secs = int(body.get("rate_limit_window_secs") or 3600)
+    db.commit()
+    log_admin_action(db, current_admin.id, "privilege_group_edit", {"id": group_id, "name": grp.name})
+    return {"status": "ok"}
+
+
+@router.delete("/api/v1/admin/privilege-groups/{group_id}")
+async def api_privilege_group_delete(group_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+
+    from models import AdminPrivilegeGroup
+    grp = db.query(AdminPrivilegeGroup).filter(AdminPrivilegeGroup.id == group_id).first()
+    if not grp:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+
+    db.query(AdminUser).filter(AdminUser.privilege_group_id == group_id).update({"privilege_group_id": None})
+    db.delete(grp)
+    db.commit()
+    log_admin_action(db, current_admin.id, "privilege_group_delete", {"id": group_id, "name": grp.name})
+    return {"status": "ok"}
 
 
 @router.post("/admin/users")
@@ -825,6 +1064,446 @@ async def admin_player_detail(
     })
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PLAYERS JSON API (for the React SPA — mirrors admin_players_list / admin_player_detail
+# above exactly, same permission checks, same service calls, JSON in/out)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/v1/admin/players")
+async def api_players_list(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    search: Optional[str] = Query(None, min_length=2),
+    label_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (check_permission(current_admin, "players", "view") or check_permission(current_admin, "players_special", "view")):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from schemas import PlayerDataOut
+    from services import LabelCategoryService
+
+    player_service = PlayerService(db)
+    label_categories = LabelCategoryService(db).get_all()
+    selected_label = db.query(LabelCategory).filter(LabelCategory.id == label_id).first() if label_id else None
+
+    if label_id:
+        from sqlalchemy import or_
+        q = db.query(PlayerData).join(PlayerLabel, PlayerLabel.player_id == PlayerData.player_id).filter(
+            PlayerLabel.category_id == label_id
+        )
+        if search:
+            q = q.filter(or_(
+                PlayerData.player_last_time_name.ilike(f"%{search}%"),
+                PlayerData.player_steamid.ilike(f"%{search}%"),
+            ))
+        total = q.count()
+        raw = q.offset((page - 1) * page_size).limit(page_size).all()
+        players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
+    elif search:
+        # Normalize to PlayerDataOut here (unlike the Jinja page, which leaves this
+        # branch as raw ORM rows with no computed rank/kit/play_time_hours fields).
+        player_results = player_service.search_players(search, limit=1000)
+        total = len(player_results)
+        start = (page - 1) * page_size
+        raw = player_results[start:start + page_size]
+        players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
+    else:
+        raw, total = player_service.get_all_players(page, page_size)
+        players = raw  # already List[PlayerDataOut]
+
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+    return {
+        "players": players,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
+        "selected_label_id": label_id,
+    }
+
+
+def _serialize_kill(k) -> dict:
+    return {"id": k.id, "monster_type": k.monster_type, "kills_count": k.kills_count}
+
+
+def _serialize_role_action(a) -> dict:
+    return {"id": a.id, "role": a.role, "action_type": a.action_type, "value": a.value}
+
+
+def _serialize_ip(ip) -> dict:
+    return {
+        "id": ip.id, "ip": ip.ip, "subnet": ip.subnet,
+        "first_seen": ip.first_seen.isoformat() if ip.first_seen else None,
+        "last_seen": ip.last_seen.isoformat() if ip.last_seen else None,
+    }
+
+
+def _serialize_name(n) -> dict:
+    return {
+        "id": n.id, "nickname": n.nickname,
+        "first_seen": n.first_seen.isoformat() if n.first_seen else None,
+        "last_seen": n.last_seen.isoformat() if n.last_seen else None,
+    }
+
+
+def _serialize_role_stat(s) -> dict:
+    return {"id": s.id, "role": s.role, "rounds_played": s.rounds_played, "mvp_score": s.mvp_score}
+
+
+def _serialize_session(s) -> dict:
+    return {
+        "id": s.id, "session_number": s.session_number,
+        "login_time": s.login_time.isoformat() if s.login_time else None,
+        "logout_time": s.logout_time.isoformat() if s.logout_time else None,
+        "session_duration": s.session_duration, "avg_ping": s.avg_ping,
+    }
+
+
+def _serialize_note(n) -> dict:
+    return {
+        "id": n.id, "admin_id": n.admin_id, "content": n.content,
+        "created_at": n.created_at.isoformat() if n.created_at else None,
+        "updated_at": n.updated_at.isoformat() if n.updated_at else None,
+    }
+
+
+def _serialize_label_pair(pair) -> dict:
+    label, category = pair
+    return {
+        "id": label.id,
+        "note": label.note,
+        "assigned_at": label.assigned_at.isoformat() if label.assigned_at else None,
+        "category": {"id": category.id, "name": category.name, "color": category.color, "icon": category.icon},
+    }
+
+
+def _serialize_trap(t) -> dict:
+    return {
+        "id": t.id, "target_steamid": t.target_steamid, "reason": t.reason,
+        "set_at": t.set_at.isoformat() if t.set_at else None,
+        "active": bool(t.active),
+        "triggered_at": t.triggered_at.isoformat() if t.triggered_at else None,
+    }
+
+
+def _serialize_punishment_row(row) -> dict:
+    p = row["p"]
+    return {
+        "id": p.id, "type": p.type, "reason": p.reason,
+        "issued_by_name": p.issued_by_name,
+        "issued_at": p.issued_at.isoformat() if p.issued_at else None,
+        "expires_at": p.expires_at.isoformat() if p.expires_at else None,
+        "is_active": bool(p.is_active),
+        "notes": p.notes,
+        "status": row["status"],
+    }
+
+
+@router.get("/api/v1/admin/players/{player_id}")
+async def api_player_detail(
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (check_permission(current_admin, "players", "view") or check_permission(current_admin, "players_special", "view")):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    is_secret = getattr(player, "is_secret", 0) == 1
+    linked_admin = db.query(AdminUser).filter(
+        AdminUser.discord_id == player.discord_id,
+        AdminUser.is_superuser == True
+    ).first() if player.discord_id else None
+    if (is_secret or linked_admin) and not current_admin.is_superuser:
+        return {"classified": True}
+
+    stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
+
+    def _safe(fn, label):
+        try:
+            return fn(player_id)
+        except Exception as e:
+            logger.warning(f"Failed to get player {label} for {player_id}: {e}")
+            return []
+
+    kills = _safe(PlayerKillService(db).get_player_kills, "kills")
+    role_actions = _safe(PlayerRoleActionService(db).get_player_actions, "role actions")
+    ips = _safe(PlayerIPService(db).get_player_ips, "IPs")
+    names = _safe(PlayerNameService(db).get_player_names, "names")
+    role_stats = _safe(PlayerRoleStatService(db).get_player_role_stats, "role stats")
+    sessions = _safe(PlayerSessionService(db).get_player_sessions, "sessions")
+
+    log_admin_action(db, current_admin.id, "view_player_profile", {
+        "target": {"player_id": player.player_id, "steamid": player.player_steamid, "name": player.player_last_time_name}
+    })
+
+    notes = PlayerNoteService(db).get_notes(player_id)
+    label_pairs = PlayerLabelService(db).get_labels(player_id)
+    traps = PlayerTrapService(db).get_traps(player_id)
+    label_categories = LabelCategoryService(db).get_all()
+    punishment_svc = PunishmentService(db)
+    punishments_raw = punishment_svc.get_for_player(player_id)
+    punishments = [{"p": p, "status": punishment_svc.effective_status(p)} for p in punishments_raw]
+
+    raw_achievements = player.achievements or {}
+    if isinstance(raw_achievements, list):
+        raw_achievements = {}
+
+    _raw_kval_kits = db.query(Kit).filter(Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
+    available_kval_kits = [
+        {"job": k.job_id[:-2], "level": k.kit_level, "label": f"{k.job_id[:-2]} | ур.{k.kit_level}"}
+        for k in _raw_kval_kits
+    ]
+
+    from services import _online_players, _online_players_lock, _prune_stale_online
+    with _online_players_lock:
+        _prune_stale_online()
+        is_online = player.player_steamid in _online_players
+
+    return {
+        "player": {
+            "player_id": player.player_id,
+            "player_last_time_name": player.player_last_time_name,
+            "player_steamid": player.player_steamid,
+            "last_login_time": player.last_login_time.isoformat() if player.last_login_time else None,
+            "play_time": player.play_time,
+            "play_time_hours": player.play_time_hours,
+            "rank_id": player.rank_id,
+            "kit_level": player.kit_level,
+            "last_ip": player.last_ip,
+            "discord_id": player.discord_id,
+            "discord_id_confirmed": bool(player.discord_id_confirmed),
+            "is_secret": bool(player.is_secret),
+        },
+        "stats": {
+            "successful_missions_captain": stats.successful_missions_captain,
+            "total_missions_captain": stats.total_missions_captain,
+            "saved_players": stats.saved_players,
+            "killed_monsters": stats.killed_monsters,
+            "killed_players": stats.killed_players,
+            "killed_npc": stats.killed_npc,
+        } if stats else None,
+        "kills": [_serialize_kill(k) for k in kills],
+        "role_actions": [_serialize_role_action(a) for a in role_actions],
+        "ips": [_serialize_ip(ip) for ip in ips],
+        "names": [_serialize_name(n) for n in names],
+        "role_stats": [_serialize_role_stat(s) for s in role_stats],
+        "sessions": [_serialize_session(s) for s in sessions],
+        "notes": [_serialize_note(n) for n in notes],
+        "label_pairs": [_serialize_label_pair(p) for p in label_pairs],
+        "traps": [_serialize_trap(t) for t in traps],
+        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
+        "punishments": [_serialize_punishment_row(row) for row in punishments],
+        "ranks": settings.ranks_mapping,
+        "kits": settings.kits_mapping,
+        "kval_kits": raw_achievements.get("kval_kits", {}),
+        "custom_items": raw_achievements.get("items", {}),
+        "custom_stats": raw_achievements.get("stats", {}),
+        "custom_talents": raw_achievements.get("talents", {}),
+        "available_kval_kits": available_kval_kits,
+        "is_online": is_online,
+        "has_view": check_permission(current_admin, "players", "view"),
+        "has_edit": check_permission(current_admin, "players", "edit"),
+        "has_delete": check_permission(current_admin, "players", "delete"),
+        "has_special": check_permission(current_admin, "players_special", "view"),
+    }
+
+
+@router.post("/api/v1/admin/players/{player_id}/rank-kit")
+async def api_update_player_rank_kit(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players_special", "view")):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await request.json()
+    old_rank_id = player.rank_id
+    old_kit_level = player.kit_level
+    new_rank_id = int(body["rank_id"]) if body.get("rank_id") is not None else old_rank_id
+    new_kit_level = int(body["kit_level"]) if body.get("kit_level") is not None else old_kit_level
+
+    if new_rank_id == old_rank_id and new_kit_level == old_kit_level:
+        return {"status": "ok", "changed": False}
+
+    player.rank_id = new_rank_id
+    player.kit_level = new_kit_level
+    db.commit()
+    db.refresh(player)
+
+    if old_rank_id != new_rank_id and player.discord_id and player.discord_id_confirmed:
+        from models import DiscordBotAction
+        rank_roles = settings.rank_discord_roles or {}
+        old_discord_role = rank_roles.get(str(old_rank_id), "") if old_rank_id is not None else ""
+        new_discord_role = rank_roles.get(str(new_rank_id), "") if new_rank_id is not None else ""
+        db.add(DiscordBotAction(
+            action_type="update_rank_role",
+            payload={
+                "discord_id": player.discord_id,
+                "remove_role_id": old_discord_role or None,
+                "add_role_id": new_discord_role or None,
+                "player_name": player.player_last_time_name,
+                "old_rank": settings.ranks_mapping.get(str(old_rank_id), ""),
+                "new_rank": settings.ranks_mapping.get(str(new_rank_id), ""),
+            },
+            queued_by_admin_id=current_admin.id,
+        ))
+        db.commit()
+
+    log_admin_action(db, current_admin.id, "update_player", {
+        "target": {"player_id": player.player_id, "steamid": player.player_steamid, "name": player.player_last_time_name},
+        "changes": [
+            *([{"field": "rank_id", "from": old_rank_id, "to": new_rank_id}] if old_rank_id != new_rank_id else []),
+            *([{"field": "kit_level", "from": old_kit_level, "to": new_kit_level}] if old_kit_level != new_kit_level else []),
+        ],
+    })
+    return {"status": "ok", "changed": True}
+
+
+@router.post("/api/v1/admin/players/{player_id}/toggle-secret")
+async def api_toggle_player_secret(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404)
+    player.is_secret = 0 if player.is_secret else 1
+    db.commit()
+    log_admin_action(db, current_admin.id, "toggle_secret", {"player_id": player_id, "is_secret": player.is_secret})
+    return {"status": "ok", "is_secret": bool(player.is_secret)}
+
+
+@router.post("/api/v1/admin/players/{player_id}/discord-id")
+async def api_update_player_discord_id(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404)
+
+    body = await request.json()
+    discord_id = (body.get("discord_id") or "").strip()
+    player.discord_id = discord_id or None
+    player.discord_id_confirmed = 1 if discord_id else 0
+    db.commit()
+    log_admin_action(db, current_admin.id, "update_discord_id", {"player_id": player_id, "discord_id": discord_id})
+    return {"status": "ok", "discord_id": player.discord_id}
+
+
+@router.post("/api/v1/admin/players/{player_id}/notes")
+async def api_add_player_note(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    note = PlayerNoteService(db).save_note(player_id, current_admin.id, content)
+    return {"status": "ok", "note": _serialize_note(note)}
+
+
+@router.post("/api/v1/admin/players/{player_id}/labels")
+async def api_assign_player_label(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    category_id = body.get("category_id")
+    if not category_id:
+        raise HTTPException(status_code=400, detail="category_id required")
+    label = PlayerLabelService(db).assign(player_id, int(category_id), body.get("note"), current_admin.id)
+    category = db.query(LabelCategory).filter(LabelCategory.id == label.category_id).first()
+    return {"status": "ok", "label": _serialize_label_pair((label, category))}
+
+
+@router.delete("/api/v1/admin/players/{player_id}/labels/{label_id}")
+async def api_remove_player_label(
+    request: Request,
+    player_id: int,
+    label_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    PlayerLabelService(db).remove(label_id)
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/players/{player_id}/traps")
+async def api_set_player_trap(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404)
+    body = await request.json()
+    trap = PlayerTrapService(db).set_trap(player_id, player.player_steamid, body.get("reason"), current_admin.id)
+    return {"status": "ok", "trap": _serialize_trap(trap)}
+
+
+@router.delete("/api/v1/admin/players/{player_id}/traps/{trap_id}")
+async def api_deactivate_player_trap(
+    request: Request,
+    player_id: int,
+    trap_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    PlayerTrapService(db).deactivate(trap_id)
+    return {"status": "ok"}
+
+
 @router.post("/admin/players/{player_id}/update")
 async def update_player(
     request: Request,
@@ -1050,6 +1729,48 @@ async def revoke_session(request: Request, session_id: int, db: Session = Depend
         push_flash(request, "error", "Не удалось отозвать сессию из-за внутренней ошибки")
 
     return RedirectResponse(url="/admin/sessions", status_code=302)
+
+
+@router.get("/api/v1/admin/sessions")
+async def api_sessions_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "sessions", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    sessions = db.query(AdminSession).order_by(AdminSession.created_at.desc()).all()
+    admin_ids = {s.admin_id for s in sessions}
+    admins_map = {a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()} if admin_ids else {}
+
+    return {
+        "sessions": [
+            {
+                "id": s.id, "admin_id": s.admin_id, "admin_name": admins_map.get(s.admin_id),
+                "token_preview": s.token[:12] + "…",
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+                "revoked": bool(s.revoked),
+            }
+            for s in sessions
+        ],
+        "can_edit": check_permission(current_admin, "sessions", "edit"),
+    }
+
+
+@router.post("/api/v1/admin/sessions/{session_id}/revoke")
+async def api_revoke_session(session_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "sessions", "edit"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для отзыва сессии")
+
+    s = db.query(AdminSession).filter(AdminSession.id == session_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+
+    target_admin = db.query(AdminUser).filter(AdminUser.id == s.admin_id).first()
+    s.revoked = 1
+    db.commit()
+    log_admin_action(db, current_admin.id, "revoke_session", {
+        "target": {"session_id": session_id, "admin_id": s.admin_id, "admin_username": target_admin.discord_username if target_admin else None}
+    })
+    return {"status": "ok"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1840,6 +2561,208 @@ async def server_priv_group_delete(
     return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SERVER PRIVILEGES JSON API (for the React SPA — modern group/commands/
+# action-ids/server-scope flow only; the legacy flat-privileges /add /update
+# /delete routes stay form-based, unused by any current UI)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _serialize_server_priv_group(g, member_count: int) -> dict:
+    return {
+        "id": g.id, "name": g.name, "group_key": g.group_key, "description": g.description,
+        "commands": g.commands or [], "allowed_action_ids": g.allowed_action_ids or [],
+        "assignable_by_groups": g.assignable_by_groups or [], "member_count": member_count,
+    }
+
+
+def _serialize_server_priv(p) -> dict:
+    return {
+        "id": p.id, "steamid": p.steamid, "player_id": p.player_id,
+        "player_name": getattr(p, "player_last_time_name", None),
+        "server_group_id": p.server_group_id, "commands": p.commands or [],
+        "allowed_action_ids": p.allowed_action_ids or [], "reason": p.reason,
+        "server_scope": p.server_scope,
+        "granted_at": p.granted_at.isoformat() if p.granted_at else None,
+    }
+
+
+@router.get("/api/v1/admin/server-privileges")
+async def api_server_privileges_list(
+    page: int = 1, search: str = "",
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "privileges", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from services import ServerPlayerPrivilegeService
+    from models import ServerPrivilegeGroup, ServerPlayerPrivilege, AdminPrivilegeGroup
+
+    privilege_service = ServerPlayerPrivilegeService(db)
+    priv_groups = db.query(ServerPrivilegeGroup).order_by(ServerPrivilegeGroup.id).all()
+    priv_groups_data = [
+        _serialize_server_priv_group(pg, db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.server_group_id == pg.id).count())
+        for pg in priv_groups
+    ]
+
+    page = max(1, page)
+    limit = settings.default_page_size
+    offset = (page - 1) * limit
+    if search:
+        privileges = privilege_service.search_privileges(search, limit=1000)
+        total = len(privileges)
+        privileges = privileges[offset:offset + limit]
+    else:
+        privileges, total = privilege_service.get_all_privileges(limit=limit, offset=offset)
+    total_pages = (total + limit - 1) // limit
+
+    steamids = [p.steamid for p in privileges]
+    player_name_map = {}
+    if steamids:
+        players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
+        player_name_map = {p.player_steamid: p.player_last_time_name for p in players}
+    for priv in privileges:
+        priv.player_last_time_name = player_name_map.get(priv.steamid)
+
+    admin_priv_groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.name).all()
+
+    return {
+        "privileges": [_serialize_server_priv(p) for p in privileges],
+        "server_privileges": settings.server_permissions_mapping,
+        "priv_groups": priv_groups_data,
+        "admin_priv_groups": [{"id": g.id, "name": g.name} for g in admin_priv_groups],
+        "page": page, "total": total, "total_pages": total_pages, "limit": limit, "search": search,
+        "current_admin_group_id": current_admin.privilege_group_id,
+        "is_superuser": current_admin.is_superuser,
+    }
+
+
+@router.post("/api/v1/admin/server-privilege-groups")
+async def api_server_priv_group_create(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _check_server_priv_perm(current_admin)
+    from models import ServerPrivilegeGroup
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    group_key = (body.get("group_key") or "").strip()
+    if not name or not group_key:
+        raise HTTPException(status_code=400, detail="Название и буквенный ID обязательны")
+    if db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.group_key == group_key).first():
+        raise HTTPException(status_code=409, detail=f"Группа с ID «{group_key}» уже существует")
+
+    grp = ServerPrivilegeGroup(
+        name=name, group_key=group_key, description=(body.get("description") or "").strip() or None,
+        commands=body.get("commands") or [], allowed_action_ids=body.get("allowed_action_ids") or [],
+        assignable_by_groups=[int(x) for x in (body.get("assignable_by_groups") or [])],
+    )
+    db.add(grp)
+    db.commit()
+    log_admin_action(db, current_admin.id, "server_priv_group_create", {"name": name, "key": group_key})
+    return {"status": "ok", "group": _serialize_server_priv_group(grp, 0)}
+
+
+@router.post("/api/v1/admin/server-privilege-groups/{group_id}")
+async def api_server_priv_group_edit(group_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _check_server_priv_perm(current_admin)
+    from models import ServerPrivilegeGroup
+    grp = db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.id == group_id).first()
+    if not grp:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    group_key = (body.get("group_key") or "").strip()
+    if name:
+        grp.name = name
+    if group_key and group_key != grp.group_key:
+        if db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.group_key == group_key, ServerPrivilegeGroup.id != group_id).first():
+            raise HTTPException(status_code=409, detail=f"ID «{group_key}» уже используется")
+        grp.group_key = group_key
+    grp.description = (body.get("description") or "").strip() or None
+    grp.commands = body.get("commands") or []
+    grp.allowed_action_ids = body.get("allowed_action_ids") or []
+    grp.assignable_by_groups = [int(x) for x in (body.get("assignable_by_groups") or [])]
+    db.commit()
+    log_admin_action(db, current_admin.id, "server_priv_group_edit", {"id": group_id, "name": grp.name})
+    return {"status": "ok"}
+
+
+@router.delete("/api/v1/admin/server-privilege-groups/{group_id}")
+async def api_server_priv_group_delete(group_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _check_server_priv_perm(current_admin)
+    from models import ServerPrivilegeGroup, ServerPlayerPrivilege
+    grp = db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.id == group_id).first()
+    if not grp:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.server_group_id == group_id).update({"server_group_id": None})
+    db.delete(grp)
+    db.commit()
+    log_admin_action(db, current_admin.id, "server_priv_group_delete", {"id": group_id, "name": grp.name})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/server-privileges/assign")
+async def api_assign_server_privilege(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "privileges", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from models import ServerPrivilegeGroup, ServerPlayerPrivilege, PlayerData
+
+    body = await request.json()
+    steamid = (body.get("steamid") or "").strip()
+    if not steamid:
+        raise HTTPException(status_code=400, detail="SteamID не может быть пустым")
+
+    server_group_id = body.get("server_group_id") or None
+    if server_group_id and not current_admin.is_superuser:
+        target_group = db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.id == server_group_id).first()
+        if target_group:
+            assignable = target_group.assignable_by_groups or []
+            if current_admin.privilege_group_id not in assignable:
+                raise HTTPException(status_code=403, detail=f"У вас нет прав назначать группу «{target_group.name}»")
+
+    commands = body.get("commands") or []
+    allowed_action_ids = body.get("allowed_action_ids") or []
+    reason = (body.get("reason") or "").strip() or None
+    server_scope_raw = (body.get("server_scope") or "").strip().upper() or None
+    server_scope = server_scope_raw if server_scope_raw in ("ASPER1", "ASPER2") else None
+
+    record = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == steamid).first()
+    if record:
+        record.server_group_id = server_group_id
+        record.commands = commands
+        record.allowed_action_ids = allowed_action_ids
+        record.reason = reason
+        record.server_scope = server_scope
+    else:
+        player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
+        record = ServerPlayerPrivilege(
+            steamid=steamid, player_id=player.player_id if player else None,
+            server_group_id=server_group_id, commands=commands, allowed_action_ids=allowed_action_ids,
+            reason=reason, server_scope=server_scope, granted_by_admin_id=current_admin.id,
+        )
+        db.add(record)
+    db.commit()
+    log_admin_action(db, current_admin.id, "assign_server_privilege", {
+        "steamid": steamid, "group_id": server_group_id, "commands": commands, "server_scope": server_scope
+    })
+    return {"status": "ok"}
+
+
+@router.delete("/api/v1/admin/server-privileges/{privilege_id}")
+async def api_revoke_server_privilege(privilege_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "privileges", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    from models import ServerPlayerPrivilege
+    record = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.id == privilege_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+    steamid = record.steamid
+    db.delete(record)
+    db.commit()
+    log_admin_action(db, current_admin.id, "revoke_server_privilege", {"privilege_id": privilege_id, "steamid": steamid})
+    return {"status": "ok"}
+
+
 @router.post("/admin/server-privileges/assign")
 async def assign_server_privilege(
     request: Request,
@@ -2612,6 +3535,184 @@ async def admin_kits_delete(
     return RedirectResponse(url="/admin/kits", status_code=302)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# KITS JSON API (for the React SPA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _serialize_kit(k: Kit) -> dict:
+    return {"id": k.id, "job_id": k.job_id, "kit_level": k.kit_level, "items": k.items}
+
+
+@router.get("/api/v1/admin/kits")
+async def api_kits_list(
+    job_id: Optional[str] = Query(None), kit_level: Optional[str] = Query(None),
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_kits_permission(current_admin)
+    kit_level_int = int(kit_level) if kit_level and kit_level.strip() else None
+
+    query = db.query(Kit)
+    if job_id:
+        query = query.filter(Kit.job_id == job_id)
+    if kit_level_int is not None:
+        query = query.filter(Kit.kit_level == kit_level_int)
+    kits = query.filter(~Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
+    qual_kits = db.query(Kit).filter(Kit.job_id.like("%_k")).order_by(Kit.job_id, Kit.kit_level).all()
+    all_job_ids = [row[0] for row in db.query(Kit.job_id).filter(~Kit.job_id.like("%_k")).distinct().order_by(Kit.job_id).all()]
+    all_qual_base_jobs = sorted(set(k.job_id[:-2] for k in qual_kits))
+
+    return {
+        "kits": [_serialize_kit(k) for k in kits],
+        "qual_kits": [_serialize_kit(k) for k in qual_kits],
+        "all_job_ids": all_job_ids,
+        "all_qual_base_jobs": all_qual_base_jobs,
+        "kits_mapping": settings.kits_mapping,
+    }
+
+
+@router.post("/api/v1/admin/kits")
+async def api_kits_add(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_kits_permission(current_admin)
+    body = await request.json()
+    job_id = (body.get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(status_code=400, detail="Профессия (job_id) не может быть пустой")
+    try:
+        kit_level = int(body.get("kit_level", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректное значение уровня кита")
+    items = body.get("items", [])
+
+    if db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first():
+        raise HTTPException(status_code=409, detail=f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
+
+    new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
+    db.add(new_kit)
+    db.commit()
+    db.refresh(new_kit)
+    log_admin_action(db, current_admin.id, "create_kit", {"kit_id": new_kit.id, "job_id": job_id, "kit_level": kit_level})
+    return {"status": "ok", "kit": _serialize_kit(new_kit)}
+
+
+@router.post("/api/v1/admin/kits/{kit_id}")
+async def api_kits_update(kit_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_kits_permission(current_admin)
+    kit = db.query(Kit).filter(Kit.id == kit_id).first()
+    if not kit:
+        raise HTTPException(status_code=404, detail="Кит не найден")
+
+    body = await request.json()
+    job_id = (body.get("job_id") or kit.job_id).strip()
+    try:
+        kit_level = int(body.get("kit_level", kit.kit_level))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректное значение уровня кита")
+    items = body.get("items", kit.items)
+
+    conflict = db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level, Kit.id != kit_id).first()
+    if conflict:
+        raise HTTPException(status_code=409, detail=f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
+
+    changes = []
+    if kit.job_id != job_id:
+        changes.append({"field": "job_id", "from": kit.job_id, "to": job_id})
+    if kit.kit_level != kit_level:
+        changes.append({"field": "kit_level", "from": kit.kit_level, "to": kit_level})
+    kit.job_id = job_id
+    kit.kit_level = kit_level
+    kit.items = items
+    db.commit()
+    log_admin_action(db, current_admin.id, "update_kit", {"kit_id": kit_id, "changes": changes})
+    return {"status": "ok", "kit": _serialize_kit(kit)}
+
+
+@router.delete("/api/v1/admin/kits/{kit_id}")
+async def api_kits_delete(kit_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_kits_permission(current_admin)
+    kit = db.query(Kit).filter(Kit.id == kit_id).first()
+    if not kit:
+        raise HTTPException(status_code=404, detail="Кит не найден")
+    job_id, level = kit.job_id, kit.kit_level
+    db.delete(kit)
+    db.commit()
+    log_admin_action(db, current_admin.id, "delete_kit", {"kit_id": kit_id, "job_id": job_id, "kit_level": level})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/qual-kits")
+async def api_qual_kits_add(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_kits_permission(current_admin)
+    body = await request.json()
+    base_job = (body.get("base_job") or "").strip()
+    if not base_job:
+        raise HTTPException(status_code=400, detail="Профессия не может быть пустой")
+    job_id = base_job if base_job.endswith("_k") else base_job + "_k"
+
+    try:
+        kit_level = int(body.get("kit_level", 1))
+        if kit_level not in range(1, 6):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Уровень квалификации должен быть от 1 до 5")
+
+    items = body.get("items", {})
+    if not isinstance(items, dict):
+        raise HTTPException(status_code=400, detail="items должен быть JSON-объектом")
+
+    if db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first():
+        raise HTTPException(status_code=409, detail=f"Квал-кит '{job_id}' уровня {kit_level} уже существует")
+
+    new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
+    db.add(new_kit)
+    db.commit()
+    db.refresh(new_kit)
+    log_admin_action(db, current_admin.id, "create_qual_kit", {"kit_id": new_kit.id, "job_id": job_id, "kit_level": kit_level})
+    return {"status": "ok", "kit": _serialize_kit(new_kit)}
+
+
+@router.post("/api/v1/admin/qual-kits/{kit_id}")
+async def api_qual_kits_update(kit_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_kits_permission(current_admin)
+    kit = db.query(Kit).filter(Kit.id == kit_id, Kit.job_id.like("%_k")).first()
+    if not kit:
+        raise HTTPException(status_code=404, detail="Квал-кит не найден")
+
+    body = await request.json()
+    try:
+        kit_level = int(body.get("kit_level", kit.kit_level))
+        if kit_level not in range(1, 6):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Уровень квалификации должен быть от 1 до 5")
+
+    items = body.get("items", kit.items)
+    if not isinstance(items, dict):
+        raise HTTPException(status_code=400, detail="items должен быть JSON-объектом")
+
+    conflict = db.query(Kit).filter(Kit.job_id == kit.job_id, Kit.kit_level == kit_level, Kit.id != kit_id).first()
+    if conflict:
+        raise HTTPException(status_code=409, detail=f"Квал-кит '{kit.job_id}' уровня {kit_level} уже существует")
+
+    kit.kit_level = kit_level
+    kit.items = items
+    db.commit()
+    log_admin_action(db, current_admin.id, "update_qual_kit", {"kit_id": kit_id})
+    return {"status": "ok", "kit": _serialize_kit(kit)}
+
+
+@router.delete("/api/v1/admin/qual-kits/{kit_id}")
+async def api_qual_kits_delete(kit_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_kits_permission(current_admin)
+    kit = db.query(Kit).filter(Kit.id == kit_id, Kit.job_id.like("%_k")).first()
+    if not kit:
+        raise HTTPException(status_code=404, detail="Квал-кит не найден")
+    job_id, level = kit.job_id, kit.kit_level
+    db.delete(kit)
+    db.commit()
+    log_admin_action(db, current_admin.id, "delete_qual_kit", {"kit_id": kit_id, "job_id": job_id, "kit_level": level})
+    return {"status": "ok"}
+
+
 # ── Qualification kit routes ──────────────────────────────────────────────────
 
 @router.post("/admin/qual-kits/add")
@@ -2882,6 +3983,47 @@ async def delete_label_category(
     return RedirectResponse(url="/admin/label-categories", status_code=302)
 
 
+@router.get("/api/v1/admin/label-categories")
+async def api_label_categories_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    cats = LabelCategoryService(db).get_all()
+    return {"categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in cats]}
+
+
+@router.post("/api/v1/admin/label-categories")
+async def api_create_label_category(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    cat = LabelCategoryService(db).create(name, body.get("color") or "#888888", body.get("icon") or "🏷", current_admin.id)
+    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon}}
+
+
+@router.post("/api/v1/admin/label-categories/{cat_id}")
+async def api_update_label_category(cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    cat = LabelCategoryService(db).update(cat_id, body.get("name"), body.get("color"), body.get("icon"))
+    if not cat:
+        raise HTTPException(status_code=404, detail="Категория не найдена")
+    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon}}
+
+
+@router.delete("/api/v1/admin/label-categories/{cat_id}")
+async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    ok = LabelCategoryService(db).delete(cat_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Категория не найдена")
+    return {"status": "ok"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TRAPS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3140,6 +4282,164 @@ def _get_editable_config() -> dict:
         "sftp_server_2_logs_dir": s.sftp_server_2_logs_dir,
         "sub_projects_discord_channel_id": s.sub_projects_discord_channel_id,
     }
+
+
+@router.get("/api/v1/admin/administration")
+async def api_admin_administration(
+    period: str = Query("day"), twink_page: int = Query(1),
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+
+    from sqlalchemy import text
+    from models import PlayerSession
+
+    now = datetime.utcnow()
+    period_map = {"day": now - timedelta(days=1), "week": now - timedelta(weeks=1), "month": now - timedelta(days=30), "all": None}
+    since = period_map.get(period, period_map["day"])
+
+    sess_q = db.query(PlayerSession)
+    if since:
+        sess_q = sess_q.filter(PlayerSession.login_time >= since)
+    sessions = sess_q.all()
+
+    unique_players = len({s.player_id for s in sessions})
+    total_sessions = len(sessions)
+    total_play_secs = sum((s.session_duration or 0) for s in sessions)
+    avg_session_mins = round(total_play_secs / 60 / max(total_sessions, 1))
+
+    events = []
+    for s in sessions:
+        events.append((s.login_time, +1))
+        if s.logout_time:
+            events.append((s.logout_time, -1))
+    events.sort(key=lambda x: x[0])
+    peak_concurrent = 0
+    current_count = 0
+    for _, delta in events:
+        current_count += delta
+        peak_concurrent = max(peak_concurrent, current_count)
+
+    if period == "day":
+        slot_count, slot_delta, label_fmt = 24, timedelta(hours=1), "%H:%M"
+    elif period == "week":
+        slot_count, slot_delta, label_fmt = 7 * 6, timedelta(hours=4), "%d.%m %H:%M"
+    elif period == "month":
+        slot_count, slot_delta, label_fmt = 30, timedelta(days=1), "%d.%m"
+    else:
+        slot_count, slot_delta, label_fmt = 52, timedelta(weeks=1), "%d.%m.%y"
+
+    slot_start_global = since if since else (now - slot_delta * slot_count)
+    chart_labels, peak_values, avg_values, min_values = [], [], [], []
+    N_SAMPLES = 10
+    for i in range(slot_count):
+        sl_start = slot_start_global + slot_delta * i
+        sl_end = sl_start + slot_delta
+        active = [s for s in sessions if s.login_time < sl_end and (s.logout_time is None or s.logout_time > sl_start)]
+        chart_labels.append(sl_start.strftime(label_fmt))
+        if not active:
+            peak_values.append(0); avg_values.append(0); min_values.append(0)
+            continue
+        slot_secs = slot_delta.total_seconds()
+        samples = []
+        for j in range(N_SAMPLES):
+            t = sl_start + timedelta(seconds=slot_secs * j / N_SAMPLES)
+            samples.append(sum(1 for s in active if s.login_time <= t and (s.logout_time is None or s.logout_time >= t)))
+        peak_values.append(max(samples))
+        avg_values.append(round(sum(samples) / len(samples), 1))
+        min_values.append(min(samples))
+
+    top_players_raw = db.execute(text(
+        "SELECT ps.player_id, pd.player_last_time_name, pd.player_steamid, "
+        "       SUM(ps.session_duration) as total_secs, COUNT(*) as sessions "
+        "FROM player_sessions ps LEFT JOIN players_data pd ON pd.player_id = ps.player_id "
+        + ("WHERE ps.login_time >= :since " if since else "")
+        + "GROUP BY ps.player_id ORDER BY total_secs DESC LIMIT 20"
+    ), {"since": since} if since else {}).fetchall()
+
+    twink_svc = TwinkDetectionService(db)
+    all_twinks = twink_svc.get_all_twink_pairs(min_signals=1)
+    twink_per_page = 30
+    twink_total = len(all_twinks)
+    twink_pages = max(1, (twink_total + twink_per_page - 1) // twink_per_page)
+    twink_page = max(1, min(twink_page, twink_pages))
+    twinks_paged = all_twinks[(twink_page - 1) * twink_per_page: twink_page * twink_per_page]
+
+    return {
+        "period": period,
+        "unique_players": unique_players, "total_sessions": total_sessions,
+        "avg_session_mins": avg_session_mins, "peak_concurrent": peak_concurrent,
+        "chart_labels": chart_labels, "peak_values": peak_values, "avg_values": avg_values, "min_values": min_values,
+        "top_players": [
+            {"player_id": r[0], "player_last_time_name": r[1], "player_steamid": r[2], "total_secs": int(r[3] or 0), "sessions": int(r[4])}
+            for r in top_players_raw
+        ],
+        "editable_cfg": _get_editable_config(),
+        "twinks": twinks_paged, "twink_page": twink_page, "twink_pages": twink_pages, "twink_total": twink_total,
+    }
+
+
+@router.post("/api/v1/admin/administration/config")
+async def api_admin_administration_config_save(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "admin", "edit"):
+        raise HTTPException(status_code=403)
+
+    body = await request.json()
+    env_path = ".env"
+    existing: dict = {}
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+
+    field_map = {
+        "debug": "DEBUG", "discord_trap_webhook_url": "DISCORD_TRAP_WEBHOOK_URL",
+        "discord_client_id": "DISCORD_CLIENT_ID", "discord_client_secret": "DISCORD_CLIENT_SECRET",
+        "discord_redirect_uri": "DISCORD_REDIRECT_URI", "use_discord_proxy": "USE_DISCORD_PROXY",
+        "discord_proxy_url": "DISCORD_PROXY_URL", "allowed_ips": "ALLOWED_IPS",
+        "rate_limit_enabled": "RATE_LIMIT_ENABLED", "rate_limit_requests": "RATE_LIMIT_REQUESTS",
+        "rate_limit_window": "RATE_LIMIT_WINDOW", "cors_origins": "CORS_ORIGINS",
+        "sub_projects_webhook_url": "SUB_PROJECTS_WEBHOOK_URL",
+        "sftp_server_1_name": "SFTP_SERVER_1_NAME", "sftp_server_1_host": "SFTP_SERVER_1_HOST",
+        "sftp_server_1_port": "SFTP_SERVER_1_PORT", "sftp_server_1_username": "SFTP_SERVER_1_USERNAME",
+        "sftp_server_1_password": "SFTP_SERVER_1_PASSWORD", "sftp_server_1_key_path": "SFTP_SERVER_1_KEY_PATH",
+        "sftp_server_1_remote_dir": "SFTP_SERVER_1_REMOTE_DIR",
+        "sftp_server_2_name": "SFTP_SERVER_2_NAME", "sftp_server_2_host": "SFTP_SERVER_2_HOST",
+        "sftp_server_2_port": "SFTP_SERVER_2_PORT", "sftp_server_2_username": "SFTP_SERVER_2_USERNAME",
+        "sftp_server_2_password": "SFTP_SERVER_2_PASSWORD", "sftp_server_2_key_path": "SFTP_SERVER_2_KEY_PATH",
+        "sftp_server_2_remote_dir": "SFTP_SERVER_2_REMOTE_DIR",
+        "sftp_server_1_logs_dir": "SFTP_SERVER_1_LOGS_DIR", "sftp_server_2_logs_dir": "SFTP_SERVER_2_LOGS_DIR",
+        "sub_projects_discord_channel_id": "SUB_PROJECTS_DISCORD_CHANNEL_ID",
+    }
+
+    for field, env_key in field_map.items():
+        val = body.get(field)
+        if val is None:
+            if field in ("debug", "use_discord_proxy", "rate_limit_enabled"):
+                val = "false"
+        elif val is True or val in ("on", "1", "true", "yes"):
+            val = "true"
+        elif val is False or val in ("off", "0", "false", "no"):
+            val = "false"
+
+        if field in ("cors_origins", "allowed_ips"):
+            raw = str(val or "").strip()
+            items = [x.strip() for x in raw.split(",") if x.strip()]
+            existing[env_key] = json.dumps(items)
+        else:
+            existing[env_key] = str(val) if val is not None else ""
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        for k, v in existing.items():
+            f.write(f"{k}={v}\n")
+    from config import reset_settings_cache
+    reset_settings_cache()
+    log_admin_action(db, current_admin.id, "save_config", {})
+    return {"status": "ok"}
 
 
 @router.post("/admin/administration/config")
@@ -3532,6 +4832,254 @@ async def admin_punishment_delete(
     log_admin_action(db, current_admin.id, "punishment_delete", {"punishment_id": punishment_id})
     push_flash(request, "success", "Наказание удалено.")
     return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PUNISHMENTS JSON API (for the React SPA — mirrors the form-based routes above)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _serialize_punishment_full(p, player) -> dict:
+    return {
+        "id": p.id,
+        "player_id": p.player_id,
+        "player_steamid": p.player_steamid,
+        "player_name": player.player_last_time_name if player else None,
+        "type": p.type,
+        "reason": p.reason,
+        "issued_by_name": p.issued_by_name,
+        "issued_at": p.issued_at.isoformat() if p.issued_at else None,
+        "expires_at": p.expires_at.isoformat() if p.expires_at else None,
+        "is_active": bool(p.is_active),
+        "notes": p.notes,
+    }
+
+
+@router.get("/api/v1/admin/punishments")
+async def api_punishments_list(
+    tab: str = Query("warning"),
+    search: str = Query(""),
+    page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "punishments", "view"):
+        raise HTTPException(status_code=403)
+    if tab not in PUNISHMENT_TYPES:
+        tab = "warning"
+
+    per_page = 50
+    svc = PunishmentService(db)
+    rows, total = svc.list_by_type(tab, search=search, limit=per_page, offset=(page - 1) * per_page)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, pages))
+
+    enriched = []
+    for p, player in rows:
+        row = _serialize_punishment_full(p, player)
+        row["status"] = svc.effective_status(p)
+        enriched.append(row)
+
+    return {
+        "tab": tab,
+        "search": search,
+        "rows": enriched,
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "type_labels": PUNISHMENT_TYPE_LABELS,
+        "punishment_types": list(PUNISHMENT_TYPES),
+        "can_edit": check_permission(current_admin, "punishments", "edit"),
+        "can_delete": current_admin.is_superuser,
+    }
+
+
+@router.post("/api/v1/admin/punishments")
+async def api_punishment_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "punishments", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    body = await request.json()
+    player_steamid = (body.get("player_steamid") or "").strip()
+    ptype = body.get("ptype")
+    reason = body.get("reason") or ""
+    expires_days = body.get("expires_days")
+    notes = body.get("notes") or ""
+    server_name = body.get("server_name")
+
+    if ptype not in PUNISHMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid type")
+    if not player_steamid:
+        raise HTTPException(status_code=400, detail="SteamID is required")
+
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == player_steamid).first()
+    player_id = player.player_id if player else 0
+
+    from services import _now_msk
+    expires_at = None
+    if expires_days and expires_days > 0:
+        expires_at = _now_msk() + timedelta(days=expires_days)
+
+    svc = PunishmentService(db)
+    punishment = svc.create(
+        player_id=player_id,
+        player_steamid=player_steamid,
+        player_ip=player.last_ip if player else None,
+        ptype=ptype,
+        reason=reason or None,
+        issued_by_admin_id=current_admin.id,
+        issued_by_name=f"ND. {current_admin.discord_username}",
+        expires_at=expires_at,
+        notes=notes or None,
+    )
+
+    if ptype in ("ban", "kick"):
+        from models import ServerAction
+        from utils import steam64_to_steam2
+        steam2_for_action = steam64_to_steam2(player_steamid)
+        action = ServerAction(
+            action_type=ptype,
+            target_steamid=steam2_for_action or player_steamid,
+            reason=reason or f"{PUNISHMENT_TYPE_LABELS.get(ptype, ptype)} через панель",
+            target_server=server_name or None,
+            queued_by_admin_id=current_admin.id,
+        )
+        if server_name and server_name.upper() == "ASPER1":
+            action.status_asper2 = 1
+        elif server_name and server_name.upper() == "ASPER2":
+            action.status_asper1 = 1
+        db.add(action)
+        db.commit()
+
+    log_admin_action(db, current_admin.id, "punishment_create",
+                     {"punishment_id": punishment.id, "type": ptype, "player_id": player_id})
+    row = _serialize_punishment_full(punishment, player)
+    row["status"] = svc.effective_status(punishment)
+    return {"status": "ok", "punishment": row, "player_id": player_id}
+
+
+@router.post("/api/v1/admin/punishments/{punishment_id}")
+async def api_punishment_edit(
+    request: Request,
+    punishment_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "punishments", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+
+    body = await request.json()
+    from services import _now_msk
+    expires_days = body.get("expires_days")
+    expires_at = None
+    if expires_days and expires_days > 0:
+        expires_at = _now_msk() + timedelta(days=expires_days)
+
+    svc.update(punishment_id,
+               reason=body.get("reason") or None,
+               expires_at=expires_at,
+               notes=body.get("notes") or None)
+
+    log_admin_action(db, current_admin.id, "punishment_edit", {"punishment_id": punishment_id})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/punishments/{punishment_id}/void")
+async def api_punishment_void(
+    request: Request,
+    punishment_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "punishments", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+    svc.set_void(punishment_id)
+    log_admin_action(db, current_admin.id, "punishment_void", {"punishment_id": punishment_id})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/punishments/{punishment_id}/unban")
+async def api_punishment_unban(
+    request: Request,
+    punishment_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "punishments", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    body = await request.json()
+    server_name = body.get("server_name")
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+    if p.type != "ban":
+        raise HTTPException(status_code=400, detail="Разбан возможен только для банов")
+
+    from utils import steam64_to_steam2
+    steamid = p.player_steamid or ""
+    steam2 = steam64_to_steam2(steamid) if steamid else None
+
+    svc.set_void(punishment_id)
+
+    from models import ServerAction
+    action = ServerAction(
+        action_type="unban",
+        target_steamid=steam2 or steamid,
+        reason=f"Unban by ND. {current_admin.discord_username}",
+        target_server=server_name or None,
+        queued_by_admin_id=current_admin.id,
+    )
+    if server_name and server_name.upper() == "ASPER1":
+        action.status_asper2 = 1
+    elif server_name and server_name.upper() == "ASPER2":
+        action.status_asper1 = 1
+    db.add(action)
+    db.commit()
+
+    log_admin_action(db, current_admin.id, "punishment_unban", {
+        "punishment_id": punishment_id, "steamid": steamid, "server_name": server_name, "action_id": action.id,
+    })
+    return {"status": "ok", "action_id": action.id}
+
+
+@router.delete("/api/v1/admin/punishments/{punishment_id}")
+async def api_punishment_delete(
+    request: Request,
+    punishment_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Удаление наказаний доступно только суперпользователю")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    svc = PunishmentService(db)
+    p = svc.get_by_id(punishment_id)
+    if not p:
+        raise HTTPException(status_code=404)
+    svc.delete(punishment_id)
+    log_admin_action(db, current_admin.id, "punishment_delete", {"punishment_id": punishment_id})
+    return {"status": "ok"}
 
 
 # ── DEBUG DIAGNOSTICS ────────────────────────────────────────────────────────

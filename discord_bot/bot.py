@@ -133,6 +133,7 @@ async def on_ready():
     sync_members_task.start()
     poll_actions_task.start()
     publish_rating_task.start()
+    round_status_task.start()
 
     # Initial ticket status refresh
     await refresh_ticket_status()
@@ -386,6 +387,111 @@ async def refresh_ticket_status():
         logger.error(f"Failed to send ticket status: {e}")
 
 
+# Round status message IDs (persisted to JSON file, keyed by server name)
+ROUND_STATUS_IDS_FILE = "round_status_message_ids.json"
+ROUND_STATUS_SERVERS = ["ASPER1", "ASPER2"]
+
+
+def _load_round_status_ids() -> dict:
+    try:
+        if os.path.exists(ROUND_STATUS_IDS_FILE):
+            with open(ROUND_STATUS_IDS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_round_status_ids(ids: dict):
+    try:
+        with open(ROUND_STATUS_IDS_FILE, "w") as f:
+            json.dump(ids, f)
+    except Exception as e:
+        logger.warning(f"Failed to save round status message IDs: {e}")
+
+
+_round_status_message_ids = _load_round_status_ids()
+
+
+def _format_shuttle_eta(shuttle_arrival_at: str) -> str:
+    """shuttle_arrival_at is an ISO8601 UTC timestamp (suffixed 'Z') or None."""
+    if not shuttle_arrival_at:
+        return "-"
+    try:
+        arrival = datetime.fromisoformat(shuttle_arrival_at[:-1] if shuttle_arrival_at.endswith("Z") else shuttle_arrival_at)
+    except ValueError:
+        return "-"
+    remaining = (arrival - datetime.utcnow()).total_seconds()
+    if remaining <= 0:
+        return "должен быть на месте"
+    minutes, seconds = divmod(int(remaining), 60)
+    return f"через {minutes} мин {seconds:02d} сек" if minutes else f"через {seconds} сек"
+
+
+async def refresh_round_status_embed(server_name: str):
+    """Update (or send) the live round-status embed for one server.
+
+    Called every minute by round_status_task, and immediately on round
+    start/end via the 'refresh_round_status' bot action.
+    """
+    config = await api_get("/api/v1/bot/config")
+    if not config:
+        return
+    channel_key = f"round_status_channel_{server_name.lower()}_id"
+    channel_id = config.get(channel_key)
+    if not channel_id:
+        return
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except (ValueError, TypeError):
+        return
+    if not channel:
+        return
+
+    status = await api_get(f"/api/v1/bot/round-status?server_name={server_name}")
+    if status is None:
+        return
+
+    if status.get("active"):
+        title = f"🟢 {server_name} - идёт раунд"
+        color = 0x22d06f
+    else:
+        title = f"⚪ {server_name} - раунд не идёт"
+        color = 0x858a94
+
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
+    embed.add_field(name="📍 Локация", value=status.get("location") or "-", inline=True)
+    embed.add_field(name="🚢 Корабль", value=status.get("submarine_name") or "-", inline=True)
+    embed.add_field(name="🎯 Миссия", value=status.get("mission") or "-", inline=False)
+    embed.add_field(name="👥 Кол-во экипажа", value=str(status.get("player_count", 0)), inline=True)
+    embed.add_field(name="🚀 Челнок снабжения", value=_format_shuttle_eta(status.get("shuttle_arrival_at")), inline=True)
+    embed.set_footer(text="Сделано за сухарики")
+
+    msg_id = _round_status_message_ids.get(server_name)
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.edit(embed=embed)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    try:
+        msg = await channel.send(embed=embed)
+        _round_status_message_ids[server_name] = msg.id
+        _save_round_status_ids(_round_status_message_ids)
+    except Exception as e:
+        logger.error(f"Failed to send round status embed for {server_name}: {e}")
+
+
+@tasks.loop(minutes=1)
+async def round_status_task():
+    """Refresh the round-status embed for every configured server every minute."""
+    for server_name in ROUND_STATUS_SERVERS:
+        await refresh_round_status_embed(server_name)
+
+
 # ═══════════════════════════════════════════════════════════
 # BOT ACTION EXECUTOR
 # ═══════════════════════════════════════════════════════════
@@ -400,6 +506,12 @@ async def execute_bot_action(action_type: str, payload: dict) -> bool:
             if channel:
                 await channel.send(content[:2000])
                 return True
+
+        elif action_type == "refresh_round_status":
+            server_name = payload.get("server_name")
+            if server_name:
+                await refresh_round_status_embed(server_name)
+            return True
 
         elif action_type == "send_embed":
             # Supports both direct channel_id and channel_config_key (bot config lookup)
@@ -665,6 +777,24 @@ async def cmd_set_dispatch2(ctx, channel: discord.TextChannel):
     """!setdispatch2 #channel - Set dispatch channel for ASPER2."""
     await api_post("/api/v1/bot/config", {"key": "dispatch_channel_asper2_id", "value": str(channel.id)})
     await ctx.send(f"✅ Диспетчерская ASPER2 будет в {channel.mention}")
+
+
+@bot.command(name="setroundstatus1")
+@commands.has_permissions(administrator=True)
+async def cmd_set_round_status1(ctx, channel: discord.TextChannel):
+    """!setroundstatus1 #channel - Set live round-status channel for ASPER1."""
+    await api_post("/api/v1/bot/config", {"key": "round_status_channel_asper1_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Статус раунда ASPER1 будет в {channel.mention}")
+    await refresh_round_status_embed("ASPER1")
+
+
+@bot.command(name="setroundstatus2")
+@commands.has_permissions(administrator=True)
+async def cmd_set_round_status2(ctx, channel: discord.TextChannel):
+    """!setroundstatus2 #channel - Set live round-status channel for ASPER2."""
+    await api_post("/api/v1/bot/config", {"key": "round_status_channel_asper2_id", "value": str(channel.id)})
+    await ctx.send(f"✅ Статус раунда ASPER2 будет в {channel.mention}")
+    await refresh_round_status_embed("ASPER2")
 
 
 @bot.command(name="publishrating")

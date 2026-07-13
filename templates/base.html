@@ -82,6 +82,7 @@
       <h1>Nexus Data Admin</h1>
       <div>
         {% if request.session.get('username') %}
+        <a href="/app" data-no-spa style="font-size:11px;color:var(--gray);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 10px;margin-right:10px;">✨ Новый интерфейс</a>
         <span>Привет, {{ request.session.get('username') }}!</span>
         <!-- Notification bell -->
         <div style="position:relative;display:inline-block;margin-right:8px;">

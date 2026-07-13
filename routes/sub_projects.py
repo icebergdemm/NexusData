@@ -261,6 +261,407 @@ async def sub_projects_list(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SUB-PROJECTS JSON API (for the React SPA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _serialize_category(c) -> dict:
+    return {
+        "id": c.id, "name": c.name, "slug": c.slug, "description": c.description,
+        "color": c.color, "icon": c.icon, "sort_order": c.sort_order, "parent_id": c.parent_id,
+    }
+
+
+def _serialize_version(v) -> dict:
+    return {
+        "id": v.id, "project_id": v.project_id, "version_number": v.version_number,
+        "filename": v.filename, "file_size": v.file_size, "changelog": v.changelog,
+        "deployed_server_1": bool(v.deployed_server_1), "deployed_server_2": bool(v.deployed_server_2),
+        "uploaded_at": v.uploaded_at.isoformat() if v.uploaded_at else None,
+        "is_deleted": bool(v.is_deleted),
+    }
+
+
+def _serialize_project(p) -> dict:
+    return {
+        "id": p.id, "name": p.name, "author": p.author, "project_type": p.project_type,
+        "crew": p.crew, "weapons": p.weapons, "has_reactor": p.has_reactor,
+        "fabricator_medfab": p.fabricator_medfab, "has_deconstructor": p.has_deconstructor,
+        "docking_ports": p.docking_ports, "decks": p.decks, "max_speed": p.max_speed,
+        "extra_equipment": p.extra_equipment, "features": p.features, "description": p.description,
+        "image_filename": p.image_filename, "discord_message_id": p.discord_message_id,
+        "created_by_admin_id": p.created_by_admin_id,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+@router.get("/api/v1/admin/sub-projects")
+async def api_sub_projects_list(
+    search: Optional[str] = Query(None), author: Optional[str] = Query(None),
+    crew_min: Optional[int] = Query(None), crew_max: Optional[int] = Query(None),
+    category_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "view"):
+        raise HTTPException(status_code=403)
+
+    svc = _get_sub_service(db)
+    projects = svc.get_all(search=search, author=author, crew_min=crew_min, crew_max=crew_max, category_id=category_id)
+
+    projects_data = []
+    for p in projects:
+        versions = svc.get_versions(p.id)
+        categories = svc.get_project_categories(p.id)
+        projects_data.append({
+            "project": _serialize_project(p),
+            "version_count": len(versions),
+            "latest_version": _serialize_version(versions[0]) if versions else None,
+            "categories": [_serialize_category(c) for c in categories],
+        })
+
+    return {
+        "projects": projects_data,
+        "all_categories": [_serialize_category(c) for c in svc.get_all_categories()],
+        "all_authors": svc.get_unique_authors(),
+        "sftp_server_1_name": settings.sftp_server_1_name,
+        "sftp_server_2_name": settings.sftp_server_2_name,
+        "can_edit": check_permission(current_admin, "sub_projects", "edit"),
+        "can_delete": check_permission(current_admin, "sub_projects", "delete"),
+    }
+
+
+@router.get("/api/v1/admin/sub-projects/{project_id}")
+async def api_sub_project_detail(
+    project_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "view"):
+        raise HTTPException(status_code=403)
+
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+
+    versions = svc.get_versions(project_id)
+    categories = svc.get_project_categories(project_id)
+
+    can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
+    is_owner = project.created_by_admin_id == current_admin.id
+
+    return {
+        "project": _serialize_project(project),
+        "versions": [_serialize_version(v) for v in versions],
+        "categories": [_serialize_category(c) for c in categories],
+        "sftp_server_1_name": settings.sftp_server_1_name,
+        "sftp_server_2_name": settings.sftp_server_2_name,
+        "is_owner": is_owner,
+        "can_edit_this": can_any or is_owner,
+        "can_deploy": can_any,
+        "can_delete": check_permission(current_admin, "sub_projects", "delete"),
+    }
+
+
+def _sub_project_form_to_data(name, author, project_type, crew, crew_min, crew_avg, crew_max,
+                               weapons, has_reactor, fabricator_medfab, has_deconstructor,
+                               docking_ports, decks, max_speed, extra_equipment, features, description) -> dict:
+    if crew_min is not None and crew_avg is not None and crew_max is not None:
+        crew_str = f"{crew_min}-{crew_avg}-{crew_max}"
+    else:
+        crew_str = (crew or "").strip() or None
+    return {
+        "name": name.strip(), "author": author.strip(),
+        "project_type": (project_type or "").strip() or None, "crew": crew_str,
+        "weapons": (weapons or "").strip() or None, "has_reactor": (has_reactor or "").strip() or None,
+        "fabricator_medfab": (fabricator_medfab or "").strip() or None,
+        "has_deconstructor": (has_deconstructor or "").strip() or None,
+        "docking_ports": (docking_ports or "").strip() or None, "decks": (decks or "").strip() or None,
+        "max_speed": (max_speed or "").strip() or None, "extra_equipment": (extra_equipment or "").strip() or None,
+        "features": (features or "").strip() or None, "description": (description or "").strip() or None,
+    }
+
+
+@router.post("/api/v1/admin/sub-projects")
+async def api_sub_project_create(
+    request: Request,
+    name: str = Form(...), author: str = Form(...), project_type: Optional[str] = Form(None),
+    crew: Optional[str] = Form(None), crew_min: Optional[int] = Form(None), crew_avg: Optional[int] = Form(None),
+    crew_max: Optional[int] = Form(None), weapons: Optional[str] = Form(None), has_reactor: Optional[str] = Form(None),
+    fabricator_medfab: Optional[str] = Form(None), has_deconstructor: Optional[str] = Form(None),
+    docking_ports: Optional[str] = Form(None), decks: Optional[str] = Form(None), max_speed: Optional[str] = Form(None),
+    extra_equipment: Optional[str] = Form(None), features: Optional[str] = Form(None), description: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit") and not check_permission(current_admin, "sub_projects", "view"):
+        raise HTTPException(status_code=403)
+
+    svc = _get_sub_service(db)
+    data = _sub_project_form_to_data(name, author, project_type, crew, crew_min, crew_avg, crew_max,
+                                      weapons, has_reactor, fabricator_medfab, has_deconstructor,
+                                      docking_ports, decks, max_speed, extra_equipment, features, description)
+    project = svc.create(data, current_admin.id)
+    if image and image.filename:
+        svc.save_image(project.id, image)
+
+    from models import AppSetting
+    default_cat_row = db.query(AppSetting).filter(AppSetting.key == "sub_cat_default_id").first()
+    if default_cat_row and default_cat_row.value and default_cat_row.value.strip().isdigit():
+        try:
+            svc.assign_category(project.id, int(default_cat_row.value))
+        except Exception:
+            pass
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_create", {"project_id": project.id, "name": project.name})
+    return {"status": "ok", "project": _serialize_project(project)}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}")
+async def api_sub_project_update(
+    project_id: int, request: Request,
+    name: str = Form(...), author: str = Form(...), project_type: Optional[str] = Form(None),
+    crew: Optional[str] = Form(None), crew_min: Optional[int] = Form(None), crew_avg: Optional[int] = Form(None),
+    crew_max: Optional[int] = Form(None), weapons: Optional[str] = Form(None), has_reactor: Optional[str] = Form(None),
+    fabricator_medfab: Optional[str] = Form(None), has_deconstructor: Optional[str] = Form(None),
+    docking_ports: Optional[str] = Form(None), decks: Optional[str] = Form(None), max_speed: Optional[str] = Form(None),
+    extra_equipment: Optional[str] = Form(None), features: Optional[str] = Form(None), description: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    svc = _get_sub_service(db)
+    existing = svc.get_by_id(project_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+
+    can_edit_any = check_permission(current_admin, "sub_projects", "delete")
+    can_edit_own = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "view")
+    is_owner = existing.created_by_admin_id == current_admin.id
+    if not can_edit_any and not (can_edit_own and is_owner):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования этого проекта")
+
+    data = _sub_project_form_to_data(name, author, project_type, crew, crew_min, crew_avg, crew_max,
+                                      weapons, has_reactor, fabricator_medfab, has_deconstructor,
+                                      docking_ports, decks, max_speed, extra_equipment, features, description)
+    project = svc.update(project_id, data)
+    if image and image.filename:
+        svc.save_image(project_id, image)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_update", {"project_id": project_id, "name": project.name})
+    return {"status": "ok", "project": _serialize_project(project)}
+
+
+@router.delete("/api/v1/admin/sub-projects/{project_id}")
+async def api_sub_project_delete(
+    project_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "delete"):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    project_name = project.name
+    svc.delete(project_id)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_delete", {"project_id": project_id, "name": project_name})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/versions")
+async def api_sub_project_upload_version(
+    project_id: int, sub_file: UploadFile = File(...), changelog: Optional[str] = Form(None),
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "view"):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
+    if not can_any and project.created_by_admin_id != current_admin.id:
+        raise HTTPException(status_code=403, detail="Вы можете загружать версии только для своих проектов")
+    if not sub_file.filename or not sub_file.filename.endswith(".sub"):
+        raise HTTPException(status_code=400, detail="Файл должен иметь расширение .sub")
+
+    version = svc.upload_version(project_id, sub_file, changelog or "", current_admin.id)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_version_upload", {"project_id": project_id, "version_id": version.id, "version_number": version.version_number})
+    return {"status": "ok", "version": _serialize_version(version)}
+
+
+@router.delete("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}")
+async def api_sub_project_delete_version(
+    project_id: int, version_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "delete"):
+        raise HTTPException(status_code=403, detail="Только пользователи с правом 'удалить' могут удалять версии")
+    svc = _get_sub_service(db)
+    svc.delete_version(version_id, admin_id=current_admin.id)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_version_delete", {"project_id": project_id, "version_id": version_id})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}/deploy")
+async def api_sub_project_deploy_version(
+    project_id: int, version_id: int, request: Request,
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403, detail="Для развёртывания необходимо право 'изменить' или 'удалить'")
+    body = await request.json()
+    server = body.get("server")
+    if server not in (1, 2):
+        raise HTTPException(status_code=400, detail="Некорректный номер сервера")
+
+    svc = _get_sub_service(db)
+    svc.deploy_version(version_id, server)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_version_deploy", {"project_id": project_id, "version_id": version_id, "server": server})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}/undeploy")
+async def api_sub_project_undeploy_version(
+    project_id: int, version_id: int, request: Request,
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403, detail="Для отката необходимо право 'изменить' или 'удалить'")
+    body = await request.json()
+    server = body.get("server")
+    if server not in (1, 2):
+        raise HTTPException(status_code=400, detail="Некорректный номер сервера")
+
+    svc = _get_sub_service(db)
+    svc.undeploy_version(version_id, server)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_version_undeploy", {"project_id": project_id, "version_id": version_id, "server": server})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/discord/publish")
+async def api_sub_project_discord_publish(
+    project_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit"):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    base_url = str(request.base_url).rstrip("/")
+    msg_id = svc.publish_to_discord(project_id, base_url)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_discord_publish", {"project_id": project_id})
+    return {"status": "ok", "message_id": msg_id}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/discord/unpublish")
+async def api_sub_project_discord_delete(
+    project_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit"):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    ok = svc.delete_discord_message(project_id)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_discord_delete", {"project_id": project_id})
+    return {"status": "ok" if ok else "failed"}
+
+
+@router.get("/api/v1/admin/sub-projects-categories")
+async def api_sub_project_categories_list(
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    return {"categories": [_serialize_category(c) for c in svc.get_all_categories()]}
+
+
+@router.post("/api/v1/admin/sub-projects-categories")
+async def api_sub_project_category_create(
+    request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    import re
+    final_slug = (body.get("slug") or "").strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+    svc = _get_sub_service(db)
+    cat = svc.create_category(
+        name=name, slug=final_slug, description=(body.get("description") or "").strip() or None,
+        color=body.get("color") or "#1a68de", icon=body.get("icon") or "🚢",
+        sort_order=body.get("sort_order") or 0, parent_id=body.get("parent_id") or None,
+        admin_id=current_admin.id,
+    )
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_category_create", {"name": name})
+    return {"status": "ok", "category": _serialize_category(cat)}
+
+
+@router.post("/api/v1/admin/sub-projects-categories/{cat_id}")
+async def api_sub_project_category_update(
+    cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    import re
+    final_slug = (body.get("slug") or "").strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+    svc = _get_sub_service(db)
+    svc.update_category(cat_id, {
+        "name": name, "slug": final_slug, "description": (body.get("description") or "").strip() or None,
+        "color": body.get("color") or "#1a68de", "icon": body.get("icon") or "🚢",
+        "sort_order": body.get("sort_order") or 0, "parent_id": body.get("parent_id") or None,
+    })
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_category_update", {"id": cat_id, "name": name})
+    return {"status": "ok"}
+
+
+@router.delete("/api/v1/admin/sub-projects-categories/{cat_id}")
+async def api_sub_project_category_delete(
+    cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    svc.delete_category(cat_id)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_category_delete", {"id": cat_id})
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/categories/{cat_id}")
+async def api_sub_project_assign_category(
+    project_id: int, cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit"):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    svc.assign_category(project_id, cat_id)
+    return {"status": "ok"}
+
+
+@router.delete("/api/v1/admin/sub-projects/{project_id}/categories/{cat_id}")
+async def api_sub_project_remove_category(
+    project_id: int, cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "edit"):
+        raise HTTPException(status_code=403)
+    svc = _get_sub_service(db)
+    svc.remove_category(project_id, cat_id)
+    return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PROJECT DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
 

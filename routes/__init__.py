@@ -15,6 +15,7 @@ from .dispatch import api_router as dispatch_api_router, panel_router as dispatc
 from .replays import api_router as replays_api_router, panel_router as replays_panel_router
 from .analytics import router as analytics_router
 from .notifications import router as notifications_router
+from .documents import router as documents_router
 
 __all__ = [
     "status_router",
@@ -40,4 +41,5 @@ __all__ = [
     "replays_panel_router",
     "analytics_router",
     "notifications_router",
+    "documents_router",
 ]

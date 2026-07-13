@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from database import get_db
 from security import check_permission
@@ -113,7 +113,43 @@ def report_online_players(
     """
     svc = ServerModerationService(db)
     count = svc.replace_online_players(report.players, server_name=server_name)
+    _update_server_live_state(db, server_name, report.submarine_health, report.supply_shuttle_eta)
     return ServerPlayersReportResult(status="ok", count=count)
+
+
+def _update_server_live_state(
+    db: Session,
+    server_name: Optional[str],
+    submarine_health: Optional[int],
+    supply_shuttle_eta: Optional[int],
+):
+    """Upsert the live per-server state (submarine health, supply shuttle ETA).
+
+    Stored as an absolute UTC arrival timestamp (not the raw seconds-remaining)
+    so consumers (the Discord round-status embed) can compute an accurate
+    countdown regardless of when they last refreshed, rather than a value that
+    goes stale between the game server's periodic reports.
+    """
+    if submarine_health is None and supply_shuttle_eta is None:
+        return
+    from models import ServerLiveState
+
+    sn = (server_name or "UNKNOWN").strip()
+    row = db.query(ServerLiveState).filter(ServerLiveState.server_name == sn).first()
+    if not row:
+        row = ServerLiveState(server_name=sn)
+        db.add(row)
+
+    if submarine_health is not None:
+        row.submarine_health = submarine_health
+    if supply_shuttle_eta is not None:
+        row.supply_shuttle_eta_seconds = supply_shuttle_eta
+        row.shuttle_arrival_at = datetime.utcnow() + timedelta(seconds=supply_shuttle_eta)
+    else:
+        row.supply_shuttle_eta_seconds = None
+        row.shuttle_arrival_at = None
+
+    db.commit()
 
 
 @api_router.post("/anticheat", response_model=AnticheatEventOut)
@@ -181,35 +217,10 @@ async def moderation_page(
     selected_server = server
 
     # Round state: last start event per server
-    from models import RoundEvent
-    from sqlalchemy import desc as _desc
+    from routes.dispatch import get_round_state
     round_states = {}
     for sn in (["ASPER1", "ASPER2"] if not server else [server]):
-        last_start = (
-            db.query(RoundEvent)
-            .filter(RoundEvent.event_type == "start", RoundEvent.server_name == sn)
-            .order_by(_desc(RoundEvent.created_at))
-            .first()
-        )
-        last_end = (
-            db.query(RoundEvent)
-            .filter(RoundEvent.event_type == "end", RoundEvent.server_name == sn)
-            .order_by(_desc(RoundEvent.created_at))
-            .first()
-        )
-        if last_start:
-            is_active = (last_end is None) or (last_start.created_at > last_end.created_at)
-            round_states[sn] = {
-                "active": is_active,
-                "submarine_name": last_start.submarine_name,
-                "mission": last_start.mission,
-                "location": last_start.location,
-                "players": last_start.players or [],
-                "started_at": last_start.created_at,
-                "last_end": last_end,
-            }
-        else:
-            round_states[sn] = {"active": False}
+        round_states[sn] = get_round_state(db, sn)
 
     # Banhammer: online + recently offline + search
     recent_offline = svc.get_recent_offline_players(limit=50)
@@ -377,6 +388,204 @@ async def review_anticheat_event(
     from routes.admin import push_flash
     push_flash(request, "success", "Событие отмечено как проверенное")
     return RedirectResponse(url="/admin/moderation?tab=anticheat", status_code=302)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MODERATION JSON API (for the React SPA — mirrors moderation_page/enqueue_moderation_action)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _serialize_online_player(info: dict) -> dict:
+    return {
+        "player_steamid": info.get("player_steamid"),
+        "player_name": info.get("player_name"),
+        "character_name": info.get("character_name"),
+        "job_id": info.get("job_id"),
+        "ping": info.get("ping"),
+        "player_id": info.get("player_id"),
+        "server_name": info.get("server_name"),
+        "join_time": info["join_time"].isoformat() if info.get("join_time") else None,
+        "last_seen": info["last_seen"].isoformat() if info.get("last_seen") else None,
+        "total_play_time": info.get("total_play_time"),
+        "is_new_player": info.get("is_new_player"),
+    }
+
+
+def _serialize_offline_player(p) -> dict:
+    return {
+        "player_id": p.player_id,
+        "player_steamid": p.player_steamid,
+        "player_last_time_name": p.player_last_time_name,
+        "last_login_time": p.last_login_time.isoformat() if p.last_login_time else None,
+        "last_session_logout": p.last_session_logout.isoformat() if getattr(p, "last_session_logout", None) else None,
+        "play_time_hours": p.play_time_hours,
+    }
+
+
+def _serialize_round_state_json(rs: dict) -> dict:
+    last_end = rs.get("last_end")
+    return {
+        "active": rs.get("active", False),
+        "location": rs.get("location"),
+        "submarine_name": rs.get("submarine_name"),
+        "mission": rs.get("mission"),
+        "started_at": rs["started_at"].isoformat() if rs.get("started_at") else None,
+        "players": rs.get("players") or [],
+        "last_end_at": last_end.created_at.isoformat() if last_end and last_end.created_at else None,
+        "last_end_mission_completed": bool(last_end.mission_completed) if last_end else None,
+    }
+
+
+@panel_router.get("/api/v1/admin/moderation/overview")
+async def api_moderation_overview(
+    server: Optional[str] = Query(None),
+    search: Optional[str] = Query(None, min_length=2),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Combined status/banhammer/anticheat data — mirrors moderation_page's eager loads."""
+    from routes.dispatch import get_round_state
+
+    svc = ServerModerationService(db)
+    online_players = svc.get_online_players(server_name=server)
+    online_servers = svc.get_online_servers()
+
+    round_states = {}
+    for sn in (["ASPER1", "ASPER2"] if not server else [server]):
+        round_states[sn] = _serialize_round_state_json(get_round_state(db, sn))
+
+    recent_offline = svc.get_recent_offline_players(limit=50)
+    if recent_offline:
+        from models import PlayerSession
+        pid_list = [p.player_id for p in recent_offline]
+        last_sessions = (
+            db.query(PlayerSession)
+            .filter(PlayerSession.player_id.in_(pid_list), PlayerSession.logout_time.isnot(None))
+            .order_by(PlayerSession.logout_time.desc())
+            .all()
+        )
+        last_logout_map = {}
+        for s in last_sessions:
+            if s.player_id not in last_logout_map:
+                last_logout_map[s.player_id] = s.logout_time
+        from datetime import timezone
+        MSK = timezone(timedelta(hours=3))
+        for p in recent_offline:
+            logout_dt = last_logout_map.get(p.player_id)
+            if logout_dt and logout_dt.tzinfo is None:
+                logout_dt = logout_dt.replace(tzinfo=timezone.utc).astimezone(MSK)
+            p.last_session_logout = logout_dt
+            if p.last_login_time and p.last_login_time.tzinfo is None:
+                p.last_login_time = p.last_login_time.replace(tzinfo=timezone.utc).astimezone(MSK)
+
+    search_results = []
+    if search:
+        from schemas import PlayerDataOut
+        raw_results = PlayerService(db).search_players(search, limit=50)
+        search_results = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw_results]
+
+    ac_events = svc.get_anticheat_events(limit=200, reviewed=None)
+    ac_enriched = [
+        {
+            "id": ev.id, "player_steamid": ev.player_steamid, "player_name": ev.player_name,
+            "player_id": ev.player_id, "event_type": ev.event_type, "details": ev.details,
+            "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None, "reviewed": bool(ev.reviewed),
+        }
+        for ev in ac_events
+    ]
+
+    return {
+        "online_players": [_serialize_online_player(p) for p in online_players],
+        "online_count": len(online_players),
+        "online_servers": online_servers,
+        "selected_server": server,
+        "round_states": round_states,
+        "recent_offline": [_serialize_offline_player(p) for p in recent_offline],
+        "search_results": search_results,
+        "search_query": search,
+        "ac_events": ac_enriched,
+        "can_edit": check_permission(current_admin, "moderation", "edit"),
+        "can_delete": check_permission(current_admin, "moderation", "delete"),
+    }
+
+
+@panel_router.post("/api/v1/admin/moderation/action")
+async def api_enqueue_moderation_action(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """JSON variant of enqueue_moderation_action — same side effects, JSON in/out."""
+    if not check_permission(current_admin, "moderation", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    body = await request.json()
+    action_type = body.get("action_type")
+    target_steamid = body.get("target_steamid")
+    reason = body.get("reason")
+    duration_minutes = body.get("duration_minutes")
+    message_text = body.get("message_text")
+    server_name = body.get("server_name")
+
+    if action_type not in ("kick", "ban", "unban", "message"):
+        raise HTTPException(status_code=400, detail="Invalid action_type")
+    if not target_steamid:
+        raise HTTPException(status_code=400, detail="target_steamid required")
+
+    from schemas import QueueActionIn
+    action_in = QueueActionIn(
+        action_type=action_type,
+        target_steamid=target_steamid,
+        reason=reason or None,
+        duration_minutes=duration_minutes or None,
+        message_text=message_text or None,
+        server_name=server_name.strip().upper() if server_name and server_name.strip() else None,
+    )
+
+    svc = ServerModerationService(db)
+    action = svc.enqueue_action(action_in, admin_id=current_admin.id)
+    logger.info(
+        "Admin %s queued %s for %s on server=%s (action_id=%s)",
+        current_admin.discord_username, action_type, target_steamid, server_name or "all", action.id,
+    )
+
+    if action_type == "ban":
+        from models import PlayerData, PlayerPunishment
+        from services import _now_msk
+        player = db.query(PlayerData).filter(PlayerData.player_steamid == target_steamid).first()
+        punishment = PlayerPunishment(
+            player_id=player.player_id if player else 0,
+            player_steamid=target_steamid,
+            player_ip=player.last_ip if player else None,
+            type="ban",
+            reason=reason or None,
+            issued_by_admin_id=current_admin.id,
+            issued_by_name=f"ND. {current_admin.discord_username}",
+            issued_at=_now_msk(),
+            expires_at=None,
+            is_active=1,
+        )
+        db.add(punishment)
+        db.commit()
+        from routes.game_api import _queue_punishment_discord_notification
+        _queue_punishment_discord_notification(db, punishment)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, f"moderation.{action_type}", {
+        "target_steamid": target_steamid, "reason": reason, "server_name": server_name, "action_id": action.id,
+    })
+    return {"status": "ok", "action_id": action.id}
+
+
+@panel_router.post("/api/v1/admin/moderation/anticheat/{event_id}/review")
+async def api_review_anticheat_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    svc = ServerModerationService(db)
+    if not svc.mark_reviewed(event_id):
+        raise HTTPException(status_code=404, detail="Event not found")
+    return {"status": "ok"}
 
 
 # ════════════════════════════════════════════════════════════════════════════
