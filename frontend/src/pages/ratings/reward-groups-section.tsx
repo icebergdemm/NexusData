@@ -157,8 +157,8 @@ export function RewardGroupsSection({ groups, canEdit }: { groups: RewardGroup[]
             <DialogDescription>Наборы предметов, статов и талантов, которые можно выдать игроку как награду.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div><Label>Название группы *</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Награда за 1 место" /></div>
-            <div><Label>Буквенный ID *</Label><Input value={id} onChange={(e) => setId(e.target.value)} placeholder="top1_reward" disabled={!!editingId} /></div>
+            <div><Label className="mb-1.5 block">Название группы *</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Награда за 1 место" /></div>
+            <div><Label className="mb-1.5 block">Буквенный ID *</Label><Input value={id} onChange={(e) => setId(e.target.value)} placeholder="top1_reward" disabled={!!editingId} /></div>
 
             <div>
               <Label className="mb-1.5 block">📦 Предметы (item_id → количество)</Label>

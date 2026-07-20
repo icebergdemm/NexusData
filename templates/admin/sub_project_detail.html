@@ -88,7 +88,7 @@
 .btn-discord:hover { background:#4752c4; }
 </style>
 
-<a href="/admin/sub-projects" class="sp-back">← Назад к списку</a>
+<a href="/adminold/sub-projects" class="sp-back">← Назад к списку</a>
 
 <div class="sp-detail-header">
   <h2>🚢 {{ project.name }}</h2>
@@ -134,7 +134,7 @@
         <span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:700;background:{{ cat.color }}22;color:{{ cat.color }};border:1px solid {{ cat.color }}55;">
           {{ cat.icon }} {{ cat.name }}
           {% if check_permission(admin, 'sub_projects', 'edit') %}
-          <form method="post" action="/admin/sub-projects/{{ project.id }}/categories/{{ cat.id }}/remove" style="display:inline;margin:0;">
+          <form method="post" action="/adminold/sub-projects/{{ project.id }}/categories/{{ cat.id }}/remove" style="display:inline;margin:0;">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
             <button type="submit" style="background:none;border:none;cursor:pointer;font-size:10px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
           </form>
@@ -148,7 +148,7 @@
 
   {% if check_permission(admin, 'sub_projects', 'edit') %}
   <div style="margin-top:10px;">
-    <form method="post" action="/admin/sub-projects/{{ project.id }}/categories/assign" style="display:flex;gap:8px;align-items:center;">
+    <form method="post" action="/adminold/sub-projects/{{ project.id }}/categories/assign" style="display:flex;gap:8px;align-items:center;">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <select name="category_id" style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:6px 10px;color:var(--white);font-size:12px;flex:1;">
         <option value="">+ Добавить категорию</option>
@@ -186,7 +186,7 @@
           {% set can_any = check_permission(admin, 'sub_projects', 'edit') or check_permission(admin, 'sub_projects', 'delete') %}
           {% set is_owner = project.created_by_admin_id == admin.id %}
           {% if can_any or is_owner %}
-          <a href="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/download" class="btn-xs btn-download">⬇️</a>
+          <a href="/adminold/sub-projects/{{ project.id }}/versions/{{ v.id }}/download" class="btn-xs btn-download">⬇️</a>
           {% endif %}
 
           {% if check_permission(admin, 'sub_projects', 'view') or can_any %}
@@ -194,13 +194,13 @@
             {% set can_delete_version = check_permission(admin, 'sub_projects', 'delete') %}
 
             {% if not v.deployed_server_1 and can_deploy %}
-            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
+            <form action="/adminold/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="1">
               <button type="submit" class="btn-xs btn-deploy" title="Развернуть на {{ sftp_server_1_name }}">▶ С1</button>
             </form>
             {% elif v.deployed_server_1 and can_deploy %}
-            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
+            <form action="/adminold/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="1">
               <button type="submit" class="btn-xs btn-undeploy" title="Удалить с {{ sftp_server_1_name }}">⏹ С1</button>
@@ -208,13 +208,13 @@
             {% endif %}
 
             {% if not v.deployed_server_2 and can_deploy %}
-            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
+            <form action="/adminold/sub-projects/{{ project.id }}/versions/{{ v.id }}/deploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="2">
               <button type="submit" class="btn-xs btn-deploy" title="Развернуть на {{ sftp_server_2_name }}">▶ С2</button>
             </form>
             {% elif v.deployed_server_2 and can_deploy %}
-            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
+            <form action="/adminold/sub-projects/{{ project.id }}/versions/{{ v.id }}/undeploy" method="post">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <input type="hidden" name="server" value="2">
               <button type="submit" class="btn-xs btn-undeploy" title="Удалить с {{ sftp_server_2_name }}">⏹ С2</button>
@@ -222,7 +222,7 @@
             {% endif %}
 
             {% if can_delete_version %}
-            <form action="/admin/sub-projects/{{ project.id }}/versions/{{ v.id }}/delete" method="post"
+            <form action="/adminold/sub-projects/{{ project.id }}/versions/{{ v.id }}/delete" method="post"
                   onsubmit="return confirm('Удалить версию {{ v.version_number }}?')">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <button type="submit" class="btn-xs btn-delete">🗑</button>
@@ -242,7 +242,7 @@
     {% if can_any_upload or is_owner_upload %}
     <div class="upload-form">
       <h4>Загрузить новую версию</h4>
-      <form action="/admin/sub-projects/{{ project.id }}/versions/upload" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <form action="/adminold/sub-projects/{{ project.id }}/versions/upload" method="post" enctype="multipart/form-data" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <div class="form-group" style="flex:1; min-width:200px;">
           <label>.sub файл</label>
@@ -264,7 +264,7 @@
 
     {% if check_permission(admin, 'sub_projects', 'edit') %}
     <div class="action-row">
-      <form action="/admin/sub-projects/{{ project.id }}/discord/publish" method="post">
+      <form action="/adminold/sub-projects/{{ project.id }}/discord/publish" method="post">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <button type="submit" class="btn btn-discord">
           {% if project.discord_message_id %}📝 Обновить embed в Discord{% else %}📤 Опубликовать в Discord{% endif %}
@@ -272,7 +272,7 @@
       </form>
 
       {% if project.discord_message_id %}
-      <form action="/admin/sub-projects/{{ project.id }}/discord/delete" method="post"
+      <form action="/adminold/sub-projects/{{ project.id }}/discord/delete" method="post"
             onsubmit="return confirm('Удалить сообщение из Discord?')">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <button type="submit" class="btn btn-danger">🗑 Удалить из Discord</button>
@@ -284,7 +284,7 @@
 
     {% if check_permission(admin, 'sub_projects', 'delete') %}
     <div class="action-row" style="margin-top:20px; padding-top:16px; border-top:1px solid var(--stroke-01);">
-      <form action="/admin/sub-projects/{{ project.id }}/delete" method="post"
+      <form action="/adminold/sub-projects/{{ project.id }}/delete" method="post"
             onsubmit="return confirm('Удалить проект «{{ project.name }}» и все его версии? Это действие необратимо.')">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <button type="submit" class="btn btn-danger">🗑 Удалить проект</button>
@@ -292,7 +292,7 @@
     </div>
 
     <div class="action-row" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--stroke-01);">
-      <form action="/admin/sub-projects/{{ project.id }}/change-owner" method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+      <form action="/adminold/sub-projects/{{ project.id }}/change-owner" method="post" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <div class="form-group" style="margin:0;">
           <label style="font-size:12px;color:var(--gray);">Сменить владельца</label>
@@ -314,7 +314,7 @@
 <div class="modal-overlay" id="editModal">
   <div class="modal-box">
     <h3>Редактировать проект</h3>
-    <form action="/admin/sub-projects/{{ project.id }}/update" method="post" enctype="multipart/form-data">
+    <form action="/adminold/sub-projects/{{ project.id }}/update" method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="form-grid">
         <div class="form-group">

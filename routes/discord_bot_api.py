@@ -39,6 +39,7 @@ class MemberInfo(BaseModel):
     display_name: Optional[str] = None
     avatar: Optional[str] = None
     joined_at: Optional[str] = None
+    role_ids: List[str] = Field(default_factory=list)
 
 
 class MembersSyncRequest(BaseModel):
@@ -58,6 +59,10 @@ class BotActionOut(BaseModel):
 class BotActionAck(BaseModel):
     success: bool
     error_message: Optional[str] = None
+    # Structured response for request/response-style actions (e.g.
+    # "check_channel_category") — optional and unused by every other action
+    # type, so this is fully backward-compatible.
+    result: Optional[dict] = None
 
 
 class AntiRaidEvent(BaseModel):
@@ -91,6 +96,7 @@ def sync_members(body: MembersSyncRequest, db: Session = Depends(get_db)):
             record.username = m.username
             record.display_name = m.display_name
             record.avatar = m.avatar
+            record.role_ids = m.role_ids
             record.last_synced_at = now
         else:
             record = DiscordMember(
@@ -98,6 +104,7 @@ def sync_members(body: MembersSyncRequest, db: Session = Depends(get_db)):
                 username=m.username,
                 display_name=m.display_name,
                 avatar=m.avatar,
+                role_ids=m.role_ids,
                 joined_at=datetime.fromisoformat(m.joined_at) if m.joined_at else None,
                 last_synced_at=now,
             )
@@ -156,11 +163,15 @@ def _auto_match_discord_ids(db: Session):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/actions", response_model=List[BotActionOut])
-def get_pending_bot_actions(db: Session = Depends(get_db)):
-    """Get pending actions for the bot to execute."""
-    actions = db.query(DiscordBotAction).filter(
-        DiscordBotAction.executed == 0
-    ).order_by(DiscordBotAction.queued_at).all()
+def get_pending_bot_actions(action_type: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Get pending actions for the bot to execute. `action_type` lets a
+    dedicated fast-polling loop (e.g. check_channel_category, polled every
+    ~2s for a near-synchronous verify-channel round trip) pull only its own
+    action type without also claiming/racing the main 30s loop's actions."""
+    q = db.query(DiscordBotAction).filter(DiscordBotAction.executed == 0)
+    if action_type:
+        q = q.filter(DiscordBotAction.action_type == action_type)
+    actions = q.order_by(DiscordBotAction.queued_at).all()
     return actions
 
 
@@ -174,6 +185,7 @@ def ack_bot_action(action_id: int, ack: BotActionAck, db: Session = Depends(get_
     action.executed = 1 if ack.success else 2
     action.executed_at = datetime.utcnow()
     action.error_message = ack.error_message
+    action.result = ack.result
     db.commit()
     return {"status": "ok"}
 
@@ -246,6 +258,46 @@ def set_bot_config(update: ConfigUpdate, db: Session = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# DEPARTMENT CHAT (item 6) — bot mirrors messages from linked channels
+# ══════════════════════════════════════════════════════════════════════════════
+
+class DepartmentChatMessageIn(BaseModel):
+    discord_channel_id: str
+    discord_message_id: Optional[str] = None
+    author_name: Optional[str] = None
+    author_avatar_url: Optional[str] = None
+    content: Optional[str] = None
+
+
+@router.get("/department-chat/channels")
+def list_department_chat_channel_ids(db: Session = Depends(get_db)):
+    """Flat list of Discord channel IDs the bot should mirror into
+    DepartmentChatMessage — refreshed periodically by sync_members_task."""
+    from models import DepartmentChatChannel
+    channel_ids = {row[0] for row in db.query(DepartmentChatChannel.discord_channel_id).all()}
+    return {"channel_ids": list(channel_ids)}
+
+
+@router.post("/department-chat/messages")
+def ingest_department_chat_message(body: DepartmentChatMessageIn, db: Session = Depends(get_db)):
+    from models import DepartmentChatChannel, DepartmentChatMessage
+
+    channel = db.query(DepartmentChatChannel).filter(DepartmentChatChannel.discord_channel_id == body.discord_channel_id).first()
+    if not channel:
+        return {"status": "skipped"}
+
+    db.add(DepartmentChatMessage(
+        channel_id=channel.id,
+        discord_message_id=body.discord_message_id,
+        author_name=body.author_name,
+        author_avatar_url=body.author_avatar_url,
+        content=(body.content or "")[:4000],
+    ))
+    db.commit()
+    return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ROUND STATUS (for the auto-updating Discord embed)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -294,6 +346,27 @@ def set_sub_project_msg_id(project_id: int, body: _SubProjectMsgId, db: Session 
     return {"status": "ok", "project_id": project_id, "message_id": body.message_id}
 
 
+class _DocumentMsgId(_BM):
+    message_id: str
+    channel_id: str
+
+
+@router.post("/document/{document_id}/set-message-id")
+def set_document_msg_id(document_id: int, body: _DocumentMsgId, db: Session = Depends(get_db)):
+    """Bot reports the Discord message_id after sending a NEW document embed
+    (routes/documents.py's api_publish_document_to_discord, "send_document_embed"
+    action) — a later publish with this message_id still present edits it
+    ("Синхронизировать") instead of posting a new message."""
+    from models import Document
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    doc.discord_message_id = body.message_id
+    doc.discord_channel_id = body.channel_id
+    db.commit()
+    return {"status": "ok", "document_id": document_id, "message_id": body.message_id}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RATINGS (for bot to publish in Discord)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -337,6 +410,66 @@ def get_ratings_for_bot(
         })
 
     return {"role": role, "leaderboard": result}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPARTMENT RATINGS (for bot to publish, one embed per department — mirrors
+# the per-role rating publish above)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/department-ratings/channels")
+def list_department_rating_channels(db: Session = Depends(get_db)):
+    """Every department with a rating_channel_id configured — the bot polls
+    this hourly before publishing, same "reload from NexusData config"
+    pattern already used for the site-wide rating channel."""
+    from models import Department
+
+    depts = db.query(Department).filter(
+        Department.rating_channel_id.isnot(None), Department.is_archived.is_(False)
+    ).all()
+    return {"departments": [{"department_id": d.id, "name": d.name, "icon": d.icon, "rating_channel_id": d.rating_channel_id} for d in depts]}
+
+
+@router.get("/department-ratings/leaderboard")
+def get_department_rating_for_bot(department_id: int = Query(...), limit: int = Query(10), db: Session = Depends(get_db)):
+    """Same aggregation as GET /api/v1/admin/departments/{id}/rating, just
+    without the admin-session/module-permission gate — this is bot-to-server
+    traffic, authenticated the same way every other /api/v1/bot/* route is."""
+    from sqlalchemy import func as sa_func
+    from sqlalchemy.orm import joinedload
+    from models import Department, DepartmentMember, DepartmentRatingEntry
+
+    dept = db.query(Department).filter(Department.id == department_id).first()
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    totals = (
+        db.query(DepartmentRatingEntry.admin_id, sa_func.sum(DepartmentRatingEntry.delta).label("total"))
+        .filter(DepartmentRatingEntry.department_id == dept.id)
+        .group_by(DepartmentRatingEntry.admin_id)
+        .all()
+    )
+    totals_by_admin = {row.admin_id: row.total for row in totals}
+    members = (
+        db.query(DepartmentMember)
+        .options(joinedload(DepartmentMember.admin))
+        .filter(DepartmentMember.department_id == dept.id)
+        .all()
+    )
+    leaderboard = sorted(
+        (
+            {
+                "admin_id": m.admin_id,
+                "admin_name": m.admin.discord_username if m.admin else None,
+                "discord_id": m.admin.discord_id if m.admin else None,
+                "total": totals_by_admin.get(m.admin_id, 0),
+            }
+            for m in members
+        ),
+        key=lambda r: r["total"],
+        reverse=True,
+    )[:limit]
+    return {"department_id": dept.id, "name": dept.name, "leaderboard": leaderboard}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -418,11 +551,13 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
             from sqlalchemy.orm import joinedload
             admin = db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(AdminUser.id == session.admin_id).first()
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-@panel_router.get("/admin/discord-bot", response_class=HTMLResponse)
+@panel_router.get("/adminold/discord-bot", response_class=HTMLResponse)
 async def admin_discord_bot_page(request: Request, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "discord_bot", "view"):
@@ -518,6 +653,30 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
     configs = db.query(DiscordBotConfig).all()
     config = {c.key: c.value for c in configs}
 
+    # Recent failures of the site -> Discord role push (routes/departments.py's
+    # _queue_role_sync) — surfaced here since these used to be silently
+    # reported as "success" by the bot even when the actual Discord API call
+    # failed (permission/role-hierarchy issues), making broken auto-sync
+    # invisible. See discord_bot/bot.py's sync_department_role handler.
+    failed_role_syncs_rows = (
+        db.query(DiscordBotAction)
+        .filter(DiscordBotAction.action_type == "sync_department_role", DiscordBotAction.executed == 2)
+        .order_by(DiscordBotAction.executed_at.desc())
+        .limit(20)
+        .all()
+    )
+    failed_role_syncs = [
+        {
+            "id": a.id,
+            "discord_id": (a.payload or {}).get("discord_id"),
+            "add_role_id": (a.payload or {}).get("add_role_id"),
+            "remove_role_id": (a.payload or {}).get("remove_role_id"),
+            "error_message": a.error_message,
+            "executed_at": a.executed_at.isoformat() if a.executed_at else None,
+        }
+        for a in failed_role_syncs_rows
+    ]
+
     antiraid_events = db.query(DiscordAntiRaidLog).order_by(DiscordAntiRaidLog.occurred_at.desc()).limit(30).all()
     ar_list = [
         {
@@ -558,7 +717,9 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
     return {
         "members_count": members_count, "pending_actions": pending_actions, "last_sync": last_sync,
         "config": config, "antiraid_events": ar_list, "twink_suspects": twink_suspects,
+        "failed_role_syncs": failed_role_syncs,
         "can_edit": check_permission(admin, "discord_bot", "edit"),
+        "can_manage_config": check_permission(admin, "discord_bot", "manage_config"),
     }
 
 
@@ -567,7 +728,7 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
     """Set a DiscordBotConfig key/value from the admin-session-authenticated web panel
     (previously only settable via Discord bang-commands using the bot's own API key)."""
     admin = _get_admin(request, db)
-    if not check_permission(admin, "discord_bot", "edit"):
+    if not check_permission(admin, "discord_bot", "manage_config"):
         raise HTTPException(status_code=403)
 
     body = await request.json()
@@ -588,10 +749,123 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
     return {"status": "ok", "key": key, "value": value}
 
 
+@panel_router.get("/api/v1/admin/discord-bot/role-sync/preview")
+async def api_discord_role_sync_preview(request: Request, db: Session = Depends(get_db)):
+    """Read-only diff of "site says this member should hold these department
+    roles" vs DiscordMember.role_ids (last-known snapshot) — the site is the
+    source of truth, this just finds where Discord hasn't caught up yet, in
+    EITHER direction (add missing, remove stale). Nothing is queued here;
+    the admin picks which rows to actually sync via the /apply endpoint
+    below. Compare with workers.task_reconcile_department_discord_roles,
+    which only ever adds automatically — this manual tool is reviewed by a
+    human, so it's safe to also surface (and let them choose to apply)
+    removals."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+
+    from sqlalchemy.orm import joinedload
+    from models import DepartmentMember, Department, DiscordMember
+
+    memberships = (
+        db.query(DepartmentMember)
+        .join(Department, Department.id == DepartmentMember.department_id)
+        .filter(Department.is_archived.is_(False))
+        .options(joinedload(DepartmentMember.admin), joinedload(DepartmentMember.department).joinedload(Department.access_levels))
+        .all()
+    )
+
+    rows = []
+    for m in memberships:
+        member_admin = m.admin
+        if not member_admin or not member_admin.discord_id:
+            continue
+        dept = m.department
+
+        managed_roles = set()
+        if dept.base_discord_role_id:
+            managed_roles.add(dept.base_discord_role_id)
+        for level in dept.access_levels:
+            if level.discord_role_id:
+                managed_roles.add(level.discord_role_id)
+        if not managed_roles:
+            continue
+
+        expected_roles = set()
+        if dept.base_discord_role_id:
+            expected_roles.add(dept.base_discord_role_id)
+        held = m.held_level_keys or []
+        for level in dept.access_levels:
+            if level.key in held and level.discord_role_id:
+                expected_roles.add(level.discord_role_id)
+
+        snapshot = db.query(DiscordMember).filter(DiscordMember.discord_id == member_admin.discord_id).first()
+        current_roles = set(snapshot.role_ids or []) if snapshot else set()
+
+        add_role_ids = sorted(expected_roles - current_roles)
+        # Only ever proposes removing a role THIS department's module
+        # actually manages (base role or one of its access levels') — never
+        # a role from another department or one granted manually in Discord
+        # for unrelated reasons.
+        remove_role_ids = sorted((current_roles & managed_roles) - expected_roles)
+        if not add_role_ids and not remove_role_ids:
+            continue
+
+        rows.append({
+            "admin_id": member_admin.id,
+            "admin_name": member_admin.discord_username,
+            "department_id": dept.id,
+            "department_name": dept.name,
+            "add_role_ids": add_role_ids,
+            "remove_role_ids": remove_role_ids,
+        })
+
+    return {"rows": rows}
+
+
+@panel_router.post("/api/v1/admin/discord-bot/role-sync/apply")
+async def api_discord_role_sync_apply(request: Request, db: Session = Depends(get_db)):
+    """Queue sync_department_role bot actions for exactly the rows the admin
+    selected from the preview above — never re-derives the diff itself, so
+    what gets applied is exactly what was reviewed on screen."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+
+    from models import AdminUser as _AdminUser
+
+    body = await request.json()
+    selections = body.get("selections") or []
+    queued = 0
+    for sel in selections:
+        member_admin = db.query(_AdminUser).filter(_AdminUser.id == sel.get("admin_id")).first()
+        if not member_admin or not member_admin.discord_id:
+            continue
+        for role_id in sel.get("add_role_ids") or []:
+            db.add(DiscordBotAction(
+                action_type="sync_department_role",
+                payload={"discord_id": member_admin.discord_id, "add_role_id": role_id},
+                queued_by_admin_id=admin.id,
+            ))
+            queued += 1
+        for role_id in sel.get("remove_role_ids") or []:
+            db.add(DiscordBotAction(
+                action_type="sync_department_role",
+                payload={"discord_id": member_admin.discord_id, "remove_role_id": role_id},
+                queued_by_admin_id=admin.id,
+            ))
+            queued += 1
+
+    db.commit()
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_role_sync_manual_apply", {"queued": queued, "selections": len(selections)})
+    return {"status": "ok", "queued": queued}
+
+
 @panel_router.post("/api/v1/admin/discord-bot/action")
 async def api_admin_discord_bot_send_action(request: Request, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
-    if not check_permission(admin, "discord_bot", "edit"):
+    if not check_permission(admin, "discord_bot", "broadcast"):
         raise HTTPException(status_code=403)
 
     body = await request.json()
@@ -606,7 +880,7 @@ async def api_admin_discord_bot_send_action(request: Request, db: Session = Depe
     return {"status": "ok", "action_id": action.id}
 
 
-@panel_router.post("/admin/discord-bot/action")
+@panel_router.post("/adminold/discord-bot/action")
 async def admin_discord_bot_send_action(
     request: Request,
     action_type: str = Form(...),
@@ -614,7 +888,7 @@ async def admin_discord_bot_send_action(
     db: Session = Depends(get_db),
 ):
     admin = _get_admin(request, db)
-    if not check_permission(admin, "discord_bot", "edit"):
+    if not check_permission(admin, "discord_bot", "broadcast"):
         raise HTTPException(status_code=403)
 
     try:
@@ -634,4 +908,4 @@ async def admin_discord_bot_send_action(
     flashes.append({"level": "success", "message": f"Действие «{action_type}» поставлено в очередь (id={action.id})"})
     request.session["_flashes"] = flashes
 
-    return RedirectResponse(url="/admin/discord-bot", status_code=302)
+    return RedirectResponse(url="/adminold/discord-bot", status_code=302)

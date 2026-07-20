@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/app/',
+  base: '/admin/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -15,7 +15,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:8000',
-      '/admin': 'http://localhost:8000',
+      '/adminold': 'http://localhost:8000',
       '/static': 'http://localhost:8000',
       '/login': 'http://localhost:8000',
       '/auth': 'http://localhost:8000',

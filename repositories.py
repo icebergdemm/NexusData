@@ -57,11 +57,28 @@ class KitRepository(BaseRepository):
 class PlayerRepository(BaseRepository):
     """Repository for PlayerData model"""
     
-    def get_all(self, page: int = 1, page_size: int = 50) -> Tuple[List[PlayerData], int]:
-        """Get all players with pagination"""
+    SORT_COLUMNS = {
+        "playtime_desc": (PlayerData.play_time, True),
+        "playtime_asc": (PlayerData.play_time, False),
+        "last_login_desc": (PlayerData.last_login_time, True),
+        "last_login_asc": (PlayerData.last_login_time, False),
+    }
+
+    def get_all(
+        self, page: int = 1, page_size: int = 50,
+        rank_id: Optional[int] = None, sort: Optional[str] = None,
+    ) -> Tuple[List[PlayerData], int]:
+        """Get all players with pagination, optional rank filter and sort order."""
         query = self.db.query(PlayerData)
+        if rank_id is not None:
+            query = query.filter(PlayerData.rank_id == rank_id)
+
+        sort_spec = self.SORT_COLUMNS.get(sort or "")
+        if sort_spec:
+            column, descending = sort_spec
+            query = query.order_by(column.desc() if descending else column.asc())
+
         total = query.count()
-        
         players = query.offset((page - 1) * page_size).limit(page_size).all()
         return players, total
     
@@ -403,7 +420,12 @@ class PlayerSessionRepository(BaseRepository):
         return self.db.query(PlayerSession).filter(PlayerSession.id == session_id).first()
     
     def get_all_by_player(self, player_id: int) -> List[PlayerSession]:
-        return self.db.query(PlayerSession).filter(PlayerSession.player_id == player_id).all()
+        return (
+            self.db.query(PlayerSession)
+            .filter(PlayerSession.player_id == player_id)
+            .order_by(PlayerSession.login_time.desc())
+            .all()
+        )
     
     def get_active_session(self, player_id: int) -> Optional[PlayerSession]:
         """Get active session (no logout_time)"""

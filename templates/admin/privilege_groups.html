@@ -129,7 +129,7 @@
             onclick="openEditGroup({{ g.id }}, {{ g.name|tojson }}, {{ (g.description or '')|tojson }}, {{ g.rate_limit_count }}, {{ g.rate_limit_window_secs }}, {{ g.permissions|tojson }})">
             ✏️ Редактировать
           </button>
-          <form method="post" action="/admin/privilege-groups/{{ g.id }}/delete" style="margin:0;"
+          <form method="post" action="/adminold/privilege-groups/{{ g.id }}/delete" style="margin:0;"
             onsubmit="return confirm('Удалить группу «{{ g.name }}»?')">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
             <button type="submit" class="btn btn-sm btn-danger">🗑</button>
@@ -225,7 +225,7 @@
       <button class="modal-close" onclick="closeModal('create-group-modal')">×</button>
     </div>
     <div class="modal-body-block">
-    <form method="post" action="/admin/privilege-groups/create">
+    <form method="post" action="/adminold/privilege-groups/create">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div class="form-group">
         <label>Название *</label>

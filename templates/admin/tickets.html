@@ -28,15 +28,15 @@
 </div>
 
 <div class="status-tabs">
-  <a href="/admin/tickets?status=open" class="status-tab {% if status_filter == 'open' %}active{% endif %}">Открытые</a>
-  <a href="/admin/tickets?status=closed" class="status-tab {% if status_filter == 'closed' %}active{% endif %}">Закрытые</a>
-  <a href="/admin/tickets?status=all" class="status-tab {% if status_filter == 'all' %}active{% endif %}">Все</a>
+  <a href="/adminold/tickets?status=open" class="status-tab {% if status_filter == 'open' %}active{% endif %}">Открытые</a>
+  <a href="/adminold/tickets?status=closed" class="status-tab {% if status_filter == 'closed' %}active{% endif %}">Закрытые</a>
+  <a href="/adminold/tickets?status=all" class="status-tab {% if status_filter == 'all' %}active{% endif %}">Все</a>
 </div>
 
 {% if tickets %}
 {% for t in tickets %}
 {% set ttype = ticket_config.types.get(t.ticket_type, {}) %}
-<a href="/admin/tickets/{{ t.id }}" class="ticket-card">
+<a href="/adminold/tickets/{{ t.id }}" class="ticket-card">
   <span class="ticket-type-badge" style="background:{{ type_colors.get(t.ticket_type, '#555') }}22; color:{{ type_colors.get(t.ticket_type, '#aaa') }}; border:1px solid {{ type_colors.get(t.ticket_type, '#555') }}55;">
     {{ ttype.get('emoji', '🎫') }} {{ ttype.get('name', t.ticket_type) }}
   </span>

@@ -18,11 +18,12 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { api } from "@/lib/api"
 import type { ModerationOverview, OfflinePlayer } from "./types"
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "—"
+  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
 }
 
 function fmtPlayTime(hours: number): string {
@@ -39,6 +40,7 @@ export function ModerationPage() {
   const [actionTarget, setActionTarget] = useState<{ steamid: string; name: string; type: ActionType } | null>(null)
   const [actionReason, setActionReason] = useState("")
   const [actionServer, setActionServer] = useState("")
+  const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const queryClient = useQueryClient()
 
   const queryKey = ["moderation-overview", searchQuery]
@@ -93,7 +95,7 @@ export function ModerationPage() {
           <TabsTrigger value="status" className="gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-success" /> Онлайн ({data.online_count})
           </TabsTrigger>
-          <TabsTrigger value="banhammer">Банхаммер</TabsTrigger>
+          <TabsTrigger value="banhammer">Вышедшие игроки</TabsTrigger>
           <TabsTrigger value="anticheat" className="gap-1.5">
             Античит {unreviewedCount > 0 && <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">{unreviewedCount}</Badge>}
           </TabsTrigger>
@@ -102,19 +104,19 @@ export function ModerationPage() {
         <TabsContent value="status" className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             {Object.entries(data.round_states).map(([sn, rs]) => (
-              <Card key={sn} className="overflow-hidden">
+              <Card key={sn} className="overflow-hidden py-0">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b bg-muted/30 py-3">
                   <CardTitle className="text-sm font-semibold">{sn}</CardTitle>
                   <Badge className={rs.active ? "bg-success text-white" : ""} variant={rs.active ? "default" : "secondary"}>
                     {rs.active ? "🟢 Раунд идёт" : "⚪ Раунд не идёт"}
                   </Badge>
                 </CardHeader>
-                <CardContent className="pt-4 text-sm">
+                <CardContent className="py-4 text-sm">
                   {rs.active ? (
                     <div className="grid grid-cols-2 gap-3">
-                      <InfoRow icon={MapPin} label="Локация" value={rs.location ?? "—"} />
-                      <InfoRow icon={Ship} label="Корабль" value={rs.submarine_name ?? "—"} />
-                      <InfoRow icon={Target} label="Миссия" value={rs.mission ?? "—"} />
+                      <InfoRow icon={MapPin} label="Локация" value={rs.location ?? "-"} />
+                      <InfoRow icon={Ship} label="Корабль" value={rs.submarine_name ?? "-"} />
+                      <InfoRow icon={Target} label="Миссия" value={rs.mission ?? "-"} />
                       <InfoRow icon={Users2} label="Игроков в раунде" value={String(rs.players.length)} />
                     </div>
                   ) : (
@@ -137,19 +139,35 @@ export function ModerationPage() {
                     <TableHead>Сервер</TableHead>
                     <TableHead>Роль</TableHead>
                     <TableHead>Пинг</TableHead>
+                    {data.can_edit && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.online_players.map((p) => (
                     <TableRow key={p.player_steamid}>
-                      <TableCell className="font-medium">{p.player_name}</TableCell>
+                      <TableCell className="font-medium">
+                        {p.player_id ? (
+                          <button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
+                            {p.player_name}
+                          </button>
+                        ) : p.player_name}
+                      </TableCell>
                       <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
-                      <TableCell>{p.job_id ?? "—"}</TableCell>
-                      <TableCell>{p.ping ?? "—"}</TableCell>
+                      <TableCell>{p.job_id ?? "-"}</TableCell>
+                      <TableCell>{p.ping ?? "-"}</TableCell>
+                      {data.can_edit && (
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1.5 whitespace-nowrap">
+                            <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_name ?? p.player_steamid, type: "message" })}>Сообщение</Button>
+                            <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_name ?? p.player_steamid, type: "kick" })}>Кик</Button>
+                            <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_name ?? p.player_steamid, type: "ban" })}>Бан</Button>
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                   {!data.online_players.length && (
-                    <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">Никого нет онлайн</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Никого нет онлайн</TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>
@@ -183,7 +201,9 @@ export function ModerationPage() {
                   {offlineRows.map((p) => (
                     <TableRow key={p.player_id}>
                       <TableCell>
-                        <div className="font-medium">{p.player_last_time_name}</div>
+                        <button className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
+                          {p.player_last_time_name}
+                        </button>
                         <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
                       </TableCell>
                       <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>
@@ -224,7 +244,13 @@ export function ModerationPage() {
                 <TableBody>
                   {data.ac_events.map((ev) => (
                     <TableRow key={ev.id}>
-                      <TableCell className="font-medium">{ev.player_name || ev.player_steamid}</TableCell>
+                      <TableCell className="font-medium">
+                        {ev.player_id ? (
+                          <button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(ev.player_id)}>
+                            {ev.player_name || ev.player_steamid}
+                          </button>
+                        ) : (ev.player_name || ev.player_steamid)}
+                      </TableCell>
                       <TableCell><span className="font-mono text-xs">{ev.event_type}</span></TableCell>
                       <TableCell className="text-sm text-muted-foreground">{fmtDate(ev.occurred_at)}</TableCell>
                       <TableCell>
@@ -255,17 +281,17 @@ export function ModerationPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {actionTarget?.type === "ban" ? "Забанить" : actionTarget?.type === "kick" ? "Кикнуть" : "Отправить сообщение"} — {actionTarget?.name}
+              {actionTarget?.type === "ban" ? "Забанить" : actionTarget?.type === "kick" ? "Кикнуть" : "Отправить сообщение"} - {actionTarget?.name}
             </DialogTitle>
             <DialogDescription>Действие будет поставлено в очередь и выполнено игровым сервером при следующем опросе.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <Label>{actionTarget?.type === "message" ? "Текст сообщения" : "Причина"}</Label>
+              <Label className="mb-1.5 block">{actionTarget?.type === "message" ? "Текст сообщения" : "Причина"}</Label>
               <Textarea value={actionReason} onChange={(e) => setActionReason(e.target.value)} />
             </div>
             <div>
-              <Label>Сервер (пусто = оба)</Label>
+              <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
               <Input value={actionServer} onChange={(e) => setActionServer(e.target.value)} placeholder="ASPER1 / ASPER2" />
             </div>
           </div>
@@ -274,6 +300,8 @@ export function ModerationPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <PlayerSummaryDialog playerId={summaryPlayerId} open={summaryPlayerId != null} onOpenChange={(o) => !o && setSummaryPlayerId(null)} />
     </div>
   )
 }

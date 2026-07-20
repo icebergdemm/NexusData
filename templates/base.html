@@ -82,7 +82,7 @@
       <h1>Nexus Data Admin</h1>
       <div>
         {% if request.session.get('username') %}
-        <a href="/app" data-no-spa style="font-size:11px;color:var(--gray);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 10px;margin-right:10px;">✨ Новый интерфейс</a>
+        <a href="/admin" data-no-spa style="font-size:11px;color:var(--gray);border:1px solid var(--stroke-01);border-radius:6px;padding:4px 10px;margin-right:10px;">✨ Новый интерфейс</a>
         <span>Привет, {{ request.session.get('username') }}!</span>
         <!-- Notification bell -->
         <div style="position:relative;display:inline-block;margin-right:8px;">
@@ -124,54 +124,54 @@
 
     <nav class="nav">
       <ul>
-        <li><a href="/admin">Главная</a></li>
+        <li><a href="/adminold">Главная</a></li>
         {% if check_permission(admin, 'admin', 'view') %}
-        <li><a href="/admin/users">Пользователи Nexus Data</a></li>
+        <li><a href="/adminold/users">Пользователи Nexus Data</a></li>
         {% endif %}
         {% if check_permission(admin, 'players', 'view') or check_permission(admin, 'players_special', 'view') %}
-        <li><a href="/admin/players">Игроки</a></li>
+        <li><a href="/adminold/players">Игроки</a></li>
         {% endif %}
         {% if check_permission(admin, 'moderation', 'view') %}
-        <li><a href="/admin/moderation">Модерирование</a></li>
+        <li><a href="/adminold/moderation">Модерирование</a></li>
         {% endif %}
         {% if check_permission(admin, 'dispatch', 'view') %}
-        <li><a href="/admin/dispatch">Диспетчерская</a></li>
+        <li><a href="/adminold/dispatch">Диспетчерская</a></li>
         {% endif %}
         {% if check_permission(admin, 'replays', 'view') %}
-        <li><a href="/admin/replays">Реплеи раундов</a></li>
+        <li><a href="/adminold/replays">Реплеи раундов</a></li>
         {% endif %}
         {% if check_permission(admin, 'sessions', 'view') %}
-        <li><a href="/admin/sessions">Сессии</a></li>
+        <li><a href="/adminold/sessions">Сессии</a></li>
         {% endif %}
         {% if check_permission(admin, 'audit', 'view') %}
-        <li><a href="/admin/audit">Аудит</a></li>
+        <li><a href="/adminold/audit">Аудит</a></li>
         {% endif %}
         {% if check_permission(admin, 'privileges', 'view') %}
-        <li><a href="/admin/server-privileges">Серверные привилегии</a></li>
+        <li><a href="/adminold/server-privileges">Серверные привилегии</a></li>
         {% endif %}
         {% if check_permission(admin, 'kits', 'view') %}
-        <li><a href="/admin/kits">Редактирование китов</a></li>
+        <li><a href="/adminold/kits">Редактирование китов</a></li>
         {% endif %}
         {% if check_permission(admin, 'admin', 'edit') %}
-        <li><a href="/admin/administration">Администрирование</a></li>
+        <li><a href="/adminold/administration">Администрирование</a></li>
         {% endif %}
         {% if check_permission(admin, 'punishments', 'view') %}
-        <li><a href="/admin/punishments">Наказания</a></li>
+        <li><a href="/adminold/punishments">Наказания</a></li>
         {% endif %}
         {% if check_permission(admin, 'sub_projects', 'view') %}
-        <li><a href="/admin/sub-projects">Sub-карты</a></li>
+        <li><a href="/adminold/sub-projects">Sub-карты</a></li>
         {% endif %}
         {% if check_permission(admin, 'ratings', 'view') %}
-        <li><a href="/admin/ratings">Рейтинг</a></li>
+        <li><a href="/adminold/ratings">Рейтинг</a></li>
         {% endif %}
         {% if check_permission(admin, 'discord_bot', 'view') %}
-        <li><a href="/admin/discord-bot">Discord бот</a></li>
+        <li><a href="/adminold/discord-bot">Discord бот</a></li>
         {% endif %}
         {% if check_permission(admin, 'tickets', 'view') %}
-        <li><a href="/admin/tickets">Тикеты</a></li>
+        <li><a href="/adminold/tickets">Тикеты</a></li>
         {% endif %}
         {% if check_permission(admin, 'admin', 'view') %}
-        <li><a href="/admin/analytics">Аналитика</a></li>
+        <li><a href="/adminold/analytics">Аналитика</a></li>
         {% endif %}
       </ul>
     </nav>

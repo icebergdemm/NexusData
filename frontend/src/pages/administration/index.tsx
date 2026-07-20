@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { AlertTriangle, Users, Clock3, Timer, Gauge } from "lucide-react"
 import { api } from "@/lib/api"
+import { useCurrentAdmin } from "@/lib/auth"
 import { baseChartOptions, lineDatasetDefaults, CHART_COLORS } from "@/lib/chart-theme"
 
 interface AdministrationResponse {
@@ -46,10 +47,25 @@ const CFG_FIELDS: { key: string; label: string; type?: "checkbox" }[] = [
   { key: "sftp_server_2_remote_dir", label: "SFTP 2: удалённая папка" },
 ]
 
+// Отдельно от CFG_FIELDS: эти поля бэкенд отдаёт и принимает только для
+// суперпользователей (routes/admin.py: ONLYOFFICE_CFG_FIELDS) — один из них
+// секрет, общий с самим Document Server. Рендерим их отдельным блоком, а не
+// подмешиваем в общий грид, чтобы не показывать пустые поля не-суперюзерам
+// (бэкенд просто не пришлёт эти ключи в editable_cfg для них).
+const SUPERUSER_CFG_FIELDS: { key: string; label: string }[] = [
+  { key: "onlyoffice_document_server_url", label: "ONLYOFFICE: URL Document Server" },
+  { key: "onlyoffice_callback_base_url", label: "ONLYOFFICE: базовый URL NexusData (для колбэков)" },
+  { key: "onlyoffice_jwt_secret", label: "ONLYOFFICE: JWT-секрет" },
+  { key: "pterodactyl_panel_url", label: "Pterodactyl: URL панели" },
+  { key: "pterodactyl_api_key", label: "Pterodactyl: Client API ключ" },
+  { key: "sub_projects_test_server_uuid", label: "Sub-проекты: UUID тестового сервера (Сервер 2 / ASPER2)" },
+]
+
 export function AdministrationPage() {
   const [period, setPeriod] = useState("day")
   const [cfg, setCfg] = useState<Record<string, string>>({})
   const queryClient = useQueryClient()
+  const { data: me } = useCurrentAdmin()
 
   const { data } = useQuery({
     queryKey: ["administration", period],
@@ -80,13 +96,13 @@ export function AdministrationPage() {
       </Tabs>
 
       <div className="grid grid-cols-4 gap-4">
-        <StatTile label="Уникальных игроков" value={data?.unique_players ?? "—"} icon={Users} accent="info" />
-        <StatTile label="Сессий" value={data?.total_sessions ?? "—"} icon={Clock3} accent="primary" />
-        <StatTile label="Ср. сессия (мин)" value={data?.avg_session_mins ?? "—"} icon={Timer} accent="success" />
-        <StatTile label="Пик одновременно" value={data?.peak_concurrent ?? "—"} icon={Gauge} accent="warning" />
+        <StatTile label="Уникальных игроков" value={data?.unique_players ?? "-"} icon={Users} accent="info" />
+        <StatTile label="Сессий" value={data?.total_sessions ?? "-"} icon={Clock3} accent="primary" />
+        <StatTile label="Ср. сессия (мин)" value={data?.avg_session_mins ?? "-"} icon={Timer} accent="success" />
+        <StatTile label="Пик одновременно" value={data?.peak_concurrent ?? "-"} icon={Gauge} accent="warning" />
       </div>
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden py-0">
         <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Онлайн за период</CardTitle></CardHeader>
         <CardContent className="pt-4" style={{ height: 276 }}>
           <Line
@@ -102,9 +118,9 @@ export function AdministrationPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="overflow-hidden py-0">
         <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Топ активных игроков</CardTitle></CardHeader>
-        <CardContent className="pt-4">
+        <CardContent className="py-4">
           <Table>
             <TableHeader><TableRow><TableHead>Игрок</TableHead><TableHead>Часов</TableHead><TableHead>Сессий</TableHead></TableRow></TableHeader>
             <TableBody>
@@ -120,9 +136,9 @@ export function AdministrationPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="overflow-hidden py-0">
         <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Конфигурация (.env)</CardTitle></CardHeader>
-        <CardContent className="space-y-4 pt-4">
+        <CardContent className="space-y-4 py-4">
           <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>Здесь отображаются секреты в открытом виде (пароли SFTP, Discord client secret). Доступ только для суперпользователей.</span>
@@ -138,6 +154,27 @@ export function AdministrationPage() {
           <Button onClick={() => saveConfig.mutate()}>Сохранить конфигурацию</Button>
         </CardContent>
       </Card>
+
+      {me?.is_superuser && (
+        <Card className="overflow-hidden py-0">
+          <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">ONLYOFFICE / Pterodactyl</CardTitle></CardHeader>
+          <CardContent className="space-y-4 py-4">
+            <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>Настройки интеграции с Document Server и Pterodactyl (включая API-ключи). Доступ только для суперпользователей — раздел не отображается остальным.</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {SUPERUSER_CFG_FIELDS.map((f) => (
+                <div key={f.key}>
+                  <Label className="text-xs text-muted-foreground">{f.label}</Label>
+                  <Input className="mt-1" value={cfg[f.key] ?? ""} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} />
+                </div>
+              ))}
+            </div>
+            <Button onClick={() => saveConfig.mutate()}>Сохранить конфигурацию</Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
@@ -152,7 +189,7 @@ const ACCENT_CLASSES: Record<string, string> = {
 function StatTile({ label, value, icon: Icon, accent }: { label: string; value: number | string; icon: typeof Users; accent: string }) {
   return (
     <Card>
-      <CardContent className="flex items-center gap-3 pt-6">
+      <CardContent className="flex items-center gap-3">
         <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${ACCENT_CLASSES[accent]}`}>
           <Icon className="h-5 w-5" />
         </div>

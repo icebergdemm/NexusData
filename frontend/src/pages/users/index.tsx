@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,23 +12,21 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { UserCog } from "lucide-react"
+import { UserCog, ShieldCheck } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
-import { useCurrentAdmin } from "@/lib/auth"
+import { useCurrentAdmin, usePermissionRegistry } from "@/lib/auth"
+import { PermissionMatrixEditor, type PermissionValue } from "./PermissionMatrixEditor"
 
-const PAGES = [
-  "players", "players_special", "moderation", "dispatch", "sessions", "kits", "admin",
-  "audit", "punishments", "privileges", "sub_projects", "replays", "ratings", "discord_bot", "tickets",
-  "documents",
-]
-
+interface LinkedPlayer { player_id: number; player_name: string; auto: boolean }
 interface AdminUserRow {
   id: number; discord_id: string; discord_username: string | null; role: string
   is_superuser: boolean; privilege_group_id: number | null; privilege_group_name: string | null
+  individual_permissions: { pages?: PermissionValue } | PermissionValue | null
+  linked_player: LinkedPlayer | null
 }
 interface PrivilegeGroup {
   id: number; name: string; description: string | null
@@ -39,17 +38,23 @@ interface UsersResponse {
   can_edit: boolean; can_delete: boolean; is_superuser: boolean
 }
 
-function getPages(g: PrivilegeGroup): Record<string, Record<string, boolean>> {
-  return (g.permissions as { pages?: Record<string, Record<string, boolean>> }).pages ?? (g.permissions as Record<string, Record<string, boolean>>) ?? {}
+function unwrapPages(raw: { pages?: PermissionValue } | PermissionValue | null | undefined): PermissionValue {
+  if (!raw) return {}
+  return (raw as { pages?: PermissionValue }).pages ?? (raw as PermissionValue) ?? {}
 }
 
 export function UsersPage() {
   const { data: me } = useCurrentAdmin()
+  const { data: registryData } = usePermissionRegistry()
   const [tab, setTab] = useState("users")
   const [newDiscordId, setNewDiscordId] = useState("")
   const [groupDialogOpen, setGroupDialogOpen] = useState(false)
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null)
   const [groupName, setGroupName] = useState("")
-  const [groupPerms, setGroupPerms] = useState<Record<string, Record<string, boolean>>>({})
+  const [groupPerms, setGroupPerms] = useState<PermissionValue>({})
+  const [indivDialogOpen, setIndivDialogOpen] = useState(false)
+  const [indivTarget, setIndivTarget] = useState<AdminUserRow | null>(null)
+  const [indivPerms, setIndivPerms] = useState<PermissionValue>({})
   const queryClient = useQueryClient()
 
   const { data } = useQuery({ queryKey: ["admin-users"], queryFn: () => api.get<UsersResponse>("/api/v1/admin/users") })
@@ -87,17 +92,43 @@ export function UsersPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const updateGroup = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/privilege-groups/${editingGroupId}`, { name: groupName, permissions: { pages: groupPerms } }),
+    onSuccess: () => { toast.success("Группа обновлена"); setGroupDialogOpen(false); setEditingGroupId(null); setGroupName(""); setGroupPerms({}); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const openCreateGroup = () => {
+    setEditingGroupId(null)
+    setGroupName("")
+    setGroupPerms({})
+    setGroupDialogOpen(true)
+  }
+
+  const openEditGroup = (g: PrivilegeGroup) => {
+    setEditingGroupId(g.id)
+    setGroupName(g.name)
+    setGroupPerms(unwrapPages(g.permissions))
+    setGroupDialogOpen(true)
+  }
+
   const deleteGroup = useMutation({
     mutationFn: (id: number) => api.delete(`/api/v1/admin/privilege-groups/${id}`),
     onSuccess: () => { toast.success("Группа удалена"); invalidate() },
   })
 
-  const togglePerm = (page: string, action: string) => {
-    setGroupPerms((prev) => ({
-      ...prev,
-      [page]: { ...prev[page], [action]: !prev[page]?.[action] },
-    }))
+  const openIndividualPerms = (a: AdminUserRow) => {
+    setIndivTarget(a)
+    setIndivPerms(unwrapPages(a.individual_permissions))
+    setIndivDialogOpen(true)
   }
+
+  const saveIndividualPerms = useMutation({
+    mutationFn: () =>
+      api.post(`/api/v1/admin/users/${indivTarget!.id}/assign-group`, { individual_permissions: { pages: indivPerms } }),
+    onSuccess: () => { toast.success("Индивидуальные права сохранены"); setIndivDialogOpen(false); setIndivTarget(null); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
 
   return (
     <div>
@@ -113,9 +144,9 @@ export function UsersPage() {
         <div className="space-y-4">
           {data?.can_edit && (
             <Card>
-              <CardContent className="flex items-end gap-2 pt-6">
+              <CardContent className="flex items-end gap-2">
                 <div className="flex-1">
-                  <Label>Discord ID нового администратора</Label>
+                  <Label className="mb-1.5 block">Discord ID нового администратора</Label>
                   <Input value={newDiscordId} onChange={(e) => setNewDiscordId(e.target.value)} />
                 </div>
                 <Button disabled={!newDiscordId.trim()} onClick={() => createAdmin.mutate()}>Добавить</Button>
@@ -123,10 +154,10 @@ export function UsersPage() {
             </Card>
           )}
           <Card>
-            <CardContent className="pt-6">
+            <CardContent>
               <Table>
                 <TableHeader>
-                  <TableRow><TableHead>Админ</TableHead><TableHead>Группа прав</TableHead><TableHead>Суперпользователь</TableHead>{data?.can_delete && <TableHead />}</TableRow>
+                  <TableRow><TableHead>Админ</TableHead><TableHead>Игрок</TableHead><TableHead>Группа прав</TableHead><TableHead>Индивидуальные права</TableHead><TableHead>Суперпользователь</TableHead>{data?.can_delete && <TableHead />}</TableRow>
                 </TableHeader>
                 <TableBody>
                   {data?.admins.map((a) => (
@@ -134,6 +165,16 @@ export function UsersPage() {
                       <TableCell>
                         <div className="font-medium">{a.discord_username}</div>
                         <div className="font-mono text-xs text-muted-foreground">{a.discord_id}</div>
+                      </TableCell>
+                      <TableCell>
+                        {a.linked_player ? (
+                          <Link to={`/players/${a.linked_player.player_id}`} className="text-primary underline-offset-2 hover:underline">
+                            {a.linked_player.player_name}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                        {a.linked_player?.auto && <Badge variant="outline" className="ml-1.5 text-[10px]">авто</Badge>}
                       </TableCell>
                       <TableCell>
                         {data.can_edit ? (
@@ -147,7 +188,18 @@ export function UsersPage() {
                               {data.groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
                             </SelectContent>
                           </Select>
-                        ) : (a.privilege_group_name ?? "—")}
+                        ) : (a.privilege_group_name ?? "-")}
+                      </TableCell>
+                      <TableCell>
+                        {(() => {
+                          const count = Object.keys(unwrapPages(a.individual_permissions)).length
+                          return (
+                            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => openIndividualPerms(a)} disabled={!data?.can_edit}>
+                              <ShieldCheck className="size-3.5" />
+                              {count > 0 ? `${count} стр.` : "Настроить"}
+                            </Button>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell>
                         {a.is_superuser ? <Badge>Да</Badge> : <Badge variant="secondary">Нет</Badge>}
@@ -174,34 +226,27 @@ export function UsersPage() {
       {tab === "groups" && (
         <div className="space-y-4">
           {data?.can_edit && (
-            <Dialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen}>
-              <DialogTrigger asChild><Button>+ Новая группа прав</Button></DialogTrigger>
-              <DialogContent className="max-w-3xl">
+            <Dialog open={groupDialogOpen} onOpenChange={(o) => { setGroupDialogOpen(o); if (!o) setEditingGroupId(null) }}>
+              <Button onClick={openCreateGroup}>+ Новая группа прав</Button>
+              <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle>Новая группа прав</DialogTitle>
-                  <DialogDescription>Настройте название и права доступа для новой группы администраторов.</DialogDescription>
+                  <DialogTitle>{editingGroupId ? "Изменить группу прав" : "Новая группа прав"}</DialogTitle>
+                  <DialogDescription>Настройте название и права доступа для группы администраторов.</DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3">
-                  <div><Label>Название</Label><Input value={groupName} onChange={(e) => setGroupName(e.target.value)} /></div>
-                  <div className="max-h-96 overflow-y-auto">
-                    <Table>
-                      <TableHeader><TableRow><TableHead>Страница</TableHead><TableHead>Просмотр</TableHead><TableHead>Изменение</TableHead><TableHead>Удаление</TableHead></TableRow></TableHeader>
-                      <TableBody>
-                        {PAGES.map((p) => (
-                          <TableRow key={p}>
-                            <TableCell className="font-mono text-xs">{p}</TableCell>
-                            {["view", "edit", "delete"].map((action) => (
-                              <TableCell key={action}>
-                                <input type="checkbox" checked={!!groupPerms[p]?.[action]} onChange={() => togglePerm(p, action)} />
-                              </TableCell>
-                            ))}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <div><Label className="mb-1.5 block">Название</Label><Input value={groupName} onChange={(e) => setGroupName(e.target.value)} /></div>
+                  {registryData && (
+                    <PermissionMatrixEditor registry={registryData.pages} value={groupPerms} onChange={setGroupPerms} />
+                  )}
                 </div>
-                <DialogFooter><Button disabled={!groupName.trim()} onClick={() => createGroup.mutate()}>Создать</Button></DialogFooter>
+                <DialogFooter>
+                  <Button
+                    disabled={!groupName.trim() || createGroup.isPending || updateGroup.isPending}
+                    onClick={() => (editingGroupId ? updateGroup.mutate() : createGroup.mutate())}
+                  >
+                    {editingGroupId ? "Сохранить" : "Создать"}
+                  </Button>
+                </DialogFooter>
               </DialogContent>
             </Dialog>
           )}
@@ -214,14 +259,17 @@ export function UsersPage() {
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <div className="flex flex-wrap gap-1">
-                    {Object.entries(getPages(g)).filter(([, v]) => v.view || v.edit || v.delete).map(([page, v]) => (
+                    {Object.entries(unwrapPages(g.permissions)).filter(([, v]) => Object.values(v).some(Boolean)).map(([page, v]) => (
                       <Badge key={page} variant="outline" className="text-xs">
-                        {page}: {[v.view && "П", v.edit && "И", v.delete && "У"].filter(Boolean).join("/")}
+                        {page}: {Object.entries(v).filter(([, on]) => on).map(([action]) => action).join("/")}
                       </Badge>
                     ))}
                   </div>
                   {data.can_edit && (
-                    <Button size="sm" variant="destructive" onClick={() => deleteGroup.mutate(g.id)}>Удалить группу</Button>
+                    <div className="flex gap-1.5">
+                      <Button size="sm" variant="outline" onClick={() => openEditGroup(g)}>Изменить</Button>
+                      <Button size="sm" variant="destructive" onClick={() => deleteGroup.mutate(g.id)}>Удалить группу</Button>
+                    </div>
                   )}
                 </CardContent>
               </Card>
@@ -229,6 +277,25 @@ export function UsersPage() {
           </div>
         </div>
       )}
+
+      <Dialog open={indivDialogOpen} onOpenChange={(o) => { setIndivDialogOpen(o); if (!o) setIndivTarget(null) }}>
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Индивидуальные права — {indivTarget?.discord_username ?? indivTarget?.discord_id}</DialogTitle>
+            <DialogDescription>
+              Переопределяют права группы для этого конкретного администратора. Отмеченное здесь действует поверх группы;
+              оставьте всё пустым, чтобы использовать только групповые права.
+            </DialogDescription>
+          </DialogHeader>
+          {registryData && (
+            <PermissionMatrixEditor registry={registryData.pages} value={indivPerms} onChange={setIndivPerms} />
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setIndivDialogOpen(false)}>Отмена</Button>
+            <Button disabled={saveIndividualPerms.isPending} onClick={() => saveIndividualPerms.mutate()}>Сохранить</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

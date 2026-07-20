@@ -104,7 +104,7 @@ export function RatingsPage() {
 
       {data?.search_result && (
         <Card className="mb-4">
-          <CardHeader><CardTitle className="text-sm">{data.search_result.player_name} — все роли</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-sm">{data.search_result.player_name} - все роли</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-2">
             {Object.entries(data.search_result.ratings).map(([r, v]) => (
               <Badge key={r} variant="secondary">{ROLE_LABELS[r] ?? r}: {v.rating} ({v.points} pts)</Badge>
@@ -114,7 +114,7 @@ export function RatingsPage() {
       )}
 
       <Card className="mb-4 overflow-hidden py-0">
-        <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Лидерборд — {ROLE_LABELS[role] ?? role}</CardTitle></CardHeader>
+        <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Лидерборд - {ROLE_LABELS[role] ?? role}</CardTitle></CardHeader>
         <CardContent className="p-0">
           {isLoading ? <div className="p-4"><Skeleton className="h-64" /></div> : (
             <Table>
@@ -149,7 +149,7 @@ export function RatingsPage() {
                 <TableRow key={s.filename}>
                   <TableCell><Link to={`/ratings/snapshots/${s.filename}`} className="font-medium text-primary underline-offset-2 hover:underline">{s.title}</Link></TableCell>
                   <TableCell>{s.total_players}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{s.created_at ? new Date(s.created_at).toLocaleString("ru-RU") : "—"}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{s.created_at ? new Date(s.created_at).toLocaleString("ru-RU") : "-"}</TableCell>
                   {data.can_edit && (
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1.5">

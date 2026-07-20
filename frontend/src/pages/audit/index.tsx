@@ -135,10 +135,10 @@ export function AuditPage() {
                           </span>
                         </TableCell>
                         <TableCell className="max-w-md truncate text-sm text-muted-foreground" title={describeDetails(l.details)}>
-                          {describeDetails(l.details) || "—"}
+                          {describeDetails(l.details) || "-"}
                         </TableCell>
                         <TableCell className="text-right text-sm whitespace-nowrap text-muted-foreground">
-                          {l.created_at ? new Date(l.created_at).toLocaleString("ru-RU") : "—"}
+                          {l.created_at ? new Date(l.created_at).toLocaleString("ru-RU") : "-"}
                         </TableCell>
                       </TableRow>
                     )

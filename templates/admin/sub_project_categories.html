@@ -33,7 +33,7 @@
 .form-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; }
 </style>
 
-<a href="/admin/sub-projects" style="color:var(--gray);text-decoration:none;font-size:13px;">← Назад к sub-картам</a>
+<a href="/adminold/sub-projects" style="color:var(--gray);text-decoration:none;font-size:13px;">← Назад к sub-картам</a>
 
 <div class="cat-header">
   <h2>🏷️ Категории sub-карт</h2>
@@ -54,7 +54,7 @@
     </div>
     <div class="cat-actions">
       <button class="btn btn-secondary btn-sm" onclick="openEditCat({{ cat.id }},'{{ cat.name }}','{{ cat.slug }}','{{ cat.description or '' }}','{{ cat.color }}','{{ cat.icon }}',{{ cat.sort_order }},{{ cat.parent_id or 'null' }})">✏️</button>
-      <form method="post" action="/admin/sub-projects/categories/{{ cat.id }}/delete" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?')">
+      <form method="post" action="/adminold/sub-projects/categories/{{ cat.id }}/delete" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?')">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <button type="submit" class="btn btn-danger btn-sm">🗑</button>
       </form>
@@ -73,7 +73,7 @@
 <div class="modal-overlay" id="createCatModal">
   <div class="modal-box">
     <h3>Создать категорию</h3>
-    <form method="post" action="/admin/sub-projects/categories/create">
+    <form method="post" action="/adminold/sub-projects/categories/create">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="form-group">
         <label>Название *</label>
@@ -172,7 +172,7 @@ document.getElementById('createCatModal').addEventListener('click',function(e){i
 document.getElementById('editCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
 
 function openEditCat(id,name,slug,desc,color,icon,order,parentId){
-  document.getElementById('editCatForm').action='/admin/sub-projects/categories/'+id+'/update';
+  document.getElementById('editCatForm').action='/adminold/sub-projects/categories/'+id+'/update';
   document.getElementById('editCatName').value=name;
   document.getElementById('editCatSlug').value=slug;
   document.getElementById('editCatDesc').value=desc;

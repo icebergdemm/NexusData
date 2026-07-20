@@ -21,7 +21,7 @@ interface ServerRoundStatus {
 type RoundStatusResponse = Record<"ASPER1" | "ASPER2", ServerRoundStatus>
 
 function formatShuttleEta(shuttleArrivalAt: string | null, now: number): string {
-  if (!shuttleArrivalAt) return "—"
+  if (!shuttleArrivalAt) return "-"
   const arrival = new Date(shuttleArrivalAt).getTime()
   const remainingSec = Math.round((arrival - now) / 1000)
   if (remainingSec <= 0) return "должен быть на месте"
@@ -47,14 +47,14 @@ function ServerStatusCard({ serverName, status, now }: { serverName: string; sta
         </Badge>
       </CardHeader>
       <CardContent className="grid grid-cols-2 gap-4 pt-4 text-sm">
-        <InfoTile icon={MapPin} label="Локация" value={status.location ?? "—"} />
-        <InfoTile icon={Ship} label="Корабль" value={status.submarine_name ?? "—"} />
-        <InfoTile icon={Target} label="Миссия" value={status.mission ?? "—"} span />
+        <InfoTile icon={MapPin} label="Локация" value={status.location ?? "-"} />
+        <InfoTile icon={Ship} label="Корабль" value={status.submarine_name ?? "-"} />
+        <InfoTile icon={Target} label="Миссия" value={status.mission ?? "-"} span />
         <InfoTile icon={Users2} label="Игроков онлайн" value={String(status.player_count)} />
         <InfoTile
           icon={HeartPulse}
           label="Корпус"
-          value={status.submarine_health != null ? `${status.submarine_health}%` : "—"}
+          value={status.submarine_health != null ? `${status.submarine_health}%` : "-"}
           valueClassName={healthColor(status.submarine_health)}
         />
         <InfoTile icon={Truck} label="Челнок снабжения" value={formatShuttleEta(status.shuttle_arrival_at, now)} span />

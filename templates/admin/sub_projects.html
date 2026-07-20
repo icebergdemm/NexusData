@@ -73,7 +73,7 @@
 
 <!-- Search & Filters -->
 <div style="background:var(--card-bg);border:1px solid var(--stroke-01);border-radius:var(--border-radius-12);padding:16px 20px;margin-bottom:20px;">
-  <form method="get" action="/admin/sub-projects" id="spFilterForm" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+  <form method="get" action="/adminold/sub-projects" id="spFilterForm" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
     <div style="flex:2;min-width:200px;">
       <label style="font-size:11px;color:var(--gray);font-weight:600;display:block;margin-bottom:4px;">Поиск по названию</label>
       <input type="text" name="search" id="spSearchInput" value="{{ search_query }}" placeholder="Название корабля..." style="background:var(--bg);border:1px solid var(--stroke-01);border-radius:6px;padding:8px 12px;color:var(--white);font-size:13px;width:100%;">
@@ -106,7 +106,7 @@
     </div>
     <button type="submit" class="btn btn-primary" style="padding:8px 16px;">🔍 Найти</button>
     {% if search_query or filter_author or filter_crew_min or filter_crew_max or filter_category_id %}
-    <a href="/admin/sub-projects" class="btn btn-secondary" style="padding:8px 14px;text-decoration:none;">✕ Сбросить</a>
+    <a href="/adminold/sub-projects" class="btn btn-secondary" style="padding:8px 14px;text-decoration:none;">✕ Сбросить</a>
     {% endif %}
   </form>
 </div>
@@ -152,7 +152,7 @@
       <span style="color:{{ cat.color }};font-weight:700;">{{ cat.icon }} {{ cat.name }}</span>
       {% if cat.description %}<span style="color:var(--gray);font-size:10px;">· {{ cat.description }}</span>{% endif %}
       <button style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--gray);padding:0 2px;" onclick="openEditCat({{ cat.id }},'{{ cat.name }}','{{ cat.slug }}','{{ cat.description or '' }}','{{ cat.color }}','{{ cat.icon }}',{{ cat.sort_order }},{{ cat.parent_id or 'null' }})" title="Редактировать">✏️</button>
-      <form method="post" action="/admin/sub-projects/categories/{{ cat.id }}/delete" style="display:inline;margin:0;" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?')">
+      <form method="post" action="/adminold/sub-projects/categories/{{ cat.id }}/delete" style="display:inline;margin:0;" onsubmit="return confirm('Удалить категорию «{{ cat.name }}»?')">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--gray);padding:0 2px;" title="Удалить">🗑</button>
       </form>
@@ -167,7 +167,7 @@
   <!-- Superuser: category permissions settings -->
   <div style="border-top:1px solid var(--stroke-01);margin-top:14px;padding-top:14px;">
     <div style="font-size:11px;color:var(--gray);font-weight:600;margin-bottom:8px;">⚙️ Права на категории (суперпользователь)</div>
-    <form method="post" action="/admin/sub-projects/category-settings" style="display:flex;flex-direction:column;gap:8px;">
+    <form method="post" action="/adminold/sub-projects/category-settings" style="display:flex;flex-direction:column;gap:8px;">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div style="display:flex;gap:12px;flex-wrap:wrap;">
         <div style="flex:1;min-width:200px;">
@@ -220,7 +220,7 @@
 <div class="modal-overlay" id="createCatModal">
   <div class="modal-box" style="max-width:520px;">
     <h3>Создать категорию</h3>
-    <form method="post" action="/admin/sub-projects/categories/create">
+    <form method="post" action="/adminold/sub-projects/categories/create">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="form-group">
         <label>Название *</label>
@@ -318,7 +318,7 @@
 document.getElementById('createCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
 document.getElementById('editCatModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});
 function openEditCat(id,name,slug,desc,color,icon,order,parentId){
-  document.getElementById('editCatForm').action='/admin/sub-projects/categories/'+id+'/update';
+  document.getElementById('editCatForm').action='/adminold/sub-projects/categories/'+id+'/update';
   document.getElementById('editCatName').value=name;
   document.getElementById('editCatSlug').value=slug;
   document.getElementById('editCatDesc').value=desc;
@@ -345,7 +345,7 @@ function openEditCat(id,name,slug,desc,color,icon,order,parentId){
 {% else %}
 <div class="sp-grid">
   {% for item in projects_data %}
-  <a href="/admin/sub-projects/{{ item.project.id }}" class="sp-card">
+  <a href="/adminold/sub-projects/{{ item.project.id }}" class="sp-card">
     {% if item.project.image_filename %}
     <img class="sp-card-img" src="/sub_projects/thumbs/{{ item.project.image_filename }}" alt="{{ item.project.name }}" loading="lazy">
     {% else %}
@@ -458,7 +458,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 <div class="modal-overlay" id="createModal">
   <div class="modal-box">
     <h3>Создать новый проект</h3>
-    <form action="/admin/sub-projects/create" method="post" enctype="multipart/form-data">
+    <form action="/adminold/sub-projects/create" method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="form-grid">
         <div class="form-group">

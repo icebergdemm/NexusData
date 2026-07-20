@@ -1,16 +1,25 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, UniqueConstraint
-from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import relationship
 from database import Base
 
 
 class Kit(Base):
     __tablename__ = "kits"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(String(50), index=True)
     kit_level = Column(Integer, default=0)
     items = Column(JSON)
+    # Kit variations (item 15) — `items` above IS variation 1/the default, so
+    # old clients that only ever read `items` are unaffected. If variation
+    # 2/3 aren't set, the client falls back to variation 1's `items`.
+    variation_2_items = Column(JSON, nullable=True)
+    variation_3_items = Column(JSON, nullable=True)
+    # "Special" kits (item 15) — tied to this job_id + exactly one variation;
+    # a player holding the matching kval_kit AND on that profession+variation
+    # gets ONLY this kit's items as a full override (resolved client-side).
+    is_special = Column(Boolean, nullable=False, default=False)
+    special_variation = Column(Integer, nullable=True)
 
 
 class PlayerData(Base):
@@ -32,8 +41,32 @@ class PlayerData(Base):
     discord_id_confirmed = Column(Integer, default=0)  # 1 = confirmed by admin, 0 = auto-matched
     is_secret = Column(Integer, default=0)  # 1 = profile hidden from non-superusers
     labels = Column(JSON, default=lambda: [])   # list of label ids assigned to this player
-    
+
+    # Superuser-managed link between this in-game character and an ND admin
+    # account, plus a name that overrides player_last_time_name everywhere
+    # it's shown in ratings/punishments — regardless of whether the
+    # underlying data (e.g. a punishment) came from the game-server API or
+    # the admin panel, since this is resolved at display time, not baked in.
+    linked_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    forced_display_name = Column(String(255), nullable=True)
+    # True when the link was created by the confirmed-Discord-ID auto-match
+    # worker (task_auto_link_admins, every 10 min) rather than a superuser —
+    # the worker only ever fills in an empty link, never overwrites a manual one.
+    linked_admin_auto = Column(Boolean, nullable=False, default=False)
+
+    # Cached Steam avatar, refreshed periodically by task_fetch_steam_avatars.
+    steam_avatar_url = Column(String(500), nullable=True)
+    steam_avatar_fetched_at = Column(DateTime, nullable=True)
+
     stats = relationship("PlayerStats", backref="player", uselist=False)
+    # Named distinctly from the "linked_admin" local variable elsewhere (the
+    # auto-detected discord_id match used for profile classification) to
+    # avoid confusion — this is the explicit, superuser-managed link.
+    linked_admin_user = relationship("AdminUser", foreign_keys=[linked_admin_id])
+
+    @property
+    def display_name(self) -> str:
+        return self.forced_display_name or self.player_last_time_name
     
     @property
     def play_time_hours(self) -> float:
@@ -75,6 +108,11 @@ class AdminUser(Base):
     is_deleted = Column(Integer, default=0)  # 1 = soft-deleted, blocks login
     created_at = Column(DateTime, default=func.now())
     last_login = Column(DateTime, nullable=True)
+    # True when this account was auto-provisioned by task_sync_department_roles
+    # (a matching Discord role was found on the guild member) rather than
+    # created via the normal "add admin" flow — surfaced in the UI so it can
+    # be reviewed, same rationale as PlayerData.linked_admin_auto.
+    created_by_worker = Column(Boolean, nullable=False, default=False)
 
     privilege_group = relationship("AdminPrivilegeGroup", back_populates="members", foreign_keys=[privilege_group_id])
 
@@ -230,6 +268,16 @@ class ServerPlayerPrivilege(Base):
     expires_at = Column(DateTime, nullable=True)
     # NULL = all servers, 'ASPER1' = only ASPER1, 'ASPER2' = only ASPER2
     server_scope = Column(String(20), nullable=True, index=True)
+    # True when server_group_id was set by task_sync_auto_server_privileges
+    # (derived from a department access level/head role), not by a human via
+    # the assign endpoint — mirrors the is_auto/linked_admin_auto "never
+    # clobber a manual grant" convention used elsewhere. The manual assign
+    # endpoint always sets this back to False, taking the row out of
+    # worker-managed territory for good until cleared some other way.
+    is_auto = Column(Boolean, nullable=False, default=False)
+    # Which department's access level/head role produced the current
+    # server_group_id when is_auto is True — drives the "От отдела: X" label.
+    auto_source_department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
 
 
 class AnticheatEvent(Base):
@@ -351,6 +399,9 @@ class DiscordMember(Base):
     avatar = Column(String(255), nullable=True)
     joined_at = Column(DateTime, nullable=True)
     last_synced_at = Column(DateTime, default=func.now())
+    # Discord role IDs currently held by this member (list of strings), used by
+    # task_sync_department_roles to auto-provision department membership.
+    role_ids = Column(JSON, nullable=False, default=lambda: [])
 
 
 class DiscordBotAction(Base):
@@ -365,6 +416,11 @@ class DiscordBotAction(Base):
     executed = Column(Integer, default=0)  # 0=pending, 1=done, 2=failed
     executed_at = Column(DateTime, nullable=True)
     error_message = Column(String(500), nullable=True)
+    # Structured response data for request/response-style actions (e.g.
+    # "check_channel_category") — the backend polls this same row for a short
+    # window after queuing, giving the frontend a near-synchronous answer
+    # without the bot needing an inbound HTTP server of its own.
+    result = Column(JSON, nullable=True)
 
 
 class DiscordBotConfig(Base):
@@ -480,6 +536,10 @@ class SubProjectCategory(Base):
     icon = Column(String(16), default="🚢")
     sort_order = Column(Integer, default=0)
     parent_id = Column(Integer, ForeignKey("sub_project_categories.id"), nullable=True)
+    # Auto-assigned to every new NORMAL-zone project on create (routes/
+    # sub_projects.py's api_sub_project_create). Only one category should
+    # ever be True at a time — enforced in services_sub_projects.py.
+    is_default = Column(Boolean, nullable=False, default=False)
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
@@ -524,6 +584,12 @@ class SubProject(Base):
     # Discord embed tracking
     discord_message_id = Column(String(64), nullable=True)
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    # NULL = normal zone (site-wide sub_projects permissions). Set = a
+    # "Тестовый полигон ASPER" project belonging to that department — access
+    # then runs ENTIRELY through the department's own "test_server" module
+    # permission (check_department_permission), never through the site-wide
+    # sub_projects permission registry.
+    department_id = Column(Integer, ForeignKey("departments.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     # Soft-delete
@@ -531,6 +597,7 @@ class SubProject(Base):
     deleted_at = Column(DateTime, nullable=True)
 
     versions = relationship("SubProjectVersion", back_populates="project", order_by="SubProjectVersion.version_number.desc()")
+    department = relationship("Department")
     category_links = relationship("SubProjectCategoryLink", backref="project", cascade="all, delete-orphan")
 
 
@@ -570,6 +637,9 @@ class PlayerPunishment(Base):
     reason = Column(String(1000), nullable=True)
     issued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     issued_by_name = Column(String(255), nullable=True)    # denormalised for history
+    # Whether the issuing admin was a superuser AT THE TIME of issuing — snapshotted
+    # here since is_superuser can change later and shouldn't rewrite history.
+    issued_by_was_superuser = Column(Boolean, nullable=False, default=False)
     issued_at = Column(DateTime, default=func.now(), index=True)
     expires_at = Column(DateTime, nullable=True)           # NULL = permanent
     is_active = Column(Integer, default=1)                 # 1 = active, 0 = void/overridden
@@ -605,6 +675,11 @@ class RoundEvent(Base):
     reached_station = Column(Integer, nullable=True)
     players = Column(JSON, default=lambda: [])
     created_at = Column(DateTime, default=func.now(), index=True)
+    # Set on "end" events only — points back at the "start" event that opened
+    # this round, so a finished round can be looked up in one query instead
+    # of pairing start/end rows in Python on every request.
+    paired_start_id = Column(Integer, ForeignKey("round_events.id"), nullable=True)
+    paired_start = relationship("RoundEvent", remote_side=[id], foreign_keys=[paired_start_id])
 
 
 class RoundReplay(Base):
@@ -623,6 +698,10 @@ class RoundReplay(Base):
     recorded_at = Column(DateTime, nullable=True)         # round start time
     uploaded_at = Column(DateTime, default=func.now(), index=True)
     notes = Column(String(1000), nullable=True)
+    # Manual escape hatch when the automatic header-timestamp/server_name
+    # matcher (routes/replays.py's _find_matching_replay) can't find this
+    # replay's round — set once by an admin, always wins over the heuristic.
+    manual_round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True)
 
 
 class AppSetting(Base):
@@ -697,18 +776,44 @@ class DocumentFolder(Base):
 
 
 class Document(Base):
-    """A single document. Content is stored as Tiptap/ProseMirror JSON."""
+    """A single document. Content is a real Office file (.docx/.xlsx) edited
+    via ONLYOFFICE Document Server — `storage_filename` names the file under
+    `{documents_upload_dir}/files/`. Old versions are never deleted on
+    overwrite (see routes/onlyoffice.py's callback handler), only superseded,
+    so DocumentRevision rows can still serve them."""
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False, default="Без названия")
     icon = Column(String(16), nullable=True)  # emoji
-    content = Column(JSON, nullable=True)  # ProseMirror JSON document
-    content_text = Column(LONGTEXT, nullable=True)  # plain-text extract for search
+    file_type = Column(String(10), nullable=False, default="word")  # "word" | "cell"
+    storage_filename = Column(String(255), nullable=True)
     folder_id = Column(Integer, ForeignKey("document_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Page nesting: a document can live "inside" another document as a
+    # sub-page, independent of folder placement.
+    parent_document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True)
+    # When set, this document belongs to a department's shared documentation
+    # space — access is resolved via check_department_permission("documentation")
+    # in addition to (not instead of) the normal owner/DocumentPermission checks.
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=True, index=True)
+    # Optional department folder (separate namespace/table from the personal
+    # `folder_id` above) — see DepartmentDocumentFolder.
+    department_folder_id = Column(Integer, ForeignKey("department_document_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Set from DocumentTemplate.is_order_template at creation time — lets the
+    # department's "Приказы" tab list order/decree documents separately from
+    # general documentation without a second table.
+    is_order = Column(Boolean, nullable=False, default=False)
+    # Same idea for the mandatory "Новости" module (item 6) — a news post is
+    # just a Document with this flag set, same as orders.
+    is_news = Column(Boolean, nullable=False, default=False)
+    # Discord publish tracking — set the first time this document is
+    # published; a later publish with the same message_id still present
+    # edits that message ("Синхронизировать") instead of posting a new one.
+    discord_channel_id = Column(String(50), nullable=True)
+    discord_message_id = Column(String(64), nullable=True)
     owner_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
     last_edited_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
-    version = Column(Integer, nullable=False, default=1)  # optimistic concurrency
+    version = Column(Integer, nullable=False, default=1)  # bumped by the ONLYOFFICE save callback
     is_archived = Column(Boolean, nullable=False, default=False)
     is_deleted = Column(Boolean, nullable=False, default=False, index=True)  # trash
     deleted_at = Column(DateTime, nullable=True)
@@ -719,7 +824,6 @@ class Document(Base):
     last_editor = relationship("AdminUser", foreign_keys=[last_edited_by_admin_id])
     folder = relationship("DocumentFolder", foreign_keys=[folder_id])
     permissions = relationship("DocumentPermission", back_populates="document", cascade="all, delete-orphan")
-    comments = relationship("DocumentComment", back_populates="document", cascade="all, delete-orphan")
 
 
 class DocumentPermission(Base):
@@ -728,9 +832,14 @@ class DocumentPermission(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
-    grantee_type = Column(String(20), nullable=False)  # "admin" | "privilege_group" | "everyone"
+    grantee_type = Column(String(20), nullable=False)  # "admin" | "privilege_group" | "access_level" | "everyone"
     grantee_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     grantee_group_id = Column(Integer, ForeignKey("admin_privilege_groups.id"), nullable=True)
+    # For a document that belongs to a department (Document.department_id):
+    # the key of one of THAT department's DepartmentAccessLevel rows —
+    # sharing with "everyone who currently holds this department access
+    # level", the department-scoped analogue of grantee_type="privilege_group".
+    grantee_access_level_key = Column(String(64), nullable=True)
     level = Column(String(10), nullable=False, default="view")  # "view" | "comment" | "edit"
     granted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
@@ -740,37 +849,55 @@ class DocumentPermission(Base):
     grantee_group = relationship("AdminPrivilegeGroup", foreign_keys=[grantee_group_id])
 
 
+class DepartmentDocumentTag(Base):
+    """A department's own tag vocabulary for documents — each department has
+    its own independent set of tags (not shared site-wide). Creating a tag
+    requires department "documentation":"edit"; assigning an EXISTING tag to
+    a document only requires edit access on that one document — see
+    routes/documents.py's tag endpoints."""
+    __tablename__ = "department_document_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    color = Column(String(16), default="#5A646E")
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('department_id', 'name', name='uq_dept_doc_tag_name'),
+    )
+
+
+class DocumentTagLink(Base):
+    """Many-to-many link between a document and one of its department's tags."""
+    __tablename__ = "document_tag_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    tag_id = Column(Integer, ForeignKey("department_document_tags.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('document_id', 'tag_id', name='uq_doc_tag_link'),
+    )
+
+
 class DocumentRevision(Base):
-    """Point-in-time snapshot of a document's content, for version history."""
+    """Point-in-time snapshot of a document's file, for version history —
+    `storage_filename` names the archived copy under
+    `{documents_upload_dir}/files/`, written whenever the ONLYOFFICE save
+    callback supersedes the current version."""
     __tablename__ = "document_revisions"
 
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=True)
-    content = Column(JSON, nullable=True)
+    storage_filename = Column(String(255), nullable=True)
     version = Column(Integer, nullable=False)
     saved_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), index=True)
 
     saved_by = relationship("AdminUser", foreign_keys=[saved_by_admin_id])
-
-
-class DocumentComment(Base):
-    """Inline comment anchored to a highlighted range (via a `comment` mark in the doc)."""
-    __tablename__ = "document_comments"
-
-    id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
-    parent_id = Column(Integer, ForeignKey("document_comments.id", ondelete="CASCADE"), nullable=True, index=True)
-    author_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False)
-    body = Column(String(2000), nullable=False)
-    anchor_text = Column(String(500), nullable=True)  # quoted snippet the comment refers to
-    mark_id = Column(String(64), nullable=True, index=True)  # matches the comment mark's id in the doc JSON
-    resolved = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime, default=func.now(), index=True)
-
-    document = relationship("Document", back_populates="comments")
-    author = relationship("AdminUser", foreign_keys=[author_admin_id])
 
 
 class DocumentStar(Base):
@@ -782,3 +909,382 @@ class DocumentStar(Base):
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
     created_at = Column(DateTime, default=func.now())
+
+
+class DocumentTemplate(Base):
+    """Reusable starting-point file for new documents, managed by any admin
+    with documents/edit — a shared, growable library rather than a fixed
+    set of hardcoded document types. `storage_filename` names the template
+    file under `{documents_upload_dir}/templates/`."""
+    __tablename__ = "document_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(String(500), nullable=True)
+    icon = Column(String(16), nullable=True)
+    file_type = Column(String(10), nullable=False, default="word")  # "word" | "cell"
+    storage_filename = Column(String(255), nullable=True)
+    # Marks this as an order/decree/citation template — documents created from
+    # it are flagged Document.is_order=True so a department's "Приказы" tab
+    # can list them separately from general documentation.
+    is_order_template = Column(Boolean, nullable=False, default=False)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPARTMENTS / WORKSPACE ("Рабочая зона")
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Department(Base):
+    """A superuser-created department (e.g. "Медицинская служба"). Membership
+    and internal permissions are Discord-role-driven — see DepartmentAccessLevel
+    and DepartmentMember."""
+    __tablename__ = "departments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    description = Column(String(2000), nullable=True)
+    icon = Column(String(16), nullable=True)  # emoji
+    color = Column(String(20), nullable=True)  # hex, e.g. "#1a68de"
+    # The base "employee of this department" Discord role — required for
+    # task_sync_department_roles to recognize someone as a department member.
+    base_discord_role_id = Column(String(50), nullable=True)
+    base_discord_role_name = Column(String(255), nullable=True)
+    # Which optional workspace tabs are turned on for this department, e.g.
+    # ["documentation","roster","rating","orders","test_server","chat"].
+    # Superuser-only toggle (item 12 — "modularity").
+    enabled_modules = Column(JSON, nullable=False, default=lambda: [])
+    # Phase 6 — Pterodactyl test-server link.
+    pterodactyl_server_uuid = Column(String(100), nullable=True)
+    # Phase 5 — Discord channel orders/decrees get published to.
+    orders_channel_id = Column(String(50), nullable=True)
+    # Discord channel news posts get published to — separate from orders
+    # since a department may want them going to different channels.
+    news_channel_id = Column(String(50), nullable=True)
+    # Discord channel the bot publishes/updates this department's internal
+    # rating leaderboard embed in, hourly — see discord_bot/bot.py's
+    # publish_department_ratings_task (mirrors the site-wide per-role rating
+    # publish, same 15s-stagger-between-embeds rate-limit precaution).
+    rating_channel_id = Column(String(50), nullable=True)
+    # Superuser-only: the Discord channel CATEGORY this department "owns" —
+    # used purely to validate a manually-entered channel ID when publishing a
+    # document to Discord (routes/documents.py's verify-channel endpoint).
+    # Left unset = no verification performed.
+    discord_category_id = Column(String(50), nullable=True)
+    # Superuser-only link: a member who is_head/is_deputy_head auto-receives
+    # this server privilege group (task_sync_auto_server_privileges) — a
+    # separate lever from DepartmentAccessLevel.server_privilege_group_id
+    # since head/deputy status is a boolean flag, not backed by any
+    # DepartmentAccessLevel row.
+    head_server_privilege_group_id = Column(Integer, ForeignKey("server_privilege_groups.id"), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    is_archived = Column(Boolean, nullable=False, default=False)
+
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+    access_levels = relationship("DepartmentAccessLevel", back_populates="department", cascade="all, delete-orphan")
+    members = relationship("DepartmentMember", back_populates="department", cascade="all, delete-orphan")
+
+
+class DepartmentAccessLevel(Base):
+    """A Discord-role-backed access tier within a department: the required
+    "base" tier, any number of "qualification" tiers, or a "head" tier.
+    Each tier carries its own {"pages": {module: {view, edit}}} permission
+    matrix, editable by the department head or a superuser — see
+    security.check_department_permission."""
+    __tablename__ = "department_access_levels"
+    __table_args__ = (UniqueConstraint("department_id", "key", name="ux_dept_access_level_key"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String(64), nullable=False)  # slug, unique per department
+    name = Column(String(255), nullable=False)
+    discord_role_id = Column(String(50), nullable=True)
+    kind = Column(String(20), nullable=False, default="qualification")  # "base" | "qualification" | "head"
+    # Superuser-only link: a member currently holding this level (via
+    # held_level_keys) auto-receives this server privilege group — see
+    # task_sync_auto_server_privileges. Ranked against other simultaneously
+    # held levels by kind (head > qualification > base), then by id desc.
+    server_privilege_group_id = Column(Integer, ForeignKey("server_privilege_groups.id"), nullable=True)
+    permissions = Column(JSON, nullable=False, default=lambda: {})
+    # Hybrid permissions (item 3): additive SITE-WIDE {"pages": {page: {action: bool}}}
+    # grants, same shape as AdminPrivilegeGroup.permissions — but unlike
+    # `permissions` above (department-module-scoped, head-or-superuser
+    # editable), this is superuser-only, since it reaches beyond the
+    # department. See security.compute_department_site_permissions.
+    site_permissions = Column(JSON, nullable=False, default=lambda: {})
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    department = relationship("Department", back_populates="access_levels")
+    kit_binding = relationship("DepartmentKitBinding", uselist=False, back_populates="access_level")
+
+
+class DepartmentMember(Base):
+    """An admin's membership in a department: which access-level keys they
+    currently hold, and whether the row was created/updated by
+    task_sync_department_roles (is_auto) or by a head/superuser manually —
+    the worker only ever adds to an auto row, never touches a manual one."""
+    __tablename__ = "department_members"
+    __table_args__ = (UniqueConstraint("department_id", "admin_id", name="ux_dept_member"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    held_level_keys = Column(JSON, nullable=False, default=lambda: [])
+    # is_head is the only superuser-exclusive "crown" — grantable/revocable
+    # only by a superuser. is_deputy_head carries the exact same authority
+    # (every is_head_or_deputy_or_superuser check below treats them
+    # identically) but can be granted by an existing head/deputy too, not
+    # just a superuser.
+    is_head = Column(Boolean, nullable=False, default=False)
+    is_deputy_head = Column(Boolean, nullable=False, default=False)
+    is_auto = Column(Boolean, nullable=False, default=False)
+    added_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    added_at = Column(DateTime, default=func.now())
+    # Bumped whenever held_level_keys/is_head/is_deputy_head actually change
+    # (manually or by task_sync_department_roles) — task_sync_auto_server_privileges
+    # uses this as the "most recent assignment wins" tie-break when the same
+    # admin simultaneously qualifies for auto-grants via multiple departments.
+    role_state_updated_at = Column(DateTime, nullable=True)
+
+    department = relationship("Department", back_populates="members")
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    added_by = relationship("AdminUser", foreign_keys=[added_by_admin_id])
+
+
+class DepartmentKitBinding(Base):
+    """Superuser-configured link: holding this DepartmentAccessLevel should
+    grant the bound qual-kit (job_id+kit_level) to the member's linked
+    in-game player. Enforced/reconciled by workers.task_sync_department_kits
+    — see DepartmentKitGrant for the "don't clobber what you didn't grant"
+    audit trail that makes safe removal possible."""
+    __tablename__ = "department_kit_bindings"
+    __table_args__ = (UniqueConstraint("access_level_id", name="ux_dept_kit_binding_level"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    access_level_id = Column(Integer, ForeignKey("department_access_levels.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(String(50), nullable=False)
+    kit_level = Column(Integer, nullable=False)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    access_level = relationship("DepartmentAccessLevel", back_populates="kit_binding")
+
+
+class DepartmentKitGrant(Base):
+    """Audit row for one qual-kit grant the worker itself made — the worker
+    only ever retracts a kval_kits entry it can prove it granted via a row
+    here (and only if nothing else already changed that entry), mirroring
+    the is_auto/linked_admin_auto never-clobber contract used everywhere
+    else this session for worker-vs-human ownership."""
+    __tablename__ = "department_kit_grants"
+    __table_args__ = (UniqueConstraint("binding_id", "player_id", name="ux_dept_kit_grant"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    binding_id = Column(Integer, ForeignKey("department_kit_bindings.id", ondelete="CASCADE"), nullable=False, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="CASCADE"), nullable=False, index=True)
+    granted_at = Column(DateTime, default=func.now())
+
+
+class DepartmentRatingEntry(Base):
+    """A single point-delta entry in a department's internal rating ledger —
+    deliberately simpler/more flexible than the site-wide profession-based
+    Ratings module: any admin with "rating" edit access can award or dock
+    points with a free-form reason and optional category."""
+    __tablename__ = "department_rating_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    delta = Column(Integer, nullable=False)
+    reason = Column(String(500), nullable=True)
+    category = Column(String(100), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
+class DepartmentReprimand(Base):
+    """A disciplinary note against a department member. Deliberately
+    head-only (NOT deputy-head) to issue — the one place in this whole
+    department system where is_deputy_head does NOT carry the same
+    authority as is_head, per explicit request."""
+    __tablename__ = "department_reprimands"
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reason = Column(String(1000), nullable=False)
+    issued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    issued_by = relationship("AdminUser", foreign_keys=[issued_by_admin_id])
+
+
+class DepartmentChatChannel(Base):
+    """A Discord channel linked to a department's "Чат" tab. A department may
+    link multiple channels (item 6)."""
+    __tablename__ = "department_chat_channels"
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    discord_channel_id = Column(String(50), nullable=False)
+    label = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class DepartmentChatMessage(Base):
+    """A message mirrored from (or sent to) a DepartmentChatChannel."""
+    __tablename__ = "department_chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    channel_id = Column(Integer, ForeignKey("department_chat_channels.id", ondelete="CASCADE"), nullable=False, index=True)
+    discord_message_id = Column(String(50), nullable=True, index=True)
+    author_name = Column(String(255), nullable=True)
+    author_avatar_url = Column(String(500), nullable=True)
+    content = Column(String(4000), nullable=True)
+    # Set when this message originated from the site (send box) rather than
+    # being mirrored in from Discord.
+    sent_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    sent_by = relationship("AdminUser", foreign_keys=[sent_by_admin_id])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPARTMENT DOCUMENT FOLDERS + PER-FOLDER ACLs (item 5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class DepartmentDocumentFolder(Base):
+    """A folder within a department's shared documentation/orders space —
+    separate table/namespace from the personal DocumentFolder (which is
+    strictly owner-scoped and not shared)."""
+    __tablename__ = "department_document_folders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    parent_id = Column(Integer, ForeignKey("department_document_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Discord channel documents inside this folder publish to by default
+    # (routes/documents.py's api_publish_document_to_discord) — a document
+    # not in any Discord-configured folder falls back to prompting for a
+    # channel ID manually.
+    discord_channel_id = Column(String(50), nullable=True)
+    # When True, this folder's OWN DepartmentFolderPermission grants also
+    # apply to documents nested in ITS SUBFOLDERS, not just documents placed
+    # directly in this folder — live inheritance, resolved on every access
+    # check (routes/documents.py's get_document_access), never copied.
+    auto_apply_permissions = Column(Boolean, nullable=False, default=False)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
+class DepartmentFolderPermission(Base):
+    """Additive ACL on a department folder — grants either an entire
+    department access-level tier (by key) or one specific member "view"/
+    "edit" on everything inside the folder, on top of the department's
+    normal documentation/orders module baseline. Never revokes access,
+    only adds — see get_document_access's folder-ACL tier."""
+    __tablename__ = "department_folder_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    folder_id = Column(Integer, ForeignKey("department_document_folders.id", ondelete="CASCADE"), nullable=False, index=True)
+    grantee_type = Column(String(20), nullable=False)  # "access_level" | "member"
+    access_level_key = Column(String(64), nullable=True)
+    member_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    level = Column(String(10), nullable=False, default="view")  # "view" | "edit"
+    created_at = Column(DateTime, default=func.now())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tasks (Notion-style Kanban boards) — a single global "Задачи" page, gated by
+# the site-wide "tasks" permission page. A board's department_id is purely an
+# organizational tag (filter/label), never an access-control boundary — see
+# permissions_registry.py's "tasks" entry.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TaskBoard(Base):
+    __tablename__ = "task_boards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(String(1000), nullable=True)
+    icon = Column(String(16), default="📋")
+    color = Column(String(16), default="#1a68de")
+    # Purely an organizational tag — which department this board "belongs
+    # to" for filtering/labeling. NULL = no department tag.
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    is_archived = Column(Boolean, nullable=False, default=False)
+
+    department = relationship("Department")
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+    columns = relationship("TaskColumn", back_populates="board", order_by="TaskColumn.sort_order", cascade="all, delete-orphan")
+
+
+class TaskColumn(Base):
+    """A named, colored status column on a board (e.g. "[NEW] 1. Модификации")."""
+    __tablename__ = "task_columns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    board_id = Column(Integer, ForeignKey("task_boards.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    color = Column(String(16), default="#5A646E")
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())
+
+    board = relationship("TaskBoard", back_populates="columns")
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    board_id = Column(Integer, ForeignKey("task_boards.id", ondelete="CASCADE"), nullable=False, index=True)
+    column_id = Column(Integer, ForeignKey("task_columns.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(500), nullable=False)
+    description = Column(String(4000), nullable=True)
+    deadline = Column(DateTime, nullable=True)
+    priority = Column(String(10), nullable=True)  # "low" | "medium" | "high" | "urgent"
+    tags = Column(JSON, default=lambda: [])
+    # An assignee can be an admin, a department, or both (e.g. "this
+    # employee, on behalf of this department") — either may be NULL.
+    assignee_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    assignee_department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    board = relationship("TaskBoard")
+    column = relationship("TaskColumn")
+    assignee_admin = relationship("AdminUser", foreign_keys=[assignee_admin_id])
+    assignee_department = relationship("Department", foreign_keys=[assignee_department_id])
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+    comments = relationship("TaskComment", back_populates="task", order_by="TaskComment.created_at", cascade="all, delete-orphan")
+
+
+class TaskComment(Base):
+    __tablename__ = "task_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    content = Column(String(2000), nullable=False)
+    created_at = Column(DateTime, default=func.now())
+
+    task = relationship("Task", back_populates="comments")
+    admin = relationship("AdminUser", foreign_keys=[admin_id])

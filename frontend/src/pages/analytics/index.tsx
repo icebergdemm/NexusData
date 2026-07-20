@@ -1,10 +1,15 @@
+import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Line, Bar } from "react-chartjs-2"
 import { UserPlus, Repeat, TrendingUp, Activity } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
 import { baseChartOptions, barDatasetDefaults, lineDatasetDefaults, CHART_COLORS } from "@/lib/chart-theme"
+import { HeavyOperationOverlay } from "@/components/layout/HeavyOperationOverlay"
 
 interface OnlineTimeline { labels: string[]; avg: number[]; peak: number[]; total_snapshots: number }
 interface RolePopularity { roles: string[]; counts: number[] }
@@ -15,21 +20,29 @@ interface ServerComparison { [server: string]: { avg_online: number; peak_online
 interface PlayerRetention { total_new_30d: number; returning_30d: number; retention_pct: number; active_this_week: number }
 interface TopPlayers { players: { name: string; value: number; unit: string }[] }
 
-function useAnalytics<T>(key: string, path: string) {
+type Preset = "24h" | "week" | "month" | "year"
+const PRESETS: { key: Preset; label: string }[] = [
+  { key: "24h", label: "24 часа" },
+  { key: "week", label: "Неделя" },
+  { key: "month", label: "Месяц" },
+  { key: "year", label: "Год" },
+]
+
+function useAnalytics<T>(key: string, path: string, rangeQuery: string) {
   return useQuery({
-    queryKey: ["analytics", key],
-    queryFn: () => api.get<T>(path),
+    queryKey: ["analytics", key, rangeQuery],
+    queryFn: () => api.get<T>(`${path}${path.includes("?") ? "&" : "?"}${rangeQuery}`),
     staleTime: 60_000,
   })
 }
 
 function ChartCard({ title, height = 260, children }: { title: string; height?: number; children: React.ReactNode }) {
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden py-0">
       <CardHeader className="border-b bg-muted/30 py-3">
         <CardTitle className="text-sm font-semibold">{title}</CardTitle>
       </CardHeader>
-      <CardContent className="pt-4" style={{ height: height + 16 }}>{children}</CardContent>
+      <CardContent className="py-4" style={{ height: height + 16 }}>{children}</CardContent>
     </Card>
   )
 }
@@ -37,31 +50,83 @@ function ChartCard({ title, height = 260, children }: { title: string; height?: 
 const noLegend = { legend: { display: false } }
 
 export function AnalyticsPage() {
-  const online = useAnalytics<OnlineTimeline>("online-timeline", "/api/v1/analytics/online-timeline")
-  const roles = useAnalytics<RolePopularity>("role-popularity", "/api/v1/analytics/role-popularity")
-  const subs = useAnalytics<SubmarinePopularity>("submarine-popularity", "/api/v1/analytics/submarine-popularity")
-  const peak = useAnalytics<PeakHours>("peak-hours", "/api/v1/analytics/peak-hours")
-  const duration = useAnalytics<SessionDuration>("session-duration", "/api/v1/analytics/session-duration")
-  const servers = useAnalytics<ServerComparison>("server-comparison", "/api/v1/analytics/server-comparison")
-  const retention = useAnalytics<PlayerRetention>("player-retention", "/api/v1/analytics/player-retention")
-  const topPlayers = useAnalytics<TopPlayers>("top-players", "/api/v1/analytics/top-players?metric=playtime&period=7d")
+  const [preset, setPreset] = useState<Preset>("week")
+  const [customStart, setCustomStart] = useState("")
+  const [customEnd, setCustomEnd] = useState("")
+  const isCustom = !!(customStart || customEnd)
 
-  const isLoading = [online, roles, subs, peak, duration, servers, retention, topPlayers].some((q) => q.isLoading)
-  if (isLoading) {
-    return <div className="grid gap-4 md:grid-cols-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-72" />)}</div>
+  const rangeQuery = useMemo(() => {
+    if (isCustom) {
+      const params = new URLSearchParams()
+      if (customStart) params.set("start", customStart)
+      if (customEnd) params.set("end", customEnd)
+      return params.toString()
+    }
+    return `preset=${preset}`
+  }, [preset, customStart, customEnd, isCustom])
+
+  const selectPreset = (p: Preset) => {
+    setPreset(p)
+    setCustomStart("")
+    setCustomEnd("")
   }
+
+  const online = useAnalytics<OnlineTimeline>("online-timeline", "/api/v1/analytics/online-timeline", rangeQuery)
+  const roles = useAnalytics<RolePopularity>("role-popularity", "/api/v1/analytics/role-popularity", rangeQuery)
+  const subs = useAnalytics<SubmarinePopularity>("submarine-popularity", "/api/v1/analytics/submarine-popularity", rangeQuery)
+  const peak = useAnalytics<PeakHours>("peak-hours", "/api/v1/analytics/peak-hours", rangeQuery)
+  const duration = useAnalytics<SessionDuration>("session-duration", "/api/v1/analytics/session-duration", rangeQuery)
+  const servers = useAnalytics<ServerComparison>("server-comparison", "/api/v1/analytics/server-comparison", rangeQuery)
+  const retention = useAnalytics<PlayerRetention>("player-retention", "/api/v1/analytics/player-retention", rangeQuery)
+  const topPlayers = useAnalytics<TopPlayers>("top-players", "/api/v1/analytics/top-players?metric=playtime", rangeQuery)
+
+  const queries = [online, roles, subs, peak, duration, servers, retention, topPlayers]
+  const isLoading = queries.some((q) => q.isLoading)
+  // A range change refetches everything while the OLD data stays on screen
+  // (react-query default) — the skeleton above only covers first load, so
+  // without this the page would just sit there looking unresponsive for
+  // however long a big (e.g. "year") range takes to recompute.
+  const isRecomputing = queries.some((q) => q.isFetching && !q.isLoading)
 
   return (
     <div className="space-y-4">
+      <HeavyOperationOverlay show={isRecomputing} message="Ого! Пересчитываю аналитику за выбранный период, подождите!" />
+      <Card>
+        <CardContent className="flex flex-wrap items-end gap-3 py-4">
+          <div className="flex gap-1.5">
+            {PRESETS.map((p) => (
+              <Button key={p.key} size="sm" variant={!isCustom && preset === p.key ? "default" : "outline"} onClick={() => selectPreset(p.key)}>
+                {p.label}
+              </Button>
+            ))}
+          </div>
+          <div className="flex items-end gap-2">
+            <div>
+              <Label className="mb-1 block text-xs text-muted-foreground">С</Label>
+              <Input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="h-8 w-36" />
+            </div>
+            <div>
+              <Label className="mb-1 block text-xs text-muted-foreground">По</Label>
+              <Input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="h-8 w-36" />
+            </div>
+            {isCustom && <Button size="sm" variant="ghost" onClick={() => { setCustomStart(""); setCustomEnd("") }}>Сбросить</Button>}
+          </div>
+        </CardContent>
+      </Card>
+
+      {isLoading ? (
+        <div className="grid gap-4 md:grid-cols-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-72" />)}</div>
+      ) : (
+      <>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Новых за 30д" value={retention.data?.total_new_30d ?? 0} icon={UserPlus} accent="info" />
-        <StatTile label="Вернулись (30д)" value={retention.data?.returning_30d ?? 0} icon={Repeat} accent="success" />
+        <StatTile label="Новых (30д до конца периода)" value={retention.data?.total_new_30d ?? 0} icon={UserPlus} accent="info" />
+        <StatTile label="Вернулись" value={retention.data?.returning_30d ?? 0} icon={Repeat} accent="success" />
         <StatTile label="Удержание" value={`${retention.data?.retention_pct ?? 0}%`} icon={TrendingUp} accent="warning" />
-        <StatTile label="Активны на неделе" value={retention.data?.active_this_week ?? 0} icon={Activity} accent="primary" />
+        <StatTile label="Активны (7д до конца периода)" value={retention.data?.active_this_week ?? 0} icon={Activity} accent="primary" />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <ChartCard title="Онлайн (за 6ч, среднее/пик)">
+        <ChartCard title="Онлайн (среднее/пик)">
           <Line
             options={baseChartOptions}
             data={{
@@ -74,7 +139,7 @@ export function AnalyticsPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Пиковые часы (14 дней)">
+        <ChartCard title="Пиковые часы">
           <Line
             options={baseChartOptions}
             data={{
@@ -87,7 +152,7 @@ export function AnalyticsPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Популярность ролей">
+        <ChartCard title="Популярность ролей (за всё время)">
           <Bar
             options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, ...noLegend } }}
             data={{
@@ -97,7 +162,7 @@ export function AnalyticsPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Популярность кораблей (30д)">
+        <ChartCard title="Популярность кораблей">
           <Bar
             options={{ ...baseChartOptions, indexAxis: "y" as const, plugins: { ...baseChartOptions.plugins, ...noLegend } }}
             data={{
@@ -107,7 +172,7 @@ export function AnalyticsPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Длительность сессий (30д)">
+        <ChartCard title="Длительность сессий">
           <Bar
             options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, ...noLegend } }}
             data={{
@@ -117,7 +182,7 @@ export function AnalyticsPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Топ игроков по наигранному (7д)">
+        <ChartCard title="Топ игроков по наигранному">
           <Bar
             options={{ ...baseChartOptions, indexAxis: "y" as const, plugins: { ...baseChartOptions.plugins, ...noLegend } }}
             data={{
@@ -128,9 +193,9 @@ export function AnalyticsPage() {
         </ChartCard>
       </div>
 
-      <Card>
-        <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Сравнение серверов (7 дней)</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 gap-4 pt-4">
+      <Card className="overflow-hidden py-0">
+        <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Сравнение серверов</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-2 gap-4 py-4">
           {Object.entries(servers.data ?? {}).map(([sn, s]) => (
             <div key={sn} className="rounded-lg border bg-muted/20 p-4">
               <div className="mb-3 font-semibold">{sn}</div>
@@ -143,6 +208,8 @@ export function AnalyticsPage() {
           ))}
         </CardContent>
       </Card>
+      </>
+      )}
     </div>
   )
 }
@@ -157,7 +224,7 @@ const ACCENT_CLASSES: Record<string, string> = {
 function StatTile({ label, value, icon: Icon, accent }: { label: string; value: number | string; icon: typeof UserPlus; accent: string }) {
   return (
     <Card>
-      <CardContent className="flex items-center gap-3 pt-6">
+      <CardContent className="flex items-center gap-3">
         <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${ACCENT_CLASSES[accent]}`}>
           <Icon className="h-5 w-5" />
         </div>

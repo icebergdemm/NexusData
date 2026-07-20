@@ -12,8 +12,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { KeyRound } from "lucide-react"
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog"
+import { KeyRound, Plus } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
 
 interface PrivGroup {
@@ -23,17 +27,27 @@ interface PrivGroup {
 interface PlayerPriv {
   id: number; steamid: string; player_name: string | null; server_group_id: number | null
   commands: string[]; allowed_action_ids: string[]; reason: string | null; server_scope: string | null
+  is_auto: boolean; auto_source_department_name: string | null
 }
 interface ServerPrivResponse {
   privileges: PlayerPriv[]; priv_groups: PrivGroup[]; admin_priv_groups: { id: number; name: string }[]
   page: number; total: number; total_pages: number; is_superuser: boolean
 }
 
+const EMPTY_ASSIGN_FORM = { steamid: "", server_group_id: "none", commands: "", allowed_action_ids: "", reason: "", server_scope: "" }
+const EMPTY_GROUP_FORM = { name: "", group_key: "", commands: "", allowed_action_ids: "" }
+
 export function ServerPrivilegesPage() {
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
-  const [assignForm, setAssignForm] = useState({ steamid: "", server_group_id: "none", commands: "", allowed_action_ids: "", reason: "", server_scope: "" })
-  const [groupForm, setGroupForm] = useState({ name: "", group_key: "", commands: "", allowed_action_ids: "" })
+  const [assignOpen, setAssignOpen] = useState(false)
+  const [assignForm, setAssignForm] = useState(EMPTY_ASSIGN_FORM)
+  const [editingPrivId, setEditingPrivId] = useState<number | null>(null)
+  const [revokeTarget, setRevokeTarget] = useState<PlayerPriv | null>(null)
+  const [groupOpen, setGroupOpen] = useState(false)
+  const [groupForm, setGroupForm] = useState(EMPTY_GROUP_FORM)
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null)
+  const [deleteGroupTarget, setDeleteGroupTarget] = useState<PrivGroup | null>(null)
   const queryClient = useQueryClient()
 
   const { data } = useQuery({
@@ -51,14 +65,38 @@ export function ServerPrivilegesPage() {
       reason: assignForm.reason || null,
       server_scope: assignForm.server_scope || null,
     }),
-    onSuccess: () => { toast.success("Привилегии назначены"); setAssignForm({ steamid: "", server_group_id: "none", commands: "", allowed_action_ids: "", reason: "", server_scope: "" }); invalidate() },
+    onSuccess: () => {
+      toast.success(editingPrivId ? "Привилегии обновлены" : "Привилегии назначены")
+      setAssignOpen(false)
+      setAssignForm(EMPTY_ASSIGN_FORM)
+      setEditingPrivId(null)
+      invalidate()
+    },
     onError: (e: Error) => toast.error(e.message),
   })
 
   const revoke = useMutation({
     mutationFn: (id: number) => api.delete(`/api/v1/admin/server-privileges/${id}`),
-    onSuccess: () => { toast.success("Привилегии отозваны"); invalidate() },
+    onSuccess: () => { toast.success("Привилегии отозваны"); setRevokeTarget(null); invalidate() },
   })
+
+  const openCreatePriv = () => {
+    setEditingPrivId(null)
+    setAssignForm(EMPTY_ASSIGN_FORM)
+    setAssignOpen(true)
+  }
+  const openEditPriv = (p: PlayerPriv) => {
+    setEditingPrivId(p.id)
+    setAssignForm({
+      steamid: p.steamid,
+      server_group_id: p.server_group_id ? String(p.server_group_id) : "none",
+      commands: p.commands.join("\n"),
+      allowed_action_ids: p.allowed_action_ids.join(", "),
+      reason: p.reason ?? "",
+      server_scope: p.server_scope ?? "",
+    })
+    setAssignOpen(true)
+  }
 
   const createGroup = useMutation({
     mutationFn: () => api.post("/api/v1/admin/server-privilege-groups", {
@@ -66,16 +104,41 @@ export function ServerPrivilegesPage() {
       commands: groupForm.commands.split("\n").map((s) => s.trim()).filter(Boolean),
       allowed_action_ids: groupForm.allowed_action_ids.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
     }),
-    onSuccess: () => { toast.success("Группа создана"); setGroupForm({ name: "", group_key: "", commands: "", allowed_action_ids: "" }); invalidate() },
+    onSuccess: () => { toast.success("Группа создана"); setGroupOpen(false); setGroupForm(EMPTY_GROUP_FORM); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const updateGroup = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/server-privilege-groups/${editingGroupId}`, {
+      name: groupForm.name, group_key: groupForm.group_key,
+      commands: groupForm.commands.split("\n").map((s) => s.trim()).filter(Boolean),
+      allowed_action_ids: groupForm.allowed_action_ids.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean),
+    }),
+    onSuccess: () => { toast.success("Группа обновлена"); setGroupOpen(false); setGroupForm(EMPTY_GROUP_FORM); setEditingGroupId(null); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
 
   const deleteGroup = useMutation({
     mutationFn: (id: number) => api.delete(`/api/v1/admin/server-privilege-groups/${id}`),
-    onSuccess: () => { toast.success("Группа удалена"); invalidate() },
+    onSuccess: () => { toast.success("Группа удалена"); setDeleteGroupTarget(null); invalidate() },
   })
 
-  const groupName = (id: number | null) => data?.priv_groups.find((g) => g.id === id)?.name ?? "—"
+  const openCreateGroup = () => {
+    setEditingGroupId(null)
+    setGroupForm(EMPTY_GROUP_FORM)
+    setGroupOpen(true)
+  }
+  const openEditGroup = (g: PrivGroup) => {
+    setEditingGroupId(g.id)
+    setGroupForm({
+      name: g.name, group_key: g.group_key,
+      commands: g.commands.join("\n"),
+      allowed_action_ids: g.allowed_action_ids.join(", "),
+    })
+    setGroupOpen(true)
+  }
+
+  const groupName = (id: number | null) => data?.priv_groups.find((g) => g.id === id)?.name ?? "-"
 
   return (
     <div>
@@ -87,54 +150,46 @@ export function ServerPrivilegesPage() {
       </TabsList>
 
       <TabsContent value="players" className="space-y-4">
-        <Card>
-          <CardHeader><CardTitle className="text-sm">Назначить привилегии</CardTitle></CardHeader>
-          <CardContent className="grid gap-2 sm:grid-cols-3">
-            <div><Label>SteamID</Label><Input value={assignForm.steamid} onChange={(e) => setAssignForm((f) => ({ ...f, steamid: e.target.value }))} /></div>
-            <div>
-              <Label>Группа</Label>
-              <Select value={assignForm.server_group_id} onValueChange={(v) => setAssignForm((f) => ({ ...f, server_group_id: v }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Без группы</SelectItem>
-                  {data?.priv_groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div><Label>Область (пусто = все)</Label><Input value={assignForm.server_scope} onChange={(e) => setAssignForm((f) => ({ ...f, server_scope: e.target.value }))} placeholder="ASPER1 / ASPER2" /></div>
-            <div><Label>Команды (по одной на строку)</Label><Textarea value={assignForm.commands} onChange={(e) => setAssignForm((f) => ({ ...f, commands: e.target.value }))} rows={2} /></div>
-            <div><Label>ID действий</Label><Textarea value={assignForm.allowed_action_ids} onChange={(e) => setAssignForm((f) => ({ ...f, allowed_action_ids: e.target.value }))} rows={2} /></div>
-            <div><Label>Причина</Label><Input value={assignForm.reason} onChange={(e) => setAssignForm((f) => ({ ...f, reason: e.target.value }))} /></div>
-            <Button disabled={!assignForm.steamid.trim()} onClick={() => assign.mutate()}>Назначить</Button>
-          </CardContent>
-        </Card>
+        <div className="flex justify-end">
+          <Button onClick={openCreatePriv}><Plus className="size-4" /> Назначить привилегии</Button>
+        </div>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center gap-2 space-y-0">
-            <CardTitle className="text-sm">Игроки с привилегиями ({data?.total ?? 0})</CardTitle>
+        <Card className="overflow-hidden py-0">
+          <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b bg-muted/30 py-3">
+            <CardTitle className="text-sm font-semibold">Игроки с привилегиями ({data?.total ?? 0})</CardTitle>
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск..." className="ml-auto max-w-xs" />
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-0">
             <Table>
               <TableHeader><TableRow><TableHead>Игрок</TableHead><TableHead>Группа</TableHead><TableHead>Область</TableHead><TableHead>Команды</TableHead><TableHead /></TableRow></TableHeader>
               <TableBody>
                 {data?.privileges.map((p) => (
                   <TableRow key={p.id}>
                     <TableCell>
-                      <div className="font-medium">{p.player_name ?? "—"}</div>
+                      <div className="font-medium">{p.player_name ?? "-"}</div>
                       <div className="font-mono text-xs text-muted-foreground">{p.steamid}</div>
                     </TableCell>
-                    <TableCell><Badge variant="secondary">{groupName(p.server_group_id)}</Badge></TableCell>
+                    <TableCell className="space-x-1">
+                      <Badge variant="secondary">{groupName(p.server_group_id)}</Badge>
+                      {p.is_auto && (
+                        <Badge variant="outline" className="border-info/40 text-[10px] text-info">
+                          От отдела: {p.auto_source_department_name ?? "—"}
+                        </Badge>
+                      )}
+                    </TableCell>
                     <TableCell>{p.server_scope ?? "Все"}</TableCell>
-                    <TableCell className="max-w-xs truncate text-xs text-muted-foreground">{p.commands.join(", ") || "—"}</TableCell>
-                    <TableCell className="text-right"><Button size="sm" variant="destructive" onClick={() => revoke.mutate(p.id)}>Отозвать</Button></TableCell>
+                    <TableCell className="max-w-xs truncate text-xs text-muted-foreground">{p.commands.join(", ") || "-"}</TableCell>
+                    <TableCell className="space-x-1.5 text-right whitespace-nowrap">
+                      <Button size="sm" variant="outline" onClick={() => openEditPriv(p)}>Изменить</Button>
+                      <Button size="sm" variant="destructive" onClick={() => setRevokeTarget(p)}>Отозвать</Button>
+                    </TableCell>
                   </TableRow>
                 ))}
-                {!data?.privileges.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">Нет назначений</TableCell></TableRow>}
+                {!data?.privileges.length && <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Нет назначений</TableCell></TableRow>}
               </TableBody>
             </Table>
             {data && data.total_pages > 1 && (
-              <div className="mt-4 flex items-center justify-center gap-2">
+              <div className="flex items-center justify-center gap-2 border-t bg-muted/30 py-3">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Назад</Button>
                 <span className="text-sm text-muted-foreground">Страница {data.page} из {data.total_pages}</span>
                 <Button variant="outline" size="sm" disabled={page >= data.total_pages} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
@@ -145,16 +200,9 @@ export function ServerPrivilegesPage() {
       </TabsContent>
 
       <TabsContent value="groups" className="space-y-4">
-        <Card>
-          <CardHeader><CardTitle className="text-sm">Новая группа</CardTitle></CardHeader>
-          <CardContent className="grid gap-2 sm:grid-cols-2">
-            <div><Label>Название</Label><Input value={groupForm.name} onChange={(e) => setGroupForm((f) => ({ ...f, name: e.target.value }))} /></div>
-            <div><Label>Буквенный ID</Label><Input value={groupForm.group_key} onChange={(e) => setGroupForm((f) => ({ ...f, group_key: e.target.value }))} /></div>
-            <div><Label>Команды (по одной на строку)</Label><Textarea value={groupForm.commands} onChange={(e) => setGroupForm((f) => ({ ...f, commands: e.target.value }))} rows={3} /></div>
-            <div><Label>ID действий</Label><Textarea value={groupForm.allowed_action_ids} onChange={(e) => setGroupForm((f) => ({ ...f, allowed_action_ids: e.target.value }))} rows={3} /></div>
-            <Button disabled={!groupForm.name.trim() || !groupForm.group_key.trim()} onClick={() => createGroup.mutate()}>Создать</Button>
-          </CardContent>
-        </Card>
+        <div className="flex justify-end">
+          <Button onClick={openCreateGroup}><Plus className="size-4" /> Новая группа</Button>
+        </div>
 
         <div className="grid gap-4 md:grid-cols-2">
           {data?.priv_groups.map((g) => (
@@ -164,15 +212,117 @@ export function ServerPrivilegesPage() {
                 <Badge variant="secondary">{g.member_count} игроков</Badge>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div><span className="text-muted-foreground">Команды:</span> {g.commands.join(", ") || "—"}</div>
-                <div><span className="text-muted-foreground">Действия:</span> {g.allowed_action_ids.join(", ") || "—"}</div>
-                <Button size="sm" variant="destructive" onClick={() => deleteGroup.mutate(g.id)}>Удалить группу</Button>
+                <div><span className="text-muted-foreground">Команды:</span> {g.commands.join(", ") || "-"}</div>
+                <div><span className="text-muted-foreground">Действия:</span> {g.allowed_action_ids.join(", ") || "-"}</div>
+                <div className="flex gap-1.5">
+                  <Button size="sm" variant="outline" onClick={() => openEditGroup(g)}>Изменить</Button>
+                  <Button size="sm" variant="destructive" onClick={() => setDeleteGroupTarget(g)}>Удалить группу</Button>
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
       </TabsContent>
       </Tabs>
+
+      <Dialog open={assignOpen} onOpenChange={setAssignOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingPrivId ? "Изменить привилегии" : "Назначить привилегии"}</DialogTitle>
+            <DialogDescription>Игровые команды и группа привилегий для конкретного игрока по SteamID.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="mb-1.5 block">SteamID</Label>
+              <Input value={assignForm.steamid} disabled={!!editingPrivId} onChange={(e) => setAssignForm((f) => ({ ...f, steamid: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Группа</Label>
+              <Select value={assignForm.server_group_id} onValueChange={(v) => setAssignForm((f) => ({ ...f, server_group_id: v }))}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Без группы</SelectItem>
+                  {data?.priv_groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Область (пусто = все)</Label>
+              <Input value={assignForm.server_scope} onChange={(e) => setAssignForm((f) => ({ ...f, server_scope: e.target.value }))} placeholder="ASPER1 / ASPER2" />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Команды (по одной на строку)</Label>
+              <Textarea value={assignForm.commands} onChange={(e) => setAssignForm((f) => ({ ...f, commands: e.target.value }))} rows={3} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">ID действий</Label>
+              <Textarea value={assignForm.allowed_action_ids} onChange={(e) => setAssignForm((f) => ({ ...f, allowed_action_ids: e.target.value }))} rows={3} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Причина</Label>
+              <Input value={assignForm.reason} onChange={(e) => setAssignForm((f) => ({ ...f, reason: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignOpen(false)}>Отмена</Button>
+            <Button disabled={!assignForm.steamid.trim() || assign.isPending} onClick={() => assign.mutate()}>
+              {editingPrivId ? "Сохранить" : "Назначить"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={groupOpen} onOpenChange={setGroupOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingGroupId ? "Изменить группу" : "Новая группа"}</DialogTitle>
+            <DialogDescription>Именованный набор команд и действий, который можно назначать игрокам целиком.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="mb-1.5 block">Название</Label>
+              <Input value={groupForm.name} onChange={(e) => setGroupForm((f) => ({ ...f, name: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Буквенный ID</Label>
+              <Input value={groupForm.group_key} onChange={(e) => setGroupForm((f) => ({ ...f, group_key: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Команды (по одной на строку)</Label>
+              <Textarea value={groupForm.commands} onChange={(e) => setGroupForm((f) => ({ ...f, commands: e.target.value }))} rows={4} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">ID действий</Label>
+              <Textarea value={groupForm.allowed_action_ids} onChange={(e) => setGroupForm((f) => ({ ...f, allowed_action_ids: e.target.value }))} rows={4} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGroupOpen(false)}>Отмена</Button>
+            <Button
+              disabled={!groupForm.name.trim() || !groupForm.group_key.trim() || createGroup.isPending || updateGroup.isPending}
+              onClick={() => (editingGroupId ? updateGroup.mutate() : createGroup.mutate())}
+            >
+              {editingGroupId ? "Сохранить" : "Создать"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={revokeTarget != null}
+        onOpenChange={(o) => !o && setRevokeTarget(null)}
+        title="Отозвать привилегии?"
+        description={revokeTarget ? `Привилегии игрока «${revokeTarget.player_name ?? revokeTarget.steamid}» будут отозваны.` : undefined}
+        confirmLabel="Отозвать"
+        onConfirm={() => revokeTarget && revoke.mutate(revokeTarget.id)}
+      />
+      <ConfirmDialog
+        open={deleteGroupTarget != null}
+        onOpenChange={(o) => !o && setDeleteGroupTarget(null)}
+        title="Удалить группу?"
+        description={deleteGroupTarget ? `Группа «${deleteGroupTarget.name}» будет удалена. У игроков этой группы останутся только индивидуальные команды.` : undefined}
+        onConfirm={() => deleteGroupTarget && deleteGroup.mutate(deleteGroupTarget.id)}
+      />
     </div>
   )
 }

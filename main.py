@@ -23,7 +23,7 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router
 from workers import start_playtime_worker
 from datetime import datetime
 
@@ -139,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(moderation_api_router)
     app.include_router(moderation_panel_router)
     app.include_router(sub_projects_router)
+    app.include_router(sub_projects_polygon_router)
     app.include_router(game_api_router)
     app.include_router(game_public_router)
     app.include_router(ratings_router)
@@ -154,6 +155,9 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(notifications_router)
     app.include_router(documents_router)
+    app.include_router(onlyoffice_router)
+    app.include_router(departments_router)
+    app.include_router(tasks_router)
 
     # ── Register global Jinja2 filters for MSK time display ──────────────────
     from utils_time import utc_to_msk, format_msk
@@ -207,15 +211,13 @@ def create_app() -> FastAPI:
     os.makedirs(sub_img_dir, exist_ok=True)
     app.mount("/sub_projects/images", StaticFiles(directory=sub_img_dir), name="sub_project_images")
 
-    # Serve uploaded document editor images at /documents/images/
-    doc_img_dir = os.path.join("uploads", "documents", "images")
-    os.makedirs(doc_img_dir, exist_ok=True)
-    app.mount("/documents/images", StaticFiles(directory=doc_img_dir), name="document_images")
-
-    # ── New React/shadcn SPA (Part 3 of the CRM rewrite), served under /app ──
-    # Coexists with the Jinja2 /admin panel; registered last so it never shadows
-    # any API or /admin route. Guarded so startup doesn't fail before the first
-    # `npm run build` has produced frontend/dist.
+    # ── New React/shadcn SPA (Part 3 of the CRM rewrite), served under /admin ──
+    # This is the only UI now — the legacy Jinja2 panel's routes are still
+    # registered (untouched, under /adminold) but unreachable: the
+    # security_and_csrf_middleware below bounces every /adminold/* request
+    # here before routing. Registered last so it never shadows any API route.
+    # Guarded so startup doesn't fail before the first `npm run build` has
+    # produced frontend/dist.
     from fastapi.responses import FileResponse as _FileResponse
 
     _spa_dist_dir = os.path.join("frontend", "dist")
@@ -223,18 +225,23 @@ def create_app() -> FastAPI:
     _spa_index_file = os.path.join(_spa_dist_dir, "index.html")
 
     if os.path.isdir(_spa_assets_dir):
-        app.mount("/app/assets", _StaticFiles(directory=_spa_assets_dir), name="spa-assets")
+        app.mount("/admin/assets", _StaticFiles(directory=_spa_assets_dir), name="spa-assets")
 
     async def _spa_index_response():
         if os.path.isfile(_spa_index_file):
             return _FileResponse(_spa_index_file)
         raise StarletteHTTPException(status_code=503, detail="Frontend not built yet — run `npm run build` in frontend/")
 
-    @app.get("/app")
+    @app.get("/admin")
     async def spa_root():
         return await _spa_index_response()
 
-    @app.get("/app/{full_path:path}")
+    @app.get("/")
+    async def root_redirect():
+        """The React SPA is the only UI now — the legacy /adminold panel is disabled."""
+        return RedirectResponse(url="/admin", status_code=302)
+
+    @app.get("/admin/{full_path:path}")
     async def spa_catchall(full_path: str):
         return await _spa_index_response()
 
@@ -246,14 +253,27 @@ def create_app() -> FastAPI:
         init_db()
         logger.info("Database initialized")
         app.state.start_time = datetime.utcnow()
-        start_playtime_worker()  # now starts full scheduler with all tasks
-        # rating_engine worker replaced by task_scheduler (registered in workers.py)
-        from services_logs import start_log_worker
-        start_log_worker()
-        from services_playtime_stats import start_playtime_stats_worker
-        start_playtime_stats_worker()
-        from services_replays import start_replay_worker
-        start_replay_worker()
+
+        # WORKER_ROLE=web marks one of several parallel uvicorn worker
+        # PROCESSES (see api_server.py's multi-worker mode) — every process
+        # spawned by `uvicorn --workers N` runs this exact same startup hook,
+        # so without this gate the periodic scheduler (Discord role sync,
+        # rating publish, etc.) and the log/playtime-stats/replay worker
+        # threads would each run N times in parallel. Unset (single-process
+        # deployment, the default/previous behavior) or "scheduler" (the
+        # dedicated non-web process multi-worker mode spawns) both still run
+        # them normally — only a "web" process skips this block.
+        if os.environ.get("WORKER_ROLE") != "web":
+            start_playtime_worker()  # now starts full scheduler with all tasks
+            # rating_engine worker replaced by task_scheduler (registered in workers.py)
+            from services_logs import start_log_worker
+            start_log_worker()
+            from services_playtime_stats import start_playtime_stats_worker
+            start_playtime_stats_worker()
+            from services_replays import start_replay_worker
+            start_replay_worker()
+        else:
+            logger.info("WORKER_ROLE=web — skipping background workers/scheduler in this process")
 
     # HTTP exception handler to render friendly templates for common errors
     @app.exception_handler(StarletteHTTPException)
@@ -267,7 +287,7 @@ def create_app() -> FastAPI:
             return templates.TemplateResponse("403.html", {"request": request}, status_code=403)
         if exc.status_code == 401:
             # For admin area requests, redirect unauthenticated users to the login page
-            if path.startswith("/admin") or path.startswith("/logout") or path.startswith("/auth"):
+            if path.startswith("/logout") or path.startswith("/auth"):
                 login_url = f"/login?next={path}"
                 return RedirectResponse(url=login_url, status_code=302)
             return templates.TemplateResponse("401.html", {"request": request}, status_code=401)
@@ -278,6 +298,11 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def security_and_csrf_middleware(request, call_next):
+        # The legacy Jinja2 panel is disabled — every /adminold/* request bounces
+        # to the React SPA before any of its 100 route handlers ever run.
+        if request.url.path.startswith("/adminold"):
+            return RedirectResponse(url="/admin", status_code=302)
+
         # Ensure CSRF token exists in session
         try:
             if "csrf_token" not in request.session:

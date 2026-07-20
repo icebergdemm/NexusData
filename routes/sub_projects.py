@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from typing import Optional
+import re
 import secrets
 import logging
 import os
@@ -30,6 +31,117 @@ def _get_sub_service(db: Session):
     return services_sub_projects.SubProjectService(db)
 
 
+def _has(admin: AdminUser, own_action: str, all_action: str, is_owner: bool) -> bool:
+    """True if the admin holds the "_all" action (any project), or holds the
+    own-project action AND actually owns this particular project."""
+    if check_permission(admin, "sub_projects", all_action):
+        return True
+    return bool(is_owner) and check_permission(admin, "sub_projects", own_action)
+
+
+def _slugify_category(name: str) -> str:
+    """[a-z0-9]-only slug with a random fallback — a name written entirely in
+    Cyrillic (or symbols) strips to "", which collided against the
+    slug column's UNIQUE constraint on the second such category and surfaced
+    as a generic "already exists" error (same fallback pattern as
+    routes/departments.py's _slugify)."""
+    base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    return base or f"cat-{secrets.token_hex(4)}"
+
+
+def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
+    token = request.cookies.get("admin_token")
+    now = datetime.utcnow()
+    if token:
+        session = db.query(AdminSession).filter(
+            AdminSession.token == token, AdminSession.revoked == 0
+        ).first()
+        if session and (session.expires_at is None or session.expires_at > now):
+            from sqlalchemy.orm import joinedload
+            admin = (
+                db.query(AdminUser)
+                .options(joinedload(AdminUser.privilege_group))
+                .filter(AdminUser.id == session.admin_id)
+                .first()
+            )
+            if admin:
+                request.session["username"] = admin.discord_username
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
+                return admin
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEST SERVER — "Сервер 2" / ASPER2 power control, from the normal Sub-
+# projects page. A DIFFERENT lever than a department's own test_server
+# module (routes/departments.py) — this one is site-wide, gated by the
+# sub_projects:manage_test_server permission, and always targets the one
+# Pterodactyl server configured in settings.sub_projects_test_server_uuid
+# (the same physical server Sub-projects/Полигон deploy .sub files to).
+# ══════════════════════════════════════════════════════════════════════════════
+
+PTERODACTYL_POWER_SIGNALS = {"start", "stop", "restart", "kill"}
+
+
+def _pterodactyl_settings():
+    if not settings.pterodactyl_panel_url or not settings.pterodactyl_api_key:
+        raise HTTPException(status_code=503, detail="Интеграция с Pterodactyl не настроена")
+    if not settings.sub_projects_test_server_uuid:
+        raise HTTPException(status_code=400, detail="Тестовый сервер не привязан (sub_projects_test_server_uuid)")
+    return settings
+
+
+@router.get("/api/v1/admin/sub-projects/test-server/status")
+async def api_sub_projects_test_server_status(current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "sub_projects", "manage_test_server"):
+        raise HTTPException(status_code=403)
+    cfg = _pterodactyl_settings()
+
+    import httpx
+    url = f"{cfg.pterodactyl_panel_url.rstrip('/')}/api/client/servers/{cfg.sub_projects_test_server_uuid}/resources"
+    headers = {"Authorization": f"Bearer {cfg.pterodactyl_api_key}", "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json().get("attributes", {})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Ошибка обращения к Pterodactyl: {e}")
+
+    resources = data.get("resources", {})
+    return {
+        "state": data.get("current_state"),
+        "cpu_percent": resources.get("cpu_absolute"),
+        "memory_bytes": resources.get("memory_bytes"),
+        "memory_limit_bytes": resources.get("memory_limit_bytes"),
+        "disk_bytes": resources.get("disk_bytes"),
+    }
+
+
+@router.post("/api/v1/admin/sub-projects/test-server/power")
+async def api_sub_projects_test_server_power(request: Request, current_admin: AdminUser = Depends(get_current_admin)):
+    if not check_permission(current_admin, "sub_projects", "manage_test_server"):
+        raise HTTPException(status_code=403)
+    cfg = _pterodactyl_settings()
+
+    body = await request.json()
+    signal = body.get("action")
+    if signal not in PTERODACTYL_POWER_SIGNALS:
+        raise HTTPException(status_code=400, detail="Недопустимое действие")
+
+    import httpx
+    url = f"{cfg.pterodactyl_panel_url.rstrip('/')}/api/client/servers/{cfg.sub_projects_test_server_uuid}/power"
+    headers = {"Authorization": f"Bearer {cfg.pterodactyl_api_key}", "Accept": "application/json", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json={"signal": signal})
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Ошибка обращения к Pterodactyl: {e}")
+    return {"status": "ok"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # IMAGE THUMBNAIL ENDPOINT (compressed, cached on disk)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -38,7 +150,7 @@ _THUMB_DIR = os.path.join(settings.sub_projects_upload_dir, "thumbs")
 os.makedirs(_THUMB_DIR, exist_ok=True)
 
 
-def _generate_thumbnail(source_path: str, thumb_path: str, max_width: int = 400, quality: int = 60):
+def _generate_thumbnail(source_path: str, thumb_path: str, max_width: int = 800, quality: int = 85):
     """Generate a compressed thumbnail from the source image, preserving transparency."""
     try:
         from PIL import Image
@@ -67,20 +179,21 @@ def _generate_thumbnail(source_path: str, thumb_path: str, max_width: int = 400,
 @router.get("/sub_projects/thumbs/{filename}")
 async def sub_project_thumbnail(filename: str):
     """Serve compressed thumbnail of a sub-project image.
-    
+
     Generates on first request and caches to disk.
-    - PNG with transparency → WebP (60% quality, preserves alpha)
-    - Other formats → JPEG (60% quality)
-    Max width: 400px.
+    - PNG with transparency → WebP (85% quality, preserves alpha)
+    - Other formats → JPEG (85% quality)
+    Max width: 800px.
     """
     # Sanitize filename
     safe_name = os.path.basename(filename)
     if not safe_name or ".." in safe_name:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Check for cached thumbnail (could be .jpg or .webp)
-    thumb_jpg = os.path.join(_THUMB_DIR, f"thumb_{safe_name}.jpg")
-    thumb_webp = os.path.join(_THUMB_DIR, f"thumb_{safe_name}.webp")
+    # "v2" cache-busts thumbnails generated under the old 400px/60%-quality
+    # defaults — old thumb_{name}.* files are simply left orphaned on disk.
+    thumb_jpg = os.path.join(_THUMB_DIR, f"thumb_v2_{safe_name}.jpg")
+    thumb_webp = os.path.join(_THUMB_DIR, f"thumb_v2_{safe_name}.webp")
 
     if os.path.exists(thumb_webp):
         return FileResponse(thumb_webp, media_type="image/webp",
@@ -112,27 +225,6 @@ async def sub_project_thumbnail(filename: str):
 
 
 # ── Reusable helpers ─────────────────────────────────────────────────────────
-
-def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            from sqlalchemy.orm import joinedload
-            admin = (
-                db.query(AdminUser)
-                .options(joinedload(AdminUser.privilege_group))
-                .filter(AdminUser.id == session.admin_id)
-                .first()
-            )
-            if admin:
-                request.session["username"] = admin.discord_username
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
-
 
 async def ensure_csrf(request: Request, db: Session):
     form = await request.form()
@@ -166,7 +258,7 @@ def pop_flashes(request: Request):
 # MAIN PAGE
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/sub-projects", response_class=HTMLResponse)
+@router.get("/adminold/sub-projects", response_class=HTMLResponse)
 async def sub_projects_list(
     request: Request,
     search: Optional[str] = Query(None),
@@ -268,6 +360,7 @@ def _serialize_category(c) -> dict:
     return {
         "id": c.id, "name": c.name, "slug": c.slug, "description": c.description,
         "color": c.color, "icon": c.icon, "sort_order": c.sort_order, "parent_id": c.parent_id,
+        "is_default": bool(c.is_default),
     }
 
 
@@ -290,6 +383,7 @@ def _serialize_project(p) -> dict:
         "extra_equipment": p.extra_equipment, "features": p.features, "description": p.description,
         "image_filename": p.image_filename, "discord_message_id": p.discord_message_id,
         "created_by_admin_id": p.created_by_admin_id,
+        "department_id": p.department_id,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -325,8 +419,9 @@ async def api_sub_projects_list(
         "all_authors": svc.get_unique_authors(),
         "sftp_server_1_name": settings.sftp_server_1_name,
         "sftp_server_2_name": settings.sftp_server_2_name,
-        "can_edit": check_permission(current_admin, "sub_projects", "edit"),
-        "can_delete": check_permission(current_admin, "sub_projects", "delete"),
+        "can_create": check_permission(current_admin, "sub_projects", "create"),
+        "can_manage_categories": check_permission(current_admin, "sub_projects", "manage_categories"),
+        "can_manage_test_server": check_permission(current_admin, "sub_projects", "manage_test_server"),
     }
 
 
@@ -342,22 +437,49 @@ async def api_sub_project_detail(
     if not project:
         raise HTTPException(status_code=404, detail="Проект не найден")
 
-    versions = svc.get_versions(project_id)
+    all_versions = svc.get_versions(project_id, include_deleted=True)
+    versions = [v for v in all_versions if not v.is_deleted]
+    is_owner = project.created_by_admin_id == current_admin.id
+    can_restore = _has(current_admin, "restore_version", "restore_version_all", is_owner)
+    # Deleted versions are only worth sending down (and only visible) to
+    # someone who could actually restore one — otherwise it's just dead
+    # weight/an info leak about deleted content for everyone else.
+    deleted_versions = [v for v in all_versions if v.is_deleted] if can_restore else []
     categories = svc.get_project_categories(project_id)
 
-    can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
-    is_owner = project.created_by_admin_id == current_admin.id
+    can_edit_category_assign = (
+        check_permission(current_admin, "sub_projects", "edit")
+        or check_permission(current_admin, "sub_projects", "edit_all")
+    )
 
     return {
         "project": _serialize_project(project),
         "versions": [_serialize_version(v) for v in versions],
+        "deleted_versions": [_serialize_version(v) for v in deleted_versions],
         "categories": [_serialize_category(c) for c in categories],
+        # Full catalog for the category picker — the dedicated
+        # /sub-projects-categories endpoint is manage_categories-gated (it's
+        # the category-management page), but assigning an EXISTING category
+        # to a project only needs edit/edit_all (see assign/remove below), so
+        # the picker's option list is served from here at the same "view"
+        # gate this whole detail endpoint already requires.
+        "all_categories": [_serialize_category(c) for c in svc.get_all_categories()],
         "sftp_server_1_name": settings.sftp_server_1_name,
         "sftp_server_2_name": settings.sftp_server_2_name,
         "is_owner": is_owner,
-        "can_edit_this": can_any or is_owner,
-        "can_deploy": can_any,
-        "can_delete": check_permission(current_admin, "sub_projects", "delete"),
+        "can_edit_this": _has(current_admin, "edit", "edit_all", is_owner),
+        "can_delete_this": _has(current_admin, "delete", "delete_all", is_owner),
+        "can_upload_version": _has(current_admin, "upload_version", "upload_version_all", is_owner),
+        "can_delete_version": _has(current_admin, "delete_version", "delete_version_all", is_owner),
+        "can_restore_version": can_restore,
+        "can_download": _has(current_admin, "download", "download_all", is_owner),
+        "can_deploy_server_1": check_permission(current_admin, "sub_projects", "deploy_server_1"),
+        "can_deploy_server_2": check_permission(current_admin, "sub_projects", "deploy_server_2"),
+        "can_undeploy_server_1": check_permission(current_admin, "sub_projects", "undeploy_server_1"),
+        "can_undeploy_server_2": check_permission(current_admin, "sub_projects", "undeploy_server_2"),
+        "can_publish_discord": _has(current_admin, "publish_discord", "publish_discord_all", is_owner),
+        "can_change_owner": check_permission(current_admin, "sub_projects", "change_owner"),
+        "can_edit_categories": can_edit_category_assign,
     }
 
 
@@ -392,7 +514,7 @@ async def api_sub_project_create(
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit") and not check_permission(current_admin, "sub_projects", "view"):
+    if not check_permission(current_admin, "sub_projects", "create"):
         raise HTTPException(status_code=403)
 
     svc = _get_sub_service(db)
@@ -403,13 +525,9 @@ async def api_sub_project_create(
     if image and image.filename:
         svc.save_image(project.id, image)
 
-    from models import AppSetting
-    default_cat_row = db.query(AppSetting).filter(AppSetting.key == "sub_cat_default_id").first()
-    if default_cat_row and default_cat_row.value and default_cat_row.value.strip().isdigit():
-        try:
-            svc.assign_category(project.id, int(default_cat_row.value))
-        except Exception:
-            pass
+    default_category = svc.get_default_category()
+    if default_category:
+        svc.assign_category(project.id, default_category.id)
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_create", {"project_id": project.id, "name": project.name})
@@ -433,10 +551,8 @@ async def api_sub_project_update(
     if not existing:
         raise HTTPException(status_code=404, detail="Проект не найден")
 
-    can_edit_any = check_permission(current_admin, "sub_projects", "delete")
-    can_edit_own = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "view")
     is_owner = existing.created_by_admin_id == current_admin.id
-    if not can_edit_any and not (can_edit_own and is_owner):
+    if not _has(current_admin, "edit", "edit_all", is_owner):
         raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования этого проекта")
 
     data = _sub_project_form_to_data(name, author, project_type, crew, crew_min, crew_avg, crew_max,
@@ -455,12 +571,13 @@ async def api_sub_project_update(
 async def api_sub_project_delete(
     project_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "delete"):
-        raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
     project = svc.get_by_id(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Проект не найден")
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "delete", "delete_all", is_owner):
+        raise HTTPException(status_code=403)
     project_name = project.name
     svc.delete(project_id)
     from routes.admin import log_admin_action
@@ -473,14 +590,12 @@ async def api_sub_project_upload_version(
     project_id: int, sub_file: UploadFile = File(...), changelog: Optional[str] = Form(None),
     db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "view"):
-        raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
     project = svc.get_by_id(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Проект не найден")
-    can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
-    if not can_any and project.created_by_admin_id != current_admin.id:
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "upload_version", "upload_version_all", is_owner):
         raise HTTPException(status_code=403, detail="Вы можете загружать версии только для своих проектов")
     if not sub_file.filename or not sub_file.filename.endswith(".sub"):
         raise HTTPException(status_code=400, detail="Файл должен иметь расширение .sub")
@@ -495,13 +610,50 @@ async def api_sub_project_upload_version(
 async def api_sub_project_delete_version(
     project_id: int, version_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "delete"):
-        raise HTTPException(status_code=403, detail="Только пользователи с правом 'удалить' могут удалять версии")
     svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "delete_version", "delete_version_all", is_owner):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для удаления версии")
     svc.delete_version(version_id, admin_id=current_admin.id)
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_version_delete", {"project_id": project_id, "version_id": version_id})
     return {"status": "ok"}
+
+
+@router.get("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}/download")
+async def api_sub_project_download_version(
+    project_id: int, version_id: int,
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    """JSON-API twin of the legacy /adminold download route — the React SPA
+    linked directly at the legacy /admin/... URL (which doesn't exist,
+    the legacy handler lives at /adminold/...), silently falling through to
+    the SPA catch-all instead of downloading. Same permission/file logic."""
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "download", "download_all", is_owner):
+        raise HTTPException(status_code=403, detail="Скачивание файлов доступно только для своих проектов")
+
+    version = svc.get_version_by_id(version_id)
+    if not version or version.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Версия не найдена")
+
+    file_path = os.path.join(settings.sub_projects_upload_dir, "files", version.stored_filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Файл не найден на диске")
+
+    return FileResponse(
+        path=file_path,
+        filename=version.filename,
+        media_type="application/octet-stream",
+    )
 
 
 @router.post("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}/deploy")
@@ -509,12 +661,12 @@ async def api_sub_project_deploy_version(
     project_id: int, version_id: int, request: Request,
     db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")):
-        raise HTTPException(status_code=403, detail="Для развёртывания необходимо право 'изменить' или 'удалить'")
     body = await request.json()
     server = body.get("server")
     if server not in (1, 2):
         raise HTTPException(status_code=400, detail="Некорректный номер сервера")
+    if not check_permission(current_admin, "sub_projects", f"deploy_server_{server}"):
+        raise HTTPException(status_code=403, detail=f"Недостаточно прав для деплоя на Сервер {server}")
 
     svc = _get_sub_service(db)
     svc.deploy_version(version_id, server)
@@ -528,12 +680,12 @@ async def api_sub_project_undeploy_version(
     project_id: int, version_id: int, request: Request,
     db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")):
-        raise HTTPException(status_code=403, detail="Для отката необходимо право 'изменить' или 'удалить'")
     body = await request.json()
     server = body.get("server")
     if server not in (1, 2):
         raise HTTPException(status_code=400, detail="Некорректный номер сервера")
+    if not check_permission(current_admin, "sub_projects", f"undeploy_server_{server}"):
+        raise HTTPException(status_code=403, detail=f"Недостаточно прав для отката с Сервера {server}")
 
     svc = _get_sub_service(db)
     svc.undeploy_version(version_id, server)
@@ -546,9 +698,13 @@ async def api_sub_project_undeploy_version(
 async def api_sub_project_discord_publish(
     project_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
-        raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "publish_discord", "publish_discord_all", is_owner):
+        raise HTTPException(status_code=403)
     base_url = str(request.base_url).rstrip("/")
     msg_id = svc.publish_to_discord(project_id, base_url)
     from routes.admin import log_admin_action
@@ -560,9 +716,13 @@ async def api_sub_project_discord_publish(
 async def api_sub_project_discord_delete(
     project_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
-        raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "publish_discord", "publish_discord_all", is_owner):
+        raise HTTPException(status_code=403)
     ok = svc.delete_discord_message(project_id)
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_discord_delete", {"project_id": project_id})
@@ -573,7 +733,7 @@ async def api_sub_project_discord_delete(
 async def api_sub_project_categories_list(
     db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
     return {"categories": [_serialize_category(c) for c in svc.get_all_categories()]}
@@ -583,21 +743,20 @@ async def api_sub_project_categories_list(
 async def api_sub_project_category_create(
     request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     body = await request.json()
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name required")
-    import re
-    final_slug = (body.get("slug") or "").strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    final_slug = (body.get("slug") or "").strip() or _slugify_category(name)
 
     svc = _get_sub_service(db)
     cat = svc.create_category(
         name=name, slug=final_slug, description=(body.get("description") or "").strip() or None,
         color=body.get("color") or "#1a68de", icon=body.get("icon") or "🚢",
         sort_order=body.get("sort_order") or 0, parent_id=body.get("parent_id") or None,
-        admin_id=current_admin.id,
+        admin_id=current_admin.id, is_default=bool(body.get("is_default")),
     )
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_category_create", {"name": name})
@@ -608,19 +767,21 @@ async def api_sub_project_category_create(
 async def api_sub_project_category_update(
     cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     body = await request.json()
     name = (body.get("name") or "").strip()
-    import re
-    final_slug = (body.get("slug") or "").strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    final_slug = (body.get("slug") or "").strip() or _slugify_category(name)
 
     svc = _get_sub_service(db)
-    svc.update_category(cat_id, {
+    update_data = {
         "name": name, "slug": final_slug, "description": (body.get("description") or "").strip() or None,
         "color": body.get("color") or "#1a68de", "icon": body.get("icon") or "🚢",
         "sort_order": body.get("sort_order") or 0, "parent_id": body.get("parent_id") or None,
-    })
+    }
+    if "is_default" in body:
+        update_data["is_default"] = bool(body.get("is_default"))
+    svc.update_category(cat_id, update_data)
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_category_update", {"id": cat_id, "name": name})
     return {"status": "ok"}
@@ -630,7 +791,7 @@ async def api_sub_project_category_update(
 async def api_sub_project_category_delete(
     cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
     svc.delete_category(cat_id)
@@ -643,7 +804,9 @@ async def api_sub_project_category_delete(
 async def api_sub_project_assign_category(
     project_id: int, cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
+    # No ownership check today (matches pre-rework behavior — bare "edit"
+    # already reached any project for category assign/remove specifically).
+    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "edit_all")):
         raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
     svc.assign_category(project_id, cat_id)
@@ -654,10 +817,77 @@ async def api_sub_project_assign_category(
 async def api_sub_project_remove_category(
     project_id: int, cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "sub_projects", "edit"):
+    if not (check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "edit_all")):
         raise HTTPException(status_code=403)
     svc = _get_sub_service(db)
     svc.remove_category(project_id, cat_id)
+    return {"status": "ok"}
+
+
+@router.get("/api/v1/admin/sub-projects/change-owner-candidates")
+async def api_sub_project_change_owner_candidates(
+    db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sub_projects", "change_owner"):
+        raise HTTPException(status_code=403)
+    admins = db.query(AdminUser).filter(AdminUser.is_deleted == 0).order_by(AdminUser.discord_username).all()
+    return {"admins": [{"id": a.id, "name": a.discord_username} for a in admins]}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/change-owner")
+async def api_sub_project_change_owner(
+    project_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    """JSON/SPA port of the legacy /adminold change-owner action — same
+    change_owner-gated capability, no ownership concept (reassigning
+    ownership is itself an administrative action on top of any project)."""
+    if not check_permission(current_admin, "sub_projects", "change_owner"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для смены владельца")
+
+    body = await request.json()
+    new_owner_admin_id = body.get("new_owner_admin_id")
+    if not isinstance(new_owner_admin_id, int):
+        raise HTTPException(status_code=400, detail="new_owner_admin_id обязателен")
+
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+
+    new_owner = db.query(AdminUser).filter(AdminUser.id == new_owner_admin_id).first()
+    if not new_owner:
+        raise HTTPException(status_code=404, detail="Администратор не найден")
+
+    project.created_by_admin_id = new_owner_admin_id
+    db.commit()
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_project_change_owner", {
+        "project_id": project_id, "new_owner_id": new_owner_admin_id, "new_owner_name": new_owner.discord_username,
+    })
+    return {"status": "ok", "project": _serialize_project(project)}
+
+
+@router.post("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}/restore")
+async def api_sub_project_restore_version(
+    project_id: int, version_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    """JSON/SPA port of the legacy /adminold version-restore action."""
+    svc = _get_sub_service(db)
+    project = svc.get_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    is_owner = project.created_by_admin_id == current_admin.id
+    if not _has(current_admin, "restore_version", "restore_version_all", is_owner):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для восстановления версии")
+
+    version = svc.get_version_by_id(version_id)
+    if not version or version.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Версия не найдена")
+
+    svc.restore_version(version_id)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "sub_version_restore", {"project_id": project_id, "version_id": version_id})
     return {"status": "ok"}
 
 
@@ -665,7 +895,7 @@ async def api_sub_project_remove_category(
 # PROJECT DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/sub-projects/{project_id}", response_class=HTMLResponse)
+@router.get("/adminold/sub-projects/{project_id}", response_class=HTMLResponse)
 async def sub_project_detail(
     request: Request,
     project_id: int,
@@ -708,7 +938,7 @@ async def sub_project_detail(
 # CREATE PROJECT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/create")
+@router.post("/adminold/sub-projects/create")
 async def sub_project_create(
     request: Request,
     name: str = Form(...),
@@ -777,14 +1007,14 @@ async def sub_project_create(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_create", {"project_id": project.id, "name": project.name})
     push_flash(request, "success", f"Проект «{project.name}» создан")
-    return RedirectResponse(url=f"/admin/sub-projects/{project.id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project.id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UPDATE PROJECT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/update")
+@router.post("/adminold/sub-projects/{project_id}/update")
 async def sub_project_update(
     request: Request,
     project_id: int,
@@ -814,7 +1044,7 @@ async def sub_project_update(
     existing = svc_check.get_by_id(project_id)
     if not existing:
         push_flash(request, "error", "Проект не найден")
-        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+        return RedirectResponse(url="/adminold/sub-projects", status_code=302)
 
     can_edit_any = check_permission(current_admin, "sub_projects", "delete")
     can_edit_own = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "view")
@@ -852,7 +1082,7 @@ async def sub_project_update(
     project = svc.update(project_id, data)
     if not project:
         push_flash(request, "error", "Проект не найден")
-        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+        return RedirectResponse(url="/adminold/sub-projects", status_code=302)
 
     if image and image.filename:
         svc.save_image(project_id, image)
@@ -860,14 +1090,14 @@ async def sub_project_update(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_update", {"project_id": project_id, "name": project.name})
     push_flash(request, "success", f"Проект «{project.name}» обновлён")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DELETE PROJECT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/delete")
+@router.post("/adminold/sub-projects/{project_id}/delete")
 async def sub_project_delete(
     request: Request,
     project_id: int,
@@ -882,7 +1112,7 @@ async def sub_project_delete(
     project = svc.get_by_id(project_id)
     if not project:
         push_flash(request, "error", "Проект не найден")
-        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+        return RedirectResponse(url="/adminold/sub-projects", status_code=302)
 
     project_name = project.name
     svc.delete(project_id)
@@ -890,14 +1120,14 @@ async def sub_project_delete(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_delete", {"project_id": project_id, "name": project_name})
     push_flash(request, "success", f"Проект «{project_name}» удалён")
-    return RedirectResponse(url="/admin/sub-projects", status_code=302)
+    return RedirectResponse(url="/adminold/sub-projects", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VERSION UPLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/versions/upload")
+@router.post("/adminold/sub-projects/{project_id}/versions/upload")
 async def sub_project_upload_version(
     request: Request,
     project_id: int,
@@ -915,7 +1145,7 @@ async def sub_project_upload_version(
     project = svc.get_by_id(project_id)
     if not project:
         push_flash(request, "error", "Проект не найден")
-        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+        return RedirectResponse(url="/adminold/sub-projects", status_code=302)
 
     # With view: only upload to own project. With edit/delete: any project
     can_any = check_permission(current_admin, "sub_projects", "edit") or check_permission(current_admin, "sub_projects", "delete")
@@ -924,7 +1154,7 @@ async def sub_project_upload_version(
 
     if not sub_file.filename or not sub_file.filename.endswith(".sub"):
         push_flash(request, "error", "Файл должен иметь расширение .sub")
-        return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
     version = svc.upload_version(project_id, sub_file, changelog or "", current_admin.id)
 
@@ -933,14 +1163,14 @@ async def sub_project_upload_version(
         "project_id": project_id, "version_id": version.id, "version_number": version.version_number
     })
     push_flash(request, "success", f"Версия {version.version_number} загружена")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VERSION DELETE
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/versions/{version_id}/delete")
+@router.post("/adminold/sub-projects/{project_id}/versions/{version_id}/delete")
 async def sub_project_delete_version(
     request: Request,
     project_id: int,
@@ -958,14 +1188,14 @@ async def sub_project_delete_version(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_version_delete", {"project_id": project_id, "version_id": version_id})
     push_flash(request, "success", "Версия помечена как удалённая")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SFTP DEPLOY / UNDEPLOY
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/versions/{version_id}/deploy")
+@router.post("/adminold/sub-projects/{project_id}/versions/{version_id}/deploy")
 async def sub_project_deploy_version(
     request: Request,
     project_id: int,
@@ -981,7 +1211,7 @@ async def sub_project_deploy_version(
 
     if server not in (1, 2):
         push_flash(request, "error", "Некорректный номер сервера")
-        return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
     svc = _get_sub_service(db)
     try:
@@ -995,10 +1225,10 @@ async def sub_project_deploy_version(
     log_admin_action(db, current_admin.id, "sub_version_deploy", {
         "project_id": project_id, "version_id": version_id, "server": server
     })
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
-@router.post("/admin/sub-projects/{project_id}/versions/{version_id}/undeploy")
+@router.post("/adminold/sub-projects/{project_id}/versions/{version_id}/undeploy")
 async def sub_project_undeploy_version(
     request: Request,
     project_id: int,
@@ -1013,7 +1243,7 @@ async def sub_project_undeploy_version(
 
     if server not in (1, 2):
         push_flash(request, "error", "Некорректный номер сервера")
-        return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
     svc = _get_sub_service(db)
     try:
@@ -1027,14 +1257,14 @@ async def sub_project_undeploy_version(
     log_admin_action(db, current_admin.id, "sub_version_undeploy", {
         "project_id": project_id, "version_id": version_id, "server": server
     })
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DISCORD WEBHOOK
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/discord/publish")
+@router.post("/adminold/sub-projects/{project_id}/discord/publish")
 async def sub_project_discord_publish(
     request: Request,
     project_id: int,
@@ -1056,10 +1286,10 @@ async def sub_project_discord_publish(
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_discord_publish", {"project_id": project_id})
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
-@router.post("/admin/sub-projects/{project_id}/discord/delete")
+@router.post("/adminold/sub-projects/{project_id}/discord/delete")
 async def sub_project_discord_delete(
     request: Request,
     project_id: int,
@@ -1079,14 +1309,14 @@ async def sub_project_discord_delete(
 
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_project_discord_delete", {"project_id": project_id})
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FILE DOWNLOAD
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/sub-projects/{project_id}/versions/{version_id}/download")
+@router.get("/adminold/sub-projects/{project_id}/versions/{version_id}/download")
 async def sub_project_download_version(
     project_id: int,
     version_id: int,
@@ -1125,7 +1355,7 @@ async def sub_project_download_version(
 # CHANGE PROJECT OWNER (delete permission only)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/sub-projects/{project_id}/change-owner")
+@router.post("/adminold/sub-projects/{project_id}/change-owner")
 async def sub_project_change_owner(
     request: Request,
     project_id: int,
@@ -1142,14 +1372,14 @@ async def sub_project_change_owner(
     project = svc.get_by_id(project_id)
     if not project:
         push_flash(request, "error", "Проект не найден")
-        return RedirectResponse(url="/admin/sub-projects", status_code=302)
+        return RedirectResponse(url="/adminold/sub-projects", status_code=302)
 
     # Verify the new owner exists
     from models import AdminUser as AU
     new_owner = db.query(AU).filter(AU.id == new_owner_admin_id).first()
     if not new_owner:
         push_flash(request, "error", "Администратор не найден")
-        return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
     project.created_by_admin_id = new_owner_admin_id
     db.commit()
@@ -1161,21 +1391,21 @@ async def sub_project_change_owner(
         "new_owner_name": new_owner.discord_username,
     })
     push_flash(request, "success", f"Владелец проекта изменён на {new_owner.discord_username}")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CATEGORIES MANAGEMENT (superuser or sub_projects.delete permission)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/sub-projects/categories", response_class=HTMLResponse)
+@router.get("/adminold/sub-projects/categories", response_class=HTMLResponse)
 async def sub_project_categories_page(
     request: Request,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Category management page."""
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
@@ -1191,7 +1421,7 @@ async def sub_project_categories_page(
     })
 
 
-@router.post("/admin/sub-projects/categories/create")
+@router.post("/adminold/sub-projects/categories/create")
 async def sub_project_category_create(
     request: Request,
     name: str = Form(...),
@@ -1204,13 +1434,12 @@ async def sub_project_category_create(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     await ensure_csrf(request, db)
 
     svc = _get_sub_service(db)
-    import re
-    final_slug = slug.strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    final_slug = slug.strip() or _slugify_category(name)
 
     svc.create_category(
         name=name.strip(),
@@ -1226,10 +1455,10 @@ async def sub_project_category_create(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_category_create", {"name": name})
     push_flash(request, "success", f"Категория «{name}» создана")
-    return RedirectResponse(url="/admin/sub-projects/categories", status_code=302)
+    return RedirectResponse(url="/adminold/sub-projects/categories", status_code=302)
 
 
-@router.post("/admin/sub-projects/categories/{cat_id}/update")
+@router.post("/adminold/sub-projects/categories/{cat_id}/update")
 async def sub_project_category_update(
     request: Request,
     cat_id: int,
@@ -1243,13 +1472,12 @@ async def sub_project_category_update(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     await ensure_csrf(request, db)
 
     svc = _get_sub_service(db)
-    import re
-    final_slug = slug.strip() or re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    final_slug = slug.strip() or _slugify_category(name)
 
     svc.update_category(cat_id, {
         "name": name.strip(),
@@ -1264,17 +1492,17 @@ async def sub_project_category_update(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_category_update", {"id": cat_id, "name": name})
     push_flash(request, "success", f"Категория «{name}» обновлена")
-    return RedirectResponse(url="/admin/sub-projects/categories", status_code=302)
+    return RedirectResponse(url="/adminold/sub-projects/categories", status_code=302)
 
 
-@router.post("/admin/sub-projects/categories/{cat_id}/delete")
+@router.post("/adminold/sub-projects/categories/{cat_id}/delete")
 async def sub_project_category_delete(
     request: Request,
     cat_id: int,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (current_admin.is_superuser or check_permission(current_admin, "sub_projects", "delete")):
+    if not check_permission(current_admin, "sub_projects", "manage_categories"):
         raise HTTPException(status_code=403)
     await ensure_csrf(request, db)
 
@@ -1284,10 +1512,10 @@ async def sub_project_category_delete(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_category_delete", {"id": cat_id})
     push_flash(request, "success", "Категория удалена")
-    return RedirectResponse(url="/admin/sub-projects/categories", status_code=302)
+    return RedirectResponse(url="/adminold/sub-projects/categories", status_code=302)
 
 
-@router.post("/admin/sub-projects/{project_id}/categories/assign")
+@router.post("/adminold/sub-projects/{project_id}/categories/assign")
 async def sub_project_assign_category(
     request: Request,
     project_id: int,
@@ -1302,10 +1530,10 @@ async def sub_project_assign_category(
     svc = _get_sub_service(db)
     svc.assign_category(project_id, category_id)
     push_flash(request, "success", "Категория назначена")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
-@router.post("/admin/sub-projects/{project_id}/categories/{cat_id}/remove")
+@router.post("/adminold/sub-projects/{project_id}/categories/{cat_id}/remove")
 async def sub_project_remove_category(
     request: Request,
     project_id: int,
@@ -1320,10 +1548,10 @@ async def sub_project_remove_category(
     svc = _get_sub_service(db)
     svc.remove_category(project_id, cat_id)
     push_flash(request, "success", "Категория снята")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
-@router.post("/admin/sub-projects/{project_id}/versions/{version_id}/restore")
+@router.post("/adminold/sub-projects/{project_id}/versions/{version_id}/restore")
 async def sub_project_restore_version(
     request: Request,
     project_id: int,
@@ -1342,10 +1570,10 @@ async def sub_project_restore_version(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_version_restore", {"project_id": project_id, "version_id": version_id})
     push_flash(request, "success", "Версия восстановлена")
-    return RedirectResponse(url=f"/admin/sub-projects/{project_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/sub-projects/{project_id}", status_code=302)
 
 
-@router.post("/admin/sub-projects/category-settings")
+@router.post("/adminold/sub-projects/category-settings")
 async def sub_project_category_settings(
     request: Request,
     db: Session = Depends(get_db),
@@ -1383,4 +1611,4 @@ async def sub_project_category_settings(
         "default_id": default_id,
     })
     push_flash(request, "success", "Настройки категорий сохранены")
-    return RedirectResponse(url="/admin/sub-projects", status_code=302)
+    return RedirectResponse(url="/adminold/sub-projects", status_code=302)

@@ -240,7 +240,7 @@ textarea { resize:vertical; min-height:80px; }
 {% endfor %}
 
 <div class="pg-header">
-  <a href="/admin/players" class="back-btn">← Игроки</a>
+  <a href="/adminold/players" class="back-btn">← Игроки</a>
   <h2>Профиль игрока #{{ player.player_id }}</h2>
   <div class="pg-header-right">
     {% if is_online %}
@@ -257,7 +257,7 @@ textarea { resize:vertical; min-height:80px; }
       {% endfor %}
 
       {% if has_active_ban.val %}
-      <form method="post" action="/admin/punishments/{{ has_active_ban.punishment_id }}/unban" style="display:inline;">
+      <form method="post" action="/adminold/punishments/{{ has_active_ban.punishment_id }}/unban" style="display:inline;">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <button type="submit" class="btn btn-primary" style="padding:12px 24px;font-size:15px;" onclick="return confirm('Разбанить игрока?')">🔓 Разбанить</button>
       </form>
@@ -267,7 +267,7 @@ textarea { resize:vertical; min-height:80px; }
       <button class="btn btn-warning" style="padding:10px 18px;font-size:13px;" onclick="openModal('warn-modal')">⚠️ Варн</button>
       <button class="btn btn-secondary" style="padding:10px 18px;font-size:13px;border-color:rgba(199,125,255,.4);color:#c77dff;" onclick="openModal('reprimand-modal')">📋 Выговор</button>
       {% if admin.is_superuser %}
-      <form method="post" action="/admin/players/{{ player.player_id }}/toggle-secret" style="display:inline;">
+      <form method="post" action="/adminold/players/{{ player.player_id }}/toggle-secret" style="display:inline;">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <button type="submit" class="btn btn-secondary" style="padding:10px 14px;font-size:12px;border-color:{% if player.is_secret %}rgba(255,20,20,.5);color:#ff4444{% else %}rgba(120,120,120,.4);color:var(--gray){% endif %};">
           {% if player.is_secret %}🔓 Рассекретить{% else %}🔒 Засекретить{% endif %}
@@ -354,7 +354,7 @@ textarea { resize:vertical; min-height:80px; }
               {% endif %}
             </span>
             {% if has_edit or has_delete or has_special %}
-            <form id="discord-id-edit" method="post" action="/admin/players/{{ player.player_id }}/discord-id"
+            <form id="discord-id-edit" method="post" action="/adminold/players/{{ player.player_id }}/discord-id"
                   style="display:none; gap:6px; align-items:center; margin-top:6px;">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
               <input type="text" name="discord_id" value="{{ player.discord_id or '' }}" placeholder="Discord ID"
@@ -387,7 +387,7 @@ textarea { resize:vertical; min-height:80px; }
         <!-- Inline rank / kit editing -->
         {% if has_delete or has_special %}
         <div style="border-top:1px solid var(--stroke-01); margin-top:16px; padding-top:16px;">
-          <form method="post" action="/admin/players/{{ player.player_id }}/update">
+          <form method="post" action="/adminold/players/{{ player.player_id }}/update">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
               <div class="form-group">
@@ -511,7 +511,7 @@ textarea { resize:vertical; min-height:80px; }
           </table>
         </div>
         <div style="padding:10px 14px;">
-          <a href="/admin/punishments?tab=warning&search={{ player.player_steamid or '' }}"
+          <a href="/adminold/punishments?tab=warning&search={{ player.player_steamid or '' }}"
              style="font-size:12px; color:var(--primary-blue); text-decoration:none;">
             Все наказания →
           </a>
@@ -563,12 +563,12 @@ textarea { resize:vertical; min-height:80px; }
             </div>
           </div>
         </div>
-        <form method="post" action="/admin/players/{{ player.player_id }}/traps/{{ active_trap.val.id }}/deactivate">
+        <form method="post" action="/adminold/players/{{ player.player_id }}/traps/{{ active_trap.val.id }}/deactivate">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
           <button type="submit" class="btn btn-warning btn-sm btn-block">🔓 Снять ловушку</button>
         </form>
         {% else %}
-        <form method="post" action="/admin/players/{{ player.player_id }}/traps/set">
+        <form method="post" action="/adminold/players/{{ player.player_id }}/traps/set">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
           <div class="form-group" style="margin-bottom:10px;">
             <label>Причина (необязательно)</label>
@@ -623,7 +623,7 @@ textarea { resize:vertical; min-height:80px; }
       <div class="block-card-header">
         <h3>🏷 Метки</h3>
         {% if admin.is_superuser %}
-        <a href="/admin/label-categories" class="btn btn-secondary btn-sm" style="font-size:11px;">⚙ Управление категориями</a>
+        <a href="/adminold/label-categories" class="btn btn-secondary btn-sm" style="font-size:11px;">⚙ Управление категориями</a>
         {% endif %}
       </div>
       <div class="block-card-body">
@@ -633,7 +633,7 @@ textarea { resize:vertical; min-height:80px; }
           <span class="label-badge" style="background:{{ cat.color }}22; color:{{ cat.color }}; border-color:{{ cat.color }}55;">
             {{ cat.icon }} {{ cat.name }}
             {% if check_permission(admin, 'players', 'delete') %}
-            <form method="post" action="/admin/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
+            <form method="post" action="/adminold/players/{{ player.player_id }}/labels/{{ lbl.id }}/remove"
                   style="display:inline; margin:0;">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
               <button type="submit" style="background:none;border:none;cursor:pointer;font-size:11px;color:inherit;padding:0 0 0 4px;opacity:.7;">✕</button>
@@ -648,7 +648,7 @@ textarea { resize:vertical; min-height:80px; }
 
         {% if check_permission(admin, 'players', 'edit') %}
           {% if label_categories %}
-          <form method="post" action="/admin/players/{{ player.player_id }}/labels/assign">
+          <form method="post" action="/adminold/players/{{ player.player_id }}/labels/assign">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px;">
               <select name="category_id" style="flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); color:var(--white); padding:8px 12px; font-size:13px; font-family:inherit; box-sizing:border-box; min-width:0;">
@@ -687,7 +687,7 @@ textarea { resize:vertical; min-height:80px; }
 <div class="modal-overlay" id="new-label-cat-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; align-items:center; justify-content:center;">
   <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:28px; width:90%; max-width:420px;">
     <h3 style="color:var(--white); font-size:16px; font-weight:700; margin-bottom:20px;">Создать категорию метки</h3>
-    <form method="post" action="/admin/label-categories/create">
+    <form method="post" action="/adminold/label-categories/create">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div class="form-group" style="margin-bottom:12px;">
         <label style="font-size:12px; color:var(--gray); font-weight:600;">Название *</label>
@@ -944,7 +944,7 @@ function renderPlayerLogs(events, total, page, totalPages) {
       <button class="modal-close" onclick="closeModal('notes-modal')">✕</button>
     </div>
     <div class="modal-body">
-      <form method="post" action="/admin/players/{{ player.player_id }}/notes/save">
+      <form method="post" action="/adminold/players/{{ player.player_id }}/notes/save">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <div class="form-group">
           <label>Заметки об игроке</label>
@@ -967,7 +967,7 @@ function renderPlayerLogs(events, total, page, totalPages) {
       <button class="modal-close" onclick="closeModal('ban-modal')">✕</button>
     </div>
     <div class="modal-body">
-      <form method="post" action="/admin/punishments/create">
+      <form method="post" action="/adminold/punishments/create">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
         <input type="hidden" name="ptype" value="ban">
@@ -1008,7 +1008,7 @@ function renderPlayerLogs(events, total, page, totalPages) {
       <button class="modal-close" onclick="closeModal('warn-modal')">✕</button>
     </div>
     <div class="modal-body">
-      <form method="post" action="/admin/punishments/create">
+      <form method="post" action="/adminold/punishments/create">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
         <input type="hidden" name="ptype" value="warning">
@@ -1037,7 +1037,7 @@ function renderPlayerLogs(events, total, page, totalPages) {
       <button class="modal-close" onclick="closeModal('reprimand-modal')">✕</button>
     </div>
     <div class="modal-body">
-      <form method="post" action="/admin/punishments/create">
+      <form method="post" action="/adminold/punishments/create">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <input type="hidden" name="player_steamid" value="{{ player.player_steamid or '' }}">
         <input type="hidden" name="ptype" value="reprimand">
@@ -1092,7 +1092,7 @@ function renderPlayerLogs(events, total, page, totalPages) {
           <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="rewardAddKval()">➕ Назначить</button>
         </div>
         {% else %}
-        <div style="text-align:center;padding:32px 20px;color:var(--gray-dark);font-size:13px;line-height:1.6;">Квал-китов не найдено в базе.<br>Добавьте их через <a href="/admin/kits" style="color:var(--primary-blue)">редактор китов</a> с суффиксом <code>_k</code>.</div>
+        <div style="text-align:center;padding:32px 20px;color:var(--gray-dark);font-size:13px;line-height:1.6;">Квал-китов не найдено в базе.<br>Добавьте их через <a href="/adminold/kits" style="color:var(--primary-blue)">редактор китов</a> с суффиксом <code>_k</code>.</div>
         {% endif %}
       </div>
 

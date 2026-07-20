@@ -89,7 +89,7 @@
           </td>
           <td>
             {% if not s.revoked %}
-            <form action="/admin/sessions/{{ s.id }}/revoke" method="post" style="display:inline;">
+            <form action="/adminold/sessions/{{ s.id }}/revoke" method="post" style="display:inline;">
               <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
               <button type="submit" class="btn btn-danger" onclick="return confirm('Отозвать сессию #{{ s.id }}?')">Отозвать</button>
             </form>

@@ -156,7 +156,7 @@
     <div class="block-card">
       <div class="block-card-header"><h3>Добавить администратора</h3></div>
       <div class="block-card-body">
-        <form action="/admin/users" method="post">
+        <form action="/adminold/users" method="post">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
           <div class="form-group">
             <label>Discord ID</label>
@@ -221,7 +221,7 @@
                     Группа
                   </button>
                   {% if u.id != admin.id %}
-                  <form action="/admin/users/{{ u.id }}/delete" method="post" style="display:contents;">
+                  <form action="/adminold/users/{{ u.id }}/delete" method="post" style="display:contents;">
                     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
                     <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить пользователя?')">Удалить</button>
                   </form>
@@ -278,7 +278,7 @@
           onclick="openEditGroup(this)">
           Редактировать
         </button>
-        <form action="/admin/privilege-groups/{{ g.id }}/delete" method="post" style="display:contents;">
+        <form action="/adminold/privilege-groups/{{ g.id }}/delete" method="post" style="display:contents;">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
           <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить группу?')">Удалить</button>
         </form>
@@ -342,7 +342,7 @@
       <h3>Новая группа привилегий</h3>
       <button class="modal-close" onclick="closeModal('create-group-modal')">&#x2715;</button>
     </div>
-    <form action="/admin/privilege-groups/create" method="post" onsubmit="buildPermissionsJson('create')">
+    <form action="/adminold/privilege-groups/create" method="post" onsubmit="buildPermissionsJson('create')">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <input type="hidden" name="permissions" id="create-permissions-json" value="{}">
       <div class="modal-body-block">
@@ -444,7 +444,7 @@ function openAssignModal(btn) {
   const currentGid  = btn.dataset.ugid || '';
   const isSuperuser = btn.dataset.usu === 'true';
   document.getElementById('assign-username').textContent = username;
-  document.getElementById('assign-form').action = '/admin/users/' + userId + '/assign-group';
+  document.getElementById('assign-form').action = '/adminold/users/' + userId + '/assign-group';
   const sel = document.getElementById('assign-group-select');
   sel.value = currentGid;
   const superCb = document.getElementById('assign-superuser');
@@ -469,7 +469,7 @@ function openEditGroup(btn) {
   // checkboxes below (which read the flat {page:{action:bool}} shape) find them.
   if (perms && perms.pages) perms = perms.pages;
 
-  document.getElementById('edit-group-form').action = '/admin/privilege-groups/' + gid + '/edit';
+  document.getElementById('edit-group-form').action = '/adminold/privilege-groups/' + gid + '/edit';
   document.getElementById('edit-group-name').value  = gname;
   document.getElementById('edit-group-desc').value  = gdesc;
   document.getElementById('edit-rl-count').value    = rlc;

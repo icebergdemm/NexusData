@@ -64,7 +64,7 @@ function KvalKitsCard({ playerId, canEdit, kvalKits, available, onDone }: {
         <div className="flex flex-wrap gap-2">
           {Object.entries(kvalKits).map(([job, level]) => (
             <Badge key={job} variant="outline" className="gap-1.5 border-info/40 text-info">
-              {job} — ур. {level}
+              {job} - ур. {level}
               {canEdit && <button onClick={() => remove.mutate(job)} className="ml-0.5 hover:text-destructive">✕</button>}
             </Badge>
           ))}

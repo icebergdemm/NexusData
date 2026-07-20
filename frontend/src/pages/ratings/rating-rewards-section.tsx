@@ -78,7 +78,7 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
             <span>🎖 <strong>{ROLE_LABELS[c.role] ?? c.role}</strong></span>
             <span>каждые <strong>{c.check_interval_days || 7}</strong> дн.</span>
             <span className="flex-1 text-muted-foreground">
-              {(c.places || []).map((p) => `${p.place} место → ${groupName(p.reward_group_id)}`).join("; ") || "—"}
+              {(c.places || []).map((p) => `${p.place} место → ${groupName(p.reward_group_id)}`).join("; ") || "-"}
             </span>
             {canEdit && (
               <div className="flex gap-1.5">
@@ -99,13 +99,13 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <Label>Профессия</Label>
+              <Label className="mb-1.5 block">Профессия</Label>
               <Select value={role} onValueChange={setRole}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>{ROLES.map((r) => <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label>Проверять каждые (дней)</Label><Input type="number" min={1} value={interval} onChange={(e) => setInterval(e.target.value)} /></div>
+            <div><Label className="mb-1.5 block">Проверять каждые (дней)</Label><Input type="number" min={1} value={interval} onChange={(e) => setInterval(e.target.value)} /></div>
             <div>
               <Label className="mb-1.5 block">🏅 Награды по местам</Label>
               <div className="space-y-1.5">
@@ -113,7 +113,7 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
                   <div key={i} className="flex items-center gap-1.5">
                     <Input type="number" min={1} className="flex-1" placeholder="место" value={p.place} onChange={(e) => updatePlace(i, "place", e.target.value)} />
                     <Select value={p.reward_group_id} onValueChange={(v) => updatePlace(i, "reward_group_id", v)}>
-                      <SelectTrigger className="flex-[2]"><SelectValue placeholder="— группа —" /></SelectTrigger>
+                      <SelectTrigger className="flex-[2]"><SelectValue placeholder="- группа -" /></SelectTrigger>
                       <SelectContent>{groups.map((g) => <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>)}</SelectContent>
                     </Select>
                     <Button type="button" size="sm" variant="ghost" className="text-destructive" onClick={() => removePlace(i)}>✕</Button>

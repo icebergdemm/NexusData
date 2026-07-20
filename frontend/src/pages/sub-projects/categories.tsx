@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Star } from "lucide-react"
 import { api } from "@/lib/api"
 import type { SubProjectCategory } from "./types"
 
@@ -31,6 +32,15 @@ export function SubProjectCategoriesPage() {
     onSuccess: () => { toast.success("Категория удалена"); invalidate() },
   })
 
+  const setDefault = useMutation({
+    mutationFn: (c: SubProjectCategory) => api.post(`/api/v1/admin/sub-projects-categories/${c.id}`, {
+      name: c.name, slug: c.slug, description: c.description, color: c.color, icon: c.icon,
+      sort_order: c.sort_order, parent_id: c.parent_id, is_default: !c.is_default,
+    }),
+    onSuccess: () => { toast.success("Категория по умолчанию обновлена"); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   return (
     <div className="space-y-4">
       <Card>
@@ -46,17 +56,23 @@ export function SubProjectCategoriesPage() {
       <Card>
         <CardHeader><CardTitle>Категории</CardTitle></CardHeader>
         <CardContent>
+          <p className="mb-2 text-xs text-muted-foreground">Категория «по умолчанию» автоматически назначается каждому новому проекту обычной зоны.</p>
           <Table>
-            <TableHeader><TableRow><TableHead>Категория</TableHead><TableHead>Slug</TableHead><TableHead /></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Категория</TableHead><TableHead>Slug</TableHead><TableHead>По умолчанию</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>
               {data?.categories.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell><Badge style={{ backgroundColor: c.color }} className="text-white">{c.icon} {c.name}</Badge></TableCell>
                   <TableCell className="text-sm text-muted-foreground">{c.slug}</TableCell>
+                  <TableCell>
+                    <Button size="sm" variant={c.is_default ? "default" : "outline"} onClick={() => setDefault.mutate(c)}>
+                      <Star className={`size-3.5 ${c.is_default ? "fill-current" : ""}`} /> {c.is_default ? "По умолчанию" : "Сделать по умолчанию"}
+                    </Button>
+                  </TableCell>
                   <TableCell className="text-right"><Button size="sm" variant="destructive" onClick={() => remove.mutate(c.id)}>Удалить</Button></TableCell>
                 </TableRow>
               ))}
-              {!data?.categories.length && <TableRow><TableCell colSpan={3} className="text-center text-muted-foreground">Категорий нет</TableCell></TableRow>}
+              {!data?.categories.length && <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground">Категорий нет</TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>

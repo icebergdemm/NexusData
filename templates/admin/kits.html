@@ -441,7 +441,7 @@
 </div>
 
 <!-- FILTER BAR -->
-<form method="get" action="/admin/kits" class="kits-filter-bar">
+<form method="get" action="/adminold/kits" class="kits-filter-bar">
   <div class="filter-group">
     <label for="f-job">Профессия (job_id)</label>
     <select id="f-job" name="job_id">
@@ -464,7 +464,7 @@
   </div>
   <div class="filter-actions">
     <button type="submit" class="btn btn-primary">Применить</button>
-    <a href="/admin/kits" class="btn btn-secondary">Сброс</a>
+    <a href="/adminold/kits" class="btn btn-secondary">Сброс</a>
   </div>
 </form>
 
@@ -475,7 +475,7 @@
     <span class="toggle-arrow" id="addKitArrow">▾</span>
   </div>
   <div class="add-kit-card-body" id="addKitBody">
-    <form method="post" action="/admin/kits/add" id="addKitForm">
+    <form method="post" action="/adminold/kits/add" id="addKitForm">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="form-row">
         <div class="form-group">
@@ -561,7 +561,7 @@
 
     <!-- Edit Form (hidden by default) -->
     <div class="kit-edit-form" id="kit-edit-{{ kit.id }}">
-      <form method="post" action="/admin/kits/{{ kit.id }}/update">
+      <form method="post" action="/adminold/kits/{{ kit.id }}/update">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <div class="form-row">
           <div class="form-group">
@@ -610,7 +610,7 @@
     </h3>
     <p>
       {% if selected_job_id or selected_kit_level != "" %}
-        Попробуйте изменить фильтры или <a href="/admin/kits" style="color:var(--primary-blue);">сбросить их</a>.
+        Попробуйте изменить фильтры или <a href="/adminold/kits" style="color:var(--primary-blue);">сбросить их</a>.
       {% else %}
         Создайте первый кит, нажав «Добавить новый кит» выше.
       {% endif %}
@@ -648,7 +648,7 @@
     <span class="toggle-arrow" id="addQualArrow">▾</span>
   </div>
   <div class="add-kit-card-body" id="addQualBody">
-    <form method="post" action="/admin/qual-kits/add">
+    <form method="post" action="/adminold/qual-kits/add">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="form-row">
         <div class="form-group">
@@ -746,7 +746,7 @@
     </div>
 
     <div class="kit-edit-form" id="qkit-edit-{{ kit.id }}">
-      <form method="post" action="/admin/qual-kits/{{ kit.id }}/update">
+      <form method="post" action="/adminold/qual-kits/{{ kit.id }}/update">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <div class="form-group">
           <label>Уровень квалификации</label>
@@ -871,7 +871,7 @@ document.querySelectorAll('.json-editor').forEach(ta => {
 function confirmDelete(prefix, kitId, jobId, level) {
   document.getElementById('deleteModalText').textContent =
     'Кит "' + jobId + '" (уровень ' + level + ') будет удалён без возможности восстановления.';
-  document.getElementById('deleteModalForm').action = '/admin/' + prefix + '/' + kitId + '/delete';
+  document.getElementById('deleteModalForm').action = '/adminold/' + prefix + '/' + kitId + '/delete';
   document.getElementById('deleteModal').style.display = 'flex';
 }
 

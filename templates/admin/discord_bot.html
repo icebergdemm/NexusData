@@ -97,7 +97,7 @@
 {% if check_permission(admin, 'discord_bot', 'edit') %}
 <div class="bot-card">
   <h3>📤 Отправить действие боту</h3>
-  <form method="post" action="/admin/discord-bot/action">
+  <form method="post" action="/adminold/discord-bot/action">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
     <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
       <div style="display:flex; gap:10px; flex-wrap:wrap;">

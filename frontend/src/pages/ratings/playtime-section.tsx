@@ -79,10 +79,10 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
-        <Card><CardContent className="pt-6 text-center"><div className="text-2xl font-bold">{Object.keys(stats?.players ?? {}).length}</div><div className="text-xs text-muted-foreground">Игроков в статистике</div></CardContent></Card>
-        <Card><CardContent className="pt-6 text-center"><div className="text-sm font-bold">{stats?.generated_at ? new Date(stats.generated_at).toLocaleString("ru-RU") : "никогда"}</div><div className="text-xs text-muted-foreground">Последний расчёт</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-2xl font-bold">{Object.keys(stats?.players ?? {}).length}</div><div className="text-xs text-muted-foreground">Игроков в статистике</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-sm font-bold">{stats?.generated_at ? new Date(stats.generated_at).toLocaleString("ru-RU") : "никогда"}</div><div className="text-xs text-muted-foreground">Последний расчёт</div></CardContent></Card>
         {canEdit && (
-          <Card><CardContent className="flex flex-col justify-center gap-2 pt-6">
+          <Card><CardContent className="flex flex-col justify-center gap-2">
             <Button size="sm" variant="outline" onClick={() => generatePlaytime.mutate()}>🔄 Пересчитать сейчас</Button>
             <Button size="sm" onClick={() => applyNow.mutate()}>🎁 Выдать награды</Button>
           </CardContent></Card>
@@ -141,7 +141,7 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <Label>Период</Label>
+              <Label className="mb-1.5 block">Период</Label>
               <Select value={period} onValueChange={(v) => setPeriod(v as PlaytimePeriod)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -151,11 +151,11 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
                 </SelectContent>
               </Select>
             </div>
-            <div><Label>Минимум часов</Label><Input type="number" min={1} step={0.5} value={hours} onChange={(e) => setHours(e.target.value)} /></div>
+            <div><Label className="mb-1.5 block">Минимум часов</Label><Input type="number" min={1} step={0.5} value={hours} onChange={(e) => setHours(e.target.value)} /></div>
             <div>
-              <Label>Группа награды</Label>
+              <Label className="mb-1.5 block">Группа награды</Label>
               <Select value={groupId} onValueChange={setGroupId}>
-                <SelectTrigger><SelectValue placeholder="— выберите группу —" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="- выберите группу -" /></SelectTrigger>
                 <SelectContent>{groups.map((g) => <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>

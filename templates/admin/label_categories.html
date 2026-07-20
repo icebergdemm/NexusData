@@ -62,7 +62,7 @@
 {% endfor %}
 
 <div class="pg-header">
-  <a href="/admin/players" class="back-btn">← Игроки</a>
+  <a href="/adminold/players" class="back-btn">← Игроки</a>
   <h2>🏷 Категории меток</h2>
 </div>
 
@@ -85,7 +85,7 @@
             <div class="cat-count">ID #{{ cat.id }}</div>
           </div>
         </div>
-        <form method="post" action="/admin/label-categories/{{ cat.id }}/delete"
+        <form method="post" action="/adminold/label-categories/{{ cat.id }}/delete"
               onsubmit="return confirm('Удалить категорию «{{ cat.name }}»? Все метки этой категории будут удалены.')">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
           <button type="submit" class="btn btn-danger btn-sm">🗑</button>
@@ -103,7 +103,7 @@
 <div class="block-card">
   <div class="block-card-header"><h3>➕ Новая категория</h3></div>
   <div class="block-card-body">
-    <form method="post" action="/admin/label-categories/create">
+    <form method="post" action="/adminold/label-categories/create">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div class="form-row">
         <div class="form-group">

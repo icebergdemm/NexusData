@@ -59,6 +59,8 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
             )
             if admin:
                 request.session["username"] = admin.discord_username
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -196,7 +198,13 @@ def acknowledge_action(
 panel_router = APIRouter()
 
 
-@panel_router.get("/admin/moderation", response_class=HTMLResponse)
+def _moderation_action_permission(action_type: Optional[str]) -> str:
+    """Maps a kick/ban/unban/message action to its own registered permission
+    (permissions_registry.py) instead of the generic "edit"."""
+    return {"kick": "kick", "ban": "ban", "unban": "ban", "message": "message"}.get(action_type, "edit")
+
+
+@panel_router.get("/adminold/moderation", response_class=HTMLResponse)
 async def moderation_page(
     request: Request,
     tab: str = Query("status", pattern=r"^(status|banhammer|logs|commands|anticheat|sauron)$"),
@@ -297,7 +305,7 @@ async def moderation_page(
     })
 
 
-@panel_router.post("/admin/moderation/action")
+@panel_router.post("/adminold/moderation/action")
 async def enqueue_moderation_action(
     request: Request,
     action_type: str = Form(...),
@@ -311,7 +319,7 @@ async def enqueue_moderation_action(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Enqueue a kick / ban / unban / message action from the admin panel."""
-    if not check_permission(current_admin, "moderation", "edit"):
+    if not check_permission(current_admin, "moderation", _moderation_action_permission(action_type)):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     await ensure_csrf(request, db)
@@ -350,6 +358,7 @@ async def enqueue_moderation_action(
             reason=reason or None,
             issued_by_admin_id=current_admin.id,
             issued_by_name=f"ND. {current_admin.discord_username}",
+            issued_by_was_superuser=current_admin.is_superuser,
             issued_at=_now_msk(),
             expires_at=None,
             is_active=1,
@@ -369,10 +378,10 @@ async def enqueue_moderation_action(
     })
     srv_label = f" → {server_name}" if server_name else " → все серверы"
     push_flash(request, "success", f"Действие «{action_type}» поставлено в очередь для {target_steamid}{srv_label}")
-    return RedirectResponse(url=f"/admin/moderation?tab={redirect_tab}", status_code=302)
+    return RedirectResponse(url=f"/adminold/moderation?tab={redirect_tab}", status_code=302)
 
 
-@panel_router.post("/admin/moderation/anticheat/{event_id}/review")
+@panel_router.post("/adminold/moderation/anticheat/{event_id}/review")
 async def review_anticheat_event(
     request: Request,
     event_id: int,
@@ -380,6 +389,8 @@ async def review_anticheat_event(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Mark an anticheat event as reviewed."""
+    if not check_permission(current_admin, "moderation", "manage_anticheat"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf(request, db)
     svc = ServerModerationService(db)
     if not svc.mark_reviewed(event_id):
@@ -387,7 +398,7 @@ async def review_anticheat_event(
 
     from routes.admin import push_flash
     push_flash(request, "success", "Событие отмечено как проверенное")
-    return RedirectResponse(url="/admin/moderation?tab=anticheat", status_code=302)
+    return RedirectResponse(url="/adminold/moderation?tab=anticheat", status_code=302)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -515,11 +526,12 @@ async def api_enqueue_moderation_action(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """JSON variant of enqueue_moderation_action — same side effects, JSON in/out."""
-    if not check_permission(current_admin, "moderation", "edit"):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-
     body = await request.json()
     action_type = body.get("action_type")
+
+    if not check_permission(current_admin, "moderation", _moderation_action_permission(action_type)):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     target_steamid = body.get("target_steamid")
     reason = body.get("reason")
     duration_minutes = body.get("duration_minutes")
@@ -560,6 +572,7 @@ async def api_enqueue_moderation_action(
             reason=reason or None,
             issued_by_admin_id=current_admin.id,
             issued_by_name=f"ND. {current_admin.discord_username}",
+            issued_by_was_superuser=current_admin.is_superuser,
             issued_at=_now_msk(),
             expires_at=None,
             is_active=1,
@@ -582,6 +595,8 @@ async def api_review_anticheat_event(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
+    if not check_permission(current_admin, "moderation", "manage_anticheat"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     svc = ServerModerationService(db)
     if not svc.mark_reviewed(event_id):
         raise HTTPException(status_code=404, detail="Event not found")

@@ -53,7 +53,7 @@
 <div class="rating-header">
   <h2>🏆 Рейтинг игроков</h2>
   {% if check_permission(admin, 'ratings', 'view') %}
-  <a href="/admin/ratings/rewards" class="btn btn-primary" style="text-decoration:none;">🎁 Награды</a>
+  <a href="/adminold/ratings/rewards" class="btn btn-primary" style="text-decoration:none;">🎁 Награды</a>
   {% endif %}
 </div>
 
@@ -67,20 +67,20 @@
 
 <!-- Поиск игрока -->
 <div class="search-card">
-  <form method="get" action="/admin/ratings" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+  <form method="get" action="/adminold/ratings" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
     <input type="hidden" name="role" value="{{ selected_role }}">
     <div style="flex:1; min-width:200px;">
       <input type="text" name="search" value="{{ search_query or '' }}" placeholder="SteamID или ник игрока..."
              style="width:100%; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:9px 12px; color:var(--white); font-size:13px; font-family:inherit;">
     </div>
     <button type="submit" class="btn btn-primary">🔍 Найти</button>
-    {% if search_query %}<a href="/admin/ratings?role={{ selected_role }}" class="btn btn-secondary">Сбросить</a>{% endif %}
+    {% if search_query %}<a href="/adminold/ratings?role={{ selected_role }}" class="btn btn-secondary">Сбросить</a>{% endif %}
   </form>
 
   {% if search_result %}
   <div class="search-result-card">
     <div class="sr-name">
-      <a href="/admin/players/{{ search_result.player.player_id }}" class="player-link">{{ search_result.player.player_last_time_name }}</a>
+      <a href="/adminold/players/{{ search_result.player.player_id }}" class="player-link">{{ search_result.player.player_last_time_name }}</a>
       <span style="font-size:11px; color:var(--gray); margin-left:8px;">{{ search_result.player.player_steamid }}</span>
     </div>
     <div class="sr-ratings">
@@ -98,7 +98,7 @@
       <h4>⚙ Управление рейтингом</h4>
 
       <!-- Корректировка очков -->
-      <form method="post" action="/admin/ratings/adjust" style="margin-bottom:16px;">
+      <form method="post" action="/adminold/ratings/adjust" style="margin-bottom:16px;">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
         <input type="hidden" name="steam_id" value="{{ search_result.player.player_steamid }}">
         <div class="tool-row">
@@ -122,13 +122,13 @@
 
       <!-- Пересчёт и обнуление -->
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
-        <form method="post" action="/admin/ratings/recalculate" style="display:inline;">
+        <form method="post" action="/adminold/ratings/recalculate" style="display:inline;">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
           <input type="hidden" name="steam_id" value="{{ search_result.player.player_steamid }}">
           <button type="submit" class="btn btn-secondary">🔄 Пересчитать рейтинг</button>
         </form>
 
-        <form method="post" action="/admin/ratings/reset" style="display:inline;"
+        <form method="post" action="/adminold/ratings/reset" style="display:inline;"
               onsubmit="return confirm('Обнулить ВСЕ рейтинги этого игрока?');">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
           <input type="hidden" name="steam_id" value="{{ search_result.player.player_steamid }}">
@@ -147,7 +147,7 @@
 <!-- Табы ролей -->
 <div class="role-tabs" style="margin-bottom:20px;">
   {% for r in roles %}
-  <a href="/admin/ratings?role={{ r }}{% if search_query %}&search={{ search_query }}{% endif %}" class="role-tab {% if selected_role == r %}active{% endif %}">
+  <a href="/adminold/ratings?role={{ r }}{% if search_query %}&search={{ search_query }}{% endif %}" class="role-tab {% if selected_role == r %}active{% endif %}">
     {{ role_icons.get(r, '') }} {{ role_names.get(r, r) }}
   </a>
   {% endfor %}
@@ -180,7 +180,7 @@
         </td>
         <td>
           {% if entry.player_id %}
-          <a href="/admin/players/{{ entry.player_id }}" class="player-link">{{ entry.player_name }}</a>
+          <a href="/adminold/players/{{ entry.player_id }}" class="player-link">{{ entry.player_name }}</a>
           {% else %}{{ entry.player_name }}{% endif %}
         </td>
         <td><span class="rating-value">{{ entry.rating }}</span></td>
@@ -208,7 +208,7 @@
   <div style="background:var(--card-bg); border:1px solid rgba(26,104,222,.5); border-radius:var(--border-radius-12); padding:16px;">
     <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:4px;">⚡ Моментальный пересчёт</h4>
     <p style="font-size:11px; color:var(--gray); margin-bottom:12px;">Пересчитывает рейтинг всех игроков из сырых данных. Текущий рейтинг автоматически сохраняется в снапшот для отката.</p>
-    <form method="post" action="/admin/ratings/recalculate-all"
+    <form method="post" action="/adminold/ratings/recalculate-all"
           onsubmit="return confirm('Запустить полный пересчёт рейтинга? Текущее состояние будет сохранено как снапшот.');">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -226,7 +226,7 @@
   <!-- 📸 Генерация снапшота -->
   <div style="background:var(--card-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-12); padding:16px;">
     <h4 style="font-size:13px; font-weight:700; color:var(--white); margin-bottom:12px;">📸 Сохранить снапшот</h4>
-    <form method="post" action="/admin/ratings/snapshot/generate">
+    <form method="post" action="/adminold/ratings/snapshot/generate">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div style="display:flex; flex-direction:column; gap:8px;">
         <input type="text" name="title" placeholder="Название (необязательно)"
@@ -248,15 +248,15 @@
           {{ snap.created_at[:16] if snap.created_at else '' }} | {{ snap.total_players }} игроков
         </div>
         <div style="display:flex; gap:4px; flex-wrap:wrap;">
-          <a href="/admin/ratings/snapshot/{{ snap.filename }}/view" class="btn btn-primary" style="font-size:10px; padding:4px 8px; text-decoration:none;">👁</a>
-          <a href="/admin/ratings/snapshot/{{ snap.filename }}" class="btn btn-secondary" style="font-size:10px; padding:4px 8px; text-decoration:none;" data-no-spa>⬇</a>
+          <a href="/adminold/ratings/snapshot/{{ snap.filename }}/view" class="btn btn-primary" style="font-size:10px; padding:4px 8px; text-decoration:none;">👁</a>
+          <a href="/adminold/ratings/snapshot/{{ snap.filename }}" class="btn btn-secondary" style="font-size:10px; padding:4px 8px; text-decoration:none;" data-no-spa>⬇</a>
           {% if check_permission(admin, 'ratings', 'edit') %}
-          <form method="post" action="/admin/ratings/snapshot/{{ snap.filename }}/restore" style="display:inline;"
+          <form method="post" action="/adminold/ratings/snapshot/{{ snap.filename }}/restore" style="display:inline;"
                 onsubmit="return confirm('Откатить рейтинг к снапшоту «{{ snap.title }}»? Текущий рейтинг будет ПЕРЕЗАПИСАН.');">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
             <button type="submit" class="btn btn-primary" style="font-size:10px; padding:4px 8px; background:#22d06f; border-color:#22d06f;" title="Откатить к этому снапшоту">↩ Откат</button>
           </form>
-          <form method="post" action="/admin/ratings/snapshot/{{ snap.filename }}/delete" style="display:inline;"
+          <form method="post" action="/adminold/ratings/snapshot/{{ snap.filename }}/delete" style="display:inline;"
                 onsubmit="return confirm('Удалить снапшот?');">
             <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
             <button type="submit" class="btn btn-danger" style="font-size:10px; padding:4px 8px;">🗑</button>

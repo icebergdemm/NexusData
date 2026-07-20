@@ -27,6 +27,14 @@ class KitOut(BaseModel):
     job_id: str
     kit_level: int
     items: Any = Field(default_factory=dict)  # Can be dict or list in DB
+    # Kit variations + special kits (item 15) — additive fields; a client
+    # that only reads job_id/kit_level/items is unaffected. `items` above IS
+    # variation 1 — variation_2/3_items are null until an admin sets them,
+    # in which case the client should fall back to `items` for that variation.
+    variation_2_items: Optional[Any] = None
+    variation_3_items: Optional[Any] = None
+    is_special: bool = False
+    special_variation: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -100,6 +108,7 @@ class PlayerDataOut(PlayerDataBase):
     rank_name: Optional[str] = None
     kit_name: Optional[str] = None
     achievements_data: Optional[Dict[str, Any]] = Field(default=None, description="Raw achievements/rewards JSON from DB")
+    steam_avatar_url: Optional[str] = None
 
     @computed_field
     @property

@@ -1,13 +1,20 @@
 """
 Analytics routes — dashboard with online snapshots, role/submarine popularity, etc.
+
+Every chart endpoint (except role-popularity, whose source table carries no
+timestamp) accepts the SAME range shape: either `preset` (one of
+"24h"/"week"/"month"/"year") or an explicit `start`/`end` (YYYY-MM-DD) pair —
+_resolve_range turns whichever was given into a concrete (since, until) the
+frontend's single shared date-range picker drives every chart with.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import secrets
 import logging
 
@@ -34,6 +41,38 @@ def _cached_snapshot() -> Optional[dict]:
 
 router = APIRouter()
 
+_PRESET_DELTAS = {
+    "24h": timedelta(hours=24),
+    "week": timedelta(days=7),
+    "month": timedelta(days=30),
+    "year": timedelta(days=365),
+}
+
+
+def _resolve_range(preset: Optional[str], start: Optional[str], end: Optional[str]):
+    now = datetime.utcnow()
+    if start or end:
+        try:
+            since = datetime.strptime(start, "%Y-%m-%d") if start else now - timedelta(days=7)
+        except ValueError:
+            since = now - timedelta(days=7)
+        try:
+            until = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1) - timedelta(seconds=1)) if end else now
+        except ValueError:
+            until = now
+        return since, until
+
+    delta = _PRESET_DELTAS.get(preset or sa.DEFAULT_PRESET, _PRESET_DELTAS["week"])
+    return now - delta, now
+
+
+def _is_default_range(preset: Optional[str], start: Optional[str], end: Optional[str]) -> bool:
+    """True exactly for "no custom dates, default preset" — the one
+    combination the background snapshot keeps warm."""
+    if start or end:
+        return False
+    return (preset or sa.DEFAULT_PRESET) == sa.DEFAULT_PRESET
+
 
 def _get_admin(request: Request, db: Session) -> AdminUser:
     token = request.cookies.get("admin_token")
@@ -44,18 +83,20 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
             from sqlalchemy.orm import joinedload
             admin = db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(AdminUser.id == session.admin_id).first()
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 def _require_analytics(request: Request, db: Session) -> AdminUser:
     admin = _get_admin(request, db)
-    if not check_permission(admin, "admin", "view"):
+    if not check_permission(admin, "analytics", "view"):
         raise HTTPException(status_code=403)
     return admin
 
 
-@router.get("/admin/analytics", response_class=HTMLResponse)
+@router.get("/adminold/analytics", response_class=HTMLResponse)
 async def analytics_page(request: Request, db: Session = Depends(get_db)):
     admin = _require_analytics(request, db)
     if "csrf_token" not in request.session:
@@ -64,13 +105,17 @@ async def analytics_page(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/api/v1/analytics/online-timeline")
-async def api_online_timeline(request: Request, period: str = Query("24h"), server: Optional[str] = Query(None), db: Session = Depends(get_db)):
+async def api_online_timeline(
+    request: Request, preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    server: Optional[str] = Query(None), db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    if period == sa.DEFAULT_ONLINE_PERIOD and not server:
+    since, until = _resolve_range(preset, start, end)
+    if _is_default_range(preset, start, end) and not server:
         cached = _cached_snapshot()
         if cached:
             return JSONResponse(cached["online_timeline"])
-    return JSONResponse(sa.compute_online_timeline(db, period=period, server=server))
+    return JSONResponse(await run_in_threadpool(sa.compute_online_timeline, db, since=since, until=until, server=server))
 
 
 @router.get("/api/v1/analytics/role-popularity")
@@ -79,62 +124,89 @@ async def api_role_popularity(request: Request, db: Session = Depends(get_db)):
     cached = _cached_snapshot()
     if cached:
         return JSONResponse(cached["role_popularity"])
-    return JSONResponse(sa.compute_role_popularity(db))
+    return JSONResponse(await run_in_threadpool(sa.compute_role_popularity, db))
 
 
 @router.get("/api/v1/analytics/submarine-popularity")
-async def api_submarine_popularity(request: Request, period: str = Query("30d"), db: Session = Depends(get_db)):
+async def api_submarine_popularity(
+    request: Request, preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    if period == sa.DEFAULT_SUB_PERIOD:
+    since, until = _resolve_range(preset, start, end)
+    if _is_default_range(preset, start, end):
         cached = _cached_snapshot()
         if cached:
             return JSONResponse(cached["submarine_popularity"])
-    return JSONResponse(sa.compute_submarine_popularity(db, period=period))
+    return JSONResponse(await run_in_threadpool(sa.compute_submarine_popularity, db, since=since, until=until))
 
 
 @router.get("/api/v1/analytics/peak-hours")
-async def api_peak_hours(request: Request, server: Optional[str] = Query(None), db: Session = Depends(get_db)):
+async def api_peak_hours(
+    request: Request, preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    server: Optional[str] = Query(None), db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    if not server:
+    since, until = _resolve_range(preset, start, end)
+    if _is_default_range(preset, start, end) and not server:
         cached = _cached_snapshot()
         if cached:
             return JSONResponse(cached["peak_hours"])
-    return JSONResponse(sa.compute_peak_hours(db, server=server))
+    return JSONResponse(await run_in_threadpool(sa.compute_peak_hours, db, since=since, until=until, server=server))
 
 
 @router.get("/api/v1/analytics/session-duration")
-async def api_session_duration(request: Request, period: str = Query("30d"), db: Session = Depends(get_db)):
+async def api_session_duration(
+    request: Request, preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    if period == sa.DEFAULT_SESSION_PERIOD:
+    since, until = _resolve_range(preset, start, end)
+    if _is_default_range(preset, start, end):
         cached = _cached_snapshot()
         if cached:
             return JSONResponse(cached["session_duration"])
-    return JSONResponse(sa.compute_session_duration(db, period=period))
+    return JSONResponse(await run_in_threadpool(sa.compute_session_duration, db, since=since, until=until))
 
 
 @router.get("/api/v1/analytics/server-comparison")
-async def api_server_comparison(request: Request, db: Session = Depends(get_db)):
+async def api_server_comparison(
+    request: Request, preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    cached = _cached_snapshot()
-    if cached:
-        return JSONResponse(cached["server_comparison"])
-    return JSONResponse(sa.compute_server_comparison(db))
+    since, until = _resolve_range(preset, start, end)
+    if _is_default_range(preset, start, end):
+        cached = _cached_snapshot()
+        if cached:
+            return JSONResponse(cached["server_comparison"])
+    return JSONResponse(await run_in_threadpool(sa.compute_server_comparison, db, since=since, until=until))
 
 
 @router.get("/api/v1/analytics/player-retention")
-async def api_player_retention(request: Request, db: Session = Depends(get_db)):
+async def api_player_retention(
+    request: Request, preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    cached = _cached_snapshot()
-    if cached:
-        return JSONResponse(cached["player_retention"])
-    return JSONResponse(sa.compute_player_retention(db))
+    since, until = _resolve_range(preset, start, end)
+    if _is_default_range(preset, start, end):
+        cached = _cached_snapshot()
+        if cached:
+            return JSONResponse(cached["player_retention"])
+    return JSONResponse(await run_in_threadpool(sa.compute_player_retention, db, since=since, until=until))
 
 
 @router.get("/api/v1/analytics/top-players")
-async def api_top_players(request: Request, metric: str = Query("playtime"), period: str = Query("7d"), limit: int = Query(15), db: Session = Depends(get_db)):
+async def api_top_players(
+    request: Request, metric: str = Query("playtime"),
+    preset: Optional[str] = Query(None), start: Optional[str] = Query(None), end: Optional[str] = Query(None),
+    limit: int = Query(15), db: Session = Depends(get_db),
+):
     _require_analytics(request, db)
-    if metric == sa.DEFAULT_TOP_METRIC and period == sa.DEFAULT_TOP_PERIOD and limit == 15:
+    since, until = _resolve_range(preset, start, end)
+    if metric == "playtime" and limit == 15 and _is_default_range(preset, start, end):
         cached = _cached_snapshot()
         if cached:
             return JSONResponse(cached["top_players"])
-    return JSONResponse(sa.compute_top_players(db, metric=metric, period=period, limit=limit))
+    return JSONResponse(await run_in_threadpool(sa.compute_top_players, db, since=since, until=until, metric=metric, limit=limit))

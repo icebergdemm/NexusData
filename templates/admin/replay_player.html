@@ -41,7 +41,7 @@
 .rpv-err{color:#ff4d80;padding:20px;font-size:13px;}
 </style>
 
-<a href="/admin/replays" class="rpv-back">← Назад к списку</a>
+<a href="/adminold/replays" class="rpv-back">← Назад к списку</a>
 <div class="rpv-top">
   <h2>🎬 {{ replay.submarine_name or 'Раунд' }} #{{ replay.id }}
     {% if replay.level_name %}<span style="color:var(--gray);font-weight:400;font-size:14px;">· {{ replay.level_name }}</span>{% endif %}
@@ -107,7 +107,7 @@
 <!-- fflate for client-side unzip -->
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
 <script>
-window.REPLAY_URL = "/admin/replays/{{ replay.id }}/download";
+window.REPLAY_URL = "/adminold/replays/{{ replay.id }}/download";
 window.HAS_VOICE = {{ 'true' if replay.has_voice else 'false' }};
 </script>
 <script src="/static/js/replay_player.js"></script>

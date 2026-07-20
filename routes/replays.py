@@ -10,7 +10,7 @@ which unpacks and parses it client-side (minimal server load).
 import os
 import secrets
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import (
@@ -18,12 +18,12 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from security import verify_external_api_key_dependency, check_permission
 from config import get_settings
-from models import AdminUser, AdminSession
+from models import AdminUser, AdminSession, RoundEvent, RoundReplay
 import services_replays
 from services_replays import ReplayService
 
@@ -72,6 +72,8 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
                 .first()
             )
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -197,7 +199,7 @@ async def upload_replay(
 # Admin panel: list page
 # ══════════════════════════════════════════════════════════════════════════════
 
-@panel_router.get("/admin/replays", response_class=HTMLResponse)
+@panel_router.get("/adminold/replays", response_class=HTMLResponse)
 async def replays_list(
     request: Request,
     page: int = Query(1, ge=1),
@@ -237,7 +239,7 @@ async def replays_list(
     })
 
 
-@panel_router.get("/admin/replays/{replay_id}/view", response_class=HTMLResponse)
+@panel_router.get("/adminold/replays/{replay_id}/view", response_class=HTMLResponse)
 async def replay_player_page(request: Request, replay_id: int, db: Session = Depends(get_db)):
     """Web player page for a single replay."""
     admin = _get_admin(request, db)
@@ -269,6 +271,154 @@ def _serialize_replay(r) -> dict:
         "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
         "notes": r.notes,
     }
+
+
+def _serialize_round(end_event: RoundEvent, replay=None) -> dict:
+    start = end_event.paired_start
+    players = (start.players if start and start.players else None) or end_event.players or []
+    return {
+        "id": end_event.id,
+        "server_name": end_event.server_name,
+        "submarine_name": start.submarine_name if start else None,
+        "mission": start.mission if start else None,
+        "location": start.location if start else None,
+        "started_at": start.created_at.isoformat() if start else None,
+        "ended_at": end_event.created_at.isoformat() if end_event.created_at else None,
+        "mission_completed": bool(end_event.mission_completed) if end_event.mission_completed is not None else None,
+        "reached_station": bool(end_event.reached_station) if end_event.reached_station is not None else None,
+        "players": players,
+        "player_count": len(players),
+        "replay": _serialize_replay(replay) if replay else None,
+    }
+
+
+def _find_matching_replay(db: Session, end_event: RoundEvent, start: Optional[RoundEvent]) -> Optional[RoundReplay]:
+    """Best-effort replay<->round match. A manual link (set via
+    /rounds/{id}/link-replay, the escape hatch for whatever this heuristic
+    can't resolve) always wins. Otherwise: exact server_name within a
+    +-10min window of the round; if nothing matches, retry the same window
+    WITHOUT the server_name filter — RoundReplay.server_name/recorded_at
+    both come from parsing the demo's binary header (services_replays.py's
+    _parse_demo_header), which can come back None on a header it fails to
+    parse, so requiring an exact server_name match was silently dropping
+    otherwise-matchable replays whose header just didn't parse cleanly."""
+    manual = (
+        db.query(RoundReplay)
+        .filter(RoundReplay.manual_round_event_id == end_event.id)
+        .first()
+    )
+    if manual:
+        return manual
+
+    if not (start and start.created_at and end_event.created_at):
+        return None
+    window_start = start.created_at - timedelta(minutes=10)
+    window_end = end_event.created_at + timedelta(minutes=10)
+
+    replay = (
+        db.query(RoundReplay)
+        .filter(
+            RoundReplay.server_name == end_event.server_name,
+            RoundReplay.recorded_at.isnot(None),
+            RoundReplay.recorded_at >= window_start,
+            RoundReplay.recorded_at <= window_end,
+        )
+        .order_by(RoundReplay.recorded_at.asc())
+        .first()
+    )
+    if replay:
+        return replay
+
+    return (
+        db.query(RoundReplay)
+        .filter(
+            RoundReplay.recorded_at.isnot(None),
+            RoundReplay.recorded_at >= window_start,
+            RoundReplay.recorded_at <= window_end,
+        )
+        .order_by(RoundReplay.recorded_at.asc())
+        .first()
+    )
+
+
+@panel_router.get("/api/v1/admin/replays/rounds")
+async def api_rounds_list(
+    request: Request, page: int = Query(1, ge=1), server: Optional[str] = Query(None), db: Session = Depends(get_db),
+):
+    """Past finished rounds (paired start/end round_events), each with its
+    matching demo recording attached when one exists."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    page_size = 20
+    q = (
+        db.query(RoundEvent)
+        .options(joinedload(RoundEvent.paired_start))
+        .filter(RoundEvent.event_type == "end", RoundEvent.paired_start_id.isnot(None))
+    )
+    if server:
+        q = q.filter(RoundEvent.server_name == server)
+    total = q.count()
+    rows = q.order_by(RoundEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    total_pages = (total + page_size - 1) // page_size if total else 1
+
+    rounds = [_serialize_round(end_event, _find_matching_replay(db, end_event, end_event.paired_start)) for end_event in rows]
+
+    return {
+        "rounds": rounds, "total": total, "page": page, "total_pages": total_pages, "selected_server": server,
+    }
+
+
+@panel_router.get("/api/v1/admin/replays/rounds/{round_id}")
+async def api_round_detail(round_id: int, request: Request, db: Session = Depends(get_db)):
+    """Single round, untruncated player list — backs the round-detail page."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    end_event = (
+        db.query(RoundEvent)
+        .options(joinedload(RoundEvent.paired_start))
+        .filter(RoundEvent.id == round_id, RoundEvent.event_type == "end")
+        .first()
+    )
+    if not end_event:
+        raise HTTPException(status_code=404, detail="Раунд не найден")
+
+    replay = _find_matching_replay(db, end_event, end_event.paired_start)
+    data = _serialize_round(end_event, replay)
+    data["manually_linked"] = bool(replay and replay.manual_round_event_id == end_event.id)
+    return data
+
+
+@panel_router.post("/api/v1/admin/replays/rounds/{round_id}/link-replay")
+async def api_link_replay_to_round(round_id: int, request: Request, db: Session = Depends(get_db)):
+    """Manually link (or clear, with replay_id=null) a demo recording to a
+    round the automatic matcher couldn't resolve."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    end_event = db.query(RoundEvent).filter(RoundEvent.id == round_id, RoundEvent.event_type == "end").first()
+    if not end_event:
+        raise HTTPException(status_code=404, detail="Раунд не найден")
+
+    body = await request.json()
+    replay_id = body.get("replay_id")
+
+    # Clear any existing manual link pointing at this round first — only one
+    # replay can be manually linked to a given round at a time.
+    db.query(RoundReplay).filter(RoundReplay.manual_round_event_id == round_id).update({"manual_round_event_id": None})
+
+    if replay_id is not None:
+        replay = db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
+        if not replay:
+            raise HTTPException(status_code=404, detail="Демозапись не найдена")
+        replay.manual_round_event_id = round_id
+
+    db.commit()
+    return {"status": "ok"}
 
 
 @panel_router.get("/api/v1/admin/replays")
@@ -364,8 +514,16 @@ async def api_replay_settings(
 # Download (streams compressed archive to browser)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@panel_router.get("/admin/replays/{replay_id}/download")
-async def replay_download(request: Request, replay_id: int, db: Session = Depends(get_db)):
+def _replay_media_type(stored_filename: str) -> str:
+    if stored_filename.endswith(".zip"):
+        return "application/zip"
+    if stored_filename.endswith(".gz"):
+        return "application/gzip"
+    return "application/octet-stream"
+
+
+@panel_router.get("/api/v1/admin/replays/{replay_id}/download")
+async def api_replay_download(request: Request, replay_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "replays", "view"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -379,20 +537,25 @@ async def replay_download(request: Request, replay_id: int, db: Session = Depend
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Файл не найден на диске")
 
-    # Stream the compressed archive directly. The browser unpacks it client-side.
+    # Stream the (possibly compressed) archive directly. The browser unpacks it client-side.
     return FileResponse(
         path=path,
         filename=replay.stored_filename,
-        media_type="application/zip",
+        media_type=_replay_media_type(replay.stored_filename),
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
+
+
+@panel_router.get("/adminold/replays/{replay_id}/download")
+async def replay_download(request: Request, replay_id: int, db: Session = Depends(get_db)):
+    return await api_replay_download(request, replay_id, db)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Delete
 # ══════════════════════════════════════════════════════════════════════════════
 
-@panel_router.post("/admin/replays/{replay_id}/delete")
+@panel_router.post("/adminold/replays/{replay_id}/delete")
 async def replay_delete(request: Request, replay_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "replays", "delete"):
@@ -409,14 +572,14 @@ async def replay_delete(request: Request, replay_id: int, db: Session = Depends(
     flashes = request.session.get("_flashes", [])
     flashes.append({"level": "success", "message": "Реплей удалён"})
     request.session["_flashes"] = flashes
-    return RedirectResponse(url="/admin/replays", status_code=302)
+    return RedirectResponse(url="/adminold/replays", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Manual upload via website (superuser only)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@panel_router.post("/admin/replays/upload")
+@panel_router.post("/adminold/replays/upload")
 async def replay_manual_upload(
     request: Request,
     file: UploadFile = File(...),
@@ -447,14 +610,14 @@ async def replay_manual_upload(
         flashes.append({"level": "error", "message": e.detail})
         request.session["_flashes"] = flashes
 
-    return RedirectResponse(url="/admin/replays", status_code=302)
+    return RedirectResponse(url="/adminold/replays", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Settings (superuser only): retention days + storage dir
 # ══════════════════════════════════════════════════════════════════════════════
 
-@panel_router.post("/admin/replays/settings")
+@panel_router.post("/adminold/replays/settings")
 async def replay_settings(
     request: Request,
     retention_days: int = Form(...),
@@ -481,4 +644,4 @@ async def replay_settings(
     flashes = request.session.get("_flashes", [])
     flashes.append({"level": "success", "message": "Настройки реплеев сохранены"})
     request.session["_flashes"] = flashes
-    return RedirectResponse(url="/admin/replays", status_code=302)
+    return RedirectResponse(url="/adminold/replays", status_code=302)

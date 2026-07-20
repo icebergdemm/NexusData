@@ -196,6 +196,12 @@
       if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
       return raw.slice().buffer;
     }
+    // GZIP?
+    if (buf[0]===0x1F && buf[1]===0x8B) {
+      const raw = fflate.gunzipSync(buf);
+      if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
+      return raw.slice().buffer;
+    }
     return buf.buffer;
   }
 

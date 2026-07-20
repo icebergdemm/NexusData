@@ -135,7 +135,7 @@
 <div class="sections-grid">
 
   {% if check_permission(admin, 'players', 'view') %}
-  <a href="/admin/players" class="section-card">
+  <a href="/adminold/players" class="section-card">
     <div class="sc-icon">🎮</div>
     <div class="sc-title">Игроки</div>
     <div class="sc-desc">Профили, история сессий, метки, заметки, ловушки и кастомные награды</div>
@@ -143,7 +143,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'admin', 'view') %}
-  <a href="/admin/users" class="section-card">
+  <a href="/adminold/users" class="section-card">
     <div class="sc-icon">👤</div>
     <div class="sc-title">Пользователи Nexus Data</div>
     <div class="sc-desc">Управление аккаунтами администраторов: роли, права, аудит входов</div>
@@ -151,7 +151,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'moderation', 'edit') %}
-  <a href="/admin/moderation" class="section-card">
+  <a href="/adminold/moderation" class="section-card">
     <div class="sc-icon">🛡️</div>
     <div class="sc-title">Модерирование сервера</div>
     <div class="sc-desc">Онлайн-игроки, банхаммер, логи сервера и инструменты античита</div>
@@ -159,7 +159,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'punishments', 'view') %}
-  <a href="/admin/punishments" class="section-card">
+  <a href="/adminold/punishments" class="section-card">
     <div class="sc-icon">⚖️</div>
     <div class="sc-title">Наказания</div>
     <div class="sc-desc">Предупреждения, выговоры, кики и баны - с историей и редактированием</div>
@@ -167,7 +167,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'privileges', 'view') %}
-  <a href="/admin/server-privileges" class="section-card">
+  <a href="/adminold/server-privileges" class="section-card">
     <div class="sc-icon">🔑</div>
     <div class="sc-title">Привилегии сервера</div>
     <div class="sc-desc">Управление правами модераторов и администраторов на игровом сервере</div>
@@ -175,7 +175,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'kits', 'edit') %}
-  <a href="/admin/kits" class="section-card">
+  <a href="/adminold/kits" class="section-card">
     <div class="sc-icon">🎒</div>
     <div class="sc-title">Редактирование китов</div>
     <div class="sc-desc">Стартовые наборы предметов: настройка по профессиям и уровням рейтинга</div>
@@ -183,7 +183,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'sessions', 'view') %}
-  <a href="/admin/sessions" class="section-card">
+  <a href="/adminold/sessions" class="section-card">
     <div class="sc-icon">🕐</div>
     <div class="sc-title">Сессии</div>
     <div class="sc-desc">Журнал игровых сессий: время входа/выхода, продолжительность, IP</div>
@@ -191,7 +191,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'audit', 'view') %}
-  <a href="/admin/audit" class="section-card">
+  <a href="/adminold/audit" class="section-card">
     <div class="sc-icon">📋</div>
     <div class="sc-title">Аудит</div>
     <div class="sc-desc">Журнал действий администраторов: кто, что и когда изменил</div>
@@ -199,7 +199,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'admin', 'edit') %}
-  <a href="/admin/administration" class="section-card">
+  <a href="/adminold/administration" class="section-card">
     <div class="sc-icon">📊</div>
     <div class="sc-title">Администрирование</div>
     <div class="sc-desc">Детальная статистика онлайна, пики и средние значения за разные периоды</div>
@@ -207,7 +207,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'sub_projects', 'view') %}
-  <a href="/admin/sub-projects" class="section-card">
+  <a href="/adminold/sub-projects" class="section-card">
     <div class="sc-icon">🚢</div>
     <div class="sc-title">Sub-карты</div>
     <div class="sc-desc">Управление проектами подводных лодок: версии файлов, деплой на серверы, Discord-публикации</div>
@@ -215,7 +215,7 @@
   {% endif %}
 
   {% if check_permission(admin, 'ratings', 'view') %}
-  <a href="/admin/ratings" class="section-card">
+  <a href="/adminold/ratings" class="section-card">
     <div class="sc-icon">🏆</div>
     <div class="sc-title">Рейтинг</div>
     <div class="sc-desc">Таблица лидеров по ролям: капитан, механик, медик, охрана, инженер</div>

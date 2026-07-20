@@ -201,12 +201,27 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_db)):
 @api_router.post("/round/end")
 def post_round_end(body: RoundEndIn, db: Session = Depends(get_db)):
     """Game server reports round end."""
+    # Link back to the start event that opened this round (the most recent
+    # unpaired "start" for this server) so past rounds can be listed in one query.
+    paired_start = (
+        db.query(RoundEvent)
+        .filter(
+            RoundEvent.server_name == body.server_name,
+            RoundEvent.event_type == "start",
+            ~RoundEvent.id.in_(
+                db.query(RoundEvent.paired_start_id).filter(RoundEvent.paired_start_id.isnot(None))
+            ),
+        )
+        .order_by(RoundEvent.created_at.desc())
+        .first()
+    )
     event = RoundEvent(
         event_type="end",
         server_name=body.server_name,
         mission_completed=1 if body.mission_completed else 0,
         reached_station=1 if body.reached_station else 0,
         players=body.players,
+        paired_start_id=paired_start.id if paired_start else None,
     )
     db.add(event)
     db.commit()
@@ -242,11 +257,13 @@ def _get_current_admin(request: Request, db: Session = Depends(get_db)) -> Admin
             from sqlalchemy.orm import joinedload
             admin = db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(AdminUser.id == session.admin_id).first()
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-@panel_router.get("/admin/dispatch", response_class=HTMLResponse)
+@panel_router.get("/adminold/dispatch", response_class=HTMLResponse)
 async def dispatch_page(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
     """Dispatch chat page."""
     if not check_permission(current_admin, "dispatch", "view"):

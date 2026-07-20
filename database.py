@@ -30,6 +30,12 @@ SessionLocal = sessionmaker(
 
 Base = declarative_base()
 
+# Names of the seeded blank document templates (see _seed_blank_templates) —
+# also used by routes/documents.py to find the default file for a new
+# document that isn't created from an explicit template_id.
+BLANK_DOCX_TEMPLATE_NAME = "Пустой документ"
+BLANK_XLSX_TEMPLATE_NAME = "Пустая таблица"
+
 
 def get_db():
     db = SessionLocal()
@@ -85,6 +91,94 @@ def _apply_migrations():
         ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),
         # admin_users: soft-delete
         ("admin_users", "is_deleted", "TINYINT NOT NULL DEFAULT 0"),
+        # player_punishments: snapshot whether the issuing admin was a superuser
+        ("player_punishments", "issued_by_was_superuser", "TINYINT NOT NULL DEFAULT 0"),
+        # players_data: superuser-managed link to an ND admin account + a display
+        # name override shown everywhere in ratings/punishments
+        ("players_data", "linked_admin_id", "INT"),
+        ("players_data", "forced_display_name", "VARCHAR(255)"),
+        ("players_data", "linked_admin_auto", "TINYINT NOT NULL DEFAULT 0"),
+        # players_data: cached Steam avatar
+        ("players_data", "steam_avatar_url", "VARCHAR(500)"),
+        ("players_data", "steam_avatar_fetched_at", "DATETIME"),
+        # round_events: link an "end" row back to the "start" row that opened it
+        ("round_events", "paired_start_id", "INT"),
+        # admin_users: flags accounts auto-provisioned by task_sync_department_roles
+        ("admin_users", "created_by_worker", "TINYINT NOT NULL DEFAULT 0"),
+        # discord_members: role IDs currently held, for department role sync
+        ("discord_members", "role_ids", "JSON"),
+        # documents: department-scoped documentation + nested sub-pages
+        ("documents", "department_id", "INT"),
+        ("documents", "parent_document_id", "INT"),
+        # orders (item 8): department Discord channel + order-doc/-template flags
+        ("departments", "orders_channel_id", "VARCHAR(50)"),
+        ("documents", "is_order", "TINYINT NOT NULL DEFAULT 0"),
+        ("document_templates", "is_order_template", "TINYINT NOT NULL DEFAULT 0"),
+        # Hybrid permissions (item 3): superuser-only site-wide grants per department access level
+        ("department_access_levels", "site_permissions", "JSON"),
+        # Department document folders (item 5) + mandatory news module (item 6)
+        ("documents", "department_folder_id", "INT"),
+        ("documents", "is_news", "TINYINT NOT NULL DEFAULT 0"),
+        ("departments", "news_channel_id", "VARCHAR(50)"),
+        ("department_members", "is_deputy_head", "TINYINT NOT NULL DEFAULT 0"),
+        # Manual replay<->round link, escape hatch for the header-parse-based
+        # auto matcher (item 9)
+        ("round_replays", "manual_round_event_id", "INT"),
+        # Kit variations + special kits (item 15) — additive; `items` (variation 1)
+        # unchanged, so old game-server clients that only read job_id/kit_level/items
+        # keep working untouched.
+        ("kits", "variation_2_items", "JSON"),
+        ("kits", "variation_3_items", "JSON"),
+        ("kits", "is_special", "TINYINT NOT NULL DEFAULT 0"),
+        ("kits", "special_variation", "INT"),
+        # Documents move to ONLYOFFICE-edited real files instead of Tiptap JSON —
+        # `content`/`content_text` (documents), `content` (document_revisions/
+        # document_templates), and is_wiki + the database/view tables are DROPPED
+        # manually via migrations/038_onlyoffice_documents.sql (this app never
+        # auto-drops columns/tables, only adds them).
+        ("documents", "file_type", "VARCHAR(10) NOT NULL DEFAULT 'word'"),
+        ("documents", "storage_filename", "VARCHAR(255)"),
+        ("document_templates", "file_type", "VARCHAR(10) NOT NULL DEFAULT 'word'"),
+        ("document_templates", "storage_filename", "VARCHAR(255)"),
+        ("document_revisions", "storage_filename", "VARCHAR(255)"),
+        # Sub-projects split into normal zone + department-scoped "Тестовый
+        # полигон ASPER" zone — NULL department_id = normal zone.
+        ("sub_projects", "department_id", "INT"),
+        # Superuser-configurable links from department access levels/head role
+        # to a server privilege group, auto-applied by
+        # task_sync_auto_server_privileges.
+        ("department_access_levels", "server_privilege_group_id", "INT"),
+        ("departments", "head_server_privilege_group_id", "INT"),
+        # Recency signal for the auto-grant tie-break ("most recent
+        # assignment wins" across departments).
+        ("department_members", "role_state_updated_at", "DATETIME"),
+        # Marks a server_group_id as worker-managed vs a human's manual
+        # assignment — the worker never touches a row once is_auto is False.
+        ("server_player_privileges", "is_auto", "TINYINT NOT NULL DEFAULT 0"),
+        ("server_player_privileges", "auto_source_department_id", "INT"),
+        # sub_project_categories: default category auto-assigned to new
+        # normal-zone projects.
+        ("sub_project_categories", "is_default", "TINYINT NOT NULL DEFAULT 0"),
+        # document_permissions: share with "everyone holding this department
+        # access level" (department-scoped documents only).
+        ("document_permissions", "grantee_access_level_key", "VARCHAR(64)"),
+        # departments: Discord channel for the hourly department-rating
+        # leaderboard embed (bot-published).
+        ("departments", "rating_channel_id", "VARCHAR(50)"),
+        # discord_bot_actions: structured response for request/response-style
+        # actions (channel-category verification).
+        ("discord_bot_actions", "result", "JSON"),
+        # documents: Discord publish tracking (generalized publish/sync,
+        # not just orders/news).
+        ("documents", "discord_channel_id", "VARCHAR(50)"),
+        ("documents", "discord_message_id", "VARCHAR(64)"),
+        # department_document_folders: default publish channel + whether this
+        # folder's permission grants cascade to nested subfolders' documents.
+        ("department_document_folders", "discord_channel_id", "VARCHAR(50)"),
+        ("department_document_folders", "auto_apply_permissions", "TINYINT NOT NULL DEFAULT 0"),
+        # departments: Discord category ID, for validating a manually-entered
+        # publish-channel ID actually belongs to this department.
+        ("departments", "discord_category_id", "VARCHAR(50)"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:
@@ -129,7 +223,211 @@ def _apply_migrations():
             pass
 
 
+def _backfill_round_pairing():
+    """One-time, idempotent pairing of round_events rows that predate the
+    paired_start_id column, so historical rounds also show up in "Прошедшие
+    раунды". Only scans anything when there's actually unpaired work."""
+    text = __import__('sqlalchemy').text
+    with engine.connect() as conn:
+        try:
+            unpaired = conn.execute(text(
+                "SELECT COUNT(*) FROM round_events WHERE event_type='end' AND paired_start_id IS NULL"
+            )).scalar()
+            if not unpaired:
+                return
+
+            rows = conn.execute(text(
+                "SELECT id, event_type, server_name, created_at FROM round_events ORDER BY server_name, created_at"
+            )).fetchall()
+
+            pending_start_by_server = {}
+            for row in rows:
+                sn = row.server_name
+                if row.event_type == "start":
+                    pending_start_by_server[sn] = row.id
+                elif row.event_type == "end":
+                    start_id = pending_start_by_server.pop(sn, None)
+                    if start_id:
+                        conn.execute(
+                            text("UPDATE round_events SET paired_start_id=:sid WHERE id=:eid AND paired_start_id IS NULL"),
+                            {"sid": start_id, "eid": row.id},
+                        )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Round pairing backfill failed: %s", e)
+
+
+def _backfill_permission_splits():
+    """When a page's generic "edit" action gets split into new named actions
+    (permissions_registry.PERMISSION_ACTION_SPLITS/PERMISSION_CROSS_PAGE_SPLITS),
+    any group/individual that already had the OLD action granted gets the NEW
+    actions granted too — purely additive (OR), so nobody silently loses a
+    capability they had before this rework. Safe/cheap to re-run every startup."""
+    import json
+    from permissions_registry import PERMISSION_ACTION_SPLITS, PERMISSION_CROSS_PAGE_SPLITS
+    text = __import__('sqlalchemy').text
+
+    def apply_splits(perms):
+        if not isinstance(perms, dict):
+            return perms, False
+        pages = perms.get("pages", perms)
+        if not isinstance(pages, dict):
+            return perms, False
+        changed = False
+        for page, split_map in PERMISSION_ACTION_SPLITS.items():
+            page_perms = pages.get(page)
+            if not isinstance(page_perms, dict):
+                continue
+            for old_action, new_actions in split_map.items():
+                if page_perms.get(old_action):
+                    for na in new_actions:
+                        if not page_perms.get(na):
+                            page_perms[na] = True
+                            changed = True
+        for from_page, from_action, to_page, to_action in PERMISSION_CROSS_PAGE_SPLITS:
+            from_perms = pages.get(from_page)
+            if isinstance(from_perms, dict) and from_perms.get(from_action):
+                to_perms = pages.setdefault(to_page, {})
+                if not to_perms.get(to_action):
+                    to_perms[to_action] = True
+                    changed = True
+        if "pages" in perms:
+            perms["pages"] = pages
+        else:
+            perms = pages
+        return perms, changed
+
+    with engine.connect() as conn:
+        try:
+            groups = conn.execute(text("SELECT id, permissions FROM admin_privilege_groups")).fetchall()
+            for row in groups:
+                raw = row.permissions
+                if not raw:
+                    continue
+                perms = raw if isinstance(raw, dict) else json.loads(raw)
+                updated, changed = apply_splits(perms)
+                if changed:
+                    conn.execute(
+                        text("UPDATE admin_privilege_groups SET permissions=:p WHERE id=:id"),
+                        {"p": json.dumps(updated), "id": row.id},
+                    )
+
+            admins = conn.execute(text(
+                "SELECT id, individual_permissions FROM admin_users WHERE individual_permissions IS NOT NULL"
+            )).fetchall()
+            for row in admins:
+                raw = row.individual_permissions
+                if not raw:
+                    continue
+                perms = raw if isinstance(raw, dict) else json.loads(raw)
+                updated, changed = apply_splits(perms)
+                if changed:
+                    conn.execute(
+                        text("UPDATE admin_users SET individual_permissions=:p WHERE id=:id"),
+                        {"p": json.dumps(updated), "id": row.id},
+                    )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Permission-split backfill failed: %s", e)
+
+
+def _seed_blank_templates():
+    """One-time seed of the 2 starter templates for the ONLYOFFICE-based
+    document library — a blank Word doc and a blank Excel sheet, generated
+    once as real files under {documents_upload_dir}/templates/. Idempotent:
+    skips a given template if its name already exists, so deleting/editing
+    the seeded ones sticks. Replaces the old Tiptap-JSON template seeding
+    (charter/order templates) — those had no ONLYOFFICE equivalent."""
+    text = __import__('sqlalchemy').text
+    import os
+
+    templates_dir = os.path.join(settings.documents_upload_dir, "templates")
+    os.makedirs(templates_dir, exist_ok=True)
+
+    def ensure_docx(filename):
+        # python-docx's built-in default template hardcodes the document's
+        # default run language to en-US, which makes ONLYOFFICE spell-check
+        # in English regardless of editorConfig.lang — always re-patch it to
+        # ru-RU (not just on first creation), so an already-seeded file from
+        # before this fix existed also gets corrected on the next restart.
+        import docx
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+
+        path = os.path.join(templates_dir, filename)
+        doc = docx.Document(path) if os.path.isfile(path) else docx.Document()
+
+        def set_lang(rpr):
+            lang_el = rpr.find(qn('w:lang'))
+            if lang_el is None:
+                lang_el = OxmlElement('w:lang')
+                rpr.append(lang_el)
+            for attr in ('w:val', 'w:eastAsia', 'w:bidi'):
+                lang_el.set(qn(attr), 'ru-RU')
+
+        doc_defaults = doc.styles.element.find(qn('w:docDefaults'))
+        if doc_defaults is not None:
+            rpr_default = doc_defaults.find(qn('w:rPrDefault'))
+            if rpr_default is not None:
+                rpr = rpr_default.find(qn('w:rPr'))
+                if rpr is None:
+                    rpr = OxmlElement('w:rPr')
+                    rpr_default.append(rpr)
+                set_lang(rpr)
+
+        normal_el = doc.styles['Normal'].element
+        rpr = normal_el.find(qn('w:rPr'))
+        if rpr is None:
+            rpr = OxmlElement('w:rPr')
+            normal_el.append(rpr)
+        set_lang(rpr)
+
+        doc.save(path)
+        return filename
+
+    def ensure_xlsx(filename):
+        path = os.path.join(templates_dir, filename)
+        if not os.path.isfile(path):
+            from openpyxl import Workbook
+            Workbook().save(path)
+        return filename
+
+    seeds = [
+        {"name": BLANK_DOCX_TEMPLATE_NAME, "icon": "📄", "description": "Чистый документ Word", "file_type": "word", "filename": ensure_docx("blank.docx")},
+        {"name": BLANK_XLSX_TEMPLATE_NAME, "icon": "📊", "description": "Чистая таблица Excel", "file_type": "cell", "filename": ensure_xlsx("blank.xlsx")},
+    ]
+
+    with engine.connect() as conn:
+        try:
+            for t in seeds:
+                existing = conn.execute(
+                    text("SELECT COUNT(*) FROM document_templates WHERE name=:name"),
+                    {"name": t["name"]},
+                ).scalar()
+                if existing:
+                    continue
+                conn.execute(
+                    text(
+                        "INSERT INTO document_templates (name, description, icon, file_type, storage_filename, is_order_template, created_at, updated_at) "
+                        "VALUES (:name, :description, :icon, :file_type, :filename, 0, NOW(), NOW())"
+                    ),
+                    {"name": t["name"], "description": t["description"], "icon": t["icon"], "file_type": t["file_type"], "filename": t["filename"]},
+                )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            import logging as _logging
+            _logging.getLogger(__name__).warning("Blank template seeding failed: %s", e)
+
+
 def init_db():
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
     _apply_migrations()
+    _backfill_round_pairing()
+    _seed_blank_templates()
+    _backfill_permission_splits()

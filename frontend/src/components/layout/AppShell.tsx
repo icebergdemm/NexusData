@@ -1,5 +1,5 @@
 import { Link, Outlet, useLocation } from "react-router-dom"
-import { LogOut, ExternalLink } from "lucide-react"
+import { LogOut } from "lucide-react"
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton,
@@ -30,9 +30,11 @@ export function AppShell() {
         </SidebarHeader>
         <SidebarContent>
           {NAV_GROUPS.map((group) => {
-            const visibleItems = group.items.filter(
-              (item) => !item.permission || canView(admin, item.permission)
-            )
+            const visibleItems = group.items.filter((item) => {
+              if (item.permission && !canView(admin, item.permission)) return false
+              if (item.isVisible && !item.isVisible(admin)) return false
+              return true
+            })
             if (visibleItems.length === 0) return null
             return (
               <SidebarGroup key={group.label}>
@@ -58,14 +60,6 @@ export function AppShell() {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild>
-                <a href="/admin" data-no-spa>
-                  <ExternalLink />
-                  <span>Классический вид</span>
-                </a>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
               <form action="/logout" method="post">
                 <input type="hidden" name="csrf_token" value={admin?.csrf_token ?? ""} />
                 <SidebarMenuButton asChild>
@@ -88,16 +82,18 @@ export function AppShell() {
           <NotificationBell />
           {admin && (
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">{admin.discord_username}</span>
-              <Avatar className="h-7 w-7">
+              <span className="hidden text-sm text-muted-foreground sm:inline">{admin.discord_username}</span>
+              <Avatar className="h-7 w-7 shrink-0">
                 <AvatarImage src={admin.discord_avatar ?? undefined} />
                 <AvatarFallback>{admin.discord_username?.[0]?.toUpperCase() ?? "?"}</AvatarFallback>
               </Avatar>
             </div>
           )}
         </header>
-        <main className="min-w-0 flex-1 overflow-auto p-6">
-          <Outlet />
+        <main className="min-w-0 flex-1 overflow-auto p-3 sm:p-6">
+          <div key={location.pathname} className="animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out">
+            <Outlet />
+          </div>
         </main>
       </SidebarInset>
     </SidebarProvider>

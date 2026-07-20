@@ -67,37 +67,127 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
             )
             if admin:
                 request.session["username"] = admin.discord_username
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
 
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-ME_PERMISSION_PAGES = [
-    "admin", "players", "players_special", "moderation", "dispatch", "replays",
-    "sessions", "audit", "privileges", "kits", "punishments", "sub_projects",
-    "ratings", "discord_bot", "tickets", "analytics", "documents",
-]
+@router.get("/api/v1/admin/permissions/registry")
+async def get_permissions_registry(current_admin: AdminUser = Depends(get_current_admin)):
+    """Single source of truth for page/action definitions — the role editor,
+    individual-permission editor and department access-level editor all
+    render their checkbox grids from this instead of a hardcoded list."""
+    from permissions_registry import PERMISSION_REGISTRY
+    return {"pages": PERMISSION_REGISTRY}
 
 
 @router.get("/api/v1/me")
-async def get_me(request: Request, current_admin: AdminUser = Depends(get_current_admin)):
+async def get_me(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     """Identity + permissions for the React SPA — mirrors what base.html's
     per-nav-item check_permission() calls do for the Jinja2 admin panel."""
+    from permissions_registry import PERMISSION_REGISTRY
     permissions = {
         page: {
-            "view": check_permission(current_admin, page, "view"),
-            "edit": check_permission(current_admin, page, "edit"),
+            action["key"]: check_permission(current_admin, page, action["key"])
+            for action in page_def["actions"]
         }
-        for page in ME_PERMISSION_PAGES
+        for page, page_def in PERMISSION_REGISTRY.items()
     }
+
+    from models import Department, DepartmentMember
+    from routes.departments import get_member
+    from security import check_department_permission
+    _my_depts = (
+        db.query(Department)
+        .join(DepartmentMember, DepartmentMember.department_id == Department.id)
+        .filter(DepartmentMember.admin_id == current_admin.id, Department.is_archived.is_(False))
+        .order_by(Department.name)
+        .all()
+    )
+    my_departments = []
+    for d in _my_depts:
+        member = get_member(db, d.id, current_admin.id)
+        my_departments.append({
+            "id": d.id, "name": d.name, "icon": d.icon, "color": d.color,
+            # Drives whether the SPA shows the "Тестовый полигон ASPER" nav
+            # item — Polygon access runs entirely through this department
+            # module, never through the site-wide sub_projects permissions.
+            "test_server_view": check_department_permission(current_admin, d, member, "test_server", "view"),
+            "test_server_edit": check_department_permission(current_admin, d, member, "test_server", "edit"),
+        })
+
+    linked_player_row = db.query(PlayerData).filter(PlayerData.linked_admin_id == current_admin.id).first()
+    linked_player = (
+        {"player_id": linked_player_row.player_id, "forced_display_name": linked_player_row.forced_display_name}
+        if linked_player_row else None
+    )
+
     return {
         "id": current_admin.id,
         "discord_username": current_admin.discord_username,
         "discord_avatar": current_admin.discord_avatar,
         "is_superuser": bool(current_admin.is_superuser),
         "permissions": permissions,
+        "my_departments": my_departments,
+        "linked_player": linked_player,
         "csrf_token": request.session.get("csrf_token"),
     }
+
+
+@router.get("/api/v1/me/player-lookup")
+async def api_me_player_lookup(steamid: str = Query(...), db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    """Self-service SteamID64 lookup for the login onboarding flow (item 3) —
+    any authenticated admin may look up a player by SteamID to confirm their
+    own identity before linking. Never exposes other players' data beyond
+    the last known in-game name."""
+    steamid = (steamid or "").strip()
+    if not steamid:
+        raise HTTPException(status_code=400, detail="Укажите SteamID64")
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Профиль с таким SteamID не найден")
+    if player.linked_admin_id is not None and player.linked_admin_id != current_admin.id:
+        raise HTTPException(status_code=409, detail="Этот профиль уже привязан к другому пользователю")
+    return {"player_id": player.player_id, "name": player.player_last_time_name}
+
+
+@router.post("/api/v1/me/link-player")
+async def api_me_link_player(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    """Self-confirmed player link (item 3 — "Да, это я"). Re-validates
+    server-side rather than trusting the client's earlier lookup response."""
+    body = await request.json()
+    player_id = body.get("player_id")
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Профиль не найден")
+    if player.linked_admin_id is not None and player.linked_admin_id != current_admin.id:
+        raise HTTPException(status_code=409, detail="Этот профиль уже привязан к другому пользователю")
+    player.linked_admin_id = current_admin.id
+    # Self-confirmed (the user explicitly clicked "Да, это я") — same trust
+    # tier as a superuser-made link, not the unconfirmed background match.
+    player.linked_admin_auto = False
+    db.commit()
+    return {"status": "ok", "player_id": player.player_id}
+
+
+@router.post("/api/v1/me/forced-nickname")
+async def api_me_set_forced_nickname(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    """Self-service "Принудительный ник" set from the login onboarding
+    modal (items 2 & 3)."""
+    player = db.query(PlayerData).filter(PlayerData.linked_admin_id == current_admin.id).first()
+    if not player:
+        raise HTTPException(status_code=400, detail="Сначала привяжите игровой профиль")
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Укажите имя")
+    if len(name) > 255:
+        raise HTTPException(status_code=400, detail="Слишком длинное имя")
+    player.forced_display_name = name
+    db.commit()
+    return {"status": "ok"}
 
 
 async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
@@ -314,7 +404,7 @@ async def logout(request: Request, csrf_token: Optional[str] = Form(None), db: S
     return response
 
 
-@router.get("/admin", response_class=HTMLResponse)
+@router.get("/adminold", response_class=HTMLResponse)
 async def admin_dashboard(
     request: Request,
     db: Session = Depends(get_db),
@@ -391,7 +481,7 @@ async def admin_dashboard(
     })
 
 
-@router.get("/admin/users", response_class=HTMLResponse)
+@router.get("/adminold/users", response_class=HTMLResponse)
 async def admin_users_list(
     request: Request,
     db: Session = Depends(get_db),
@@ -425,7 +515,7 @@ async def admin_users_list(
     })
 
 
-def _serialize_admin_user(a: AdminUser) -> dict:
+def _serialize_admin_user(a: AdminUser, linked_player=None) -> dict:
     return {
         "id": a.id, "discord_id": a.discord_id, "discord_username": a.discord_username,
         "discord_avatar": a.discord_avatar, "role": a.role, "is_superuser": bool(a.is_superuser),
@@ -434,6 +524,14 @@ def _serialize_admin_user(a: AdminUser) -> dict:
         "individual_permissions": a.individual_permissions,
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "last_login": a.last_login.isoformat() if a.last_login else None,
+        "linked_player": (
+            {
+                "player_id": linked_player.player_id,
+                "player_name": linked_player.forced_display_name or linked_player.player_last_time_name,
+                "auto": bool(linked_player.linked_admin_auto),
+            }
+            if linked_player else None
+        ),
     }
 
 
@@ -457,8 +555,11 @@ async def api_admin_users_list(db: Session = Depends(get_db), current_admin: Adm
     groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.id).all()
     groups_data = [_serialize_privilege_group(g, db.query(AdminUser).filter(AdminUser.privilege_group_id == g.id).count()) for g in groups]
 
+    linked_players = db.query(PlayerData).filter(PlayerData.linked_admin_id.in_([a.id for a in admins])).all()
+    linked_by_admin_id = {p.linked_admin_id: p for p in linked_players}
+
     return {
-        "admins": [_serialize_admin_user(a) for a in admins],
+        "admins": [_serialize_admin_user(a, linked_by_admin_id.get(a.id)) for a in admins],
         "roles": list(settings.roles_mapping.keys()),
         "groups": groups_data,
         "can_edit": check_permission(current_admin, "admin", "edit"),
@@ -478,8 +579,20 @@ async def api_create_admin_user(request: Request, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="discord_id required")
 
     admin_service = AdminService(db)
-    if admin_service.get_admin_by_discord_id(discord_id):
-        raise HTTPException(status_code=409, detail="Администратор с таким Discord ID уже существует")
+    existing = admin_service.get_admin_by_discord_id(discord_id)
+    if existing:
+        if not existing.is_deleted:
+            raise HTTPException(status_code=409, detail="Администратор с таким Discord ID уже существует")
+        # Previously soft-deleted — restore the account instead of failing.
+        # Privileges stay wiped (delete_admin cleared them on delete); an
+        # admin has to re-grant a group/permissions explicitly.
+        existing.is_deleted = 0
+        existing.role = role
+        db.commit()
+        log_admin_action(db, current_admin.id, "restore_admin", {
+            "target": {"admin_id": existing.id, "discord_id": existing.discord_id, "username": existing.discord_username},
+        })
+        return {"status": "ok", "admin": _serialize_admin_user(existing)}
 
     admin = AdminUser(discord_id=discord_id, discord_username=f"User_{discord_id}", role=role)
     db.add(admin)
@@ -546,8 +659,14 @@ async def api_admin_user_assign_group(user_id: int, request: Request, db: Sessio
         raise HTTPException(status_code=403, detail="Нельзя изменить суперпользователя")
 
     body = await request.json()
-    target.privilege_group_id = body.get("privilege_group_id") or None
-    target.individual_permissions = body.get("individual_permissions") or None
+    # Only touch fields the caller actually sent — previously this always
+    # overwrote individual_permissions (defaulting to None), so switching an
+    # admin's group or toggling superuser from the React UI (which never
+    # sends individual_permissions) silently wiped any individual override.
+    if "privilege_group_id" in body:
+        target.privilege_group_id = body.get("privilege_group_id") or None
+    if "individual_permissions" in body:
+        target.individual_permissions = body.get("individual_permissions") or None
     if current_admin.is_superuser and "is_superuser" in body:
         target.is_superuser = bool(body.get("is_superuser"))
 
@@ -626,7 +745,7 @@ async def api_privilege_group_delete(group_id: int, db: Session = Depends(get_db
     return {"status": "ok"}
 
 
-@router.post("/admin/users")
+@router.post("/adminold/users")
 async def create_admin_user(
     request: Request,
     discord_id: str = Form(...),
@@ -637,7 +756,7 @@ async def create_admin_user(
     """Create new admin user (manual)"""
     if not check_permission(current_admin, "admin", "edit"):
         push_flash(request, "error", "Недостаточно прав для создания администратора")
-        return RedirectResponse(url="/admin/users", status_code=302)
+        return RedirectResponse(url="/adminold/users", status_code=302)
 
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -648,7 +767,7 @@ async def create_admin_user(
         existing = admin_service.get_admin_by_discord_id(discord_id)
         if existing:
             push_flash(request, "error", "Администратор с таким Discord ID уже существует")
-            return RedirectResponse(url="/admin/users", status_code=302)
+            return RedirectResponse(url="/adminold/users", status_code=302)
 
         # Create with minimal info (no flat permissions; will use privilege_group only)
         admin = AdminUser(
@@ -684,10 +803,10 @@ async def create_admin_user(
         logger.exception("Create admin failed: %s", exc)
         push_flash(request, "error", "Не удалось создать администратора из-за внутренней ошибки")
 
-    return RedirectResponse(url="/admin/users", status_code=302)
+    return RedirectResponse(url="/adminold/users", status_code=302)
 
 
-@router.post("/admin/users/{admin_id}/update")
+@router.post("/adminold/users/{admin_id}/update")
 async def update_admin_user(
     request: Request,
     admin_id: int,
@@ -698,7 +817,7 @@ async def update_admin_user(
     """Update admin user"""
     if not check_permission(current_admin, "admin", "edit"):
         push_flash(request, "error", "Недостаточно прав для изменения администратора")
-        return RedirectResponse(url="/admin/users", status_code=302)
+        return RedirectResponse(url="/adminold/users", status_code=302)
 
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -706,12 +825,12 @@ async def update_admin_user(
         target_admin = db.query(AdminUser).filter(AdminUser.id == admin_id).first()
         if not target_admin:
             push_flash(request, "error", "Администратор не найден")
-            return RedirectResponse(url="/admin/users", status_code=302)
+            return RedirectResponse(url="/adminold/users", status_code=302)
 
         old_role = target_admin.role
         if old_role == role:
             push_flash(request, "info", "Роль не изменилась")
-            return RedirectResponse(url="/admin/users", status_code=302)
+            return RedirectResponse(url="/adminold/users", status_code=302)
 
         admin_service = AdminService(db)
         admin_service.update_admin_role(admin_id, role)
@@ -738,10 +857,10 @@ async def update_admin_user(
         logger.exception("Update admin role failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить роль из-за внутренней ошибки")
     
-    return RedirectResponse(url="/admin/users", status_code=302)
+    return RedirectResponse(url="/adminold/users", status_code=302)
 
 
-@router.post("/admin/users/{admin_id}/delete")
+@router.post("/adminold/users/{admin_id}/delete")
 async def delete_admin_user(
     request: Request,
     admin_id: int,
@@ -751,24 +870,24 @@ async def delete_admin_user(
     """Delete admin user"""
     if not check_permission(current_admin, "admin", "delete"):
         push_flash(request, "error", "Недостаточно прав для удаления администратора")
-        return RedirectResponse(url="/admin/users", status_code=302)
+        return RedirectResponse(url="/adminold/users", status_code=302)
 
     try:
         if current_admin.id == admin_id:
             push_flash(request, "error", "Нельзя удалить собственную учетную запись")
-            return RedirectResponse(url="/admin/users", status_code=302)
+            return RedirectResponse(url="/adminold/users", status_code=302)
 
         await ensure_csrf_or_valid_admin_session(request, db)
 
         target_admin = db.query(AdminUser).filter(AdminUser.id == admin_id).first()
         if not target_admin:
             push_flash(request, "error", "Администратор не найден")
-            return RedirectResponse(url="/admin/users", status_code=302)
+            return RedirectResponse(url="/adminold/users", status_code=302)
 
         # Guard: only superuser can delete another superuser
         if target_admin.is_superuser and not current_admin.is_superuser:
             push_flash(request, "error", "Только суперпользователь может удалить суперпользователя")
-            return RedirectResponse(url="/admin/users", status_code=302)
+            return RedirectResponse(url="/adminold/users", status_code=302)
 
         admin_service = AdminService(db)
         admin_service.delete_admin(admin_id)
@@ -792,10 +911,10 @@ async def delete_admin_user(
         logger.exception("Delete admin failed: %s", exc)
         push_flash(request, "error", "Не удалось удалить администратора из-за внутренней ошибки")
     
-    return RedirectResponse(url="/admin/users", status_code=302)
+    return RedirectResponse(url="/adminold/users", status_code=302)
 
 
-@router.get("/admin/players", response_class=HTMLResponse)
+@router.get("/adminold/players", response_class=HTMLResponse)
 async def admin_players_list(
     request: Request,
     page: int = Query(1, ge=1),
@@ -874,7 +993,7 @@ async def admin_players_list(
     })
 
 
-@router.get("/admin/players/{player_id}", response_class=HTMLResponse)
+@router.get("/adminold/players/{player_id}", response_class=HTMLResponse)
 async def admin_player_detail(
     request: Request,
     player_id: int,
@@ -1070,12 +1189,60 @@ async def admin_player_detail(
 # above exactly, same permission checks, same service calls, JSON in/out)
 # ══════════════════════════════════════════════════════════════════════════════
 
+PLAYER_SORTS = ("playtime_desc", "playtime_asc", "last_login_desc", "last_login_asc")
+
+
+def _sort_player_outs(items: list, sort: Optional[str]) -> list:
+    """In-memory equivalent of PlayerRepository.SORT_COLUMNS, for branches that
+    already materialized results (search, label_id + search) instead of a
+    lazy SQLAlchemy query."""
+    if sort == "playtime_desc":
+        return sorted(items, key=lambda p: p.play_time or 0, reverse=True)
+    if sort == "playtime_asc":
+        return sorted(items, key=lambda p: p.play_time or 0)
+    if sort == "last_login_desc":
+        return sorted(items, key=lambda p: p.last_login_time or datetime.min, reverse=True)
+    if sort == "last_login_asc":
+        return sorted(items, key=lambda p: p.last_login_time or datetime.min)
+    return items
+
+
+@router.get("/api/v1/admin/players/search-suggestions")
+async def api_players_search_suggestions(
+    q: str = Query(..., min_length=2),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Live-search dropdown for the Players page — top-5 best matches,
+    same cascading name/steamid/previous-nickname/IP search as the main
+    list (PlayerRepository.search), just capped small and fast for
+    on-keystroke use instead of the full paginated list endpoint."""
+    if not (check_permission(current_admin, "players", "view") or check_permission(current_admin, "players_special", "view")):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    player_service = PlayerService(db)
+    results = player_service.search_players(q, limit=5)
+    return {
+        "players": [
+            {
+                "player_id": p.player_id,
+                "player_last_time_name": p.player_last_time_name,
+                "player_steamid": p.player_steamid,
+                "steam_avatar_url": p.steam_avatar_url,
+            }
+            for p in results
+        ]
+    }
+
+
 @router.get("/api/v1/admin/players")
 async def api_players_list(
     page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
+    page_size: int = Query(50, ge=1, le=200),
     search: Optional[str] = Query(None, min_length=2),
     label_id: Optional[int] = Query(None),
+    rank_id: Optional[int] = Query(None),
+    sort: Optional[str] = Query(None, pattern="^(playtime_desc|playtime_asc|last_login_desc|last_login_asc)$"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -1094,11 +1261,18 @@ async def api_players_list(
         q = db.query(PlayerData).join(PlayerLabel, PlayerLabel.player_id == PlayerData.player_id).filter(
             PlayerLabel.category_id == label_id
         )
+        if rank_id is not None:
+            q = q.filter(PlayerData.rank_id == rank_id)
         if search:
             q = q.filter(or_(
                 PlayerData.player_last_time_name.ilike(f"%{search}%"),
                 PlayerData.player_steamid.ilike(f"%{search}%"),
             ))
+        from repositories import PlayerRepository
+        sort_spec = PlayerRepository.SORT_COLUMNS.get(sort or "")
+        if sort_spec:
+            column, descending = sort_spec
+            q = q.order_by(column.desc() if descending else column.asc())
         total = q.count()
         raw = q.offset((page - 1) * page_size).limit(page_size).all()
         players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
@@ -1106,12 +1280,15 @@ async def api_players_list(
         # Normalize to PlayerDataOut here (unlike the Jinja page, which leaves this
         # branch as raw ORM rows with no computed rank/kit/play_time_hours fields).
         player_results = player_service.search_players(search, limit=1000)
+        if rank_id is not None:
+            player_results = [p for p in player_results if p.rank_id == rank_id]
         total = len(player_results)
+        outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in player_results]
+        outs = _sort_player_outs(outs, sort)
         start = (page - 1) * page_size
-        raw = player_results[start:start + page_size]
-        players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
+        players = outs[start:start + page_size]
     else:
-        raw, total = player_service.get_all_players(page, page_size)
+        raw, total = player_service.get_all_players(page, page_size, rank_id=rank_id, sort=sort)
         players = raw  # already List[PlayerDataOut]
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
@@ -1124,6 +1301,9 @@ async def api_players_list(
         "total_pages": total_pages,
         "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
         "selected_label_id": label_id,
+        "selected_rank_id": rank_id,
+        "selected_sort": sort,
+        "ranks": settings.ranks_mapping,
     }
 
 
@@ -1196,6 +1376,7 @@ def _serialize_punishment_row(row) -> dict:
     return {
         "id": p.id, "type": p.type, "reason": p.reason,
         "issued_by_name": p.issued_by_name,
+        "issued_by_was_superuser": bool(p.issued_by_was_superuser),
         "issued_at": p.issued_at.isoformat() if p.issued_at else None,
         "expires_at": p.expires_at.isoformat() if p.expires_at else None,
         "is_active": bool(p.is_active),
@@ -1268,6 +1449,29 @@ async def api_player_detail(
         _prune_stale_online()
         is_online = player.player_steamid in _online_players
 
+    server_privilege = None
+    if player.player_steamid and check_permission(current_admin, "privileges", "view"):
+        from models import ServerPlayerPrivilege, ServerPrivilegeGroup, Department
+        priv = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == player.player_steamid).first()
+        if priv:
+            group_name = None
+            if priv.server_group_id:
+                group = db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.id == priv.server_group_id).first()
+                group_name = group.name if group else None
+            auto_department_name = None
+            if priv.is_auto and priv.auto_source_department_id:
+                dept = db.query(Department).filter(Department.id == priv.auto_source_department_id).first()
+                auto_department_name = dept.name if dept else None
+            server_privilege = {
+                "server_group_id": priv.server_group_id,
+                "server_group_name": group_name,
+                "server_scope": priv.server_scope,
+                # Auto-assigned (task_sync_auto_server_privileges) vs a
+                # human's manual grant — shown as "От отдела: X" when auto.
+                "is_auto": bool(priv.is_auto),
+                "auto_source_department_name": auto_department_name,
+            }
+
     return {
         "player": {
             "player_id": player.player_id,
@@ -1282,6 +1486,10 @@ async def api_player_detail(
             "discord_id": player.discord_id,
             "discord_id_confirmed": bool(player.discord_id_confirmed),
             "is_secret": bool(player.is_secret),
+            "linked_admin_id": player.linked_admin_id,
+            "linked_admin_name": player.linked_admin_user.discord_username if player.linked_admin_user else None,
+            "forced_display_name": player.forced_display_name,
+            "steam_avatar_url": player.steam_avatar_url,
         },
         "stats": {
             "successful_missions_captain": stats.successful_missions_captain,
@@ -1310,11 +1518,52 @@ async def api_player_detail(
         "custom_talents": raw_achievements.get("talents", {}),
         "available_kval_kits": available_kval_kits,
         "is_online": is_online,
+        "server_privilege": server_privilege,
         "has_view": check_permission(current_admin, "players", "view"),
         "has_edit": check_permission(current_admin, "players", "edit"),
         "has_delete": check_permission(current_admin, "players", "delete"),
         "has_special": check_permission(current_admin, "players_special", "view"),
     }
+
+
+@router.post("/api/v1/admin/players/{player_id}/link-admin")
+async def api_link_player_admin(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Superuser-only: link this player character to an ND admin account and/or
+    set a forced display name, shown everywhere in ratings/punishments."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await request.json()
+    admin_id = body.get("admin_id")
+    if admin_id is not None:
+        target_admin = db.query(AdminUser).filter(AdminUser.id == int(admin_id)).first()
+        if not target_admin:
+            raise HTTPException(status_code=404, detail="Администратор не найден")
+        player.linked_admin_id = target_admin.id
+    else:
+        player.linked_admin_id = None
+    # Any manual edit through this endpoint takes precedence over the
+    # auto-match worker — it will no longer touch this player's link.
+    player.linked_admin_auto = False
+
+    forced_name = (body.get("forced_display_name") or "").strip()
+    player.forced_display_name = forced_name or None
+
+    db.commit()
+    log_admin_action(db, current_admin.id, "player_link_admin", {
+        "player_id": player_id, "admin_id": player.linked_admin_id, "forced_display_name": player.forced_display_name,
+    })
+    return {"status": "ok"}
 
 
 @router.post("/api/v1/admin/players/{player_id}/rank-kit")
@@ -1437,6 +1686,27 @@ async def api_add_player_note(
     return {"status": "ok", "note": _serialize_note(note)}
 
 
+@router.post("/api/v1/admin/players/{player_id}/notes/{note_id}")
+async def api_update_player_note(
+    request: Request,
+    player_id: int,
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    note = PlayerNoteService(db).update_note(note_id, player_id, content)
+    if not note:
+        raise HTTPException(status_code=404, detail="Заметка не найдена")
+    return {"status": "ok", "note": _serialize_note(note)}
+
+
 @router.post("/api/v1/admin/players/{player_id}/labels")
 async def api_assign_player_label(
     request: Request,
@@ -1504,7 +1774,7 @@ async def api_deactivate_player_trap(
     return {"status": "ok"}
 
 
-@router.post("/admin/players/{player_id}/update")
+@router.post("/adminold/players/{player_id}/update")
 async def update_player(
     request: Request,
     player_id: int,
@@ -1514,7 +1784,7 @@ async def update_player(
     """Update player data (rank/kit) - requires 'delete' or 'special' permission"""
     if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players_special", "view")):
         push_flash(request, "error", "Недостаточно прав для редактирования игрока")
-        return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -1523,7 +1793,7 @@ async def update_player(
         player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
         if not player:
             push_flash(request, "error", "Игрок не найден")
-            return RedirectResponse(url="/admin/players", status_code=302)
+            return RedirectResponse(url="/adminold/players", status_code=302)
 
         rank_raw = form.get("rank_id")
         kit_raw = form.get("kit_level")
@@ -1532,13 +1802,13 @@ async def update_player(
             new_rank_id = None if rank_raw in (None, "") else int(rank_raw)
         except (TypeError, ValueError):
             push_flash(request, "error", "Некорректное значение ранга")
-            return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+            return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
         try:
             new_kit_level = None if kit_raw in (None, "") else int(kit_raw)
         except (TypeError, ValueError):
             push_flash(request, "error", "Некорректное значение набора")
-            return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+            return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
         old_rank_id = player.rank_id
         old_kit_level = player.kit_level
@@ -1551,7 +1821,7 @@ async def update_player(
 
         if not changes:
             push_flash(request, "info", "Изменений не обнаружено")
-            return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+            return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
         player.rank_id = new_rank_id
         player.kit_level = new_kit_level
@@ -1607,10 +1877,10 @@ async def update_player(
         logger.exception("Update player failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить данные игрока из-за внутренней ошибки")
 
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.post("/admin/players/{player_id}/toggle-secret")
+@router.post("/adminold/players/{player_id}/toggle-secret")
 async def toggle_player_secret(
     request: Request,
     player_id: int,
@@ -1632,10 +1902,10 @@ async def toggle_player_secret(
     status = "засекречен" if player.is_secret else "рассекречен"
     log_admin_action(db, current_admin.id, "toggle_secret", {"player_id": player_id, "is_secret": player.is_secret})
     push_flash(request, "success", f"Профиль {status}")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.post("/admin/players/{player_id}/discord-id")
+@router.post("/adminold/players/{player_id}/discord-id")
 async def update_player_discord_id(
     request: Request,
     player_id: int,
@@ -1646,14 +1916,14 @@ async def update_player_discord_id(
     """Update player's Discord ID (confirmed by admin)."""
     if not (check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
         push_flash(request, "error", "Недостаточно прав")
-        return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
         player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
         if not player:
             push_flash(request, "error", "Игрок не найден")
-            return RedirectResponse(url="/admin/players", status_code=302)
+            return RedirectResponse(url="/adminold/players", status_code=302)
 
         new_discord_id = discord_id.strip() or None
         player.discord_id = new_discord_id
@@ -1671,10 +1941,10 @@ async def update_player_discord_id(
         logger.exception("Update discord_id failed: %s", exc)
         push_flash(request, "error", "Ошибка обновления Discord ID")
 
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.get("/admin/sessions", response_class=HTMLResponse)
+@router.get("/adminold/sessions", response_class=HTMLResponse)
 async def admin_sessions_list(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     """List active admin sessions"""
     if not check_permission(current_admin, "sessions", "view"):
@@ -1689,12 +1959,12 @@ async def admin_sessions_list(request: Request, db: Session = Depends(get_db), c
     return templates.TemplateResponse("admin/sessions.html", {"request": request, "admin": current_admin, "sessions": sessions, "flashes": pop_flashes(request)})
 
 
-@router.post("/admin/sessions/{session_id}/revoke")
+@router.post("/adminold/sessions/{session_id}/revoke")
 async def revoke_session(request: Request, session_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     """Revoke a specific admin session"""
     if not check_permission(current_admin, "sessions", "edit"):
         push_flash(request, "error", "Недостаточно прав для отзыва сессии")
-        return RedirectResponse(url="/admin/sessions", status_code=302)
+        return RedirectResponse(url="/adminold/sessions", status_code=302)
 
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -1702,7 +1972,7 @@ async def revoke_session(request: Request, session_id: int, db: Session = Depend
         s = db.query(AdminSession).filter(AdminSession.id == session_id).first()
         if not s:
             push_flash(request, "error", "Сессия не найдена")
-            return RedirectResponse(url="/admin/sessions", status_code=302)
+            return RedirectResponse(url="/adminold/sessions", status_code=302)
 
         target_admin = db.query(AdminUser).filter(AdminUser.id == s.admin_id).first()
 
@@ -1728,7 +1998,7 @@ async def revoke_session(request: Request, session_id: int, db: Session = Depend
         logger.exception("Revoke session failed: %s", exc)
         push_flash(request, "error", "Не удалось отозвать сессию из-за внутренней ошибки")
 
-    return RedirectResponse(url="/admin/sessions", status_code=302)
+    return RedirectResponse(url="/adminold/sessions", status_code=302)
 
 
 @router.get("/api/v1/admin/sessions")
@@ -1777,13 +2047,13 @@ async def api_revoke_session(session_id: int, db: Session = Depends(get_db), cur
 # PRIVILEGE GROUPS
 # ═══════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/privilege-groups", response_class=HTMLResponse)
+@router.get("/adminold/privilege-groups", response_class=HTMLResponse)
 async def admin_privilege_groups(request: Request):
     """Redirect to combined users+groups page."""
-    return RedirectResponse(url="/admin/users?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/users?tab=groups", status_code=302)
 
 
-@router.post("/admin/privilege-groups/create")
+@router.post("/adminold/privilege-groups/create")
 async def admin_privilege_group_create(
     request: Request,
     db: Session = Depends(get_db),
@@ -1800,11 +2070,11 @@ async def admin_privilege_group_create(
     name = (form.get("name") or "").strip()
     if not name:
         push_flash(request, "error", "Название группы не может быть пустым")
-        return RedirectResponse(url="/admin/users?tab=groups", status_code=302)
+        return RedirectResponse(url="/adminold/users?tab=groups", status_code=302)
 
     if db.query(AdminPrivilegeGroup).filter(AdminPrivilegeGroup.name == name).first():
         push_flash(request, "error", f"Группа '{name}' уже существует")
-        return RedirectResponse(url="/admin/users?tab=groups", status_code=302)
+        return RedirectResponse(url="/adminold/users?tab=groups", status_code=302)
 
     import json as _json
     permissions_str = (form.get("permissions") or "{}").strip()
@@ -1824,10 +2094,10 @@ async def admin_privilege_group_create(
     db.commit()
     log_admin_action(db, current_admin.id, "privilege_group_create", {"name": name})
     push_flash(request, "success", f"Группа '{name}' создана")
-    return RedirectResponse(url="/admin/users?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/users?tab=groups", status_code=302)
 
 
-@router.post("/admin/privilege-groups/{group_id}/edit")
+@router.post("/adminold/privilege-groups/{group_id}/edit")
 async def admin_privilege_group_edit(
     group_id: int,
     request: Request,
@@ -1861,10 +2131,10 @@ async def admin_privilege_group_edit(
     db.commit()
     log_admin_action(db, current_admin.id, "privilege_group_edit", {"id": group_id, "name": grp.name})
     push_flash(request, "success", f"Группа '{grp.name}' обновлена")
-    return RedirectResponse(url="/admin/users?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/users?tab=groups", status_code=302)
 
 
-@router.post("/admin/privilege-groups/{group_id}/delete")
+@router.post("/adminold/privilege-groups/{group_id}/delete")
 async def admin_privilege_group_delete(
     group_id: int,
     request: Request,
@@ -1886,10 +2156,10 @@ async def admin_privilege_group_delete(
     db.commit()
     log_admin_action(db, current_admin.id, "privilege_group_delete", {"id": group_id, "name": grp.name})
     push_flash(request, "success", "Группа удалена")
-    return RedirectResponse(url="/admin/users?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/users?tab=groups", status_code=302)
 
 
-@router.post("/admin/users/{user_id}/assign-group")
+@router.post("/adminold/users/{user_id}/assign-group")
 async def admin_user_assign_group(
     user_id: int,
     request: Request,
@@ -1910,7 +2180,7 @@ async def admin_user_assign_group(
     # Guard: only superuser can modify another superuser
     if target.is_superuser and not current_admin.is_superuser:
         push_flash(request, "error", "Нельзя изменить суперпользователя")
-        return RedirectResponse(url="/admin/users?tab=users", status_code=302)
+        return RedirectResponse(url="/adminold/users?tab=users", status_code=302)
 
     from models import AdminPrivilegeGroup
     import json as _json
@@ -1932,10 +2202,10 @@ async def admin_user_assign_group(
     db.commit()
     log_admin_action(db, current_admin.id, "user_assign_group", {"target_id": user_id, "group_id": target.privilege_group_id})
     push_flash(request, "success", "Права пользователя обновлены")
-    return RedirectResponse(url="/admin/users?tab=users", status_code=302)
+    return RedirectResponse(url="/adminold/users?tab=users", status_code=302)
 
 
-@router.get("/admin/debug", response_class=HTMLResponse)
+@router.get("/adminold/debug", response_class=HTMLResponse)
 async def admin_debug(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     """Debug page - check permission system"""
     return templates.TemplateResponse("admin/debug.html", {
@@ -1944,7 +2214,7 @@ async def admin_debug(request: Request, db: Session = Depends(get_db), current_a
     })
 
 
-@router.get("/admin/meeting", response_class=HTMLResponse)
+@router.get("/adminold/meeting", response_class=HTMLResponse)
 async def admin_meeting(
     request: Request,
     room: str = Query("asper-general"),
@@ -1963,7 +2233,7 @@ async def admin_meeting(
     })
 
 
-@router.get("/admin/audit", response_class=HTMLResponse)
+@router.get("/adminold/audit", response_class=HTMLResponse)
 async def admin_audit_list(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     """List audit logs - lightweight page shell, data loaded via AJAX"""
     if not check_permission(current_admin, "audit", "view"):
@@ -2213,7 +2483,7 @@ async def api_audit_logs(
     })
 
 
-@router.get("/admin/server-privileges", response_class=HTMLResponse)
+@router.get("/adminold/server-privileges", response_class=HTMLResponse)
 async def admin_server_privileges(
     request: Request,
     page: int = 1,
@@ -2288,7 +2558,7 @@ async def admin_server_privileges(
     })
 
 
-@router.post("/admin/server-privileges/add")
+@router.post("/adminold/server-privileges/add")
 async def add_server_privilege(
     request: Request,
     db: Session = Depends(get_db),
@@ -2297,7 +2567,7 @@ async def add_server_privilege(
     """Add legacy player privilege (backward compat — use /assign for new assignments)."""
     if not check_permission(current_admin, "privileges", "edit"):
         push_flash(request, "error", "Недостаточно прав")
-        return RedirectResponse(url="/admin/server-privileges", status_code=302)
+        return RedirectResponse(url="/adminold/server-privileges", status_code=302)
 
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -2309,7 +2579,7 @@ async def add_server_privilege(
 
         if not steamid:
             push_flash(request, "error", "SteamID не может быть пустым")
-            return RedirectResponse(url="/admin/server-privileges", status_code=302)
+            return RedirectResponse(url="/adminold/server-privileges", status_code=302)
 
         from services import ServerPlayerPrivilegeService
         privilege_service = ServerPlayerPrivilegeService(db)
@@ -2330,10 +2600,10 @@ async def add_server_privilege(
         logger.exception("Add privilege failed: %s", exc)
         push_flash(request, "error", "Не удалось добавить привилегию")
 
-    return RedirectResponse(url="/admin/server-privileges?tab=players", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges?tab=players", status_code=302)
 
 
-@router.post("/admin/server-privileges/{privilege_id}/update")
+@router.post("/adminold/server-privileges/{privilege_id}/update")
 async def update_server_privilege(
     request: Request,
     privilege_id: int,
@@ -2344,7 +2614,7 @@ async def update_server_privilege(
     # Check if user has permission to manage server privileges
     if not check_permission(current_admin, "privileges", "edit"):
         push_flash(request, "error", "Недостаточно прав")
-        return RedirectResponse(url="/admin/server-privileges", status_code=302)
+        return RedirectResponse(url="/adminold/server-privileges", status_code=302)
     
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -2358,7 +2628,7 @@ async def update_server_privilege(
         
         if not privilege_record:
             push_flash(request, "error", "Запись о привилегиях не найдена")
-            return RedirectResponse(url="/admin/server-privileges", status_code=302)
+            return RedirectResponse(url="/adminold/server-privileges", status_code=302)
         
         form = await request.form()
         selected_privileges = form.getlist("privileges")
@@ -2389,10 +2659,10 @@ async def update_server_privilege(
         logger.exception("Update privilege failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить привилегии")
     
-    return RedirectResponse(url="/admin/server-privileges", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges", status_code=302)
 
 
-@router.post("/admin/server-privileges/{privilege_id}/delete")
+@router.post("/adminold/server-privileges/{privilege_id}/delete")
 async def delete_server_privilege(
     request: Request,
     privilege_id: int,
@@ -2403,7 +2673,7 @@ async def delete_server_privilege(
     # Check if user has permission to manage server privileges
     if not check_permission(current_admin, "privileges", "edit"):
         push_flash(request, "error", "Недостаточно прав")
-        return RedirectResponse(url="/admin/server-privileges", status_code=302)
+        return RedirectResponse(url="/adminold/server-privileges", status_code=302)
     
     try:
         await ensure_csrf_or_valid_admin_session(request, db)
@@ -2417,7 +2687,7 @@ async def delete_server_privilege(
         
         if not privilege_record:
             push_flash(request, "error", "Запись о привилегиях не найдена")
-            return RedirectResponse(url="/admin/server-privileges", status_code=302)
+            return RedirectResponse(url="/adminold/server-privileges", status_code=302)
         
         steamid = privilege_record.steamid
         privilege_service = ServerPlayerPrivilegeService(db)
@@ -2435,7 +2705,7 @@ async def delete_server_privilege(
         logger.exception("Delete privilege failed: %s", exc)
         push_flash(request, "error", "Не удалось удалить привилегии")
     
-    return RedirectResponse(url="/admin/server-privileges", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges", status_code=302)
 
 
 # ─── Server Privilege Groups CRUD ────────────────────────────────────────────
@@ -2445,7 +2715,7 @@ def _check_server_priv_perm(admin: AdminUser):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
 
-@router.post("/admin/server-privilege-groups/create")
+@router.post("/adminold/server-privilege-groups/create")
 async def server_priv_group_create(
     request: Request,
     db: Session = Depends(get_db),
@@ -2464,11 +2734,11 @@ async def server_priv_group_create(
 
     if not name or not group_key:
         push_flash(request, "error", "Название и буквенный ID обязательны")
-        return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
+        return RedirectResponse(url="/adminold/server-privileges?tab=groups", status_code=302)
 
     if db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.group_key == group_key).first():
         push_flash(request, "error", f"Группа с ID «{group_key}» уже существует")
-        return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
+        return RedirectResponse(url="/adminold/server-privileges?tab=groups", status_code=302)
 
     commands_raw = (form.get("commands") or "").strip()
     commands = [c.strip() for c in commands_raw.splitlines() if c.strip()]
@@ -2487,10 +2757,10 @@ async def server_priv_group_create(
     db.commit()
     log_admin_action(db, current_admin.id, "server_priv_group_create", {"name": name, "key": group_key})
     push_flash(request, "success", f"Группа «{name}» создана")
-    return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges?tab=groups", status_code=302)
 
 
-@router.post("/admin/server-privilege-groups/{group_id}/edit")
+@router.post("/adminold/server-privilege-groups/{group_id}/edit")
 async def server_priv_group_edit(
     group_id: int,
     request: Request,
@@ -2518,7 +2788,7 @@ async def server_priv_group_edit(
             ServerPrivilegeGroup.id != group_id
         ).first():
             push_flash(request, "error", f"ID «{group_key}» уже используется")
-            return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
+            return RedirectResponse(url="/adminold/server-privileges?tab=groups", status_code=302)
         grp.group_key = group_key
 
     grp.description = (form.get("description") or "").strip() or None
@@ -2532,10 +2802,10 @@ async def server_priv_group_edit(
     db.commit()
     log_admin_action(db, current_admin.id, "server_priv_group_edit", {"id": group_id, "name": grp.name})
     push_flash(request, "success", f"Группа «{grp.name}» обновлена")
-    return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges?tab=groups", status_code=302)
 
 
-@router.post("/admin/server-privilege-groups/{group_id}/delete")
+@router.post("/adminold/server-privilege-groups/{group_id}/delete")
 async def server_priv_group_delete(
     group_id: int,
     request: Request,
@@ -2558,7 +2828,7 @@ async def server_priv_group_delete(
     db.commit()
     log_admin_action(db, current_admin.id, "server_priv_group_delete", {"id": group_id, "name": grp.name})
     push_flash(request, "success", "Группа удалена")
-    return RedirectResponse(url="/admin/server-privileges?tab=groups", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges?tab=groups", status_code=302)
 
 
 
@@ -2576,7 +2846,7 @@ def _serialize_server_priv_group(g, member_count: int) -> dict:
     }
 
 
-def _serialize_server_priv(p) -> dict:
+def _serialize_server_priv(p, auto_department_name: Optional[str] = None) -> dict:
     return {
         "id": p.id, "steamid": p.steamid, "player_id": p.player_id,
         "player_name": getattr(p, "player_last_time_name", None),
@@ -2584,6 +2854,11 @@ def _serialize_server_priv(p) -> dict:
         "allowed_action_ids": p.allowed_action_ids or [], "reason": p.reason,
         "server_scope": p.server_scope,
         "granted_at": p.granted_at.isoformat() if p.granted_at else None,
+        # Auto-assigned (task_sync_auto_server_privileges) vs a human's
+        # manual grant — the frontend shows "От отдела: X" for auto rows
+        # instead of the normal granted-by-admin display.
+        "is_auto": bool(p.is_auto),
+        "auto_source_department_name": auto_department_name if p.is_auto else None,
     }
 
 
@@ -2624,10 +2899,16 @@ async def api_server_privileges_list(
     for priv in privileges:
         priv.player_last_time_name = player_name_map.get(priv.steamid)
 
+    from models import Department
+    dept_ids = {p.auto_source_department_id for p in privileges if p.is_auto and p.auto_source_department_id}
+    dept_name_map = {}
+    if dept_ids:
+        dept_name_map = {d.id: d.name for d in db.query(Department).filter(Department.id.in_(dept_ids)).all()}
+
     admin_priv_groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.name).all()
 
     return {
-        "privileges": [_serialize_server_priv(p) for p in privileges],
+        "privileges": [_serialize_server_priv(p, dept_name_map.get(p.auto_source_department_id)) for p in privileges],
         "server_privileges": settings.server_permissions_mapping,
         "priv_groups": priv_groups_data,
         "admin_priv_groups": [{"id": g.id, "name": g.name} for g in admin_priv_groups],
@@ -2741,6 +3022,10 @@ async def api_assign_server_privilege(request: Request, db: Session = Depends(ge
             reason=reason, server_scope=server_scope, granted_by_admin_id=current_admin.id,
         )
         db.add(record)
+    # Any manual assign takes this row out of worker-managed territory —
+    # task_sync_auto_server_privileges never touches an is_auto=False row.
+    record.is_auto = False
+    record.auto_source_department_id = None
     db.commit()
     log_admin_action(db, current_admin.id, "assign_server_privilege", {
         "steamid": steamid, "group_id": server_group_id, "commands": commands, "server_scope": server_scope
@@ -2763,7 +3048,7 @@ async def api_revoke_server_privilege(privilege_id: int, db: Session = Depends(g
     return {"status": "ok"}
 
 
-@router.post("/admin/server-privileges/assign")
+@router.post("/adminold/server-privileges/assign")
 async def assign_server_privilege(
     request: Request,
     db: Session = Depends(get_db),
@@ -2784,7 +3069,7 @@ async def assign_server_privilege(
     steamid = (form.get("steamid") or "").strip()
     if not steamid:
         push_flash(request, "error", "SteamID не может быть пустым")
-        return RedirectResponse(url="/admin/server-privileges?tab=players", status_code=302)
+        return RedirectResponse(url="/adminold/server-privileges?tab=players", status_code=302)
 
     server_group_id_str = (form.get("server_group_id") or "").strip()
     server_group_id = int(server_group_id_str) if server_group_id_str.isdigit() else None
@@ -2797,7 +3082,7 @@ async def assign_server_privilege(
             admin_group_id = current_admin.privilege_group_id
             if admin_group_id not in assignable:
                 push_flash(request, "error", f"У вас нет прав назначать группу «{target_group.name}»")
-                return RedirectResponse(url="/admin/server-privileges?tab=players", status_code=302)
+                return RedirectResponse(url="/adminold/server-privileges?tab=players", status_code=302)
 
     commands_raw = (form.get("commands") or "").strip()
     commands = [c.strip() for c in commands_raw.splitlines() if c.strip()]
@@ -2835,7 +3120,7 @@ async def assign_server_privilege(
     log_admin_action(db, current_admin.id, "assign_server_privilege",
                      {"steamid": steamid, "group_id": server_group_id, "commands": commands, "server_scope": server_scope})
     push_flash(request, "success", f"Привилегии обновлены для {steamid}")
-    return RedirectResponse(url="/admin/server-privileges?tab=players", status_code=302)
+    return RedirectResponse(url="/adminold/server-privileges?tab=players", status_code=302)
 
 
 # ============================================
@@ -3306,7 +3591,7 @@ def _require_kits_permission(current_admin: AdminUser):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
 
-@router.get("/admin/kits", response_class=HTMLResponse)
+@router.get("/adminold/kits", response_class=HTMLResponse)
 async def admin_kits_list(
     request: Request,
     job_id: Optional[str] = Query(None),
@@ -3355,7 +3640,7 @@ async def admin_kits_list(
     })
 
 
-@router.post("/admin/kits/add")
+@router.post("/adminold/kits/add")
 async def admin_kits_add(
     request: Request,
     db: Session = Depends(get_db),
@@ -3374,25 +3659,25 @@ async def admin_kits_add(
 
         if not job_id:
             push_flash(request, "error", "Профессия (job_id) не может быть пустой")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         try:
             kit_level = int(kit_level_raw)
         except (TypeError, ValueError):
             push_flash(request, "error", "Некорректное значение уровня кита")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         try:
             items = json.loads(items_raw)
         except json.JSONDecodeError:
             push_flash(request, "error", "Некорректный JSON в поле предметов")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         # Check duplicate
         existing = db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first()
         if existing:
             push_flash(request, "error", f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
         db.add(new_kit)
@@ -3412,10 +3697,10 @@ async def admin_kits_add(
         logger.exception("Create kit failed: %s", exc)
         push_flash(request, "error", "Не удалось создать кит")
 
-    return RedirectResponse(url="/admin/kits", status_code=302)
+    return RedirectResponse(url="/adminold/kits", status_code=302)
 
 
-@router.post("/admin/kits/{kit_id}/update")
+@router.post("/adminold/kits/{kit_id}/update")
 async def admin_kits_update(
     request: Request,
     kit_id: int,
@@ -3432,7 +3717,7 @@ async def admin_kits_update(
         kit = db.query(Kit).filter(Kit.id == kit_id).first()
         if not kit:
             push_flash(request, "error", "Кит не найден")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         job_id = form.get("job_id", kit.job_id).strip()
         kit_level_raw = form.get("kit_level", str(kit.kit_level))
@@ -3440,19 +3725,19 @@ async def admin_kits_update(
 
         if not job_id:
             push_flash(request, "error", "Профессия (job_id) не может быть пустой")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         try:
             kit_level = int(kit_level_raw)
         except (TypeError, ValueError):
             push_flash(request, "error", "Некорректное значение уровня кита")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         try:
             items = json.loads(items_raw)
         except json.JSONDecodeError:
             push_flash(request, "error", "Некорректный JSON в поле предметов")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         # Check duplicate (excluding self)
         conflict = db.query(Kit).filter(
@@ -3462,7 +3747,7 @@ async def admin_kits_update(
         ).first()
         if conflict:
             push_flash(request, "error", f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         changes = []
         if kit.job_id != job_id:
@@ -3474,7 +3759,7 @@ async def admin_kits_update(
 
         if not changes:
             push_flash(request, "info", "Изменений не обнаружено")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         kit.job_id = job_id
         kit.kit_level = kit_level
@@ -3493,10 +3778,10 @@ async def admin_kits_update(
         logger.exception("Update kit failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить кит")
 
-    return RedirectResponse(url="/admin/kits", status_code=302)
+    return RedirectResponse(url="/adminold/kits", status_code=302)
 
 
-@router.post("/admin/kits/{kit_id}/delete")
+@router.post("/adminold/kits/{kit_id}/delete")
 async def admin_kits_delete(
     request: Request,
     kit_id: int,
@@ -3512,7 +3797,7 @@ async def admin_kits_delete(
         kit = db.query(Kit).filter(Kit.id == kit_id).first()
         if not kit:
             push_flash(request, "error", "Кит не найден")
-            return RedirectResponse(url="/admin/kits", status_code=302)
+            return RedirectResponse(url="/adminold/kits", status_code=302)
 
         job_id = kit.job_id
         level = kit.kit_level
@@ -3532,7 +3817,7 @@ async def admin_kits_delete(
         logger.exception("Delete kit failed: %s", exc)
         push_flash(request, "error", "Не удалось удалить кит")
 
-    return RedirectResponse(url="/admin/kits", status_code=302)
+    return RedirectResponse(url="/adminold/kits", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3540,7 +3825,30 @@ async def admin_kits_delete(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _serialize_kit(k: Kit) -> dict:
-    return {"id": k.id, "job_id": k.job_id, "kit_level": k.kit_level, "items": k.items}
+    return {
+        "id": k.id, "job_id": k.job_id, "kit_level": k.kit_level, "items": k.items,
+        "variation_2_items": k.variation_2_items,
+        "variation_3_items": k.variation_3_items,
+        "is_special": k.is_special,
+        "special_variation": k.special_variation,
+    }
+
+
+def _validate_special_kit_fields(body: dict, current_special_variation: Optional[int] = None) -> tuple:
+    """Shared validation for the is_special/special_variation pair (item 15) —
+    a special kit must name exactly one variation (1/2/3) it overrides for."""
+    is_special = bool(body.get("is_special", False))
+    special_variation = body.get("special_variation", current_special_variation if is_special else None)
+    if is_special:
+        try:
+            special_variation = int(special_variation)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Особый кит должен указывать вариацию (1, 2 или 3)")
+        if special_variation not in (1, 2, 3):
+            raise HTTPException(status_code=400, detail="Вариация особого кита должна быть 1, 2 или 3")
+    else:
+        special_variation = None
+    return is_special, special_variation
 
 
 @router.get("/api/v1/admin/kits")
@@ -3582,11 +3890,17 @@ async def api_kits_add(request: Request, db: Session = Depends(get_db), current_
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Некорректное значение уровня кита")
     items = body.get("items", [])
+    is_special, special_variation = _validate_special_kit_fields(body)
 
     if db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first():
         raise HTTPException(status_code=409, detail=f"Кит для профессии '{job_id}' с уровнем {kit_level} уже существует")
 
-    new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
+    new_kit = Kit(
+        job_id=job_id, kit_level=kit_level, items=items,
+        variation_2_items=body.get("variation_2_items"),
+        variation_3_items=body.get("variation_3_items"),
+        is_special=is_special, special_variation=special_variation,
+    )
     db.add(new_kit)
     db.commit()
     db.refresh(new_kit)
@@ -3608,6 +3922,7 @@ async def api_kits_update(kit_id: int, request: Request, db: Session = Depends(g
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Некорректное значение уровня кита")
     items = body.get("items", kit.items)
+    is_special, special_variation = _validate_special_kit_fields(body, kit.special_variation)
 
     conflict = db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level, Kit.id != kit_id).first()
     if conflict:
@@ -3621,6 +3936,10 @@ async def api_kits_update(kit_id: int, request: Request, db: Session = Depends(g
     kit.job_id = job_id
     kit.kit_level = kit_level
     kit.items = items
+    kit.variation_2_items = body.get("variation_2_items", kit.variation_2_items)
+    kit.variation_3_items = body.get("variation_3_items", kit.variation_3_items)
+    kit.is_special = is_special
+    kit.special_variation = special_variation
     db.commit()
     log_admin_action(db, current_admin.id, "update_kit", {"kit_id": kit_id, "changes": changes})
     return {"status": "ok", "kit": _serialize_kit(kit)}
@@ -3658,11 +3977,17 @@ async def api_qual_kits_add(request: Request, db: Session = Depends(get_db), cur
     items = body.get("items", {})
     if not isinstance(items, dict):
         raise HTTPException(status_code=400, detail="items должен быть JSON-объектом")
+    is_special, special_variation = _validate_special_kit_fields(body)
 
     if db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first():
         raise HTTPException(status_code=409, detail=f"Квал-кит '{job_id}' уровня {kit_level} уже существует")
 
-    new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
+    new_kit = Kit(
+        job_id=job_id, kit_level=kit_level, items=items,
+        variation_2_items=body.get("variation_2_items"),
+        variation_3_items=body.get("variation_3_items"),
+        is_special=is_special, special_variation=special_variation,
+    )
     db.add(new_kit)
     db.commit()
     db.refresh(new_kit)
@@ -3688,6 +4013,7 @@ async def api_qual_kits_update(kit_id: int, request: Request, db: Session = Depe
     items = body.get("items", kit.items)
     if not isinstance(items, dict):
         raise HTTPException(status_code=400, detail="items должен быть JSON-объектом")
+    is_special, special_variation = _validate_special_kit_fields(body, kit.special_variation)
 
     conflict = db.query(Kit).filter(Kit.job_id == kit.job_id, Kit.kit_level == kit_level, Kit.id != kit_id).first()
     if conflict:
@@ -3695,6 +4021,10 @@ async def api_qual_kits_update(kit_id: int, request: Request, db: Session = Depe
 
     kit.kit_level = kit_level
     kit.items = items
+    kit.variation_2_items = body.get("variation_2_items", kit.variation_2_items)
+    kit.variation_3_items = body.get("variation_3_items", kit.variation_3_items)
+    kit.is_special = is_special
+    kit.special_variation = special_variation
     db.commit()
     log_admin_action(db, current_admin.id, "update_qual_kit", {"kit_id": kit_id})
     return {"status": "ok", "kit": _serialize_kit(kit)}
@@ -3715,7 +4045,7 @@ async def api_qual_kits_delete(kit_id: int, db: Session = Depends(get_db), curre
 
 # ── Qualification kit routes ──────────────────────────────────────────────────
 
-@router.post("/admin/qual-kits/add")
+@router.post("/adminold/qual-kits/add")
 async def admin_qual_kits_add(
     request: Request,
     db: Session = Depends(get_db),
@@ -3733,7 +4063,7 @@ async def admin_qual_kits_add(
 
         if not base_job:
             push_flash(request, "error", "Профессия не может быть пустой")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         job_id = base_job if base_job.endswith("_k") else base_job + "_k"
 
@@ -3743,7 +4073,7 @@ async def admin_qual_kits_add(
                 raise ValueError
         except (TypeError, ValueError):
             push_flash(request, "error", "Уровень квалификации должен быть от 1 до 5")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         try:
             items = json.loads(items_raw)
@@ -3751,12 +4081,12 @@ async def admin_qual_kits_add(
                 raise ValueError("items must be a JSON object")
         except (json.JSONDecodeError, ValueError) as e:
             push_flash(request, "error", f"Некорректный JSON: {e}")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         existing = db.query(Kit).filter(Kit.job_id == job_id, Kit.kit_level == kit_level).first()
         if existing:
             push_flash(request, "error", f"Квал-кит '{job_id}' уровня {kit_level} уже существует")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         new_kit = Kit(job_id=job_id, kit_level=kit_level, items=items)
         db.add(new_kit)
@@ -3774,10 +4104,10 @@ async def admin_qual_kits_add(
         logger.exception("Create qual kit failed: %s", exc)
         push_flash(request, "error", "Не удалось создать квал-кит")
 
-    return RedirectResponse(url="/admin/kits#qual", status_code=302)
+    return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
 
-@router.post("/admin/qual-kits/{kit_id}/update")
+@router.post("/adminold/qual-kits/{kit_id}/update")
 async def admin_qual_kits_update(
     request: Request,
     kit_id: int,
@@ -3793,7 +4123,7 @@ async def admin_qual_kits_update(
         kit = db.query(Kit).filter(Kit.id == kit_id, Kit.job_id.like("%_k")).first()
         if not kit:
             push_flash(request, "error", "Квал-кит не найден")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         kit_level_raw = form.get("kit_level", str(kit.kit_level))
         items_raw = form.get("items", "{}").strip()
@@ -3804,7 +4134,7 @@ async def admin_qual_kits_update(
                 raise ValueError
         except (TypeError, ValueError):
             push_flash(request, "error", "Уровень квалификации должен быть от 1 до 5")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         try:
             items = json.loads(items_raw)
@@ -3812,14 +4142,14 @@ async def admin_qual_kits_update(
                 raise ValueError("items must be a JSON object")
         except (json.JSONDecodeError, ValueError) as e:
             push_flash(request, "error", f"Некорректный JSON: {e}")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         conflict = db.query(Kit).filter(
             Kit.job_id == kit.job_id, Kit.kit_level == kit_level, Kit.id != kit_id
         ).first()
         if conflict:
             push_flash(request, "error", f"Квал-кит '{kit.job_id}' уровня {kit_level} уже существует")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         kit.kit_level = kit_level
         kit.items = items
@@ -3834,10 +4164,10 @@ async def admin_qual_kits_update(
         logger.exception("Update qual kit failed: %s", exc)
         push_flash(request, "error", "Не удалось обновить квал-кит")
 
-    return RedirectResponse(url="/admin/kits#qual", status_code=302)
+    return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
 
-@router.post("/admin/qual-kits/{kit_id}/delete")
+@router.post("/adminold/qual-kits/{kit_id}/delete")
 async def admin_qual_kits_delete(
     request: Request,
     kit_id: int,
@@ -3852,7 +4182,7 @@ async def admin_qual_kits_delete(
         kit = db.query(Kit).filter(Kit.id == kit_id, Kit.job_id.like("%_k")).first()
         if not kit:
             push_flash(request, "error", "Квал-кит не найден")
-            return RedirectResponse(url="/admin/kits#qual", status_code=302)
+            return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
         job_id = kit.job_id
         level = kit.kit_level
@@ -3870,14 +4200,14 @@ async def admin_qual_kits_delete(
         logger.exception("Delete qual kit failed: %s", exc)
         push_flash(request, "error", "Не удалось удалить квал-кит")
 
-    return RedirectResponse(url="/admin/kits#qual", status_code=302)
+    return RedirectResponse(url="/adminold/kits#qual", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PLAYER NOTES
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/players/{player_id}/notes/save")
+@router.post("/adminold/players/{player_id}/notes/save")
 async def save_player_note(
     request: Request,
     player_id: int,
@@ -3891,14 +4221,14 @@ async def save_player_note(
     PlayerNoteService(db).save_note(player_id, current_admin.id, content)
     log_admin_action(db, current_admin.id, "save_player_note", {"player_id": player_id})
     push_flash(request, "success", "Личное дело сохранено")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LABELS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/players/{player_id}/labels/assign")
+@router.post("/adminold/players/{player_id}/labels/assign")
 async def assign_label(
     request: Request,
     player_id: int,
@@ -3913,10 +4243,10 @@ async def assign_label(
     PlayerLabelService(db).assign(player_id, category_id, note, current_admin.id)
     log_admin_action(db, current_admin.id, "assign_label", {"player_id": player_id, "category_id": category_id})
     push_flash(request, "success", "Метка установлена")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.post("/admin/players/{player_id}/labels/{label_id}/remove")
+@router.post("/adminold/players/{player_id}/labels/{label_id}/remove")
 async def remove_label(
     request: Request,
     player_id: int,
@@ -3930,10 +4260,10 @@ async def remove_label(
     PlayerLabelService(db).remove(label_id)
     log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
     push_flash(request, "success", "Метка снята")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.get("/admin/label-categories")
+@router.get("/adminold/label-categories")
 async def label_categories_page(
     request: Request,
     db: Session = Depends(get_db),
@@ -3950,7 +4280,7 @@ async def label_categories_page(
     })
 
 
-@router.post("/admin/label-categories/create")
+@router.post("/adminold/label-categories/create")
 async def create_label_category(
     request: Request,
     name: str = Form(...),
@@ -3964,10 +4294,10 @@ async def create_label_category(
     await ensure_csrf_or_valid_admin_session(request, db)
     LabelCategoryService(db).create(name.strip(), color, icon, current_admin.id)
     push_flash(request, "success", f"Категория «{name}» создана")
-    return RedirectResponse(url="/admin/label-categories", status_code=302)
+    return RedirectResponse(url="/adminold/label-categories", status_code=302)
 
 
-@router.post("/admin/label-categories/{cat_id}/delete")
+@router.post("/adminold/label-categories/{cat_id}/delete")
 async def delete_label_category(
     request: Request,
     cat_id: int,
@@ -3980,7 +4310,7 @@ async def delete_label_category(
     ok = LabelCategoryService(db).delete(cat_id)
     push_flash(request, "success" if ok else "error",
                "Категория удалена" if ok else "Категория не найдена")
-    return RedirectResponse(url="/admin/label-categories", status_code=302)
+    return RedirectResponse(url="/adminold/label-categories", status_code=302)
 
 
 @router.get("/api/v1/admin/label-categories")
@@ -4028,7 +4358,7 @@ async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), 
 # TRAPS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/players/{player_id}/traps/set")
+@router.post("/adminold/players/{player_id}/traps/set")
 async def set_trap(
     request: Request,
     player_id: int,
@@ -4045,10 +4375,10 @@ async def set_trap(
     PlayerTrapService(db).set_trap(player_id, player.player_steamid, reason, current_admin.id)
     log_admin_action(db, current_admin.id, "set_trap", {"player_id": player_id})
     push_flash(request, "success", "Ловушка установлена")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.post("/admin/players/{player_id}/traps/{trap_id}/deactivate")
+@router.post("/adminold/players/{player_id}/traps/{trap_id}/deactivate")
 async def deactivate_trap(
     request: Request,
     player_id: int,
@@ -4061,14 +4391,14 @@ async def deactivate_trap(
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerTrapService(db).deactivate(trap_id)
     push_flash(request, "success", "Ловушка деактивирована")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADMINISTRATION PAGE
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/administration", response_class=HTMLResponse)
+@router.get("/adminold/administration", response_class=HTMLResponse)
 async def admin_administration(
     request: Request,
     period: str = Query("day"),          # day | week | month | all
@@ -4184,7 +4514,7 @@ async def admin_administration(
     ), {"since": since} if since else {}).fetchall()
 
     # ── Config (editable fields only) ────────────────────────────────────────
-    editable_cfg = _get_editable_config()
+    editable_cfg = _get_editable_config(current_admin)
 
     # ── Global twink pairs ────────────────────────────────────────────────────
     twink_svc = TwinkDetectionService(db)
@@ -4220,8 +4550,19 @@ async def admin_administration(
     })
 
 
-def _get_editable_config() -> dict:
-    """Return dict of editable config fields and their current values."""
+SUPERUSER_ONLY_CFG_FIELDS = {
+    "onlyoffice_document_server_url", "onlyoffice_callback_base_url", "onlyoffice_jwt_secret",
+    # Pterodactyl bearer token grants real power over game servers (department
+    # test servers + the Sub-projects "Сервер 2"/ASPER2 control panel).
+    "pterodactyl_panel_url", "pterodactyl_api_key", "sub_projects_test_server_uuid",
+}
+
+
+def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
+    """Return dict of editable config fields and their current values.
+    ONLYOFFICE fields (one of them is a secret shared with the Document
+    Server) are only ever included for superusers — everyone else gets the
+    rest of the config as before."""
     import os as _os, json as _json
     # Patch broken list fields in .env before loading Settings
     env_path = ".env"
@@ -4250,7 +4591,7 @@ def _get_editable_config() -> dict:
             reset_settings_cache()
 
     s = get_settings()
-    return {
+    cfg = {
         "debug": s.debug,
         "discord_trap_webhook_url": s.discord_trap_webhook_url,
         "discord_client_id": s.discord_client_id,
@@ -4282,6 +4623,16 @@ def _get_editable_config() -> dict:
         "sftp_server_2_logs_dir": s.sftp_server_2_logs_dir,
         "sub_projects_discord_channel_id": s.sub_projects_discord_channel_id,
     }
+    if current_admin is not None and current_admin.is_superuser:
+        cfg.update({
+            "onlyoffice_document_server_url": s.onlyoffice_document_server_url,
+            "onlyoffice_callback_base_url": s.onlyoffice_callback_base_url,
+            "onlyoffice_jwt_secret": s.onlyoffice_jwt_secret,
+            "pterodactyl_panel_url": s.pterodactyl_panel_url,
+            "pterodactyl_api_key": s.pterodactyl_api_key,
+            "sub_projects_test_server_uuid": s.sub_projects_test_server_uuid,
+        })
+    return cfg
 
 
 @router.get("/api/v1/admin/administration")
@@ -4375,7 +4726,7 @@ async def api_admin_administration(
             {"player_id": r[0], "player_last_time_name": r[1], "player_steamid": r[2], "total_secs": int(r[3] or 0), "sessions": int(r[4])}
             for r in top_players_raw
         ],
-        "editable_cfg": _get_editable_config(),
+        "editable_cfg": _get_editable_config(current_admin),
         "twinks": twinks_paged, "twink_page": twink_page, "twink_pages": twink_pages, "twink_total": twink_total,
     }
 
@@ -4414,9 +4765,20 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "sftp_server_2_remote_dir": "SFTP_SERVER_2_REMOTE_DIR",
         "sftp_server_1_logs_dir": "SFTP_SERVER_1_LOGS_DIR", "sftp_server_2_logs_dir": "SFTP_SERVER_2_LOGS_DIR",
         "sub_projects_discord_channel_id": "SUB_PROJECTS_DISCORD_CHANNEL_ID",
+        "onlyoffice_document_server_url": "ONLYOFFICE_DOCUMENT_SERVER_URL",
+        "onlyoffice_callback_base_url": "ONLYOFFICE_CALLBACK_BASE_URL",
+        "onlyoffice_jwt_secret": "ONLYOFFICE_JWT_SECRET",
+        "pterodactyl_panel_url": "PTERODACTYL_PANEL_URL",
+        "pterodactyl_api_key": "PTERODACTYL_API_KEY",
+        "sub_projects_test_server_uuid": "SUB_PROJECTS_TEST_SERVER_UUID",
     }
 
     for field, env_key in field_map.items():
+        if field in SUPERUSER_ONLY_CFG_FIELDS and not current_admin.is_superuser:
+            # Настройки ONLYOFFICE/Pterodactyl (секреты и серверные UUID)
+            # меняют только суперпользователи — молча пропускаем поле, даже
+            # если оно затесалось в тело запроса.
+            continue
         val = body.get(field)
         if val is None:
             if field in ("debug", "use_discord_proxy", "rate_limit_enabled"):
@@ -4442,7 +4804,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
     return {"status": "ok"}
 
 
-@router.post("/admin/administration/config")
+@router.post("/adminold/administration/config")
 async def admin_administration_config_save(
     request: Request,
     db: Session = Depends(get_db),
@@ -4501,9 +4863,14 @@ async def admin_administration_config_save(
         "sftp_server_1_logs_dir": "SFTP_SERVER_1_LOGS_DIR",
         "sftp_server_2_logs_dir": "SFTP_SERVER_2_LOGS_DIR",
         "sub_projects_discord_channel_id": "SUB_PROJECTS_DISCORD_CHANNEL_ID",
+        "onlyoffice_document_server_url": "ONLYOFFICE_DOCUMENT_SERVER_URL",
+        "onlyoffice_callback_base_url": "ONLYOFFICE_CALLBACK_BASE_URL",
+        "onlyoffice_jwt_secret": "ONLYOFFICE_JWT_SECRET",
     }
 
     for field, env_key in field_map.items():
+        if field in SUPERUSER_ONLY_CFG_FIELDS and not current_admin.is_superuser:
+            continue
         val = form.get(field)
         if val is None:
             # checkboxes that are unchecked won't appear in form
@@ -4538,14 +4905,14 @@ async def admin_administration_config_save(
         push_flash(request, "error", f"Ошибка сохранения: {e}")
 
     log_admin_action(db, current_admin.id, "save_config", {})
-    return RedirectResponse(url="/admin/administration", status_code=302)
+    return RedirectResponse(url="/adminold/administration", status_code=302)
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # PUNISHMENTS
 # ════════════════════════════════════════════════════════════════════════════
 
-@router.get("/admin/api/players/search")
+@router.get("/adminold/api/players/search")
 async def api_players_search(
     q: str = Query("", min_length=2),
     db: Session = Depends(get_db),
@@ -4576,7 +4943,7 @@ async def api_players_search(
     ])
 
 
-@router.get("/admin/punishments")
+@router.get("/adminold/punishments")
 async def admin_punishments(
     request: Request,
     tab: str = Query("warning"),
@@ -4620,7 +4987,7 @@ async def admin_punishments(
     })
 
 
-@router.post("/admin/punishments/create")
+@router.post("/adminold/punishments/create")
 async def admin_punishment_create(
     request: Request,
     player_steamid: str = Form(...),
@@ -4632,7 +4999,7 @@ async def admin_punishment_create(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "punishments", "edit"):
+    if not check_permission(current_admin, "punishments", "issue"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -4665,6 +5032,7 @@ async def admin_punishment_create(
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
         issued_by_name=f"ND. {current_admin.discord_username}",
+        issued_by_was_superuser=current_admin.is_superuser,
         expires_at=expires_at,
         notes=notes or None,
     )
@@ -4692,10 +5060,10 @@ async def admin_punishment_create(
     log_admin_action(db, current_admin.id, "punishment_create",
                      {"punishment_id": punishment.id, "type": ptype, "player_id": player_id})
     push_flash(request, "success", f"{PUNISHMENT_TYPE_LABELS.get(ptype, ptype)} выдан(о).")
-    return RedirectResponse(url=f"/admin/players/{player_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
-@router.post("/admin/punishments/{punishment_id}/edit")
+@router.post("/adminold/punishments/{punishment_id}/edit")
 async def admin_punishment_edit(
     request: Request,
     punishment_id: int,
@@ -4728,17 +5096,17 @@ async def admin_punishment_edit(
     log_admin_action(db, current_admin.id, "punishment_edit", {"punishment_id": punishment_id})
     push_flash(request, "success", "Наказание обновлено.")
     tab = p.type
-    return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
+    return RedirectResponse(url=f"/adminold/punishments?tab={tab}", status_code=302)
 
 
-@router.post("/admin/punishments/{punishment_id}/void")
+@router.post("/adminold/punishments/{punishment_id}/void")
 async def admin_punishment_void(
     request: Request,
     punishment_id: int,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "punishments", "edit"):
+    if not check_permission(current_admin, "punishments", "revoke"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -4750,10 +5118,10 @@ async def admin_punishment_void(
     svc.set_void(punishment_id)
     log_admin_action(db, current_admin.id, "punishment_void", {"punishment_id": punishment_id})
     push_flash(request, "info", "Наказание помечено неактуальным.")
-    return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
+    return RedirectResponse(url=f"/adminold/punishments?tab={tab}", status_code=302)
 
 
-@router.post("/admin/punishments/{punishment_id}/unban")
+@router.post("/adminold/punishments/{punishment_id}/unban")
 async def admin_punishment_unban(
     request: Request,
     punishment_id: int,
@@ -4765,7 +5133,7 @@ async def admin_punishment_unban(
     Разбанить игрока: пометить бан неактивным + поставить задачу 'unban' в очередь действий.
     server_name: имя сервера (ASPER1/ASPER2/null=все).
     """
-    if not check_permission(current_admin, "punishments", "edit"):
+    if not check_permission(current_admin, "punishments", "revoke"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -4775,7 +5143,7 @@ async def admin_punishment_unban(
         raise HTTPException(status_code=404)
     if p.type != "ban":
         push_flash(request, "error", "Разбан возможен только для банов")
-        return RedirectResponse(url=f"/admin/punishments?tab={p.type}", status_code=302)
+        return RedirectResponse(url=f"/adminold/punishments?tab={p.type}", status_code=302)
 
     from utils import steam64_to_steam2
     steamid = p.player_steamid or ""
@@ -4807,10 +5175,10 @@ async def admin_punishment_unban(
         "action_id": action.id,
     })
     push_flash(request, "success", f"Разбан поставлен в очередь (action_id={action.id}){srv_label}")
-    return RedirectResponse(url=f"/admin/punishments?tab=ban", status_code=302)
+    return RedirectResponse(url=f"/adminold/punishments?tab=ban", status_code=302)
 
 
-@router.post("/admin/punishments/{punishment_id}/delete")
+@router.post("/adminold/punishments/{punishment_id}/delete")
 async def admin_punishment_delete(
     request: Request,
     punishment_id: int,
@@ -4820,7 +5188,7 @@ async def admin_punishment_delete(
     # Only superuser can permanently delete punishments
     if not current_admin.is_superuser:
         push_flash(request, "error", "Удаление наказаний доступно только суперпользователю")
-        return RedirectResponse(url="/admin/punishments", status_code=302)
+        return RedirectResponse(url="/adminold/punishments", status_code=302)
     await ensure_csrf_or_valid_admin_session(request, db)
 
     svc = PunishmentService(db)
@@ -4831,7 +5199,7 @@ async def admin_punishment_delete(
     svc.delete(punishment_id)
     log_admin_action(db, current_admin.id, "punishment_delete", {"punishment_id": punishment_id})
     push_flash(request, "success", "Наказание удалено.")
-    return RedirectResponse(url=f"/admin/punishments?tab={tab}", status_code=302)
+    return RedirectResponse(url=f"/adminold/punishments?tab={tab}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4843,10 +5211,13 @@ def _serialize_punishment_full(p, player) -> dict:
         "id": p.id,
         "player_id": p.player_id,
         "player_steamid": p.player_steamid,
-        "player_name": player.player_last_time_name if player else None,
+        # Forced display name wins regardless of how the punishment was
+        # issued (game-server API or admin panel) — resolved at display time.
+        "player_name": (player.forced_display_name or player.player_last_time_name) if player else None,
         "type": p.type,
         "reason": p.reason,
         "issued_by_name": p.issued_by_name,
+        "issued_by_was_superuser": bool(p.issued_by_was_superuser),
         "issued_at": p.issued_at.isoformat() if p.issued_at else None,
         "expires_at": p.expires_at.isoformat() if p.expires_at else None,
         "is_active": bool(p.is_active),
@@ -4899,7 +5270,7 @@ async def api_punishment_create(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "punishments", "edit"):
+    if not check_permission(current_admin, "punishments", "issue"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -4933,6 +5304,7 @@ async def api_punishment_create(
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
         issued_by_name=f"ND. {current_admin.discord_username}",
+        issued_by_was_superuser=current_admin.is_superuser,
         expires_at=expires_at,
         notes=notes or None,
     )
@@ -5001,7 +5373,7 @@ async def api_punishment_void(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "punishments", "edit"):
+    if not check_permission(current_admin, "punishments", "revoke"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -5021,7 +5393,7 @@ async def api_punishment_unban(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "punishments", "edit"):
+    if not check_permission(current_admin, "punishments", "revoke"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -5122,16 +5494,20 @@ async def admin_debug(
     
     diagnostics["privilege_group"] = grp_info
     
-    # Test all permission checks with detailed tracing
-    pages = ["players", "players_special", "moderation", "dispatch", "sessions", "kits", "admin", "stats", "audit", "punishments", "privileges", "sub_projects", "replays", "ratings", "discord_bot", "tickets", "meeting"]
-    actions = ["view", "edit", "delete"]
-    
+    # Test all permission checks with detailed tracing — sourced from the
+    # single permissions_registry.py instead of a hand-maintained page/action
+    # list that had already drifted from the real page set (missing/extra
+    # pages, and a fixed view/edit/delete triad that doesn't reflect the
+    # custom actions several pages actually use).
+    from permissions_registry import PERMISSION_REGISTRY
+
     permission_tests = {}
     permission_traces = {}
-    for page in pages:
+    for page, page_def in PERMISSION_REGISTRY.items():
         permission_tests[page] = {}
         permission_traces[page] = {}
-        for action in actions:
+        for action_def in page_def["actions"]:
+            action = action_def["key"]
             result = check_permission(current_admin, page, action)
             permission_tests[page][action] = result
             

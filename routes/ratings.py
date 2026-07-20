@@ -70,6 +70,8 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
                 .first()
             )
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -87,7 +89,7 @@ def pop_flashes(request: Request):
     return flashes
 
 
-@router.get("/admin/ratings", response_class=HTMLResponse)
+@router.get("/adminold/ratings", response_class=HTMLResponse)
 async def admin_ratings_page(
     request: Request,
     role: str = Query("captain"),
@@ -148,7 +150,7 @@ async def admin_ratings_page(
         leaderboard.append({
             "rank": i,
             "steam_id": record.steam_id,
-            "player_name": player.player_last_time_name if player else record.steam_id,
+            "player_name": (player.forced_display_name or player.player_last_time_name) if player else record.steam_id,
             "player_id": player.player_id if player else None,
             "rating": round(record.current_rating, 2),
             "cumulative_points": round(record.cumulative_points, 1),
@@ -178,7 +180,7 @@ async def admin_ratings_page(
     })
 
 
-@router.get("/admin/ratings/rewards", response_class=HTMLResponse)
+@router.get("/adminold/ratings/rewards", response_class=HTMLResponse)
 async def admin_rewards_page(
     request: Request,
     db: Session = Depends(get_db),
@@ -206,7 +208,7 @@ async def admin_rewards_page(
 # ADMIN ACTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/ratings/reset")
+@router.post("/adminold/ratings/reset")
 async def admin_rating_reset(
     request: Request,
     steam_id: str = Form(...),
@@ -244,10 +246,10 @@ async def admin_rating_reset(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "rating_reset", {"steam_id": steam_id, "role": role, "count": count})
     push_flash(request, "success", f"Рейтинг обнулён ({count} ролей) для {steam_id}")
-    return RedirectResponse(url=f"/admin/ratings?role={role}&search={steam_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/ratings?role={role}&search={steam_id}", status_code=302)
 
 
-@router.post("/admin/ratings/adjust")
+@router.post("/adminold/ratings/adjust")
 async def admin_rating_adjust(
     request: Request,
     steam_id: str = Form(...),
@@ -267,7 +269,7 @@ async def admin_rating_adjust(
     steam_id = steam_id.strip()
     if role not in ROLES:
         push_flash(request, "error", "Некорректная роль")
-        return RedirectResponse(url="/admin/ratings", status_code=302)
+        return RedirectResponse(url="/adminold/ratings", status_code=302)
 
     record = get_or_create_rating(db, steam_id, role)
     old_points = record.cumulative_points
@@ -289,10 +291,10 @@ async def admin_rating_adjust(
     })
     direction = "+" if points_delta > 0 else ""
     push_flash(request, "success", f"Рейтинг {role}: {direction}{points_delta} очков для {steam_id}")
-    return RedirectResponse(url=f"/admin/ratings?role={role}&search={steam_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/ratings?role={role}&search={steam_id}", status_code=302)
 
 
-@router.post("/admin/ratings/recalculate")
+@router.post("/adminold/ratings/recalculate")
 async def admin_rating_recalculate(
     request: Request,
     steam_id: str = Form(...),
@@ -300,7 +302,7 @@ async def admin_rating_recalculate(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Recalculate rating from current cumulative_points (useful after param changes)."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
 
     from rating_constants import ROLES
@@ -318,7 +320,7 @@ async def admin_rating_recalculate(
 
     db.commit()
     push_flash(request, "success", f"Рейтинг пересчитан для {steam_id} ({count} ролей)")
-    return RedirectResponse(url=f"/admin/ratings?search={steam_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/ratings?search={steam_id}", status_code=302)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -349,7 +351,7 @@ async def api_ratings_page(
             records = db.query(PlayerRating).filter(PlayerRating.steam_id == player.player_steamid).all()
             search_result = {
                 "player_id": player.player_id,
-                "player_name": player.player_last_time_name,
+                "player_name": player.forced_display_name or player.player_last_time_name,
                 "player_steamid": player.player_steamid,
                 "ratings": {
                     r.role: {
@@ -380,7 +382,7 @@ async def api_ratings_page(
         leaderboard.append({
             "rank": i,
             "steam_id": record.steam_id,
-            "player_name": player.player_last_time_name if player else record.steam_id,
+            "player_name": (player.forced_display_name or player.player_last_time_name) if player else record.steam_id,
             "player_id": player.player_id if player else None,
             "rating": round(record.current_rating, 2),
             "cumulative_points": round(record.cumulative_points, 1),
@@ -423,7 +425,7 @@ async def api_rating_snapshot_generate(
     players_map = {}
     if steam_ids:
         players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all()
-        players_map = {p.player_steamid: p.player_last_time_name for p in players}
+        players_map = {p.player_steamid: (p.forced_display_name or p.player_last_time_name) for p in players}
 
     leaderboards = {}
     for role in ROLES:
@@ -554,7 +556,7 @@ async def api_rating_recalculate_all(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
     try:
         from task_scheduler import scheduler, Priority
@@ -571,7 +573,7 @@ async def api_rating_recalculate_all(
 # SNAPSHOTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.post("/admin/ratings/snapshot/generate")
+@router.post("/adminold/ratings/snapshot/generate")
 async def admin_rating_snapshot_generate(
     request: Request,
     title: str = Form(""),
@@ -597,7 +599,7 @@ async def admin_rating_snapshot_generate(
     players_map = {}
     if steam_ids:
         players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all()
-        players_map = {p.player_steamid: p.player_last_time_name for p in players}
+        players_map = {p.player_steamid: (p.forced_display_name or p.player_last_time_name) for p in players}
 
     # Build leaderboards per role
     leaderboards = {}
@@ -641,10 +643,10 @@ async def admin_rating_snapshot_generate(
         "filename": filename, "title": snapshot_title, "players": len(ratings_data)
     })
     push_flash(request, "success", f"Снапшот «{snapshot_title}» сгенерирован ({len(ratings_data)} игроков)")
-    return RedirectResponse(url="/admin/ratings", status_code=302)
+    return RedirectResponse(url="/adminold/ratings", status_code=302)
 
 
-@router.get("/admin/ratings/snapshot/{filename}")
+@router.get("/adminold/ratings/snapshot/{filename}")
 async def admin_rating_snapshot_download(
     filename: str,
     db: Session = Depends(get_db),
@@ -663,7 +665,7 @@ async def admin_rating_snapshot_download(
     return FileResponse(path=filepath, filename=safe_name, media_type="application/json")
 
 
-@router.post("/admin/ratings/snapshot/{filename}/delete")
+@router.post("/adminold/ratings/snapshot/{filename}/delete")
 async def admin_rating_snapshot_delete(
     request: Request,
     filename: str,
@@ -682,10 +684,10 @@ async def admin_rating_snapshot_delete(
     else:
         push_flash(request, "error", "Файл не найден")
 
-    return RedirectResponse(url="/admin/ratings", status_code=302)
+    return RedirectResponse(url="/adminold/ratings", status_code=302)
 
 
-@router.get("/admin/ratings/snapshot/{filename}/view", response_class=HTMLResponse)
+@router.get("/adminold/ratings/snapshot/{filename}/view", response_class=HTMLResponse)
 async def admin_rating_snapshot_view(
     request: Request,
     filename: str,
@@ -727,7 +729,7 @@ async def admin_rating_snapshot_view(
     })
 
 
-@router.post("/admin/ratings/snapshot/{filename}/restore")
+@router.post("/adminold/ratings/snapshot/{filename}/restore")
 async def admin_rating_snapshot_restore(
     request: Request,
     filename: str,
@@ -745,7 +747,7 @@ async def admin_rating_snapshot_restore(
     filepath = os.path.join(SNAPSHOTS_DIR, safe_name)
     if not os.path.exists(filepath):
         push_flash(request, "error", "Файл снапшота не найден")
-        return RedirectResponse(url="/admin/ratings", status_code=302)
+        return RedirectResponse(url="/adminold/ratings", status_code=302)
 
     try:
         with open(filepath, "r", encoding="utf-8") as f:
@@ -793,10 +795,10 @@ async def admin_rating_snapshot_restore(
         logger.exception("Snapshot restore failed: %s", e)
         push_flash(request, "error", f"Ошибка восстановления: {e}")
 
-    return RedirectResponse(url="/admin/ratings", status_code=302)
+    return RedirectResponse(url="/adminold/ratings", status_code=302)
 
 
-@router.post("/admin/ratings/recalculate-all")
+@router.post("/adminold/ratings/recalculate-all")
 async def admin_rating_recalculate_all(
     request: Request,
     save_snapshot: str = Form("1"),
@@ -805,7 +807,7 @@ async def admin_rating_recalculate_all(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Submit full rating recalculation as a background task (HIGH priority)."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
 
     try:
@@ -827,4 +829,4 @@ async def admin_rating_recalculate_all(
             push_flash(request, "success", f"Рейтинг пересчитан для {result.get('players_recalculated', '?')} игроков.")
         except Exception as e:
             push_flash(request, "error", f"Ошибка пересчёта: {e}")
-    return RedirectResponse(url="/admin/ratings?tab=snapshots", status_code=302)
+    return RedirectResponse(url="/adminold/ratings?tab=snapshots", status_code=302)

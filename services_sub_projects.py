@@ -274,11 +274,15 @@ class SubProjectService:
         crew_max: Optional[int] = None,
         category_id: Optional[int] = None,
     ) -> List[SubProject]:
-        """Get all sub-projects with optional filters (excludes soft-deleted)."""
+        """Get all NORMAL-ZONE sub-projects with optional filters (excludes
+        soft-deleted AND excludes "Тестовый полигон ASPER" projects — those
+        live entirely under department_id and are only ever listed via
+        get_polygon_projects, gated through the department test_server
+        module instead of the site-wide sub_projects permissions)."""
         from models import SubProjectCategoryLink
         from sqlalchemy import or_
 
-        q = self.db.query(SubProject).filter(SubProject.is_deleted == 0)
+        q = self.db.query(SubProject).filter(SubProject.is_deleted == 0, SubProject.department_id.is_(None))
 
         # Search by name
         if search:
@@ -318,7 +322,22 @@ class SubProjectService:
     def get_by_id(self, project_id: int) -> Optional[SubProject]:
         return self.db.query(SubProject).filter(SubProject.id == project_id).first()
 
-    def create(self, data: dict, admin_id: int) -> SubProject:
+    def get_polygon_projects(self, department_ids: List[int], search: Optional[str] = None) -> List[SubProject]:
+        """Projects in "Тестовый полигон ASPER" belonging to any of the given
+        departments (the caller has already resolved which departments the
+        admin has test_server:view on, or passed every department id for a
+        superuser)."""
+        if not department_ids:
+            return []
+        q = self.db.query(SubProject).filter(
+            SubProject.is_deleted == 0,
+            SubProject.department_id.in_(department_ids),
+        )
+        if search:
+            q = q.filter(SubProject.name.ilike(f"%{search}%"))
+        return q.order_by(SubProject.name).all()
+
+    def create(self, data: dict, admin_id: int, department_id: Optional[int] = None) -> SubProject:
         project = SubProject(
             name=data["name"],
             project_type=data.get("project_type"),
@@ -335,6 +354,7 @@ class SubProjectService:
             description=data.get("description"),
             author=data["author"],
             created_by_admin_id=admin_id,
+            department_id=department_id,
         )
         self.db.add(project)
         self.db.commit()
@@ -486,32 +506,55 @@ class SubProjectService:
         from models import SubProjectCategory
         return self.db.query(SubProjectCategory).filter(SubProjectCategory.id == cat_id).first()
 
+    def get_default_category(self):
+        from models import SubProjectCategory
+        return self.db.query(SubProjectCategory).filter(SubProjectCategory.is_default.is_(True)).first()
+
+    def _clear_other_defaults(self, keep_id: Optional[int] = None):
+        """Only one category may be is_default at a time."""
+        from models import SubProjectCategory
+        q = self.db.query(SubProjectCategory).filter(SubProjectCategory.is_default.is_(True))
+        if keep_id is not None:
+            q = q.filter(SubProjectCategory.id != keep_id)
+        q.update({"is_default": False})
+
     def create_category(self, name: str, slug: str, description: Optional[str] = None,
                         color: str = "#1a68de", icon: str = "🚢",
                         sort_order: int = 0, parent_id: Optional[int] = None,
-                        admin_id: Optional[int] = None):
+                        admin_id: Optional[int] = None, is_default: bool = False):
         from models import SubProjectCategory
         import re
+        import secrets
         if not slug:
-            slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+            # Non-Latin (e.g. all-Cyrillic) names strip to "" here — fall back
+            # to a random slug rather than colliding on the UNIQUE column.
+            slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or f"cat-{secrets.token_hex(4)}"
         cat = SubProjectCategory(
             name=name, slug=slug, description=description,
             color=color, icon=icon, sort_order=sort_order,
             parent_id=parent_id, created_by_admin_id=admin_id,
+            is_default=is_default,
         )
         self.db.add(cat)
+        self.db.flush()
+        if is_default:
+            self._clear_other_defaults(keep_id=cat.id)
         self.db.commit()
         self.db.refresh(cat)
         return cat
 
     def update_category(self, cat_id: int, data: dict):
-        from models import SubProjectCategory
         cat = self.get_category_by_id(cat_id)
         if not cat:
             return None
         for field in ("name", "slug", "description", "color", "icon", "sort_order", "parent_id"):
             if field in data:
                 setattr(cat, field, data[field])
+        if "is_default" in data:
+            cat.is_default = bool(data["is_default"])
+            if cat.is_default:
+                self.db.flush()
+                self._clear_other_defaults(keep_id=cat.id)
         self.db.commit()
         self.db.refresh(cat)
         return cat
@@ -571,38 +614,81 @@ class SubProjectService:
 
     # ── SFTP Deployment ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _versioned_remote_filename(version: SubProjectVersion) -> str:
+        """Remote filename for a version — original name + "_vN" suffix so
+        every deployed version of a project coexists under a distinct name
+        on the SFTP server (never overwriting a sibling version's file).
+        "Тестовый полигон ASPER" projects (department_id set) additionally
+        get a "_polyg" suffix, so polygon builds are visually/namespace-
+        distinct from normal-zone deploys even though both can only ever
+        land on the same "Сервер 2"/ASPER2."""
+        stem, ext = os.path.splitext(version.filename)
+        suffix = f"_v{version.version_number}"
+        if version.project and version.project.department_id is not None:
+            suffix += "_polyg"
+        return f"{stem}{suffix}{ext}"
+
     def deploy_version(self, version_id: int, server_number: int) -> bool:
-        """Deploy a .sub file version to a remote server via SFTP."""
+        """Deploy a .sub file version to a remote server via SFTP.
+
+        Replaces any other version of the SAME project already deployed to
+        this server: the new version is uploaded and added to filelist.xml
+        first (so a failure here never leaves the server without an active
+        version), then any previously-deployed sibling version is dropped
+        from filelist.xml only — its file is deliberately left on disk on
+        the SFTP server, never physically deleted.
+        """
         version = self.get_version_by_id(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Версия не найдена")
+        if version.project and version.project.department_id is not None and server_number != 2:
+            # Hard business-rule lock (belt-and-suspenders alongside the
+            # route-level check) — Полигон deploys ONLY ever go to "Сервер 2"
+            # / ASPER2, regardless of what permissions the caller holds.
+            raise HTTPException(status_code=400, detail="Проекты Тестового полигона можно развернуть только на Сервере 2 (ASPER2)")
 
         local_path = os.path.join(settings.sub_projects_upload_dir, "files", version.stored_filename)
         if not os.path.exists(local_path):
             raise HTTPException(status_code=404, detail="Файл версии не найден на диске")
 
-        # Use original filename for remote (game server expects it)
-        remote_filename = version.filename
+        remote_filename = self._versioned_remote_filename(version)
+        deployed_flag = "deployed_server_1" if server_number == 1 else "deployed_server_2"
 
         sftp = SFTPManager(server_number)
         sftp.upload_file(local_path, remote_filename)
         sftp.add_to_filelist(remote_filename)
 
-        # Mark as deployed
-        if server_number == 1:
-            version.deployed_server_1 = 1
-        else:
-            version.deployed_server_2 = 1
+        # Untrack any other version of this project still marked deployed on
+        # this same server — filelist.xml only, the old file stays put.
+        siblings = (
+            self.db.query(SubProjectVersion)
+            .filter(
+                SubProjectVersion.project_id == version.project_id,
+                SubProjectVersion.id != version.id,
+                getattr(SubProjectVersion, deployed_flag) == 1,
+            )
+            .all()
+        )
+        for sibling in siblings:
+            sftp.remove_from_filelist(self._versioned_remote_filename(sibling))
+            setattr(sibling, deployed_flag, 0)
+
+        setattr(version, deployed_flag, 1)
         self.db.commit()
         return True
 
     def undeploy_version(self, version_id: int, server_number: int) -> bool:
-        """Remove a .sub file from a remote server."""
+        """Remove a .sub file from a remote server (filelist.xml + the
+        physical file — an explicit undeploy, unlike the replace-on-deploy
+        path above, IS meant to actually delete it)."""
         version = self.get_version_by_id(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Версия не найдена")
+        if version.project and version.project.department_id is not None and server_number != 2:
+            raise HTTPException(status_code=400, detail="Проекты Тестового полигона можно удалить только с Сервера 2 (ASPER2)")
 
-        remote_filename = version.filename
+        remote_filename = self._versioned_remote_filename(version)
 
         sftp = SFTPManager(server_number)
         sftp.delete_file(remote_filename)

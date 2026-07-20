@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react"
 import { Navigate, Route, Routes } from "react-router-dom"
 import { AppShell } from "@/components/layout/AppShell"
+import { OnboardingModal } from "@/components/layout/OnboardingModal"
 import { useCurrentAdmin } from "@/lib/auth"
 import { DashboardPage } from "@/pages/dashboard"
 import { RoundStatusPage } from "@/pages/round-status"
@@ -19,8 +20,11 @@ import { SubProjectsListPage } from "@/pages/sub-projects"
 import { SubProjectDetailPage } from "@/pages/sub-projects/detail"
 import { SubProjectFormPage } from "@/pages/sub-projects/form"
 import { SubProjectCategoriesPage } from "@/pages/sub-projects/categories"
+import { SubProjectsPolygonListPage } from "@/pages/sub-projects-polygon"
+import { SubProjectsPolygonDetailPage } from "@/pages/sub-projects-polygon/detail"
 import { ReplaysListPage } from "@/pages/replays"
 import { ReplayPlayerPage } from "@/pages/replays/player"
+import { RoundDetailPage } from "@/pages/replays/round-detail"
 import { SessionsPage } from "@/pages/sessions"
 import { AuditPage } from "@/pages/audit"
 import { LabelCategoriesPage } from "@/pages/label-categories"
@@ -31,11 +35,15 @@ import { DiscordBotPage } from "@/pages/discord-bot"
 import { AdministrationPage } from "@/pages/administration"
 import { LogsPage } from "@/pages/logs"
 import { DocumentsPage } from "@/pages/documents"
+import { DepartmentsPage } from "@/pages/departments"
+import { DepartmentDetailPage } from "@/pages/departments/detail"
+import { TasksListPage } from "@/pages/tasks"
+import { TaskBoardPage } from "@/pages/tasks/board"
 
-// The rich text editor pulls in the full Tiptap extension set — code-split it
-// so every other page doesn't pay for that weight on first load.
+// The ONLYOFFICE editor page dynamically loads Document Server's own script
+// — code-split it so every other page doesn't pay for that on first load.
 const DocumentEditorPage = lazy(() =>
-  import("@/pages/documents/editor").then((m) => ({ default: m.DocumentEditorPage }))
+  import("@/pages/documents/OnlyOfficeEditorPage").then((m) => ({ default: m.OnlyOfficeEditorPage }))
 )
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -48,7 +56,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     // The api client already redirects to /login on 401; this is a fallback.
     return null
   }
-  return <>{children}</>
+  return (
+    <>
+      <OnboardingModal />
+      {children}
+    </>
+  )
 }
 
 export default function App() {
@@ -66,12 +79,15 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
           <Route path="punishments" element={<PunishmentsPage />} />
           <Route path="replays" element={<ReplaysListPage />} />
+          <Route path="replays/rounds/:roundId" element={<RoundDetailPage />} />
           <Route path="replays/:replayId" element={<ReplayPlayerPage />} />
           <Route path="sub-projects" element={<SubProjectsListPage />} />
           <Route path="sub-projects/categories" element={<SubProjectCategoriesPage />} />
           <Route path="sub-projects/new" element={<SubProjectFormPage />} />
           <Route path="sub-projects/:projectId" element={<SubProjectDetailPage />} />
           <Route path="sub-projects/:projectId/edit" element={<SubProjectFormPage />} />
+          <Route path="sub-projects-polygon" element={<SubProjectsPolygonListPage />} />
+          <Route path="sub-projects-polygon/:projectId" element={<SubProjectsPolygonDetailPage />} />
           <Route path="ratings" element={<RatingsPage />} />
           <Route path="ratings/rewards" element={<RewardsConfigPage />} />
           <Route path="ratings/snapshots/:filename" element={<RatingSnapshotViewPage />} />
@@ -86,6 +102,10 @@ export default function App() {
           <Route path="audit" element={<AuditPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="documents" element={<DocumentsPage />} />
+          <Route path="tasks" element={<TasksListPage />} />
+          <Route path="tasks/:boardId" element={<TaskBoardPage />} />
+          <Route path="departments" element={<DepartmentsPage />} />
+          <Route path="departments/:departmentId" element={<DepartmentDetailPage />} />
           <Route
             path="documents/:documentId"
             element={

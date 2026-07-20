@@ -26,4 +26,7 @@ export interface PlayersListResponse {
   total_pages: number
   label_categories: LabelCategory[]
   selected_label_id: number | null
+  selected_rank_id: number | null
+  selected_sort: string | null
+  ranks: Record<string, string>
 }

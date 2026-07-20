@@ -93,7 +93,7 @@
       {% else %}
         <span>Результаты по: <strong>«{{ search_query }}»</strong></span>
       {% endif %}
-      <a href="/admin/players" title="Сбросить">✕</a>
+      <a href="/adminold/players" title="Сбросить">✕</a>
     </div>
     {% endif %}
 
@@ -109,12 +109,12 @@
       {% if label_categories %}
       <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
         <span style="font-size:11px; color:var(--gray); font-weight:600; white-space:nowrap;">🏷 По метке:</span>
-        <a href="/admin/players{% if search_query %}?search={{ search_query }}{% endif %}"
+        <a href="/adminold/players{% if search_query %}?search={{ search_query }}{% endif %}"
            class="label-filter-btn {% if not selected_label_id %}active{% endif %}">
           Все
         </a>
         {% for cat in label_categories %}
-        <a href="/admin/players?label_id={{ cat.id }}{% if search_query %}&search={{ search_query }}{% endif %}"
+        <a href="/adminold/players?label_id={{ cat.id }}{% if search_query %}&search={{ search_query }}{% endif %}"
            class="label-filter-btn {% if selected_label_id == cat.id %}active{% endif %}"
            style="--cat-color: {{ cat.color }};">
           {{ cat.icon }} {{ cat.name }}
@@ -174,7 +174,7 @@
           <td class="cell-time">{{ player.kit_name or '-' }}</td>
           <td class="cell-time">{{ "%.1f"|format(player.play_time_hours) }}</td>
           <td class="cell-time">{{ player.last_login_time|msk if player.last_login_time else '-' }}</td>
-          <td><a href="/admin/players/{{ player.player_id }}" class="btn btn-outline">Просмотр →</a></td>
+          <td><a href="/adminold/players/{{ player.player_id }}" class="btn btn-outline">Просмотр →</a></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -184,7 +184,7 @@
   <div style="text-align:center; padding:48px 32px; color:var(--gray-dark);">
     <div style="font-size:48px; margin-bottom:16px; opacity:.45;">👤</div>
     <h3 style="color:var(--gray); margin-bottom:8px;">Игроки не найдены</h3>
-    {% if search_query %}<p>Попробуйте изменить запрос или <a href="/admin/players" style="color:var(--primary-blue);">сбросить поиск</a></p>{% endif %}
+    {% if search_query %}<p>Попробуйте изменить запрос или <a href="/adminold/players" style="color:var(--primary-blue);">сбросить поиск</a></p>{% endif %}
   </div>
   {% endif %}
 
@@ -241,9 +241,9 @@
         dd.style.display = 'none';
         // Use SPA navigation instead of location.href
         if (window.__spaNavigate) {
-          window.__spaNavigate('/admin/players?search=' + encodeURIComponent(q));
+          window.__spaNavigate('/adminold/players?search=' + encodeURIComponent(q));
         } else {
-          location.href = '/admin/players?search=' + encodeURIComponent(q);
+          location.href = '/adminold/players?search=' + encodeURIComponent(q);
         }
       }
     }
@@ -284,7 +284,7 @@
       if (ctx.indexOf('ip_address') !== -1) sub = '<strong>' + esc(p.steamid) + '</strong> · ' + esc(p.name);
       else if (ctx.indexOf('steamid') !== -1 && p.previous_names && p.previous_names.length)
         sub = 'Ники: ' + p.previous_names.slice(0, 3).map(esc).join(', ');
-      return '<div class="sd-item" onclick="if(window.__spaNavigate)window.__spaNavigate(\'/admin/players/' + p.id + '\');else location.href=\'/admin/players/' + p.id + '\'">' +
+      return '<div class="sd-item" onclick="if(window.__spaNavigate)window.__spaNavigate(\'/adminold/players/' + p.id + '\');else location.href=\'/adminold/players/' + p.id + '\'">' +
              '<div class="sd-name">' + esc(p.name) + '</div>' +
              '<div class="sd-sub">' + sub + '</div></div>';
     }).join('');

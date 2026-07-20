@@ -194,11 +194,13 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
             from sqlalchemy.orm import joinedload
             admin = db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(AdminUser.id == session.admin_id).first()
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-@panel_router.get("/admin/tickets", response_class=HTMLResponse)
+@panel_router.get("/adminold/tickets", response_class=HTMLResponse)
 async def admin_tickets_list(request: Request, status: str = Query("open"), db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "tickets", "view"):
@@ -232,7 +234,7 @@ async def admin_tickets_list(request: Request, status: str = Query("open"), db: 
     })
 
 
-@panel_router.get("/admin/tickets/{ticket_id}", response_class=HTMLResponse)
+@panel_router.get("/adminold/tickets/{ticket_id}", response_class=HTMLResponse)
 async def admin_ticket_detail(request: Request, ticket_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "tickets", "view"):
@@ -263,7 +265,7 @@ async def admin_ticket_detail(request: Request, ticket_id: int, db: Session = De
     })
 
 
-@panel_router.post("/admin/tickets/{ticket_id}/send")
+@panel_router.post("/adminold/tickets/{ticket_id}/send")
 async def admin_ticket_send_message(
     request: Request,
     ticket_id: int,
@@ -272,7 +274,7 @@ async def admin_ticket_send_message(
 ):
     """Send a message to a ticket from the web panel (via bot)."""
     admin = _get_admin(request, db)
-    if not check_permission(admin, "tickets", "edit"):
+    if not check_permission(admin, "tickets", "reply"):
         raise HTTPException(status_code=403)
 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
@@ -280,7 +282,7 @@ async def admin_ticket_send_message(
         raise HTTPException(status_code=404)
 
     if not content.strip():
-        return RedirectResponse(url=f"/admin/tickets/{ticket_id}", status_code=302)
+        return RedirectResponse(url=f"/adminold/tickets/{ticket_id}", status_code=302)
 
     # Queue bot action to send message in Discord channel
     bot_action = DiscordBotAction(
@@ -310,7 +312,7 @@ async def admin_ticket_send_message(
     ticket.awaiting_admin = 0
     db.commit()
 
-    return RedirectResponse(url=f"/admin/tickets/{ticket_id}", status_code=302)
+    return RedirectResponse(url=f"/adminold/tickets/{ticket_id}", status_code=302)
 
 
 def _load_ticket_config() -> dict:
@@ -395,7 +397,7 @@ async def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depe
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/send")
 async def api_ticket_send_message(request: Request, ticket_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
-    if not check_permission(admin, "tickets", "edit"):
+    if not check_permission(admin, "tickets", "reply"):
         raise HTTPException(status_code=403)
 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
@@ -428,7 +430,7 @@ async def api_ticket_send_message(request: Request, ticket_id: int, db: Session 
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/close")
 async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
-    if not check_permission(admin, "tickets", "edit"):
+    if not check_permission(admin, "tickets", "close"):
         raise HTTPException(status_code=403)
 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
@@ -449,7 +451,7 @@ async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depen
     return {"status": "ok"}
 
 
-@panel_router.get("/admin/tickets/{ticket_id}/messages-json")
+@panel_router.get("/adminold/tickets/{ticket_id}/messages-json")
 async def admin_ticket_messages_json(
     request: Request,
     ticket_id: int,
@@ -483,11 +485,11 @@ async def admin_ticket_messages_json(
     ])
 
 
-@panel_router.post("/admin/tickets/{ticket_id}/close")
+@panel_router.post("/adminold/tickets/{ticket_id}/close")
 async def admin_ticket_close(request: Request, ticket_id: int, db: Session = Depends(get_db)):
     """Close a ticket from the web panel."""
     admin = _get_admin(request, db)
-    if not check_permission(admin, "tickets", "edit"):
+    if not check_permission(admin, "tickets", "close"):
         raise HTTPException(status_code=403)
 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
@@ -511,4 +513,4 @@ async def admin_ticket_close(request: Request, ticket_id: int, db: Session = Dep
         db.add(bot_action)
 
     db.commit()
-    return RedirectResponse(url="/admin/tickets", status_code=302)
+    return RedirectResponse(url="/adminold/tickets", status_code=302)

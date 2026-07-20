@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Gavel, Plus } from "lucide-react"
+import { Gavel, Plus, Star } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,6 +26,7 @@ interface PunishmentRow {
   type: string
   reason: string | null
   issued_by_name: string | null
+  issued_by_was_superuser: boolean
   issued_at: string | null
   expires_at: string | null
   is_active: boolean
@@ -54,7 +55,7 @@ const TYPE_DOT: Record<string, string> = {
 }
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "—"
+  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
 }
 
 export function PunishmentsPage() {
@@ -123,25 +124,25 @@ export function PunishmentsPage() {
               </DialogHeader>
               <div className="space-y-3">
                 <div>
-                  <Label>SteamID</Label>
+                  <Label className="mb-1.5 block">SteamID</Label>
                   <Input value={form.player_steamid} onChange={(e) => setForm((f) => ({ ...f, player_steamid: e.target.value }))} />
                 </div>
                 <div>
-                  <Label>Причина</Label>
+                  <Label className="mb-1.5 block">Причина</Label>
                   <Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
                 </div>
                 <div>
-                  <Label>Срок (дней, пусто = навсегда)</Label>
+                  <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
                   <Input type="number" value={form.expires_days} onChange={(e) => setForm((f) => ({ ...f, expires_days: e.target.value }))} />
                 </div>
                 {(tab === "ban" || tab === "kick") && (
                   <div>
-                    <Label>Сервер (пусто = оба)</Label>
+                    <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
                     <Input value={form.server_name} onChange={(e) => setForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
                   </div>
                 )}
                 <div>
-                  <Label>Внутренние заметки</Label>
+                  <Label className="mb-1.5 block">Внутренние заметки</Label>
                   <Textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
                 </div>
               </div>
@@ -184,11 +185,18 @@ export function PunishmentsPage() {
               {data?.rows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell>
-                    <div className="font-medium">{r.player_name || "—"}</div>
+                    <div className="font-medium">{r.player_name || "-"}</div>
                     <div className="font-mono text-xs text-muted-foreground">{r.player_steamid}</div>
                   </TableCell>
-                  <TableCell className="max-w-52 truncate" title={r.reason ?? undefined}>{r.reason || "—"}</TableCell>
-                  <TableCell className="text-muted-foreground">{r.issued_by_name || "—"}</TableCell>
+                  <TableCell className="max-w-52 truncate" title={r.reason ?? undefined}>{r.reason || "-"}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      {r.issued_by_name || "-"}
+                      {r.issued_by_was_superuser && (
+                        <span title="Выдано суперпользователем"><Star className="size-3.5 fill-warning text-warning" /></span>
+                      )}
+                    </span>
+                  </TableCell>
                   <TableCell className="text-sm text-muted-foreground">{fmtDate(r.issued_at)}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{r.expires_at ? fmtDate(r.expires_at) : "Навсегда"}</TableCell>
                   <TableCell><Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge></TableCell>

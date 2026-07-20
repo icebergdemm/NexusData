@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Bot } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Bot, RefreshCw, Send } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 
@@ -27,10 +28,115 @@ const KNOWN_KEYS: { key: string; label: string }[] = [
 
 interface AntiRaidEvent { event_type: string; discord_id: string | null; username: string | null; occurred_at: string | null; resolved: boolean }
 interface TwinkSuspect { new_discord_id: string; new_username: string | null; new_display_name: string | null; similar_player_name: string | null }
+interface FailedRoleSync {
+  id: number; discord_id: string | null; add_role_id: string | null; remove_role_id: string | null
+  error_message: string | null; executed_at: string | null
+}
 interface DiscordBotResponse {
   members_count: number; pending_actions: number; last_sync: string | null
   config: Record<string, string>; antiraid_events: AntiRaidEvent[]; twink_suspects: TwinkSuspect[]
+  failed_role_syncs: FailedRoleSync[]
   can_edit: boolean
+  can_manage_config: boolean
+}
+
+interface RoleSyncRow {
+  admin_id: number; admin_name: string | null
+  department_id: number; department_name: string
+  add_role_ids: string[]; remove_role_ids: string[]
+}
+
+function rowKey(r: RoleSyncRow): string { return `${r.admin_id}:${r.department_id}` }
+
+function RoleSyncCard() {
+  const [rows, setRows] = useState<RoleSyncRow[] | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  const previewMutation = useMutation({
+    mutationFn: () => api.get<{ rows: RoleSyncRow[] }>("/api/v1/admin/discord-bot/role-sync/preview"),
+    onSuccess: (res) => { setRows(res.rows); setSelected(new Set(res.rows.map(rowKey))) },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const applyMutation = useMutation({
+    mutationFn: () => api.post<{ status: string; queued: number }>("/api/v1/admin/discord-bot/role-sync/apply", {
+      selections: (rows ?? []).filter((r) => selected.has(rowKey(r))).map((r) => ({
+        admin_id: r.admin_id, add_role_ids: r.add_role_ids, remove_role_ids: r.remove_role_ids,
+      })),
+    }),
+    onSuccess: (res) => {
+      toast.success(`Поставлено в очередь: ${res.queued}`)
+      setRows(null)
+      setSelected(new Set())
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const toggle = (key: string) => {
+    setSelected((s) => {
+      const next = new Set(s)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between space-y-0">
+        <CardTitle className="text-sm">Ручная синхронизация ролей отделов (сайт → Discord)</CardTitle>
+        <Button size="sm" variant="outline" disabled={previewMutation.isPending} onClick={() => previewMutation.mutate()}>
+          <RefreshCw className="size-3.5" /> Найти расхождения
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <p className="mb-2 text-xs text-muted-foreground">
+          Сравнивает то, что положено сотрудникам по сайту, с их фактическими ролями в Discord (по последнему снимку) — сайт всегда источник истины.
+          Отметьте, что синхронизировать, и нажмите «Синхронизировать выбранные».
+        </p>
+        {rows === null ? (
+          <p className="text-sm text-muted-foreground">Нажмите «Найти расхождения», чтобы посмотреть текущее состояние.</p>
+        ) : !rows.length ? (
+          <p className="text-sm text-muted-foreground">Расхождений не найдено — всё синхронизировано.</p>
+        ) : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8">
+                    <Checkbox
+                      checked={selected.size === rows.length}
+                      onCheckedChange={(c) => setSelected(c ? new Set(rows.map(rowKey)) : new Set())}
+                    />
+                  </TableHead>
+                  <TableHead>Сотрудник</TableHead>
+                  <TableHead>Отдел</TableHead>
+                  <TableHead>Изменение</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={rowKey(r)}>
+                    <TableCell><Checkbox checked={selected.has(rowKey(r))} onCheckedChange={() => toggle(rowKey(r))} /></TableCell>
+                    <TableCell>{r.admin_name ?? `#${r.admin_id}`}</TableCell>
+                    <TableCell>{r.department_name}</TableCell>
+                    <TableCell className="text-xs">
+                      {r.add_role_ids.map((id) => <span key={id} className="mr-1 text-emerald-500">+{id}</span>)}
+                      {r.remove_role_ids.map((id) => <span key={id} className="mr-1 text-destructive">-{id}</span>)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="mt-3 flex justify-end">
+              <Button size="sm" disabled={!selected.size || applyMutation.isPending} onClick={() => applyMutation.mutate()}>
+                <Send className="size-3.5" /> Синхронизировать выбранные ({selected.size})
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 export function DiscordBotPage() {
@@ -50,9 +156,9 @@ export function DiscordBotPage() {
       <PageHeader title="Discord бот" description="Синхронизация участников, каналы уведомлений, анти-рейд" icon={Bot} />
       <div className="space-y-4">
       <div className="grid grid-cols-3 gap-4">
-        <Card><CardContent className="pt-6 text-center"><div className="text-2xl font-bold">{data?.members_count ?? "—"}</div><div className="text-xs text-muted-foreground">Участников Discord</div></CardContent></Card>
-        <Card><CardContent className="pt-6 text-center"><div className="text-2xl font-bold">{data?.pending_actions ?? "—"}</div><div className="text-xs text-muted-foreground">Задач в очереди</div></CardContent></Card>
-        <Card><CardContent className="pt-6 text-center"><div className="text-sm font-bold">{data?.last_sync ? new Date(data.last_sync).toLocaleString("ru-RU") : "—"}</div><div className="text-xs text-muted-foreground">Последняя синхронизация</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.members_count ?? "-"}</div><div className="text-xs text-muted-foreground">Участников Discord в базе данных (не актуальное кол-во, а общее)</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.pending_actions ?? "-"}</div><div className="text-xs text-muted-foreground">Задач в очереди</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-sm font-bold">{data?.last_sync ? new Date(data.last_sync).toLocaleString("ru-RU") : "-"}</div><div className="text-xs text-muted-foreground">Последняя синхронизация</div></CardContent></Card>
       </div>
 
       <Card>
@@ -63,8 +169,8 @@ export function DiscordBotPage() {
           ))}
           {data?.can_edit && (
             <div className="flex items-end gap-2 border-t pt-3">
-              <div className="flex-1"><Label>Ключ</Label><Input value={newKey.key} onChange={(e) => setNewKey((f) => ({ ...f, key: e.target.value }))} /></div>
-              <div className="flex-1"><Label>Значение</Label><Input value={newKey.value} onChange={(e) => setNewKey((f) => ({ ...f, value: e.target.value }))} /></div>
+              <div className="flex-1"><Label className="mb-1.5 block">Ключ</Label><Input value={newKey.key} onChange={(e) => setNewKey((f) => ({ ...f, key: e.target.value }))} /></div>
+              <div className="flex-1"><Label className="mb-1.5 block">Значение</Label><Input value={newKey.value} onChange={(e) => setNewKey((f) => ({ ...f, value: e.target.value }))} /></div>
               <Button disabled={!newKey.key.trim()} onClick={() => { setConfig.mutate(newKey); setNewKey({ key: "", value: "" }) }}>Добавить</Button>
             </div>
           )}
@@ -80,8 +186,8 @@ export function DiscordBotPage() {
               {data?.antiraid_events.map((e, i) => (
                 <TableRow key={i}>
                   <TableCell>{e.event_type}</TableCell>
-                  <TableCell>{e.username ?? e.discord_id ?? "—"}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{e.occurred_at ? new Date(e.occurred_at).toLocaleString("ru-RU") : "—"}</TableCell>
+                  <TableCell>{e.username ?? e.discord_id ?? "-"}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{e.occurred_at ? new Date(e.occurred_at).toLocaleString("ru-RU") : "-"}</TableCell>
                   <TableCell><Badge variant={e.resolved ? "secondary" : "destructive"}>{e.resolved ? "Решено" : "Активно"}</Badge></TableCell>
                 </TableRow>
               ))}
@@ -90,6 +196,37 @@ export function DiscordBotPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {data?.can_manage_config && <RoleSyncCard />}
+
+      {!!data?.failed_role_syncs.length && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardHeader><CardTitle className="text-sm text-destructive">Ошибки синхронизации ролей отделов (сайт → Discord)</CardTitle></CardHeader>
+          <CardContent>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Роль не удалось выдать/снять в Discord — обычно значит, что роль бота стоит ниже целевой роли в иерархии сервера,
+              либо у бота нет права «Управление ролями». Сайт продолжит переотправлять эти изменения, пока проблема не будет устранена в Discord.
+            </p>
+            <Table>
+              <TableHeader><TableRow><TableHead>Discord ID</TableHead><TableHead>Изменение</TableHead><TableHead>Ошибка</TableHead><TableHead>Время</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {data.failed_role_syncs.map((f) => (
+                  <TableRow key={f.id}>
+                    <TableCell className="font-mono text-xs">{f.discord_id ?? "-"}</TableCell>
+                    <TableCell className="text-xs">
+                      {f.add_role_id && <span className="text-emerald-500">+{f.add_role_id}</span>}
+                      {f.add_role_id && f.remove_role_id && " / "}
+                      {f.remove_role_id && <span className="text-destructive">-{f.remove_role_id}</span>}
+                    </TableCell>
+                    <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={f.error_message ?? undefined}>{f.error_message ?? "-"}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{f.executed_at ? new Date(f.executed_at).toLocaleString("ru-RU") : "-"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader><CardTitle className="text-sm">Подозрения на твинков (по Discord)</CardTitle></CardHeader>

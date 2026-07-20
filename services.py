@@ -345,12 +345,15 @@ class PlayerService:
         self.player_repo = PlayerRepository(db)
         self.stats_repo = PlayerStatsRepository(db)
     
-    def get_all_players(self, page: int = 1, page_size: int = 50) -> Tuple[List[PlayerDataOut], int]:
-        """Get all players with pagination"""
+    def get_all_players(
+        self, page: int = 1, page_size: int = 50,
+        rank_id: Optional[int] = None, sort: Optional[str] = None,
+    ) -> Tuple[List[PlayerDataOut], int]:
+        """Get all players with pagination, optional rank filter and sort order."""
         if page < 1:
             raise HTTPException(status_code=400, detail="Page must be >= 1")
-        
-        players, total = self.player_repo.get_all(page, page_size)
+
+        players, total = self.player_repo.get_all(page, page_size, rank_id=rank_id, sort=sort)
         player_outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in players]
         return player_outs, total
     
@@ -1560,17 +1563,22 @@ class PlayerNoteService:
                 .all())
 
     def save_note(self, player_id: int, admin_id: int, content: str) -> PlayerNote:
-        existing = (self.db.query(PlayerNote)
-                    .filter(PlayerNote.player_id == player_id)
-                    .first())
-        if existing:
-            existing.content = content
-            existing.admin_id = admin_id
-            existing.updated_at = datetime.utcnow()
-            self.db.commit()
-            return existing
+        """Always creates a new note — the player's notes are a running log,
+        not a single slot (each note is independently editable, see update_note)."""
         note = PlayerNote(player_id=player_id, admin_id=admin_id, content=content)
         self.db.add(note)
+        self.db.commit()
+        self.db.refresh(note)
+        return note
+
+    def update_note(self, note_id: int, player_id: int, content: str) -> Optional[PlayerNote]:
+        note = (self.db.query(PlayerNote)
+                .filter(PlayerNote.id == note_id, PlayerNote.player_id == player_id)
+                .first())
+        if not note:
+            return None
+        note.content = content
+        note.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(note)
         return note
@@ -1948,7 +1956,7 @@ class PunishmentService:
     def create(self, player_id: int, player_steamid: str, player_ip: Optional[str],
                ptype: str, reason: Optional[str], issued_by_admin_id: int,
                issued_by_name: str, expires_at: Optional[datetime],
-               notes: Optional[str] = None):
+               notes: Optional[str] = None, issued_by_was_superuser: bool = False):
         from models import PlayerPunishment
         p = PlayerPunishment(
             player_id=player_id,
@@ -1958,6 +1966,7 @@ class PunishmentService:
             reason=reason,
             issued_by_admin_id=issued_by_admin_id,
             issued_by_name=issued_by_name,
+            issued_by_was_superuser=issued_by_was_superuser,
             issued_at=_now_msk(),
             expires_at=expires_at,
             is_active=1,

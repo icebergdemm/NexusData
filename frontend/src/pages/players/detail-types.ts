@@ -11,6 +11,10 @@ export interface PlayerDetailPlayer {
   discord_id: string | null
   discord_id_confirmed: boolean
   is_secret: boolean
+  linked_admin_id: number | null
+  linked_admin_name: string | null
+  forced_display_name: string | null
+  steam_avatar_url: string | null
 }
 
 export interface PlayerStats {
@@ -58,6 +62,7 @@ export interface PunishmentRow {
   type: string
   reason: string | null
   issued_by_name: string | null
+  issued_by_was_superuser: boolean
   issued_at: string | null
   expires_at: string | null
   is_active: boolean
@@ -105,8 +110,20 @@ export interface PlayerDetailResponse {
   custom_talents: Record<string, string[]>
   available_kval_kits: AvailableKvalKit[]
   is_online: boolean
+  server_privilege: PlayerServerPrivilege | null
   has_view: boolean
   has_edit: boolean
   has_delete: boolean
   has_special: boolean
+}
+
+export interface PlayerServerPrivilege {
+  server_group_id: number | null
+  server_group_name: string | null
+  server_scope: string | null
+  // True when task_sync_auto_server_privileges assigned this group from a
+  // department access level/head role, rather than a human via the Server
+  // Privileges page — shown as "От отдела: X" instead of a manual grant.
+  is_auto: boolean
+  auto_source_department_name: string | null
 }

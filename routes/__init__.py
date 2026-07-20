@@ -6,6 +6,7 @@ from .admin import router as admin_router
 from .events import router as events_router
 from .moderation import api_router as moderation_api_router, panel_router as moderation_panel_router
 from .sub_projects import router as sub_projects_router
+from .sub_projects_polygon import router as sub_projects_polygon_router
 from .game_api import router as game_api_router, public_router as game_public_router
 from .ratings import router as ratings_router
 from .discord_bot_api import router as discord_bot_api_router, panel_router as discord_bot_panel_router
@@ -16,6 +17,9 @@ from .replays import api_router as replays_api_router, panel_router as replays_p
 from .analytics import router as analytics_router
 from .notifications import router as notifications_router
 from .documents import router as documents_router
+from .onlyoffice import router as onlyoffice_router
+from .departments import router as departments_router
+from .tasks import router as tasks_router
 
 __all__ = [
     "status_router",
@@ -27,6 +31,7 @@ __all__ = [
     "moderation_api_router",
     "moderation_panel_router",
     "sub_projects_router",
+    "sub_projects_polygon_router",
     "game_api_router",
     "game_public_router",
     "ratings_router",
@@ -42,4 +47,7 @@ __all__ = [
     "analytics_router",
     "notifications_router",
     "documents_router",
+    "onlyoffice_router",
+    "departments_router",
+    "tasks_router",
 ]

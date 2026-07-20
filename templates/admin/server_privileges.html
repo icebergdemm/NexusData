@@ -126,7 +126,7 @@
           onclick="openEditGroup(this)">
           Редактировать
         </button>
-        <form action="/admin/server-privilege-groups/{{ g.id }}/delete" method="post" style="display:contents;">
+        <form action="/adminold/server-privilege-groups/{{ g.id }}/delete" method="post" style="display:contents;">
           <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
           <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить группу «{{ g.name }}»?')">Удалить</button>
         </form>
@@ -149,12 +149,12 @@
   </div>
 
   <!-- Search -->
-  <form method="get" action="/admin/server-privileges" style="margin-bottom:var(--spacing-16);">
+  <form method="get" action="/adminold/server-privileges" style="margin-bottom:var(--spacing-16);">
     <input type="hidden" name="tab" value="players">
     <div class="search-bar">
       <input type="text" name="search" value="{{ search }}" placeholder="Поиск по SteamID или нику...">
       <button type="submit" class="btn btn-secondary">Найти</button>
-      {% if search %}<a href="/admin/server-privileges?tab=players" class="btn btn-secondary">Сбросить</a>{% endif %}
+      {% if search %}<a href="/adminold/server-privileges?tab=players" class="btn btn-secondary">Сбросить</a>{% endif %}
     </div>
   </form>
 
@@ -227,7 +227,7 @@
                   Изменить
                 </button>
                 {% if check_permission(admin, 'privileges', 'delete') or admin.is_superuser %}
-                <form action="/admin/server-privileges/{{ priv.id }}/delete" method="post" style="display:contents;">
+                <form action="/adminold/server-privileges/{{ priv.id }}/delete" method="post" style="display:contents;">
                   <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
                   <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Удалить привилегии игрока {{ priv.steamid }}?')">Удалить</button>
                 </form>
@@ -243,13 +243,13 @@
     {% if total_pages > 1 %}
     <div class="pagination" style="padding:var(--spacing-16);">
       {% if page > 1 %}
-      <a href="/admin/server-privileges?tab=players&page={{ page-1 }}&search={{ search }}" class="page-btn">&#8592;</a>
+      <a href="/adminold/server-privileges?tab=players&page={{ page-1 }}&search={{ search }}" class="page-btn">&#8592;</a>
       {% endif %}
       {% for p in range(1, total_pages+1) %}
-      <a href="/admin/server-privileges?tab=players&page={{ p }}&search={{ search }}" class="page-btn {% if p==page %}active{% endif %}">{{ p }}</a>
+      <a href="/adminold/server-privileges?tab=players&page={{ p }}&search={{ search }}" class="page-btn {% if p==page %}active{% endif %}">{{ p }}</a>
       {% endfor %}
       {% if page < total_pages %}
-      <a href="/admin/server-privileges?tab=players&page={{ page+1 }}&search={{ search }}" class="page-btn">&#8594;</a>
+      <a href="/adminold/server-privileges?tab=players&page={{ page+1 }}&search={{ search }}" class="page-btn">&#8594;</a>
       {% endif %}
     </div>
     {% endif %}
@@ -269,7 +269,7 @@
       <h3>Новая группа привилегий</h3>
       <button class="modal-close" onclick="closeModal('create-group-modal')">&#x2715;</button>
     </div>
-    <form action="/admin/server-privilege-groups/create" method="post">
+    <form action="/adminold/server-privilege-groups/create" method="post">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="modal-body-block">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--spacing-16);">
@@ -365,7 +365,7 @@
       <h3 id="assign-modal-title">Назначить привилегии игроку</h3>
       <button class="modal-close" onclick="closeModal('assign-modal')">&#x2715;</button>
     </div>
-    <form id="assign-priv-form" action="/admin/server-privileges/assign" method="post">
+    <form id="assign-priv-form" action="/adminold/server-privileges/assign" method="post">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
       <div class="modal-body-block">
         <div class="form-group">
@@ -438,7 +438,7 @@ document.querySelectorAll('.modal-overlay').forEach(el => {
 // ── edit group ─────────────────────────────────────────────────────────────────
 function openEditGroup(btn) {
   document.getElementById('edit-group-form').action =
-    '/admin/server-privilege-groups/' + btn.dataset.gid + '/edit';
+    '/adminold/server-privilege-groups/' + btn.dataset.gid + '/edit';
   document.getElementById('eg-name').value  = btn.dataset.gname;
   document.getElementById('eg-key').value   = btn.dataset.gkey;
   document.getElementById('eg-desc').value  = btn.dataset.gdesc;
@@ -451,7 +451,7 @@ function openEditGroup(btn) {
 function openEditPriv(btn) {
   document.getElementById('assign-modal-title').textContent = 'Изменить привилегии: ' + btn.dataset.steamid;
   const form = document.getElementById('assign-priv-form');
-  form.action = '/admin/server-privileges/assign';
+  form.action = '/adminold/server-privileges/assign';
   document.getElementById('ap-steamid').value  = btn.dataset.steamid;
   document.getElementById('ap-steamid').readOnly = true;
   document.getElementById('ap-server_scope').value = btn.dataset.scope || '';

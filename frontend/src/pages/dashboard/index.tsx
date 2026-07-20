@@ -40,7 +40,7 @@ export function DashboardPage() {
         {visibleLinks.map((link) => (
           <Link key={link.to} to={link.to}>
             <Card className="h-full transition-all hover:border-primary/50 hover:shadow-md">
-              <CardContent className="pt-6">
+              <CardContent>
                 <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-lg ${ACCENT_CLASSES[link.accent]}`}>
                   <link.icon className="h-5 w-5" />
                 </div>
@@ -53,9 +53,9 @@ export function DashboardPage() {
       </div>
 
       <Card className="mt-4">
-        <CardContent className="pt-6 text-sm text-muted-foreground">
+        <CardContent className="text-sm text-muted-foreground">
           Некоторые редко используемые разделы пока доступны только в{" "}
-          <a href="/admin" data-no-spa className="text-primary underline-offset-2 hover:underline">
+          <a href="/adminold" data-no-spa className="text-primary underline-offset-2 hover:underline">
             классической панели
           </a>
           .

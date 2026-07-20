@@ -16,13 +16,13 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
   onOpenChange: (open: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const [granteeKind, setGranteeKind] = useState<"admin" | "privilege_group" | "everyone">("admin")
+  const [granteeKind, setGranteeKind] = useState<"admin" | "group" | "everyone">("admin")
   const [granteeId, setGranteeId] = useState<string>("")
   const [level, setLevel] = useState<"view" | "comment" | "edit">("view")
 
   const { data: candidates } = useQuery({
-    queryKey: ["document-share-candidates"],
-    queryFn: () => documentsApi.shareCandidates(),
+    queryKey: ["document-share-candidates", documentId],
+    queryFn: () => documentsApi.shareCandidates(documentId),
     enabled: open,
   })
   const { data: perms } = useQuery({
@@ -32,10 +32,20 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
   })
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["document-permissions", documentId] })
 
+  // The document belongs to a department → "Группа" means "уровень доступа
+  // отдела" (grantee_type=access_level, string keys), else ND-wide
+  // privilege groups (grantee_type=privilege_group, numeric ids).
+  const groupGranteeType = candidates?.group_grantee_type ?? "privilege_group"
+  const groupLabel = groupGranteeType === "access_level" ? "Уровень доступа" : "Группа"
+
   const grant = useMutation({
     mutationFn: () => documentsApi.permissions.grant(documentId, {
-      grantee_type: granteeKind,
-      grantee_id: granteeKind === "everyone" ? undefined : Number(granteeId),
+      grantee_type: granteeKind === "everyone" ? "everyone" : granteeKind === "group" ? groupGranteeType : "admin",
+      grantee_id: granteeKind === "everyone"
+        ? undefined
+        : granteeKind === "group" && groupGranteeType === "access_level"
+          ? granteeId
+          : Number(granteeId),
       level,
     }),
     onSuccess: () => { toast.success("Доступ предоставлен"); setGranteeId(""); invalidate() },
@@ -49,8 +59,9 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
 
   const granteeLabel = (p: NonNullable<typeof perms>["permissions"][number]) => {
     if (p.grantee_type === "everyone") return "Все администраторы"
-    if (p.grantee_type === "admin") return p.grantee_admin?.name ?? "—"
-    return p.grantee_group?.name ?? "—"
+    if (p.grantee_type === "admin") return p.grantee_admin?.name ?? "-"
+    if (p.grantee_type === "access_level") return p.grantee_access_level?.name ?? "-"
+    return p.grantee_group?.name ?? "-"
   }
 
   return (
@@ -58,7 +69,7 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Доступ к документу</DialogTitle>
-          <DialogDescription>Владелец: {perms?.owner?.name ?? "—"}. Управляйте тем, кто может просматривать, комментировать или редактировать документ.</DialogDescription>
+          <DialogDescription>Владелец: {perms?.owner?.name ?? "-"}. Управляйте тем, кто может просматривать, комментировать или редактировать документ.</DialogDescription>
         </DialogHeader>
 
         <div className="flex items-end gap-2">
@@ -67,7 +78,7 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="admin">Админ</SelectItem>
-                <SelectItem value="privilege_group">Группа</SelectItem>
+                <SelectItem value="group">{groupLabel}</SelectItem>
                 <SelectItem value="everyone">Все</SelectItem>
               </SelectContent>
             </Select>
@@ -103,7 +114,7 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
           {perms?.permissions.length ? perms.permissions.map((p) => (
             <div key={p.id} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
               <div className="flex items-center gap-2">
-                {p.grantee_type === "everyone" ? <Globe2 className="size-4 text-muted-foreground" /> : p.grantee_type === "privilege_group" ? <Users className="size-4 text-muted-foreground" /> : <User className="size-4 text-muted-foreground" />}
+                {p.grantee_type === "everyone" ? <Globe2 className="size-4 text-muted-foreground" /> : p.grantee_type === "privilege_group" || p.grantee_type === "access_level" ? <Users className="size-4 text-muted-foreground" /> : <User className="size-4 text-muted-foreground" />}
                 <span className="font-medium">{granteeLabel(p)}</span>
               </div>
               <div className="flex items-center gap-2">

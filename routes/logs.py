@@ -6,6 +6,7 @@ Also includes SFTP file manager routes for sub-projects.
 from fastapi import APIRouter, Request, Depends, HTTPException, Query, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
@@ -49,6 +50,8 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
                 .first()
             )
             if admin:
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -120,7 +123,8 @@ async def api_logs_events(
 
     offset = (page - 1) * page_size
 
-    events, total = search_logs(
+    events, total = await run_in_threadpool(
+        search_logs,
         server_name=server if server else None,
         player_name=effective_player if effective_player else None,
         action_type=action_type if action_type else None,
@@ -163,7 +167,7 @@ async def api_logs_players(
     if not check_permission(current_admin, "moderation", "view"):
         raise HTTPException(status_code=403)
 
-    players = get_unique_players(server)
+    players = await run_in_threadpool(get_unique_players, server)
     return JSONResponse({"players": players})
 
 
@@ -177,7 +181,7 @@ async def api_logs_player_map(
     if not check_permission(current_admin, "moderation", "view"):
         raise HTTPException(status_code=403)
 
-    pmap = get_player_map()
+    pmap = await run_in_threadpool(get_player_map)
     return JSONResponse(pmap)
 
 
@@ -191,7 +195,7 @@ async def api_logs_stats(
     if not check_permission(current_admin, "moderation", "view"):
         raise HTTPException(status_code=403)
 
-    stats = get_log_stats()
+    stats = await run_in_threadpool(get_log_stats)
     # Values are already strings from JSON storage, no conversion needed
     return JSONResponse(stats)
 
@@ -461,7 +465,7 @@ async def api_playtime_generate(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Force generate playtime stats now."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
     import threading
     def _gen():
@@ -489,7 +493,7 @@ async def api_save_reward_groups(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Save reward groups configuration."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "manage_rewards"):
         raise HTTPException(status_code=403)
     body = await request.json()
     save_reward_groups(body if isinstance(body, list) else [])
@@ -515,7 +519,7 @@ async def api_save_playtime_conditions(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Save playtime reward conditions."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "manage_rewards"):
         raise HTTPException(status_code=403)
     body = await request.json()
     save_playtime_conditions(body if isinstance(body, list) else [])
@@ -541,7 +545,7 @@ async def api_save_rating_rewards(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Save rating-based reward conditions."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "manage_rewards"):
         raise HTTPException(status_code=403)
     body = await request.json()
     save_rating_rewards(body if isinstance(body, list) else [])
@@ -555,7 +559,7 @@ async def api_apply_rewards_now(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Force apply all reward checks (rating + playtime) now."""
-    if not check_permission(current_admin, "ratings", "edit"):
+    if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
     import threading
     def _apply():

@@ -1,0 +1,42 @@
+{
+    "_comment": "Custom egg for running ONLYOFFICE Document Server on a Pterodactyl/Wings node. See deploy/onlyoffice/PTERODACTYL.md for import steps and known caveats before relying on this.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-18T00:00:00+00:00",
+    "name": "ONLYOFFICE Document Server",
+    "author": "admin@example.com",
+    "description": "Self-hosted ONLYOFFICE Document Server (Community Edition) — the editor engine NexusData's Documents section embeds via https://api.onlyoffice.com.",
+    "features": null,
+    "docker_images": {
+        "ONLYOFFICE Document Server": "onlyoffice/documentserver:latest"
+    },
+    "file_denylist": [],
+    "startup": "bash /home/container/start.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"[egg] Forwarding\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/ash\r\n# Runs once in a throwaway Alpine container with /mnt/server bound to the\r\n# same persistent volume that becomes /home/container at runtime — this just\r\n# writes the real startup wrapper there so the egg's \"startup\" command has\r\n# something to run.\r\ncd /mnt/server\r\n\r\ncat > start.sh << 'EOF'\r\n#!/bin/bash\r\n# ONLYOFFICE's own /etc/onlyoffice config paths are read-only under Wings, so\r\n# never try to edit them in place (an earlier version of this egg did via sed\r\n# and failed with \"Read-only file system\"). Instead: let ONLYOFFICE's bundled\r\n# nginx run completely untouched on its default port 80, then front it with a\r\n# SECOND, independent nginx instance that lives entirely under\r\n# /home/container (writable) and listens on the port Wings actually\r\n# allocated, simply forwarding traffic to 127.0.0.1:80.\r\nset -e\r\n\r\nexport JWT_ENABLED=true\r\nexport JWT_SECRET=\"${JWT_SECRET}\"\r\nexport JWT_HEADER=Authorization\r\nexport JWT_IN_BODY=true\r\n\r\n# Some versions of the image expect these to already exist; harmless if they\r\n# already do, and a plain mkdir won't fail the whole script if the parent is\r\n# read-only elsewhere.\r\nmkdir -p /var/log/onlyoffice/documentserver 2>/dev/null || true\r\n\r\n/app/ds/run-document-server.sh &\r\nDS_PID=$!\r\n\r\necho \"[egg] Waiting for Document Server on 127.0.0.1:80 ...\"\r\nfor i in $(seq 1 60); do\r\n  if curl -sf http://127.0.0.1/healthcheck > /dev/null 2>&1; then\r\n    echo \"[egg] Document Server is up.\"\r\n    break\r\n  fi\r\n  if ! kill -0 \"$DS_PID\" 2>/dev/null; then\r\n    echo \"[egg] Document Server process exited early — check the log above for the real error.\"\r\n    wait \"$DS_PID\"\r\n    exit 1\r\n  fi\r\n  sleep 5\r\ndone\r\n\r\ncat > /home/container/proxy-nginx.conf << NGINXEOF\r\nworker_processes 1;\r\nerror_log /home/container/proxy-error.log;\r\npid /home/container/proxy-nginx.pid;\r\nevents { worker_connections 128; }\r\nhttp {\r\n    server {\r\n        listen ${SERVER_PORT};\r\n        client_max_body_size 100m;\r\n        location / {\r\n            proxy_pass http://127.0.0.1:80;\r\n            proxy_set_header Host \\$host;\r\n            proxy_set_header X-Real-IP \\$remote_addr;\r\n            proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;\r\n            proxy_set_header X-Forwarded-Proto \\$scheme;\r\n            proxy_http_version 1.1;\r\n            proxy_set_header Upgrade \\$http_upgrade;\r\n            proxy_set_header Connection \"upgrade\";\r\n        }\r\n    }\r\n}\r\nNGINXEOF\r\n\r\necho \"[egg] Forwarding ${SERVER_PORT} -> 127.0.0.1:80\"\r\nexec nginx -c /home/container/proxy-nginx.conf -g \"daemon off;\"\r\nEOF\r\n\r\nchmod +x start.sh\r\necho \"start.sh written to /mnt/server/start.sh\"\r\n",
+            "container": "alpine:3.19",
+            "entrypoint": "ash"
+        }
+    },
+    "variables": [
+        {
+            "name": "JWT Secret",
+            "description": "Must be the EXACT same value as ONLYOFFICE_JWT_SECRET / onlyoffice_jwt_secret on the NexusData backend — both sides sign/verify editor configs and save callbacks with it.",
+            "env_variable": "JWT_SECRET",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:191",
+            "field_type": "text"
+        }
+    ]
+}

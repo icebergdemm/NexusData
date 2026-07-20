@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # Server
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    # >1 launches api_server.py in multi-process mode: a dedicated
+    # scheduler/background-worker process plus N uvicorn worker processes
+    # serving HTTP, so one slow synchronous DB query in one request doesn't
+    # stall every other concurrent request site-wide (see main.py's startup
+    # hook — gated on WORKER_ROLE so the scheduler never runs more than
+    # once). 1 (default) preserves the exact previous single-process behavior.
+    uvicorn_workers: int = Field(1, env="UVICORN_WORKERS")
 
     # CORS — stored as plain str to avoid pydantic-settings JSON pre-parsing errors;
     # converted to List[str] in __init__
@@ -92,8 +99,26 @@ class Settings(BaseSettings):
     replays_upload_dir: str = "uploads/replays"
     replays_retention_days: int = 30  # auto-delete demos older than this
 
-    # Document editor: inline image uploads
+    # Steam Web API (avatar auto-fetch) — https://steamcommunity.com/dev/apikey
+    steam_api_key: str = ""
+
+    # Pterodactyl panel API (department test-server power/status — item 4)
+    pterodactyl_panel_url: str = ""
+    pterodactyl_api_key: str = ""
+    # Same Pterodactyl panel, a DIFFERENT server — the "Сервер 2"/ASPER2 test
+    # server that Sub-projects/Полигон deploy to. Power-controlled from the
+    # normal Sub-projects page (routes/sub_projects.py), gated by the
+    # site-wide sub_projects:manage_test_server permission — unrelated to any
+    # one department's own pterodactyl_server_uuid.
+    sub_projects_test_server_uuid: str = ""
+
+    # Document library file storage (real .docx/.xlsx files edited via ONLYOFFICE)
     documents_upload_dir: str = "uploads/documents"
+
+    # ONLYOFFICE Document Server integration
+    onlyoffice_document_server_url: str = "https://nd.rp-asper.ru/onlyoffice"  # public browser-facing URL, e.g. https://nd.rp-asper.ru:8082
+    onlyoffice_callback_base_url: str = "https://nd.rp-asper.ru"    # our own base URL, reachable BY the Document Server (fetch + callback)
+    onlyoffice_jwt_secret: str = Field("", env="ONLYOFFICE_JWT_SECRET")
 
     # SFTP Server 1
     sftp_server_1_host: str = ""

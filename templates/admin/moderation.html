@@ -8,17 +8,17 @@
     <h2 style="margin:0;">Модерирование сервера</h2>
     <div style="display:flex; align-items:center; gap:12px;">
       <div style="display:flex; gap:4px; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:var(--border-radius-8); padding:3px;">
-        <a href="/admin/moderation?tab={{ active_tab }}&server=ASPER1"
+        <a href="/adminold/moderation?tab={{ active_tab }}&server=ASPER1"
            style="padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; text-decoration:none; transition:.2s;
                   {% if selected_server == 'ASPER1' %}background:var(--primary-blue); color:#fff;{% else %}color:var(--gray);{% endif %}">
           ASPER1
         </a>
-        <a href="/admin/moderation?tab={{ active_tab }}&server=ASPER2"
+        <a href="/adminold/moderation?tab={{ active_tab }}&server=ASPER2"
            style="padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; text-decoration:none; transition:.2s;
                   {% if selected_server == 'ASPER2' %}background:var(--primary-blue); color:#fff;{% else %}color:var(--gray);{% endif %}">
           ASPER2
         </a>
-        <a href="/admin/moderation?tab={{ active_tab }}"
+        <a href="/adminold/moderation?tab={{ active_tab }}"
            style="padding:6px 14px; border-radius:6px; font-size:12px; font-weight:700; text-decoration:none; transition:.2s;
                   {% if not selected_server %}background:var(--primary-blue); color:#fff;{% else %}color:var(--gray);{% endif %}">
           Все
@@ -31,14 +31,14 @@
 
 {# ── Tab navigation ─────────────────────────────────────────────────────── #}
 <nav class="mod-tabs">
-  <a href="/admin/moderation?tab=status{% if selected_server %}&server={{ selected_server }}{% endif %}"     class="mod-tab {% if active_tab == 'status'     %}active{% endif %}">Состояние сервера</a>
-  <a href="/admin/moderation?tab=banhammer{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
-  <a href="/admin/moderation?tab=logs{% if selected_server %}&server={{ selected_server }}{% endif %}"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
+  <a href="/adminold/moderation?tab=status{% if selected_server %}&server={{ selected_server }}{% endif %}"     class="mod-tab {% if active_tab == 'status'     %}active{% endif %}">Состояние сервера</a>
+  <a href="/adminold/moderation?tab=banhammer{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'banhammer'  %}active{% endif %}">Банхамер</a>
+  <a href="/adminold/moderation?tab=logs{% if selected_server %}&server={{ selected_server }}{% endif %}"       class="mod-tab {% if active_tab == 'logs'       %}active{% endif %}">Логи</a>
   {% if check_permission(admin, 'moderation', 'delete') %}
-  <a href="/admin/moderation?tab=commands{% if selected_server %}&server={{ selected_server }}{% endif %}"   class="mod-tab {% if active_tab == 'commands'   %}active{% endif %}">Команды</a>
+  <a href="/adminold/moderation?tab=commands{% if selected_server %}&server={{ selected_server }}{% endif %}"   class="mod-tab {% if active_tab == 'commands'   %}active{% endif %}">Команды</a>
   {% endif %}
-  <a href="/admin/moderation?tab=anticheat{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
-  <a href="/admin/moderation?tab=sauron{% if selected_server %}&server={{ selected_server }}{% endif %}"    class="mod-tab {% if active_tab == 'sauron'    %}active{% endif %}" style="{% if active_tab == 'sauron' %}{% else %}color:#ff4d80;{% endif %}">👁 Oko Саурона</a>
+  <a href="/adminold/moderation?tab=anticheat{% if selected_server %}&server={{ selected_server }}{% endif %}"  class="mod-tab {% if active_tab == 'anticheat'  %}active{% endif %}">Античит</a>
+  <a href="/adminold/moderation?tab=sauron{% if selected_server %}&server={{ selected_server }}{% endif %}"    class="mod-tab {% if active_tab == 'sauron'    %}active{% endif %}" style="{% if active_tab == 'sauron' %}{% else %}color:#ff4d80;{% endif %}">👁 Oko Саурона</a>
 </nav>
 
 {# ════════════════════════════════════════════════════════════════════════ #}
@@ -127,7 +127,7 @@
           <td>
             <div class="action-group">
               {% if p.player_id %}
-              <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost" title="Профиль">Профиль</a>
+              <a href="/adminold/players/{{ p.player_id }}" class="btn btn-sm btn-ghost" title="Профиль">Профиль</a>
               {% endif %}
               <button type="button"
                 class="btn btn-sm btn-warn"
@@ -158,13 +158,13 @@
 {# ════════════════════════════════════════════════════════════════════════ #}
 {% elif active_tab == 'banhammer' %}
 <div class="card">
-  <form method="get" action="/admin/moderation" class="search-form" style="margin-bottom:var(--spacing-24);">
+  <form method="get" action="/adminold/moderation" class="search-form" style="margin-bottom:var(--spacing-24);">
     <input type="hidden" name="tab" value="banhammer">
     <input type="text" name="search" class="form-control" placeholder="Поиск по имени / SteamID / IP…"
            value="{{ search_query or '' }}" style="min-width:320px;">
     <button type="submit" class="btn btn-primary">Найти</button>
     {% if search_query %}
-    <a href="/admin/moderation?tab=banhammer" class="btn btn-ghost">Сбросить</a>
+    <a href="/adminold/moderation?tab=banhammer" class="btn btn-ghost">Сбросить</a>
     {% endif %}
   </form>
 
@@ -182,7 +182,7 @@
             <td>{{ fmt_playtime(p.play_time) }}</td>
             <td>
               <div class="action-group">
-                <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
+                <a href="/adminold/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
                 {% set online_ids = online_players | map(attribute='player_steamid') | list %}
                 {% if p.player_steamid in online_ids %}
                 <button type="button" class="btn btn-sm btn-warn"
@@ -221,7 +221,7 @@
           <td>{{ p.join_time|msk('%H:%M:%S') if p.join_time else '-' }}</td>
           <td>
             <div class="action-group">
-              {% if p.player_id %}<a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>{% endif %}
+              {% if p.player_id %}<a href="/adminold/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>{% endif %}
               <button type="button" class="btn btn-sm btn-warn"
                 onclick="openActionModal('kick','{{ p.player_steamid }}','{{ p.player_name | e }}','banhammer','{{ p.server_name or '' }}')">Кик</button>
               <button type="button" class="btn btn-sm btn-danger"
@@ -252,7 +252,7 @@
           <td>{{ p.last_session_logout|msk('%d.%m %H:%M') if p.last_session_logout else (p.last_login_time|msk('%d.%m %H:%M') if p.last_login_time else '-') }}</td>
           <td>
             <div class="action-group">
-              <a href="/admin/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
+              <a href="/adminold/players/{{ p.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
               <button type="button" class="btn btn-sm btn-danger"
                 onclick="openActionModal('ban','{{ p.player_steamid }}','{{ p.player_last_time_name | e }}','banhammer','')">Бан</button>
             </div>
@@ -744,14 +744,14 @@ loadCmdPlayersList();
           <td>
             <div class="action-group">
               {% if ev.player_id %}
-              <a href="/admin/players/{{ ev.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
+              <a href="/adminold/players/{{ ev.player_id }}" class="btn btn-sm btn-ghost">Профиль</a>
               {% endif %}
               <button type="button" class="btn btn-sm btn-warn"
                 onclick="openActionModal('kick','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat','')">Кик</button>
               <button type="button" class="btn btn-sm btn-danger"
                 onclick="openActionModal('ban','{{ ev.player_steamid }}','{{ (ev.player_name or ev.player_steamid) | e }}','anticheat','')">Бан</button>
               {% if ev.reviewed == 0 %}
-              <form method="post" action="/admin/moderation/anticheat/{{ ev.id }}/review" style="display:inline;">
+              <form method="post" action="/adminold/moderation/anticheat/{{ ev.id }}/review" style="display:inline;">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button type="submit" class="btn btn-sm btn-ghost">✓ Проверено</button>
               </form>
@@ -916,12 +916,12 @@ function renderTwinks(data) {
         <div style="display:flex;gap:24px;margin-bottom:10px;flex-wrap:wrap;">
           <div>
             <div style="font-size:10px;color:var(--gray);">Игрок A</div>
-            <a href="/admin/players/${item.pid_a}" style="color:var(--primary-blue);font-size:13px;font-weight:600;">${esc(item.name_a)}</a>
+            <a href="/adminold/players/${item.pid_a}" style="color:var(--primary-blue);font-size:13px;font-weight:600;">${esc(item.name_a)}</a>
             <div style="font-size:10px;color:var(--gray-dark);font-family:monospace;">${esc(item.steamid_a||'')}</div>
           </div>
           <div>
             <div style="font-size:10px;color:var(--gray);">Игрок B</div>
-            <a href="/admin/players/${item.pid_b}" style="color:var(--primary-blue);font-size:13px;font-weight:600;">${esc(item.name_b)}</a>
+            <a href="/adminold/players/${item.pid_b}" style="color:var(--primary-blue);font-size:13px;font-weight:600;">${esc(item.name_b)}</a>
             <div style="font-size:10px;color:var(--gray-dark);font-family:monospace;">${esc(item.steamid_b||'')}</div>
           </div>
         </div>
@@ -957,7 +957,7 @@ function renderDeviant(data) {
         <span style="color:var(--gray);font-size:14px;">▾</span>
       </div>
       <div class="sauron-card-body">
-        <a href="/admin/players/${item.player_id}" style="font-size:11px;color:var(--primary-blue);font-family:monospace;margin-bottom:10px;display:block;">${esc(item.player_steamid||'')} → Профиль</a>
+        <a href="/adminold/players/${item.player_id}" style="font-size:11px;color:var(--primary-blue);font-family:monospace;margin-bottom:10px;display:block;">${esc(item.player_steamid||'')} → Профиль</a>
         ${incidents || '<span style="color:var(--gray-dark)">Нет инцидентов</span>'}
       </div>
     </div>`;
@@ -988,7 +988,7 @@ document.getElementById('sauronResults').innerHTML =
       <h3 id="modal-title">Действие над игроком</h3>
       <button type="button" class="modal-close" onclick="closeActionModal()" aria-label="Закрыть">×</button>
     </div>
-    <form method="post" action="/admin/moderation/action" id="action-form">
+    <form method="post" action="/adminold/moderation/action" id="action-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action_type" id="modal-action-type">
       <input type="hidden" name="target_steamid" id="modal-steamid">

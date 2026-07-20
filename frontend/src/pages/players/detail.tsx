@@ -1,16 +1,19 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
-  Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon,
+  Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2,
+  Pencil, Check, X, KeyRound,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -19,12 +22,19 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table"
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog"
 import { api } from "@/lib/api"
-import type { PlayerDetailResponse } from "./detail-types"
+import { useCurrentAdmin } from "@/lib/auth"
+import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import type { PlayerDetailResponse, Note } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
 
+interface AdminOption { id: number; discord_username: string | null }
+
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "—"
+  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
 }
 
 function fmtPlayTime(hours: number): string {
@@ -34,7 +44,7 @@ function fmtPlayTime(hours: number): string {
 }
 
 function fmtDuration(seconds: number | null): string {
-  if (!seconds) return "—"
+  if (!seconds) return "-"
   const h = Math.floor(seconds / 3600)
   const m = Math.round((seconds % 3600) / 60)
   return h > 0 ? `${h}ч ${m}м` : `${m}м`
@@ -49,9 +59,14 @@ const STATUS_LABEL: Record<string, { label: string; variant: "default" | "second
 export function PlayerDetailPage() {
   const { playerId } = useParams<{ playerId: string }>()
   const queryClient = useQueryClient()
+  const { data: admin } = useCurrentAdmin()
   const [noteDraft, setNoteDraft] = useState("")
   const [trapReason, setTrapReason] = useState("")
   const [labelCategoryId, setLabelCategoryId] = useState<string>("")
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false)
+  const [linkAdminId, setLinkAdminId] = useState<string>("none")
+  const [linkForcedName, setLinkForcedName] = useState("")
+  const [discordIdDraft, setDiscordIdDraft] = useState("")
 
   const queryKey = ["player-detail", playerId]
 
@@ -60,7 +75,32 @@ export function PlayerDetailPage() {
     queryFn: () => api.get<PlayerDetailResponse>(`/api/v1/admin/players/${playerId}`),
   })
 
+  useEffect(() => {
+    setDiscordIdDraft(data?.player.discord_id ?? "")
+  }, [data?.player.discord_id])
+
+  const { data: adminsData } = useQuery({
+    queryKey: ["admin-users"],
+    queryFn: () => api.get<{ admins: AdminOption[] }>("/api/v1/admin/users"),
+    enabled: !!admin?.is_superuser,
+  })
+
   const invalidate = () => queryClient.invalidateQueries({ queryKey })
+
+  const linkAdminMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/players/${playerId}/link-admin`, {
+      admin_id: linkAdminId === "none" ? null : Number(linkAdminId),
+      forced_display_name: linkForcedName.trim() || null,
+    }),
+    onSuccess: () => { toast.success("Связь обновлена"); setLinkDialogOpen(false); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const openLinkDialog = () => {
+    setLinkAdminId(data?.player.linked_admin_id ? String(data.player.linked_admin_id) : "none")
+    setLinkForcedName(data?.player.forced_display_name ?? "")
+    setLinkDialogOpen(true)
+  }
 
   const rankKitMutation = useMutation({
     mutationFn: (body: { rank_id?: number; kit_level?: number }) =>
@@ -71,13 +111,20 @@ export function PlayerDetailPage() {
 
   const discordIdMutation = useMutation({
     mutationFn: (discord_id: string) => api.post(`/api/v1/admin/players/${playerId}/discord-id`, { discord_id }),
-    onSuccess: () => { toast.success("Discord ID обновлён"); invalidate() },
+    onSuccess: () => { toast.success("Discord ID сохранён и подтверждён"); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
 
   const noteMutation = useMutation({
     mutationFn: (content: string) => api.post(`/api/v1/admin/players/${playerId}/notes`, { content }),
     onSuccess: () => { toast.success("Заметка сохранена"); setNoteDraft(""); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const updateNoteMutation = useMutation({
+    mutationFn: ({ noteId, content }: { noteId: number; content: string }) =>
+      api.post(`/api/v1/admin/players/${playerId}/notes/${noteId}`, { content }),
+    onSuccess: () => { toast.success("Заметка обновлена"); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -110,7 +157,7 @@ export function PlayerDetailPage() {
   if (data.classified) {
     return (
       <Card>
-        <CardContent className="py-16 text-center text-muted-foreground">
+        <CardContent className="text-center text-muted-foreground">
           🔒 Профиль засекречен. Доступ только для суперпользователей.
         </CardContent>
       </Card>
@@ -125,23 +172,51 @@ export function PlayerDetailPage() {
   return (
     <div className="space-y-4">
       {/* ── Header ── */}
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden py-0">
         <div className="bg-gradient-to-r from-primary/15 via-card to-card px-6 py-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-center gap-4">
-              <div className="relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-primary/20 text-2xl font-bold text-primary">
-                {player.player_last_time_name.slice(0, 2).toUpperCase()}
-                {data.is_online && (
-                  <span className="absolute right-0 bottom-0 h-4 w-4 rounded-full border-2 border-card bg-success" title="В сети" />
-                )}
-              </div>
+              <PlayerAvatar url={player.steam_avatar_url} name={player.player_last_time_name} size={64} online={data.is_online} />
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-bold">{player.player_last_time_name}</h1>
+                  <h1 className="text-xl font-bold">{player.forced_display_name || player.player_last_time_name}</h1>
                   {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
                   {player.is_secret && <Badge variant="outline" className="border-warning/40 text-warning">🔒 Секретно</Badge>}
+                  {player.forced_display_name && (
+                    <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${player.player_last_time_name}`}>
+                      <Link2 className="mr-1 size-3" /> {player.linked_admin_name ?? "принудительное имя"}
+                    </Badge>
+                  )}
+                  {admin?.is_superuser && (
+                    <Button size="icon-xs" variant="ghost" onClick={openLinkDialog} title="Связать с пользователем Nexus Data">
+                      <Link2 className="size-3.5" />
+                    </Button>
+                  )}
                 </div>
                 <div className="mt-0.5 font-mono text-xs text-muted-foreground">{player.player_steamid}</div>
+                {player.discord_id && (
+                  <div className="mt-0.5 flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+                    Discord: {player.discord_id}
+                    {player.discord_id_confirmed ? (
+                      <Badge variant="outline" className="border-success/40 text-[10px] text-success">Подтверждён</Badge>
+                    ) : (
+                      <Badge variant="outline" className="border-warning/40 text-[10px] text-warning">Не точный</Badge>
+                    )}
+                  </div>
+                )}
+                {data.server_privilege?.server_group_name && (
+                  <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <KeyRound className="size-3" />
+                    {data.server_privilege.server_group_name}
+                    {data.server_privilege.is_auto ? (
+                      <Badge variant="outline" className="border-info/40 text-[10px] text-info">
+                        От отдела: {data.server_privilege.auto_source_department_name ?? "—"}
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px]">Назначено вручную</Badge>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex gap-4 text-center text-sm">
@@ -156,7 +231,7 @@ export function PlayerDetailPage() {
         </div>
 
         {data.has_edit && (
-          <CardContent className="grid grid-cols-1 gap-4 border-t pt-4 sm:grid-cols-3">
+          <CardContent className="grid grid-cols-1 gap-4 border-t py-4 sm:grid-cols-3">
             <div>
               <div className="mb-1 text-xs text-muted-foreground">Ранг</div>
               <Select
@@ -186,11 +261,27 @@ export function PlayerDetailPage() {
               </Select>
             </div>
             <div>
-              <div className="mb-1 text-xs text-muted-foreground">Discord ID</div>
-              <Input
-                defaultValue={player.discord_id ?? ""}
-                onBlur={(e) => e.target.value !== (player.discord_id ?? "") && discordIdMutation.mutate(e.target.value)}
-              />
+              <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                Discord ID
+                {player.discord_id && (player.discord_id_confirmed
+                  ? <Badge variant="outline" className="border-success/40 text-[10px] text-success">Подтверждён</Badge>
+                  : <Badge variant="outline" className="border-warning/40 text-[10px] text-warning">Не точный</Badge>)}
+              </div>
+              <div className="flex gap-1.5">
+                <Input
+                  value={discordIdDraft}
+                  onChange={(e) => setDiscordIdDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && discordIdDraft !== (player.discord_id ?? "") && discordIdMutation.mutate(discordIdDraft)}
+                />
+                <Button
+                  size="sm"
+                  disabled={discordIdDraft === (player.discord_id ?? "") || discordIdMutation.isPending}
+                  onClick={() => discordIdMutation.mutate(discordIdDraft)}
+                >
+                  <Check className="size-3.5" /> Сохранить
+                </Button>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">Изменение вручную помечает ID как подтверждённый.</p>
             </div>
           </CardContent>
         )}
@@ -209,7 +300,7 @@ export function PlayerDetailPage() {
 
         <TabsContent value="stats" className="space-y-4">
           <Card>
-            <CardContent className="grid grid-cols-2 gap-4 pt-6 sm:grid-cols-3">
+            <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               {data.stats ? (
                 <>
                   <Stat label="Успешных рейсов капитаном" value={data.stats.successful_missions_captain} icon={Ship} accent="info" />
@@ -257,7 +348,7 @@ export function PlayerDetailPage() {
 
         <TabsContent value="notes">
           <Card>
-            <CardContent className="space-y-3 pt-6">
+            <CardContent className="space-y-3">
               {data.has_edit && (
                 <div className="flex gap-2">
                   <Textarea value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} placeholder="Личное дело игрока..." />
@@ -265,10 +356,13 @@ export function PlayerDetailPage() {
                 </div>
               )}
               {data.notes.map((n) => (
-                <div key={n.id} className="rounded-md border p-3 text-sm">
-                  <div className="whitespace-pre-wrap">{n.content}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{fmtDate(n.updated_at)}</div>
-                </div>
+                <NoteRow
+                  key={n.id}
+                  note={n}
+                  canEdit={data.has_edit}
+                  onSave={(content) => updateNoteMutation.mutate({ noteId: n.id, content })}
+                  saving={updateNoteMutation.isPending}
+                />
               ))}
               {!data.notes.length && <div className="text-center text-muted-foreground">Заметок нет</div>}
             </CardContent>
@@ -277,7 +371,7 @@ export function PlayerDetailPage() {
 
         <TabsContent value="labels">
           <Card>
-            <CardContent className="space-y-3 pt-6">
+            <CardContent className="space-y-3">
               {data.has_edit && (
                 <div className="flex gap-2">
                   <Select value={labelCategoryId} onValueChange={setLabelCategoryId}>
@@ -313,7 +407,7 @@ export function PlayerDetailPage() {
 
         <TabsContent value="traps">
           <Card>
-            <CardContent className="space-y-3 pt-6">
+            <CardContent className="space-y-3">
               {data.has_edit && (
                 <div className="flex gap-2">
                   <Input value={trapReason} onChange={(e) => setTrapReason(e.target.value)} placeholder="Причина ловушки" />
@@ -356,8 +450,15 @@ export function PlayerDetailPage() {
                   {data.punishments.map((p) => (
                     <TableRow key={p.id}>
                       <TableCell className="font-medium">{p.type}</TableCell>
-                      <TableCell>{p.reason || "—"}</TableCell>
-                      <TableCell className="text-muted-foreground">{p.issued_by_name || "—"}</TableCell>
+                      <TableCell>{p.reason || "-"}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          {p.issued_by_name || "-"}
+                          {p.issued_by_was_superuser && (
+                            <span title="Выдано суперпользователем"><Star className="size-3.5 fill-warning text-warning" /></span>
+                          )}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{fmtDate(p.issued_at)}</TableCell>
                       <TableCell>
                         <Badge variant={STATUS_LABEL[p.status]?.variant ?? "secondary"}>
@@ -379,51 +480,67 @@ export function PlayerDetailPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <Card>
               <CardHeader><CardTitle className="text-sm">Сессии</CardTitle></CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {data.sessions.slice(0, 10).map((s) => (
-                  <div key={s.id} className="flex justify-between border-b py-1.5 last:border-0">
-                    <span>#{s.session_number}</span>
-                    <span className="text-muted-foreground">{fmtDate(s.login_time)}</span>
-                    <span className="text-muted-foreground">{fmtDuration(s.session_duration)}</span>
+              <CardContent className="p-0">
+                <ScrollArea className="h-64">
+                  <div className="space-y-1 p-4 pt-0 text-sm">
+                    {data.sessions.map((s) => (
+                      <div key={s.id} className="flex justify-between border-b py-1.5 last:border-0">
+                        <span>#{s.session_number}</span>
+                        <span className="text-muted-foreground">{fmtDate(s.login_time)}</span>
+                        <span className="text-muted-foreground">{fmtDuration(s.session_duration)}</span>
+                      </div>
+                    ))}
+                    {!data.sessions.length && <div className="text-muted-foreground">Нет данных</div>}
                   </div>
-                ))}
-                {!data.sessions.length && <div className="text-muted-foreground">Нет данных</div>}
+                </ScrollArea>
               </CardContent>
             </Card>
             <Card>
               <CardHeader><CardTitle className="text-sm">IP-адреса</CardTitle></CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {data.ips.map((ip) => (
-                  <div key={ip.id} className="flex justify-between border-b py-1.5 last:border-0">
-                    <span className="font-mono">{ip.ip}</span>
-                    <span className="text-muted-foreground">{fmtDate(ip.last_seen)}</span>
+              <CardContent className="p-0">
+                <ScrollArea className="h-64">
+                  <div className="space-y-1 p-4 pt-0 text-sm">
+                    {data.ips.map((ip) => (
+                      <div key={ip.id} className="flex justify-between border-b py-1.5 last:border-0">
+                        <span className="font-mono">{ip.ip}</span>
+                        <span className="text-muted-foreground">{fmtDate(ip.last_seen)}</span>
+                      </div>
+                    ))}
+                    {!data.ips.length && <div className="text-muted-foreground">Нет данных</div>}
                   </div>
-                ))}
-                {!data.ips.length && <div className="text-muted-foreground">Нет данных</div>}
+                </ScrollArea>
               </CardContent>
             </Card>
             <Card>
               <CardHeader><CardTitle className="text-sm">Прошлые ники</CardTitle></CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {data.names.map((n) => (
-                  <div key={n.id} className="flex justify-between border-b py-1.5 last:border-0">
-                    <span>{n.nickname}</span>
-                    <span className="text-muted-foreground">{fmtDate(n.last_seen)}</span>
+              <CardContent className="p-0">
+                <ScrollArea className="h-64">
+                  <div className="space-y-1 p-4 pt-0 text-sm">
+                    {data.names.map((n) => (
+                      <div key={n.id} className="flex justify-between border-b py-1.5 last:border-0">
+                        <span>{n.nickname}</span>
+                        <span className="text-muted-foreground">{fmtDate(n.last_seen)}</span>
+                      </div>
+                    ))}
+                    {!data.names.length && <div className="text-muted-foreground">Нет данных</div>}
                   </div>
-                ))}
-                {!data.names.length && <div className="text-muted-foreground">Нет данных</div>}
+                </ScrollArea>
               </CardContent>
             </Card>
             <Card>
               <CardHeader><CardTitle className="text-sm">Убийства монстров</CardTitle></CardHeader>
-              <CardContent className="space-y-1 text-sm">
-                {data.kills.map((k) => (
-                  <div key={k.id} className="flex justify-between border-b py-1.5 last:border-0">
-                    <span>{k.monster_type}</span>
-                    <span className="text-muted-foreground">{k.kills_count}</span>
+              <CardContent className="p-0">
+                <ScrollArea className="h-64">
+                  <div className="space-y-1 p-4 pt-0 text-sm">
+                    {data.kills.map((k) => (
+                      <div key={k.id} className="flex justify-between border-b py-1.5 last:border-0">
+                        <span>{k.monster_type}</span>
+                        <span className="text-muted-foreground">{k.kills_count}</span>
+                      </div>
+                    ))}
+                    {!data.kills.length && <div className="text-muted-foreground">Нет данных</div>}
                   </div>
-                ))}
-                {!data.kills.length && <div className="text-muted-foreground">Нет данных</div>}
+                </ScrollArea>
               </CardContent>
             </Card>
             {data.role_actions.length > 0 && (
@@ -442,6 +559,45 @@ export function PlayerDetailPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Связь с пользователем Nexus Data</DialogTitle>
+            <DialogDescription>
+              Привяжите этого игрока к аккаунту администратора и/или задайте принудительное отображаемое имя.
+              Это имя будет показываться в рейтинге и наказаниях вместо игрового ника, независимо от того,
+              откуда пришло наказание — с сайта или через API игрового клиента.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="mb-1.5 block">Привязанный администратор</Label>
+              <Select value={linkAdminId} onValueChange={setLinkAdminId}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Без привязки</SelectItem>
+                  {adminsData?.admins.map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>{a.discord_username}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Принудительное отображаемое имя</Label>
+              <Input
+                value={linkForcedName}
+                onChange={(e) => setLinkForcedName(e.target.value)}
+                placeholder={player.player_last_time_name}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>Отмена</Button>
+            <Button disabled={linkAdminMutation.isPending} onClick={() => linkAdminMutation.mutate()}>Сохранить</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -465,6 +621,44 @@ function Stat({ label, value, icon: Icon, accent }: { label: string; value: numb
         <div className="text-xl font-bold leading-none">{value}</div>
         <div className="mt-1 text-xs text-muted-foreground">{label}</div>
       </div>
+    </div>
+  )
+}
+
+function NoteRow({ note, canEdit, onSave, saving }: { note: Note; canEdit: boolean; onSave: (content: string) => void; saving: boolean }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(note.content)
+
+  const startEdit = () => { setDraft(note.content); setEditing(true) }
+  const save = () => {
+    if (!draft.trim()) return
+    onSave(draft.trim())
+    setEditing(false)
+  }
+
+  return (
+    <div className="rounded-md border p-3 text-sm">
+      {editing ? (
+        <div className="space-y-2">
+          <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus rows={3} />
+          <div className="flex gap-1.5">
+            <Button size="sm" disabled={!draft.trim() || saving} onClick={save}><Check className="size-3.5" /> Сохранить</Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)}><X className="size-3.5" /> Отмена</Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <div className="whitespace-pre-wrap">{note.content}</div>
+            {canEdit && (
+              <Button size="icon-xs" variant="ghost" className="shrink-0" onClick={startEdit} title="Редактировать">
+                <Pencil className="size-3.5" />
+              </Button>
+            )}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">{note.updated_at ? new Date(note.updated_at).toLocaleString("ru-RU") : "-"}</div>
+        </>
+      )}
     </div>
   )
 }

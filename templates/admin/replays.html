@@ -43,16 +43,16 @@
 <div class="rp-header">
   <h2>🎬 Реплеи раундов</h2>
   <div class="server-filter">
-    <a href="/admin/replays" class="{% if not selected_server %}active{% endif %}">Все</a>
-    <a href="/admin/replays?server=ASPER1" class="{% if selected_server == 'ASPER1' %}active{% endif %}">ASPER1</a>
-    <a href="/admin/replays?server=ASPER2" class="{% if selected_server == 'ASPER2' %}active{% endif %}">ASPER2</a>
+    <a href="/adminold/replays" class="{% if not selected_server %}active{% endif %}">Все</a>
+    <a href="/adminold/replays?server=ASPER1" class="{% if selected_server == 'ASPER1' %}active{% endif %}">ASPER1</a>
+    <a href="/adminold/replays?server=ASPER2" class="{% if selected_server == 'ASPER2' %}active{% endif %}">ASPER2</a>
   </div>
 </div>
 
 {% if admin.is_superuser %}
 <div class="rp-settings">
   <h3>⬆️ Ручная загрузка реплея (суперпользователь)</h3>
-  <form method="post" action="/admin/replays/upload" enctype="multipart/form-data" class="rp-form-row">
+  <form method="post" action="/adminold/replays/upload" enctype="multipart/form-data" class="rp-form-row">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
     <div class="rp-fg" style="flex:1;min-width:240px;">
       <label>Файл .barodemo или .barodemo.zip</label>
@@ -73,7 +73,7 @@
 
 <div class="rp-settings">
   <h3>⚙️ Настройки хранения (суперпользователь)</h3>
-  <form method="post" action="/admin/replays/settings" class="rp-form-row">
+  <form method="post" action="/adminold/replays/settings" class="rp-form-row">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
     <div class="rp-fg">
       <label>Срок хранения (дней)</label>
@@ -109,10 +109,10 @@
       {% if r.has_voice %}<span class="rp-badge rp-badge-voice">🎙 голос</span>{% endif %}
     </div>
     <div class="rp-actions">
-      <a href="/admin/replays/{{ r.id }}/view" class="btn btn-primary">▶ Смотреть</a>
-      <a href="/admin/replays/{{ r.id }}/download" class="btn btn-ghost">⬇ Скачать</a>
+      <a href="/adminold/replays/{{ r.id }}/view" class="btn btn-primary">▶ Смотреть</a>
+      <a href="/adminold/replays/{{ r.id }}/download" class="btn btn-ghost">⬇ Скачать</a>
       {% if check_permission(admin, 'replays', 'delete') %}
-      <form method="post" action="/admin/replays/{{ r.id }}/delete" style="display:inline;" onsubmit="return confirm('Удалить реплей #{{ r.id }}?')">
+      <form method="post" action="/adminold/replays/{{ r.id }}/delete" style="display:inline;" onsubmit="return confirm('Удалить реплей #{{ r.id }}?')">
         <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token') }}">
         <button type="submit" class="btn btn-danger">🗑</button>
       </form>
@@ -125,7 +125,7 @@
 {% if total_pages > 1 %}
 <div class="pagination">
   {% for p in range(1, total_pages + 1) %}
-  <a href="/admin/replays?page={{ p }}{% if selected_server %}&server={{ selected_server }}{% endif %}"
+  <a href="/adminold/replays?page={{ p }}{% if selected_server %}&server={{ selected_server }}{% endif %}"
      class="page-btn {% if p == page %}active{% endif %}">{{ p }}</a>
   {% endfor %}
 </div>

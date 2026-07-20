@@ -328,7 +328,7 @@ setInterval(loadHealth, 30000);
     <span style="font-size:12px; color:var(--gray-dark);">Изменения требуют перезапуска для части настроек</span>
   </div>
   <div class="block-card-body">
-    <form method="post" action="/admin/administration/config">
+    <form method="post" action="/adminold/administration/config">
       <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
       <div class="config-grid">
 

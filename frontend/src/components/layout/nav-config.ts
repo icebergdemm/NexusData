@@ -1,9 +1,10 @@
 import {
   LayoutDashboard, Radio, Users, ShieldAlert, Gavel, PlayCircle,
   Ship, Star, Bot, Ticket, UserCog, Settings, KeyRound, Wrench,
-  Clock, ScrollText, BarChart3, Tags, FileText, NotebookText,
+  Clock, ScrollText, BarChart3, Tags, FileText, NotebookText, Building2,
+  KanbanSquare,
 } from "lucide-react"
-import type { PermissionPage } from "@/lib/auth"
+import type { CurrentAdmin, PermissionPage } from "@/lib/auth"
 
 export interface NavItem {
   label: string
@@ -11,6 +12,10 @@ export interface NavItem {
   icon: typeof LayoutDashboard
   /** Permission page gating this item — omit for items visible to any authenticated admin. */
   permission?: PermissionPage
+  /** Extra visibility predicate for items not gated by the standard page/
+   * action permission model (e.g. department-scoped features like the
+   * Polygon zone). Evaluated in addition to `permission` when both are set. */
+  isVisible?: (admin: CurrentAdmin | undefined) => boolean
 }
 
 export interface NavGroup {
@@ -40,13 +45,17 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Диспетчерская",
     items: [
       { label: "Диспетчерская", to: "/dispatch", icon: Radio, permission: "dispatch" },
-      { label: "Реплеи раундов", to: "/replays", icon: PlayCircle, permission: "replays" },
+      { label: "Прошедшие раунды", to: "/replays", icon: PlayCircle, permission: "replays" },
     ],
   },
   {
     label: "Проекты и рейтинг",
     items: [
       { label: "Sub-карты", to: "/sub-projects", icon: Ship, permission: "sub_projects" },
+      {
+        label: "Тестовый полигон ASPER", to: "/sub-projects-polygon", icon: Ship,
+        isVisible: (admin) => !!admin && (admin.is_superuser || admin.my_departments.some((d) => d.test_server_view)),
+      },
       { label: "Рейтинг", to: "/ratings", icon: Star, permission: "ratings" },
     ],
   },
@@ -58,9 +67,11 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: "Документы",
+    label: "Рабочая зона",
     items: [
       { label: "Документы", to: "/documents", icon: NotebookText, permission: "documents" },
+      { label: "Задачи", to: "/tasks", icon: KanbanSquare, permission: "tasks" },
+      { label: "Отделы", to: "/departments", icon: Building2, permission: "departments" },
     ],
   },
   {

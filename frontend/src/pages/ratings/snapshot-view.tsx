@@ -46,7 +46,7 @@ export function RatingSnapshotViewPage() {
       </Tabs>
 
       <Card>
-        <CardContent className="pt-6">
+        <CardContent>
           <Table>
             <TableHeader><TableRow><TableHead>#</TableHead><TableHead>Игрок</TableHead><TableHead>Рейтинг</TableHead><TableHead>Очки</TableHead></TableRow></TableHeader>
             <TableBody>

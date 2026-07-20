@@ -32,7 +32,10 @@
   --muted: #27272a;
   --muted-foreground: #a1a1aa;
 
-  --accent: #27272a;
+  /* Noticeably lighter than card/muted/border so hover/pressed states on
+     buttons, menu items and sidebar rows are clearly visible, not just a
+     barely-there shift between near-identical grays. */
+  --accent: #3a3a42;
   --accent-foreground: #fafafa;
 
   --destructive: #ef4444;

@@ -11,7 +11,7 @@ import { api } from "@/lib/api"
 import type { TicketsListResponse } from "./types"
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "—"
+  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
 }
 
 export function TicketsListPage() {
@@ -42,7 +42,7 @@ export function TicketsListPage() {
           {data?.tickets.map((t) => {
             const meta = data.ticket_config.types[t.ticket_type]
             return (
-              <Card key={t.id} className="cursor-pointer transition-all hover:border-primary/50" onClick={() => navigate(`/tickets/${t.id}`)}>
+              <Card key={t.id} className="cursor-pointer overflow-hidden py-0 transition-all hover:border-primary/50" onClick={() => navigate(`/tickets/${t.id}`)}>
                 <CardContent className="flex items-center gap-3 py-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-xl">{meta?.emoji ?? "🎫"}</div>
                   <div className="flex-1">

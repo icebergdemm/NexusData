@@ -30,7 +30,7 @@ export function ReplayPlayerPage() {
     // Wait until the replay metadata (has_voice) is known so the scripts are
     // only ever injected once per replay, with the correct globals already set.
     if (!replayId || !data) return
-    ;(window as unknown as { REPLAY_URL: string }).REPLAY_URL = `/admin/replays/${replayId}/download`
+    ;(window as unknown as { REPLAY_URL: string }).REPLAY_URL = `/api/v1/admin/replays/${replayId}/download`
     ;(window as unknown as { HAS_VOICE: boolean }).HAS_VOICE = data.replay.has_voice
 
     const scripts: HTMLScriptElement[] = []

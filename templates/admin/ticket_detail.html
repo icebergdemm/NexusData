@@ -31,12 +31,12 @@
 .sidebar-value { color:var(--white); font-weight:600; }
 </style>
 
-<a href="/admin/tickets" class="ticket-back">&larr; Назад к тикетам</a>
+<a href="/adminold/tickets" class="ticket-back">&larr; Назад к тикетам</a>
 
 <div class="ticket-header">
   <h2>🎫 #{{ ticket.id }} - {{ ticket.title }}</h2>
   {% if ticket.status != 'closed' and check_permission(admin, 'tickets', 'edit') %}
-  <form method="post" action="/admin/tickets/{{ ticket.id }}/close" style="margin-left:auto;"
+  <form method="post" action="/adminold/tickets/{{ ticket.id }}/close" style="margin-left:auto;"
         onsubmit="return confirm('Закрыть тикет?');">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
     <button type="submit" style="background:var(--red); color:#fff; border:none; border-radius:6px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer;">Закрыть тикет</button>
@@ -57,7 +57,7 @@
   {% if player %}
   <div class="sidebar-row">
     <span class="sidebar-label">Игрок</span>
-    <span class="sidebar-value"><a href="/admin/players/{{ player.player_id }}" style="color:var(--primary-blue); text-decoration:none;">{{ player.player_last_time_name }} (#{{ player.player_id }})</a></span>
+    <span class="sidebar-value"><a href="/adminold/players/{{ player.player_id }}" style="color:var(--primary-blue); text-decoration:none;">{{ player.player_last_time_name }} (#{{ player.player_id }})</a></span>
   </div>
   {% endif %}
   <div class="sidebar-row">
@@ -111,7 +111,7 @@
   </div>
 
   {% if ticket.status != 'closed' and check_permission(admin, 'tickets', 'edit') %}
-  <form method="post" action="/admin/tickets/{{ ticket.id }}/send" class="chat-input-area">
+  <form method="post" action="/adminold/tickets/{{ ticket.id }}/send" class="chat-input-area">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
     <textarea name="content" class="chat-input" placeholder="Написать сообщение..." rows="1"></textarea>
     <button type="submit" class="chat-send">Отправить</button>
@@ -171,7 +171,7 @@ if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
   }
 
   function pollMessages() {
-    fetch('/admin/tickets/' + ticketId + '/messages-json?after_id=' + lastMsgId, {credentials: 'same-origin'})
+    fetch('/adminold/tickets/' + ticketId + '/messages-json?after_id=' + lastMsgId, {credentials: 'same-origin'})
       .then(function(r) { return r.json(); })
       .then(function(messages) {
         if (messages.length > 0) {

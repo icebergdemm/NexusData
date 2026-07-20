@@ -29,10 +29,10 @@
 
 <div class="quick-rooms" style="margin-bottom:16px;">
   <span style="font-size:12px; color:var(--gray); align-self:center;">Быстрые комнаты:</span>
-  <a href="/admin/meeting?room=asper-general" class="quick-room {% if room_name == 'asper-general' %}active{% endif %}">Общая</a>
-  <a href="/admin/meeting?room=asper-admins" class="quick-room {% if room_name == 'asper-admins' %}active{% endif %}">Администрация</a>
-  <a href="/admin/meeting?room=asper-moderators" class="quick-room {% if room_name == 'asper-moderators' %}active{% endif %}">Модераторы</a>
-  <a href="/admin/meeting?room=asper-dev" class="quick-room {% if room_name == 'asper-dev' %}active{% endif %}">Разработка</a>
+  <a href="/adminold/meeting?room=asper-general" class="quick-room {% if room_name == 'asper-general' %}active{% endif %}">Общая</a>
+  <a href="/adminold/meeting?room=asper-admins" class="quick-room {% if room_name == 'asper-admins' %}active{% endif %}">Администрация</a>
+  <a href="/adminold/meeting?room=asper-moderators" class="quick-room {% if room_name == 'asper-moderators' %}active{% endif %}">Модераторы</a>
+  <a href="/adminold/meeting?room=asper-dev" class="quick-room {% if room_name == 'asper-dev' %}active{% endif %}">Разработка</a>
 </div>
 
 <div class="meeting-container">
@@ -49,7 +49,7 @@
 function joinRoom() {
   var name = document.getElementById('room-name').value.trim();
   if (name) {
-    window.location.href = '/admin/meeting?room=' + encodeURIComponent(name);
+    window.location.href = '/adminold/meeting?room=' + encodeURIComponent(name);
   }
 }
 document.getElementById('room-name').addEventListener('keypress', function(e) {

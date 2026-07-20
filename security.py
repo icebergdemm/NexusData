@@ -139,13 +139,26 @@ def generate_api_key() -> str:
 def check_permission(admin, page: str, action: str = "view") -> bool:
     """Check if admin has a specific page permission.
 
-    Resolution order:
+    Resolution order (hybrid — "Пользователи ND" is the primary source of
+    truth, department access is a secondary, additive layer):
     1. is_superuser → always True
-    2. individual_permissions override (if key present)
-    3. privilege_group.permissions
-    4. legacy flat permissions list fallback
+    2. baseline: every authenticated admin can view Documents and create
+       personal documents, and can view the Departments tab (scoped to
+       their own memberships — see api_list_departments/api_get_department),
+       regardless of group/individual grants
+    3. individual_permissions override (if key present)
+    4. privilege_group.permissions
+    5. department site-wide grants (superuser-authored only — see
+       compute_department_site_permissions, attached to `admin` by each
+       router's get_current_admin as `_department_site_permissions`)
     """
     if admin.is_superuser:
+        return True
+
+    if page == "documents" and action in ("create_personal", "view"):
+        return True
+
+    if page == "departments" and action == "view":
         return True
 
     # Individual overrides
@@ -163,14 +176,78 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
         if page in grp_pages and action in grp_pages[page]:
             return bool(grp_pages[page][action])
 
-    # No group or permission found
+    # Hybrid tier: additive site-wide grants from a department access level,
+    # settable only by a superuser (see routes/departments.py access-level
+    # PATCH gate). Never removes access, only adds.
+    hybrid = getattr(admin, "_department_site_permissions", None)
+    if hybrid:
+        hybrid_pages = hybrid.get("pages", {})
+        if page in hybrid_pages and hybrid_pages[page].get(action):
+            return True
+
     return False
 
 
-def require_permission(admin, page: str, action: str = "view"):
-    """Raise HTTPException(403) if permission is missing."""
-    if not check_permission(admin, page, action):
-        raise HTTPException(status_code=403, detail="Недостаточно прав")
+def compute_department_site_permissions(db, admin_id: int) -> dict:
+    """Union of {"pages": {page: {action: bool}}} site-wide grants from every
+    department access level `admin_id` currently holds. Computed once per
+    request by each router's get_current_admin and cached on the AdminUser
+    instance so check_permission (a pure function, no db access) can consult
+    it without threading a db session through ~250 call sites."""
+    from models import DepartmentMember, DepartmentAccessLevel
+
+    memberships = db.query(DepartmentMember).filter(DepartmentMember.admin_id == admin_id).all()
+    if not memberships:
+        return {}
+
+    level_keys_by_dept: dict = {}
+    for m in memberships:
+        level_keys_by_dept.setdefault(m.department_id, set()).update(m.held_level_keys or [])
+
+    dept_ids = list(level_keys_by_dept.keys())
+    if not dept_ids:
+        return {}
+
+    levels = db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id.in_(dept_ids)).all()
+    merged: dict = {}
+    for level in levels:
+        if level.key not in level_keys_by_dept.get(level.department_id, set()):
+            continue
+        for page, actions in (level.site_permissions or {}).get("pages", {}).items():
+            for action, allowed in (actions or {}).items():
+                if allowed:
+                    merged.setdefault(page, {})[action] = True
+
+    return {"pages": merged} if merged else {}
+
+
+def check_department_permission(admin, department, member, page: str, action: str = "view") -> bool:
+    """Check if admin has a specific module permission within a department.
+
+    `member` is the caller's DepartmentMember row for this department (None
+    if they aren't a member at all). `department` must have `access_levels`
+    available (SQLAlchemy relationship, loaded lazily or eagerly).
+
+    Resolution order:
+    1. is_superuser → always True
+    2. not a member → False
+    3. is_head → always True within their own department
+    4. union of every held access level's {"pages": {module: {action: bool}}}
+    """
+    if admin.is_superuser:
+        return True
+    if member is None:
+        return False
+    if member.is_head:
+        return True
+
+    held = member.held_level_keys or []
+    for level in department.access_levels:
+        if level.key in held:
+            pages = (level.permissions or {}).get("pages", {})
+            if page in pages and pages[page].get(action):
+                return True
+    return False
 
 
 def check_rate_limit(db, admin, action: str = "general") -> bool:

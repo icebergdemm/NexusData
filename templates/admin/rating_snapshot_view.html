@@ -36,7 +36,7 @@
 {% set role_icons = {"captain": "🎖", "mechanic": "🔧", "medic": "💊", "security": "🔫", "engineer": "⚡"} %}
 {% set role_names = {"captain": "Капитан", "mechanic": "Механик", "medic": "Медик", "security": "СБ", "engineer": "Инженер"} %}
 
-<a href="/admin/ratings" class="snap-back">&larr; Назад к рейтингу</a>
+<a href="/adminold/ratings" class="snap-back">&larr; Назад к рейтингу</a>
 
 <div class="snap-header">
   <h2>📸 {{ meta.title }}</h2>
@@ -64,7 +64,7 @@
 <!-- Role tabs -->
 <div class="role-tabs">
   {% for r in roles %}
-  <a href="/admin/ratings/snapshot/{{ filename }}/view?role={{ r }}" class="role-tab {% if selected_role == r %}active{% endif %}">
+  <a href="/adminold/ratings/snapshot/{{ filename }}/view?role={{ r }}" class="role-tab {% if selected_role == r %}active{% endif %}">
     {{ role_icons.get(r, '') }} {{ role_names.get(r, r) }}
     <span style="font-size:10px; opacity:.7;">({{ all_leaderboards.get(r, [])|length }})</span>
   </a>

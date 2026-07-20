@@ -11,7 +11,7 @@ import { api } from "@/lib/api"
 import type { TicketDetailResponse } from "./types"
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "—"
+  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
 }
 
 export function TicketDetailPage() {
@@ -53,7 +53,7 @@ export function TicketDetailPage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-8rem)] max-w-3xl flex-col gap-3">
       <Card>
-        <CardContent className="flex items-center justify-between py-4">
+        <CardContent className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2 font-semibold">
               <span>{meta?.emoji ?? "🎫"}</span> {ticket.title}
