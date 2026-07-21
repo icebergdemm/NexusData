@@ -13,7 +13,7 @@ import { ArrowLeft, Crown, MapPin, Ship, Target, Video, Link2, Link2Off } from "
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 
-interface RoundPlayer { steamid: string; player_name: string; role?: string }
+interface RoundPlayer { steamid: string; player_name: string; real_name?: string; role?: string }
 interface ReplayRow { id: number; server_name: string | null; submarine_name: string | null; file_size: number | null; recorded_at: string | null }
 interface RoundDetail {
   id: number
@@ -107,6 +107,11 @@ export function RoundDetailPage() {
                 <span className="flex items-center gap-1.5">
                   {isCaptain(p.role) && <Crown className="size-3.5 text-primary" />}
                   {p.player_name}
+                  {p.real_name && (
+                    <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${p.real_name}`}>
+                      принудительное имя
+                    </Badge>
+                  )}
                 </span>
                 {p.role && <Badge variant="outline" className="text-xs">{p.role}</Badge>}
               </div>

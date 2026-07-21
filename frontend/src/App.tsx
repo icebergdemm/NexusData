@@ -1,11 +1,14 @@
 import { lazy, Suspense } from "react"
 import { Navigate, Route, Routes } from "react-router-dom"
+import { AlertTriangle, RotateCw } from "lucide-react"
 import { AppShell } from "@/components/layout/AppShell"
 import { OnboardingModal } from "@/components/layout/OnboardingModal"
 import { useCurrentAdmin } from "@/lib/auth"
+import { ApiError } from "@/lib/api"
 import { DashboardPage } from "@/pages/dashboard"
 import { RoundStatusPage } from "@/pages/round-status"
 import { DispatchPage } from "@/pages/dispatch"
+import { WorldOverviewPage } from "@/pages/world-overview"
 import { PlayersListPage } from "@/pages/players"
 import { PlayerDetailPage } from "@/pages/players/detail"
 import { ModerationPage } from "@/pages/moderation"
@@ -47,14 +50,33 @@ const DocumentEditorPage = lazy(() =>
 )
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isLoading, isError } = useCurrentAdmin()
+  const { isLoading, isError, error, refetch } = useCurrentAdmin()
 
   if (isLoading) {
     return <div className="flex h-screen items-center justify-center text-muted-foreground">Загрузка…</div>
   }
   if (isError) {
-    // The api client already redirects to /login on 401; this is a fallback.
-    return null
+    // The api client already hard-redirects to /login on 401 before this
+    // ever renders — this only fires for network failures, 500s, or a 503
+    // (maintenance/degraded, also caught globally by MaintenanceBanner).
+    // Used to just `return null` (a blank white page) here.
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-3 p-4 text-center">
+        <AlertTriangle className="size-8 text-destructive" />
+        <div>
+          <p className="font-medium">Не удалось связаться с сервером</p>
+          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+            {error instanceof ApiError ? error.message : "Проверьте соединение и попробуйте снова."}
+          </p>
+        </div>
+        <button
+          onClick={() => refetch()}
+          className="mt-1 flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+        >
+          <RotateCw className="size-3.5" /> Повторить
+        </button>
+      </div>
+    )
   }
   return (
     <>
@@ -72,6 +94,7 @@ export default function App() {
           <Route index element={<DashboardPage />} />
           <Route path="round-status" element={<RoundStatusPage />} />
           <Route path="dispatch" element={<DispatchPage />} />
+          <Route path="world-overview" element={<WorldOverviewPage />} />
           <Route path="players" element={<PlayersListPage />} />
           <Route path="players/:playerId" element={<PlayerDetailPage />} />
           <Route path="label-categories" element={<LabelCategoriesPage />} />

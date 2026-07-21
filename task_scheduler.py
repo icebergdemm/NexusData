@@ -132,9 +132,23 @@ class TaskScheduler:
 
         logger.info(f"[Scheduler] Started with {self._worker_count} workers")
 
-    def stop(self):
-        """Signal workers to stop (best-effort). Daemon threads die on process exit anyway."""
+    def stop(self, wait: bool = True, timeout: float = 8.0):
+        """Signal workers to stop — and, unlike the old fire-and-forget
+        version, actually wait for them to exit (bounded by `timeout`) and
+        reset internal state so a later start() genuinely restarts the
+        subsystem instead of being a no-op (self._started never used to be
+        cleared). Used by the "workers off/restart" console command and
+        workers.py's watch_runtime_state(), not just process shutdown."""
         self._stop_event.set()
+        if wait:
+            deadline = time.monotonic() + timeout
+            for t in self._workers:
+                t.join(timeout=max(0.0, deadline - time.monotonic()))
+            if self._periodic_thread:
+                self._periodic_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        self._workers = []
+        self._periodic_thread = None
+        self._started = False
 
     def submit(
         self,

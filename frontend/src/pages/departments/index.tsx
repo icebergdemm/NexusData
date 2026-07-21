@@ -164,7 +164,7 @@ export function DepartmentsPage() {
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <Badge variant="secondary" className="gap-1"><Users2 className="size-3" /> {d.member_count}</Badge>
                   {d.head && (
-                    <Badge variant="outline" className="gap-1"><Crown className="size-3" /> {d.head.admin_name ?? "-"}</Badge>
+                    <Badge variant="outline" className="gap-1"><Crown className="size-3" /> {d.head.forced_display_name ?? d.head.admin_name ?? "-"}</Badge>
                   )}
                   {d.is_head && <Badge className="bg-primary/15 text-primary">Вы — глава</Badge>}
                 </div>

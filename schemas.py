@@ -109,6 +109,7 @@ class PlayerDataOut(PlayerDataBase):
     kit_name: Optional[str] = None
     achievements_data: Optional[Dict[str, Any]] = Field(default=None, description="Raw achievements/rewards JSON from DB")
     steam_avatar_url: Optional[str] = None
+    forced_display_name: Optional[str] = Field(default=None, description="Admin-assigned display name — takes precedence over player_last_time_name wherever the player's name is shown")
 
     @computed_field
     @property

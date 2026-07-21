@@ -1,0 +1,186 @@
+import { useEffect, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { Globe2, Users2, Zap, Clock, Wind, Flame, Droplets } from "lucide-react"
+import { Card, CardContent } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageHeader } from "@/components/layout/PageHeader"
+import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import { worldStateApi, type WorldCharacter } from "./api"
+import { WorldCanvas } from "./WorldCanvas"
+
+function fmtDuration(seconds: number | null): string {
+  if (seconds == null) return "-"
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}:${String(s).padStart(2, "0")}`
+}
+
+const TEAM_LABELS: Record<string, string> = {
+  Team1: "Команда 1",
+  Team2: "Команда 2",
+  None: "Без команды",
+  FriendlyNPC: "Дружественный NPC",
+}
+
+function CharacterRow({ c, selected, onSelect }: { c: WorldCharacter; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      onClick={onSelect}
+      className={`flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent ${selected ? "border-primary bg-accent" : "border-transparent"}`}
+    >
+      <PlayerAvatar url={null} name={c.name} size={22} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className={`truncate font-medium ${c.dead ? "text-muted-foreground line-through" : ""}`}>{c.name}</span>
+          {c.ragdoll && !c.dead && <Badge variant="outline" className="text-[9px]">оглушён</Badge>}
+        </div>
+        <div className="text-[11px] text-muted-foreground">{c.job ?? c.species} · {TEAM_LABELS[c.team] ?? c.team}</div>
+      </div>
+      <div className="shrink-0 text-right text-[11px]">
+        <div className={c.hp < 30 ? "text-destructive" : "text-muted-foreground"}>{Math.round(c.hp)} HP</div>
+        {c.water && <Droplets className="ml-auto size-3 text-info" />}
+      </div>
+    </button>
+  )
+}
+
+export function WorldOverviewPage() {
+  const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
+  const [selectedCharacterId, setSelectedCharacterId] = useState<number | null>(null)
+
+  const { data: roundsData, isLoading: roundsLoading } = useQuery({
+    queryKey: ["world-rounds"],
+    queryFn: () => worldStateApi.listRounds(),
+    refetchInterval: 5000,
+  })
+
+  useEffect(() => {
+    if (!roundsData) return
+    const stillListed = roundsData.rounds.some((r) => r.round_id === selectedRoundId)
+    if (!stillListed) setSelectedRoundId(roundsData.rounds[0]?.round_id ?? null)
+  }, [roundsData, selectedRoundId])
+
+  const { data: geometry } = useQuery({
+    queryKey: ["world-geometry", selectedRoundId],
+    // Static per round_id — fetched once, never refetched on its own.
+    queryFn: () => worldStateApi.getGeometry(selectedRoundId as string),
+    enabled: !!selectedRoundId,
+    staleTime: Infinity,
+  })
+
+  const { data: state } = useQuery({
+    queryKey: ["world-state", selectedRoundId],
+    queryFn: () => worldStateApi.getState(selectedRoundId as string),
+    enabled: !!selectedRoundId,
+    refetchInterval: 3000,
+  })
+
+  useEffect(() => { setSelectedCharacterId(null) }, [selectedRoundId])
+
+  return (
+    <div className="flex h-[calc(100vh-6rem)] flex-col">
+      <PageHeader
+        title="Обзор мира"
+        description="Просмотр раунда"
+        icon={Globe2}
+        actions={!!roundsData?.rounds.length && (
+          <Select value={selectedRoundId ?? undefined} onValueChange={setSelectedRoundId}>
+            <SelectTrigger className="w-64"><SelectValue placeholder="Выберите раунд" /></SelectTrigger>
+            <SelectContent>
+              {roundsData.rounds.map((r) => (
+                <SelectItem key={r.round_id} value={r.round_id}>
+                  {r.server_name ?? "?"} — {r.level_name ?? "?"} ({fmtDuration(r.t)})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      />
+
+      {roundsLoading ? (
+        <Skeleton className="flex-1" />
+      ) : !roundsData?.rounds.length ? (
+        <Card className="flex-1"><CardContent className="flex h-full items-center justify-center py-12 text-center text-sm text-muted-foreground">
+          Похоже раунд не начался :(
+        </CardContent></Card>
+      ) : !geometry || !state ? (
+        <Skeleton className="flex-1" />
+      ) : (
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_320px]">
+          <WorldCanvas
+            geometry={geometry}
+            state={state}
+            selectedCharacterId={selectedCharacterId}
+            onSelectCharacter={setSelectedCharacterId}
+          />
+
+          <div className="flex min-h-0 flex-col gap-3">
+            <Card className="shrink-0">
+              <CardContent className="space-y-1.5 py-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">{geometry.level_name ?? "-"}</span>
+                  <Badge variant={state.is_active ? "secondary" : "destructive"}>{state.is_active ? "Активен" : "Нет данных"}</Badge>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Clock className="size-3.5" /> {fmtDuration(state.t)}
+                </div>
+                <div className="text-xs text-muted-foreground">{geometry.sub_name} · {geometry.server_name}</div>
+              </CardContent>
+            </Card>
+
+            <Tabs defaultValue="characters" className="min-h-0 flex-1 gap-2">
+              <TabsList className="w-full shrink-0">
+                <TabsTrigger value="characters" className="gap-1.5">
+                  <Users2 className="size-3.5" /> Персонажи ({state.characters.length})
+                </TabsTrigger>
+                <TabsTrigger value="reactors" className="gap-1.5">
+                  <Zap className="size-3.5" /> Реакторы ({state.reactors.length})
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="characters" className="min-h-0 flex-1 overflow-y-auto">
+                <div className="flex flex-col gap-1.5 pr-0.5">
+                  {state.characters.map((c) => (
+                    <CharacterRow key={c.id} c={c} selected={c.id === selectedCharacterId} onSelect={() => setSelectedCharacterId(c.id)} />
+                  ))}
+                  {!state.characters.length && <p className="py-4 text-center text-xs text-muted-foreground">Никого нет</p>}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="reactors" className="min-h-0 flex-1 overflow-y-auto">
+                <div className="flex flex-col gap-1.5 pr-0.5">
+                  {state.reactors.map((r) => (
+                    <div key={r.id} className="rounded-md border px-2.5 py-1.5 text-xs">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="font-medium">Реактор #{r.id}</span>
+                        <div className="flex gap-1">
+                          {r.melted && <Badge variant="destructive" className="text-[9px]">Расплавлен</Badge>}
+                          {r.critical && !r.melted && <Badge variant="destructive" className="gap-1 text-[9px]"><Flame className="size-2.5" /> Критично</Badge>}
+                          {!r.power_on && <Badge variant="outline" className="text-[9px]">Выключен</Badge>}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1 text-muted-foreground">
+                        <span>Деление: {r.fission.toFixed(0)}%</span>
+                        <span>Турбина: {r.turbine.toFixed(0)}%</span>
+                        <span>Темп.: {r.temp.toFixed(0)}%</span>
+                        <span>Топливо: {r.fuel.toFixed(0)}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {!state.reactors.length && <p className="py-4 text-center text-xs text-muted-foreground">Реакторов нет</p>}
+                </div>
+              </TabsContent>
+            </Tabs>
+
+            <p className="flex shrink-0 items-center gap-1 px-1 text-[10px] text-muted-foreground">
+              <Wind className="size-3" /> Обновляется каждые ~3с · seq {state.seq ?? "-"}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

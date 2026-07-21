@@ -23,8 +23,9 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router
-from workers import start_playtime_worker
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router
+from workers import start_playtime_worker, stop_all_workers, watch_runtime_state
+import runtime_control
 from datetime import datetime
 
 settings = get_settings()
@@ -94,6 +95,23 @@ def create_app() -> FastAPI:
         except Exception:
             return PlainTextResponse(message, status_code=status_code)
 
+    def _maintenance_response(request, message: str, status_code: int = 503):
+        """Same JSON-for-API/HTML-for-browser split as _error_response above,
+        but for a deliberate degraded state (maintenance mode, a subsystem
+        toggled off via the console, or a dead DB) rather than an exception —
+        see maintenance_gate_middleware below."""
+        if _is_api(request):
+            return _JSONResponse(
+                status_code=status_code,
+                content={"success": False, "maintenance": True, "error": message},
+            )
+        try:
+            return templates.TemplateResponse(
+                "maintenance.html", {"request": request, "message": message}, status_code=status_code,
+            )
+        except Exception:
+            return PlainTextResponse(message, status_code=status_code)
+
     @app.exception_handler(IntegrityError)
     async def integrity_exception_handler(request, exc):
         logger.error(f"Integrity error: {exc}")
@@ -158,6 +176,11 @@ def create_app() -> FastAPI:
     app.include_router(onlyoffice_router)
     app.include_router(departments_router)
     app.include_router(tasks_router)
+    app.include_router(world_state_router)
+    app.include_router(world_state_admin_router)
+    app.include_router(world_state_client_router)
+    app.include_router(warehouse_admin_router)
+    app.include_router(warehouse_client_router)
 
     # ── Register global Jinja2 filters for MSK time display ──────────────────
     from utils_time import utc_to_msk, format_msk
@@ -232,6 +255,29 @@ def create_app() -> FastAPI:
             return _FileResponse(_spa_index_file)
         raise StarletteHTTPException(status_code=503, detail="Frontend not built yet — run `npm run build` in frontend/")
 
+    @app.get("/healthz")
+    async def healthz():
+        """Unauthenticated, DB-free liveness probe — unlike /api/v1/health
+        (which requires the API key when require_auth is on), this is what
+        the frontend's MaintenanceBanner and any external monitor can poll
+        without credentials. Deliberately does not touch the database."""
+        state = runtime_control.read_state()
+        if state.maintenance_mode:
+            status = "maintenance"
+        elif not state.db_healthy or not state.api_enabled or not state.web_enabled:
+            status = "degraded"
+        else:
+            status = "ok"
+        return _JSONResponse({
+            "status": status,
+            "db_healthy": state.db_healthy,
+            "api_enabled": state.api_enabled,
+            "web_enabled": state.web_enabled,
+            "workers_enabled": state.workers_enabled,
+            "maintenance_mode": state.maintenance_mode,
+            "maintenance_message": state.maintenance_message or None,
+        })
+
     @app.get("/admin")
     async def spa_root():
         return await _spa_index_response()
@@ -250,8 +296,18 @@ def create_app() -> FastAPI:
     async def startup():
         logger.info(f"Starting {settings.app_name} v{settings.app_version}")
         logger.info(f"require_auth={settings.require_auth}, api_key={settings.api_key[:4]}*** (len={len(settings.api_key)})")
-        init_db()
-        logger.info("Database initialized")
+        try:
+            init_db()
+            logger.info("Database initialized")
+            runtime_control.set_db_healthy(True)
+        except Exception:
+            # A dead DB at boot must not take the whole process down with it —
+            # the app still binds the port and serves /healthz, the SPA shell,
+            # and the maintenance page; DB-dependent API routes degrade to a
+            # clean 503 via maintenance_gate_middleware instead of every
+            # request 500ing on a fresh connection attempt.
+            logger.exception("Database initialization failed at startup — continuing in degraded mode")
+            runtime_control.set_db_healthy(False)
         app.state.start_time = datetime.utcnow()
 
         # WORKER_ROLE=web marks one of several parallel uvicorn worker
@@ -272,8 +328,18 @@ def create_app() -> FastAPI:
             start_playtime_stats_worker()
             from services_replays import start_replay_worker
             start_replay_worker()
+            # Lets the "workers on/off/restart" console command (see console.py)
+            # affect this process even though it never reads stdin itself —
+            # the console only ever writes runtime_control's state file, this
+            # thread is what actually reacts to it wherever the workers live.
+            watch_runtime_state()
         else:
             logger.info("WORKER_ROLE=web — skipping background workers/scheduler in this process")
+
+    @app.on_event("shutdown")
+    async def shutdown():
+        if os.environ.get("WORKER_ROLE") != "web":
+            stop_all_workers()
 
     # HTTP exception handler to render friendly templates for common errors
     @app.exception_handler(StarletteHTTPException)
@@ -322,7 +388,35 @@ def create_app() -> FastAPI:
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: https:; frame-src 'self' https://*.jit.si https://meet.jit.si https://*.rp-asper.ru https:"
 
         return response
-    
+
+    # Maintenance/degraded-mode gate — registered LAST so it's the OUTERMOST
+    # middleware layer (Starlette wraps in add-order: the most-recently-added
+    # @app.middleware("http") runs first on the way in), short-circuiting
+    # before security_and_csrf_middleware and every route/DB call above when
+    # the site is in maintenance mode, a subsystem was toggled off via the
+    # console (see console.py), or the database failed to initialize.
+    _MAINTENANCE_BYPASS_PREFIXES = ("/healthz", "/static", "/admin/assets")
+
+    @app.middleware("http")
+    async def maintenance_gate_middleware(request, call_next):
+        path = request.url.path
+        if any(path.startswith(p) for p in _MAINTENANCE_BYPASS_PREFIXES):
+            return await call_next(request)
+
+        state = runtime_control.read_state()
+        is_api = path.startswith("/api/")
+
+        if state.maintenance_mode:
+            return _maintenance_response(request, state.maintenance_message or "Ведутся технические работы. Пожалуйста, зайдите позже.")
+        if is_api and not state.api_enabled:
+            return _maintenance_response(request, "API временно отключено администратором.")
+        if not is_api and not state.web_enabled:
+            return _maintenance_response(request, "Веб-интерфейс временно отключён администратором.")
+        if is_api and not state.db_healthy:
+            return _maintenance_response(request, "База данных недоступна. Мы уже работаем над восстановлением.")
+
+        return await call_next(request)
+
     return app
 
 

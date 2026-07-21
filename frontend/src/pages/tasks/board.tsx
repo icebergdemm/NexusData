@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare,
+  User, Building2, X, Pencil, KanbanSquare, Copy,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -21,6 +21,7 @@ import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS,
@@ -31,19 +32,38 @@ function isOverdue(task: TaskRow): boolean {
   return !!task.deadline && new Date(task.deadline).getTime() < Date.now()
 }
 
+function copyToClipboard(text: string, label: string) {
+  navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
+}
+
 function fmtDeadline(iso: string): string {
   return new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
 // ── Task card (draggable) ───────────────────────────────────────────────────
 
-function TaskCard({ task, onOpen, onDragStart }: {
+function TaskCard({ task, onOpen, onDragStart, onDeleted }: {
   task: TaskRow
   onOpen: () => void
   onDragStart: (e: React.DragEvent) => void
+  onDeleted: () => void
 }) {
   const overdue = isOverdue(task)
+
+  const deleteMutation = useMutation({
+    mutationFn: () => tasksApi.tasks.delete(task.id),
+    onSuccess: onDeleted,
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   return (
+    <AppContextMenu
+      actions={[
+        { label: "Открыть", icon: Pencil, onSelect: onOpen },
+        { label: "Скопировать название", icon: Copy, onSelect: () => copyToClipboard(task.title, "Название") },
+        { label: "Удалить", icon: Trash2, destructive: true, separatorBefore: true, onSelect: () => deleteMutation.mutate() },
+      ]}
+    >
     <Card
       draggable
       onDragStart={onDragStart}
@@ -78,12 +98,13 @@ function TaskCard({ task, onOpen, onDragStart }: {
         </div>
       </CardContent>
     </Card>
+    </AppContextMenu>
   )
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
 
-function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask }: {
+function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
@@ -93,6 +114,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   onEditColumn: () => void
   onDeleteColumn: () => void
   onCreateTask: (columnId: number, title: string) => void
+  onTaskDeleted: () => void
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
@@ -139,6 +161,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             task={t}
             onOpen={() => onOpenTask(t.id)}
             onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
+            onDeleted={onTaskDeleted}
           />
         ))}
       </div>
@@ -623,6 +646,7 @@ export function TaskBoardPage() {
             onEditColumn={() => setEditColumn(col)}
             onDeleteColumn={() => setDeleteColumn(col)}
             onCreateTask={(columnId, title) => createTaskMutation.mutate({ columnId, title })}
+            onTaskDeleted={invalidate}
           />
         ))}
         {!data.columns.length && (

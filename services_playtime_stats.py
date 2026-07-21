@@ -410,3 +410,9 @@ def start_playtime_stats_worker():
         return
     t = threading.Thread(target=_playtime_stats_worker_loop, daemon=True, name="PlaytimeStatsWorker")
     t.start()
+
+
+def stop_playtime_stats_worker():
+    """Stop the background playtime stats worker."""
+    global _playtime_stats_worker_running
+    _playtime_stats_worker_running = False

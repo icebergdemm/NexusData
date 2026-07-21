@@ -1,0 +1,3674 @@
+{
+  "40mmchemgrenade": {
+    "has_icon": true,
+    "name": "40-мм кислотная граната"
+  },
+  "40mmgrenade": {
+    "has_icon": true,
+    "name": "40-мм граната"
+  },
+  "40mmstungrenade": {
+    "has_icon": true,
+    "name": "40-мм оглушающая граната"
+  },
+  "abscomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Модуль\""
+  },
+  "abyssdivingsuit": {
+    "has_icon": true,
+    "name": "Водолазный скафандр бездны"
+  },
+  "accordion": {
+    "has_icon": true,
+    "name": "Аккордеон"
+  },
+  "acidemitter": {
+    "has_icon": true,
+    "name": "acidemitter"
+  },
+  "acidmistemitter": {
+    "has_icon": true,
+    "name": "acidmistemitter"
+  },
+  "acoscomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Арккосинус\""
+  },
+  "addercomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Сложение\""
+  },
+  "administratorclothes": {
+    "has_icon": true,
+    "name": "administratorclothes"
+  },
+  "adrenalinegland": {
+    "has_icon": true,
+    "name": "Адреналиновая железа"
+  },
+  "advancedgenesplicer": {
+    "has_icon": true,
+    "name": "Улучшенный спайщик генов"
+  },
+  "advancedgenesplicerblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: улучшенный спайщик генов"
+  },
+  "advancedsyringegun": {
+    "has_icon": true,
+    "name": "Улучшенный шприц-пистолет"
+  },
+  "advancedsyringegunblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: улучшенный шприц-пистолет"
+  },
+  "alarmbuzzer": {
+    "has_icon": true,
+    "name": "Аварийный гудок"
+  },
+  "alienassemblydevice": {
+    "has_icon": false,
+    "name": "Инопланетное сборочное устройство"
+  },
+  "alienassemblydevice_bubble": {
+    "has_icon": false,
+    "name": "Контейнер сборочных устройств"
+  },
+  "alienblood": {
+    "has_icon": true,
+    "name": "Инопланетная кровь"
+  },
+  "alienblueprint": {
+    "has_icon": true,
+    "name": "Блок инопланетных данных (неопознанное)"
+  },
+  "alienbutton": {
+    "has_icon": false,
+    "name": "Инопланетная кнопка"
+  },
+  "aliencircuitry": {
+    "has_icon": true,
+    "name": "Инопланетная схема"
+  },
+  "aliencoil": {
+    "has_icon": false,
+    "name": "Инопланетный индуктор"
+  },
+  "aliencoildecorative": {
+    "has_icon": true,
+    "name": "aliencoildecorative"
+  },
+  "aliencurrentgenerator": {
+    "has_icon": false,
+    "name": "Инопланетный генератор тока"
+  },
+  "aliendoor": {
+    "has_icon": false,
+    "name": "Инопланетная дверь"
+  },
+  "aliendoorheavy": {
+    "has_icon": true,
+    "name": "aliendoorheavy"
+  },
+  "aliendoorsmall": {
+    "has_icon": true,
+    "name": "aliendoorsmall"
+  },
+  "aliendoorsmallwbuttons": {
+    "has_icon": true,
+    "name": "aliendoorsmallwbuttons"
+  },
+  "aliendoorwbuttons": {
+    "has_icon": false,
+    "name": "Инопланетная дверь с кнопками"
+  },
+  "alienflare": {
+    "has_icon": true,
+    "name": "Инопланетный сигнальный огонь"
+  },
+  "aliengenerator": {
+    "has_icon": true,
+    "name": "Инопланетный генератор"
+  },
+  "aliengenerator_new": {
+    "has_icon": false,
+    "name": "aliengenerator_new"
+  },
+  "aliengravityammoblueprint": {
+    "has_icon": true,
+    "name": "Блок инопланетных данных (гравитация)"
+  },
+  "alienhatch": {
+    "has_icon": false,
+    "name": "Инопланетный люк"
+  },
+  "alienhatchheavy": {
+    "has_icon": true,
+    "name": "alienhatchheavy"
+  },
+  "alienhatchsmall": {
+    "has_icon": true,
+    "name": "alienhatchsmall"
+  },
+  "alienhatchsmallwbuttons": {
+    "has_icon": true,
+    "name": "alienhatchsmallwbuttons"
+  },
+  "alienhatchwbuttons": {
+    "has_icon": false,
+    "name": "Инопланетный люк с кнопками"
+  },
+  "alienincendiumblueprint": {
+    "has_icon": true,
+    "name": "Блок инопланетных данных (воспламенит)"
+  },
+  "alienitemcontainerlarge": {
+    "has_icon": false,
+    "name": "Большой инопланетный сундук"
+  },
+  "alienitemcontainermedium": {
+    "has_icon": true,
+    "name": "Средний инопланетный сундук"
+  },
+  "alienitemcontainersmall": {
+    "has_icon": false,
+    "name": "Небольшой инопланетный сундук"
+  },
+  "alienlight1": {
+    "has_icon": false,
+    "name": "alienlight1"
+  },
+  "alienlight2": {
+    "has_icon": false,
+    "name": "alienlight2"
+  },
+  "alienlight3": {
+    "has_icon": false,
+    "name": "alienlight3"
+  },
+  "alienlightcomponent": {
+    "has_icon": false,
+    "name": "Инопланетный осветительный прибор"
+  },
+  "alienmotionsensor": {
+    "has_icon": false,
+    "name": "Инопланетный датчик движения"
+  },
+  "alienphysicoriumammoblueprint": {
+    "has_icon": true,
+    "name": "Блок инопланетных данных (физикорий)"
+  },
+  "alienpistol": {
+    "has_icon": true,
+    "name": "Инопланетный пистолет"
+  },
+  "alienpowercell": {
+    "has_icon": false,
+    "name": "Инопланетный энергоблок"
+  },
+  "alienprojectile": {
+    "has_icon": true,
+    "name": "alienprojectile"
+  },
+  "alienpump": {
+    "has_icon": false,
+    "name": "Инопланетный насос"
+  },
+  "aliensampledisplay": {
+    "has_icon": false,
+    "name": "Инопланетный стенд для образцов"
+  },
+  "alienshell": {
+    "has_icon": true,
+    "name": "Физикориевый снаряд для рельсотрона"
+  },
+  "alienshell_reduceddmg": {
+    "has_icon": true,
+    "name": "alienshell_reduceddmg"
+  },
+  "alienspear": {
+    "has_icon": true,
+    "name": "Физикориевый гарпун"
+  },
+  "alienstoragevat": {
+    "has_icon": true,
+    "name": "Инопланетная цистерна"
+  },
+  "aliensymbol01": {
+    "has_icon": false,
+    "name": "aliensymbol01"
+  },
+  "aliensymbol02": {
+    "has_icon": false,
+    "name": "aliensymbol02"
+  },
+  "aliensymbol03": {
+    "has_icon": false,
+    "name": "aliensymbol03"
+  },
+  "aliensymbol04": {
+    "has_icon": false,
+    "name": "aliensymbol04"
+  },
+  "aliensymbol05": {
+    "has_icon": false,
+    "name": "aliensymbol05"
+  },
+  "aliensymbol06": {
+    "has_icon": false,
+    "name": "aliensymbol06"
+  },
+  "aliensymbol07": {
+    "has_icon": false,
+    "name": "aliensymbol07"
+  },
+  "aliensymbol08": {
+    "has_icon": false,
+    "name": "aliensymbol08"
+  },
+  "aliensymbol09": {
+    "has_icon": false,
+    "name": "aliensymbol09"
+  },
+  "aliensymbol10": {
+    "has_icon": false,
+    "name": "aliensymbol10"
+  },
+  "aliensymbol11": {
+    "has_icon": false,
+    "name": "aliensymbol11"
+  },
+  "aliensymbol12": {
+    "has_icon": false,
+    "name": "aliensymbol12"
+  },
+  "alienterminal": {
+    "has_icon": true,
+    "name": "Инопланетный терминал"
+  },
+  "alienterminal2": {
+    "has_icon": false,
+    "name": "alienterminal2"
+  },
+  "alienterminal_new": {
+    "has_icon": false,
+    "name": "alienterminal_new"
+  },
+  "alientoxinsgenerator": {
+    "has_icon": false,
+    "name": "Инопланетный генератор токсинов"
+  },
+  "alientranslator": {
+    "has_icon": true,
+    "name": "alientranslator"
+  },
+  "alientrinket1": {
+    "has_icon": true,
+    "name": "Инопланетная безделушка"
+  },
+  "alientrinket2": {
+    "has_icon": true,
+    "name": "Инопланетная вещица"
+  },
+  "alientrinket3": {
+    "has_icon": true,
+    "name": "Инопланетное украшение"
+  },
+  "alienturret": {
+    "has_icon": true,
+    "name": "Инопланетное орудие"
+  },
+  "alienturret_new": {
+    "has_icon": false,
+    "name": "alienturret_new"
+  },
+  "alienturretammo": {
+    "has_icon": true,
+    "name": "Инопланетный снаряд"
+  },
+  "alienturretammoemp": {
+    "has_icon": true,
+    "name": "alienturretammoemp"
+  },
+  "alienwire1": {
+    "has_icon": true,
+    "name": "alienwire1"
+  },
+  "alienwire2": {
+    "has_icon": true,
+    "name": "alienwire2"
+  },
+  "alienwire3": {
+    "has_icon": true,
+    "name": "alienwire3"
+  },
+  "alienwriting_alienwriting1": {
+    "has_icon": false,
+    "name": "alienwriting_alienwriting1"
+  },
+  "alienwriting_alienwriting2": {
+    "has_icon": false,
+    "name": "alienwriting_alienwriting2"
+  },
+  "alienwriting_alienwriting6": {
+    "has_icon": false,
+    "name": "alienwriting_alienwriting6"
+  },
+  "alienwriting_alienwriting7": {
+    "has_icon": false,
+    "name": "alienwriting_alienwriting7"
+  },
+  "alienwriting_alienwriting8": {
+    "has_icon": false,
+    "name": "alienwriting_alienwriting8"
+  },
+  "alienwritingdecal1": {
+    "has_icon": false,
+    "name": "alienwritingdecal1"
+  },
+  "alienwritingdecal2": {
+    "has_icon": false,
+    "name": "alienwritingdecal2"
+  },
+  "alienwritingdecal3": {
+    "has_icon": false,
+    "name": "alienwritingdecal3"
+  },
+  "alienwritingdecal4": {
+    "has_icon": false,
+    "name": "alienwritingdecal4"
+  },
+  "alienwritingdecal5": {
+    "has_icon": false,
+    "name": "alienwritingdecal5"
+  },
+  "alienwritingdecal6": {
+    "has_icon": false,
+    "name": "alienwritingdecal6"
+  },
+  "alienwritingdecal7": {
+    "has_icon": false,
+    "name": "alienwritingdecal7"
+  },
+  "aluminium": {
+    "has_icon": true,
+    "name": "Алюминий"
+  },
+  "amblygonite": {
+    "has_icon": true,
+    "name": "Амблигонит"
+  },
+  "ancientweapon": {
+    "has_icon": true,
+    "name": "Древнее оружие"
+  },
+  "andcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"И\""
+  },
+  "anomaly": {
+    "has_icon": true,
+    "name": "anomaly"
+  },
+  "anomalyprojectile": {
+    "has_icon": true,
+    "name": "anomalyprojectile"
+  },
+  "anomalysmall": {
+    "has_icon": true,
+    "name": "anomalysmall"
+  },
+  "aquaticpoppy": {
+    "has_icon": true,
+    "name": "Водяной мак"
+  },
+  "aragonite": {
+    "has_icon": true,
+    "name": "Арагонит"
+  },
+  "arcemitter": {
+    "has_icon": true,
+    "name": "Дуговой разрядник"
+  },
+  "artifactholder": {
+    "has_icon": true,
+    "name": "Ячейка для артефакта"
+  },
+  "artifacttransportcase": {
+    "has_icon": true,
+    "name": "Контейнер для перевозки артефактов"
+  },
+  "asincomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Арксинус\""
+  },
+  "assaultrifle": {
+    "has_icon": true,
+    "name": "Штурмовая винтовка"
+  },
+  "assaultriflemagazine": {
+    "has_icon": true,
+    "name": "Магазин штурмовой винтовки"
+  },
+  "assaultrifleround": {
+    "has_icon": true,
+    "name": "assaultrifleround"
+  },
+  "assistantclothes": {
+    "has_icon": true,
+    "name": "Одежда помощника"
+  },
+  "atancomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Арктангенс\""
+  },
+  "autoinjectorheadset": {
+    "has_icon": true,
+    "name": "Гарнитура с инжектором"
+  },
+  "autoshotgun": {
+    "has_icon": true,
+    "name": "Автоматический дробовик"
+  },
+  "backpack": {
+    "has_icon": true,
+    "name": "Рюкзак"
+  },
+  "badcreepingorange": {
+    "has_icon": true,
+    "name": "Мутировавший взрывной гранат"
+  },
+  "badraptorbane": {
+    "has_icon": true,
+    "name": "Мутировавший бич раптора"
+  },
+  "ballastfloratoxins": {
+    "has_icon": true,
+    "name": "ballastfloratoxins"
+  },
+  "ballisticfiber": {
+    "has_icon": true,
+    "name": "Противоударное волокно"
+  },
+  "ballistichelmet1": {
+    "has_icon": true,
+    "name": "Пуленепробиваемый шлем"
+  },
+  "ballistichelmet2": {
+    "has_icon": true,
+    "name": "Шлем стрелка"
+  },
+  "ballistichelmet3": {
+    "has_icon": true,
+    "name": "Полицейский шлем"
+  },
+  "balloonegg": {
+    "has_icon": true,
+    "name": "balloonegg"
+  },
+  "banana": {
+    "has_icon": false,
+    "name": "banana"
+  },
+  "bananapeel": {
+    "has_icon": true,
+    "name": "bananapeel"
+  },
+  "bananapeelprojectile": {
+    "has_icon": true,
+    "name": "bananapeelprojectile"
+  },
+  "banditclothes1": {
+    "has_icon": true,
+    "name": "banditclothes1"
+  },
+  "banditclothes2": {
+    "has_icon": true,
+    "name": "banditclothes2"
+  },
+  "bandolier": {
+    "has_icon": true,
+    "name": "Патронташ"
+  },
+  "baseballcap": {
+    "has_icon": true,
+    "name": "Бейсболка"
+  },
+  "battery": {
+    "has_icon": true,
+    "name": "Батарея"
+  },
+  "batterycell": {
+    "has_icon": true,
+    "name": "Аккумулятор"
+  },
+  "batterywrecked": {
+    "has_icon": true,
+    "name": "batterywrecked"
+  },
+  "beerbottle1": {
+    "has_icon": true,
+    "name": "beerbottle1"
+  },
+  "beerbottle2": {
+    "has_icon": true,
+    "name": "beerbottle2"
+  },
+  "bikehorn": {
+    "has_icon": true,
+    "name": "Велосипедный гудок"
+  },
+  "blackwire": {
+    "has_icon": true,
+    "name": "Черный провод"
+  },
+  "blankloader": {
+    "has_icon": true,
+    "name": "Основание зарядника"
+  },
+  "blankperiscope": {
+    "has_icon": true,
+    "name": "Основание перископа"
+  },
+  "bloodsamplevial": {
+    "has_icon": true,
+    "name": "Фиал для образца крови"
+  },
+  "bluejumpsuit1": {
+    "has_icon": true,
+    "name": "Костюм котельника"
+  },
+  "bluejumpsuit2": {
+    "has_icon": true,
+    "name": "Комбинезон механика"
+  },
+  "bluewire": {
+    "has_icon": true,
+    "name": "Синий провод"
+  },
+  "boardingaxe": {
+    "has_icon": true,
+    "name": "Абордажный топор"
+  },
+  "boardingpod": {
+    "has_icon": true,
+    "name": "Абордажный модуль"
+  },
+  "bodyarmor": {
+    "has_icon": true,
+    "name": "Бронежилет"
+  },
+  "bookofchalices1": {
+    "has_icon": true,
+    "name": "bookofchalices1"
+  },
+  "bookofchalices2": {
+    "has_icon": true,
+    "name": "bookofchalices2"
+  },
+  "bornite": {
+    "has_icon": true,
+    "name": "Борнит"
+  },
+  "brockite": {
+    "has_icon": true,
+    "name": "Брокит"
+  },
+  "brokendivingsuit": {
+    "has_icon": true,
+    "name": "Поврежденный водолазный скафандр"
+  },
+  "brownwire": {
+    "has_icon": true,
+    "name": "Коричневый провод"
+  },
+  "bunk": {
+    "has_icon": false,
+    "name": "bunk"
+  },
+  "bunkwrecked": {
+    "has_icon": false,
+    "name": "bunkwrecked"
+  },
+  "button": {
+    "has_icon": true,
+    "name": "Кнопка"
+  },
+  "c4block": {
+    "has_icon": true,
+    "name": "Блок C-4"
+  },
+  "c4block_vipbombing": {
+    "has_icon": true,
+    "name": "c4block_vipbombing"
+  },
+  "calcium": {
+    "has_icon": true,
+    "name": "Кальций"
+  },
+  "camera": {
+    "has_icon": true,
+    "name": "Камера"
+  },
+  "captainscap1": {
+    "has_icon": true,
+    "name": "Фуражка ветерана"
+  },
+  "captainscap2": {
+    "has_icon": true,
+    "name": "Фуражка мятежника"
+  },
+  "captainscap3": {
+    "has_icon": true,
+    "name": "Фуражка адмирала"
+  },
+  "captainseparatistsuniform1": {
+    "has_icon": true,
+    "name": "Форма командующего"
+  },
+  "captainseparatistsuniform2": {
+    "has_icon": true,
+    "name": "Форма ветерана"
+  },
+  "captainseparatistsuniform3": {
+    "has_icon": true,
+    "name": "Форма военачальника"
+  },
+  "captainspipe": {
+    "has_icon": true,
+    "name": "Трубка капитана"
+  },
+  "captainsseparatistcap1": {
+    "has_icon": true,
+    "name": "Фуражка ветерана"
+  },
+  "captainsseparatistcap2": {
+    "has_icon": true,
+    "name": "Фуражка военачальника"
+  },
+  "captainsuniform1": {
+    "has_icon": true,
+    "name": "Форма ветерана"
+  },
+  "captainsuniform2": {
+    "has_icon": true,
+    "name": "Форма мятежника"
+  },
+  "captainsuniform3": {
+    "has_icon": true,
+    "name": "Форма адмирала"
+  },
+  "carbon": {
+    "has_icon": true,
+    "name": "Углерод"
+  },
+  "cargoscooter": {
+    "has_icon": true,
+    "name": "Грузовой скутер"
+  },
+  "cassiterite": {
+    "has_icon": true,
+    "name": "Касситерит"
+  },
+  "ceilcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Верхнее округление\""
+  },
+  "ceremonialsword": {
+    "has_icon": true,
+    "name": "Церемониальный меч"
+  },
+  "chaingun": {
+    "has_icon": true,
+    "name": "Цепная пушка"
+  },
+  "chaingunammobox": {
+    "has_icon": true,
+    "name": "Боеприпасы для цепной пушки"
+  },
+  "chaingunammoboxphysicorium": {
+    "has_icon": true,
+    "name": "Физикориевые боеприпасы для цепной пушки"
+  },
+  "chaingunammoboxshredder": {
+    "has_icon": true,
+    "name": "Дробные боеприпасы для цепной пушки"
+  },
+  "chaingunbolt": {
+    "has_icon": true,
+    "name": "Болт для цепной пушки"
+  },
+  "chaingunboltphysicorium": {
+    "has_icon": true,
+    "name": "chaingunboltphysicorium"
+  },
+  "chaingunboltshredder": {
+    "has_icon": true,
+    "name": "chaingunboltshredder"
+  },
+  "chaingunloader": {
+    "has_icon": true,
+    "name": "Зарядник для цепной пушки"
+  },
+  "chaingunloaderwrecked": {
+    "has_icon": true,
+    "name": "chaingunloaderwrecked"
+  },
+  "chaingunwrecked": {
+    "has_icon": true,
+    "name": "chaingunwrecked"
+  },
+  "chalcopyrite": {
+    "has_icon": true,
+    "name": "Халькопирит"
+  },
+  "chamosite": {
+    "has_icon": true,
+    "name": "Бавалин"
+  },
+  "chargingdock": {
+    "has_icon": true,
+    "name": "Станция зарядки"
+  },
+  "chargingdockwrecked": {
+    "has_icon": true,
+    "name": "chargingdockwrecked"
+  },
+  "chemgrenade": {
+    "has_icon": true,
+    "name": "Кислотная граната"
+  },
+  "chemicalcrate": {
+    "has_icon": true,
+    "name": "Ящик с химикатами"
+  },
+  "chemicalcratedamaged": {
+    "has_icon": true,
+    "name": "Протекающий контейнер с химикатами"
+  },
+  "chitin": {
+    "has_icon": true,
+    "name": "Кусок хитина"
+  },
+  "chitinhelmet": {
+    "has_icon": true,
+    "name": "Хитиновый шлем"
+  },
+  "chlorine": {
+    "has_icon": true,
+    "name": "Хлорин"
+  },
+  "chrysoprase": {
+    "has_icon": true,
+    "name": "Хризопраз"
+  },
+  "cigar": {
+    "has_icon": true,
+    "name": "Сигара"
+  },
+  "circuitbox": {
+    "has_icon": true,
+    "name": "Кабельная коробка"
+  },
+  "clowncostume": {
+    "has_icon": true,
+    "name": "Клоунский костюм"
+  },
+  "clowncrate": {
+    "has_icon": false,
+    "name": "Клоунский сундук"
+  },
+  "clowncrateblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: клоунский сундук"
+  },
+  "clowndivingmask": {
+    "has_icon": true,
+    "name": "Подводная маска клоуна"
+  },
+  "clownexosuit": {
+    "has_icon": true,
+    "name": "clownexosuit"
+  },
+  "clownmask": {
+    "has_icon": true,
+    "name": "Клоунская маска"
+  },
+  "clownmaskunique": {
+    "has_icon": true,
+    "name": "Материнская поддержка"
+  },
+  "clownsuitunique": {
+    "has_icon": true,
+    "name": "Материнское провидение"
+  },
+  "coalitioncommendation": {
+    "has_icon": true,
+    "name": "Благодарность"
+  },
+  "coalitionmedal": {
+    "has_icon": true,
+    "name": "Медаль"
+  },
+  "coilgun": {
+    "has_icon": true,
+    "name": "Магнитная пушка"
+  },
+  "coilgunammobox": {
+    "has_icon": true,
+    "name": "Ящик с боеприпасами для магнитной пушки"
+  },
+  "coilgunammobox_blanks": {
+    "has_icon": true,
+    "name": "coilgunammobox_blanks"
+  },
+  "coilgunammoboxdepletedfuel": {
+    "has_icon": true,
+    "name": "Ящик с боеприпасами с обедненным топливом для магнитной пушки"
+  },
+  "coilgunammoboxexplosive": {
+    "has_icon": true,
+    "name": "Ящик с разрывными боеприпасами для магнитной пушки"
+  },
+  "coilgunammoboxpiercing": {
+    "has_icon": true,
+    "name": "Ящик пробивных снарядов для магнитной пушки"
+  },
+  "coilgunammoshelf": {
+    "has_icon": true,
+    "name": "Полка с боеприпасами"
+  },
+  "coilgunammoshelfwrecked": {
+    "has_icon": true,
+    "name": "coilgunammoshelfwrecked"
+  },
+  "coilgunbolt": {
+    "has_icon": true,
+    "name": "Снаряд для магнитной пушки"
+  },
+  "coilgunbolt_blank": {
+    "has_icon": true,
+    "name": "coilgunbolt_blank"
+  },
+  "coilgunboltexplosive": {
+    "has_icon": true,
+    "name": "Взрывной снаряд магнитной пушки"
+  },
+  "coilgunboltpiercing": {
+    "has_icon": true,
+    "name": "Пробивной снаряд магнитной пушки"
+  },
+  "coilgunharpoon": {
+    "has_icon": true,
+    "name": "coilgunharpoon"
+  },
+  "coilgunharpoonbox": {
+    "has_icon": true,
+    "name": "Гарпуны для магнитной пушки"
+  },
+  "coilgunloader": {
+    "has_icon": true,
+    "name": "Зарядник магнитной пушки"
+  },
+  "coilgunloaderwrecked": {
+    "has_icon": true,
+    "name": "coilgunloaderwrecked"
+  },
+  "coilgunwrecked": {
+    "has_icon": true,
+    "name": "coilgunwrecked"
+  },
+  "colorcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"цвет\""
+  },
+  "combatdivingsuit": {
+    "has_icon": true,
+    "name": "Боевой водолазный скафандр"
+  },
+  "combatstimulantsyringe": {
+    "has_icon": true,
+    "name": "Боевой стимулятор"
+  },
+  "commonerclothes1": {
+    "has_icon": true,
+    "name": "commonerclothes1"
+  },
+  "commonerclothes2": {
+    "has_icon": true,
+    "name": "commonerclothes2"
+  },
+  "commonerclothes3": {
+    "has_icon": true,
+    "name": "commonerclothes3"
+  },
+  "commonerclothes4": {
+    "has_icon": true,
+    "name": "commonerclothes4"
+  },
+  "commonerclothes5": {
+    "has_icon": true,
+    "name": "commonerclothes5"
+  },
+  "compoundn": {
+    "has_icon": true,
+    "name": "Соединение N"
+  },
+  "concatcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"взаимосвязь\""
+  },
+  "copper": {
+    "has_icon": true,
+    "name": "Медь"
+  },
+  "coscomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Косинус\""
+  },
+  "crateshelf": {
+    "has_icon": true,
+    "name": "Стеллаж для ящиков"
+  },
+  "crawleregg": {
+    "has_icon": true,
+    "name": "Яйцо ползуна"
+  },
+  "crawlereggprojectile": {
+    "has_icon": true,
+    "name": "crawlereggprojectile"
+  },
+  "crawlermask": {
+    "has_icon": true,
+    "name": "Маска ползуна"
+  },
+  "creepingorange": {
+    "has_icon": true,
+    "name": "Взрывной гранат"
+  },
+  "creepingorangevineseed": {
+    "has_icon": true,
+    "name": "Семя взрывного граната"
+  },
+  "crewchiefclothes": {
+    "has_icon": true,
+    "name": "crewchiefclothes"
+  },
+  "crowbar": {
+    "has_icon": true,
+    "name": "Лом"
+  },
+  "crowbardementonite": {
+    "has_icon": true,
+    "name": "Дементонитовый лом"
+  },
+  "crowbarhardened": {
+    "has_icon": true,
+    "name": "Закаленный лом"
+  },
+  "cryolite": {
+    "has_icon": true,
+    "name": "Криолит"
+  },
+  "cultistrobes": {
+    "has_icon": true,
+    "name": "cultistrobes"
+  },
+  "cyborgturretammo": {
+    "has_icon": true,
+    "name": "cyborgturretammo"
+  },
+  "cymbals": {
+    "has_icon": true,
+    "name": "cymbals"
+  },
+  "cymbalsblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: тарелки"
+  },
+  "datapad": {
+    "has_icon": false,
+    "name": "Датапад"
+  },
+  "deconstructor": {
+    "has_icon": true,
+    "name": "Деконструктор"
+  },
+  "deconstructorwrecked": {
+    "has_icon": true,
+    "name": "deconstructorwrecked"
+  },
+  "deepdiverduck": {
+    "has_icon": true,
+    "name": "Глубоководная утка"
+  },
+  "defensebotammobox": {
+    "has_icon": true,
+    "name": "Боеприпасы защитного бота"
+  },
+  "defensebotround": {
+    "has_icon": true,
+    "name": "defensebotround"
+  },
+  "defensebotspawner": {
+    "has_icon": true,
+    "name": "Защитный бот"
+  },
+  "delaycomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Задержки\""
+  },
+  "dementonite": {
+    "has_icon": true,
+    "name": "Скопление дементонита"
+  },
+  "dementonite_mindsunraveled": {
+    "has_icon": true,
+    "name": "dementonite_mindsunraveled"
+  },
+  "demultiplexercomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Селектор выхода\""
+  },
+  "depletedfuel": {
+    "has_icon": true,
+    "name": "Обедненное топливо"
+  },
+  "depletedfuelbolt": {
+    "has_icon": true,
+    "name": "Снаряд с обедненным топливом"
+  },
+  "depthchargeloader": {
+    "has_icon": true,
+    "name": "Зарядник глубинных бомб"
+  },
+  "depthchargeshell": {
+    "has_icon": true,
+    "name": "Глубинная бомба"
+  },
+  "depthchargetube": {
+    "has_icon": true,
+    "name": "ПУ для глубинных бомб"
+  },
+  "depthdecoyshell": {
+    "has_icon": true,
+    "name": "Глубинная приманка"
+  },
+  "detonator": {
+    "has_icon": true,
+    "name": "Детонатор"
+  },
+  "devcap": {
+    "has_icon": true,
+    "name": "Странная кепка"
+  },
+  "diamond": {
+    "has_icon": true,
+    "name": "Алмаз"
+  },
+  "dirtybomb_showofstrength": {
+    "has_icon": false,
+    "name": "Модифицированная «грязная» бомба"
+  },
+  "dischargecoil": {
+    "has_icon": true,
+    "name": "Разрядная катушка"
+  },
+  "diversremains": {
+    "has_icon": true,
+    "name": "Останки водолаза"
+  },
+  "dividecomponent": {
+    "has_icon": true,
+    "name": "Компонент \"разделить\""
+  },
+  "divingknife": {
+    "has_icon": true,
+    "name": "Нож ныряльщика"
+  },
+  "divingknife_murdermystery": {
+    "has_icon": true,
+    "name": "divingknife_murdermystery"
+  },
+  "divingknifedementonite": {
+    "has_icon": true,
+    "name": "Дементонитовый нож ныряльщика"
+  },
+  "divingknifehardened": {
+    "has_icon": true,
+    "name": "Закаленный нож ныряльщика"
+  },
+  "divingknifeunique": {
+    "has_icon": true,
+    "name": "Рукопожатие Европы"
+  },
+  "divingmask": {
+    "has_icon": true,
+    "name": "Подводная маска"
+  },
+  "divingsuit": {
+    "has_icon": true,
+    "name": "Водолазный скафандр"
+  },
+  "divingsuitlocker": {
+    "has_icon": true,
+    "name": "Шкаф для водолазного костюма"
+  },
+  "divingsuitlocker2": {
+    "has_icon": true,
+    "name": "Большой шкаф для подводного снаряжения"
+  },
+  "divingsuitlockerwrecked": {
+    "has_icon": true,
+    "name": "divingsuitlockerwrecked"
+  },
+  "dockinghatch": {
+    "has_icon": true,
+    "name": "Горизонтальный стыковочный порт"
+  },
+  "dockinghatchwrecked": {
+    "has_icon": true,
+    "name": "dockinghatchwrecked"
+  },
+  "dockingport": {
+    "has_icon": true,
+    "name": "Вертикальный стыковочный порт"
+  },
+  "dockingportwrecked": {
+    "has_icon": true,
+    "name": "dockingportwrecked"
+  },
+  "doctorsuniform1": {
+    "has_icon": true,
+    "name": "Форма медика"
+  },
+  "doctorsuniform2": {
+    "has_icon": true,
+    "name": "Форма врача"
+  },
+  "door": {
+    "has_icon": true,
+    "name": "Настраиваемая дверь"
+  },
+  "doorwbuttons": {
+    "has_icon": true,
+    "name": "Дверь с кнопками"
+  },
+  "doorwbuttonswrecked": {
+    "has_icon": true,
+    "name": "doorwbuttonswrecked"
+  },
+  "doorwrecked": {
+    "has_icon": true,
+    "name": "doorwrecked"
+  },
+  "doublecoilgun": {
+    "has_icon": true,
+    "name": "Двойная магнитная пушка"
+  },
+  "doublecoilgunwrecked": {
+    "has_icon": true,
+    "name": "doublecoilgunwrecked"
+  },
+  "ductblock": {
+    "has_icon": true,
+    "name": "Сливной клапан"
+  },
+  "duffelbag": {
+    "has_icon": true,
+    "name": "Вещмешок"
+  },
+  "elastinplant": {
+    "has_icon": true,
+    "name": "Эластиновое растение"
+  },
+  "electriciansgoggles": {
+    "has_icon": true,
+    "name": "Очки электрика"
+  },
+  "emergencylight": {
+    "has_icon": true,
+    "name": "Аварийная лампа"
+  },
+  "emergencysiren": {
+    "has_icon": true,
+    "name": "Аварийная сирена"
+  },
+  "empgrenade": {
+    "has_icon": true,
+    "name": "ЭМ-граната"
+  },
+  "endocrinebooster": {
+    "has_icon": true,
+    "name": "Гормональный усилитель"
+  },
+  "endruinheavydoorhorizontal": {
+    "has_icon": true,
+    "name": "endruinheavydoorhorizontal"
+  },
+  "endruinheavydoorvertical": {
+    "has_icon": true,
+    "name": "endruinheavydoorvertical"
+  },
+  "endwormshell": {
+    "has_icon": true,
+    "name": "Фрагмент панциря червя рока"
+  },
+  "engine": {
+    "has_icon": true,
+    "name": "Двигатель"
+  },
+  "engineerseparatistsuniform1": {
+    "has_icon": true,
+    "name": "Костюм инженера сепаратистов"
+  },
+  "engineerseparatistsuniform2": {
+    "has_icon": true,
+    "name": "Костюм инженера сепаратистов"
+  },
+  "enginewrecked": {
+    "has_icon": true,
+    "name": "enginewrecked"
+  },
+  "equalscomponent": {
+    "has_icon": true,
+    "name": "Компонент \"равно\""
+  },
+  "esperite": {
+    "has_icon": true,
+    "name": "Эсперит"
+  },
+  "europabrew": {
+    "has_icon": true,
+    "name": "Европовка"
+  },
+  "exosuit": {
+    "has_icon": true,
+    "name": "Экзокостюм"
+  },
+  "explosivecrate": {
+    "has_icon": true,
+    "name": "Ящик со взрывчаткой"
+  },
+  "explosivespear": {
+    "has_icon": true,
+    "name": "Взрывной гарпун"
+  },
+  "extinguisher": {
+    "has_icon": true,
+    "name": "Огнетушитель"
+  },
+  "extinguisherbracket": {
+    "has_icon": true,
+    "name": "Стойка огнетушителя"
+  },
+  "extinguisherbracketwrecked": {
+    "has_icon": true,
+    "name": "extinguisherbracketwrecked"
+  },
+  "fabricator": {
+    "has_icon": true,
+    "name": "Фабрикатор"
+  },
+  "fabricatorwrecked": {
+    "has_icon": true,
+    "name": "fabricatorwrecked"
+  },
+  "factorialcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Факториал\""
+  },
+  "fakeexplosion": {
+    "has_icon": true,
+    "name": "fakeexplosion"
+  },
+  "fakeexplosionnodamage": {
+    "has_icon": true,
+    "name": "fakeexplosionnodamage"
+  },
+  "faradayartifact": {
+    "has_icon": true,
+    "name": "Фарадеевый инопланетный артефакт"
+  },
+  "faultycultistrobes": {
+    "has_icon": true,
+    "name": "faultycultistrobes"
+  },
+  "fertilizer": {
+    "has_icon": true,
+    "name": "Удобрение"
+  },
+  "fiberplant": {
+    "has_icon": true,
+    "name": "Прядильное растение"
+  },
+  "fixfoamgrenade": {
+    "has_icon": true,
+    "name": "Граната с монтажной пеной"
+  },
+  "flakbolt": {
+    "has_icon": true,
+    "name": "Шрапнельный снаряд"
+  },
+  "flakboltdirectional": {
+    "has_icon": true,
+    "name": "Шрапнельный снаряд (направленный)"
+  },
+  "flakboltexplosive": {
+    "has_icon": true,
+    "name": "Взрывчатый шрапнельный снаряд"
+  },
+  "flakboltgravity": {
+    "has_icon": true,
+    "name": "Гравитационный шрапнельный снаряд"
+  },
+  "flakboltphysicorium": {
+    "has_icon": true,
+    "name": "Физикориевый шрапнельный снаряд"
+  },
+  "flakcannon": {
+    "has_icon": true,
+    "name": "Шрапнельное орудие"
+  },
+  "flakcannonammobox": {
+    "has_icon": true,
+    "name": "Ящик шрапнельных снарядов широкого рассеивания"
+  },
+  "flakcannonammoboxexplosive": {
+    "has_icon": true,
+    "name": "Ящик взрывчатых снарядов шрапнельного орудия"
+  },
+  "flakcannonammoboxgravity": {
+    "has_icon": true,
+    "name": "Ящик гравитационных шрапнельных снарядов"
+  },
+  "flakcannonammoboxphysicorium": {
+    "has_icon": true,
+    "name": "Ящик физикориевых шрапнельных снарядов"
+  },
+  "flakcannondirectionalammobox": {
+    "has_icon": true,
+    "name": "Ящик шрапнельных снарядов малого рассеивания"
+  },
+  "flakcannonloader": {
+    "has_icon": true,
+    "name": "Зарядник шрапнельного орудия"
+  },
+  "flakcannonloaderwrecked": {
+    "has_icon": true,
+    "name": "flakcannonloaderwrecked"
+  },
+  "flakcannonwrecked": {
+    "has_icon": true,
+    "name": "flakcannonwrecked"
+  },
+  "flakshrapnel": {
+    "has_icon": true,
+    "name": "Фрагмент шрапнели"
+  },
+  "flakshrapneldirectional": {
+    "has_icon": true,
+    "name": "Тяжелый фрагмент шрапнели"
+  },
+  "flakshrapnelexplosive": {
+    "has_icon": true,
+    "name": "Взрывчатый фрагмент шрапнели"
+  },
+  "flakshrapnelgravity": {
+    "has_icon": true,
+    "name": "Сила гравитации"
+  },
+  "flakshrapnelphysicorium": {
+    "has_icon": true,
+    "name": "Физикориевый фрагмент шрапнели"
+  },
+  "flamer": {
+    "has_icon": true,
+    "name": "Огнемет"
+  },
+  "flamerunique": {
+    "has_icon": true,
+    "name": "Прототип паровой пушки"
+  },
+  "flare": {
+    "has_icon": true,
+    "name": "Сигнальный огонь"
+  },
+  "flashlight": {
+    "has_icon": true,
+    "name": "Фонарик"
+  },
+  "flashpowder": {
+    "has_icon": true,
+    "name": "Светящийся порошок"
+  },
+  "floorcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Нижнее округление\""
+  },
+  "food": {
+    "has_icon": true,
+    "name": "Еда для питомца"
+  },
+  "fpgacircuit": {
+    "has_icon": true,
+    "name": "Схема на базе ППВМ"
+  },
+  "fraggrenade": {
+    "has_icon": true,
+    "name": "Осколочная граната"
+  },
+  "fuelrod": {
+    "has_icon": true,
+    "name": "Топливный стержень"
+  },
+  "fulgurium": {
+    "has_icon": true,
+    "name": "Кусок грозовия"
+  },
+  "fulguriumbatterycell": {
+    "has_icon": true,
+    "name": "Грозовиевый аккумулятор"
+  },
+  "fulguriumfuelrod": {
+    "has_icon": true,
+    "name": "Грозовиевый топливный стержень"
+  },
+  "fulguriumfuelrodvolatile": {
+    "has_icon": true,
+    "name": "Нестабильный грозовиевый топливный стержень"
+  },
+  "galena": {
+    "has_icon": true,
+    "name": "Галена"
+  },
+  "genesplicer": {
+    "has_icon": true,
+    "name": "Спайщик генов"
+  },
+  "geneticmaterial_unresearched": {
+    "has_icon": true,
+    "name": "geneticmaterial_unresearched"
+  },
+  "geneticmaterialcrawler": {
+    "has_icon": true,
+    "name": "geneticmaterialcrawler"
+  },
+  "geneticmaterialhammerhead": {
+    "has_icon": true,
+    "name": "geneticmaterialhammerhead"
+  },
+  "geneticmaterialhammerheadmatriarch": {
+    "has_icon": true,
+    "name": "geneticmaterialhammerheadmatriarch"
+  },
+  "geneticmaterialhunter": {
+    "has_icon": true,
+    "name": "geneticmaterialhunter"
+  },
+  "geneticmaterialhusk": {
+    "has_icon": true,
+    "name": "geneticmaterialhusk"
+  },
+  "geneticmaterialmantis": {
+    "has_icon": true,
+    "name": "geneticmaterialmantis"
+  },
+  "geneticmaterialmollusc": {
+    "has_icon": true,
+    "name": "geneticmaterialmollusc"
+  },
+  "geneticmaterialmoloch": {
+    "has_icon": true,
+    "name": "geneticmaterialmoloch"
+  },
+  "geneticmaterialmudraptor": {
+    "has_icon": true,
+    "name": "geneticmaterialmudraptor"
+  },
+  "geneticmaterialskitter": {
+    "has_icon": true,
+    "name": "geneticmaterialskitter"
+  },
+  "geneticmaterialspineling": {
+    "has_icon": true,
+    "name": "geneticmaterialspineling"
+  },
+  "geneticmaterialthresher": {
+    "has_icon": true,
+    "name": "geneticmaterialthresher"
+  },
+  "giantspinelingspike": {
+    "has_icon": true,
+    "name": "giantspinelingspike"
+  },
+  "glowstick": {
+    "has_icon": true,
+    "name": "ХИС"
+  },
+  "graphite": {
+    "has_icon": true,
+    "name": "Графит"
+  },
+  "gravityshell": {
+    "has_icon": true,
+    "name": "Гравитационный снаряд рельсотрона"
+  },
+  "gravityshelleffect": {
+    "has_icon": true,
+    "name": "Сила гравитации"
+  },
+  "gravitysphere": {
+    "has_icon": false,
+    "name": "Сфера гравитации"
+  },
+  "greatercomponent": {
+    "has_icon": true,
+    "name": "Компонент \"больше\""
+  },
+  "greenwire": {
+    "has_icon": true,
+    "name": "Зеленый провод"
+  },
+  "grenadelauncher": {
+    "has_icon": true,
+    "name": "Гранатомет"
+  },
+  "guardianbeamweapon": {
+    "has_icon": true,
+    "name": "guardianbeamweapon"
+  },
+  "guardianempcannon": {
+    "has_icon": true,
+    "name": "guardianempcannon"
+  },
+  "guardianhookcannon": {
+    "has_icon": true,
+    "name": "Гарпун стража"
+  },
+  "guardianlaserprojectile": {
+    "has_icon": true,
+    "name": "guardianlaserprojectile"
+  },
+  "guardianpod": {
+    "has_icon": false,
+    "name": "Модуль стража"
+  },
+  "guardianpodtrap": {
+    "has_icon": false,
+    "name": "guardianpodtrap"
+  },
+  "guardianrepairprojectile": {
+    "has_icon": true,
+    "name": "guardianrepairprojectile"
+  },
+  "guardianrepairtool": {
+    "has_icon": true,
+    "name": "guardianrepairtool"
+  },
+  "guardianspear": {
+    "has_icon": true,
+    "name": "Копье стража"
+  },
+  "guardiansteamcannon": {
+    "has_icon": true,
+    "name": "Паровая пушка стража"
+  },
+  "guitar": {
+    "has_icon": true,
+    "name": "Гитара"
+  },
+  "hammerheadribs": {
+    "has_icon": true,
+    "name": "Ребра молотоглава"
+  },
+  "handcannon": {
+    "has_icon": true,
+    "name": "Бомбарда"
+  },
+  "handcannonround": {
+    "has_icon": true,
+    "name": "Патрон бомбарды"
+  },
+  "handcuffs": {
+    "has_icon": true,
+    "name": "Наручники"
+  },
+  "handheldelectricalmonitor": {
+    "has_icon": true,
+    "name": "Ручной электромонитор"
+  },
+  "handhelditemfinder": {
+    "has_icon": true,
+    "name": "Ручной искатель предметов"
+  },
+  "handheldsonar": {
+    "has_icon": true,
+    "name": "Ручной сонар"
+  },
+  "handheldstatusmonitor": {
+    "has_icon": true,
+    "name": "Ручной монитор статуса"
+  },
+  "handheldterminal": {
+    "has_icon": true,
+    "name": "Судовой журнал"
+  },
+  "harmonica": {
+    "has_icon": true,
+    "name": "Губная гармошка"
+  },
+  "harpooncoilrifle": {
+    "has_icon": true,
+    "name": "Гарпунное электроружье"
+  },
+  "harpoongun": {
+    "has_icon": true,
+    "name": "Подводное ружье"
+  },
+  "hatch": {
+    "has_icon": true,
+    "name": "Настраиваемый люк"
+  },
+  "hatchwbuttons": {
+    "has_icon": true,
+    "name": "Люк с кнопками"
+  },
+  "hatchwbuttonswrecked": {
+    "has_icon": true,
+    "name": "hatchwbuttonswrecked"
+  },
+  "hatchwrecked": {
+    "has_icon": true,
+    "name": "hatchwrecked"
+  },
+  "headset": {
+    "has_icon": true,
+    "name": "Наушники"
+  },
+  "healthscanner": {
+    "has_icon": true,
+    "name": "Информационный экран сканера здоровья"
+  },
+  "heavywrench": {
+    "has_icon": true,
+    "name": "Тяжелый гаечный ключ"
+  },
+  "hmg": {
+    "has_icon": true,
+    "name": "ТП"
+  },
+  "hmgblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: ТП"
+  },
+  "hmgmagazine": {
+    "has_icon": true,
+    "name": "Магазин для ТП"
+  },
+  "hmground": {
+    "has_icon": true,
+    "name": "Патрон для ТП"
+  },
+  "honkmotherianscriptures1": {
+    "has_icon": true,
+    "name": "honkmotherianscriptures1"
+  },
+  "honkmotherianscriptures2": {
+    "has_icon": true,
+    "name": "honkmotherianscriptures2"
+  },
+  "honkmotherianscriptures3": {
+    "has_icon": true,
+    "name": "honkmotherianscriptures3"
+  },
+  "huskcaller": {
+    "has_icon": true,
+    "name": "Манок хасков"
+  },
+  "huskcontainerspawner": {
+    "has_icon": true,
+    "name": "huskcontainerspawner"
+  },
+  "huskeggs": {
+    "has_icon": true,
+    "name": "Экстракт каликса"
+  },
+  "huskeggs_huskroulette_harmless": {
+    "has_icon": true,
+    "name": "huskeggs_huskroulette_harmless"
+  },
+  "huskeggs_huskroulette_infect": {
+    "has_icon": true,
+    "name": "huskeggs_huskroulette_infect"
+  },
+  "huskeggsbasic": {
+    "has_icon": true,
+    "name": "Яйца велонацепса каликса"
+  },
+  "huskfigurine": {
+    "has_icon": true,
+    "name": "Фигурки хаска"
+  },
+  "huskstinger": {
+    "has_icon": true,
+    "name": "Жало хаска"
+  },
+  "hydroxyapatite": {
+    "has_icon": true,
+    "name": "Гидроксиапатит"
+  },
+  "ic4block": {
+    "has_icon": true,
+    "name": "Блок C-4+"
+  },
+  "iceshardprojectile": {
+    "has_icon": true,
+    "name": "iceshardprojectile"
+  },
+  "idcard": {
+    "has_icon": true,
+    "name": "Удостоверение личности"
+  },
+  "idcardfakesootman": {
+    "has_icon": true,
+    "name": "Удостоверение личности"
+  },
+  "idcardwreck": {
+    "has_icon": true,
+    "name": "Удостоверение с места кораблекрушения"
+  },
+  "ilmenite": {
+    "has_icon": true,
+    "name": "Ильменит"
+  },
+  "incendium": {
+    "has_icon": true,
+    "name": "Воспламенитовый кристалл"
+  },
+  "incendiumemitter": {
+    "has_icon": true,
+    "name": "incendiumemitter"
+  },
+  "incendiumfueltank": {
+    "has_icon": true,
+    "name": "Топливный баллон из воспламенита"
+  },
+  "incendiumgrenade": {
+    "has_icon": true,
+    "name": "Граната с воспламенитом"
+  },
+  "incubationbubble": {
+    "has_icon": true,
+    "name": "Инкубационная капсула"
+  },
+  "iron": {
+    "has_icon": true,
+    "name": "Железо"
+  },
+  "ironhelmet": {
+    "has_icon": true,
+    "name": "Железный шлем"
+  },
+  "ironore": {
+    "has_icon": true,
+    "name": "Железная руда"
+  },
+  "joviansystemhologram": {
+    "has_icon": true,
+    "name": "Юпитерианская голография"
+  },
+  "junctionbox": {
+    "has_icon": true,
+    "name": "Кабельная коробка"
+  },
+  "junctionbox_tutorial": {
+    "has_icon": true,
+    "name": "junctionbox_tutorial"
+  },
+  "junctionboxwrecked": {
+    "has_icon": true,
+    "name": "junctionboxwrecked"
+  },
+  "label": {
+    "has_icon": false,
+    "name": "Вывеска"
+  },
+  "ladder": {
+    "has_icon": true,
+    "name": "Лестница"
+  },
+  "ladderwrecked": {
+    "has_icon": true,
+    "name": "ladderwrecked"
+  },
+  "lamp": {
+    "has_icon": true,
+    "name": "Лампа"
+  },
+  "langbeinite": {
+    "has_icon": true,
+    "name": "Лангбейнит"
+  },
+  "largeengine": {
+    "has_icon": true,
+    "name": "Большой двигатель"
+  },
+  "largeenginewrecked": {
+    "has_icon": true,
+    "name": "largeenginewrecked"
+  },
+  "largemudraptoregg": {
+    "has_icon": true,
+    "name": "largemudraptoregg"
+  },
+  "largeturrethardpoint": {
+    "has_icon": true,
+    "name": "Большой держатель орудия"
+  },
+  "lazulite": {
+    "has_icon": true,
+    "name": "Лазулит"
+  },
+  "lead": {
+    "has_icon": true,
+    "name": "Свинец"
+  },
+  "lever": {
+    "has_icon": true,
+    "name": "Рычаг"
+  },
+  "lightcomponent": {
+    "has_icon": true,
+    "name": "Осветительный компонент"
+  },
+  "lightcomponent90": {
+    "has_icon": true,
+    "name": "lightcomponent90"
+  },
+  "lightcomponentround": {
+    "has_icon": true,
+    "name": "lightcomponentround"
+  },
+  "lightfluorescentl01": {
+    "has_icon": true,
+    "name": "lightfluorescentl01"
+  },
+  "lightfluorescentl01wrecked": {
+    "has_icon": true,
+    "name": "lightfluorescentl01wrecked"
+  },
+  "lightfluorescentl02": {
+    "has_icon": true,
+    "name": "lightfluorescentl02"
+  },
+  "lightfluorescentl02wrecked": {
+    "has_icon": true,
+    "name": "lightfluorescentl02wrecked"
+  },
+  "lightfluorescentm01": {
+    "has_icon": true,
+    "name": "lightfluorescentm01"
+  },
+  "lightfluorescentm01wrecked": {
+    "has_icon": true,
+    "name": "lightfluorescentm01wrecked"
+  },
+  "lightfluorescentm02": {
+    "has_icon": true,
+    "name": "lightfluorescentm02"
+  },
+  "lightfluorescentm02wrecked": {
+    "has_icon": true,
+    "name": "lightfluorescentm02wrecked"
+  },
+  "lightfluorescentm03": {
+    "has_icon": true,
+    "name": "lightfluorescentm03"
+  },
+  "lightfluorescentm03wrecked": {
+    "has_icon": true,
+    "name": "lightfluorescentm03wrecked"
+  },
+  "lightfluorescentm04": {
+    "has_icon": true,
+    "name": "lightfluorescentm04"
+  },
+  "lightfluorescentm04wrecked": {
+    "has_icon": true,
+    "name": "lightfluorescentm04wrecked"
+  },
+  "lighthalogenm04": {
+    "has_icon": true,
+    "name": "lighthalogenm04"
+  },
+  "lighthalogenm04wrecked": {
+    "has_icon": true,
+    "name": "lighthalogenm04wrecked"
+  },
+  "lighthalogenmm01": {
+    "has_icon": true,
+    "name": "lighthalogenmm01"
+  },
+  "lighthalogenmm01wrecked": {
+    "has_icon": true,
+    "name": "lighthalogenmm01wrecked"
+  },
+  "lighthalogenmm02": {
+    "has_icon": true,
+    "name": "lighthalogenmm02"
+  },
+  "lighthalogenmm02wrecked": {
+    "has_icon": true,
+    "name": "lighthalogenmm02wrecked"
+  },
+  "lighthalogenmm03": {
+    "has_icon": true,
+    "name": "lighthalogenmm03"
+  },
+  "lighthalogenmm03wrecked": {
+    "has_icon": true,
+    "name": "lighthalogenmm03wrecked"
+  },
+  "lightleds01": {
+    "has_icon": true,
+    "name": "lightleds01"
+  },
+  "lightleds01wrecked": {
+    "has_icon": true,
+    "name": "lightleds01wrecked"
+  },
+  "lithium": {
+    "has_icon": true,
+    "name": "Литий"
+  },
+  "loosepanel": {
+    "has_icon": false,
+    "name": "Приоткрытая панель"
+  },
+  "loosepanel2": {
+    "has_icon": false,
+    "name": "loosepanel2"
+  },
+  "loosevent": {
+    "has_icon": true,
+    "name": "Приоткрытая вентиляция"
+  },
+  "machinepistol": {
+    "has_icon": true,
+    "name": "Автоматический пистолет"
+  },
+  "machinepistolblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: автоматический пистолет"
+  },
+  "magnesium": {
+    "has_icon": true,
+    "name": "Магний"
+  },
+  "magneticsuspensioncrate": {
+    "has_icon": true,
+    "name": "Контейнер с магнитной подвеской"
+  },
+  "makeshiftarmor": {
+    "has_icon": true,
+    "name": "Самодельный бронежилет"
+  },
+  "makeshiftshelf": {
+    "has_icon": true,
+    "name": "Самодельные полки"
+  },
+  "mechanicseparatistsuniform1": {
+    "has_icon": true,
+    "name": "Костюм механика сепаратистов"
+  },
+  "mechanicseparatistsuniform2": {
+    "has_icon": true,
+    "name": "Костюм механика сепаратистов"
+  },
+  "medcabinet": {
+    "has_icon": true,
+    "name": "Аптечка"
+  },
+  "medcabinetwrecked": {
+    "has_icon": true,
+    "name": "medcabinetwrecked"
+  },
+  "medicalfabricator": {
+    "has_icon": true,
+    "name": "Медицинский фабрикатор"
+  },
+  "medicalfabricatorwrecked": {
+    "has_icon": true,
+    "name": "medicalfabricatorwrecked"
+  },
+  "medicalofficerclothes": {
+    "has_icon": true,
+    "name": "medicalofficerclothes"
+  },
+  "mediccrate": {
+    "has_icon": true,
+    "name": "Медконтейнер"
+  },
+  "medicinebelt_tier1": {
+    "has_icon": true,
+    "name": "medicinebelt_tier1"
+  },
+  "medicinebelt_tier2": {
+    "has_icon": true,
+    "name": "medicinebelt_tier2"
+  },
+  "medicinebelt_tier3": {
+    "has_icon": true,
+    "name": "medicinebelt_tier3"
+  },
+  "medicseparatistsuniform1": {
+    "has_icon": true,
+    "name": "Форма медика сепаратистов"
+  },
+  "medicseparatistsuniform2": {
+    "has_icon": true,
+    "name": "Форма медика сепаратистов"
+  },
+  "mediummudraptoregg": {
+    "has_icon": true,
+    "name": "mediummudraptoregg"
+  },
+  "mediumsteelcabinet": {
+    "has_icon": true,
+    "name": "Средний стальной шкаф"
+  },
+  "mediumsteelcabinetwrecked": {
+    "has_icon": true,
+    "name": "mediumsteelcabinetwrecked"
+  },
+  "mediumwindowedsteelcabinet": {
+    "has_icon": true,
+    "name": "Средний стальной шкаф с окном"
+  },
+  "mediumwindowedsteelcabinetwrecked": {
+    "has_icon": true,
+    "name": "mediumwindowedsteelcabinetwrecked"
+  },
+  "memorycomponent": {
+    "has_icon": true,
+    "name": "Компонент \"память\""
+  },
+  "metalcrate": {
+    "has_icon": true,
+    "name": "Металлический ящик"
+  },
+  "minerclothes": {
+    "has_icon": true,
+    "name": "minerclothes"
+  },
+  "modulocomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Остаток\""
+  },
+  "molochbone": {
+    "has_icon": true,
+    "name": "Кость молоха"
+  },
+  "morbusinespinelingspike": {
+    "has_icon": true,
+    "name": "morbusinespinelingspike"
+  },
+  "motiondetector": {
+    "has_icon": true,
+    "name": "Детектор движения"
+  },
+  "mucusball": {
+    "has_icon": true,
+    "name": "Шарик слизи"
+  },
+  "mudraptorshell": {
+    "has_icon": true,
+    "name": "Шкура грязевого раптора"
+  },
+  "multiplexercomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Селектор входа\""
+  },
+  "multiplycomponent": {
+    "has_icon": true,
+    "name": "Компонент \"умножить\""
+  },
+  "nasonovartifact": {
+    "has_icon": true,
+    "name": "Инопланетный артефакт Насонова"
+  },
+  "navterminal": {
+    "has_icon": true,
+    "name": "Навигационный терминал"
+  },
+  "navterminalwrecked": {
+    "has_icon": true,
+    "name": "navterminalwrecked"
+  },
+  "neonlight0": {
+    "has_icon": false,
+    "name": "Неоновая лампа 0"
+  },
+  "neonlight1": {
+    "has_icon": false,
+    "name": "Неоновая лампа 1"
+  },
+  "neonlight2": {
+    "has_icon": false,
+    "name": "Неоновая лампа 2"
+  },
+  "neonlight3": {
+    "has_icon": false,
+    "name": "Неоновая лампа 3"
+  },
+  "neonlight4": {
+    "has_icon": false,
+    "name": "Неоновая лампа 4"
+  },
+  "neonlight5": {
+    "has_icon": false,
+    "name": "Неоновая лампа 5"
+  },
+  "neonlight6": {
+    "has_icon": false,
+    "name": "Неоновая лампа 6"
+  },
+  "neonlight7": {
+    "has_icon": false,
+    "name": "Неоновая лампа 7"
+  },
+  "neonlight8": {
+    "has_icon": false,
+    "name": "Неоновая лампа 8"
+  },
+  "neonlight9": {
+    "has_icon": false,
+    "name": "Неоновая лампа 9"
+  },
+  "neonlighta": {
+    "has_icon": false,
+    "name": "Неоновая лампа A"
+  },
+  "neonlightarrow": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Стрела\""
+  },
+  "neonlightb": {
+    "has_icon": false,
+    "name": "Неоновая лампа B"
+  },
+  "neonlightc": {
+    "has_icon": false,
+    "name": "Неоновая лампа C"
+  },
+  "neonlightd": {
+    "has_icon": false,
+    "name": "Неоновая лампа D"
+  },
+  "neonlighte": {
+    "has_icon": false,
+    "name": "Неоновая лампа E"
+  },
+  "neonlightf": {
+    "has_icon": false,
+    "name": "Неоновая лампа F"
+  },
+  "neonlightfood": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Еда\""
+  },
+  "neonlightframe": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Рамка\""
+  },
+  "neonlightg": {
+    "has_icon": false,
+    "name": "Неоновая лампа G"
+  },
+  "neonlightgarden": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Сад\""
+  },
+  "neonlightgear": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Шестерня\""
+  },
+  "neonlighth": {
+    "has_icon": false,
+    "name": "Неоновая лампа H"
+  },
+  "neonlighti": {
+    "has_icon": false,
+    "name": "Неоновая лампа I"
+  },
+  "neonlightj": {
+    "has_icon": false,
+    "name": "Неоновая лампа J"
+  },
+  "neonlightk": {
+    "has_icon": false,
+    "name": "Неоновая лампа K"
+  },
+  "neonlightkiss": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Поцелуй\""
+  },
+  "neonlightl": {
+    "has_icon": false,
+    "name": "Неоновая лампа L"
+  },
+  "neonlightm": {
+    "has_icon": false,
+    "name": "Неоновая лампа M"
+  },
+  "neonlightn": {
+    "has_icon": false,
+    "name": "Неоновая лампа N"
+  },
+  "neonlighto": {
+    "has_icon": false,
+    "name": "Неоновая лампа O"
+  },
+  "neonlightp": {
+    "has_icon": false,
+    "name": "Неоновая лампа P"
+  },
+  "neonlightplanet": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Планета\""
+  },
+  "neonlightq": {
+    "has_icon": false,
+    "name": "Неоновая лампа Q"
+  },
+  "neonlightr": {
+    "has_icon": false,
+    "name": "Неоновая лампа R"
+  },
+  "neonlights": {
+    "has_icon": false,
+    "name": "Неоновая лампа S"
+  },
+  "neonlightsubmarine": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Подлодка\""
+  },
+  "neonlightt": {
+    "has_icon": false,
+    "name": "Неоновая лампа T"
+  },
+  "neonlightu": {
+    "has_icon": false,
+    "name": "Неоновая лампа U"
+  },
+  "neonlightv": {
+    "has_icon": false,
+    "name": "Неоновая лампа V"
+  },
+  "neonlightw": {
+    "has_icon": false,
+    "name": "Неоновая лампа W"
+  },
+  "neonlightwire1": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Провод 1\""
+  },
+  "neonlightwire2": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Провод 2\""
+  },
+  "neonlightwire3": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Провод 3\""
+  },
+  "neonlightwire4": {
+    "has_icon": false,
+    "name": "Неоновая лампа \"Провод 4\""
+  },
+  "neonlightx": {
+    "has_icon": false,
+    "name": "Неоновая лампа X"
+  },
+  "neonlighty": {
+    "has_icon": false,
+    "name": "Неоновая лампа Y"
+  },
+  "neonlightz": {
+    "has_icon": false,
+    "name": "Неоновая лампа Z"
+  },
+  "nitroglycerin": {
+    "has_icon": true,
+    "name": "Нитроглицерин"
+  },
+  "notcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Не\""
+  },
+  "nuclearaftereffectemitter": {
+    "has_icon": true,
+    "name": "nuclearaftereffectemitter"
+  },
+  "nucleardepthcharge": {
+    "has_icon": true,
+    "name": "Ядерная глубинная бомба"
+  },
+  "nucleardepthchargecheap": {
+    "has_icon": true,
+    "name": "Ядерная глубинная бомба (дешевая)"
+  },
+  "nucleardepthdecoy": {
+    "has_icon": true,
+    "name": "Ядерная глубинная приманка"
+  },
+  "nucleardepthdecoycheap": {
+    "has_icon": true,
+    "name": "Ядерная глубинная приманка (дешевая)"
+  },
+  "nucleargun": {
+    "has_icon": true,
+    "name": "Быстрый ускоритель распада"
+  },
+  "nucleargunbolt": {
+    "has_icon": true,
+    "name": "nucleargunbolt"
+  },
+  "nuclearshell": {
+    "has_icon": true,
+    "name": "Ядерный снаряд рельсотрона"
+  },
+  "nuclearshellcheap": {
+    "has_icon": true,
+    "name": "Ядерный снаряд рельсотрона (дешевый)"
+  },
+  "op_researchterminal": {
+    "has_icon": false,
+    "name": "Исследовательский терминал"
+  },
+  "orangeboyegg": {
+    "has_icon": true,
+    "name": "orangeboyegg"
+  },
+  "orangejumpsuit1": {
+    "has_icon": true,
+    "name": "Защитный комплект"
+  },
+  "orangejumpsuit2": {
+    "has_icon": true,
+    "name": "Комбинезон инженера"
+  },
+  "orangewire": {
+    "has_icon": true,
+    "name": "Оранжевый провод"
+  },
+  "orcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Или\""
+  },
+  "organicfiber": {
+    "has_icon": true,
+    "name": "Органическое волокно"
+  },
+  "oscillator": {
+    "has_icon": true,
+    "name": "Компонент \"Осциллятор\""
+  },
+  "oxygendetector": {
+    "has_icon": true,
+    "name": "Детектор кислорода"
+  },
+  "oxygenerator": {
+    "has_icon": true,
+    "name": "Генератор кислорода"
+  },
+  "oxygeneratorwrecked": {
+    "has_icon": true,
+    "name": "oxygeneratorwrecked"
+  },
+  "oxygeniteshard": {
+    "has_icon": true,
+    "name": "Осколок кислородита"
+  },
+  "oxygenitetank": {
+    "has_icon": true,
+    "name": "Баллон с кислородитом"
+  },
+  "oxygentank": {
+    "has_icon": true,
+    "name": "Кислородный баллон"
+  },
+  "oxygentankshelf": {
+    "has_icon": true,
+    "name": "Полка для хранения кислородных баллонов"
+  },
+  "oxygentankshelf2": {
+    "has_icon": true,
+    "name": "oxygentankshelf2"
+  },
+  "oxygentankshelf2wrecked": {
+    "has_icon": true,
+    "name": "oxygentankshelf2wrecked"
+  },
+  "paralyxis": {
+    "has_icon": true,
+    "name": "Параликс"
+  },
+  "partybanner": {
+    "has_icon": true,
+    "name": "Плакат для вечеринки"
+  },
+  "peanutegg": {
+    "has_icon": true,
+    "name": "peanutegg"
+  },
+  "periscope": {
+    "has_icon": true,
+    "name": "Перископ"
+  },
+  "periscopewrecked": {
+    "has_icon": true,
+    "name": "periscopewrecked"
+  },
+  "petnametag": {
+    "has_icon": true,
+    "name": "Жетон с именем питомца"
+  },
+  "petraptoregg": {
+    "has_icon": true,
+    "name": "Яйцо ручного раптора"
+  },
+  "phosphorus": {
+    "has_icon": true,
+    "name": "Фосфор"
+  },
+  "physicorium": {
+    "has_icon": true,
+    "name": "Физикориевый осколок"
+  },
+  "physicoriumammobox": {
+    "has_icon": true,
+    "name": "Физикориевые боеприпасы для магнитной пушки"
+  },
+  "physicoriumbolt": {
+    "has_icon": true,
+    "name": "Физикориевый снаряд"
+  },
+  "piezocrystal": {
+    "has_icon": true,
+    "name": "Пьезокристалл"
+  },
+  "pipetobacco": {
+    "has_icon": true,
+    "name": "Курительный табак"
+  },
+  "pipeweakpoint1_water": {
+    "has_icon": true,
+    "name": "pipeweakpoint1_water"
+  },
+  "pipeweakpoint2_water": {
+    "has_icon": true,
+    "name": "pipeweakpoint2_water"
+  },
+  "placeabledefensebotspawner": {
+    "has_icon": true,
+    "name": "placeabledefensebotspawner"
+  },
+  "plasmacutter": {
+    "has_icon": true,
+    "name": "Плазменный резак"
+  },
+  "plastic": {
+    "has_icon": true,
+    "name": "Пластик"
+  },
+  "polyhalite": {
+    "has_icon": true,
+    "name": "Полигалит"
+  },
+  "poop": {
+    "has_icon": true,
+    "name": "Говно"
+  },
+  "portablepump": {
+    "has_icon": true,
+    "name": "Портативный насос"
+  },
+  "potassium": {
+    "has_icon": true,
+    "name": "Калий"
+  },
+  "powcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Возведение в степень\""
+  },
+  "powerdistributor": {
+    "has_icon": true,
+    "name": "Распределитель энергии"
+  },
+  "pressurestabilizer": {
+    "has_icon": true,
+    "name": "Стабилизатор давления"
+  },
+  "prisonerclothes": {
+    "has_icon": true,
+    "name": "Костюм заключенного"
+  },
+  "psilotoadegg": {
+    "has_icon": true,
+    "name": "psilotoadegg"
+  },
+  "psychosisartifact": {
+    "has_icon": true,
+    "name": "Психотропный инопланетный артефакт"
+  },
+  "psychosisartifact_event": {
+    "has_icon": true,
+    "name": "psychosisartifact_event"
+  },
+  "psychosisartifact_noeffect": {
+    "has_icon": true,
+    "name": "psychosisartifact_noeffect"
+  },
+  "pucs": {
+    "has_icon": true,
+    "name": "УЗК"
+  },
+  "pulselaser": {
+    "has_icon": true,
+    "name": "Импульсный лазер"
+  },
+  "pulselaserammobox": {
+    "has_icon": true,
+    "name": "Капсула для импульсного лазера"
+  },
+  "pulselaserammoboxtrilaser": {
+    "has_icon": true,
+    "name": "Капсула для импульсного трилазера"
+  },
+  "pulselaserbolt": {
+    "has_icon": true,
+    "name": "Болт для импульсного лазера"
+  },
+  "pulselaserbolttrilaser": {
+    "has_icon": true,
+    "name": "pulselaserbolttrilaser"
+  },
+  "pulselaserloader": {
+    "has_icon": true,
+    "name": "Зарядник импульсного лазера"
+  },
+  "pulselaserloaderwrecked": {
+    "has_icon": true,
+    "name": "pulselaserloaderwrecked"
+  },
+  "pulselaserwrecked": {
+    "has_icon": true,
+    "name": "pulselaserwrecked"
+  },
+  "pump": {
+    "has_icon": true,
+    "name": "Насос"
+  },
+  "pylon": {
+    "has_icon": true,
+    "name": "pylon"
+  },
+  "pyromorphite": {
+    "has_icon": true,
+    "name": "Пироморфит"
+  },
+  "quartermasterclothes": {
+    "has_icon": true,
+    "name": "quartermasterclothes"
+  },
+  "quartz": {
+    "has_icon": true,
+    "name": "Кварц"
+  },
+  "radiojammer": {
+    "has_icon": true,
+    "name": "Радиоглушилка"
+  },
+  "railgun": {
+    "has_icon": true,
+    "name": "Рельсотрон"
+  },
+  "railguncanistershell": {
+    "has_icon": true,
+    "name": "Картечный снаряд рельсотрона"
+  },
+  "railguncanistershellpellet": {
+    "has_icon": true,
+    "name": "Картечь"
+  },
+  "railgunharpoon": {
+    "has_icon": true,
+    "name": "Гарпун для рельсотрона"
+  },
+  "railgunloader": {
+    "has_icon": true,
+    "name": "Зарядник рельсотрона"
+  },
+  "railgunloadersinglehorizontal": {
+    "has_icon": true,
+    "name": "Одиночный горизонтальный зарядник рельсотрона"
+  },
+  "railgunloadersinglehorizontalwrecked": {
+    "has_icon": true,
+    "name": "railgunloadersinglehorizontalwrecked"
+  },
+  "railgunloadersinglevertical": {
+    "has_icon": true,
+    "name": "Одиночный вертикальный зарядник рельсотрона"
+  },
+  "railgunloadersingleverticalwrecked": {
+    "has_icon": true,
+    "name": "railgunloadersingleverticalwrecked"
+  },
+  "railgunloadersmall": {
+    "has_icon": true,
+    "name": "railgunloadersmall"
+  },
+  "railgunloaderwrecked": {
+    "has_icon": true,
+    "name": "railgunloaderwrecked"
+  },
+  "railgunshell": {
+    "has_icon": true,
+    "name": "Снаряд рельсотрона"
+  },
+  "railgunshell_reduceddmg": {
+    "has_icon": true,
+    "name": "railgunshell_reduceddmg"
+  },
+  "railgunshellrack": {
+    "has_icon": true,
+    "name": "Стойка для снарядов рельсотрона"
+  },
+  "railgunshellrack3": {
+    "has_icon": true,
+    "name": "railgunshellrack3"
+  },
+  "railgunshellrackwrecked": {
+    "has_icon": true,
+    "name": "railgunshellrackwrecked"
+  },
+  "railgunwrecked": {
+    "has_icon": true,
+    "name": "railgunwrecked"
+  },
+  "raptorbane": {
+    "has_icon": true,
+    "name": "Бич раптора"
+  },
+  "raptorbaneseed": {
+    "has_icon": true,
+    "name": "Семя бича раптора"
+  },
+  "reactor1": {
+    "has_icon": true,
+    "name": "Ядерный реактор"
+  },
+  "reactor1wrecked": {
+    "has_icon": true,
+    "name": "reactor1wrecked"
+  },
+  "reactorpda": {
+    "has_icon": true,
+    "name": "Пульт реактора"
+  },
+  "redwire": {
+    "has_icon": true,
+    "name": "Красный провод"
+  },
+  "regexcomponent": {
+    "has_icon": true,
+    "name": "Компонент поиска рег. выражений"
+  },
+  "relaycomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Реле\""
+  },
+  "repairpack": {
+    "has_icon": true,
+    "name": "Мультитул"
+  },
+  "researcherclothes": {
+    "has_icon": true,
+    "name": "researcherclothes"
+  },
+  "researcherscribble1": {
+    "has_icon": true,
+    "name": "researcherscribble1"
+  },
+  "researcherscribble2": {
+    "has_icon": true,
+    "name": "researcherscribble2"
+  },
+  "respawndivingsuit": {
+    "has_icon": true,
+    "name": "Одноразовый водолазный скафандр"
+  },
+  "revolver": {
+    "has_icon": true,
+    "name": "Револьвер"
+  },
+  "revolverround": {
+    "has_icon": true,
+    "name": "Патрон револьвера"
+  },
+  "revolverrounddepletedfuel": {
+    "has_icon": true,
+    "name": "Патрон револьвера с обедненным топливом"
+  },
+  "rifle": {
+    "has_icon": true,
+    "name": "Ружье"
+  },
+  "rifleblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: ружье"
+  },
+  "riflebullet": {
+    "has_icon": true,
+    "name": "Патрон для ружья"
+  },
+  "riotshield": {
+    "has_icon": true,
+    "name": "Полицейский щит"
+  },
+  "rituallantern": {
+    "has_icon": true,
+    "name": "rituallantern"
+  },
+  "rituallanternspecial": {
+    "has_icon": true,
+    "name": "rituallanternspecial"
+  },
+  "roundcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Округление\""
+  },
+  "rubber": {
+    "has_icon": true,
+    "name": "Резина"
+  },
+  "ruindecalpulse1": {
+    "has_icon": false,
+    "name": "ruindecalpulse1"
+  },
+  "ruinpipeconnection": {
+    "has_icon": false,
+    "name": "Соединение труб в руинах"
+  },
+  "ruinpipeconnectioncorner": {
+    "has_icon": false,
+    "name": "Угол соединения трубы"
+  },
+  "ruinscanner": {
+    "has_icon": true,
+    "name": "Сканер руин"
+  },
+  "ruintoxins": {
+    "has_icon": true,
+    "name": "ruintoxins"
+  },
+  "ruinvent": {
+    "has_icon": false,
+    "name": "Вентиляция в руинах"
+  },
+  "safeandsoundsecurity101": {
+    "has_icon": true,
+    "name": "Основы разумной безопасности офицера Переса"
+  },
+  "safetyharness": {
+    "has_icon": true,
+    "name": "Страховочные ремни"
+  },
+  "saltbulb": {
+    "has_icon": true,
+    "name": "Солевая луковица"
+  },
+  "saltvineseed": {
+    "has_icon": true,
+    "name": "Семя солевой лозы"
+  },
+  "scooter_tier2and3": {
+    "has_icon": true,
+    "name": "scooter_tier2and3"
+  },
+  "scooter_tier4": {
+    "has_icon": true,
+    "name": "scooter_tier4"
+  },
+  "scope": {
+    "has_icon": true,
+    "name": "Прицел винтовки"
+  },
+  "scrap": {
+    "has_icon": true,
+    "name": "Хлам"
+  },
+  "scrapcannon": {
+    "has_icon": true,
+    "name": "Хлам-пушка"
+  },
+  "scrapcannonblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: хлам-пушка"
+  },
+  "screwdriver": {
+    "has_icon": true,
+    "name": "Отвертка"
+  },
+  "screwdriver_murdermystery": {
+    "has_icon": true,
+    "name": "screwdriver_murdermystery"
+  },
+  "screwdriverdementonite": {
+    "has_icon": true,
+    "name": "Дементонитовая отвертка"
+  },
+  "screwdriverhardened": {
+    "has_icon": true,
+    "name": "Закаленная отвертка"
+  },
+  "sealedsupplycrate": {
+    "has_icon": true,
+    "name": "Запечатанный ящик с припасами"
+  },
+  "searchlight": {
+    "has_icon": true,
+    "name": "Прожектор"
+  },
+  "securemetalcrate": {
+    "has_icon": true,
+    "name": "Защищенный металлический ящик"
+  },
+  "securesteelcabinet": {
+    "has_icon": true,
+    "name": "Защищенный стальной шкаф"
+  },
+  "securesteelcabinetwrecked": {
+    "has_icon": true,
+    "name": "securesteelcabinetwrecked"
+  },
+  "securitypatrolclothes": {
+    "has_icon": true,
+    "name": "securitypatrolclothes"
+  },
+  "securityseparatistsuniform1": {
+    "has_icon": true,
+    "name": "Форма службы безопасности сепаратистов"
+  },
+  "securityseparatistsuniform2": {
+    "has_icon": true,
+    "name": "Форма службы безопасности сепаратистов"
+  },
+  "securityseparatistsuniform3": {
+    "has_icon": true,
+    "name": "Форма службы безопасности сепаратистов"
+  },
+  "securityuniform1": {
+    "has_icon": true,
+    "name": "Форма спецназа"
+  },
+  "securityuniform2": {
+    "has_icon": true,
+    "name": "Форма офицера охраны"
+  },
+  "securityuniform3": {
+    "has_icon": true,
+    "name": "Форма стрелка"
+  },
+  "seedbag": {
+    "has_icon": true,
+    "name": "Мешок семян"
+  },
+  "separatistexplosivesblueprint": {
+    "has_icon": true,
+    "name": "Чертёж: грязные приёмы"
+  },
+  "shellshield": {
+    "has_icon": true,
+    "name": "Фрагмент панциря молоха"
+  },
+  "shotgun": {
+    "has_icon": true,
+    "name": "Дробовик"
+  },
+  "shotgunshell": {
+    "has_icon": true,
+    "name": "Патрон для дробовика"
+  },
+  "shotgunshellblunt": {
+    "has_icon": true,
+    "name": "Резиновый патрон для дробовика"
+  },
+  "shotgunslugexplosive": {
+    "has_icon": true,
+    "name": "Разрывная пуля"
+  },
+  "shotgununique": {
+    "has_icon": true,
+    "name": "Гремелка"
+  },
+  "shuttlebattery": {
+    "has_icon": true,
+    "name": "Батарея челнока"
+  },
+  "shuttlebatterywrecked": {
+    "has_icon": true,
+    "name": "shuttlebatterywrecked"
+  },
+  "shuttleengine": {
+    "has_icon": true,
+    "name": "Двигатель челнока"
+  },
+  "shuttleenginewrecked": {
+    "has_icon": true,
+    "name": "shuttleenginewrecked"
+  },
+  "shuttlenavterminal": {
+    "has_icon": true,
+    "name": "Навигационный терминал челнока"
+  },
+  "shuttlenavterminalwrecked": {
+    "has_icon": true,
+    "name": "shuttlenavterminalwrecked"
+  },
+  "shuttleoxygenerator": {
+    "has_icon": true,
+    "name": "Генератор кислорода челнока"
+  },
+  "shuttleoxygeneratorwrecked": {
+    "has_icon": true,
+    "name": "shuttleoxygeneratorwrecked"
+  },
+  "signalcheckcomponent": {
+    "has_icon": true,
+    "name": "Компонент проверки сигнала"
+  },
+  "silicon": {
+    "has_icon": true,
+    "name": "Кремний"
+  },
+  "sincomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Синус\""
+  },
+  "skillbook_warstories": {
+    "has_icon": true,
+    "name": "Собрание военных историй"
+  },
+  "skillbookeuropanmedicine": {
+    "has_icon": true,
+    "name": "Европейская медицина"
+  },
+  "skillbookhandyseaman": {
+    "has_icon": true,
+    "name": "Умелый моряк"
+  },
+  "skillbooksailorsguide": {
+    "has_icon": true,
+    "name": "Справочник моряка"
+  },
+  "skillbooksubmarinewarfare": {
+    "has_icon": true,
+    "name": "Искусство подводной войны"
+  },
+  "skyholderartifact": {
+    "has_icon": true,
+    "name": "Небесный инопланетный артефакт"
+  },
+  "slimebacteria": {
+    "has_icon": true,
+    "name": "Слизистые бактерии"
+  },
+  "slipsuit": {
+    "has_icon": true,
+    "name": "Гидрокостюм"
+  },
+  "smallcrawleregg": {
+    "has_icon": true,
+    "name": "smallcrawleregg"
+  },
+  "smalldoor": {
+    "has_icon": true,
+    "name": "Маленькая дверь"
+  },
+  "smallmudraptoregg": {
+    "has_icon": true,
+    "name": "smallmudraptoregg"
+  },
+  "smallplanter": {
+    "has_icon": true,
+    "name": "Небольшой ящик для рассады"
+  },
+  "smallpump": {
+    "has_icon": true,
+    "name": "Малый насос"
+  },
+  "smg": {
+    "has_icon": true,
+    "name": "Пистолет-пулемет"
+  },
+  "smgmagazine": {
+    "has_icon": true,
+    "name": "Магазин для ПП"
+  },
+  "smgmagazinedepletedfuel": {
+    "has_icon": true,
+    "name": "Магазин для ПП с обедненным топливом"
+  },
+  "smground": {
+    "has_icon": true,
+    "name": "Патрон для ПП"
+  },
+  "smgrounddepletedfuel": {
+    "has_icon": true,
+    "name": "Патрон для ПП с обедненным топливом"
+  },
+  "smgunique": {
+    "has_icon": true,
+    "name": "Меткий карабин"
+  },
+  "smokedetector": {
+    "has_icon": true,
+    "name": "Детектор дыма"
+  },
+  "sodium": {
+    "has_icon": true,
+    "name": "Натрий"
+  },
+  "sonarbeacon": {
+    "has_icon": true,
+    "name": "Сонарный маяк"
+  },
+  "sonarmonitor": {
+    "has_icon": true,
+    "name": "Монитор сонара"
+  },
+  "sonartransducer": {
+    "has_icon": true,
+    "name": "Преобразователь сонара"
+  },
+  "sonartransducerwrecked": {
+    "has_icon": true,
+    "name": "sonartransducerwrecked"
+  },
+  "sparkemitter": {
+    "has_icon": true,
+    "name": "sparkemitter"
+  },
+  "spear": {
+    "has_icon": true,
+    "name": "Гарпун"
+  },
+  "spearunique": {
+    "has_icon": true,
+    "name": "Копье Ахава"
+  },
+  "sphalerite": {
+    "has_icon": true,
+    "name": "Сфалерит"
+  },
+  "spinelingspike": {
+    "has_icon": true,
+    "name": "Шип шипостая"
+  },
+  "spinelingspikeloot": {
+    "has_icon": true,
+    "name": "spinelingspikeloot"
+  },
+  "sprayer": {
+    "has_icon": true,
+    "name": "Распылитель"
+  },
+  "squarerootcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Квадратный корень\""
+  },
+  "stannite": {
+    "has_icon": true,
+    "name": "Станнит"
+  },
+  "statusmonitor": {
+    "has_icon": true,
+    "name": "Монитор состояния"
+  },
+  "statusmonitorwrecked": {
+    "has_icon": true,
+    "name": "statusmonitorwrecked"
+  },
+  "steel": {
+    "has_icon": true,
+    "name": "Стальной слиток"
+  },
+  "steelcabinet": {
+    "has_icon": true,
+    "name": "Большой стальной шкаф"
+  },
+  "steelcabinetwrecked": {
+    "has_icon": true,
+    "name": "steelcabinetwrecked"
+  },
+  "stunbaton": {
+    "has_icon": true,
+    "name": "Шоковая дубинка"
+  },
+  "stungrenade": {
+    "has_icon": true,
+    "name": "Светошумовая граната"
+  },
+  "stungun": {
+    "has_icon": true,
+    "name": "Электрошокер"
+  },
+  "stungundart": {
+    "has_icon": true,
+    "name": "Дротик для электрошокера"
+  },
+  "stungundartfulgurium": {
+    "has_icon": true,
+    "name": "Грозовиевый дротик для электрошокера"
+  },
+  "submarinepusher": {
+    "has_icon": true,
+    "name": "submarinepusher"
+  },
+  "subtractcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"вычесть\""
+  },
+  "sulphuricacidsyringe": {
+    "has_icon": true,
+    "name": "Алая кислота"
+  },
+  "sulphuriteshard": {
+    "has_icon": true,
+    "name": "Осколок сернита"
+  },
+  "supercapacitor": {
+    "has_icon": true,
+    "name": "Суперконденсатор"
+  },
+  "supercapacitorwrecked": {
+    "has_icon": true,
+    "name": "supercapacitorwrecked"
+  },
+  "suppliescabinet": {
+    "has_icon": true,
+    "name": "Хозяйственный шкаф"
+  },
+  "suppliescabinetwrecked": {
+    "has_icon": true,
+    "name": "suppliescabinetwrecked"
+  },
+  "surveillancecamera": {
+    "has_icon": true,
+    "name": "Камера наблюдения"
+  },
+  "surveillancecenter": {
+    "has_icon": true,
+    "name": "Центр наблюдения"
+  },
+  "swimbladder": {
+    "has_icon": true,
+    "name": "Плавательный пузырь"
+  },
+  "switch": {
+    "has_icon": true,
+    "name": "Выключатель"
+  },
+  "sylvite": {
+    "has_icon": true,
+    "name": "Сильвин"
+  },
+  "syringegun": {
+    "has_icon": true,
+    "name": "Шприц-пистолет"
+  },
+  "tancomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Тангенс\""
+  },
+  "terminal": {
+    "has_icon": true,
+    "name": "Терминал"
+  },
+  "textdisplay": {
+    "has_icon": true,
+    "name": "Текстовый экран"
+  },
+  "thermalartifact": {
+    "has_icon": true,
+    "name": "Тепловой инопланетный артефакт"
+  },
+  "thermalgoggles": {
+    "has_icon": true,
+    "name": "Тепловизор"
+  },
+  "thorianite": {
+    "has_icon": true,
+    "name": "Торианит"
+  },
+  "thorium": {
+    "has_icon": true,
+    "name": "Торий"
+  },
+  "thoriumfuelrod": {
+    "has_icon": true,
+    "name": "Ториевый топливный стержень"
+  },
+  "tigerthresheregg": {
+    "has_icon": true,
+    "name": "Яйцо акульего тигра"
+  },
+  "timeddetonator": {
+    "has_icon": true,
+    "name": "Детонатор с таймером"
+  },
+  "tin": {
+    "has_icon": true,
+    "name": "Олово"
+  },
+  "titanite": {
+    "has_icon": true,
+    "name": "Титанит"
+  },
+  "titanium": {
+    "has_icon": true,
+    "name": "Титан"
+  },
+  "titaniumaluminiumalloy": {
+    "has_icon": true,
+    "name": "Слиток из титана и алюминия"
+  },
+  "tobaccobud": {
+    "has_icon": true,
+    "name": "Табачный бутон"
+  },
+  "tobaccovineseed": {
+    "has_icon": true,
+    "name": "Семя табачной лозы"
+  },
+  "tonguetendon": {
+    "has_icon": true,
+    "name": "Язык блокиратора"
+  },
+  "tonguetendoncharacter": {
+    "has_icon": true,
+    "name": "tonguetendoncharacter"
+  },
+  "toolbelt": {
+    "has_icon": true,
+    "name": "Пояс инструментов"
+  },
+  "toolbox": {
+    "has_icon": true,
+    "name": "Контейнер для хранения"
+  },
+  "toothspike": {
+    "has_icon": true,
+    "name": "Зуб блокиратора"
+  },
+  "toxcabinet": {
+    "has_icon": true,
+    "name": "Шкаф для хранения токсинов"
+  },
+  "toxcabinetwrecked": {
+    "has_icon": true,
+    "name": "toxcabinetwrecked"
+  },
+  "toxinsvent": {
+    "has_icon": false,
+    "name": "Распылитель токсинов"
+  },
+  "toyhammer": {
+    "has_icon": true,
+    "name": "Игрушечный молот"
+  },
+  "traitorduffelbag": {
+    "has_icon": true,
+    "name": "traitorduffelbag"
+  },
+  "traitortimebomb": {
+    "has_icon": true,
+    "name": "Тикающая часовая бомба"
+  },
+  "traitortimebomb2": {
+    "has_icon": true,
+    "name": "Тикающая часовая бомба (обнаруженная)"
+  },
+  "traitortimebomb3": {
+    "has_icon": true,
+    "name": "Тикающая часовая бомба (на батарейке)"
+  },
+  "triphylite": {
+    "has_icon": true,
+    "name": "Трифилин"
+  },
+  "turrethardpoint": {
+    "has_icon": true,
+    "name": "Держатель орудия"
+  },
+  "uex": {
+    "has_icon": true,
+    "name": "UEX"
+  },
+  "underwaterscooter": {
+    "has_icon": true,
+    "name": "Подводный скутер"
+  },
+  "unidentifiedbiologicalmaterial": {
+    "has_icon": true,
+    "name": "Неопознанный биоматериал"
+  },
+  "unitloaddevice": {
+    "has_icon": true,
+    "name": "Грузовой модуль"
+  },
+  "uranium": {
+    "has_icon": true,
+    "name": "Уран"
+  },
+  "uraniumore": {
+    "has_icon": true,
+    "name": "Урановая руда"
+  },
+  "valve": {
+    "has_icon": true,
+    "name": "Клапан трубы"
+  },
+  "vent": {
+    "has_icon": true,
+    "name": "Вентиляционный клапан"
+  },
+  "ventwrecked": {
+    "has_icon": true,
+    "name": "ventwrecked"
+  },
+  "vipclothes1": {
+    "has_icon": true,
+    "name": "vipclothes1"
+  },
+  "vipclothes2": {
+    "has_icon": true,
+    "name": "vipclothes2"
+  },
+  "vipclothes3": {
+    "has_icon": true,
+    "name": "vipclothes3"
+  },
+  "volatilecompoundn": {
+    "has_icon": true,
+    "name": "Нестабильное соединение N"
+  },
+  "volatilenitroglycerin": {
+    "has_icon": true,
+    "name": "Взрывоопасный нитроглицерин"
+  },
+  "walldamageprojectile": {
+    "has_icon": false,
+    "name": "walldamageprojectile"
+  },
+  "wallpipeweakpoint": {
+    "has_icon": true,
+    "name": "Уязвимая труба"
+  },
+  "watchershell": {
+    "has_icon": true,
+    "name": "Фрагмент панциря смотрителя"
+  },
+  "watchmanclothes": {
+    "has_icon": true,
+    "name": "Одежда сторожа"
+  },
+  "waterdetector": {
+    "has_icon": true,
+    "name": "Детектор воды"
+  },
+  "wateringcan": {
+    "has_icon": true,
+    "name": "Лейка"
+  },
+  "weapondroptier1_1": {
+    "has_icon": true,
+    "name": "weapondroptier1_1"
+  },
+  "weapondroptier1_2": {
+    "has_icon": true,
+    "name": "weapondroptier1_2"
+  },
+  "weapondroptier1_3": {
+    "has_icon": true,
+    "name": "weapondroptier1_3"
+  },
+  "weapondroptier1_ruin_special": {
+    "has_icon": true,
+    "name": "weapondroptier1_ruin_special"
+  },
+  "weapondroptier1_special": {
+    "has_icon": true,
+    "name": "weapondroptier1_special"
+  },
+  "weapondroptier2_1": {
+    "has_icon": true,
+    "name": "weapondroptier2_1"
+  },
+  "weapondroptier2_1_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier2_1_ruin"
+  },
+  "weapondroptier2_2": {
+    "has_icon": true,
+    "name": "weapondroptier2_2"
+  },
+  "weapondroptier2_2_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier2_2_ruin"
+  },
+  "weapondroptier2_3": {
+    "has_icon": true,
+    "name": "weapondroptier2_3"
+  },
+  "weapondroptier2_3_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier2_3_ruin"
+  },
+  "weapondroptier2_4": {
+    "has_icon": true,
+    "name": "weapondroptier2_4"
+  },
+  "weapondroptier2_4_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier2_4_ruin"
+  },
+  "weapondroptier2_5_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier2_5_ruin"
+  },
+  "weapondroptier2_ruin_scooters": {
+    "has_icon": true,
+    "name": "weapondroptier2_ruin_scooters"
+  },
+  "weapondroptier2_ruin_special1": {
+    "has_icon": true,
+    "name": "weapondroptier2_ruin_special1"
+  },
+  "weapondroptier2_ruin_special2": {
+    "has_icon": true,
+    "name": "weapondroptier2_ruin_special2"
+  },
+  "weapondroptier2_special": {
+    "has_icon": true,
+    "name": "weapondroptier2_special"
+  },
+  "weapondroptier3_1": {
+    "has_icon": true,
+    "name": "weapondroptier3_1"
+  },
+  "weapondroptier3_1_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier3_1_ruin"
+  },
+  "weapondroptier3_2": {
+    "has_icon": true,
+    "name": "weapondroptier3_2"
+  },
+  "weapondroptier3_2_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier3_2_ruin"
+  },
+  "weapondroptier3_3": {
+    "has_icon": true,
+    "name": "weapondroptier3_3"
+  },
+  "weapondroptier3_3_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier3_3_ruin"
+  },
+  "weapondroptier3_4_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier3_4_ruin"
+  },
+  "weapondroptier3_ruin_scooters": {
+    "has_icon": true,
+    "name": "weapondroptier3_ruin_scooters"
+  },
+  "weapondroptier3_ruin_special1": {
+    "has_icon": true,
+    "name": "weapondroptier3_ruin_special1"
+  },
+  "weapondroptier3_special1": {
+    "has_icon": true,
+    "name": "weapondroptier3_special1"
+  },
+  "weapondroptier3_special2": {
+    "has_icon": true,
+    "name": "weapondroptier3_special2"
+  },
+  "weapondroptier4_1": {
+    "has_icon": true,
+    "name": "weapondroptier4_1"
+  },
+  "weapondroptier4_1_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier4_1_ruin"
+  },
+  "weapondroptier4_2": {
+    "has_icon": true,
+    "name": "weapondroptier4_2"
+  },
+  "weapondroptier4_2_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier4_2_ruin"
+  },
+  "weapondroptier4_3_ruin": {
+    "has_icon": true,
+    "name": "weapondroptier4_3_ruin"
+  },
+  "weapondroptier4_ruin_scooters": {
+    "has_icon": true,
+    "name": "weapondroptier4_ruin_scooters"
+  },
+  "weapondroptier4_ruin_special1": {
+    "has_icon": true,
+    "name": "weapondroptier4_ruin_special1"
+  },
+  "weapondroptier4_ruin_special2": {
+    "has_icon": true,
+    "name": "weapondroptier4_ruin_special2"
+  },
+  "weapondroptier4_ruin_special3": {
+    "has_icon": true,
+    "name": "weapondroptier4_ruin_special3"
+  },
+  "weapondroptier4_special1": {
+    "has_icon": true,
+    "name": "weapondroptier4_special1"
+  },
+  "weapondroptier4_special2": {
+    "has_icon": true,
+    "name": "weapondroptier4_special2"
+  },
+  "weapondroptier4_special3": {
+    "has_icon": true,
+    "name": "weapondroptier4_special3"
+  },
+  "weaponholder": {
+    "has_icon": true,
+    "name": "Оружейная стойка"
+  },
+  "weaponholderwrecked": {
+    "has_icon": true,
+    "name": "weaponholderwrecked"
+  },
+  "weldingfueltank": {
+    "has_icon": true,
+    "name": "Топливный бак сварочного аппарата"
+  },
+  "weldingtool": {
+    "has_icon": true,
+    "name": "Сварочный аппарат"
+  },
+  "wificomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Беспроводной\""
+  },
+  "windoweddoor": {
+    "has_icon": true,
+    "name": "Настраиваемая дверь с окном"
+  },
+  "windoweddoorwbuttons": {
+    "has_icon": true,
+    "name": "Дверь с окном и кнопками"
+  },
+  "windoweddoorwbuttonswrecked": {
+    "has_icon": true,
+    "name": "windoweddoorwbuttonswrecked"
+  },
+  "windoweddoorwrecked": {
+    "has_icon": true,
+    "name": "windoweddoorwrecked"
+  },
+  "wire": {
+    "has_icon": true,
+    "name": "Провод"
+  },
+  "wrench": {
+    "has_icon": true,
+    "name": "Гаечный ключ"
+  },
+  "wrench_murdermystery": {
+    "has_icon": true,
+    "name": "wrench_murdermystery"
+  },
+  "wrenchdementonite": {
+    "has_icon": true,
+    "name": "Дементонитовый гаечный ключ"
+  },
+  "wrenchhardened": {
+    "has_icon": true,
+    "name": "Закаленный гаечный ключ"
+  },
+  "xorcomponent": {
+    "has_icon": true,
+    "name": "Компонент \"Х или\""
+  },
+  "yeastshroom": {
+    "has_icon": true,
+    "name": "Морские дрожжи"
+  },
+  "zealotrobes": {
+    "has_icon": true,
+    "name": "zealotrobes"
+  },
+  "zinc": {
+    "has_icon": true,
+    "name": "Цинк"
+  }
+}

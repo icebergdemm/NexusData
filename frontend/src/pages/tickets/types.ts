@@ -41,7 +41,7 @@ export interface TicketMessageRow {
 
 export interface TicketDetailResponse {
   ticket: TicketRow
-  player: { player_id: number; player_last_time_name: string; player_steamid: string } | null
+  player: { player_id: number; player_last_time_name: string; forced_display_name: string | null; player_steamid: string } | null
   messages: TicketMessageRow[]
   ticket_config: { types: Record<string, TicketTypeMeta> }
   can_edit: boolean

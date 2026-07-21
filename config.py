@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = Field("your-secret-key-change-in-production", env="SECRET_KEY")
     api_key: str = Field("your-api-key-change-in-production", env="API_KEY")
+    # Separate dedicated key for read-only external "client" integrations
+    # (world-state export, warehouse export — routes/world_state.py,
+    # routes/warehouse.py) — intentionally NOT the same secret as `api_key`
+    # (used by the Barotrauma server's own ingest calls), so a consumer of
+    # these read endpoints never needs the ingest credential. Empty by
+    # default = these endpoints stay closed until explicitly configured.
+    client_api_key: str = Field("", env="CLIENT_API_KEY")
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"

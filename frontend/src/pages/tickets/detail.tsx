@@ -61,7 +61,11 @@ export function TicketDetailPage() {
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               {meta?.name ?? ticket.ticket_type} · {ticket.creator_display_name || ticket.creator_username}
-              {data.player && ` · игрок: ${data.player.player_last_time_name}`}
+              {data.player && (
+                <span title={data.player.forced_display_name ? `Настоящий ник: ${data.player.player_last_time_name}` : undefined}>
+                  {` · игрок: ${data.player.forced_display_name || data.player.player_last_time_name}`}
+                </span>
+              )}
             </div>
           </div>
           {data.can_edit && !isClosed && (

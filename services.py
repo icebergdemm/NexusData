@@ -1205,6 +1205,7 @@ class ServerModerationService:
                     "player_steamid": steamid,
                     "player_name": player_name or db_name or steamid,
                     "character_name": character_name,
+                    "forced_display_name": pd.forced_display_name if pd else None,
                     "job_id": job_id,
                     "ping": ping,
                     "player_id": player_id,

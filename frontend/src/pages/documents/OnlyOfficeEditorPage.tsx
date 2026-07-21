@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Navigate, useNavigate, useParams } from "react-router-dom"
+import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
@@ -22,6 +22,9 @@ import { documentsApi, canEditDocument } from "@/pages/documents/api"
 import { ApiError } from "@/lib/api"
 import { ShareDialog } from "@/pages/documents/ShareDialog"
 import { VersionHistoryDialog } from "@/pages/documents/VersionHistoryDialog"
+import { SetupPermissionsDialog } from "@/pages/documents/SetupPermissionsDialog"
+
+interface ReturnTarget { pathname: string; state?: Record<string, unknown> }
 
 const EMOJI_CHOICES = ["📄", "📝", "📋", "📌", "📖", "🗂️", "💡", "⚙️", "🚀", "✅", "📊", "🔒", "🎯", "📢", "🧭"]
 const EDITOR_CONTAINER_ID = "onlyoffice-editor-container"
@@ -47,8 +50,31 @@ function loadOnlyOfficeScript(documentServerUrl: string): Promise<void> {
 
 function DocumentEditorInner({ documentId }: { documentId: number }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const editorInstanceRef = useRef<{ destroyEditor: () => void } | null>(null)
+
+  // Where "back"/"leave" should go — set by whichever page opened this
+  // document (e.g. a department's Документация tab wants to return to its
+  // own tab, not the generic /documents root). See documentation.tsx and
+  // departments/detail.tsx for the sending/receiving side of this state.
+  const navState = location.state as { returnTo?: ReturnTarget; justCreated?: boolean } | null
+  const returnTo = navState?.returnTo
+  const justCreated = !!navState?.justCreated
+  const [setupPromptOpen, setSetupPromptOpen] = useState(false)
+
+  function goBack() {
+    if (returnTo) navigate(returnTo.pathname, returnTo.state ? { state: returnTo.state } : undefined)
+    else navigate("/documents")
+  }
+
+  function requestExit() {
+    if (justCreated && !setupPromptOpen && data?.department_id) {
+      setSetupPromptOpen(true)
+      return
+    }
+    goBack()
+  }
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["document", documentId],
@@ -171,7 +197,7 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
 
   const trashMutation = useMutation({
     mutationFn: () => documentsApi.trash(documentId),
-    onSuccess: () => { toast.success("Перемещено в корзину"); navigate("/documents") },
+    onSuccess: () => { toast.success("Перемещено в корзину"); goBack() },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -229,7 +255,7 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
     return (
       <div className="flex h-[60vh] flex-col items-center justify-center gap-3 text-center">
         <p className="text-muted-foreground">Документ не найден или у вас нет к нему доступа.</p>
-        <Button variant="outline" onClick={() => navigate("/documents")}><ArrowLeft className="mr-1 size-4" /> К документам</Button>
+        <Button variant="outline" onClick={goBack}><ArrowLeft className="mr-1 size-4" /> К документам</Button>
       </div>
     )
   }
@@ -237,7 +263,7 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
   return (
     <div className={isFocusMode ? "fixed inset-0 z-50 flex flex-col bg-background p-3" : "flex h-[calc(100vh-6rem)] flex-col"}>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <Button variant="ghost" size="icon-sm" onClick={() => navigate("/documents")}><ArrowLeft className="size-4" /></Button>
+        <Button variant="ghost" size="icon-sm" onClick={requestExit}><ArrowLeft className="size-4" /></Button>
 
         <Popover>
           <PopoverTrigger asChild>
@@ -359,6 +385,13 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
       </div>
 
       <ShareDialog documentId={documentId} open={shareOpen} onOpenChange={setShareOpen} />
+      {!!data?.department_id && (
+        <SetupPermissionsDialog
+          documentId={documentId}
+          open={setupPromptOpen}
+          onDone={() => { setSetupPromptOpen(false); goBack() }}
+        />
+      )}
       <VersionHistoryDialog
         documentId={documentId}
         open={historyOpen}

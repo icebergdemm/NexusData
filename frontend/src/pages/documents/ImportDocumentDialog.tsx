@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Upload, FileText, Loader2 } from "lucide-react"
@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog"
 import { documentsApi } from "./api"
 
-export function ImportDocumentDialog({ open, onOpenChange, onImported, departmentId, folderId, departmentFolderId, parentDocumentId, isOrderTemplate, isNews }: {
+export function ImportDocumentDialog({ open, onOpenChange, onImported, departmentId, folderId, departmentFolderId, parentDocumentId, isOrderTemplate, isNews, initialFile }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onImported: (documentId: number) => void
@@ -18,9 +18,17 @@ export function ImportDocumentDialog({ open, onOpenChange, onImported, departmen
   parentDocumentId?: number
   isOrderTemplate?: boolean
   isNews?: boolean
+  // Pre-selects a file dropped on the page (drag-and-drop) so the dialog
+  // opens straight to the confirm step instead of the file picker.
+  initialFile?: File | null
 }) {
   const [file, setFile] = useState<File | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (open && initialFile) setFile(initialFile)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialFile])
 
   const importMutation = useMutation({
     mutationFn: () => documentsApi.import(file!, {

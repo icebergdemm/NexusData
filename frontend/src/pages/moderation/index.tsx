@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { ShieldAlert, MapPin, Ship, Target, Users2 } from "lucide-react"
+import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Link2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -19,8 +19,14 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
+import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { api } from "@/lib/api"
-import type { ModerationOverview, OfflinePlayer } from "./types"
+import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
+import { AnomaliesTab } from "./AnomaliesTab"
+
+function copyToClipboard(text: string, label: string) {
+  navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
+}
 
 function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
@@ -30,6 +36,24 @@ function fmtPlayTime(hours: number): string {
   const h = Math.floor(hours)
   const m = Math.round((hours - h) * 60)
   return `${h}ч ${m}м`
+}
+
+function onlineDisplayName(p: OnlinePlayer): string {
+  return p.forced_display_name || p.player_name || p.player_steamid
+}
+
+function offlineDisplayName(p: OfflinePlayer): string {
+  return p.forced_display_name || p.player_last_time_name
+}
+
+/** Small badge shown next to a forced nickname, with the real name in a tooltip. */
+function ForcedNameBadge({ realName }: { realName: string | null }) {
+  if (!realName) return null
+  return (
+    <Badge variant="outline" className="ml-1.5 border-info/40 text-info" title={`Настоящий ник: ${realName}`}>
+      <Link2 className="mr-1 size-3" /> принудительное имя
+    </Badge>
+  )
 }
 
 type ActionType = "kick" | "ban" | "message"
@@ -99,6 +123,9 @@ export function ModerationPage() {
           <TabsTrigger value="anticheat" className="gap-1.5">
             Античит {unreviewedCount > 0 && <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">{unreviewedCount}</Badge>}
           </TabsTrigger>
+          <TabsTrigger value="anomalies" className="gap-1.5">
+            <ShieldAlert className="size-3.5" /> Аномалии
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="status" className="space-y-4">
@@ -139,35 +166,56 @@ export function ModerationPage() {
                     <TableHead>Сервер</TableHead>
                     <TableHead>Роль</TableHead>
                     <TableHead>Пинг</TableHead>
+                    <TableHead>Дата входа</TableHead>
                     {data.can_edit && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.online_players.map((p) => (
-                    <TableRow key={p.player_steamid}>
-                      <TableCell className="font-medium">
-                        {p.player_id ? (
-                          <button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
-                            {p.player_name}
-                          </button>
-                        ) : p.player_name}
-                      </TableCell>
-                      <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
-                      <TableCell>{p.job_id ?? "-"}</TableCell>
-                      <TableCell>{p.ping ?? "-"}</TableCell>
-                      {data.can_edit && (
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1.5 whitespace-nowrap">
-                            <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_name ?? p.player_steamid, type: "message" })}>Сообщение</Button>
-                            <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_name ?? p.player_steamid, type: "kick" })}>Кик</Button>
-                            <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_name ?? p.player_steamid, type: "ban" })}>Бан</Button>
-                          </div>
+                  {data.online_players.map((p) => {
+                    const name = onlineDisplayName(p)
+                    return (
+                    <AppContextMenu
+                      key={p.player_steamid}
+                      actions={[
+                        ...(p.player_id ? [{ label: "Открыть профиль", icon: ShieldAlert, onSelect: () => setSummaryPlayerId(p.player_id as number) }] : []),
+                        { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
+                        { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(name, "Имя") },
+                        ...(data.can_edit ? [
+                          { label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) },
+                          { label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) },
+                          { label: "Бан", destructive: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "ban" as const }) },
+                        ] : []),
+                      ]}
+                    >
+                      <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
+                        <TableCell className="font-medium">
+                          {p.player_id ? (
+                            <button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
+                              {name}
+                            </button>
+                          ) : name}
+                          {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
+                          {p.forced_display_name && <ForcedNameBadge realName={p.player_name} />}
                         </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
+                        <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
+                        <TableCell>{p.job_id ?? "-"}</TableCell>
+                        <TableCell>{p.ping ?? "-"}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtDate(p.join_time)}</TableCell>
+                        {data.can_edit && (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1.5 whitespace-nowrap">
+                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
+                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
+                              <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    </AppContextMenu>
+                    )
+                  })}
                   {!data.online_players.length && (
-                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Никого нет онлайн</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Никого нет онлайн</TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>
@@ -193,34 +241,55 @@ export function ModerationPage() {
                   <TableRow>
                     <TableHead>Игрок</TableHead>
                     <TableHead>Наиграно</TableHead>
+                    <TableHead>Первый вход</TableHead>
                     <TableHead>Последний вход</TableHead>
                     {data.can_edit && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {offlineRows.map((p) => (
-                    <TableRow key={p.player_id}>
-                      <TableCell>
-                        <button className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
-                          {p.player_last_time_name}
-                        </button>
-                        <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
-                      </TableCell>
-                      <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{fmtDate(p.last_login_time)}</TableCell>
-                      {data.can_edit && (
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1.5 whitespace-nowrap">
-                            <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_last_time_name, type: "message" })}>Сообщение</Button>
-                            <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_last_time_name, type: "kick" })}>Кик</Button>
-                            <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name: p.player_last_time_name, type: "ban" })}>Бан</Button>
-                          </div>
+                  {offlineRows.map((p) => {
+                    const name = offlineDisplayName(p)
+                    return (
+                    <AppContextMenu
+                      key={p.player_id}
+                      actions={[
+                        { label: "Открыть профиль", icon: ShieldAlert, onSelect: () => setSummaryPlayerId(p.player_id) },
+                        { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
+                        { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(name, "Имя") },
+                        ...(data.can_edit ? [
+                          { label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) },
+                          { label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) },
+                          { label: "Бан", destructive: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "ban" as const }) },
+                        ] : []),
+                      ]}
+                    >
+                      <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
+                        <TableCell>
+                          <button className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
+                            {name}
+                          </button>
+                          {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
+                          {p.forced_display_name && <ForcedNameBadge realName={p.player_last_time_name} />}
+                          <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
                         </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
+                        <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtDate(p.first_login)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtDate(p.last_login_time)}</TableCell>
+                        {data.can_edit && (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1.5 whitespace-nowrap">
+                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
+                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
+                              <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    </AppContextMenu>
+                    )
+                  })}
                   {!offlineRows.length && (
-                    <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">Нет результатов</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Нет результатов</TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>
@@ -274,6 +343,10 @@ export function ModerationPage() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="anomalies">
+          <AnomaliesTab setSummaryPlayerId={setSummaryPlayerId} />
         </TabsContent>
       </Tabs>
 

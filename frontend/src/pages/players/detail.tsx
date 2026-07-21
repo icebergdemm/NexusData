@@ -271,11 +271,11 @@ export function PlayerDetailPage() {
                 <Input
                   value={discordIdDraft}
                   onChange={(e) => setDiscordIdDraft(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && discordIdDraft !== (player.discord_id ?? "") && discordIdMutation.mutate(discordIdDraft)}
+                  onKeyDown={(e) => e.key === "Enter" && discordIdMutation.mutate(discordIdDraft)}
                 />
                 <Button
                   size="sm"
-                  disabled={discordIdDraft === (player.discord_id ?? "") || discordIdMutation.isPending}
+                  disabled={discordIdMutation.isPending}
                   onClick={() => discordIdMutation.mutate(discordIdDraft)}
                 >
                   <Check className="size-3.5" /> Сохранить

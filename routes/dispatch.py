@@ -368,11 +368,26 @@ def dispatch_get_messages(
         ))
     messages = q.order_by(desc(DispatchMessage.created_at)).limit(limit).all()
     messages.reverse()
+
+    # Overlay forced_display_name (admin-assigned nickname) onto the stored
+    # per-message sender name, same fallback convention used elsewhere
+    # (forced_display_name or the real name) — see routes/moderation.py.
+    steamids = {m.steamid for m in messages if m.steamid}
+    forced_map = {}
+    if steamids:
+        rows = (
+            db.query(PlayerData.player_steamid, PlayerData.forced_display_name)
+            .filter(PlayerData.player_steamid.in_(steamids), PlayerData.forced_display_name.isnot(None))
+            .all()
+        )
+        forced_map = {sid: name for sid, name in rows if name}
+
     return [
         {
             "id": m.id,
             "steamid": m.steamid,
-            "player_name": m.player_name,
+            "player_name": (forced_map.get(m.steamid) or m.player_name) if m.steamid else m.player_name,
+            "real_name": m.player_name if m.steamid and forced_map.get(m.steamid) else None,
             "text": m.text,
             "sender_type": m.sender_type,
             "server_name": m.server_name,

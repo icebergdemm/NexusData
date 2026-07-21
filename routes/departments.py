@@ -111,6 +111,51 @@ def _has_linked_profile(db: Session, admin_id: int) -> bool:
     return db.query(PlayerData).filter(PlayerData.linked_admin_id == admin_id).first() is not None
 
 
+def _forced_names_by_admin_id(db: Session, admin_ids: list) -> dict:
+    """Batch lookup — the linked in-game profile's admin-assigned display
+    name (PlayerData.forced_display_name) for each admin id that has one
+    set, so the roster can show it instead of/alongside the Discord name."""
+    from models import PlayerData
+    if not admin_ids:
+        return {}
+    rows = db.query(PlayerData.linked_admin_id, PlayerData.forced_display_name).filter(
+        PlayerData.linked_admin_id.in_(admin_ids), PlayerData.forced_display_name.isnot(None)
+    ).all()
+    return {admin_id: name for admin_id, name in rows if name}
+
+
+def _folder_visible(db: Session, folder: DepartmentDocumentFolder, admin: AdminUser, member: Optional[DepartmentMember], held_keys: set) -> bool:
+    """A documentation folder with no permissions configured on it is
+    private to its creator — mirrors routes/documents.py's
+    get_document_access default-deny policy for the documents inside it.
+    Visible to: the creator, an explicit DepartmentFolderPermission grant on
+    the folder itself, or one on an ancestor folder that has
+    auto_apply_permissions=True (same inheritance rule documents use)."""
+    if admin.is_superuser or folder.created_by_admin_id == admin.id:
+        return True
+
+    applicable_folder_ids = [folder.id]
+    current = folder
+    seen = {folder.id}
+    while current.parent_id and current.parent_id not in seen:
+        parent = db.query(DepartmentDocumentFolder).filter(
+            DepartmentDocumentFolder.id == current.parent_id, DepartmentDocumentFolder.department_id == folder.department_id
+        ).first()
+        if not parent:
+            break
+        if parent.auto_apply_permissions:
+            applicable_folder_ids.append(parent.id)
+        seen.add(parent.id)
+        current = parent
+
+    grants = db.query(DepartmentFolderPermission).filter(DepartmentFolderPermission.folder_id.in_(applicable_folder_ids)).all()
+    return any(
+        (g.grantee_type == "access_level" and g.access_level_key in held_keys)
+        or (g.grantee_type == "member" and g.member_admin_id == admin.id)
+        for g in grants
+    )
+
+
 def _grants_elevated_access(held_level_keys: list, is_head_flag: bool, is_deputy_flag: bool) -> bool:
     """True if this state includes anything beyond the base level — the
     threshold at which a linked player profile becomes mandatory."""
@@ -251,7 +296,10 @@ def serialize_access_level(level: DepartmentAccessLevel) -> dict:
     }
 
 
-def serialize_member(member: DepartmentMember, linked_admin_ids: Optional[set] = None, db: Optional[Session] = None) -> dict:
+def serialize_member(
+    member: DepartmentMember, linked_admin_ids: Optional[set] = None, db: Optional[Session] = None,
+    forced_names: Optional[dict] = None,
+) -> dict:
     admin = member.admin
     if linked_admin_ids is not None:
         has_linked_profile = member.admin_id in linked_admin_ids
@@ -259,11 +307,21 @@ def serialize_member(member: DepartmentMember, linked_admin_ids: Optional[set] =
         has_linked_profile = _has_linked_profile(db, member.admin_id)
     else:
         has_linked_profile = False
+    if forced_names is not None:
+        forced_display_name = forced_names.get(member.admin_id)
+    elif db is not None:
+        forced_display_name = _forced_names_by_admin_id(db, [member.admin_id]).get(member.admin_id)
+    else:
+        forced_display_name = None
     return {
         "id": member.id,
         "admin_id": member.admin_id,
         "admin_name": admin.discord_username if admin else None,
         "admin_avatar": admin.discord_avatar if admin else None,
+        # Admin-assigned in-game nickname (PlayerData.forced_display_name) of
+        # this member's linked profile, when set — takes precedence over
+        # admin_name wherever the roster displays a member's name.
+        "forced_display_name": forced_display_name,
         "created_by_worker": bool(admin.created_by_worker) if admin else False,
         "held_level_keys": member.held_level_keys or [],
         "is_head": member.is_head,
@@ -310,7 +368,7 @@ def serialize_department(dept: Department, db: Session, current_admin: AdminUser
         "discord_category_id": dept.discord_category_id,
         "head_server_privilege_group_id": dept.head_server_privilege_group_id,
         "member_count": len(members),
-        "head": serialize_member(head) if head else None,
+        "head": serialize_member(head, db=db) if head else None,
         "is_member": member is not None,
         "is_head": bool(member and member.is_head),
         "is_deputy_head": bool(member and member.is_deputy_head),
@@ -612,8 +670,10 @@ async def api_list_department_members(department_id: int, db: Session = Depends(
         .order_by(DepartmentMember.added_at)
         .all()
     )
-    linked_admin_ids = _linked_admin_ids(db, [m.admin_id for m in members])
-    return {"members": [serialize_member(m, linked_admin_ids=linked_admin_ids) for m in members]}
+    admin_ids = [m.admin_id for m in members]
+    linked_admin_ids = _linked_admin_ids(db, admin_ids)
+    forced_names = _forced_names_by_admin_id(db, admin_ids)
+    return {"members": [serialize_member(m, linked_admin_ids=linked_admin_ids, forced_names=forced_names) for m in members]}
 
 
 @router.post("/api/v1/admin/departments/{department_id}/members")
@@ -779,11 +839,12 @@ async def api_remove_department_member(department_id: int, member_id: int, db: S
 
 # ── Internal rating (item 7) ────────────────────────────────────────────────
 
-def serialize_rating_entry(e: DepartmentRatingEntry) -> dict:
+def serialize_rating_entry(e: DepartmentRatingEntry, forced_names: Optional[dict] = None) -> dict:
     return {
         "id": e.id,
         "admin_id": e.admin_id,
         "admin_name": e.admin.discord_username if e.admin else None,
+        "forced_display_name": (forced_names or {}).get(e.admin_id),
         "delta": e.delta,
         "reason": e.reason,
         "category": e.category,
@@ -813,9 +874,15 @@ async def api_department_rating_leaderboard(department_id: int, db: Session = De
         .filter(DepartmentMember.department_id == dept.id)
         .all()
     )
+    forced_names = _forced_names_by_admin_id(db, [m.admin_id for m in members])
     leaderboard = sorted(
         (
-            {"admin_id": m.admin_id, "admin_name": m.admin.discord_username if m.admin else None, "total": totals_by_admin.get(m.admin_id, 0)}
+            {
+                "admin_id": m.admin_id,
+                "admin_name": m.admin.discord_username if m.admin else None,
+                "forced_display_name": forced_names.get(m.admin_id),
+                "total": totals_by_admin.get(m.admin_id, 0),
+            }
             for m in members
         ),
         key=lambda r: r["total"],
@@ -838,7 +905,8 @@ async def api_list_department_rating_entries(department_id: int, admin_id: Optio
     if admin_id is not None:
         q = q.filter(DepartmentRatingEntry.admin_id == admin_id)
     entries = q.order_by(DepartmentRatingEntry.created_at.desc()).limit(200).all()
-    return {"entries": [serialize_rating_entry(e) for e in entries]}
+    forced_names = _forced_names_by_admin_id(db, [e.admin_id for e in entries])
+    return {"entries": [serialize_rating_entry(e, forced_names) for e in entries]}
 
 
 @router.post("/api/v1/admin/departments/{department_id}/rating/entries")
@@ -1187,7 +1255,10 @@ async def api_list_dept_document_folders(department_id: int, db: Session = Depen
         .order_by(DepartmentDocumentFolder.name)
         .all()
     )
-    return {"folders": [serialize_dept_folder(f) for f in folders]}
+    member = get_member(db, dept.id, current_admin.id)
+    held_keys = set(member.held_level_keys or []) if member else set()
+    visible = [f for f in folders if _folder_visible(db, f, current_admin, member, held_keys)]
+    return {"folders": [serialize_dept_folder(f) for f in visible]}
 
 
 @router.post("/api/v1/admin/departments/{department_id}/document-folders")

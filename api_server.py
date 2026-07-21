@@ -4,10 +4,19 @@ import sys
 import uvicorn
 from main import app
 from config import get_settings
+from console import start_console_thread
 
 if __name__ == "__main__":
     settings = get_settings()
     workers = max(1, settings.uvicorn_workers)
+
+    # Console commands (api/web/workers on|off|restart, maintenance, db check
+    # — see console.py) work by writing to runtime_control's shared state
+    # file, so starting this here — before uvicorn takes over the main
+    # thread — is enough regardless of which mode below actually ends up
+    # serving requests. This is also the only process that reads stdin at
+    # all (this is what a Pterodactyl "Console" tab talks to).
+    start_console_thread()
 
     if workers <= 1 or settings.debug:
         # Single-process mode — the previous, still-default behavior. The

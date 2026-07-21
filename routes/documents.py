@@ -142,18 +142,23 @@ def require_document_write_access(db: Session, admin: AdminUser, department_id: 
 def get_document_access(db: Session, document: Document, admin: AdminUser) -> Optional[str]:
     """Highest access level the admin has on this document, or None.
 
-    Combines the normal owner/DocumentPermission grants with department
-    documentation access (when the document belongs to a department) — the
-    higher of the two wins, so a department's baseline access never takes
-    away an individual grant and vice versa.
+    Regular documentation pages have NO automatic department-wide baseline:
+    a document with nothing explicitly configured on it (or on its folder)
+    is private to its creator — the department's "documentation" module
+    view/edit permission only gates creating pages and browsing the
+    directory/listing endpoints (require_document_write_access), never an
+    individual page's content. "Приказы"/"Новости" are the deliberate
+    exception — those two modules keep the department-wide baseline below
+    since they only make sense as broadcasts everyone with module view
+    access can read, same as before this policy split.
     """
     if admin.is_superuser or document.owner_admin_id == admin.id:
         return "owner"
 
-    # Resolve department membership/held levels FIRST — needed both by the
-    # main permission loop below (grantee_type="access_level" shares with
-    # "everyone currently holding this department access level") and by the
-    # existing department-module baseline further down.
+    # Resolve department membership/held levels — needed by the permission
+    # loop below (grantee_type="access_level" shares with "everyone
+    # currently holding this department access level"), the orders/news
+    # baseline, and the folder ACL section further down.
     member = None
     held_keys: set = set()
     dept = None
@@ -186,10 +191,10 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
         if matches and (best is None or ACCESS_RANK[perm.level] > ACCESS_RANK[best]):
             best = perm.level
 
-    if dept:
+    if dept and (document.is_news or document.is_order):
         from security import check_department_permission
 
-        module = "news" if document.is_news else ("orders" if document.is_order else "documentation")
+        module = "news" if document.is_news else "orders"
         if document.is_news:
             # News write access is head/superuser-only regardless of what
             # an access level's own "news":"edit" grant says (item 6) —
@@ -209,15 +214,14 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
         if dept_level and (best is None or ACCESS_RANK[dept_level] > ACCESS_RANK[best]):
             best = dept_level
 
-    # Folder ACL (item 5) — a further additive tier on top of the department
-    # module baseline above: a specific access-level tier or a specific
-    # member can be granted extra view/edit on everything inside one folder.
-    # Only ever adds access, never takes it away. The document's OWN folder
-    # is always checked; an ANCESTOR folder's grants also apply if THAT
-    # ancestor has auto_apply_permissions=True — each folder independently
-    # decides whether it pushes its own grants down to nested documents.
-    # Live inheritance: resolved fresh on every access check, never copied
-    # into a DocumentPermission row.
+    # Folder ACL (item 5) — a specific access-level tier or a specific
+    # member can be granted view/edit on everything inside one folder, same
+    # additive idea as DocumentPermission above but at folder granularity.
+    # The document's OWN folder is always checked; an ANCESTOR folder's
+    # grants also apply if THAT ancestor has auto_apply_permissions=True —
+    # each folder independently decides whether it pushes its own grants
+    # down to nested documents. Live inheritance: resolved fresh on every
+    # access check, never copied into a DocumentPermission row.
     if document.department_folder_id:
         from models import DepartmentFolderPermission, DepartmentDocumentFolder
 
@@ -294,7 +298,42 @@ def serialize_admin(admin: Optional[AdminUser]) -> Optional[dict]:
     return {"id": admin.id, "name": admin.discord_username, "avatar": admin.discord_avatar}
 
 
-def serialize_document_row(db: Session, doc: Document, admin: AdminUser, starred_ids: set) -> dict:
+def _document_access_level_names(db: Session, department_ids: set) -> dict:
+    """{department_id: {access_level_key: (name, kind)}} — one batched query
+    per document listing, used to render a human-readable sharing summary on
+    document cards (owner-only, see _document_shared_summary)."""
+    department_ids = {d for d in department_ids if d}
+    if not department_ids:
+        return {}
+    from models import DepartmentAccessLevel
+    out: dict = {}
+    for lvl in db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id.in_(department_ids)).all():
+        out.setdefault(lvl.department_id, {})[lvl.key] = (lvl.name, lvl.kind)
+    return out
+
+
+def _document_shared_summary(doc: Document, level_names: dict) -> Optional[str]:
+    """Human-readable "who else can see this" summary shown only to the
+    document's owner on its card."""
+    perms = doc.permissions or []
+    if not perms:
+        return "Только вам"
+    if any(p.grantee_type == "everyone" for p in perms):
+        return "Все администраторы"
+    parts = []
+    for p in perms:
+        if p.grantee_type == "access_level":
+            name, kind = level_names.get(p.grantee_access_level_key, (p.grantee_access_level_key, None))
+            parts.append("весь отдел (база)" if kind == "base" else name)
+        elif p.grantee_type == "admin":
+            parts.append(p.grantee_admin.discord_username if p.grantee_admin else "сотрудник")
+        elif p.grantee_type == "privilege_group":
+            parts.append(p.grantee_group.name if p.grantee_group else "группа")
+    return "Доступ: " + ", ".join(parts) if parts else "Только вам"
+
+
+def serialize_document_row(db: Session, doc: Document, admin: AdminUser, starred_ids: set, level_names: Optional[dict] = None) -> dict:
+    is_mine = doc.owner_admin_id == admin.id
     return {
         "id": doc.id,
         "title": doc.title,
@@ -316,7 +355,8 @@ def serialize_document_row(db: Session, doc: Document, admin: AdminUser, starred
         "version": doc.version,
         "is_starred": doc.id in starred_ids,
         "access_level": get_document_access(db, doc, admin),
-        "is_mine": doc.owner_admin_id == admin.id,
+        "is_mine": is_mine,
+        "shared_summary": _document_shared_summary(doc, (level_names or {}).get(doc.department_id, {})) if is_mine else None,
     }
 
 
@@ -501,7 +541,8 @@ async def api_list_documents(
     starred_ids = {
         row[0] for row in db.query(DocumentStar.document_id).filter(DocumentStar.admin_id == current_admin.id).all()
     }
-    return JSONResponse({"documents": [serialize_document_row(db, d, current_admin, starred_ids) for d in docs]})
+    level_names = _document_access_level_names(db, {d.department_id for d in docs})
+    return JSONResponse({"documents": [serialize_document_row(db, d, current_admin, starred_ids, level_names) for d in docs]})
 
 
 @router.post("/api/v1/admin/documents")
@@ -689,10 +730,16 @@ async def api_list_department_documents(
         q = q.filter(Document.is_order.is_(False), Document.is_news.is_(False))
     q = q.filter(Document.department_folder_id == folder_id) if folder_id is not None else q.filter(Document.department_folder_id.is_(None))
     docs = q.order_by(Document.title).all()
+    # Module "view" access (checked above) only unlocks the directory itself
+    # — an unshared documentation page is still private to its creator, so
+    # each row needs its own get_document_access check (orders/news keep
+    # their department-wide baseline and so pass this for everyone regardless).
+    docs = [d for d in docs if get_document_access(db, d, current_admin) is not None]
     starred_ids = {
         row[0] for row in db.query(DocumentStar.document_id).filter(DocumentStar.admin_id == current_admin.id).all()
     }
-    return JSONResponse({"documents": [serialize_document_row(db, d, current_admin, starred_ids) for d in docs]})
+    level_names = _document_access_level_names(db, {department_id})
+    return JSONResponse({"documents": [serialize_document_row(db, d, current_admin, starred_ids, level_names) for d in docs]})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -839,8 +886,9 @@ async def api_share_candidates(
         levels = dept.access_levels if dept else []
         return JSONResponse({
             "admins": [{"id": a.id, "name": a.discord_username} for a in admins],
-            "groups": [{"id": lvl.key, "name": lvl.name} for lvl in levels],
+            "groups": [{"id": lvl.key, "name": lvl.name, "is_base": lvl.kind == "base"} for lvl in levels],
             "group_grantee_type": "access_level",
+            "is_department_doc": True,
         })
 
     admins = (
@@ -1305,16 +1353,17 @@ async def api_list_permissions(
     require_documents_page(current_admin, "view")
     doc, _ = load_document_or_404(db, document_id, current_admin, "owner")
 
-    level_name_by_key = {}
+    level_by_key = {}
     if doc.department_id and any(p.grantee_type == "access_level" for p in doc.permissions):
         from models import DepartmentAccessLevel
-        level_name_by_key = {
-            lvl.key: lvl.name
+        level_by_key = {
+            lvl.key: lvl
             for lvl in db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id == doc.department_id).all()
         }
 
     return JSONResponse({
         "owner": serialize_admin(doc.owner),
+        "is_department_doc": bool(doc.department_id),
         "permissions": [
             {
                 "id": p.id,
@@ -1322,7 +1371,11 @@ async def api_list_permissions(
                 "grantee_admin": serialize_admin(p.grantee_admin) if p.grantee_admin_id else None,
                 "grantee_group": {"id": p.grantee_group.id, "name": p.grantee_group.name} if p.grantee_group_id and p.grantee_group else None,
                 "grantee_access_level": (
-                    {"key": p.grantee_access_level_key, "name": level_name_by_key.get(p.grantee_access_level_key, p.grantee_access_level_key)}
+                    {
+                        "key": p.grantee_access_level_key,
+                        "name": level_by_key[p.grantee_access_level_key].name if p.grantee_access_level_key in level_by_key else p.grantee_access_level_key,
+                        "is_base": level_by_key[p.grantee_access_level_key].kind == "base" if p.grantee_access_level_key in level_by_key else False,
+                    }
                     if p.grantee_access_level_key else None
                 ),
                 "level": p.level,
@@ -1330,6 +1383,73 @@ async def api_list_permissions(
             for p in doc.permissions
         ],
     })
+
+
+@router.get("/api/v1/admin/documents/{document_id}/permissions/suggested-defaults")
+async def api_suggested_document_permissions(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Prefill for the "configure sharing" prompt shown right after a
+    department document is created (see the frontend's SetupPermissionsDialog):
+    reuses the document's own DepartmentFolderPermission grants as "the
+    folder's default access" — falling back to the department's base access
+    level (view-only) when the folder has no grants of its own, or isn't set."""
+    doc, _ = load_document_or_404(db, document_id, current_admin, "owner")
+    if not doc.department_id:
+        return JSONResponse({"suggestions": []})
+
+    from models import DepartmentAccessLevel, DepartmentFolderPermission
+
+    suggestions = []
+    if doc.department_folder_id:
+        folder_perms = db.query(DepartmentFolderPermission).filter(
+            DepartmentFolderPermission.folder_id == doc.department_folder_id
+        ).all()
+        level_by_key = {
+            lvl.key: lvl
+            for lvl in db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id == doc.department_id).all()
+        }
+        admin_by_id = {
+            a.id: a for a in db.query(AdminUser).filter(
+                AdminUser.id.in_({p.member_admin_id for p in folder_perms if p.member_admin_id})
+            ).all()
+        } if folder_perms else {}
+        for p in folder_perms:
+            if p.grantee_type == "access_level":
+                lvl = level_by_key.get(p.access_level_key)
+                suggestions.append({
+                    "grantee_type": "access_level",
+                    "grantee_id": p.access_level_key,
+                    "level": p.level,
+                    "label": lvl.name if lvl else p.access_level_key,
+                    "is_base": bool(lvl and lvl.kind == "base"),
+                })
+            else:
+                a = admin_by_id.get(p.member_admin_id)
+                suggestions.append({
+                    "grantee_type": "admin",
+                    "grantee_id": p.member_admin_id,
+                    "level": p.level,
+                    "label": a.discord_username if a else "Сотрудник",
+                    "is_base": False,
+                })
+
+    if not suggestions:
+        base = db.query(DepartmentAccessLevel).filter(
+            DepartmentAccessLevel.department_id == doc.department_id, DepartmentAccessLevel.kind == "base"
+        ).first()
+        if base:
+            suggestions.append({
+                "grantee_type": "access_level",
+                "grantee_id": base.key,
+                "level": "view",
+                "label": base.name,
+                "is_base": True,
+            })
+
+    return JSONResponse({"suggestions": suggestions})
 
 
 @router.post("/api/v1/admin/documents/{document_id}/permissions")

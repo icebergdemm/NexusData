@@ -422,7 +422,24 @@ async def api_sub_projects_list(
         "can_create": check_permission(current_admin, "sub_projects", "create"),
         "can_manage_categories": check_permission(current_admin, "sub_projects", "manage_categories"),
         "can_manage_test_server": check_permission(current_admin, "sub_projects", "manage_test_server"),
+        "can_reorder": check_permission(current_admin, "sub_projects", "edit_all"),
     }
+
+
+@router.post("/api/v1/admin/sub-projects/reorder")
+async def api_sub_projects_reorder(
+    request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Drag-and-drop card reorder on the Sub-projects grid. Gated by
+    edit_all (not the own-project "edit") since a single drag can reshuffle
+    cards belonging to different owners at once."""
+    if not check_permission(current_admin, "sub_projects", "edit_all"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    project_ids = body.get("project_ids") or []
+    svc = _get_sub_service(db)
+    svc.reorder(project_ids)
+    return {"status": "ok"}
 
 
 @router.get("/api/v1/admin/sub-projects/{project_id}")

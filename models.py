@@ -595,6 +595,9 @@ class SubProject(Base):
     # Soft-delete
     is_deleted = Column(Integer, default=0)  # 0=active, 1=deleted
     deleted_at = Column(DateTime, nullable=True)
+    # Manual drag-and-drop ordering on the Sub-projects grid (routes/
+    # sub_projects.py's reorder endpoint) — lower sorts first.
+    sort_order = Column(Integer, nullable=False, default=0)
 
     versions = relationship("SubProjectVersion", back_populates="project", order_by="SubProjectVersion.version_number.desc()")
     department = relationship("Department")
@@ -1207,6 +1210,8 @@ class DepartmentFolderPermission(Base):
     level = Column(String(10), nullable=False, default="view")  # "view" | "edit"
     created_at = Column(DateTime, default=func.now())
 
+    member = relationship("AdminUser", foreign_keys=[member_admin_id])
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Tasks (Notion-style Kanban boards) — a single global "Задачи" page, gated by
@@ -1288,3 +1293,104 @@ class TaskComment(Base):
 
     task = relationship("Task", back_populates="comments")
     admin = relationship("AdminUser", foreign_keys=[admin_id])
+
+
+class PlayerAnomaly(Base):
+    """A finding from the background anomaly scan (workers.task_scan_anomalies,
+    every 30 min, scheduler-process-only — see services_anomaly.py): either a
+    "twink" (alt-account) suspicion pairing two players, or a "behavior"
+    statistical outlier for one player. Re-detection of the SAME pairing/
+    subtype just bumps last_seen_at instead of duplicating a row."""
+    __tablename__ = "player_anomalies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    category = Column(String(20), nullable=False, index=True)  # "twink" | "behavior"
+    # "ip_ban_evasion" | "ip_shared" | "behavior_<action_type>"
+    subtype = Column(String(50), nullable=False)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=False, index=True)
+    # The other account in a "twink" pairing — NULL for "behavior" findings.
+    related_player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
+    score = Column(Integer, nullable=False, default=0)
+    evidence = Column(JSON, default=lambda: {})
+    detected_at = Column(DateTime, default=func.now(), index=True)
+    last_seen_at = Column(DateTime, default=func.now())
+    status = Column(String(20), nullable=False, default="new")  # new | reviewed | dismissed
+    reviewed_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    # True if this specific finding triggered the automatic ban-evasion ban
+    # (services_anomaly.py's _auto_ban_evader) — kept for audit/history even
+    # if the finding is later dismissed.
+    auto_banned = Column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        UniqueConstraint('category', 'subtype', 'player_id', 'related_player_id', name='uq_player_anomaly'),
+    )
+
+
+class WorldRound(Base):
+    """Live round state fed by the client-side WorldStateStreamer plugin —
+    see WORLD_STATE_API_GUIDE.md for the exact wire contract. One row per
+    round_id, upserted in place (never an append-only log): `world/init`
+    (once, at round start) fills in the static geometry columns; `world/snapshot`
+    (every ~3s while the round runs) overwrites the `last_*` columns with the
+    latest known dynamic state — "Обзор мира" polls the latter and treats a
+    round as ended once last_update_at goes stale (no explicit end signal
+    exists on the wire)."""
+    __tablename__ = "world_rounds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    round_id = Column(String(64), unique=True, nullable=False, index=True)
+
+    # ── Static geometry, from world/init ────────────────────────────────
+    server_name = Column(String(100), nullable=True, index=True)
+    level_seed = Column(String(100), nullable=True)
+    level_name = Column(String(255), nullable=True)
+    level_type = Column(String(50), nullable=True)
+    level_w = Column(Integer, nullable=True)
+    level_h = Column(Integer, nullable=True)
+    sub_name = Column(String(255), nullable=True)
+    submarines = Column(JSON, nullable=True)  # [{id, name}]
+    hulls = Column(JSON, nullable=True)       # [{id, sub, r:[x,y,w,h]}] — sub-local
+    walls = Column(JSON, nullable=True)       # [{sub, r, h, p}] — sub-local
+    doors = Column(JSON, nullable=True)       # [{id, sub, r, h}] — sub-local
+    outline_w = Column(Integer, nullable=True)
+    outline_h = Column(Integer, nullable=True)
+    outline = Column(JSON, nullable=True)     # [[[x,y], ...], ...] — world coords, can be large
+    init_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    # ── Latest dynamic snapshot, from world/snapshot (upsert-only, no history) ──
+    last_seq = Column(Integer, nullable=True)
+    last_t = Column(Float, nullable=True)
+    last_sent_at = Column(DateTime, nullable=True)
+    last_subs = Column(JSON, nullable=True)         # [{id, x, y}] — world coords
+    last_hulls_state = Column(JSON, nullable=True)  # [{id, water, oxygen, fire}]
+    last_doors_state = Column(JSON, nullable=True)  # [{id, open}]
+    last_reactors = Column(JSON, nullable=True)
+    last_characters = Column(JSON, nullable=True)
+    last_items = Column(JSON, nullable=True)        # null = IncludeItems:false — never overwritten with null, see routes/world_state.py
+    # Server-side receipt time (not the plugin's sent_at) — the single
+    # source of truth for "is this round still live" (missing snapshots for
+    # a few intervals = round over), independent of any clock skew on the
+    # game server's end.
+    last_update_at = Column(DateTime, nullable=True, index=True)
+
+
+class WarehouseItem(Base):
+    """Virtual dispatch resource warehouse — one row per Barotrauma item
+    identifier (see static/item_catalog.json / tools/extract_barotrauma_items.py)
+    with a quantity, managed from the Диспетчерская page (routes/warehouse.py).
+    Gated by the same site-wide "dispatch" permission as the rest of that
+    page — this isn't a separate feature/permission, just another dispatch
+    tool. Future work (not yet built): actually sending some of this stock
+    out with the supply shuttle — see dispatch/index.tsx's
+    "Отправить челнок снабжения" stub action, the eventual integration point."""
+    __tablename__ = "warehouse_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    identifier = Column(String(100), unique=True, nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=0)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    updated_by = relationship("AdminUser", foreign_keys=[updated_by_admin_id])

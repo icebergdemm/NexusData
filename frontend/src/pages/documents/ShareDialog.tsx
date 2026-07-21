@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Globe2, Trash2, Users, User } from "lucide-react"
+import { Globe2, Trash2, Users, User, TriangleAlert } from "lucide-react"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
@@ -34,9 +34,18 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
 
   // The document belongs to a department → "Группа" means "уровень доступа
   // отдела" (grantee_type=access_level, string keys), else ND-wide
-  // privilege groups (grantee_type=privilege_group, numeric ids).
+  // privilege groups (grantee_type=privilege_group, numeric ids). Same
+  // department check also swaps "Админ" for "Сотрудник" below — for a
+  // department document the admin picker is already restricted to that
+  // department's own members server-side (see api_share_candidates).
+  const isDeptDoc = !!candidates?.is_department_doc
   const groupGranteeType = candidates?.group_grantee_type ?? "privilege_group"
   const groupLabel = groupGranteeType === "access_level" ? "Уровень доступа" : "Группа"
+  const adminLabel = isDeptDoc ? "Сотрудник" : "Админ"
+  const everyoneLabel = isDeptDoc ? "Все сотрудники отдела" : "Все администраторы"
+
+  const selectedIsBase = granteeKind === "group" && groupGranteeType === "access_level"
+    && candidates?.groups.find((g) => String(g.id) === granteeId)?.is_base
 
   const grant = useMutation({
     mutationFn: () => documentsApi.permissions.grant(documentId, {
@@ -58,7 +67,7 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
   })
 
   const granteeLabel = (p: NonNullable<typeof perms>["permissions"][number]) => {
-    if (p.grantee_type === "everyone") return "Все администраторы"
+    if (p.grantee_type === "everyone") return everyoneLabel
     if (p.grantee_type === "admin") return p.grantee_admin?.name ?? "-"
     if (p.grantee_type === "access_level") return p.grantee_access_level?.name ?? "-"
     return p.grantee_group?.name ?? "-"
@@ -77,7 +86,7 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
             <Select value={granteeKind} onValueChange={(v) => { setGranteeKind(v as typeof granteeKind); setGranteeId("") }}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="admin">Админ</SelectItem>
+                <SelectItem value="admin">{adminLabel}</SelectItem>
                 <SelectItem value="group">{groupLabel}</SelectItem>
                 <SelectItem value="everyone">Все</SelectItem>
               </SelectContent>
@@ -90,7 +99,7 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
                 <SelectContent>
                   {granteeKind === "admin"
                     ? candidates?.admins.map((a) => <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>)
-                    : candidates?.groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                    : candidates?.groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}{g.is_base ? " (базовый)" : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -107,6 +116,14 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
           </div>
           <Button disabled={granteeKind !== "everyone" && !granteeId} onClick={() => grant.mutate()}>Добавить</Button>
         </div>
+        {(selectedIsBase || granteeKind === "everyone") && (
+          <p className="flex items-center gap-1.5 text-xs text-warning">
+            <TriangleAlert className="size-3.5 shrink-0" />
+            {granteeKind === "everyone"
+              ? "Документ увидят все администраторы."
+              : "Этот документ увидят все сотрудники отдела с базовым уровнем доступа."}
+          </p>
+        )}
 
         <Separator />
 
@@ -116,6 +133,9 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
               <div className="flex items-center gap-2">
                 {p.grantee_type === "everyone" ? <Globe2 className="size-4 text-muted-foreground" /> : p.grantee_type === "privilege_group" || p.grantee_type === "access_level" ? <Users className="size-4 text-muted-foreground" /> : <User className="size-4 text-muted-foreground" />}
                 <span className="font-medium">{granteeLabel(p)}</span>
+                {(p.grantee_type === "everyone" || p.grantee_access_level?.is_base) && (
+                  <TriangleAlert className="size-3.5 text-warning" />
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">{ACCESS_LABEL[p.level]}</span>

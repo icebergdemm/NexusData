@@ -7,6 +7,8 @@ import './index.css'
 import App from './App.tsx'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
+import { MaintenanceBanner } from '@/components/layout/MaintenanceBanner'
+import { AppErrorBoundary } from '@/components/layout/AppErrorBoundary'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -23,8 +25,11 @@ createRoot(document.getElementById('root')!).render(
       <QueryClientProvider client={queryClient}>
         <BrowserRouter basename="/admin">
           <TooltipProvider>
-            <App />
+            <AppErrorBoundary>
+              <App />
+            </AppErrorBoundary>
             <Toaster />
+            <MaintenanceBanner />
           </TooltipProvider>
         </BrowserRouter>
       </QueryClientProvider>

@@ -31,6 +31,9 @@ export interface DepartmentMemberRow {
   admin_id: number
   admin_name: string | null
   admin_avatar: string | null
+  // Admin-assigned in-game nickname of this member's linked profile, when
+  // set — takes precedence over admin_name wherever a member's name shows.
+  forced_display_name: string | null
   created_by_worker: boolean
   held_level_keys: string[]
   is_head: boolean
@@ -93,6 +96,7 @@ export interface DepartmentDetail extends DepartmentRow {
 export interface RatingLeaderboardRow {
   admin_id: number
   admin_name: string | null
+  forced_display_name: string | null
   total: number
 }
 
@@ -100,6 +104,7 @@ export interface RatingEntry {
   id: number
   admin_id: number
   admin_name: string | null
+  forced_display_name: string | null
   delta: number
   reason: string | null
   category: string | null

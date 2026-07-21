@@ -69,7 +69,7 @@ export function AddRatingEntryDialog({ open, onOpenChange, department, presetMem
                 <SelectTrigger><SelectValue placeholder="Выберите сотрудника" /></SelectTrigger>
                 <SelectContent>
                   {membersData?.members.map((m) => (
-                    <SelectItem key={m.admin_id} value={String(m.admin_id)}>{m.admin_name ?? `#${m.admin_id}`}</SelectItem>
+                    <SelectItem key={m.admin_id} value={String(m.admin_id)}>{m.forced_display_name ?? m.admin_name ?? `#${m.admin_id}`}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -156,7 +156,7 @@ export function RatingTab({ department, canEdit }: { department: DepartmentDetai
                 <div key={r.admin_id} className="flex items-center justify-between py-2 text-sm">
                   <span className="flex items-center gap-2">
                     <Badge variant="outline" className="w-6 justify-center text-[10px]">{i + 1}</Badge>
-                    {r.admin_name ?? `#${r.admin_id}`}
+                    {r.forced_display_name ?? r.admin_name ?? `#${r.admin_id}`}
                   </span>
                   <span className={`font-semibold ${r.total > 0 ? "text-success" : r.total < 0 ? "text-destructive" : "text-muted-foreground"}`}>
                     {r.total > 0 ? "+" : ""}{r.total}
@@ -181,7 +181,7 @@ export function RatingTab({ department, canEdit }: { department: DepartmentDetai
                 <div key={e.id} className="flex items-center justify-between gap-2 py-2 text-sm">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium">{e.admin_name ?? `#${e.admin_id}`}</span>
+                      <span className="font-medium">{e.forced_display_name ?? e.admin_name ?? `#${e.admin_id}`}</span>
                       <span className={e.delta > 0 ? "text-success" : "text-destructive"}>{e.delta > 0 ? "+" : ""}{e.delta}</span>
                       {e.category && <Badge variant="secondary" className="text-[10px]">{e.category}</Badge>}
                     </div>

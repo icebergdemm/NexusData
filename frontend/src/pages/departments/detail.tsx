@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { useNavigate, useParams } from "react-router-dom"
+import { useLocation, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
@@ -374,7 +374,7 @@ function EditMemberLevelsDialog({ open, onOpenChange, department, member, isSupe
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Уровни доступа — {member.admin_name ?? `#${member.admin_id}`}</DialogTitle>
+          <DialogTitle>Уровни доступа — {member.forced_display_name ?? member.admin_name ?? `#${member.admin_id}`}</DialogTitle>
         </DialogHeader>
         <div className="space-y-2">
           {department.access_levels.map((lvl) => (
@@ -659,7 +659,7 @@ function AddReprimandDialog({ open, onOpenChange, department, member }: {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Выговор — {member?.admin_name ?? `#${member?.admin_id}`}</DialogTitle>
+          <DialogTitle>Выговор — {member?.forced_display_name ?? member?.admin_name ?? `#${member?.admin_id}`}</DialogTitle>
           <DialogDescription>Только глава отдела может выдавать выговоры.</DialogDescription>
         </DialogHeader>
         <Textarea rows={4} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Причина выговора" />
@@ -739,7 +739,9 @@ function RosterTab({ department, canEdit, isSuperuser }: { department: Departmen
             <Card key={m.id} className={`overflow-hidden py-0 ${needsSteamId ? "border-warning/50 bg-warning/10" : ""}`}>
               <CardContent className="flex flex-wrap items-center justify-between gap-2 p-3">
                 <div className="flex items-center gap-2">
-                  <span className="font-medium">{m.admin_name ?? `#${m.admin_id}`}</span>
+                  <span className="font-medium" title={m.forced_display_name ? `Discord: ${m.admin_name ?? m.admin_id}` : undefined}>
+                    {m.forced_display_name ?? m.admin_name ?? `#${m.admin_id}`}
+                  </span>
                   {m.is_head && <Badge className="gap-1 bg-primary/15 text-primary"><Crown className="size-3" /> Глава</Badge>}
                   {m.is_deputy_head && <Badge className="gap-1 bg-primary/10 text-primary"><Crown className="size-3" /> Зам. главы</Badge>}
                   {m.is_auto && <Badge variant="outline" className="text-[10px]">авто</Badge>}
@@ -804,7 +806,7 @@ function RosterTab({ department, canEdit, isSuperuser }: { department: Departmen
         open={!!removeTarget}
         onOpenChange={(o) => !o && setRemoveTarget(null)}
         title="Удалить сотрудника из отдела?"
-        description={removeTarget?.admin_name ?? undefined}
+        description={removeTarget?.forced_display_name ?? removeTarget?.admin_name ?? undefined}
         onConfirm={() => removeTarget && removeMutation.mutate(removeTarget.id)}
       />
       {ratingTarget && (
@@ -812,7 +814,7 @@ function RosterTab({ department, canEdit, isSuperuser }: { department: Departmen
           open={!!ratingTarget}
           onOpenChange={(o) => !o && setRatingTarget(null)}
           department={department}
-          presetMember={{ admin_id: ratingTarget.admin_id, admin_name: ratingTarget.admin_name }}
+          presetMember={{ admin_id: ratingTarget.admin_id, admin_name: ratingTarget.forced_display_name ?? ratingTarget.admin_name }}
         />
       )}
       <AddReprimandDialog
@@ -828,13 +830,17 @@ function RosterTab({ department, canEdit, isSuperuser }: { department: Departmen
 export function DepartmentDetailPage() {
   const { departmentId } = useParams<{ departmentId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const { data: admin } = useCurrentAdmin()
   const [editOpen, setEditOpen] = useState(false)
   const [createLevelOpen, setCreateLevelOpen] = useState(false)
   const [permsTarget, setPermsTarget] = useState<DepartmentAccessLevel | null>(null)
   const [deleteLevelTarget, setDeleteLevelTarget] = useState<DepartmentAccessLevel | null>(null)
-  const [activeTab, setActiveTab] = useState("overview")
+  // Restores whichever tab a document/link sent us back to (see
+  // OnlyOfficeEditorPage's "returnTo" navigation state) instead of always
+  // resetting to "Обзор".
+  const [activeTab, setActiveTab] = useState(() => (location.state as { tab?: string } | null)?.tab || "overview")
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["department", Number(departmentId)],
@@ -932,7 +938,7 @@ export function DepartmentDetailPage() {
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Глава отдела</div>
-                <div className="text-lg font-semibold">{data.head?.admin_name ?? "Не назначен"}</div>
+                <div className="text-lg font-semibold">{data.head?.forced_display_name ?? data.head?.admin_name ?? "Не назначен"}</div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Базовая роль Discord</div>

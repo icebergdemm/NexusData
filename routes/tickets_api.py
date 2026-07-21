@@ -379,7 +379,7 @@ async def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depe
 
     return {
         "ticket": _serialize_ticket(ticket),
-        "player": {"player_id": player.player_id, "player_last_time_name": player.player_last_time_name, "player_steamid": player.player_steamid} if player else None,
+        "player": {"player_id": player.player_id, "player_last_time_name": player.player_last_time_name, "forced_display_name": player.forced_display_name, "player_steamid": player.player_steamid} if player else None,
         "messages": [
             {
                 "id": m.id, "author_discord_id": m.author_discord_id, "author_username": m.author_username,

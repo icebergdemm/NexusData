@@ -1,6 +1,7 @@
 export interface OnlinePlayer {
   player_steamid: string
   player_name: string | null
+  forced_display_name: string | null
   character_name: string | null
   job_id: string | null
   ping: number | null
@@ -16,9 +17,12 @@ export interface OfflinePlayer {
   player_id: number
   player_steamid: string
   player_last_time_name: string
+  forced_display_name: string | null
+  first_login: string | null
   last_login_time: string | null
   last_session_logout: string | null
   play_time_hours: number
+  is_new_player: boolean
 }
 
 export interface RoundState {

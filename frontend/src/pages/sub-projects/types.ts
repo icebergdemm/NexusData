@@ -54,6 +54,7 @@ export interface SubProjectsListResponse {
   can_create: boolean
   can_manage_categories: boolean
   can_manage_test_server: boolean
+  can_reorder: boolean
 }
 
 export interface SubProjectsTestServerStatus {

@@ -1227,6 +1227,7 @@ async def api_players_search_suggestions(
             {
                 "player_id": p.player_id,
                 "player_last_time_name": p.player_last_time_name,
+                "forced_display_name": p.forced_display_name,
                 "player_steamid": p.player_steamid,
                 "steam_avatar_url": p.steam_avatar_url,
             }
@@ -4702,7 +4703,7 @@ async def api_admin_administration(
         min_values.append(min(samples))
 
     top_players_raw = db.execute(text(
-        "SELECT ps.player_id, pd.player_last_time_name, pd.player_steamid, "
+        "SELECT ps.player_id, pd.player_last_time_name, pd.player_steamid, pd.forced_display_name, "
         "       SUM(ps.session_duration) as total_secs, COUNT(*) as sessions "
         "FROM player_sessions ps LEFT JOIN players_data pd ON pd.player_id = ps.player_id "
         + ("WHERE ps.login_time >= :since " if since else "")
@@ -4723,7 +4724,14 @@ async def api_admin_administration(
         "avg_session_mins": avg_session_mins, "peak_concurrent": peak_concurrent,
         "chart_labels": chart_labels, "peak_values": peak_values, "avg_values": avg_values, "min_values": min_values,
         "top_players": [
-            {"player_id": r[0], "player_last_time_name": r[1], "player_steamid": r[2], "total_secs": int(r[3] or 0), "sessions": int(r[4])}
+            {
+                "player_id": r[0],
+                "player_last_time_name": r[1],
+                "player_steamid": r[2],
+                "forced_display_name": r[3],
+                "total_secs": int(r[4] or 0),
+                "sessions": int(r[5]),
+            }
             for r in top_players_raw
         ],
         "editable_cfg": _get_editable_config(current_admin),

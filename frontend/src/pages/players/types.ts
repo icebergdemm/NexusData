@@ -1,6 +1,7 @@
 export interface PlayerRow {
   player_id: number
   player_last_time_name: string
+  forced_display_name?: string | null
   player_steamid: string
   rank_id: number
   kit_level: number

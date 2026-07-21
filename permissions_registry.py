@@ -130,6 +130,10 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
         {"key": "delete_all", "label": "Удаление любых задач"},
         {"key": "manage_boards", "label": "Управление досками и колонками"},
     ]},
+    # Read-only live-round viewer fed by the client-side WorldStateStreamer
+    # plugin (see WORLD_STATE_API_GUIDE.md / routes/world_state.py) — no
+    # write actions exist on the admin side, just "can see it".
+    "world_state": {"label": "Обзор мира", "actions": [{"key": "view", "label": "Просмотр"}]},
 }
 
 # Registry keys that were split off an existing generic action when this

@@ -296,7 +296,7 @@ class SubProjectService:
         if category_id:
             q = q.join(SubProjectCategoryLink).filter(SubProjectCategoryLink.category_id == category_id)
 
-        projects = q.order_by(SubProject.name).all()
+        projects = q.order_by(SubProject.sort_order, SubProject.name).all()
 
         # Filter by crew range (crew is stored as "min-avg-max" string)
         if crew_min is not None or crew_max is not None:
@@ -336,6 +336,21 @@ class SubProjectService:
         if search:
             q = q.filter(SubProject.name.ilike(f"%{search}%"))
         return q.order_by(SubProject.name).all()
+
+    def reorder(self, project_ids: List[int]) -> None:
+        """Apply a new manual sort order from a drag-and-drop reorder on the
+        Sub-projects grid — only touches the given (currently-visible,
+        normal-zone) ids, sequential from 0 in the order given."""
+        projects = {
+            p.id: p for p in self.db.query(SubProject).filter(
+                SubProject.id.in_(project_ids), SubProject.department_id.is_(None)
+            ).all()
+        }
+        for idx, pid in enumerate(project_ids):
+            project = projects.get(pid)
+            if project:
+                project.sort_order = idx
+        self.db.commit()
 
     def create(self, data: dict, admin_id: int, department_id: Optional[int] = None) -> SubProject:
         project = SubProject(

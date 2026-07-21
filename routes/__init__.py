@@ -20,6 +20,8 @@ from .documents import router as documents_router
 from .onlyoffice import router as onlyoffice_router
 from .departments import router as departments_router
 from .tasks import router as tasks_router
+from .world_state import router as world_state_router, admin_router as world_state_admin_router, client_router as world_state_client_router
+from .warehouse import admin_router as warehouse_admin_router, client_router as warehouse_client_router
 
 __all__ = [
     "status_router",
@@ -50,4 +52,9 @@ __all__ = [
     "onlyoffice_router",
     "departments_router",
     "tasks_router",
+    "world_state_router",
+    "world_state_admin_router",
+    "world_state_client_router",
+    "warehouse_admin_router",
+    "warehouse_client_router",
 ]

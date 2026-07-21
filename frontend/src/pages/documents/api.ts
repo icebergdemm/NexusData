@@ -17,6 +17,7 @@ export interface DocumentRow {
   folder_id: number | null
   parent_document_id: number | null
   department_id: number | null
+  department_folder_id: number | null
   owner: DocAdminRef | null
   last_edited_by: DocAdminRef | null
   is_archived: boolean
@@ -28,6 +29,9 @@ export interface DocumentRow {
   is_starred: boolean
   access_level: AccessLevel | null
   is_mine: boolean
+  // Only populated when the current admin owns the document — a
+  // human-readable "who else can see this" summary for its card.
+  shared_summary: string | null
 }
 
 export interface DocumentFull {
@@ -67,8 +71,16 @@ export interface DocPermission {
   grantee_type: "admin" | "privilege_group" | "access_level" | "everyone"
   grantee_admin: DocAdminRef | null
   grantee_group: { id: number; name: string } | null
-  grantee_access_level: { key: string; name: string } | null
+  grantee_access_level: { key: string; name: string; is_base: boolean } | null
   level: "view" | "comment" | "edit"
+}
+
+export interface DocPermissionSuggestion {
+  grantee_type: "admin" | "access_level"
+  grantee_id: number | string
+  level: "view" | "comment" | "edit"
+  label: string
+  is_base: boolean
 }
 
 export interface DocTag {
@@ -157,16 +169,18 @@ export const documentsApi = {
 
   shareCandidates: (documentId: number) => api.get<{
     admins: { id: number; name: string | null }[]
-    groups: { id: number | string; name: string }[]
+    groups: { id: number | string; name: string; is_base?: boolean }[]
     // "access_level" when the document belongs to a department (groups are
     // THAT department's access levels), else "privilege_group" (ND-wide).
     group_grantee_type: "access_level" | "privilege_group"
+    is_department_doc?: boolean
   }>(`${base}/share-candidates?document_id=${documentId}`),
   permissions: {
-    list: (documentId: number) => api.get<{ owner: DocAdminRef | null; permissions: DocPermission[] }>(`${base}/${documentId}/permissions`),
+    list: (documentId: number) => api.get<{ owner: DocAdminRef | null; permissions: DocPermission[]; is_department_doc: boolean }>(`${base}/${documentId}/permissions`),
     grant: (documentId: number, data: { grantee_type: "admin" | "privilege_group" | "access_level" | "everyone"; grantee_id?: number | string | null; level: "view" | "comment" | "edit" }) =>
       api.post(`${base}/${documentId}/permissions`, data),
     revoke: (documentId: number, permissionId: number) => api.delete(`${base}/${documentId}/permissions/${permissionId}`),
+    suggestedDefaults: (documentId: number) => api.get<{ suggestions: DocPermissionSuggestion[] }>(`${base}/${documentId}/permissions/suggested-defaults`),
   },
 
   revisions: {

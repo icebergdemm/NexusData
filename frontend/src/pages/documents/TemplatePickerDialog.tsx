@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { FileText, Trash2, Upload } from "lucide-react"
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { documentsApi } from "@/pages/documents/api"
 import { ImportDocumentDialog } from "./ImportDocumentDialog"
 
-export function TemplatePickerDialog({ open, onOpenChange, onPick, onImported, canManage, folderId, departmentId, departmentFolderId }: {
+export function TemplatePickerDialog({ open, onOpenChange, onPick, onImported, canManage, folderId, departmentId, departmentFolderId, initialFile }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onPick: (templateId?: number) => void
@@ -18,9 +18,16 @@ export function TemplatePickerDialog({ open, onOpenChange, onPick, onImported, c
   folderId?: number
   departmentId?: number
   departmentFolderId?: number
+  // A file dropped directly on the page (drag-and-drop) — skips the
+  // template grid and opens straight to the import confirm step.
+  initialFile?: File | null
 }) {
   const queryClient = useQueryClient()
   const [importOpen, setImportOpen] = useState(false)
+
+  useEffect(() => {
+    if (open && initialFile) setImportOpen(true)
+  }, [open, initialFile])
   const { data } = useQuery({
     queryKey: ["document-templates"],
     queryFn: () => documentsApi.templates.list(),
@@ -105,7 +112,15 @@ export function TemplatePickerDialog({ open, onOpenChange, onPick, onImported, c
       </DialogContent>
     </Dialog>
     {onImported && (
-      <ImportDocumentDialog open={importOpen} onOpenChange={setImportOpen} onImported={onImported} folderId={folderId} departmentId={departmentId} departmentFolderId={departmentFolderId} />
+      <ImportDocumentDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={onImported}
+        folderId={folderId}
+        departmentId={departmentId}
+        departmentFolderId={departmentFolderId}
+        initialFile={initialFile}
+      />
     )}
     </>
   )

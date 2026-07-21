@@ -109,6 +109,34 @@ def task_sauron_summary() -> dict:
         db.close()
 
 
+def task_scan_anomalies() -> dict:
+    """Twink/alt-account + behavior-outlier detection (Moderation → Аномалии).
+    Runs every 30 min — see services_anomaly.py for the actual scans and
+    their self-throttling; this just owns the DB session lifecycle like
+    every other scheduled task here."""
+    import services_anomaly
+    db = SessionLocal()
+    try:
+        return services_anomaly.run_anomaly_scan(db)
+    finally:
+        db.close()
+
+
+def task_cleanup_world_rounds() -> dict:
+    """Delete stale "Обзор мира" round rows (see routes/world_state.py) —
+    this is live-round scratch data, not history worth keeping once a round
+    is long over. Runs every 6 hours."""
+    from models import WorldRound
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=6)
+        deleted = db.query(WorldRound).filter(WorldRound.last_update_at < cutoff).delete(synchronize_session=False)
+        db.commit()
+        return {"deleted_world_rounds": deleted}
+    finally:
+        db.close()
+
+
 def task_cleanup_replays() -> dict:
     """Delete expired replay files. Runs every 6 hours."""
     import services_replays
@@ -776,6 +804,25 @@ def _start_scheduler():
         task_id="replay_cleanup",
     )
 
+    # "Обзор мира" stale round cleanup: BACKGROUND priority, every 6 hours
+    scheduler.register_periodic(
+        task_cleanup_world_rounds,
+        interval_secs=6 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="world_rounds_cleanup",
+    )
+
+    # Anomaly scan (twinks + behavior outliers): BACKGROUND priority, every
+    # 30 min — the heaviest new task here, deliberately lowest priority and
+    # internally self-throttled (services_anomaly.py) so it never competes
+    # with request-serving work for the database.
+    scheduler.register_periodic(
+        task_scan_anomalies,
+        interval_secs=30 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="anomaly_scan",
+    )
+
     # Log refresh: handled by services_logs built-in worker (interval set to 60s there)
     # No need to duplicate in scheduler
 
@@ -849,3 +896,84 @@ def _start_scheduler():
 
     scheduler.start()
     logger.info("[Workers] All periodic tasks registered and scheduler started")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# RUNTIME CONTROL — lets the "workers on/off/restart" console command (see
+# console.py) stop/restart every background subsystem here without killing
+# the process they run in. _start_scheduler() above only ever registers
+# periodic tasks ONCE at process startup; stop_all_workers()/
+# start_all_workers() below intentionally never call it again — restarting
+# just resumes the SAME already-registered periodic list via
+# scheduler.start() (see task_scheduler.py's now-restartable stop()),
+# instead of duplicating every registration and doubling job frequency.
+# ═══════════════════════════════════════════════════════════════════════
+
+def stop_all_workers() -> None:
+    """Stop every background subsystem (task scheduler + log/playtime-stats/
+    replay workers) without killing the process. Safe to call even if
+    task_scheduler isn't available (_HAS_SCHEDULER=False) or workers were
+    never started."""
+    if _HAS_SCHEDULER and scheduler is not None:
+        scheduler.stop()
+    try:
+        from services_logs import stop_log_worker
+        stop_log_worker()
+    except Exception:
+        logger.exception("[Workers] Failed to stop log worker")
+    try:
+        from services_playtime_stats import stop_playtime_stats_worker
+        stop_playtime_stats_worker()
+    except Exception:
+        logger.exception("[Workers] Failed to stop playtime stats worker")
+    try:
+        from services_replays import stop_replay_worker
+        stop_replay_worker()
+    except Exception:
+        logger.exception("[Workers] Failed to stop replay worker")
+    logger.info("[Workers] All background workers stopped")
+
+
+def start_all_workers() -> None:
+    """Restart every background subsystem after stop_all_workers() — resumes
+    the scheduler's existing periodic-task list (registered once at process
+    startup) rather than re-registering it."""
+    if _HAS_SCHEDULER and scheduler is not None:
+        scheduler.start()
+    from services_logs import start_log_worker
+    start_log_worker()
+    from services_playtime_stats import start_playtime_stats_worker
+    start_playtime_stats_worker()
+    from services_replays import start_replay_worker
+    start_replay_worker()
+    logger.info("[Workers] All background workers started")
+
+
+def watch_runtime_state(poll_secs: float = 5.0) -> None:
+    """Daemon thread: reacts to the "workers on/off" flag in
+    runtime_control's shared state file. The console (console.py) only ever
+    writes that file — this is what actually stops/starts the workers,
+    wherever they happen to live (in-process, or the dedicated
+    scheduler_process.py in multi-worker mode). Call once, right after the
+    workers you want it to manage have been started."""
+    import time
+    import runtime_control
+
+    def _loop():
+        enabled = True  # workers start enabled — see _start_scheduler()/start_playtime_worker()
+        while True:
+            time.sleep(poll_secs)
+            try:
+                state = runtime_control.read_state(force=True)
+            except Exception:
+                continue
+            if state.workers_enabled and not enabled:
+                logger.info("[Workers] runtime_state: workers_enabled=True — restarting")
+                start_all_workers()
+                enabled = True
+            elif not state.workers_enabled and enabled:
+                logger.info("[Workers] runtime_state: workers_enabled=False — stopping")
+                stop_all_workers()
+                enabled = False
+
+    threading.Thread(target=_loop, daemon=True, name="RuntimeStateWatcher").start()

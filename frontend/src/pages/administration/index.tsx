@@ -17,7 +17,7 @@ interface AdministrationResponse {
   period: string
   unique_players: number; total_sessions: number; avg_session_mins: number; peak_concurrent: number
   chart_labels: string[]; peak_values: number[]; avg_values: number[]; min_values: number[]
-  top_players: { player_id: number; player_last_time_name: string | null; total_secs: number; sessions: number }[]
+  top_players: { player_id: number; player_last_time_name: string | null; forced_display_name: string | null; total_secs: number; sessions: number }[]
   editable_cfg: Record<string, string | number | boolean>
   twinks: unknown[]; twink_page: number; twink_pages: number; twink_total: number
 }
@@ -126,7 +126,12 @@ export function AdministrationPage() {
             <TableBody>
               {data?.top_players.map((p) => (
                 <TableRow key={p.player_id}>
-                  <TableCell className="font-medium">{p.player_last_time_name ?? `#${p.player_id}`}</TableCell>
+                  <TableCell
+                    className="font-medium"
+                    title={p.forced_display_name && p.player_last_time_name ? `Настоящий ник: ${p.player_last_time_name}` : undefined}
+                  >
+                    {p.forced_display_name || p.player_last_time_name || `#${p.player_id}`}
+                  </TableCell>
                   <TableCell>{(p.total_secs / 3600).toFixed(1)}</TableCell>
                   <TableCell className="text-muted-foreground">{p.sessions}</TableCell>
                 </TableRow>

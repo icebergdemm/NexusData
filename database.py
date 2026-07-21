@@ -179,6 +179,8 @@ def _apply_migrations():
         # departments: Discord category ID, for validating a manually-entered
         # publish-channel ID actually belongs to this department.
         ("departments", "discord_category_id", "VARCHAR(50)"),
+        # sub_projects: manual drag-and-drop card ordering.
+        ("sub_projects", "sort_order", "INT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:

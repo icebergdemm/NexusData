@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import { Users, ChevronRight } from "lucide-react"
+import { toast } from "sonner"
+import { Users, ChevronRight, ExternalLink, Copy, IdCard, Link2 } from "lucide-react"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -15,8 +16,13 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { api } from "@/lib/api"
 import type { PlayersListResponse } from "./types"
+
+function copyToClipboard(text: string, label: string) {
+  navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
+}
 
 function formatPlayTime(hours: number): string {
   const h = Math.floor(hours)
@@ -27,8 +33,13 @@ function formatPlayTime(hours: number): string {
 interface PlayerSuggestion {
   player_id: number
   player_last_time_name: string
+  forced_display_name: string | null
   player_steamid: string
   steam_avatar_url: string | null
+}
+
+function playerDisplayName(p: { player_last_time_name: string; forced_display_name?: string | null }): string {
+  return p.forced_display_name || p.player_last_time_name
 }
 
 export function PlayersListPage() {
@@ -97,7 +108,12 @@ export function PlayersListPage() {
                   onMouseDown={(e) => { e.preventDefault(); if (blurTimeout.current) clearTimeout(blurTimeout.current); navigate(`/players/${p.player_id}`) }}
                 >
                   <PlayerAvatar url={p.steam_avatar_url} name={p.player_last_time_name} size={22} />
-                  <span className="min-w-0 flex-1 truncate">{p.player_last_time_name}</span>
+                  <span
+                    className="min-w-0 flex-1 truncate"
+                    title={p.forced_display_name ? `Настоящий ник: ${p.player_last_time_name}` : undefined}
+                  >
+                    {playerDisplayName(p)}
+                  </span>
                   <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{p.player_steamid}</span>
                 </button>
               ))}
@@ -163,22 +179,41 @@ export function PlayersListPage() {
               </TableHeader>
               <TableBody>
                 {data?.players.map((p) => (
-                  <TableRow
+                  <AppContextMenu
                     key={p.player_id}
-                    className="cursor-pointer"
-                    onClick={() => navigate(`/players/${p.player_id}`)}
-                    onAuxClick={(e) => { if (e.button === 1) window.open(`/players/${p.player_id}`, "_blank") }}
+                    actions={[
+                      { label: "Открыть в новой вкладке", icon: ExternalLink, onSelect: () => window.open(`/players/${p.player_id}`, "_blank") },
+                      { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
+                      { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(playerDisplayName(p), "Имя") },
+                    ]}
                   >
-                    <TableCell className="font-medium">{p.player_last_time_name}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{p.player_steamid}</TableCell>
-                    <TableCell><Badge variant="secondary">{p.rank_name || "-"}</Badge></TableCell>
-                    <TableCell>{p.kit_name || "-"}</TableCell>
-                    <TableCell>{formatPlayTime(p.play_time_hours)}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {p.last_login_time ? new Date(p.last_login_time).toLocaleString("ru-RU") : "-"}
-                    </TableCell>
-                    <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
-                  </TableRow>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => navigate(`/players/${p.player_id}`)}
+                      onAuxClick={(e) => { if (e.button === 1) window.open(`/players/${p.player_id}`, "_blank") }}
+                    >
+                      <TableCell className="font-medium">
+                        {playerDisplayName(p)}
+                        {p.forced_display_name && (
+                          <Badge
+                            variant="outline"
+                            className="ml-1.5 border-info/40 text-info"
+                            title={`Настоящий ник: ${p.player_last_time_name}`}
+                          >
+                            <Link2 className="mr-1 size-3" /> принудительное имя
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{p.player_steamid}</TableCell>
+                      <TableCell><Badge variant="secondary">{p.rank_name || "-"}</Badge></TableCell>
+                      <TableCell>{p.kit_name || "-"}</TableCell>
+                      <TableCell>{formatPlayTime(p.play_time_hours)}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {p.last_login_time ? new Date(p.last_login_time).toLocaleString("ru-RU") : "-"}
+                      </TableCell>
+                      <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
+                    </TableRow>
+                  </AppContextMenu>
                 ))}
                 {!data?.players.length && (
                   <TableRow>

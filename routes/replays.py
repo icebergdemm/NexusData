@@ -273,9 +273,41 @@ def _serialize_replay(r) -> dict:
     }
 
 
-def _serialize_round(end_event: RoundEvent, replay=None) -> dict:
+def _resolve_round_players(db: Session, players: list) -> list:
+    """Overlay forced_display_name onto the raw per-round player snapshot
+    (list of {steamid, player_name} dicts as reported live by the game server
+    at round start/end — see RoundStartIn/RoundEndIn) so admins see the
+    assigned nickname instead of the raw one. The original name is kept under
+    "real_name" so the UI can still show it (e.g. as a tooltip)."""
+    steamids = [p.get("steamid") for p in players if isinstance(p, dict) and p.get("steamid")]
+    forced_map = {}
+    if steamids:
+        from models import PlayerData
+        rows = (
+            db.query(PlayerData.player_steamid, PlayerData.forced_display_name)
+            .filter(PlayerData.player_steamid.in_(steamids), PlayerData.forced_display_name.isnot(None))
+            .all()
+        )
+        forced_map = {sid: name for sid, name in rows if name}
+
+    resolved = []
+    for p in players:
+        if not isinstance(p, dict):
+            resolved.append(p)
+            continue
+        forced = forced_map.get(p.get("steamid"))
+        entry = dict(p)
+        if forced:
+            entry["real_name"] = p.get("player_name")
+            entry["player_name"] = forced
+        resolved.append(entry)
+    return resolved
+
+
+def _serialize_round(db: Session, end_event: RoundEvent, replay=None) -> dict:
     start = end_event.paired_start
     players = (start.players if start and start.players else None) or end_event.players or []
+    players = _resolve_round_players(db, players)
     return {
         "id": end_event.id,
         "server_name": end_event.server_name,
@@ -295,13 +327,18 @@ def _serialize_round(end_event: RoundEvent, replay=None) -> dict:
 def _find_matching_replay(db: Session, end_event: RoundEvent, start: Optional[RoundEvent]) -> Optional[RoundReplay]:
     """Best-effort replay<->round match. A manual link (set via
     /rounds/{id}/link-replay, the escape hatch for whatever this heuristic
-    can't resolve) always wins. Otherwise: exact server_name within a
-    +-10min window of the round; if nothing matches, retry the same window
-    WITHOUT the server_name filter — RoundReplay.server_name/recorded_at
-    both come from parsing the demo's binary header (services_replays.py's
-    _parse_demo_header), which can come back None on a header it fails to
-    parse, so requiring an exact server_name match was silently dropping
-    otherwise-matchable replays whose header just didn't parse cleanly."""
+    can't resolve) always wins. Otherwise: matched by RoundReplay.uploaded_at
+    (THIS server's own clock at the moment the file arrived) falling shortly
+    after the round's end — NOT by RoundReplay.recorded_at, which is parsed
+    from the demo file's own self-reported header (services_replays.py's
+    _parse_demo_header): that field can be None outright if header parsing
+    fails, and even when present it depends on the game server's own
+    clock/timezone being correct, which is exactly what was silently
+    breaking almost every match (the demo's declared recording-start time
+    landing hours away from this server's round-end timestamp). Comparing
+    two timestamps written by the SAME server avoids that class of bug
+    entirely. The window's wide upper bound accounts for demos that don't
+    finish uploading immediately when the round ends."""
     manual = (
         db.query(RoundReplay)
         .filter(RoundReplay.manual_round_event_id == end_event.id)
@@ -310,20 +347,22 @@ def _find_matching_replay(db: Session, end_event: RoundEvent, start: Optional[Ro
     if manual:
         return manual
 
-    if not (start and start.created_at and end_event.created_at):
+    if not end_event.created_at:
         return None
-    window_start = start.created_at - timedelta(minutes=10)
-    window_end = end_event.created_at + timedelta(minutes=10)
+    # A couple of minutes of slack before round-end covers clock skew/a
+    # demo upload that lands just ahead of the end-event webhook; up to an
+    # hour after covers a slow/delayed upload.
+    window_start = end_event.created_at - timedelta(minutes=2)
+    window_end = end_event.created_at + timedelta(minutes=60)
 
     replay = (
         db.query(RoundReplay)
         .filter(
             RoundReplay.server_name == end_event.server_name,
-            RoundReplay.recorded_at.isnot(None),
-            RoundReplay.recorded_at >= window_start,
-            RoundReplay.recorded_at <= window_end,
+            RoundReplay.uploaded_at >= window_start,
+            RoundReplay.uploaded_at <= window_end,
         )
-        .order_by(RoundReplay.recorded_at.asc())
+        .order_by(RoundReplay.uploaded_at.asc())
         .first()
     )
     if replay:
@@ -332,11 +371,10 @@ def _find_matching_replay(db: Session, end_event: RoundEvent, start: Optional[Ro
     return (
         db.query(RoundReplay)
         .filter(
-            RoundReplay.recorded_at.isnot(None),
-            RoundReplay.recorded_at >= window_start,
-            RoundReplay.recorded_at <= window_end,
+            RoundReplay.uploaded_at >= window_start,
+            RoundReplay.uploaded_at <= window_end,
         )
-        .order_by(RoundReplay.recorded_at.asc())
+        .order_by(RoundReplay.uploaded_at.asc())
         .first()
     )
 
@@ -363,7 +401,7 @@ async def api_rounds_list(
     rows = q.order_by(RoundEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     total_pages = (total + page_size - 1) // page_size if total else 1
 
-    rounds = [_serialize_round(end_event, _find_matching_replay(db, end_event, end_event.paired_start)) for end_event in rows]
+    rounds = [_serialize_round(db, end_event, _find_matching_replay(db, end_event, end_event.paired_start)) for end_event in rows]
 
     return {
         "rounds": rounds, "total": total, "page": page, "total_pages": total_pages, "selected_server": server,
@@ -387,7 +425,7 @@ async def api_round_detail(round_id: int, request: Request, db: Session = Depend
         raise HTTPException(status_code=404, detail="Раунд не найден")
 
     replay = _find_matching_replay(db, end_event, end_event.paired_start)
-    data = _serialize_round(end_event, replay)
+    data = _serialize_round(db, end_event, replay)
     data["manually_linked"] = bool(replay and replay.manual_round_event_id == end_event.id)
     return data
 

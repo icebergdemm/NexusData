@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -10,15 +10,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select"
-import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { documentsApi } from "@/pages/documents/api"
 import { ImportDocumentDialog } from "@/pages/documents/ImportDocumentDialog"
 import { departmentsApi, type DeptDocumentFolder, type DepartmentDetail } from "./api"
+import { FolderAccessFields } from "./FolderAccessFields"
 
 function DeptFolderNode({ folder, folders, depth, activeId, canManage, onSelect, onDelete, onPermissions }: {
   folder: DeptDocumentFolder; folders: DeptDocumentFolder[]; depth: number
@@ -57,46 +55,6 @@ function DeptFolderNode({ folder, folders, depth, activeId, canManage, onSelect,
 function FolderPermissionsDialog({ open, onOpenChange, department, folder }: {
   open: boolean; onOpenChange: (open: boolean) => void; department: DepartmentDetail; folder: DeptDocumentFolder | null
 }) {
-  const queryClient = useQueryClient()
-  const [granteeType, setGranteeType] = useState<"access_level" | "member">("access_level")
-  const [accessLevelKey, setAccessLevelKey] = useState("")
-  const [memberAdminId, setMemberAdminId] = useState("")
-  const [level, setLevel] = useState<"view" | "edit">("view")
-
-  const { data: permsData } = useQuery({
-    queryKey: ["dept-folder-permissions", department.id, folder?.id],
-    queryFn: () => departmentsApi.documentFolders.permissions.list(department.id, folder!.id),
-    enabled: open && !!folder,
-  })
-  const { data: membersData } = useQuery({
-    queryKey: ["department-members", department.id],
-    queryFn: () => departmentsApi.members.list(department.id),
-    enabled: open,
-  })
-
-  const grantMutation = useMutation({
-    mutationFn: () => departmentsApi.documentFolders.permissions.grant(department.id, folder!.id, {
-      grantee_type: granteeType,
-      access_level_key: granteeType === "access_level" ? accessLevelKey : undefined,
-      member_admin_id: granteeType === "member" ? Number(memberAdminId) : undefined,
-      level,
-    }),
-    onSuccess: () => {
-      toast.success("Доступ выдан")
-      queryClient.invalidateQueries({ queryKey: ["dept-folder-permissions", department.id, folder?.id] })
-      setAccessLevelKey(""); setMemberAdminId("")
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const revokeMutation = useMutation({
-    mutationFn: (permissionId: number) => departmentsApi.documentFolders.permissions.revoke(department.id, folder!.id, permissionId),
-    onSuccess: () => {
-      toast.success("Доступ отозван")
-      queryClient.invalidateQueries({ queryKey: ["dept-folder-permissions", department.id, folder?.id] })
-    },
-  })
-
   if (!folder) return null
 
   return (
@@ -107,61 +65,7 @@ function FolderPermissionsDialog({ open, onOpenChange, department, folder }: {
           <DialogDescription>Дополнительный доступ к содержимому папки поверх общих прав на документацию отдела.</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2">
-          {!permsData?.permissions.length && <p className="text-xs text-muted-foreground">Дополнительных прав пока нет.</p>}
-          {permsData?.permissions.map((p) => (
-            <div key={p.id} className="flex items-center justify-between rounded-md border px-2.5 py-1.5 text-sm">
-              <span>
-                {p.grantee_type === "access_level" ? `Уровень: ${p.access_level_key}` : `Сотрудник: ${p.member_name ?? p.member_admin_id}`}
-                {" — "}{p.level === "edit" ? "изменение" : "просмотр"}
-              </span>
-              <Button size="icon-xs" variant="ghost" className="text-destructive" onClick={() => revokeMutation.mutate(p.id)}>
-                <Trash2 className="size-3.5" />
-              </Button>
-            </div>
-          ))}
-        </div>
-
-        <div className="space-y-2 border-t pt-3">
-          <div className="grid grid-cols-2 gap-2">
-            <Select value={granteeType} onValueChange={(v) => setGranteeType(v as "access_level" | "member")}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="access_level">Уровень доступа</SelectItem>
-                <SelectItem value="member">Конкретный сотрудник</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={level} onValueChange={(v) => setLevel(v as "view" | "edit")}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="view">Просмотр</SelectItem>
-                <SelectItem value="edit">Изменение</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {granteeType === "access_level" ? (
-            <Select value={accessLevelKey} onValueChange={setAccessLevelKey}>
-              <SelectTrigger><SelectValue placeholder="Выберите уровень" /></SelectTrigger>
-              <SelectContent>
-                {department.access_levels.map((l) => <SelectItem key={l.key} value={l.key}>{l.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Select value={memberAdminId} onValueChange={setMemberAdminId}>
-              <SelectTrigger><SelectValue placeholder="Выберите сотрудника" /></SelectTrigger>
-              <SelectContent>
-                {membersData?.members.map((m) => <SelectItem key={m.admin_id} value={String(m.admin_id)}>{m.admin_name ?? `#${m.admin_id}`}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
-          <Button
-            size="sm"
-            disabled={(granteeType === "access_level" ? !accessLevelKey : !memberAdminId) || grantMutation.isPending}
-            onClick={() => grantMutation.mutate()}
-          >
-            Выдать доступ
-          </Button>
-        </div>
+        <FolderAccessFields open={open} departmentId={department.id} folder={folder} accessLevels={department.access_levels} />
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Закрыть</Button>
@@ -254,8 +158,35 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
   const [deleteFolderId, setDeleteFolderId] = useState<number | null>(null)
   const [permsFolder, setPermsFolder] = useState<DeptDocumentFolder | null>(null)
   const [tagManagerOpen, setTagManagerOpen] = useState(false)
+  const [droppedFile, setDroppedFile] = useState<File | null>(null)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
   const canView = department.my_access.documentation?.view
   const canManageFolders = canEdit && (isSuperuser || department.is_head)
+
+  const dragCounter = useRef(0)
+  function handleDragEnter(e: React.DragEvent) {
+    if (!canEdit || !e.dataTransfer.types.includes("Files")) return
+    e.preventDefault()
+    dragCounter.current += 1
+    setIsDraggingOver(true)
+  }
+  function handleDragOver(e: React.DragEvent) {
+    if (!canEdit || !e.dataTransfer.types.includes("Files")) return
+    e.preventDefault()
+  }
+  function handleDragLeave() {
+    dragCounter.current = Math.max(0, dragCounter.current - 1)
+    if (dragCounter.current === 0) setIsDraggingOver(false)
+  }
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    dragCounter.current = 0
+    setIsDraggingOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!canEdit || !file) return
+    setDroppedFile(file)
+    setImportOpen(true)
+  }
 
   const { data: foldersData } = useQuery({
     queryKey: ["department-document-folders", department.id],
@@ -277,7 +208,7 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
     mutationFn: () => documentsApi.create({ title: "Новая страница", department_id: department.id, department_folder_id: folderId ?? undefined }),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ["department-documents", department.id] })
-      navigate(`/documents/${res.id}`)
+      navigate(`/documents/${res.id}`, { state: { justCreated: true, returnTo: { pathname: `/departments/${department.id}`, state: { tab: "documentation" } } } })
     },
     onError: (e: Error) => toast.error(e.message),
     onSettled: () => setCreating(false),
@@ -339,7 +270,18 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
         ))}
       </aside>
 
-      <div className="space-y-3">
+      <div
+        className="relative space-y-3"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDraggingOver && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-primary/10">
+            <span className="rounded-md bg-background px-3 py-1.5 text-sm font-medium shadow">Отпустите файл, чтобы загрузить</span>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
             {currentFolder ? (
@@ -399,7 +341,7 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
               <Card
                 key={d.id}
                 className="cursor-pointer overflow-hidden py-0 transition-colors hover:border-primary/50"
-                onClick={() => navigate(`/documents/${d.id}`)}
+                onClick={() => navigate(`/documents/${d.id}`, { state: { returnTo: { pathname: `/departments/${department.id}`, state: { tab: "documentation" } } } })}
               >
                 <CardContent className="flex items-center gap-3 p-3">
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-lg">
@@ -409,6 +351,7 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
                     <div className="truncate font-medium">{d.title}</div>
                     <div className="text-xs text-muted-foreground">
                       {d.last_edited_by?.name ? `Изменил ${d.last_edited_by.name}` : "Ещё не редактировался"}
+                      {d.is_mine && d.shared_summary && ` · ${d.shared_summary}`}
                     </div>
                   </div>
                 </CardContent>
@@ -420,9 +363,14 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
 
       <ImportDocumentDialog
         open={importOpen}
-        onOpenChange={setImportOpen}
+        onOpenChange={(o) => { setImportOpen(o); if (!o) setDroppedFile(null) }}
         departmentId={department.id}
-        onImported={(id) => { queryClient.invalidateQueries({ queryKey: ["department-documents", department.id] }); navigate(`/documents/${id}`) }}
+        departmentFolderId={folderId ?? undefined}
+        initialFile={droppedFile}
+        onImported={(id) => {
+          queryClient.invalidateQueries({ queryKey: ["department-documents", department.id] })
+          navigate(`/documents/${id}`, { state: { justCreated: true, returnTo: { pathname: `/departments/${department.id}`, state: { tab: "documentation" } } } })
+        }}
       />
 
       <Dialog open={newFolderOpen} onOpenChange={setNewFolderOpen}>

@@ -409,6 +409,7 @@ def _serialize_online_player(info: dict) -> dict:
     return {
         "player_steamid": info.get("player_steamid"),
         "player_name": info.get("player_name"),
+        "forced_display_name": info.get("forced_display_name"),
         "character_name": info.get("character_name"),
         "job_id": info.get("job_id"),
         "ping": info.get("ping"),
@@ -426,9 +427,15 @@ def _serialize_offline_player(p) -> dict:
         "player_id": p.player_id,
         "player_steamid": p.player_steamid,
         "player_last_time_name": p.player_last_time_name,
+        "forced_display_name": p.forced_display_name,
+        "first_login": p.first_login.isoformat() if p.first_login else None,
         "last_login_time": p.last_login_time.isoformat() if p.last_login_time else None,
         "last_session_logout": p.last_session_logout.isoformat() if getattr(p, "last_session_logout", None) else None,
         "play_time_hours": p.play_time_hours,
+        # Same "under 2 hours total playtime" threshold as the online-players
+        # is_new_player flag (services.py) — kept in sync so a player looks
+        # equally "new" whether they're currently online or not.
+        "is_new_player": p.play_time_hours < 2,
     }
 
 
@@ -693,3 +700,96 @@ async def sauron_summary(
     except ImportError:
         import services_sauron
         return JSONResponse(services_sauron.get_sauron_summary(db))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ANOMALIES (Moderation → Аномалии) — stored findings from the background
+# scan (workers.task_scan_anomalies, every 30 min — see services_anomaly.py).
+# Unlike the on-demand /api/v1/sauron/* endpoints above, this reads
+# persisted PlayerAnomaly rows — nothing here triggers a scan itself.
+# ════════════════════════════════════════════════════════════════════════════
+
+def _serialize_anomaly_player(db: Session, player_id: Optional[int]) -> Optional[dict]:
+    if not player_id:
+        return None
+    from models import PlayerData
+    p = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not p:
+        return {"player_id": player_id, "name": None, "real_name": None, "steamid": None}
+    return {
+        "player_id": p.player_id,
+        "name": p.forced_display_name or p.player_last_time_name,
+        "real_name": p.player_last_time_name if p.forced_display_name else None,
+        "steamid": p.player_steamid,
+    }
+
+
+def _serialize_anomaly(db: Session, a) -> dict:
+    return {
+        "id": a.id,
+        "category": a.category,
+        "subtype": a.subtype,
+        "player": _serialize_anomaly_player(db, a.player_id),
+        "related_player": _serialize_anomaly_player(db, a.related_player_id),
+        "score": a.score,
+        "evidence": a.evidence or {},
+        "detected_at": a.detected_at.isoformat() if a.detected_at else None,
+        "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
+        "status": a.status,
+        "auto_banned": a.auto_banned,
+    }
+
+
+@panel_router.get("/api/v1/admin/moderation/anomalies")
+async def api_list_anomalies(
+    request: Request,
+    category: Optional[str] = Query(None, description="twink | behavior"),
+    status: Optional[str] = Query("new", description="new | reviewed | dismissed | all"),
+    db: Session = Depends(get_db),
+):
+    admin = get_current_admin(request, db)
+    if not check_permission(admin, "moderation", "manage_anticheat"):
+        raise HTTPException(status_code=403)
+
+    from models import PlayerAnomaly
+    q = db.query(PlayerAnomaly)
+    if category:
+        q = q.filter(PlayerAnomaly.category == category)
+    if status and status != "all":
+        q = q.filter(PlayerAnomaly.status == status)
+    rows = q.order_by(PlayerAnomaly.score.desc(), PlayerAnomaly.last_seen_at.desc()).limit(300).all()
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse({
+        "anomalies": [_serialize_anomaly(db, a) for a in rows],
+        "can_manage": check_permission(admin, "moderation", "manage_anticheat"),
+    })
+
+
+@panel_router.post("/api/v1/admin/moderation/anomalies/{anomaly_id}/review")
+async def api_review_anomaly(
+    anomaly_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    admin = get_current_admin(request, db)
+    if not check_permission(admin, "moderation", "manage_anticheat"):
+        raise HTTPException(status_code=403)
+
+    from models import PlayerAnomaly
+    row = db.query(PlayerAnomaly).filter(PlayerAnomaly.id == anomaly_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Не найдено")
+
+    body = await request.json()
+    new_status = body.get("status")
+    if new_status not in ("reviewed", "dismissed", "new"):
+        raise HTTPException(status_code=400, detail="Некорректный статус")
+
+    row.status = new_status
+    row.reviewed_by_admin_id = admin.id
+    row.reviewed_at = datetime.utcnow()
+    db.commit()
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"status": "ok"})

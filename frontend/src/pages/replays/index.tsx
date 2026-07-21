@@ -22,7 +22,7 @@ interface ReplaysResponse {
   replays: ReplayRow[]; total: number; page: number; total_pages: number
   retention_days: number; can_delete: boolean; is_superuser: boolean
 }
-interface RoundPlayer { steamid: string; player_name: string; role?: string }
+interface RoundPlayer { steamid: string; player_name: string; real_name?: string; role?: string }
 interface RoundRow {
   id: number
   server_name: string | null
@@ -109,7 +109,12 @@ function RoundsTab() {
             <div className="mt-3 flex items-center justify-between border-t pt-3">
               <div className="flex flex-wrap gap-1">
                 {r.players.slice(0, 8).map((p) => (
-                  <Badge key={p.steamid} variant={isCaptain(p.role) ? "default" : "outline"} className="gap-1 text-xs">
+                  <Badge
+                    key={p.steamid}
+                    variant={isCaptain(p.role) ? "default" : "outline"}
+                    className="gap-1 text-xs"
+                    title={p.real_name ? `Настоящий ник: ${p.real_name}` : undefined}
+                  >
                     {isCaptain(p.role) && <Crown className="size-3" />} {p.player_name}
                   </Badge>
                 ))}

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -31,6 +31,7 @@ import { canEdit, useCurrentAdmin, type MyDepartmentRef } from "@/lib/auth"
 import { documentsApi, type DocScope, type DocumentRow, type DocFolder } from "@/pages/documents/api"
 import { TemplatePickerDialog } from "@/pages/documents/TemplatePickerDialog"
 import { departmentsApi, type DeptDocumentFolder } from "@/pages/departments/api"
+import { FolderAccessFields } from "@/pages/departments/FolderAccessFields"
 
 const SCOPES: { key: DocScope; label: string; icon: typeof NotebookText }[] = [
   { key: "mine", label: "Мои документы", icon: FileText },
@@ -174,6 +175,9 @@ export function DocumentsPage() {
   const [deleteDeptFolderId, setDeleteDeptFolderId] = useState<number | null>(null)
   const [permanentDeleteId, setPermanentDeleteId] = useState<number | null>(null)
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
+  const [droppedFile, setDroppedFile] = useState<File | null>(null)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
+  const dragCounter = useRef(0)
   const [viewMode, setViewMode] = useState<"grid" | "list">(() => (localStorage.getItem("nd-documents-view") === "list" ? "list" : "grid"))
   const setAndPersistViewMode = (mode: "grid" | "list") => {
     setViewMode(mode)
@@ -189,7 +193,15 @@ export function DocumentsPage() {
 
   const editAllowed = canEdit(admin, "documents")
   const myDepartments = admin?.my_departments ?? []
-  const deptById = Object.fromEntries(myDepartments.map((d) => [d.id, d]))
+  // Card badges (item 6) need every department's name/color, not just ones
+  // the current admin belongs to (e.g. scope="all" superuser view, or a
+  // shared document from someone else's department) — my_departments wins
+  // on overlap since it's already loaded and identical for shared fields.
+  const { data: allDeptsData } = useQuery({ queryKey: ["departments-lite"], queryFn: () => departmentsApi.list() })
+  const deptById: Record<number, { name: string; color: string | null }> = Object.fromEntries([
+    ...(allDeptsData?.departments ?? []).map((d) => [d.id, { name: d.name, color: d.color }]),
+    ...myDepartments.map((d) => [d.id, { name: d.name, color: d.color }]),
+  ])
 
   const { data: foldersData } = useQuery({
     queryKey: ["document-folders"],
@@ -236,7 +248,10 @@ export function DocumentsPage() {
     mutationFn: (templateId?: number) => (inDeptView
       ? documentsApi.create({ department_id: deptId!, department_folder_id: deptFolderId ?? undefined, template_id: templateId })
       : documentsApi.create({ folder_id: scope === "mine" ? folderId : null, template_id: templateId })),
-    onSuccess: (res) => { setTemplatePickerOpen(false); navigate(`/documents/${res.id}`) },
+    onSuccess: (res) => {
+      setTemplatePickerOpen(false)
+      navigate(`/documents/${res.id}`, inDeptView ? { state: { justCreated: true } } : undefined)
+    },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -367,6 +382,32 @@ export function DocumentsPage() {
     )
   }
 
+  const canUploadHere = inDeptView ? deptCanEdit : editAllowed
+
+  function handleDragEnter(e: React.DragEvent) {
+    if (!canUploadHere || !e.dataTransfer.types.includes("Files")) return
+    e.preventDefault()
+    dragCounter.current += 1
+    setIsDraggingOver(true)
+  }
+  function handleDragOver(e: React.DragEvent) {
+    if (!canUploadHere || !e.dataTransfer.types.includes("Files")) return
+    e.preventDefault()
+  }
+  function handleDragLeave() {
+    dragCounter.current = Math.max(0, dragCounter.current - 1)
+    if (dragCounter.current === 0) setIsDraggingOver(false)
+  }
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    dragCounter.current = 0
+    setIsDraggingOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!canUploadHere || !file) return
+    setDroppedFile(file)
+    setTemplatePickerOpen(true)
+  }
+
   return (
     <div>
       <PageHeader
@@ -445,7 +486,18 @@ export function DocumentsPage() {
           )}
         </aside>
 
-        <main className="min-w-0">
+        <main
+          className="relative min-w-0"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDraggingOver && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary bg-primary/10">
+              <span className="rounded-md bg-background px-3 py-1.5 text-sm font-medium shadow">Отпустите файл, чтобы загрузить</span>
+            </div>
+          )}
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             {inDeptView ? (
               <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -502,6 +554,11 @@ export function DocumentsPage() {
                     {doc.access_level && doc.access_level !== "owner" && (
                       <Badge variant="secondary" className="shrink-0 text-[10px]">{doc.access_level === "edit" ? "редактор" : doc.access_level === "comment" ? "комментатор" : "просмотр"}</Badge>
                     )}
+                    {doc.is_mine && doc.shared_summary && (
+                      <Badge variant="outline" className="hidden shrink-0 gap-1 text-[10px] sm:inline-flex" title={doc.shared_summary}>
+                        <Users className="size-2.5" /> {doc.shared_summary}
+                      </Badge>
+                    )}
                     <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:inline">{doc.owner?.name}</span>
                     <span className="hidden w-32 shrink-0 text-right text-[11px] text-muted-foreground md:inline">
                       {doc.updated_at ? new Date(doc.updated_at).toLocaleDateString("ru-RU") : "-"}
@@ -540,6 +597,11 @@ export function DocumentsPage() {
                       {doc.department_id && !inDeptView && (
                         <Badge variant="outline" className="mt-1 gap-1 text-[10px]">
                           <Building2 className="size-2.5" /> {deptById[doc.department_id]?.name ?? "Отдел"}
+                        </Badge>
+                      )}
+                      {doc.is_mine && doc.shared_summary && (
+                        <Badge variant="outline" className="mt-1 ml-1 gap-1 text-[10px]" title={doc.shared_summary}>
+                          <Users className="size-2.5" /> {doc.shared_summary}
                         </Badge>
                       )}
                       <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
@@ -622,6 +684,14 @@ export function DocumentsPage() {
               Автоматически применять права папки для всех вложенных документов
             </label>
           </div>
+          {folderSettingsTarget && deptId != null && (
+            <FolderAccessFields
+              open={folderSettingsTarget != null}
+              departmentId={deptId}
+              folder={folderSettingsTarget}
+              accessLevels={activeDeptDetail?.access_levels ?? []}
+            />
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setFolderSettingsTarget(null)}>Отмена</Button>
             <Button disabled={saveFolderSettingsMutation.isPending} onClick={() => saveFolderSettingsMutation.mutate()}>Сохранить</Button>
@@ -644,13 +714,18 @@ export function DocumentsPage() {
 
       <TemplatePickerDialog
         open={templatePickerOpen}
-        onOpenChange={setTemplatePickerOpen}
+        onOpenChange={(o) => { setTemplatePickerOpen(o); if (!o) setDroppedFile(null) }}
         onPick={(templateId) => createDocMutation.mutate(templateId)}
-        onImported={(id) => { setTemplatePickerOpen(false); invalidateDocs(); navigate(`/documents/${id}`) }}
+        onImported={(id) => {
+          setTemplatePickerOpen(false)
+          invalidateDocs()
+          navigate(`/documents/${id}`, inDeptView ? { state: { justCreated: true } } : undefined)
+        }}
         canManage={editAllowed}
         folderId={!inDeptView && scope === "mine" && folderId != null ? folderId : undefined}
         departmentId={inDeptView ? deptId! : undefined}
         departmentFolderId={inDeptView && deptFolderId != null ? deptFolderId : undefined}
+        initialFile={droppedFile}
       />
     </div>
   )

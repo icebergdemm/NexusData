@@ -129,6 +129,25 @@ async def verify_external_api_key_dependency(request: Request) -> dict:
     return {"authenticated": True, "client_ip": client_ip, "auth_type": "external_api_key"}
 
 
+async def verify_client_api_key_dependency(request: Request) -> dict:
+    """API key check for read-only external "client" integrations (world-
+    state export, warehouse export) — a DIFFERENT secret than `api_key`
+    (that one's for the game server's own ingest calls), so a read-only
+    consumer never needs the ingest credential. See config.py's
+    `client_api_key`. Fails closed (401) if that setting is left empty —
+    an unconfigured key must never accidentally "match" an empty header.
+    """
+    client_ip = request.client.host if request.client else None
+    configured = settings.client_api_key
+
+    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if not configured or not api_key or not secrets.compare_digest(str(api_key), str(configured)):
+        logger.warning(f"Invalid client API key attempted from {client_ip}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+    return {"authenticated": True, "client_ip": client_ip, "auth_type": "client_api_key"}
+
+
 def generate_api_key() -> str:
     """Generate random API key"""
     return secrets.token_urlsafe(32)

@@ -3,13 +3,14 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Radio, MoreVertical, Send, Truck, CornerUpLeft, PackagePlus, Zap,
-  MapPin, Ship, Target, Users2,
+  MapPin, Ship, Target, Users2, Warehouse as WarehouseIcon,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -18,11 +19,13 @@ import { api } from "@/lib/api"
 import { canEdit, useCurrentAdmin } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import type { ModerationOverview } from "@/pages/moderation/types"
+import { Warehouse } from "./Warehouse"
 
 interface DispatchMessage {
   id: number
   steamid: string | null
   player_name: string | null
+  real_name: string | null
   text: string
   sender_type: "player" | "dispatcher"
   server_name: string | null
@@ -128,6 +131,13 @@ export function DispatchPage() {
     <div>
       <PageHeader title="Диспетчерская" description="Радиосвязь с игроками и статус раунда в реальном времени" icon={Radio} />
 
+      <Tabs defaultValue="radio">
+        <TabsList className="mb-3">
+          <TabsTrigger value="radio" className="gap-1.5"><Radio className="size-3.5" /> Радиосвязь</TabsTrigger>
+          <TabsTrigger value="warehouse" className="gap-1.5"><WarehouseIcon className="size-3.5" /> Склад</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="radio">
       <div className="flex h-[calc(100vh-13rem)] gap-4">
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <div className="flex justify-end gap-1 rounded-lg border bg-card p-1 self-end">
@@ -161,7 +171,10 @@ export function DispatchPage() {
                       )}
                     >
                       {!outgoing && (
-                        <div className="mb-0.5 text-xs font-semibold text-info" title={m.steamid ?? ""}>
+                        <div
+                          className="mb-0.5 text-xs font-semibold text-info"
+                          title={m.real_name ? `Настоящий ник: ${m.real_name}` : (m.steamid ?? "")}
+                        >
                           {m.player_name || m.steamid || "?"}
                         </div>
                       )}
@@ -219,7 +232,12 @@ export function DispatchPage() {
               <div className="divide-y">
                 {onlinePlayers.map((p) => (
                   <div key={p.player_steamid} className="flex items-center justify-between px-3 py-2 text-xs">
-                    <span className="truncate font-medium">{p.player_name ?? p.character_name ?? "?"}</span>
+                    <span
+                      className="truncate font-medium"
+                      title={p.forced_display_name ? `Настоящий ник: ${p.player_name ?? p.player_steamid}` : undefined}
+                    >
+                      {p.forced_display_name || p.player_name || p.character_name || "?"}
+                    </span>
                     <div className="flex shrink-0 items-center gap-1.5">
                       {server === "" && p.server_name && <Badge variant="outline" className="text-[10px]">{p.server_name}</Badge>}
                       <Badge variant="secondary" className="text-[10px]">{p.job_id ?? "-"}</Badge>
@@ -232,6 +250,12 @@ export function DispatchPage() {
           </Card>
         </div>
       </div>
+        </TabsContent>
+
+        <TabsContent value="warehouse">
+          <Warehouse />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
