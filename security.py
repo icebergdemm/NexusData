@@ -88,7 +88,8 @@ async def verify_api_key_dependency(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> dict:
-    """Dependency: verify API key from Authorization header or api_key query.
+    """Dependency: verify API key from Authorization header, X-API-Key header,
+    or api_key query param.
 
     NOTE: there used to be an `allowed_ips` bypass here (skip the key entirely
     for a hardcoded IP). It was removed: the app now runs behind
@@ -97,6 +98,14 @@ async def verify_api_key_dependency(
     be a trivially spoofable auth bypass. Every legitimate caller (the game
     server plugin) already sends the API key, so key verification is the sole
     gate. `allowed_ips` remains only for reference/logging, never for auth.
+
+    X-API-Key support added alongside Authorization/query — the game server
+    plugin sends X-API-Key (same as verify_external_api_key_dependency, used
+    by routes/dispatch.py, world_state.py, game_api.py, events.py,
+    moderation.py), but this dependency (routes/players.py, kits.py,
+    stats.py, status.py) previously only checked Authorization/query, so
+    every request from the plugin to those routes was silently rejected with
+    401 regardless of how correct the key was.
     """
     client_ip = None
     if request.client and request.client.host:
@@ -105,6 +114,8 @@ async def verify_api_key_dependency(
     api_key = None
     if credentials and credentials.credentials:
         api_key = credentials.credentials
+    elif request.headers.get("X-API-Key"):
+        api_key = request.headers.get("X-API-Key")
     else:
         api_key = request.query_params.get("api_key")
 
