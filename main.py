@@ -39,6 +39,43 @@ settings = get_settings()
 templates = Jinja2Templates(directory="templates")
 
 
+class _NoGzipForApiKeyClients:
+    """Strips Accept-Encoding from requests authenticated via API key (the
+    Barotrauma game-server plugin, external X-API-Key/client_api_key
+    integrations) before GZipMiddleware ever sees them, so it never
+    compresses those responses. Pure-ASGI (not BaseHTTPMiddleware) to avoid
+    buffering the whole request/response — this only ever touches request
+    headers, never the body.
+
+    Must be registered via app.add_middleware(...) AFTER GZipMiddleware in
+    create_app() — Starlette wraps middleware so the last one added is
+    outermost, i.e. runs first on the way in, which is what lets this strip
+    the header before GZipMiddleware's own dispatch inspects it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        is_api_key_request = any(k == b"x-api-key" for k, _v in scope.get("headers") or [])
+        if not is_api_key_request:
+            query_string = scope.get("query_string", b"")
+            is_api_key_request = b"api_key=" in query_string
+
+        if is_api_key_request:
+            scope = {
+                **scope,
+                "headers": [
+                    (k, v) for k, v in scope["headers"] if k != b"accept-encoding"
+                ],
+            }
+
+        await self.app(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     """Application factory"""
     
@@ -88,9 +125,19 @@ def create_app() -> FastAPI:
         allow_headers=settings.cors_headers,
     )
 
-    # GZip compression for responses > 500 bytes
+    # GZip compression for responses > 500 bytes — but never for API-key
+    # (machine) clients: the Barotrauma game-server plugin's HTTP client
+    # advertises Accept-Encoding: gzip without actually decompressing the
+    # response, so it received raw gzip bytes and choked trying to parse
+    # them as JSON ("'0x1F' is an invalid start of a value" — 0x1F is
+    # gzip's magic byte). Browsers/the SPA always decompress correctly and
+    # never send an API key, so stripping Accept-Encoding only for API-key
+    # requests (added AFTER GZipMiddleware below, so it runs BEFORE it on
+    # the way in — see Starlette's outermost-added-last ordering) fixes the
+    # game server without touching admin-panel compression at all.
     app.add_middleware(GZipMiddleware, minimum_size=500)
-    
+    app.add_middleware(_NoGzipForApiKeyClients)
+
     # Exception handlers
     from starlette.responses import JSONResponse as _JSONResponse
 
