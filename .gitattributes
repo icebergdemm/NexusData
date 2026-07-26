@@ -1,0 +1,4 @@
+# Shell-скрипты всегда с LF — иначе на Linux bash ломается на CRLF (\r),
+# даже если репозиторий редактируется с Windows.
+*.sh text eol=lf
+deploy/deploy.sh text eol=lf
