@@ -58,3 +58,16 @@ uploads/
 
 # Logs cache (downloaded from SFTP, stored as JSON)
 data/
+
+# ── Не нужно на проде (dev-скрипты, миграции, документация) ──────────────
+# Рантайм-миграции живут в database.py (init_db). Эти .sql — исторические,
+# приложением не читаются.
+/migrations/
+# Одноразовые/вспомогательные скрипты и dev-инструменты
+/tools/
+migrate_logs_json_to_sqlite.py
+LevelTransition.cs
+# Проектная документация (dev/API/дизайн). Раннбуки в deploy/*.md остаются.
+/*.md
+frontend/README.md
+/role-based-rating-system/
