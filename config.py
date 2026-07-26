@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     discord_client_id: str = ""
     discord_client_secret: str = ""
     discord_redirect_uri: str = "https://nd.rp-asper.ru/auth/discord/callback"
+    # Extra hostnames the site is also directly reachable on (e.g. a second
+    # entry point bypassing the main proxy) besides the one baked into
+    # discord_redirect_uri above. Discord validates redirect_uri byte-for-byte
+    # against what's registered on its side, so logging in from one of these
+    # extra hosts must round-trip through THAT SAME host's own
+    # /auth/discord/callback — see routes/admin.py's _resolve_oauth_redirect_uri.
+    # Each one must ALSO be added as a Redirect URI in the Discord Developer
+    # Portal, or Discord will reject the login with its own error page.
+    extra_allowed_hosts: str = ""
+    extra_allowed_hosts_list: List[str] = []   # populated in __init__
 
     # Discord Bot (discord_bot/bot.py — runs in-process, see supervise_bot())
     discord_bot_token: str = Field("", env="DISCORD_BOT_TOKEN")
@@ -182,6 +192,10 @@ class Settings(BaseSettings):
         object.__setattr__(self, "allowed_ips_list", _str_to_list(
             self.allowed_ips,
             ["92.38.222.172"],
+        ))
+        object.__setattr__(self, "extra_allowed_hosts_list", _str_to_list(
+            self.extra_allowed_hosts,
+            [],
         ))
 
         # Load JSON config files

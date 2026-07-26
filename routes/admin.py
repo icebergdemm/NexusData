@@ -227,6 +227,35 @@ def _safe_next_path(next_url: Optional[str], default: str = "/admin") -> str:
     return next_url
 
 
+def _oauth_allowed_hosts() -> set:
+    """Every hostname the site is reachable on and allowed to complete a
+    Discord login round-trip through — the primary one baked into
+    discord_redirect_uri, plus any extras from settings.extra_allowed_hosts.
+    """
+    from urllib.parse import urlparse
+    primary = (urlparse(settings.discord_redirect_uri).hostname or "").lower()
+    return {h.lower() for h in ([primary] + settings.extra_allowed_hosts_list) if h}
+
+
+def _resolve_oauth_redirect_uri(request: Request) -> str:
+    """Multiple entry-point domains (e.g. a second hostname reachable
+    directly, bypassing the main proxy) each need their OWN
+    /auth/discord/callback round-trip: Discord validates redirect_uri
+    byte-for-byte against what's registered in the Developer Portal, so a
+    login started on host A must also come back to host A, never a fixed
+    default — otherwise Discord rejects it outright, or (if the default
+    domain happens to also be registered) the session cookie ends up set on
+    the WRONG host and the user looks logged-out back on the domain they
+    actually started from. Falls back to the configured default if the
+    request's own Host header isn't in the allowed set (unregistered/unknown
+    hosts would fail at Discord's side anyway, since only registered exact
+    URIs work — this is just about picking the right ALREADY-registered one)."""
+    host = (request.url.hostname or "").lower()
+    if host in _oauth_allowed_hosts():
+        return f"{request.url.scheme}://{request.url.netloc}/auth/discord/callback"
+    return settings.discord_redirect_uri
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, next: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """Discord login page"""
@@ -246,6 +275,12 @@ async def login_page(request: Request, next: Optional[str] = Query(None), db: Se
     request.session["oauth_state"] = oauth_state
     request.session["oauth_next"] = next_path
 
+    # Pinned to whichever entry-point domain this request actually came in
+    # on (see _resolve_oauth_redirect_uri) — the callback must reuse this
+    # SAME value, stashed here since it round-trips through the session.
+    redirect_uri = _resolve_oauth_redirect_uri(request)
+    request.session["oauth_redirect_uri"] = redirect_uri
+
     # Redirect only if server-side admin session exists and is valid.
     token = request.cookies.get("admin_token")
     if token:
@@ -256,11 +291,11 @@ async def login_page(request: Request, next: Optional[str] = Query(None), db: Se
 
         # Stale/invalid token cookie: clear it to prevent redirect loops.
         request.session.pop("username", None)
-        response = templates.TemplateResponse("login.html", {"request": request, "oauth_url": discord_auth.get_oauth_url(state=oauth_state)})
+        response = templates.TemplateResponse("login.html", {"request": request, "oauth_url": discord_auth.get_oauth_url(state=oauth_state, redirect_uri=redirect_uri)})
         response.delete_cookie("admin_token")
         return response
 
-    oauth_url = discord_auth.get_oauth_url(state=oauth_state)
+    oauth_url = discord_auth.get_oauth_url(state=oauth_state, redirect_uri=redirect_uri)
     return templates.TemplateResponse("login.html", {"request": request, "oauth_url": oauth_url})
 
 
@@ -308,13 +343,19 @@ async def discord_callback(
     # Consume it from the session regardless of outcome so it can't be replayed.
     expected_state = request.session.pop("oauth_state", None)
     next_path = _safe_next_path(request.session.pop("oauth_next", None))
+    # Same redirect_uri login_page used when it sent the user to Discord —
+    # must match exactly or Discord rejects the exchange (see
+    # _resolve_oauth_redirect_uri). Falls back to resolving it fresh from
+    # this request if the session value is somehow missing (e.g. an old
+    # session predating this field) rather than failing outright.
+    redirect_uri = request.session.pop("oauth_redirect_uri", None) or _resolve_oauth_redirect_uri(request)
     if not expected_state or not state or not secrets.compare_digest(str(state), str(expected_state)):
         logger.warning("Discord callback with invalid/missing OAuth state — possible CSRF or expired login")
         return RedirectResponse(url="/login?error=state_mismatch", status_code=302)
 
     try:
         # Exchange code for token
-        token_data = await discord_auth.exchange_code(code)
+        token_data = await discord_auth.exchange_code(code, redirect_uri=redirect_uri)
         access_token = token_data["access_token"]
         
         # Get user info

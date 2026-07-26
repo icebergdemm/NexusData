@@ -819,11 +819,18 @@ class DiscordAuthService:
         self.client_secret = settings.discord_client_secret
         self.redirect_uri = settings.discord_redirect_uri
 
-    def get_oauth_url(self, state: str = None) -> str:
-        """Generate Discord OAuth URL (always direct to Discord)"""
+    def get_oauth_url(self, state: str = None, redirect_uri: str = None) -> str:
+        """Generate Discord OAuth URL (always direct to Discord).
+
+        `redirect_uri` overrides the configured default — used to support
+        multiple entry-point domains (see routes/admin.py's
+        _resolve_oauth_redirect_uri): Discord validates redirect_uri
+        byte-for-byte against what's registered on its side, so whichever
+        value is used here MUST be passed again, identically, to
+        exchange_code below for the SAME login round-trip."""
         params = {
             "client_id": self.client_id,
-            "redirect_uri": self.redirect_uri,
+            "redirect_uri": redirect_uri or self.redirect_uri,
             "response_type": "code",
             "scope": "identify",
         }
@@ -833,8 +840,12 @@ class DiscordAuthService:
         query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{self.DISCORD_OAUTH_URL}?{query}"
 
-    async def exchange_code(self, code: str) -> dict:
-        """Exchange authorization code for access token"""
+    async def exchange_code(self, code: str, redirect_uri: str = None) -> dict:
+        """Exchange authorization code for access token.
+
+        `redirect_uri` must match exactly what was passed to get_oauth_url
+        for this same login attempt — Discord rejects the exchange
+        otherwise, even though the code itself is valid."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 response = await client.post(
@@ -844,7 +855,7 @@ class DiscordAuthService:
                         "client_secret": self.client_secret,
                         "grant_type": "authorization_code",
                         "code": code,
-                        "redirect_uri": self.redirect_uri,
+                        "redirect_uri": redirect_uri or self.redirect_uri,
                     },
                     headers={"Content-Type": "application/x-www-form-urlencoded"}
                 )
