@@ -1,5 +1,6 @@
-# Logs
-logs
+# Logs — привязано к корню frontend/, иначе матчит и frontend/src/pages/logs/
+# (реальная страница приложения, случайно выпадавшая из git этим правилом).
+/logs
 *.log
 npm-debug.log*
 yarn-debug.log*

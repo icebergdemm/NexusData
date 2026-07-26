@@ -4,14 +4,18 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+/build/
 develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Привязано к корню репозитория (без ведущего "/" это правило матчило БЫ
+# любую папку "lib" где угодно в дереве — так уже случайно затёрло из git
+# frontend/src/lib/, критичный код фронтенда, на всё время существования
+# репозитория). Аналогичная привязка ниже для frontend/.gitignore's "logs".
+/lib/
+/lib64/
 parts/
 sdist/
 var/
