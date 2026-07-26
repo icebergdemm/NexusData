@@ -1,5 +1,7 @@
 fastapi==0.104.1
 uvicorn==0.24.0
+watchfiles==0.21.0
+starlette==0.27.0
 sqlalchemy==2.0.23
 pymysql==1.1.0
 pydantic==2.5.0
@@ -23,3 +25,6 @@ psutil==5.9.8
 # openpyxl used only for generating the blank .xlsx seed template.
 python-docx==1.1.2
 openpyxl==3.1.2
+
+# Discord bot (discord_bot/bot.py) — runs in-process, see discord_bot.supervise_bot()
+discord.py==2.3.2

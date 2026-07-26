@@ -756,9 +756,9 @@ class SubProjectService:
 
     def publish_to_discord(self, project_id: int, base_url: str) -> Optional[str]:
         """Publish or update Discord embed for a project via the Discord bot.
-        
-        Uses DiscordBotAction queue to send/edit messages through the bot
-        in the configured sub_projects channel. Falls back to webhook if
+
+        Dispatches directly to the in-process bot to send/edit messages in
+        the configured sub_projects channel. Falls back to webhook if
         channel is not configured.
         """
         project = self.get_by_id(project_id)
@@ -785,37 +785,28 @@ class SubProjectService:
         return self._publish_via_webhook(project, embed, webhook_url)
 
     def _publish_via_bot(self, project: SubProject, embed: dict, channel_id: str) -> Optional[str]:
-        """Publish embed via Discord bot action queue."""
-        from models import DiscordBotAction
+        """Publish embed via the in-process Discord bot."""
+        from discord_bot import bot as discord_bot
 
         if project.discord_message_id:
             # Edit existing message via bot
-            action = DiscordBotAction(
-                action_type="edit_embed",
-                payload={
-                    "channel_id": channel_id,
-                    "message_id": project.discord_message_id,
-                    "embed": embed,
-                },
-            )
-            self.db.add(action)
-            self.db.commit()
-            logger.info(f"Queued edit_embed bot action for project {project.id}")
+            discord_bot.schedule(discord_bot.execute_bot_action("edit_embed", {
+                "channel_id": channel_id,
+                "message_id": project.discord_message_id,
+                "embed": embed,
+            }))
+            logger.info(f"Dispatched edit_embed bot action for project {project.id}")
             return project.discord_message_id
         else:
             # Send new message via bot
-            action = DiscordBotAction(
-                action_type="send_sub_project_embed",
-                payload={
-                    "channel_id": channel_id,
-                    "embed": embed,
-                    "project_id": project.id,
-                },
-            )
-            self.db.add(action)
-            self.db.commit()
-            logger.info(f"Queued send_sub_project_embed bot action for project {project.id}")
-            # Message ID will be set by bot after sending
+            discord_bot.schedule(discord_bot.execute_bot_action("send_sub_project_embed", {
+                "channel_id": channel_id,
+                "embed": embed,
+                "project_id": project.id,
+            }))
+            logger.info(f"Dispatched send_sub_project_embed bot action for project {project.id}")
+            # Message ID will be set by the bot after sending (see
+            # discord_bot/data.py's set_sub_project_message_id).
             return "pending"
 
     def _publish_via_webhook(self, project: SubProject, embed: dict, webhook_url: str) -> Optional[str]:
@@ -863,15 +854,11 @@ class SubProjectService:
         channel_id = settings.sub_projects_discord_channel_id
         if channel_id:
             # Delete via bot
-            from models import DiscordBotAction
-            action = DiscordBotAction(
-                action_type="delete_message",
-                payload={
-                    "channel_id": channel_id,
-                    "message_id": project.discord_message_id,
-                },
-            )
-            self.db.add(action)
+            from discord_bot import bot as discord_bot
+            discord_bot.schedule(discord_bot.execute_bot_action("delete_message", {
+                "channel_id": channel_id,
+                "message_id": project.discord_message_id,
+            }))
             project.discord_message_id = None
             self.db.commit()
             return True

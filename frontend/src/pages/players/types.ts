@@ -30,4 +30,5 @@ export interface PlayersListResponse {
   selected_rank_id: number | null
   selected_sort: string | null
   ranks: Record<string, string>
+  rank_colors: Record<string, string>
 }

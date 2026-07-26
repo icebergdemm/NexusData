@@ -110,6 +110,7 @@ class PlayerDataOut(PlayerDataBase):
     achievements_data: Optional[Dict[str, Any]] = Field(default=None, description="Raw achievements/rewards JSON from DB")
     steam_avatar_url: Optional[str] = None
     forced_display_name: Optional[str] = Field(default=None, description="Admin-assigned display name — takes precedence over player_last_time_name wherever the player's name is shown")
+    profile_hash: Optional[str] = Field(default=None, description="Change-detection hash for the game-server cache sync API (see cache_versioning.py) — unchanged hash means the plugin's local cache is still fresh")
 
     @computed_field
     @property
@@ -141,6 +142,8 @@ class PlayerDataOut(PlayerDataBase):
             # Provide a flat list of item IDs for .NET clients that read 'achievements' field
             items = raw_ach.get("items", {})
             data.achievements = list(items.keys()) if items else []
+        from cache_versioning import compute_player_profile_hash
+        data.profile_hash = compute_player_profile_hash(obj)
         return data
 
 
@@ -395,6 +398,7 @@ class ServerActionOut(BaseModel):
     queued_at: Optional[datetime] = None
     ack_asper1: int = 0
     ack_asper2: int = 0
+    payload: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -413,6 +417,7 @@ class ServerActionOut(BaseModel):
             queued_at=row.created_at,
             ack_asper1=row.status_asper1,
             ack_asper2=row.status_asper2,
+            payload=row.payload,
         )
 
 

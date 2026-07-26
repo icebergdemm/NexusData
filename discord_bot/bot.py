@@ -1,41 +1,37 @@
-﻿"""
-NexusData Discord Bot
+"""
+NexusData Discord Bot — in-process service (no longer a separate process
+talking to NexusData over its own loopback HTTP API).
 - Syncs members to NexusData every 10 minutes
 - Forwards all messages to a designated channel
 - Anti-raid detection
-- Publishes rating embeds every 5 minutes
-- Polls NexusData for bot actions
+- Publishes rating embeds every hour
+- Executes actions scheduled directly by the rest of the app (see schedule())
 - Twink detection
+
+See discord_bot/data.py for the direct DB-access helpers that replaced the
+old api_get/api_post loopback calls, and supervise_bot()/schedule() at the
+bottom of this file for how the rest of the app drives this bot.
 """
 
-import os
 import asyncio
 import logging
 import json
+import os
+from collections import deque
 from datetime import datetime, timedelta
-from collections import defaultdict
 from typing import Optional, Tuple
 
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+from config import get_settings
+from discord_bot import data as bot_data
 
-# ═══════════════════════════════════════════════════════════
-# CONFIG
-# ═══════════════════════════════════════════════════════════
+settings = get_settings()
 
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-API_URL = os.getenv("NEXUSDATA_API_URL", "https://nd.rp-asper.ru")
-API_KEY = os.getenv("NEXUSDATA_API_KEY", "")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-FORWARD_CHANNEL_ID = int(os.getenv("FORWARD_CHANNEL_ID", "0"))
-RATING_CHANNEL_ID = int(os.getenv("RATING_CHANNEL_ID", "0"))
+GUILD_ID = int(settings.discord_guild_id or 0)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("NexusBot")
 
 # All server timestamps are stored/received in UTC; embeds should always show MSK
@@ -66,12 +62,22 @@ RAID_WINDOW = 60  # seconds
 # 10 min by sync_members_task, consulted in on_message to mirror messages.
 _department_chat_channel_ids: set = set()
 
+# Bound config, reloaded from DiscordBotConfig at on_ready/sync_members_task.
+FORWARD_CHANNEL_ID = 0
+RATING_CHANNEL_ID = 0
+
+# Persisted message-id files live next to this module, regardless of the
+# current process's working directory (this used to be its own process
+# launched from within discord_bot/; now it's imported as a module from the
+# app root, so a bare relative filename would silently start a NEW empty
+# file there instead of reusing the bot's existing persisted state).
+_BOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Rating message IDs (persisted to JSON file)
-RATING_IDS_FILE = "rating_message_ids.json"
+RATING_IDS_FILE = os.path.join(_BOT_DIR, "rating_message_ids.json")
 
 
 def _load_rating_ids() -> dict:
-    """Load rating message IDs from JSON file."""
     try:
         if os.path.exists(RATING_IDS_FILE):
             with open(RATING_IDS_FILE, "r") as f:
@@ -82,7 +88,6 @@ def _load_rating_ids() -> dict:
 
 
 def _save_rating_ids(ids: dict):
-    """Save rating message IDs to JSON file."""
     try:
         with open(RATING_IDS_FILE, "w") as f:
             json.dump(ids, f)
@@ -91,33 +96,6 @@ def _save_rating_ids(ids: dict):
 
 
 _rating_message_ids = _load_rating_ids()
-
-# HTTP client
-_http = httpx.AsyncClient(timeout=15.0, headers={"X-API-Key": API_KEY})
-
-
-# ═══════════════════════════════════════════════════════════
-# HELPERS
-# ═══════════════════════════════════════════════════════════
-
-async def api_get(path: str):
-    try:
-        r = await _http.get(f"{API_URL}{path}")
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logger.error(f"API GET {path} failed: {e}")
-        return None
-
-
-async def api_post(path: str, data: dict = None):
-    try:
-        r = await _http.post(f"{API_URL}{path}", json=data or {})
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logger.error(f"API POST {path} failed: {e}")
-        return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -129,11 +107,7 @@ async def on_ready():
     global FORWARD_CHANNEL_ID, RATING_CHANNEL_ID
     logger.info(f"Bot ready: {bot.user} (guilds: {len(bot.guilds)})")
 
-    # Register persistent views (survive bot restarts)
-    # Done in setup_hook below (classes defined later in file)
-
-    # Load saved config from NexusData
-    config = await api_get("/api/v1/bot/config")
+    config = await asyncio.to_thread(bot_data.get_bot_config)
     if config:
         try:
             if config.get("forward_channel_id"):
@@ -149,9 +123,6 @@ async def on_ready():
             pass
 
     sync_members_task.start()
-    poll_actions_task.start()
-    poll_fast_actions_task.start()
-    poll_role_sync_actions_task.start()
     publish_rating_task.start()
     publish_department_ratings_task.start()
     round_status_task.start()
@@ -173,28 +144,30 @@ async def on_member_join(member: discord.Member):
 
     if len(_join_timestamps) >= RAID_THRESHOLD:
         # Potential raid!
-        await api_post("/api/v1/bot/antiraid/event", {
-            "event_type": "mass_join",
-            "discord_id": str(member.id),
-            "username": str(member),
-            "details": {
+        await asyncio.to_thread(
+            bot_data.report_antiraid_event,
+            event_type="mass_join",
+            discord_id=str(member.id),
+            username=str(member),
+            details={
                 "joins_in_window": len(_join_timestamps),
                 "window_seconds": RAID_WINDOW,
                 "account_age_days": (now - member.created_at.replace(tzinfo=None)).days if member.created_at else None,
             },
-        })
+        )
         logger.warning(f"RAID ALERT: {len(_join_timestamps)} joins in {RAID_WINDOW}s")
 
     # Check suspicious account (very new)
     if member.created_at:
         account_age = (now - member.created_at.replace(tzinfo=None)).days
         if account_age < 7:
-            await api_post("/api/v1/bot/antiraid/event", {
-                "event_type": "suspicious_account",
-                "discord_id": str(member.id),
-                "username": str(member),
-                "details": {"account_age_days": account_age},
-            })
+            await asyncio.to_thread(
+                bot_data.report_antiraid_event,
+                event_type="suspicious_account",
+                discord_id=str(member.id),
+                username=str(member),
+                details={"account_age_days": account_age},
+            )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -207,7 +180,7 @@ async def sync_members_task():
     global FORWARD_CHANNEL_ID, _department_chat_channel_ids
 
     # Reload forward channel config
-    config = await api_get("/api/v1/bot/config")
+    config = await asyncio.to_thread(bot_data.get_bot_config)
     if config and config.get("forward_channel_id"):
         try:
             FORWARD_CHANNEL_ID = int(config["forward_channel_id"])
@@ -215,9 +188,7 @@ async def sync_members_task():
             pass
 
     # Reload department chat channel IDs (item 6)
-    chat_channels = await api_get("/api/v1/bot/department-chat/channels")
-    if chat_channels is not None:
-        _department_chat_channel_ids = set(chat_channels.get("channel_ids") or [])
+    _department_chat_channel_ids = set(await asyncio.to_thread(bot_data.list_department_chat_channel_ids))
 
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -237,104 +208,9 @@ async def sync_members_task():
         })
 
     if members_data:
-        result = await api_post("/api/v1/bot/members/sync", {"members": members_data})
+        result = await asyncio.to_thread(bot_data.sync_members, members_data)
         if result:
             logger.info(f"Synced {result.get('synced', 0)} members to NexusData")
-
-
-@tasks.loop(seconds=30)
-async def poll_actions_task():
-    """Poll NexusData for pending bot actions."""
-    data = await api_get("/api/v1/bot/actions")
-    if not data:
-        return
-
-    for action in data:
-        action_id = action["id"]
-        action_type = action["action_type"]
-        # "check_channel_category" is handled exclusively by
-        # poll_fast_actions_task (every ~2s) — the backend request that
-        # queues it waits synchronously-ish for a fast answer, so leave it
-        # for that loop rather than racing it here. "sync_department_role"
-        # is handled by poll_role_sync_actions_task (every ~3s) — the site
-        # is meant to be the source of truth for roles "instantly", not on
-        # this loop's 30s cadence.
-        if action_type in ("check_channel_category", "sync_department_role"):
-            continue
-        payload = action.get("payload", {})
-
-        success, error_message = await execute_bot_action(action_type, payload)
-        await api_post(f"/api/v1/bot/actions/{action_id}/ack", {
-            "success": success,
-            "error_message": None if success else (error_message or "Execution failed"),
-        })
-
-
-@tasks.loop(seconds=2)
-async def poll_fast_actions_task():
-    """Fast-polled sibling of poll_actions_task, exclusively for
-    "check_channel_category" — routes/documents.py's verify-channel endpoint
-    queues one of these and waits ~9s for an answer, so this needs a much
-    tighter poll interval than the general 30s loop."""
-    data = await api_get("/api/v1/bot/actions?action_type=check_channel_category")
-    if not data:
-        return
-
-    for action in data:
-        action_id = action["id"]
-        payload = action.get("payload", {})
-        channel_id_raw = payload.get("channel_id")
-        category_id_raw = payload.get("category_id")
-
-        try:
-            channel_id = int(channel_id_raw)
-        except (TypeError, ValueError):
-            await api_post(f"/api/v1/bot/actions/{action_id}/ack", {
-                "success": False, "error_message": "Некорректный ID канала",
-            })
-            continue
-
-        channel = bot.get_channel(channel_id)
-        if not channel:
-            try:
-                channel = await bot.fetch_channel(channel_id)
-            except Exception as e:
-                await api_post(f"/api/v1/bot/actions/{action_id}/ack", {
-                    "success": False, "error_message": f"Канал не найден: {e}",
-                })
-                continue
-
-        channel_category_id = str(getattr(channel, "category_id", None) or "")
-        belongs = bool(category_id_raw) and channel_category_id == str(category_id_raw)
-        await api_post(f"/api/v1/bot/actions/{action_id}/ack", {
-            "success": True,
-            "result": {
-                "belongs_to_category": belongs,
-                "channel_name": getattr(channel, "name", None),
-            },
-        })
-
-
-@tasks.loop(seconds=3)
-async def poll_role_sync_actions_task():
-    """Dedicated fast poll for "sync_department_role" — the site is meant to
-    be the source of truth for department roles applied "instantly", so this
-    can't sit on the general 30s loop. Separate from poll_fast_actions_task
-    (which has its own ~2s cadence reserved for the synchronous
-    check_channel_category request/response contract) to keep the two
-    unrelated concerns from racing each other."""
-    data = await api_get("/api/v1/bot/actions?action_type=sync_department_role")
-    if not data:
-        return
-
-    for action in data:
-        action_id = action["id"]
-        payload = action.get("payload", {})
-        success, error_message = await execute_bot_action("sync_department_role", payload)
-        await api_post(f"/api/v1/bot/actions/{action_id}/ack", {
-            "success": success,
-            "error_message": None if success else (error_message or "Execution failed"),
-        })
 
 
 @tasks.loop(hours=1)
@@ -343,7 +219,7 @@ async def publish_rating_task():
     global RATING_CHANNEL_ID
 
     # Reload channel from NexusData config (in case it was changed via !setrating)
-    config = await api_get("/api/v1/bot/config")
+    config = await asyncio.to_thread(bot_data.get_bot_config)
     if config and config.get("rating_channel_id"):
         try:
             RATING_CHANNEL_ID = int(config["rating_channel_id"])
@@ -374,7 +250,7 @@ async def publish_rating_task():
     }
 
     for role in roles:
-        data = await api_get(f"/api/v1/bot/ratings/leaderboard?role={role}&limit=10")
+        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10)
         if not data or not data.get("leaderboard"):
             await asyncio.sleep(15)
             continue
@@ -433,7 +309,7 @@ async def publish_rating_task():
 
 # Department rating message IDs (persisted to their own JSON file, same
 # pattern as _rating_message_ids above but keyed by department_id).
-DEPARTMENT_RATING_IDS_FILE = "department_rating_message_ids.json"
+DEPARTMENT_RATING_IDS_FILE = os.path.join(_BOT_DIR, "department_rating_message_ids.json")
 
 
 def _load_department_rating_ids() -> dict:
@@ -463,11 +339,11 @@ async def publish_department_ratings_task():
     in its own configured channel, every hour. Mirrors publish_rating_task
     above (including the 15s stagger between embeds) — a department with no
     rating_channel_id configured is simply skipped."""
-    depts_resp = await api_get("/api/v1/bot/department-ratings/channels")
-    if not depts_resp or not depts_resp.get("departments"):
+    departments = await asyncio.to_thread(bot_data.list_department_rating_channels)
+    if not departments:
         return
 
-    for dept in depts_resp["departments"]:
+    for dept in departments:
         department_id = dept["department_id"]
         channel_id = dept.get("rating_channel_id")
         if not channel_id:
@@ -477,7 +353,7 @@ async def publish_department_ratings_task():
             await asyncio.sleep(15)
             continue
 
-        data = await api_get(f"/api/v1/bot/department-ratings/leaderboard?department_id={department_id}&limit=15")
+        data = await asyncio.to_thread(bot_data.get_department_rating_leaderboard, department_id, 15)
         if not data:
             await asyncio.sleep(15)
             continue
@@ -532,7 +408,7 @@ async def refresh_ticket_status():
     """Update ticket status embed. Called on ticket create/message/close."""
     global _ticket_status_msg_id
 
-    config = await api_get("/api/v1/bot/config")
+    config = await asyncio.to_thread(bot_data.get_bot_config)
     if not config:
         return
     status_channel_id = config.get("ticket_status_channel_id")
@@ -546,7 +422,7 @@ async def refresh_ticket_status():
     if not channel:
         return
 
-    tickets = await api_get("/api/v1/tickets/open")
+    tickets = await asyncio.to_thread(bot_data.get_open_tickets)
     if tickets is None:
         return
 
@@ -584,7 +460,7 @@ async def refresh_ticket_status():
 
 
 # Round status message IDs (persisted to JSON file, keyed by server name)
-ROUND_STATUS_IDS_FILE = "round_status_message_ids.json"
+ROUND_STATUS_IDS_FILE = os.path.join(_BOT_DIR, "round_status_message_ids.json")
 ROUND_STATUS_SERVERS = ["ASPER1", "ASPER2"]
 
 
@@ -630,9 +506,9 @@ async def refresh_round_status_embed(server_name: str):
     """Update (or send) the live round-status embed for one server.
 
     Called every minute by round_status_task, and immediately on round
-    start/end via the 'refresh_round_status' bot action.
+    start/end via the 'refresh_round_status' action (see execute_bot_action).
     """
-    config = await api_get("/api/v1/bot/config")
+    config = await asyncio.to_thread(bot_data.get_bot_config)
     if not config:
         return
     channel_key = f"round_status_channel_{server_name.lower()}_id"
@@ -647,7 +523,7 @@ async def refresh_round_status_embed(server_name: str):
     if not channel:
         return
 
-    status = await api_get(f"/api/v1/bot/round-status?server_name={server_name}")
+    status = await asyncio.to_thread(bot_data.get_round_status, server_name)
     if status is None:
         return
 
@@ -691,16 +567,49 @@ async def round_status_task():
 
 
 # ═══════════════════════════════════════════════════════════
+# CHANNEL-CATEGORY CHECK (near-synchronous, called via schedule()+wrap_future)
+# ═══════════════════════════════════════════════════════════
+
+async def check_channel_category(channel_id: int, category_id: str) -> dict:
+    """Direct replacement for the old queued "check_channel_category" bot
+    action — routes/documents.py's verify-channel endpoint now calls this via
+    schedule()+asyncio.wrap_future instead of polling a DiscordBotAction row
+    for ~9s. Raises on failure (channel not found) so the caller's await
+    surfaces it directly."""
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        channel = await bot.fetch_channel(channel_id)  # raises on failure
+
+    channel_category_id = str(getattr(channel, "category_id", None) or "")
+    belongs = bool(category_id) and channel_category_id == str(category_id)
+    return {"belongs_to_category": belongs, "channel_name": getattr(channel, "name", None)}
+
+
+# ═══════════════════════════════════════════════════════════
 # BOT ACTION EXECUTOR
 # ═══════════════════════════════════════════════════════════
 
+# Bounded in-memory log of recent sync_department_role failures — surfaced on
+# /adminold/discord-bot and /api/v1/admin/discord-bot (see
+# routes/discord_bot_api.py's panel_router) so a broken auto role-push is
+# visible there instead of only in the bot's own logs. Replaces the old
+# DiscordBotAction.error_message column, which had nowhere to write to once
+# the action queue itself was removed.
+_recent_role_sync_failures = deque(maxlen=50)
+
+
+def get_recent_role_sync_failures() -> list:
+    return list(_recent_role_sync_failures)
+
+
 async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Optional[str]]:
-    """Execute a bot action from NexusData queue. Returns (success, error_message) —
-    error_message is stored on DiscordBotAction.error_message so failures are
-    visible in the admin panel instead of only in the bot's own logs (see
-    sync_department_role below, which used to swallow every exception and
-    unconditionally report success — a role that failed to apply due to a
-    permission/hierarchy issue looked identical to one that worked)."""
+    """Execute a bot action. Returns (success, error_message).
+
+    Called directly via schedule(execute_bot_action(...)) from every part of
+    the app that used to queue a DiscordBotAction row — the action_type/
+    payload contract is unchanged, only the delivery mechanism (direct call
+    instead of a polled DB queue) is different, so every call site keeps
+    passing the exact same two arguments it always did."""
     try:
         if action_type == "send_message":
             channel_id = int(payload.get("channel_id", 0))
@@ -722,7 +631,7 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
             channel_config_key = payload.get("channel_config_key")
 
             if channel_config_key:
-                config = await api_get("/api/v1/bot/config")
+                config = await asyncio.to_thread(bot_data.get_bot_config)
                 if config and config.get(channel_config_key):
                     try:
                         channel_id_raw = int(config[channel_config_key])
@@ -841,11 +750,20 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
                     errors.append(f"add role {add_role_id} not found on guild")
 
             logger.info(f"Department role synced for {member}: -{remove_role_id} +{add_role_id}")
-            return (False, "; ".join(errors)) if errors else (True, None)
+            if errors:
+                _recent_role_sync_failures.append({
+                    "discord_id": discord_id,
+                    "add_role_id": add_role_id,
+                    "remove_role_id": remove_role_id,
+                    "error_message": "; ".join(errors),
+                    "executed_at": datetime.utcnow().isoformat(),
+                })
+                return False, "; ".join(errors)
+            return True, None
 
         elif action_type == "trap_triggered":
             # Send trap notification to traps channel
-            config = await api_get("/api/v1/bot/config")
+            config = await asyncio.to_thread(bot_data.get_bot_config)
             trap_channel_id = 0
             if config and config.get("trap_channel_id"):
                 try:
@@ -874,30 +792,6 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
 
             await channel.send(content="<@&1506729102713950288>", embed=embed)
             return True, None
-
-        elif action_type == "kick_member":
-            guild = bot.get_guild(GUILD_ID)
-            member_id = int(payload.get("discord_id", 0))
-            reason = payload.get("reason", "NexusData action")
-            if guild:
-                member = guild.get_member(member_id)
-                if member:
-                    await member.kick(reason=reason)
-                    return True, None
-                return False, f"Member {member_id} not found in guild"
-            return False, "Guild not found (bot not in cache for GUILD_ID)"
-
-        elif action_type == "ban_member":
-            guild = bot.get_guild(GUILD_ID)
-            member_id = int(payload.get("discord_id", 0))
-            reason = payload.get("reason", "NexusData action")
-            if guild:
-                member = guild.get_member(member_id)
-                if member:
-                    await member.ban(reason=reason)
-                    return True, None
-                return False, f"Member {member_id} not found in guild"
-            return False, "Guild not found (bot not in cache for GUILD_ID)"
 
         elif action_type == "ticket_send_message":
             channel_id = int(payload.get("channel_id", 0))
@@ -930,9 +824,7 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
                 msg = await channel.send(embed=embed)
                 # Report message_id back to NexusData
                 if project_id:
-                    await api_post(f"/api/v1/bot/sub-project/{project_id}/set-message-id", {
-                        "message_id": str(msg.id)
-                    })
+                    await asyncio.to_thread(bot_data.set_sub_project_message_id, project_id, str(msg.id))
                 return True, None
 
         elif action_type == "send_document_embed":
@@ -947,10 +839,7 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
                 embed = discord.Embed.from_dict(embed_data)
                 msg = await channel.send(embed=embed)
                 if document_id:
-                    await api_post(f"/api/v1/bot/document/{document_id}/set-message-id", {
-                        "message_id": str(msg.id),
-                        "channel_id": str(channel_id),
-                    })
+                    await asyncio.to_thread(bot_data.set_document_message_id, document_id, str(msg.id), str(channel_id))
                 return True, None
 
         elif action_type == "edit_embed":
@@ -1000,7 +889,7 @@ async def cmd_set_forward(ctx, channel: discord.TextChannel):
     """!setforward #channel - Set message forwarding channel."""
     global FORWARD_CHANNEL_ID
     FORWARD_CHANNEL_ID = channel.id
-    await api_post("/api/v1/bot/config", {"key": "forward_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "forward_channel_id", str(channel.id))
     await ctx.send(f"✅ Пересылка сообщений настроена в {channel.mention}")
 
 
@@ -1010,7 +899,7 @@ async def cmd_set_rating(ctx, channel: discord.TextChannel):
     """!setrating #channel - Set rating publication channel."""
     global RATING_CHANNEL_ID
     RATING_CHANNEL_ID = channel.id
-    await api_post("/api/v1/bot/config", {"key": "rating_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "rating_channel_id", str(channel.id))
     await ctx.send(f"✅ Рейтинг будет публиковаться в {channel.mention}")
 
 
@@ -1018,7 +907,7 @@ async def cmd_set_rating(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_traps(ctx, channel: discord.TextChannel):
     """!settraps #channel - Set trap notifications channel."""
-    await api_post("/api/v1/bot/config", {"key": "trap_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "trap_channel_id", str(channel.id))
     await ctx.send(f"✅ Уведомления о ловушках будут приходить в {channel.mention}")
 
 
@@ -1026,7 +915,7 @@ async def cmd_set_traps(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_sub_projects(ctx, channel: discord.TextChannel):
     """!setsubprojects #channel - Set sub-projects publication channel."""
-    await api_post("/api/v1/bot/config", {"key": "sub_projects_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "sub_projects_channel_id", str(channel.id))
     await ctx.send(f"✅ Корабли будут публиковаться в {channel.mention}")
 
 
@@ -1034,7 +923,7 @@ async def cmd_set_sub_projects(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_punishments(ctx, channel: discord.TextChannel):
     """!setpunishments #channel - Set punishments notification channel (all types)."""
-    await api_post("/api/v1/bot/config", {"key": "punishment_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "punishment_channel_id", str(channel.id))
     await ctx.send(f"✅ Все наказания будут отправляться в {channel.mention}")
 
 
@@ -1042,7 +931,7 @@ async def cmd_set_punishments(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_bans(ctx, channel: discord.TextChannel):
     """!setbans #channel - Set bans-only notification channel."""
-    await api_post("/api/v1/bot/config", {"key": "ban_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "ban_channel_id", str(channel.id))
     await ctx.send(f"✅ Уведомления о банах будут приходить в {channel.mention}")
 
 
@@ -1050,7 +939,7 @@ async def cmd_set_bans(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_dispatch1(ctx, channel: discord.TextChannel):
     """!setdispatch1 #channel - Set dispatch channel for ASPER1."""
-    await api_post("/api/v1/bot/config", {"key": "dispatch_channel_asper1_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "dispatch_channel_asper1_id", str(channel.id))
     await ctx.send(f"✅ Диспетчерская ASPER1 будет в {channel.mention}")
 
 
@@ -1058,7 +947,7 @@ async def cmd_set_dispatch1(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_dispatch2(ctx, channel: discord.TextChannel):
     """!setdispatch2 #channel - Set dispatch channel for ASPER2."""
-    await api_post("/api/v1/bot/config", {"key": "dispatch_channel_asper2_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "dispatch_channel_asper2_id", str(channel.id))
     await ctx.send(f"✅ Диспетчерская ASPER2 будет в {channel.mention}")
 
 
@@ -1066,7 +955,7 @@ async def cmd_set_dispatch2(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_round_status1(ctx, channel: discord.TextChannel):
     """!setroundstatus1 #channel - Set live round-status channel for ASPER1."""
-    await api_post("/api/v1/bot/config", {"key": "round_status_channel_asper1_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "round_status_channel_asper1_id", str(channel.id))
     await ctx.send(f"✅ Статус раунда ASPER1 будет в {channel.mention}")
     await refresh_round_status_embed("ASPER1")
 
@@ -1075,7 +964,7 @@ async def cmd_set_round_status1(ctx, channel: discord.TextChannel):
 @commands.has_permissions(administrator=True)
 async def cmd_set_round_status2(ctx, channel: discord.TextChannel):
     """!setroundstatus2 #channel - Set live round-status channel for ASPER2."""
-    await api_post("/api/v1/bot/config", {"key": "round_status_channel_asper2_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "round_status_channel_asper2_id", str(channel.id))
     await ctx.send(f"✅ Статус раунда ASPER2 будет в {channel.mention}")
     await refresh_round_status_embed("ASPER2")
 
@@ -1096,10 +985,6 @@ async def cmd_sync_members(ctx):
     await ctx.send("✅ Участники синхронизированы")
 
 
-# ═══════════════════════════════════════════════════════════
-# RUN
-# ═══════════════════════════════════════════════════════════
-# (main block moved to end of file)
 # ═══════════════════════════════════════════════════════════
 # TICKET SYSTEM
 # ═══════════════════════════════════════════════════════════
@@ -1127,7 +1012,7 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
     is_admin = user.guild_permissions.administrator if hasattr(user, 'guild_permissions') else False
 
     # Check: already has open ticket in this category
-    open_tickets = await api_get("/api/v1/tickets/open")
+    open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
     if open_tickets:
         for t in open_tickets:
             if t.get("creator_discord_id") == str(user.id) and t.get("type") == ticket_type:
@@ -1152,8 +1037,8 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
                     except (ValueError, TypeError):
                         pass
 
-    config = await api_get("/api/v1/tickets/config")
-    bot_config = await api_get("/api/v1/bot/config")
+    config = await asyncio.to_thread(bot_data.get_tickets_config)
+    bot_config = await asyncio.to_thread(bot_data.get_bot_config)
     if not config:
         await interaction.followup.send("Ошибка загрузки конфигурации", ephemeral=True)
         return
@@ -1193,16 +1078,19 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
     # Use display_name as the title
     title = f"{TICKET_TYPES.get(ticket_type, {}).get('name', ticket_type)}"
 
-    result = await api_post("/api/v1/tickets/create", {
-        "ticket_type": ticket_type,
-        "title": title,
-        "creator_discord_id": str(user.id),
-        "creator_username": str(user),
-        "creator_display_name": user.display_name,
-        "discord_channel_id": str(channel.id),
-    })
-
-    ticket_id = result.get("ticket_id", "?") if result else "?"
+    try:
+        ticket_id = await asyncio.to_thread(
+            bot_data.create_ticket,
+            ticket_type=ticket_type,
+            title=title,
+            creator_discord_id=str(user.id),
+            creator_username=str(user),
+            creator_display_name=user.display_name,
+            discord_channel_id=str(channel.id),
+        )
+    except Exception as e:
+        logger.error(f"Failed to create ticket record: {e}")
+        ticket_id = "?"
 
     tinfo = TICKET_TYPES.get(ticket_type, {})
     silent_pings = " ".join(f"||<@&{rid}>||" for rid in ping_roles if rid)
@@ -1226,6 +1114,20 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
     await refresh_ticket_status()
 
 
+async def _close_ticket_with_retry(ticket_id, closed_by: str) -> bool:
+    """One retry, then give up — never delete the ticket channel unless this
+    actually succeeded. A stuck-open channel is recoverable; a deleted
+    channel with a still-open site-side Ticket row ("phantom ticket") is
+    not."""
+    for _ in range(2):
+        try:
+            if await asyncio.to_thread(bot_data.close_ticket, ticket_id, closed_by):
+                return True
+        except Exception as e:
+            logger.warning(f"close_ticket({ticket_id}) failed: {e}")
+    return False
+
+
 class TicketCloseView(discord.ui.View):
     def __init__(self, ticket_id=None, channel=None):
         super().__init__(timeout=None)
@@ -1238,18 +1140,7 @@ class TicketCloseView(discord.ui.View):
         channel = interaction.channel
         ticket_id = self.ticket_id
 
-        # Never delete the channel unless the site-side close actually
-        # succeeded — api_post silently returns None on any HTTP/network
-        # failure, and blindly deleting anyway is exactly what orphaned a
-        # site-side Ticket row stuck open forever with no channel left to
-        # act on ("phantom tickets"). One retry, then bail out and leave the
-        # channel intact — a stuck-open channel is recoverable, a deleted
-        # one with a stuck-open DB row is not.
-        result = await api_post(f"/api/v1/tickets/{ticket_id}/close", {"closed_by": interaction.user.display_name}) if ticket_id else None
-        if ticket_id and result is None:
-            result = await api_post(f"/api/v1/tickets/{ticket_id}/close", {"closed_by": interaction.user.display_name})
-
-        if not ticket_id or result is None:
+        if not ticket_id or not await _close_ticket_with_retry(ticket_id, interaction.user.display_name):
             await interaction.followup.send(
                 "⚠️ Не удалось закрыть обращение на сайте — канал НЕ удалён, попробуйте ещё раз позже.",
                 ephemeral=True,
@@ -1345,7 +1236,7 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
 
     if not has_perm:
         # Load ticket config ping roles and check if user has any of them
-        config = await api_get("/api/v1/tickets/config")
+        config = await asyncio.to_thread(bot_data.get_tickets_config)
         if config:
             for ttype, tconf in config.get("types", {}).items():
                 for role_id_str in tconf.get("ping_roles", []):
@@ -1388,7 +1279,7 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
         time_str = f"{minutes} минут"
 
     # Find ticket_id by channel
-    open_tickets = await api_get("/api/v1/tickets/open")
+    open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
     ticket_id = None
     ticket_title = "Обращение"
     creator_discord_id = None
@@ -1408,19 +1299,8 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
 
     async def _do_close():
         await asyncio.sleep(delay_seconds)
-        # Close in NexusData — never delete the channel unless this actually
-        # succeeded (with one retry). Same phantom-ticket fix as the button
-        # close handler: api_post/api_get both silently return None on any
-        # failure, so the old code deleted the channel even when the site
-        # never learned the ticket closed, or (worse) when ticket_id itself
-        # failed to resolve via the separate /tickets/open lookup above.
-        close_result = None
-        if ticket_id:
-            close_result = await api_post(f"/api/v1/tickets/{ticket_id}/close", {"closed_by": user.display_name})
-            if close_result is None:
-                close_result = await api_post(f"/api/v1/tickets/{ticket_id}/close", {"closed_by": user.display_name})
 
-        if not ticket_id or close_result is None:
+        if not ticket_id or not await _close_ticket_with_retry(ticket_id, user.display_name):
             _pending_close.pop(channel_id_str, None)
             try:
                 await channel.send(
@@ -1467,7 +1347,7 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
 @commands.has_permissions(administrator=True)
 async def cmd_set_ticket_category(ctx, category_id: str):
     """!setticketcategory <category_id> - Set category for ticket channels."""
-    await api_post("/api/v1/bot/config", {"key": "ticket_category_id", "value": category_id})
+    await asyncio.to_thread(bot_data.set_bot_config, "ticket_category_id", category_id)
     await ctx.send(f"✅ Категория для тикетов: {category_id}")
 
 
@@ -1475,7 +1355,7 @@ async def cmd_set_ticket_category(ctx, category_id: str):
 @commands.has_permissions(administrator=True)
 async def cmd_set_ticket_status(ctx, channel: discord.TextChannel):
     """!setticketstatus #channel - Set ticket status channel."""
-    await api_post("/api/v1/bot/config", {"key": "ticket_status_channel_id", "value": str(channel.id)})
+    await asyncio.to_thread(bot_data.set_bot_config, "ticket_status_channel_id", str(channel.id))
     await ctx.send(f"✅ Статус тикетов будет в {channel.mention}")
 
 
@@ -1493,7 +1373,7 @@ async def on_message(message: discord.Message):
         attachments = [{"url": a.url, "filename": a.filename, "content_type": a.content_type} for a in message.attachments]
 
         # First find ticket_id by channel
-        open_tickets = await api_get("/api/v1/tickets/open")
+        open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
         ticket_id = None
         if open_tickets:
             for t in open_tickets:
@@ -1502,16 +1382,17 @@ async def on_message(message: discord.Message):
                     break
 
         if ticket_id:
-            await api_post("/api/v1/tickets/message", {
-                "ticket_id": ticket_id,
-                "author_discord_id": str(message.author.id),
-                "author_username": str(message.author),
-                "author_display_name": message.author.display_name,
-                "author_avatar_url": str(message.author.display_avatar.url) if message.author.display_avatar else None,
-                "content": message.content,
-                "attachments": attachments,
-                "discord_message_id": str(message.id),
-            })
+            await asyncio.to_thread(
+                bot_data.add_ticket_message,
+                ticket_id=ticket_id,
+                author_discord_id=str(message.author.id),
+                author_username=str(message.author),
+                author_display_name=message.author.display_name,
+                author_avatar_url=str(message.author.display_avatar.url) if message.author.display_avatar else None,
+                content=message.content,
+                attachments=attachments,
+                discord_message_id=str(message.id),
+            )
             # Update status embed
             await refresh_ticket_status()
 
@@ -1520,13 +1401,14 @@ async def on_message(message: discord.Message):
     # via the "send_message" action) never reach here — message.author.bot
     # already short-circuited this handler above.
     if str(message.channel.id) in _department_chat_channel_ids:
-        await api_post("/api/v1/bot/department-chat/messages", {
-            "discord_channel_id": str(message.channel.id),
-            "discord_message_id": str(message.id),
-            "author_name": message.author.display_name,
-            "author_avatar_url": str(message.author.display_avatar.url) if message.author.display_avatar else None,
-            "content": message.content,
-        })
+        await asyncio.to_thread(
+            bot_data.ingest_department_chat_message,
+            discord_channel_id=str(message.channel.id),
+            discord_message_id=str(message.id),
+            author_name=message.author.display_name,
+            author_avatar_url=str(message.author.display_avatar.url) if message.author.display_avatar else None,
+            content=message.content,
+        )
 
     # Forward to designated channel (existing logic)
     global FORWARD_CHANNEL_ID
@@ -1582,40 +1464,81 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     act on. Best-effort: only touches tickets that are still open."""
     if not (channel.name and channel.name.startswith("ticket-")):
         return
-    open_tickets = await api_get("/api/v1/tickets/open")
+    open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
     if not open_tickets:
         return
     channel_id = str(channel.id)
     for t in open_tickets:
         if t.get("discord_channel_id") == channel_id:
-            await api_post(f"/api/v1/tickets/{t['id']}/close", {"closed_by": "Discord (канал удалён вручную)"})
+            await asyncio.to_thread(bot_data.close_ticket, t["id"], "Discord (канал удалён вручную)")
             await refresh_ticket_status()
             break
 
 
-# Handle ticket_send_message and ticket_close_channel bot actions
-# (already handled in execute_bot_action, add these cases)
+@bot.event
+async def setup_hook():
+    """Register persistent views so buttons work after restart, and sync
+    slash commands. Runs on module import (not gated behind __main__ like it
+    used to be) since this module is now imported, not exec'd as a script."""
+    bot.add_view(TicketPanelView())
+    bot.add_view(TicketCloseView())
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} slash command(s)")
+    except Exception as e:
+        logger.error(f"Failed to sync slash commands: {e}")
 
 
 # ═══════════════════════════════════════════════════════════
-# RUN (must be at the very end after all class definitions)
+# SUPERVISOR — how the rest of the app drives this bot
 # ═══════════════════════════════════════════════════════════
+
+_bot_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def schedule(coro):
+    """Thread-safe way to fire a coroutine at the bot's event loop from ANY
+    context — a sync/threadpool-dispatched route handler or an async one.
+    Returns a concurrent.futures.Future; most callers fire-and-forget it, but
+    routes/documents.py's verify-channel endpoint awaits it (via
+    asyncio.wrap_future) for check_channel_category's near-synchronous
+    request/response contract. This is the direct replacement for every
+    `db.add(DiscordBotAction(...))` call site — same action_type/payload
+    shape, delivered immediately instead of polled."""
+    if _bot_loop is None:
+        raise RuntimeError("Discord bot is not running (schedule() called before supervise_bot() started it)")
+    return asyncio.run_coroutine_threadsafe(coro, _bot_loop)
+
+
+async def supervise_bot():
+    """Runs the bot with retry/backoff instead of the old blocking
+    bot.run(TOKEN) — lets this coroutine be scheduled alongside the rest of
+    the app's startup (main.py's startup hook in single-process mode, or
+    scheduler_process.py in multi-worker mode) instead of needing its own
+    dedicated process."""
+    global _bot_loop
+
+    if not settings.discord_bot_token:
+        logger.warning("discord_bot_token not configured — Discord bot will not start")
+        return
+
+    _bot_loop = asyncio.get_running_loop()
+    backoff = 5
+    while True:
+        try:
+            await bot.start(settings.discord_bot_token)
+            break  # bot.close() was called deliberately — stop supervising
+        except Exception:
+            logger.exception(f"Discord bot crashed — restarting in {backoff}s")
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300)
+
 
 if __name__ == "__main__":
-    if not TOKEN:
-        print("ERROR: DISCORD_BOT_TOKEN not set in .env")
-        exit(1)
-
-    @bot.event
-    async def setup_hook():
-        """Register persistent views so buttons work after restart."""
-        bot.add_view(TicketPanelView())
-        bot.add_view(TicketCloseView())
-        # Sync slash commands globally
-        try:
-            synced = await bot.tree.sync()
-            logger.info(f"Synced {len(synced)} slash command(s)")
-        except Exception as e:
-            logger.error(f"Failed to sync slash commands: {e}")
-
-    bot.run(TOKEN)
+    # Quick standalone check — normal operation is via supervise_bot() called
+    # from main.py / scheduler_process.py.
+    asyncio.run(supervise_bot())

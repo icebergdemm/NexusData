@@ -21,12 +21,23 @@ const POPUP_WIDTH = 260
  * latest sub positions per WORLD_STATE_API_GUIDE.md §5) plus the dynamic
  * layer (hull water/fire fill, door openness, characters). Pan with drag,
  * zoom with the wheel, click a character to select it (see the side panel
- * in index.tsx for details on the selected one). */
-export function WorldCanvas({ geometry, state, selectedCharacterId, onSelectCharacter }: {
+ * in index.tsx for details on the selected one).
+ *
+ * `targetMode` repurposes clicks for coordinate-picking (dispatch's torpedo
+ * strike dialog) instead of character selection — a crosshair follows
+ * `targetPoint` and every click reports world coordinates via
+ * `onPickTarget` instead of touching character selection at all. */
+export function WorldCanvas({
+  geometry, state, selectedCharacterId, onSelectCharacter,
+  targetMode = false, targetPoint = null, onPickTarget,
+}: {
   geometry: WorldGeometry
   state: WorldState
   selectedCharacterId: number | null
   onSelectCharacter: (id: number | null) => void
+  targetMode?: boolean
+  targetPoint?: { x: number; y: number } | null
+  onPickTarget?: (x: number, y: number) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -192,8 +203,23 @@ export function WorldCanvas({ geometry, state, selectedCharacterId, onSelectChar
         ctx.fillText(c.name, sx, sy - radius - 4)
       }
     }
+
+    if (targetMode && targetPoint) {
+      const [sx, sy] = toScreen(targetPoint.x, targetPoint.y, view)
+      ctx.strokeStyle = "#FF5A4E"
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(sx, sy, 14, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(sx - 20, sy); ctx.lineTo(sx - 6, sy)
+      ctx.moveTo(sx + 6, sy); ctx.lineTo(sx + 20, sy)
+      ctx.moveTo(sx, sy - 20); ctx.lineTo(sx, sy - 6)
+      ctx.moveTo(sx, sy + 6); ctx.lineTo(sx, sy + 20)
+      ctx.stroke()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, state, view, selectedCharacterId])
+  }, [geometry, state, view, selectedCharacterId, targetMode, targetPoint])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
@@ -228,12 +254,19 @@ export function WorldCanvas({ geometry, state, selectedCharacterId, onSelectChar
     dragRef.current = null
     if (!drag || drag.moved) return
 
-    // Click (not a drag) — hit-test the nearest character within ~10px.
     const container = containerRef.current
     if (!container) return
     const rect = container.getBoundingClientRect()
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
+
+    if (targetMode) {
+      const [wx, wy] = toWorld(mx, my, view)
+      onPickTarget?.(Math.round(wx), Math.round(wy))
+      return
+    }
+
+    // Click (not a drag) — hit-test the nearest character within ~10px.
     let closest: WorldCharacter | null = null
     let closestDist = 12 // px
     for (const c of state.characters) {
@@ -244,7 +277,7 @@ export function WorldCanvas({ geometry, state, selectedCharacterId, onSelectChar
     onSelectCharacter(closest ? closest.id : null)
   }
 
-  const selectedCharacter = selectedCharacterId != null
+  const selectedCharacter = !targetMode && selectedCharacterId != null
     ? state.characters.find((c) => c.id === selectedCharacterId) ?? null
     : null
 
@@ -269,7 +302,7 @@ export function WorldCanvas({ geometry, state, selectedCharacterId, onSelectChar
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full cursor-grab overflow-hidden rounded-lg border bg-[#0A0E14] active:cursor-grabbing"
+      className={`relative h-full w-full overflow-hidden rounded-lg border bg-[#0A0E14] ${targetMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}

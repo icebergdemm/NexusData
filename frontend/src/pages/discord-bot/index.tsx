@@ -33,7 +33,7 @@ interface FailedRoleSync {
   error_message: string | null; executed_at: string | null
 }
 interface DiscordBotResponse {
-  members_count: number; pending_actions: number; last_sync: string | null
+  members_count: number; bot_online: boolean; last_sync: string | null
   config: Record<string, string>; antiraid_events: AntiRaidEvent[]; twink_suspects: TwinkSuspect[]
   failed_role_syncs: FailedRoleSync[]
   can_edit: boolean
@@ -157,7 +157,7 @@ export function DiscordBotPage() {
       <div className="space-y-4">
       <div className="grid grid-cols-3 gap-4">
         <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.members_count ?? "-"}</div><div className="text-xs text-muted-foreground">Участников Discord в базе данных (не актуальное кол-во, а общее)</div></CardContent></Card>
-        <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.pending_actions ?? "-"}</div><div className="text-xs text-muted-foreground">Задач в очереди</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.bot_online ? "Онлайн" : "Оффлайн"}</div><div className="text-xs text-muted-foreground">Подключение бота</div></CardContent></Card>
         <Card><CardContent className="text-center"><div className="text-sm font-bold">{data?.last_sync ? new Date(data.last_sync).toLocaleString("ru-RU") : "-"}</div><div className="text-xs text-muted-foreground">Последняя синхронизация</div></CardContent></Card>
       </div>
 

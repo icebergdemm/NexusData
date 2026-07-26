@@ -1114,16 +1114,16 @@ async def api_verify_document_discord_channel(
 ):
     """Near-synchronous check that a manually-entered channel ID actually
     belongs to the document's department's configured Discord category
-    (Department.discord_category_id, superuser-only setting) — queues a
-    "check_channel_category" bot action and polls THIS SAME row for up to
-    ~9s while the bot's dedicated ~2s fast-poll loop answers it. If the
-    department hasn't configured a category, verification is skipped
-    (nothing to check against) rather than blocking publishing."""
+    (Department.discord_category_id, superuser-only setting) — calls the
+    in-process bot directly and awaits its answer (with a timeout), instead
+    of the old queue-a-row-and-poll-it dance. If the department hasn't
+    configured a category, verification is skipped (nothing to check
+    against) rather than blocking publishing."""
     doc, _access = load_document_or_404(db, document_id, current_admin, "edit")
     if not doc.department_id:
         raise HTTPException(status_code=400, detail="Доступно только для документов отдела")
 
-    from models import Department, DiscordBotAction
+    from models import Department
 
     dept = db.query(Department).filter(Department.id == doc.department_id).first()
     if not dept:
@@ -1137,28 +1137,22 @@ async def api_verify_document_discord_channel(
     if not dept.discord_category_id:
         return JSONResponse({"verified": True, "skipped": True, "channel_name": None})
 
-    action = DiscordBotAction(
-        action_type="check_channel_category",
-        payload={"channel_id": channel_id, "category_id": dept.discord_category_id},
-        queued_by_admin_id=current_admin.id,
-    )
-    db.add(action)
-    db.commit()
-    db.refresh(action)
-
     import asyncio
-    for _ in range(18):  # ~9s at 0.5s steps — matches the bot's ~2s fast-poll cadence with margin
-        if action.executed != 0:
-            break
-        await asyncio.sleep(0.5)
-        db.refresh(action)
-
-    if action.executed == 0:
+    from discord_bot import bot as discord_bot
+    try:
+        result = await asyncio.wait_for(
+            asyncio.wrap_future(discord_bot.schedule(
+                discord_bot.check_channel_category(int(channel_id), dept.discord_category_id)
+            )),
+            timeout=9.0,
+        )
+    except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Бот не ответил вовремя — попробуйте ещё раз")
-    if action.executed == 2:
-        raise HTTPException(status_code=502, detail=action.error_message or "Ошибка проверки канала")
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Ошибка проверки канала: {e}")
 
-    result = action.result or {}
     return JSONResponse({
         "verified": bool(result.get("belongs_to_category")),
         "skipped": False,
@@ -1185,7 +1179,7 @@ async def api_publish_document_to_discord(
     if not doc.department_id:
         raise HTTPException(status_code=400, detail="Публикация в Discord доступна только для документов отдела")
 
-    from models import Department, DiscordBotAction
+    from models import Department
 
     dept = db.query(Department).filter(Department.id == doc.department_id).first()
     if not dept:
@@ -1208,18 +1202,15 @@ async def api_publish_document_to_discord(
         "footer": {"text": f"Опубликовано: {current_admin.discord_username or 'ND'}"},
     }
 
+    from discord_bot import bot as discord_bot
     if doc.discord_message_id and channel_id == doc.discord_channel_id:
-        db.add(DiscordBotAction(
-            action_type="edit_embed",
-            payload={"channel_id": channel_id, "message_id": doc.discord_message_id, "embed": embed},
-            queued_by_admin_id=current_admin.id,
-        ))
+        discord_bot.schedule(discord_bot.execute_bot_action("edit_embed", {
+            "channel_id": channel_id, "message_id": doc.discord_message_id, "embed": embed,
+        }))
     else:
-        db.add(DiscordBotAction(
-            action_type="send_document_embed",
-            payload={"channel_id": channel_id, "embed": embed, "document_id": doc.id},
-            queued_by_admin_id=current_admin.id,
-        ))
+        discord_bot.schedule(discord_bot.execute_bot_action("send_document_embed", {
+            "channel_id": channel_id, "embed": embed, "document_id": doc.id,
+        }))
         doc.discord_channel_id = channel_id
         # Cleared, not guessed — the bot's callback (set-message-id) fills
         # this back in once the new message is actually sent.

@@ -21,7 +21,7 @@ from typing import Optional, List
 import secrets
 from datetime import datetime, timedelta
 
-from database import get_db
+from database import get_db, get_game_db
 from security import check_permission
 from config import get_settings
 from security import verify_external_api_key_dependency
@@ -106,7 +106,7 @@ api_router = APIRouter(
 def report_online_players(
     report: ServerPlayersReport,
     server_name: Optional[str] = Query(None, description="Имя сервера-отправителя"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """Replace the full snapshot of currently online players for a server.
 
@@ -157,7 +157,7 @@ def _update_server_live_state(
 @api_router.post("/anticheat", response_model=AnticheatEventOut)
 def report_anticheat_event(
     event: AnticheatEventIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """Record a single anticheat trigger from the game server."""
     svc = ServerModerationService(db)
@@ -168,7 +168,7 @@ def report_anticheat_event(
 @api_router.get("/actions")
 def get_pending_actions(
     server_name: Optional[str] = Query(None, description="Имя сервера — получить только свои задачи"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """Return pending actions for the specified server."""
     svc = ServerModerationService(db)
@@ -180,7 +180,7 @@ def get_pending_actions(
 def acknowledge_action(
     action_id: int,
     ack: ServerActionAck,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """Acknowledge that the game server executed (or failed) a queued action.
     Include server_name in the body so NexusData can track per-server completion for broadcast actions."""

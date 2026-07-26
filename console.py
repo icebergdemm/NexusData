@@ -34,12 +34,22 @@ logger = logging.getLogger(__name__)
 # happened to land between two polls.
 _WORKERS_RESTART_WAIT_SECONDS = 7.0
 
+# Comfortably longer than proxy_server.py's backend-watcher poll interval
+# (~2s), same reasoning as _WORKERS_RESTART_WAIT_SECONDS above — long enough
+# that the proxy is guaranteed to actually see backend_enabled go False (and
+# kill the process) before this flips it back to True.
+_BACKEND_RESTART_WAIT_SECONDS = 5.0
+
 _HELP = """
 Доступные команды:
   status                       — текущее состояние подсистем
   api on|off|restart           — вкл/выкл/перезапуск API (/api/*)
   web on|off|restart           — вкл/выкл/перезапуск веб-морды (сайта/SPA)
   workers on|off|restart       — вкл/выкл/перезапуск фоновых воркеров
+  backend on|off|restart       — вкл/выкл/перезапуск всего backend-процесса
+                                 (api_server.py) — используйте перед заменой
+                                 кода при деплое; прокси (proxy_server.py)
+                                 продолжает показывать страницу техработ
   maintenance on [текст]|off   — вкл/выкл режим технических работ
   db check                     — принудительно проверить подключение к БД
   help                         — эта справка
@@ -52,6 +62,7 @@ def _print_status():
         f"api={'on' if s.api_enabled else 'OFF'}  "
         f"web={'on' if s.web_enabled else 'OFF'}  "
         f"workers={'on' if s.workers_enabled else 'OFF'}  "
+        f"backend={'on' if s.backend_enabled else 'OFF'}  "
         f"db={'ok' if s.db_healthy else 'DOWN'}  "
         f"maintenance={('ON — ' + s.maintenance_message) if s.maintenance_mode else 'off'}"
     )
@@ -104,6 +115,23 @@ def _workers_cmd(action: str):
         print("Использование: workers on|off|restart")
 
 
+def _backend_cmd(action: str):
+    if action == "on":
+        runtime_control.write_state(backend_enabled=True)
+        print("backend: запускается (в течение нескольких секунд)")
+    elif action == "off":
+        runtime_control.write_state(backend_enabled=False)
+        print("backend: останавливается (в течение нескольких секунд) — прокси продолжит отвечать страницей техработ")
+    elif action == "restart":
+        runtime_control.write_state(backend_enabled=False)
+        print(f"backend: остановка… (~{int(_BACKEND_RESTART_WAIT_SECONDS)} сек)")
+        time.sleep(_BACKEND_RESTART_WAIT_SECONDS)
+        runtime_control.write_state(backend_enabled=True)
+        print("backend: снова запускается")
+    else:
+        print("Использование: backend on|off|restart")
+
+
 def _maintenance_cmd(rest: str):
     parts = rest.strip().split(maxsplit=1)
     action = parts[0].lower() if parts else ""
@@ -133,6 +161,8 @@ def _handle(line: str):
         _toggle(f"{cmd}_enabled", cmd, rest.strip().lower())
     elif cmd == "workers":
         _workers_cmd(rest.strip().lower())
+    elif cmd == "backend":
+        _backend_cmd(rest.strip().lower())
     elif cmd == "maintenance":
         _maintenance_cmd(rest)
     elif cmd == "db" and rest.strip().lower() == "check":

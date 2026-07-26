@@ -11,7 +11,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { Wrench } from "lucide-react"
+import { Wrench, RefreshCw } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
@@ -169,6 +169,12 @@ export function KitsPage() {
     onSuccess: () => { toast.success("Квал-кит удалён"); invalidate() },
   })
 
+  const syncReference = useMutation({
+    mutationFn: () => api.post("/api/v1/admin/kits/sync", {}),
+    onSuccess: () => toast.success("Синхронизация китов и справочников запрошена — сервер обновит кэш при следующем опросе очереди"),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const startEditBase = (k: KitRow) => {
     setEditingBaseId(k.id)
     setEditDraft({ job_id: k.job_id, kit_level: String(k.kit_level), items: JSON.stringify(k.items, null, 2) })
@@ -182,7 +188,22 @@ export function KitsPage() {
 
   return (
     <div>
-      <PageHeader title="Редактирование китов" description="Стартовые наборы предметов по профессиям и квалификациям" icon={Wrench} />
+      <PageHeader
+        title="Редактирование китов"
+        description="Стартовые наборы предметов по профессиям и квалификациям"
+        icon={Wrench}
+        actions={(
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={syncReference.isPending}
+            onClick={() => syncReference.mutate()}
+            title="Принудительно обновить кэш китов и справочников на сервере, минуя проверку изменений"
+          >
+            <RefreshCw className="size-3.5" /> Синхронизировать с сервером
+          </Button>
+        )}
+      />
       <Tabs defaultValue="base" className="space-y-4">
       <TabsList>
         <TabsTrigger value="base">Базовые киты</TabsTrigger>

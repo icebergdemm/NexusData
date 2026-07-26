@@ -110,14 +110,21 @@ export interface PlayerDetailResponse {
   custom_talents: Record<string, string[]>
   available_kval_kits: AvailableKvalKit[]
   is_online: boolean
-  server_privilege: PlayerServerPrivilege | null
+  // A player can hold several grants at once — one manual per server_scope
+  // (global/ASPER1/ASPER2) plus one department-derived (is_auto) grant,
+  // summed together rather than only one ever existing.
+  server_privileges: PlayerServerPrivilege[]
   has_view: boolean
   has_edit: boolean
   has_delete: boolean
   has_special: boolean
+  can_issue_punishment: boolean
+  punishment_types: string[]
+  punishment_type_labels: Record<string, string>
 }
 
 export interface PlayerServerPrivilege {
+  id: number
   server_group_id: number | null
   server_group_name: string | null
   server_scope: string | null

@@ -37,6 +37,13 @@ class RuntimeState:
     api_enabled: bool = True
     web_enabled: bool = True
     workers_enabled: bool = True
+    # Controls the actual backend (api_server.py) OS process, managed by
+    # proxy_server.py — distinct from api_enabled/web_enabled, which only
+    # gate request handling INSIDE that same process. Flipping this to False
+    # stops the whole backend process (e.g. to safely replace code during a
+    # deploy); the proxy keeps serving the maintenance/unavailable page the
+    # entire time since it's a separate process that never goes down.
+    backend_enabled: bool = True
     maintenance_mode: bool = False
     maintenance_message: str = ""
     db_healthy: bool = True

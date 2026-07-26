@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import { ApiError } from "@/lib/api"
 import { worldStateApi, type WorldCharacter } from "./api"
 import { WorldCanvas } from "./WorldCanvas"
 
@@ -51,10 +52,11 @@ export function WorldOverviewPage() {
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
   const [selectedCharacterId, setSelectedCharacterId] = useState<number | null>(null)
 
-  const { data: roundsData, isLoading: roundsLoading } = useQuery({
+  const { data: roundsData, isLoading: roundsLoading, isError: roundsError, error: roundsErrorObj } = useQuery({
     queryKey: ["world-rounds"],
     queryFn: () => worldStateApi.listRounds(),
     refetchInterval: 5000,
+    retry: false,
   })
 
   useEffect(() => {
@@ -102,6 +104,15 @@ export function WorldOverviewPage() {
 
       {roundsLoading ? (
         <Skeleton className="flex-1" />
+      ) : roundsError ? (
+        <Card className="flex-1"><CardContent className="flex h-full flex-col items-center justify-center gap-1 py-12 text-center text-sm">
+          <span className="font-medium text-destructive">Не удалось загрузить раунды</span>
+          <span className="text-muted-foreground">
+            {roundsErrorObj instanceof ApiError && roundsErrorObj.status === 403
+              ? "Недостаточно прав для просмотра этой страницы."
+              : roundsErrorObj instanceof ApiError ? roundsErrorObj.message : "Проверьте соединение и попробуйте снова."}
+          </span>
+        </CardContent></Card>
       ) : !roundsData?.rounds.length ? (
         <Card className="flex-1"><CardContent className="flex h-full items-center justify-center py-12 text-center text-sm text-muted-foreground">
           Похоже раунд не начался :(

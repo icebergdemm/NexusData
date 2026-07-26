@@ -9,7 +9,12 @@ spawning their own threads. This gives us:
   - Unified logging and monitoring
 """
 
+import ctypes
+import ctypes.util
+import gc
 import logging
+import os
+import platform
 import threading
 from datetime import datetime, timedelta
 
@@ -19,6 +24,51 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+# ── Memory maintenance helpers ─────────────────────────────────────────────
+# Cached libc handle for malloc_trim (Linux/glibc only). `False` is a
+# "tried and unavailable" sentinel so we don't re-probe every cycle.
+_libc = None
+
+
+def _get_libc():
+    global _libc
+    if _libc is None:
+        if platform.system() != "Linux":
+            _libc = False
+        else:
+            try:
+                _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+            except Exception:
+                _libc = False
+    return _libc or None
+
+
+def _malloc_trim() -> bool:
+    """Ask glibc to return free heap memory to the OS (no-op off Linux/glibc).
+
+    Long-running Python services that periodically build large temporary
+    structures (analytics row loads, log parsing, anomaly scans) otherwise
+    show RSS that only ever grows and plateaus high — even fully idle —
+    because glibc parks freed memory in per-thread arenas rather than handing
+    it back. This is the direct fix for "RAM keeps growing on empty"."""
+    libc = _get_libc()
+    if libc is not None and hasattr(libc, "malloc_trim"):
+        try:
+            libc.malloc_trim(0)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def _rss_mb():
+    try:
+        import psutil
+        return round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
+    except Exception:
+        return None
 
 # Try to import task_scheduler — if not present, fall back to simple thread model
 try:
@@ -267,6 +317,22 @@ def task_sync_department_roles() -> dict:
         updated = 0
         removed = 0
 
+        # Batch-load AdminUser (by discord_id) and every existing
+        # DepartmentMember row (by admin_id) up front instead of one query per
+        # member inside the loop below. Admins created mid-loop (newly
+        # provisioned) are added to admins_by_discord_id as they're created;
+        # they have no pre-existing DepartmentMember rows to look up.
+        discord_ids = [dm.discord_id for dm in members]
+        admins_by_discord_id = {
+            a.discord_id: a
+            for a in (db.query(AdminUser).filter(AdminUser.discord_id.in_(discord_ids)).all() if discord_ids else [])
+        }
+        existing_by_admin_id: dict = {}
+        if admins_by_discord_id:
+            admin_ids = [a.id for a in admins_by_discord_id.values()]
+            for row in db.query(DepartmentMember).filter(DepartmentMember.admin_id.in_(admin_ids)).all():
+                existing_by_admin_id.setdefault(row.admin_id, {})[row.department_id] = row
+
         for dm in members:
             role_ids = dm.role_ids or []
 
@@ -281,7 +347,7 @@ def task_sync_department_roles() -> dict:
                     elif kind == "deputy_head":
                         grant["is_deputy"] = True
 
-            admin = db.query(AdminUser).filter(AdminUser.discord_id == dm.discord_id).first()
+            admin = admins_by_discord_id.get(dm.discord_id)
             if not admin:
                 if not grants:
                     continue  # nothing to provision, nothing to reconcile
@@ -294,6 +360,7 @@ def task_sync_department_roles() -> dict:
                 )
                 db.add(admin)
                 db.flush()
+                admins_by_discord_id[dm.discord_id] = admin
                 provisioned += 1
             elif admin.is_deleted and grants:
                 # Regained a department-granting role after being
@@ -309,10 +376,7 @@ def task_sync_department_roles() -> dict:
             # exists" below and triggers a duplicate INSERT, which violates
             # DepartmentMember's ux_dept_member unique constraint and fails
             # the whole run (this previously broke the worker outright).
-            existing = {
-                m.department_id: m
-                for m in db.query(DepartmentMember).filter(DepartmentMember.admin_id == admin.id).all()
-            }
+            existing = existing_by_admin_id.setdefault(admin.id, {})
             # Reconcile every department currently granted by role, plus every
             # department with an existing AUTO row that's still role-mapped
             # (so a fully-revoked grant gets cleaned up, not just skipped).
@@ -397,14 +461,30 @@ def task_reconcile_department_discord_roles() -> dict:
     """
     db = SessionLocal()
     try:
-        from models import DepartmentMember, Department, DiscordMember, DiscordBotAction
+        from sqlalchemy.orm import joinedload
+        from models import DepartmentMember, Department, DiscordMember
+        from discord_bot import bot as discord_bot
 
+        # joinedload admin/department/access_levels so the loop below never
+        # lazy-loads a relationship per row (each would otherwise be its own
+        # query per membership).
         memberships = (
             db.query(DepartmentMember)
             .join(Department, Department.id == DepartmentMember.department_id)
             .filter(Department.is_archived.is_(False))
+            .options(
+                joinedload(DepartmentMember.admin),
+                joinedload(DepartmentMember.department).joinedload(Department.access_levels),
+            )
             .all()
         )
+
+        discord_ids = [m.admin.discord_id for m in memberships if m.admin and m.admin.discord_id]
+        snapshots_by_discord_id = {
+            s.discord_id: s
+            for s in (db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else [])
+        }
+
         queued = 0
         for m in memberships:
             admin = m.admin
@@ -421,12 +501,12 @@ def task_reconcile_department_discord_roles() -> dict:
             if not expected_roles:
                 continue
 
-            snapshot = db.query(DiscordMember).filter(DiscordMember.discord_id == admin.discord_id).first()
+            snapshot = snapshots_by_discord_id.get(admin.discord_id)
             current_roles = set(snapshot.role_ids or []) if snapshot else set()
             for role_id in expected_roles - current_roles:
-                db.add(DiscordBotAction(
-                    action_type="sync_department_role",
-                    payload={"discord_id": admin.discord_id, "add_role_id": role_id},
+                discord_bot.schedule(discord_bot.execute_bot_action(
+                    "sync_department_role",
+                    {"discord_id": admin.discord_id, "add_role_id": role_id},
                 ))
                 queued += 1
 
@@ -455,6 +535,7 @@ def task_sync_department_kits() -> dict:
     """
     db = SessionLocal()
     try:
+        from sqlalchemy import or_
         from models import DepartmentKitBinding, DepartmentKitGrant, DepartmentMember, DepartmentAccessLevel, PlayerData
 
         bindings = db.query(DepartmentKitBinding).all()
@@ -474,19 +555,37 @@ def task_sync_department_kits() -> dict:
                 continue
 
             members = db.query(DepartmentMember).filter(DepartmentMember.department_id == level.department_id).all()
-            holding_player_ids = set()
-            for m in members:
-                if level.key not in (m.held_level_keys or []):
-                    continue
-                player = db.query(PlayerData).filter(PlayerData.linked_admin_id == m.admin_id).first()
-                if player:
-                    holding_player_ids.add(player.player_id)
+            eligible_admin_ids = {m.admin_id for m in members if level.key in (m.held_level_keys or [])}
 
             existing_grants = db.query(DepartmentKitGrant).filter(DepartmentKitGrant.binding_id == binding.id).all()
             existing_by_player = {g.player_id: g for g in existing_grants}
 
+            # Batch-load every PlayerData row this binding could touch — players
+            # linked to an eligible admin (to grant) plus players already holding
+            # this binding's grant (to check for revocation) — one query instead
+            # of one per member/grant.
+            needed_player_ids = set(existing_by_player.keys())
+            players_by_admin_id: dict = {}
+            players_by_id: dict = {}
+            if eligible_admin_ids or needed_player_ids:
+                filters = []
+                if eligible_admin_ids:
+                    filters.append(PlayerData.linked_admin_id.in_(eligible_admin_ids))
+                if needed_player_ids:
+                    filters.append(PlayerData.player_id.in_(needed_player_ids))
+                for p in db.query(PlayerData).filter(or_(*filters)).all():
+                    players_by_id[p.player_id] = p
+                    if p.linked_admin_id is not None:
+                        players_by_admin_id.setdefault(p.linked_admin_id, p)
+
+            holding_player_ids = set()
+            for admin_id in eligible_admin_ids:
+                player = players_by_admin_id.get(admin_id)
+                if player:
+                    holding_player_ids.add(player.player_id)
+
             for player_id in holding_player_ids - set(existing_by_player.keys()):
-                player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+                player = players_by_id.get(player_id)
                 if not player:
                     continue
                 ach = _achievements_dict(player)
@@ -500,7 +599,7 @@ def task_sync_department_kits() -> dict:
             for player_id, grant in existing_by_player.items():
                 if player_id in holding_player_ids:
                     continue
-                player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+                player = players_by_id.get(player_id)
                 if player:
                     ach = _achievements_dict(player)
                     kval_kits = dict(ach.get("kval_kits", {}))
@@ -526,10 +625,11 @@ def task_sync_auto_server_privileges() -> dict:
     (held via held_level_keys) or Department.head_server_privilege_group_id
     (is_head/is_deputy_head) — both superuser-configured. Runs every 5 min.
 
-    Never touches a ServerPlayerPrivilege row a human manually assigned
-    (is_auto=False) — routes/admin.py's api_assign_server_privilege always
-    flips is_auto back to False on any manual assign, same never-clobber
-    contract as DepartmentMember.is_auto/PlayerData.linked_admin_auto.
+    Owns exactly one row per player: the one with is_auto=True. A human's
+    manual grant(s) (routes/admin.py's assign endpoints, is_auto=False,
+    one per server_scope) live in SEPARATE rows this worker never queries
+    for and therefore can never touch — manual and auto sum together at
+    read time (privilege_resolution.py) instead of one clobbering the other.
 
     Tie-break when one admin simultaneously qualifies via multiple sources:
     within one department, by kind (head/deputy_head > qualification > base),
@@ -553,11 +653,18 @@ def task_sync_auto_server_privileges() -> dict:
         for m in memberships:
             by_admin.setdefault(m.admin_id, []).append(m)
 
+        # Batch-load one PlayerData per candidate admin instead of a query
+        # per admin inside the loop below.
+        players_by_admin_id = {
+            p.linked_admin_id: p
+            for p in db.query(PlayerData).filter(PlayerData.linked_admin_id.in_(by_admin.keys())).all()
+        }
+
         assigned = 0
         cleared = 0
 
         for admin_id, members in by_admin.items():
-            player = db.query(PlayerData).filter(PlayerData.linked_admin_id == admin_id).first()
+            player = players_by_admin_id.get(admin_id)
             if not player or not player.player_steamid:
                 continue
 
@@ -583,12 +690,16 @@ def task_sync_auto_server_privileges() -> dict:
                 if best is None or ts > best[0]:
                     best = (ts, group_id, dept.id)
 
-            existing = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == player.player_steamid).first()
-            if existing and not existing.is_auto:
-                continue  # a human manually assigned this — never touch it
+            # This worker's own row only — a manual grant (is_auto=False)
+            # for the same steamid, if any, is a different row entirely and
+            # is never matched by this filter, so there's nothing to skip.
+            existing = db.query(ServerPlayerPrivilege).filter(
+                ServerPlayerPrivilege.steamid == player.player_steamid,
+                ServerPlayerPrivilege.is_auto == True,
+            ).first()
 
             if best is None:
-                if existing and existing.is_auto and (existing.server_group_id or existing.auto_source_department_id):
+                if existing and (existing.server_group_id or existing.auto_source_department_id):
                     existing.server_group_id = None
                     existing.auto_source_department_id = None
                     cleared += 1
@@ -596,10 +707,9 @@ def task_sync_auto_server_privileges() -> dict:
 
             _, group_id, dept_id = best
             if existing:
-                if existing.server_group_id != group_id or existing.auto_source_department_id != dept_id or not existing.is_auto:
+                if existing.server_group_id != group_id or existing.auto_source_department_id != dept_id:
                     existing.server_group_id = group_id
                     existing.auto_source_department_id = dept_id
-                    existing.is_auto = True
                     assigned += 1
             else:
                 db.add(ServerPlayerPrivilege(
@@ -635,7 +745,8 @@ def task_auto_close_stale_tickets() -> dict:
     STALE_HOURS = 72
     db = SessionLocal()
     try:
-        from models import Ticket, DiscordBotAction
+        from models import Ticket
+        from discord_bot import bot as discord_bot
 
         cutoff = datetime.utcnow() - timedelta(hours=STALE_HOURS)
         candidates = db.query(Ticket).filter(Ticket.status != "closed", Ticket.awaiting_admin == 1).all()
@@ -649,9 +760,9 @@ def task_auto_close_stale_tickets() -> dict:
             ticket.closed_by = "Авто-закрытие (нет ответа администрации)"
             ticket.closed_at = datetime.utcnow()
             if ticket.discord_channel_id:
-                db.add(DiscordBotAction(
-                    action_type="ticket_close_channel",
-                    payload={"ticket_id": ticket.id, "channel_id": ticket.discord_channel_id},
+                discord_bot.schedule(discord_bot.execute_bot_action(
+                    "ticket_close_channel",
+                    {"ticket_id": ticket.id, "channel_id": ticket.discord_channel_id},
                 ))
             closed += 1
 
@@ -724,6 +835,105 @@ def task_fetch_steam_avatars() -> dict:
         db.close()
 
 
+def task_cleanup_online_snapshots() -> dict:
+    """Delete OnlineSnapshot rows older than 30 days — this table gets a new
+    row on every /server/players report with no existing retention, so it
+    grows without bound. Runs every 6 hours, same cadence as the other
+    cleanup tasks."""
+    from models import OnlineSnapshot
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        deleted = db.query(OnlineSnapshot).filter(OnlineSnapshot.recorded_at < cutoff).delete(synchronize_session=False)
+        db.commit()
+        return {"deleted_online_snapshots": deleted}
+    finally:
+        db.close()
+
+
+def task_cleanup_server_actions() -> dict:
+    """Delete ServerAction rows older than 14 days that are fully resolved on
+    every server they targeted (status != 0 = pending for both
+    status_asper1/status_asper2 — see routes/dispatch.py, which immediately
+    marks the non-targeted server's status as done/not-applicable at creation
+    time, so this condition is correct even for single-server-targeted
+    actions). Never deletes a still-pending action regardless of age. Runs
+    every 6 hours."""
+    from models import ServerAction
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=14)
+        deleted = (
+            db.query(ServerAction)
+            .filter(
+                ServerAction.created_at < cutoff,
+                ServerAction.status_asper1 != 0,
+                ServerAction.status_asper2 != 0,
+            )
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        return {"deleted_server_actions": deleted}
+    finally:
+        db.close()
+
+
+def task_memory_maintenance() -> dict:
+    """Periodic memory hygiene (every 5 min) — the "фоновая очистка памяти":
+      1. gc.collect() — promptly reclaim cyclic garbage. SQLAlchemy ORM
+         instances, closures and the like form reference cycles the
+         generational collector would otherwise sit on for a while.
+      2. malloc_trim(0) on Linux/glibc — hand freed heap back to the OS so
+         RSS actually goes down after the heavy periodic tasks release their
+         temporary allocations (see _malloc_trim's docstring — this is the
+         core fix for idle RAM growth).
+      3. Evict stale in-process TTL cache entries (dept-site-permissions),
+         so memory isn't held for admins who stopped making requests.
+    Cheap and safe; logs the RSS delta so the effect is observable."""
+    import security
+
+    rss_before = _rss_mb()
+    collected = gc.collect()
+    trimmed = _malloc_trim()
+    try:
+        evicted = security.evict_stale_dept_site_perms()
+    except Exception:
+        evicted = 0
+    rss_after = _rss_mb()
+
+    freed = round(rss_before - rss_after, 1) if (rss_before is not None and rss_after is not None) else None
+    logger.info(
+        "[MemMaint] gc_collected=%s malloc_trim=%s cache_evicted=%s rss_mb=%s->%s (freed=%s)",
+        collected, trimmed, evicted, rss_before, rss_after, freed,
+    )
+    return {
+        "status": "ok",
+        "gc_collected": collected,
+        "malloc_trimmed": trimmed,
+        "cache_evicted": evicted,
+        "rss_mb_before": rss_before,
+        "rss_mb_after": rss_after,
+        "rss_mb_freed": freed,
+    }
+
+
+def task_check_db_health() -> dict:
+    """Lightweight periodic `SELECT 1` liveness probe, feeding
+    runtime_control.set_db_healthy() automatically instead of relying solely
+    on someone running the console's manual `db check`. Runs every 30s."""
+    import runtime_control
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        runtime_control.set_db_healthy(True)
+        return {"status": "ok", "db_healthy": True}
+    except Exception as e:
+        runtime_control.set_db_healthy(False)
+        return {"status": "error", "db_healthy": False, "error": str(e)}
+    finally:
+        db.close()
+
+
 def task_refresh_analytics() -> dict:
     """Recompute the analytics dashboard's default-view snapshot. Runs every 5 min.
 
@@ -772,6 +982,10 @@ def _start_simple_workers():
         (task_auto_close_stale_tickets, 30 * 60),
         (task_sync_auto_server_privileges, 5 * 60),
         (task_reconcile_department_discord_roles, 30 * 60),
+        (task_cleanup_online_snapshots, 6 * 60 * 60),
+        (task_cleanup_server_actions, 6 * 60 * 60),
+        (task_check_db_health, 30),
+        (task_memory_maintenance, 5 * 60),
     ]:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
         t.start()
@@ -892,6 +1106,41 @@ def _start_scheduler():
         interval_secs=30 * 60,
         priority=Priority.BACKGROUND,
         task_id="department_discord_role_reconcile",
+    )
+
+    # Online-snapshot retention (30 days): BACKGROUND priority, every 6 hours
+    scheduler.register_periodic(
+        task_cleanup_online_snapshots,
+        interval_secs=6 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="online_snapshots_cleanup",
+    )
+
+    # Fully-resolved ServerAction retention (14 days): BACKGROUND priority, every 6 hours
+    scheduler.register_periodic(
+        task_cleanup_server_actions,
+        interval_secs=6 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="server_actions_cleanup",
+    )
+
+    # DB liveness probe: CRITICAL priority (must never be starved by
+    # everything else queued), every 30s
+    scheduler.register_periodic(
+        task_check_db_health,
+        interval_secs=30,
+        priority=Priority.CRITICAL,
+        task_id="db_health_check",
+    )
+
+    # Memory maintenance (gc + malloc_trim + cache eviction): LOW priority so
+    # it runs promptly rather than sitting behind the BACKGROUND cleanups,
+    # every 5 min. See task_memory_maintenance / _malloc_trim.
+    scheduler.register_periodic(
+        task_memory_maintenance,
+        interval_secs=5 * 60,
+        priority=Priority.LOW,
+        task_id="memory_maintenance",
     )
 
     scheduler.start()

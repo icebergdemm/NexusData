@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from typing import Optional
 import secrets
+import threading
+import time
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
@@ -86,14 +88,19 @@ async def verify_api_key_dependency(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> dict:
-    """Dependency: verify API key from Authorization header or api_key query"""
+    """Dependency: verify API key from Authorization header or api_key query.
+
+    NOTE: there used to be an `allowed_ips` bypass here (skip the key entirely
+    for a hardcoded IP). It was removed: the app now runs behind
+    proxy_server.py (and nginx), so `request.client.host` is derived from
+    X-Forwarded-For and is attacker-controllable — an IP allowlist there would
+    be a trivially spoofable auth bypass. Every legitimate caller (the game
+    server plugin) already sends the API key, so key verification is the sole
+    gate. `allowed_ips` remains only for reference/logging, never for auth.
+    """
     client_ip = None
     if request.client and request.client.host:
         client_ip = request.client.host
-
-    # Блок разрешённых IP без проверки ключа
-    if client_ip and client_ip in settings.allowed_ips_list:
-        return {"authenticated": True, "client_ip": client_ip}
 
     api_key = None
     if credentials and credentials.credentials:
@@ -207,37 +214,74 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
     return False
 
 
+_DEPT_SITE_PERMS_CACHE_TTL_SECONDS = 30.0
+_dept_site_perms_cache: dict = {}  # admin_id -> (result, monotonic timestamp)
+_dept_site_perms_cache_lock = threading.Lock()
+
+
 def compute_department_site_permissions(db, admin_id: int) -> dict:
     """Union of {"pages": {page: {action: bool}}} site-wide grants from every
     department access level `admin_id` currently holds. Computed once per
     request by each router's get_current_admin and cached on the AdminUser
     instance so check_permission (a pure function, no db access) can consult
-    it without threading a db session through ~250 call sites."""
+    it without threading a db session through ~250 call sites.
+
+    This function itself is called on EVERY admin-panel request (2 queries),
+    so its result is additionally cached here for a short TTL keyed by
+    admin_id — department membership changes rarely enough that a 30s-stale
+    read is a non-issue, and it cuts 2 DB round-trips (+ event-loop time,
+    since callers are mostly synchronous inside async def) per request down
+    to a dict lookup for repeat requests within the window."""
+    now = time.monotonic()
+    with _dept_site_perms_cache_lock:
+        cached = _dept_site_perms_cache.get(admin_id)
+        if cached is not None and (now - cached[1]) < _DEPT_SITE_PERMS_CACHE_TTL_SECONDS:
+            return cached[0]
+
     from models import DepartmentMember, DepartmentAccessLevel
 
     memberships = db.query(DepartmentMember).filter(DepartmentMember.admin_id == admin_id).all()
     if not memberships:
-        return {}
+        result = {}
+    else:
+        level_keys_by_dept: dict = {}
+        for m in memberships:
+            level_keys_by_dept.setdefault(m.department_id, set()).update(m.held_level_keys or [])
 
-    level_keys_by_dept: dict = {}
-    for m in memberships:
-        level_keys_by_dept.setdefault(m.department_id, set()).update(m.held_level_keys or [])
+        dept_ids = list(level_keys_by_dept.keys())
+        if not dept_ids:
+            result = {}
+        else:
+            levels = db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id.in_(dept_ids)).all()
+            merged: dict = {}
+            for level in levels:
+                if level.key not in level_keys_by_dept.get(level.department_id, set()):
+                    continue
+                for page, actions in (level.site_permissions or {}).get("pages", {}).items():
+                    for action, allowed in (actions or {}).items():
+                        if allowed:
+                            merged.setdefault(page, {})[action] = True
+            result = {"pages": merged} if merged else {}
 
-    dept_ids = list(level_keys_by_dept.keys())
-    if not dept_ids:
-        return {}
+    with _dept_site_perms_cache_lock:
+        _dept_site_perms_cache[admin_id] = (result, now)
+    return result
 
-    levels = db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.department_id.in_(dept_ids)).all()
-    merged: dict = {}
-    for level in levels:
-        if level.key not in level_keys_by_dept.get(level.department_id, set()):
-            continue
-        for page, actions in (level.site_permissions or {}).get("pages", {}).items():
-            for action, allowed in (actions or {}).items():
-                if allowed:
-                    merged.setdefault(page, {})[action] = True
 
-    return {"pages": merged} if merged else {}
+def evict_stale_dept_site_perms() -> int:
+    """Drop expired entries from the dept-site-permissions TTL cache. Bounded
+    by admin count already, but this keeps it from holding memory for admins
+    who've gone idle. Called periodically by workers.task_memory_maintenance.
+    Returns the number of entries removed."""
+    now = time.monotonic()
+    with _dept_site_perms_cache_lock:
+        stale = [
+            aid for aid, (_result, ts) in _dept_site_perms_cache.items()
+            if (now - ts) >= _DEPT_SITE_PERMS_CACHE_TTL_SECONDS
+        ]
+        for aid in stale:
+            _dept_site_perms_cache.pop(aid, None)
+    return len(stale)
 
 
 def check_department_permission(admin, department, member, page: str, action: str = "view") -> bool:

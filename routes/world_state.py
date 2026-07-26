@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
-from database import get_db
+from database import get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
 from models import AdminUser, AdminSession, WorldRound
@@ -99,7 +99,7 @@ async def _read_json_body(request: Request) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/init")
-async def world_init(request: Request, db: Session = Depends(get_db)):
+async def world_init(request: Request, db: Session = Depends(get_game_db)):
     """Static round geometry — sent once at round start (and again if the
     plugin hot-reloads mid-round, which just re-upserts the same round_id)."""
     body = await _read_json_body(request)
@@ -136,7 +136,7 @@ async def world_init(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/snapshot")
-async def world_snapshot(request: Request, db: Session = Depends(get_db)):
+async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
     """Dynamic round state — sent every ~SnapshotIntervalSeconds. Always a
     full upsert of "current state"; the plugin never retries a failed send,
     so this must never assume completeness or ordering guarantees beyond a
@@ -188,8 +188,24 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
     if token:
         session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
         if session and (session.expires_at is None or session.expires_at > now):
-            admin = db.query(AdminUser).filter(AdminUser.id == session.admin_id).first()
+            from sqlalchemy.orm import joinedload
+            admin = (
+                db.query(AdminUser)
+                .options(joinedload(AdminUser.privilege_group))
+                .filter(AdminUser.id == session.admin_id)
+                .first()
+            )
             if admin:
+                # check_permission's "hybrid" tier (site-wide grants attached
+                # to a department access level, e.g. how a non-superuser most
+                # likely got "Обзор мира" access) reads this attribute — it
+                # was missing here, so that grant path silently never worked
+                # for this page even though it works everywhere else (every
+                # other router's get_current_admin sets it). Superusers were
+                # unaffected since they short-circuit check_permission
+                # entirely, which is why this only showed up for regular users.
+                from security import compute_department_site_permissions
+                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -375,7 +391,7 @@ def _gzip_json_response(payload: dict) -> Response:
 
 
 @client_router.get("/world/state")
-async def api_client_world_state(round_id: Optional[str] = None, db: Session = Depends(get_db)):
+async def api_client_world_state(round_id: Optional[str] = None, db: Session = Depends(get_game_db)):
     """Structured world state for external client integrations (dedicated
     client_api_key, see security.py) — always the freshest row currently in
     the database at request time (every /world/snapshot upserts in place,

@@ -89,9 +89,9 @@ class Settings(BaseSettings):
     discord_client_secret: str = ""
     discord_redirect_uri: str = "https://nd.rp-asper.ru/auth/discord/callback"
 
-    # Discord Proxy
-    use_discord_proxy: bool = False
-    discord_proxy_url: str = "http://localhost:8001"
+    # Discord Bot (discord_bot/bot.py — runs in-process, see supervise_bot())
+    discord_bot_token: str = Field("", env="DISCORD_BOT_TOKEN")
+    discord_guild_id: str = Field("", env="GUILD_ID")
 
     # Discord Trap Webhook
     discord_trap_webhook_url: str = ""

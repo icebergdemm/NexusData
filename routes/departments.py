@@ -19,7 +19,7 @@ from database import get_db
 from security import check_permission, check_department_permission
 from models import (
     AdminUser, AdminSession, Department, DepartmentAccessLevel, DepartmentMember, DepartmentRatingEntry,
-    DepartmentChatChannel, DepartmentChatMessage, DiscordBotAction,
+    DepartmentChatChannel, DepartmentChatMessage,
     DepartmentDocumentFolder, DepartmentFolderPermission, DepartmentDocumentTag,
 )
 
@@ -200,9 +200,10 @@ def _role_ids_for_membership(department: Department, held_level_keys: list) -> s
 
 
 def _queue_role_sync(db: Session, target_admin: AdminUser, add_role_ids: set, remove_role_ids: set, queued_by_admin_id: int) -> None:
-    """Queue Discord role grants/revokes for a department membership change.
-    Picked up by the bot's "sync_department_role" action handler — see
-    discord_bot/bot.py. No-op if the admin has no Discord ID.
+    """Dispatch Discord role grants/revokes for a department membership
+    change directly to the in-process bot — see
+    discord_bot/bot.py's execute_bot_action "sync_department_role" branch.
+    No-op if the admin has no Discord ID.
 
     Only ever called from the member add/update/remove endpoints below —
     each of those flips the DepartmentMember row to is_auto=False in the
@@ -212,17 +213,16 @@ def _queue_role_sync(db: Session, target_admin: AdminUser, add_role_ids: set, re
     docstring for the full explanation."""
     if not target_admin.discord_id:
         return
+    from discord_bot import bot as discord_bot
     for role_id in add_role_ids:
-        db.add(DiscordBotAction(
-            action_type="sync_department_role",
-            payload={"discord_id": target_admin.discord_id, "add_role_id": role_id},
-            queued_by_admin_id=queued_by_admin_id,
+        discord_bot.schedule(discord_bot.execute_bot_action(
+            "sync_department_role",
+            {"discord_id": target_admin.discord_id, "add_role_id": role_id},
         ))
     for role_id in remove_role_ids:
-        db.add(DiscordBotAction(
-            action_type="sync_department_role",
-            payload={"discord_id": target_admin.discord_id, "remove_role_id": role_id},
-            queued_by_admin_id=queued_by_admin_id,
+        discord_bot.schedule(discord_bot.execute_bot_action(
+            "sync_department_role",
+            {"discord_id": target_admin.discord_id, "remove_role_id": role_id},
         ))
 
 
@@ -1208,14 +1208,13 @@ async def api_send_chat_message(department_id: int, channel_id: int, request: Re
         sent_by_admin_id=current_admin.id,
     )
     db.add(message)
+    db.commit()
     # Reuses the existing generic "send_message" bot action (same bridge
     # dispatch/tickets/etc. already use) — no new bot action_type needed.
-    db.add(DiscordBotAction(
-        action_type="send_message",
-        payload={"channel_id": channel.discord_channel_id, "content": content[:2000]},
-        queued_by_admin_id=current_admin.id,
-    ))
-    db.commit()
+    from discord_bot import bot as discord_bot
+    discord_bot.schedule(discord_bot.execute_bot_action("send_message", {
+        "channel_id": channel.discord_channel_id, "content": content[:2000],
+    }))
     return {"status": "ok", "message": serialize_chat_message(message)}
 
 

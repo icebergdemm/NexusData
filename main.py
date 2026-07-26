@@ -23,7 +23,7 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, game_api_router, game_public_router, ratings_router, discord_bot_api_router, discord_bot_panel_router, tickets_bot_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, game_api_router, game_public_router, ratings_router, discord_bot_panel_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, dispatch_client_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router, cache_sync_api_router
 from workers import start_playtime_worker, stop_all_workers, watch_runtime_state
 import runtime_control
 from datetime import datetime
@@ -46,8 +46,14 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         debug=settings.debug,
+        # The interactive API schema (Swagger/ReDoc/openapi.json) enumerates
+        # every endpoint of an admin/moderation panel — needless attack-surface
+        # disclosure in production. Only expose it in debug/dev.
+        docs_url="/docs" if settings.debug else None,
+        redoc_url="/redoc" if settings.debug else None,
+        openapi_url="/openapi.json" if settings.debug else None,
     )
-    
+
     # Add session middleware with max_age
     app.add_middleware(
         SessionMiddleware,
@@ -57,12 +63,27 @@ def create_app() -> FastAPI:
         https_only=not settings.debug,
         same_site="lax",
     )
-    
-    # Setup CORS
+
+    # Setup CORS. A wildcard origin combined with credentials is a serious
+    # misconfiguration: Starlette then reflects the caller's Origin and sends
+    # Access-Control-Allow-Credentials: true, letting ANY website make
+    # cookie-authenticated requests on behalf of a logged-in admin. The SPA is
+    # served same-origin (see the /admin mount below) so it never needs CORS
+    # credentials, and the game-server/external integrations authenticate with
+    # an X-API-Key header (not a browser, not cookies) so restricting origins
+    # doesn't affect them. If origins are left as "*", force credentials off.
+    cors_origins = settings.cors_origins_list or ["*"]
+    cors_credentials = settings.cors_credentials
+    if "*" in cors_origins and cors_credentials:
+        logger.warning(
+            "CORS: wildcard origin ('*') with credentials is unsafe — disabling "
+            "credentials. Set CORS_ORIGINS to your explicit site origin(s) in .env."
+        )
+        cors_credentials = False
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
-        allow_credentials=settings.cors_credentials,
+        allow_origins=cors_origins,
+        allow_credentials=cors_credentials,
         allow_methods=settings.cors_methods,
         allow_headers=settings.cors_headers,
     )
@@ -77,40 +98,47 @@ def create_app() -> FastAPI:
         p = str(request.url.path or "")
         return p.startswith("/api/")
 
+    # Every browser-facing page except /login is the React SPA now — instead
+    # of rendering the old Jinja2 error/maintenance templates (visually
+    # inconsistent with the app, see templates/404.html, 403.html, 401.html,
+    # error_generic.html, maintenance.html — none of these are deleted, just
+    # unused from here on, in case something still references them directly),
+    # serve the SPA shell itself. React's own error handling then takes over:
+    # MaintenanceBanner (polls /healthz) for degraded/maintenance states,
+    # AppErrorBoundary for render crashes, RequireAuth's own 401-redirect for
+    # auth — all already styled consistently with the rest of the app. The
+    # HTTP status code is still set correctly (503/403/etc.) for anything
+    # that inspects it (monitoring, curl) — browsers render the body
+    # regardless of status code as long as it isn't a near-empty response.
+    _spa_index_path = os.path.join("frontend", "dist", "index.html")
+
+    def _serve_spa_or_fallback(status_code: int, fallback_message: str):
+        from fastapi.responses import FileResponse
+        if os.path.isfile(_spa_index_path):
+            return FileResponse(_spa_index_path, status_code=status_code)
+        return PlainTextResponse(fallback_message, status_code=status_code)
+
     def _error_response(request, status_code, title, message, details):
-        """Return JSON for API clients, HTML page for browsers (with safe fallback)."""
+        """Return JSON for API clients, the SPA shell for browsers (with a
+        plain-text fallback if the frontend hasn't been built yet)."""
         if _is_api(request):
             return _JSONResponse(status_code=status_code,
                                  content={"success": False, "error": message, "details": details})
-        try:
-            return templates.TemplateResponse(
-                "error_generic.html",
-                {
-                    "request": request, "title": title, "message": message, "details": details,
-                    "back_url": "/login" if str(request.url.path).startswith("/auth") else "/",
-                    "back_text": "Вернуться",
-                },
-                status_code=status_code,
-            )
-        except Exception:
-            return PlainTextResponse(message, status_code=status_code)
+        return _serve_spa_or_fallback(status_code, message)
 
     def _maintenance_response(request, message: str, status_code: int = 503):
-        """Same JSON-for-API/HTML-for-browser split as _error_response above,
+        """Same JSON-for-API/SPA-for-browser split as _error_response above,
         but for a deliberate degraded state (maintenance mode, a subsystem
         toggled off via the console, or a dead DB) rather than an exception —
-        see maintenance_gate_middleware below."""
+        see maintenance_gate_middleware below. The SPA's own MaintenanceBanner
+        polls /healthz and shows the real message/design — this just needs
+        to get React booted at all, even mid-outage."""
         if _is_api(request):
             return _JSONResponse(
                 status_code=status_code,
                 content={"success": False, "maintenance": True, "error": message},
             )
-        try:
-            return templates.TemplateResponse(
-                "maintenance.html", {"request": request, "message": message}, status_code=status_code,
-            )
-        except Exception:
-            return PlainTextResponse(message, status_code=status_code)
+        return _serve_spa_or_fallback(status_code, message)
 
     @app.exception_handler(IntegrityError)
     async def integrity_exception_handler(request, exc):
@@ -161,13 +189,12 @@ def create_app() -> FastAPI:
     app.include_router(game_api_router)
     app.include_router(game_public_router)
     app.include_router(ratings_router)
-    app.include_router(discord_bot_api_router)
     app.include_router(discord_bot_panel_router)
-    app.include_router(tickets_bot_router)
     app.include_router(tickets_panel_router)
     app.include_router(logs_router)
     app.include_router(dispatch_api_router)
     app.include_router(dispatch_panel_router)
+    app.include_router(dispatch_client_router)
     app.include_router(replays_api_router)
     app.include_router(replays_panel_router)
     app.include_router(analytics_router)
@@ -181,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(world_state_client_router)
     app.include_router(warehouse_admin_router)
     app.include_router(warehouse_client_router)
+    app.include_router(cache_sync_api_router)
 
     # ── Register global Jinja2 filters for MSK time display ──────────────────
     from utils_time import utc_to_msk, format_msk
@@ -229,7 +257,6 @@ def create_app() -> FastAPI:
     app.mount("/static", CachedStaticFiles(directory="static"), name="static")
 
     # Serve uploaded sub-project images at /sub_projects/images/
-    import os
     sub_img_dir = os.path.join("uploads", "sub_projects", "images")
     os.makedirs(sub_img_dir, exist_ok=True)
     app.mount("/sub_projects/images", StaticFiles(directory=sub_img_dir), name="sub_project_images")
@@ -333,6 +360,16 @@ def create_app() -> FastAPI:
             # the console only ever writes runtime_control's state file, this
             # thread is what actually reacts to it wherever the workers live.
             watch_runtime_state()
+
+            # Discord bot — in-process now (see discord_bot/bot.py), started
+            # alongside the other background workers in whichever process
+            # actually owns them (this single-process startup hook normally;
+            # scheduler_process.py in multi-worker mode — see its own
+            # supervise_bot() call). Runs its own retry/backoff loop, so a
+            # gateway drop or crash doesn't need this process to restart.
+            import asyncio as _asyncio
+            from discord_bot import bot as discord_bot
+            _asyncio.create_task(discord_bot.supervise_bot())
         else:
             logger.info("WORKER_ROLE=web — skipping background workers/scheduler in this process")
 
@@ -341,22 +378,23 @@ def create_app() -> FastAPI:
         if os.environ.get("WORKER_ROLE") != "web":
             stop_all_workers()
 
-    # HTTP exception handler to render friendly templates for common errors
+    # HTTP exception handler — JSON for API clients, the SPA shell for
+    # everything else except the /login redirect (see _error_response's
+    # comment above for why: only /login itself stays a separate page).
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request, exc):
         path = str(request.url.path or "")
         if path.startswith("/api/"):
             return _JSONResponse(status_code=exc.status_code, content={"success": False, "error": str(exc.detail)})
-        if exc.status_code == 404:
-            return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
-        if exc.status_code == 403:
-            return templates.TemplateResponse("403.html", {"request": request}, status_code=403)
         if exc.status_code == 401:
-            # For admin area requests, redirect unauthenticated users to the login page
+            # Unauthenticated — bounce to the actual login page (the one
+            # page this whole SPA-ification deliberately leaves alone).
             if path.startswith("/logout") or path.startswith("/auth"):
                 login_url = f"/login?next={path}"
                 return RedirectResponse(url=login_url, status_code=302)
-            return templates.TemplateResponse("401.html", {"request": request}, status_code=401)
+            return RedirectResponse(url=f"/login?next={path}", status_code=302)
+        if exc.status_code in (403, 404):
+            return _serve_spa_or_fallback(exc.status_code, str(exc.detail))
         return PlainTextResponse(str(exc.detail), status_code=exc.status_code)
 
     # Security headers and CSRF token middleware

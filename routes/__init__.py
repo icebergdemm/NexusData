@@ -9,10 +9,10 @@ from .sub_projects import router as sub_projects_router
 from .sub_projects_polygon import router as sub_projects_polygon_router
 from .game_api import router as game_api_router, public_router as game_public_router
 from .ratings import router as ratings_router
-from .discord_bot_api import router as discord_bot_api_router, panel_router as discord_bot_panel_router
-from .tickets_api import bot_router as tickets_bot_router, panel_router as tickets_panel_router
+from .discord_bot_api import panel_router as discord_bot_panel_router
+from .tickets_api import panel_router as tickets_panel_router
 from .logs import router as logs_router
-from .dispatch import api_router as dispatch_api_router, panel_router as dispatch_panel_router
+from .dispatch import api_router as dispatch_api_router, panel_router as dispatch_panel_router, client_router as dispatch_client_router
 from .replays import api_router as replays_api_router, panel_router as replays_panel_router
 from .analytics import router as analytics_router
 from .notifications import router as notifications_router
@@ -22,6 +22,7 @@ from .departments import router as departments_router
 from .tasks import router as tasks_router
 from .world_state import router as world_state_router, admin_router as world_state_admin_router, client_router as world_state_client_router
 from .warehouse import admin_router as warehouse_admin_router, client_router as warehouse_client_router
+from .cache_sync import api_router as cache_sync_api_router
 
 __all__ = [
     "status_router",
@@ -37,13 +38,12 @@ __all__ = [
     "game_api_router",
     "game_public_router",
     "ratings_router",
-    "discord_bot_api_router",
     "discord_bot_panel_router",
-    "tickets_bot_router",
     "tickets_panel_router",
     "logs_router",
     "dispatch_api_router",
     "dispatch_panel_router",
+    "dispatch_client_router",
     "replays_api_router",
     "replays_panel_router",
     "analytics_router",
@@ -57,4 +57,5 @@ __all__ = [
     "world_state_client_router",
     "warehouse_admin_router",
     "warehouse_client_router",
+    "cache_sync_api_router",
 ]

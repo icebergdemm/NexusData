@@ -14,7 +14,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 
-from database import get_db
+from database import get_db, get_game_db
 from security import verify_external_api_key_dependency
 from config import get_settings
 from models import (
@@ -133,7 +133,7 @@ class UnbanRequest(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/traps/queue")
-def queue_trap(body: TrapQueueRequest, db: Session = Depends(get_db)):
+def queue_trap(body: TrapQueueRequest, db: Session = Depends(get_game_db)):
     """
     Поставить ловушку в очередь действий сервера.
     Сервер получит задачу через GET /api/v1/server/actions и будет ждать входа игрока.
@@ -172,7 +172,7 @@ def queue_trap(body: TrapQueueRequest, db: Session = Depends(get_db)):
 @router.get("/bans", response_model=List[BanOut])
 def get_active_bans(
     include_expired: bool = Query(False, description="Включить истёкшие баны"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """
     Получить список активных банов.
@@ -206,7 +206,7 @@ def get_active_bans(
 
 
 @router.get("/bans/check")
-def check_ban(steamid: str = Query(...), db: Session = Depends(get_db)):
+def check_ban(steamid: str = Query(...), db: Session = Depends(get_game_db)):
     """
     Проверить, забанен ли игрок.
     """
@@ -238,7 +238,7 @@ def check_ban(steamid: str = Query(...), db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/punishments", response_model=PunishmentOut)
-def create_punishment(body: PunishmentCreateRequest, db: Session = Depends(get_db)):
+def create_punishment(body: PunishmentCreateRequest, db: Session = Depends(get_game_db)):
     """
     Создать наказание (warning, reprimand, kick, ban).
     """
@@ -282,7 +282,7 @@ def create_punishment(body: PunishmentCreateRequest, db: Session = Depends(get_d
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/unban")
-def unban_player(body: UnbanRequest, db: Session = Depends(get_db)):
+def unban_player(body: UnbanRequest, db: Session = Depends(get_game_db)):
     """
     Разбанить игрока:
     1. Все активные баны в БД помечаются неактивными
@@ -341,7 +341,7 @@ def unban_player(body: UnbanRequest, db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/privileges/groups", response_model=List[PrivilegeGroupOut])
-def get_privilege_groups(db: Session = Depends(get_db)):
+def get_privilege_groups(db: Session = Depends(get_game_db)):
     """
     Получить все серверные группы привилегий.
     """
@@ -352,7 +352,7 @@ def get_privilege_groups(db: Session = Depends(get_db)):
 @router.get("/privileges/players", response_model=List[PlayerPrivilegeOut])
 def get_player_privileges(
     server_name: Optional[str] = Query(None, description="Имя сервера (ASPER1 или ASPER2) для фильтрации привилегий"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """
     Получить список всех игроков с серверными привилегиями.
@@ -404,43 +404,22 @@ def get_player_privileges(
 def get_player_privilege(
     steamid: str = Query(...),
     server_name: Optional[str] = Query(None, description="Имя сервера для фильтрации — возвращает привилегии для этого сервера"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """
-    Получить привилегии конкретного игрока (объединённые: группа + индивидуальные).
-    Если указан server_name — применяется фильтр по server_scope.
+    Получить привилегии конкретного игрока — объединённые по ВСЕМ применимым
+    строкам (несколько ручных грантов по server_scope + один от отдела
+    суммируются, а не берётся первая попавшаяся). Если указан server_name —
+    учитываются только глобальные строки и строки с этим scope.
     """
-    from sqlalchemy import or_
-    query = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == steamid)
-    if server_name:
-        sn = server_name.strip().upper()
-        query = query.filter(
-            or_(
-                ServerPlayerPrivilege.server_scope.is_(None),
-                ServerPlayerPrivilege.server_scope == sn,
-            )
-        )
-    record = query.first()
+    from privilege_resolution import resolve_player_privilege_rows, merge_privilege_rows
+    from cache_versioning import compute_privilege_hash
 
-    if not record:
-        return {"has_privileges": False, "steamid": steamid}
+    rows = resolve_player_privilege_rows(db, steamid, server_name)
+    merged = merge_privilege_rows(db, rows)
 
-    commands = list(record.commands or [])
-    action_ids = list(record.allowed_action_ids or [])
-    group_key = record.group_id
-
-    if record.server_group_id:
-        grp = db.query(ServerPrivilegeGroup).filter(
-            ServerPrivilegeGroup.id == record.server_group_id
-        ).first()
-        if grp:
-            group_key = grp.group_key
-            for cmd in (grp.commands or []):
-                if cmd not in commands:
-                    commands.append(cmd)
-            for aid in (grp.allowed_action_ids or []):
-                if aid not in action_ids:
-                    action_ids.append(aid)
+    if not rows:
+        return {"has_privileges": False, "steamid": steamid, "privilege_hash": compute_privilege_hash(merged)}
 
     # Resolve player name
     player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
@@ -448,13 +427,16 @@ def get_player_privilege(
     return {
         "has_privileges": True,
         "steamid": steamid,
-        "player_id": record.player_id,
+        "player_id": next((r.player_id for r in rows if r.player_id), None),
         "player_name": player.player_last_time_name if player else None,
-        "group_key": group_key,
-        "commands": commands,
-        "allowed_action_ids": action_ids,
-        "reason": record.reason,
-        "server_scope": record.server_scope,
+        "group_key": merged["group_key"],
+        "group_keys": merged["group_keys"],
+        "commands": merged["commands"],
+        "allowed_action_ids": merged["allowed_action_ids"],
+        "reason": next((r.reason for r in rows if r.reason), None),
+        "server_scope": server_name.strip().upper() if server_name else None,
+        "sources": merged["sources"],
+        "privilege_hash": compute_privilege_hash(merged),
     }
 
 
@@ -463,7 +445,7 @@ def get_player_privilege(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/ratings/{steam_id}")
-def get_player_ratings_endpoint(steam_id: str, db: Session = Depends(get_db)):
+def get_player_ratings_endpoint(steam_id: str, db: Session = Depends(get_game_db)):
     """
     Get per-role ratings for a player. Applies lazy time decay on read.
     """
@@ -480,8 +462,8 @@ def get_player_ratings_endpoint(steam_id: str, db: Session = Depends(get_db)):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _queue_punishment_discord_notification(db, punishment):
-    """Queue a Discord bot action to notify about a new punishment."""
-    from models import DiscordBotAction
+    """Notify the Discord bot directly about a new punishment."""
+    from discord_bot import bot as discord_bot
 
     type_labels = {
         "warning": "⚠️ Предупреждение",
@@ -516,27 +498,17 @@ def _queue_punishment_discord_notification(db, punishment):
         })
 
     # Send to all-punishments channel (uses bot config key)
-    action_all = DiscordBotAction(
-        action_type="send_embed",
-        payload={
-            "channel_config_key": "punishment_channel_id",
-            "embed": embed,
-        },
-    )
-    db.add(action_all)
+    discord_bot.schedule(discord_bot.execute_bot_action("send_embed", {
+        "channel_config_key": "punishment_channel_id",
+        "embed": embed,
+    }))
 
     # Additionally for bans — send to bans-specific channel
     if punishment.type == "ban":
-        action_ban = DiscordBotAction(
-            action_type="send_embed",
-            payload={
-                "channel_config_key": "ban_channel_id",
-                "embed": embed,
-            },
-        )
-        db.add(action_ban)
-
-    db.commit()
+        discord_bot.schedule(discord_bot.execute_bot_action("send_embed", {
+            "channel_config_key": "ban_channel_id",
+            "embed": embed,
+        }))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

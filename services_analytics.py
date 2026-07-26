@@ -44,34 +44,38 @@ def _label_fmt(bucket_minutes: int) -> str:
     return "%d.%m"
 
 
-def _floor_to_bucket(ts: datetime, bucket_minutes: int) -> datetime:
-    epoch = datetime(1970, 1, 1)
-    total_minutes = int((ts - epoch).total_seconds() // 60)
-    floored = (total_minutes // bucket_minutes) * bucket_minutes
-    return epoch + timedelta(minutes=floored)
-
-
 def compute_online_timeline(db: Session, since: datetime, until: datetime, server: str = None) -> dict:
-    q = db.query(OnlineSnapshot).filter(OnlineSnapshot.recorded_at >= since, OnlineSnapshot.recorded_at <= until)
-    if server:
-        q = q.filter(OnlineSnapshot.server_name == server.strip().upper())
-    snapshots = q.order_by(OnlineSnapshot.recorded_at).all()
-
+    """Buckets/aggregates entirely in SQL (GROUP BY a floored-to-bucket
+    timestamp) instead of pulling every OnlineSnapshot row in range into
+    Python and bucketing/averaging manually — a wide range (month/year) could
+    mean tens of thousands of rows loaded just to compute an avg/max per
+    slot, work MySQL already does far cheaper via AVG()/MAX()/GROUP BY."""
     bucket_minutes = _pick_bucket_minutes(since, until)
     label_fmt = _label_fmt(bucket_minutes)
-    slots = {}
-    for s in snapshots:
-        slot_key = _floor_to_bucket(s.recorded_at, bucket_minutes)
-        slots.setdefault(slot_key, []).append(s.player_count)
+    bucket_secs = bucket_minutes * 60
+
+    sql = (
+        "SELECT FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(recorded_at) / :bucket_secs) * :bucket_secs) AS slot, "
+        "AVG(player_count) AS avg_count, MAX(player_count) AS peak_count, COUNT(*) AS cnt "
+        "FROM online_snapshots WHERE recorded_at >= :since AND recorded_at <= :until"
+    )
+    params = {"bucket_secs": bucket_secs, "since": since, "until": until}
+    if server:
+        sql += " AND server_name = :server"
+        params["server"] = server.strip().upper()
+    sql += " GROUP BY slot ORDER BY slot"
+
+    rows = db.execute(text(sql), params).fetchall()
 
     labels, values_avg, values_peak = [], [], []
-    for ts in sorted(slots.keys()):
-        counts = slots[ts]
-        labels.append(ts.strftime(label_fmt))
-        values_avg.append(round(sum(counts) / len(counts), 1))
-        values_peak.append(max(counts))
+    total_snapshots = 0
+    for slot, avg_count, peak_count, cnt in rows:
+        labels.append(slot.strftime(label_fmt))
+        values_avg.append(round(float(avg_count or 0), 1))
+        values_peak.append(int(peak_count or 0))
+        total_snapshots += int(cnt)
 
-    return {"labels": labels, "avg": values_avg, "peak": values_peak, "total_snapshots": len(snapshots)}
+    return {"labels": labels, "avg": values_avg, "peak": values_peak, "total_snapshots": total_snapshots}
 
 
 def compute_role_popularity(db: Session) -> dict:
@@ -92,36 +96,51 @@ def compute_submarine_popularity(db: Session, since: datetime, until: datetime) 
 
 
 def compute_peak_hours(db: Session, since: datetime, until: datetime, server: str = None) -> dict:
-    q = db.query(OnlineSnapshot).filter(OnlineSnapshot.recorded_at >= since, OnlineSnapshot.recorded_at <= until)
+    """GROUP BY HOUR() in SQL instead of loading every snapshot row in range
+    just to bucket it by hour-of-day in Python."""
+    sql = (
+        "SELECT HOUR(recorded_at) AS h, AVG(player_count) AS avg_count, MAX(player_count) AS peak_count "
+        "FROM online_snapshots WHERE recorded_at >= :since AND recorded_at <= :until"
+    )
+    params = {"since": since, "until": until}
     if server:
-        q = q.filter(OnlineSnapshot.server_name == server.strip().upper())
-    snapshots = q.all()
+        sql += " AND server_name = :server"
+        params["server"] = server.strip().upper()
+    sql += " GROUP BY h"
 
-    hourly = {}
-    for s in snapshots:
-        h = s.recorded_at.hour
-        hourly.setdefault(h, []).append(s.player_count)
+    by_hour = {int(h): (float(avg_count or 0), int(peak_count or 0)) for h, avg_count, peak_count in db.execute(text(sql), params).fetchall()}
 
     labels = [f"{h:02d}:00" for h in range(24)]
-    avg_v = [round(sum(hourly.get(h, [0])) / max(len(hourly.get(h, [0])), 1), 1) for h in range(24)]
-    peak_v = [max(hourly.get(h, [0])) for h in range(24)]
+    avg_v = [round(by_hour.get(h, (0.0, 0))[0], 1) for h in range(24)]
+    peak_v = [by_hour.get(h, (0.0, 0))[1] for h in range(24)]
     return {"labels": labels, "avg": avg_v, "peak": peak_v}
 
 
 def compute_session_duration(db: Session, since: datetime, until: datetime) -> dict:
-    sessions = db.query(PlayerSession.session_duration).filter(
-        PlayerSession.login_time >= since, PlayerSession.login_time <= until, PlayerSession.session_duration.isnot(None)
-    ).all()
+    """CASE-bucketed COUNT(*)/GROUP BY in SQL instead of pulling every
+    session's raw duration into Python just to sort it into one of 8 fixed
+    buckets."""
+    bucket_labels = ["<5 мин", "5-15 мин", "15-30 мин", "30м-1ч", "1-2ч", "2-4ч", "4-8ч", "8ч+"]
+    sql = (
+        "SELECT CASE "
+        "WHEN session_duration/60 < 5 THEN 0 "
+        "WHEN session_duration/60 < 15 THEN 1 "
+        "WHEN session_duration/60 < 30 THEN 2 "
+        "WHEN session_duration/60 < 60 THEN 3 "
+        "WHEN session_duration/60 < 120 THEN 4 "
+        "WHEN session_duration/60 < 240 THEN 5 "
+        "WHEN session_duration/60 < 480 THEN 6 "
+        "ELSE 7 END AS bucket_idx, COUNT(*) AS cnt "
+        "FROM player_sessions "
+        "WHERE login_time >= :since AND login_time <= :until AND session_duration IS NOT NULL "
+        "GROUP BY bucket_idx"
+    )
+    rows = db.execute(text(sql), {"since": since, "until": until}).fetchall()
 
     buckets = [0] * 8
-    bucket_labels = ["<5 мин", "5-15 мин", "15-30 мин", "30м-1ч", "1-2ч", "2-4ч", "4-8ч", "8ч+"]
-    for (dur,) in sessions:
-        if dur is None:
-            continue
-        m = dur / 60
-        idx = 0 if m < 5 else 1 if m < 15 else 2 if m < 30 else 3 if m < 60 else 4 if m < 120 else 5 if m < 240 else 6 if m < 480 else 7
-        buckets[idx] += 1
-    return {"labels": bucket_labels, "counts": buckets, "total_sessions": len(sessions)}
+    for idx, cnt in rows:
+        buckets[int(idx)] = int(cnt)
+    return {"labels": bucket_labels, "counts": buckets, "total_sessions": sum(buckets)}
 
 
 def compute_server_comparison(db: Session, since: datetime, until: datetime) -> dict:

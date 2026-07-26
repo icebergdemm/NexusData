@@ -806,29 +806,19 @@ class PlayerSessionService:
 
 # Discord auth service
 class DiscordAuthService:
-    """Service for Discord OAuth authentication via Proxy"""
-    
+    """Service for Discord OAuth authentication — always talks to Discord's
+    API directly. Used to optionally route through a local proxy
+    (discord_proxy.py) when the API server's host had discord.com blocked at
+    the network level; that block has since been lifted/the server moved, so
+    the proxy path was removed."""
+
     DISCORD_OAUTH_URL = "https://discord.com/api/v10/oauth2/authorize"
-    
-    def __init__(self, use_proxy: bool = None, proxy_url: str = None):
-        """
-        Initialize Discord Auth Service
-        
-        Args:
-            use_proxy: Whether to use Discord API proxy (if None, uses config)
-            proxy_url: URL of the proxy server (if None, uses config)
-        """
+
+    def __init__(self):
         self.client_id = settings.discord_client_id
         self.client_secret = settings.discord_client_secret
         self.redirect_uri = settings.discord_redirect_uri
-        
-        # Используем значения из конфига если не переданы явно
-        self.use_proxy = use_proxy if use_proxy is not None else settings.use_discord_proxy
-        self.proxy_url = proxy_url or settings.discord_proxy_url
-        
-        if self.use_proxy:
-            logger.info(f"Using Discord API Proxy: {self.proxy_url}")
-    
+
     def get_oauth_url(self, state: str = None) -> str:
         """Generate Discord OAuth URL (always direct to Discord)"""
         params = {
@@ -839,64 +829,43 @@ class DiscordAuthService:
         }
         if state:
             params["state"] = state
-        
+
         query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{self.DISCORD_OAUTH_URL}?{query}"
-    
+
     async def exchange_code(self, code: str) -> dict:
         """Exchange authorization code for access token"""
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                if self.use_proxy:
-                    # Используем прокси
-                    response = await client.post(
-                        f"{self.proxy_url}/oauth/token",
-                        params={
-                            "code": code,
-                            "redirect_uri": self.redirect_uri,
-                        }
-                    )
-                else:
-                    # Прямое подключение к Discord
-                    response = await client.post(
-                        "https://discord.com/api/v10/oauth2/token",
-                        data={
-                            "client_id": self.client_id,
-                            "client_secret": self.client_secret,
-                            "grant_type": "authorization_code",
-                            "code": code,
-                            "redirect_uri": self.redirect_uri,
-                        },
-                        headers={"Content-Type": "application/x-www-form-urlencoded"}
-                    )
-                
+                response = await client.post(
+                    "https://discord.com/api/v10/oauth2/token",
+                    data={
+                        "client_id": self.client_id,
+                        "client_secret": self.client_secret,
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": self.redirect_uri,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}
+                )
                 response.raise_for_status()
                 return response.json()
-            
+
             except Exception as e:
                 logger.error(f"Failed to exchange code: {e}")
                 raise HTTPException(status_code=500, detail="Authentication failed")
-    
+
     async def get_user_info(self, access_token: str) -> dict:
         """Get user info from Discord API"""
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                if self.use_proxy:
-                    # Используем прокси
-                    response = await client.get(
-                        f"{self.proxy_url}/users/@me",
-                        params={"access_token": access_token}
-                    )
-                else:
-                    # Прямое подключение к Discord
-                    response = await client.get(
-                        "https://discord.com/api/v10/users/@me",
-                        headers={"Authorization": f"Bearer {access_token}"}
-                    )
-                
+                response = await client.get(
+                    "https://discord.com/api/v10/users/@me",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
                 response.raise_for_status()
                 return response.json()
-            
+
             except Exception as e:
                 logger.error(f"Failed to get user info: {e}")
                 raise HTTPException(status_code=500, detail="Failed to get user info")
@@ -1245,21 +1214,23 @@ class ServerModerationService:
                     .all()
                 )
                 if active_traps:
-                    from models import DiscordBotAction
+                    from discord_bot import bot as discord_bot
                     for trap in active_traps:
                         with _online_players_lock:
                             pinfo = _online_players.get(trap.target_steamid, {})
                         pname = pinfo.get("player_name", trap.target_steamid)
-                        bot_action = DiscordBotAction(
-                            action_type="trap_triggered",
-                            payload={
+                        try:
+                            discord_bot.schedule(discord_bot.execute_bot_action("trap_triggered", {
                                 "player_name": pname,
                                 "steamid": trap.target_steamid,
                                 "player_id": trap.player_id,
                                 "reason": trap.reason,
-                            },
-                        )
-                        self.db.add(bot_action)
+                            }))
+                        except Exception as e:
+                            # Bot not running yet — still deactivate the trap
+                            # (it fired, that's not in question) even if the
+                            # Discord notification itself couldn't be sent.
+                            logging.warning(f"Trap notification dispatch failed: {e}")
                         trap.active = 0
                         trap.triggered_at = _now_msk()
                     self.db.commit()
@@ -1358,7 +1329,7 @@ class ServerModerationService:
 
     # ── Action queue ───────────────────────────────────────────────────────────────
 
-    def enqueue_action(self, action_in, admin_id: Optional[int] = None, server_name: Optional[str] = None) -> "ServerAction":
+    def enqueue_action(self, action_in, admin_id: Optional[int] = None, server_name: Optional[str] = None, payload: Optional[dict] = None) -> "ServerAction":
         """Create a new server action (v2 table)."""
         from datetime import datetime
         from models import ServerAction
@@ -1376,6 +1347,7 @@ class ServerModerationService:
             created_at=datetime.utcnow(),
             status_asper1=0 if (not effective_server or effective_server.upper() == "ASPER1") else 1,  # 1=not applicable (skip)
             status_asper2=0 if (not effective_server or effective_server.upper() == "ASPER2") else 1,
+            payload=payload,
         )
         # If targeted to one server, mark the other as "done" (not applicable)
         if effective_server and effective_server.upper() == "ASPER1":
@@ -1523,8 +1495,7 @@ class ServerModerationService:
             self.db.add(trap)
             self.db.commit()
 
-            # Queue notification for Discord bot instead of direct webhook
-            from models import DiscordBotAction
+            # Notify Discord bot directly instead of queuing
             trap_msg = (
                 f"🪤 **Ловушка сработала!**\n"
                 f"**Игрок:** {player_name}\n"
@@ -1532,19 +1503,15 @@ class ServerModerationService:
                 f"**Player ID:** {player_id or '-'}\n"
                 f"**Причина ловушки:** {action.reason or '-'}"
             )
-            bot_action = DiscordBotAction(
-                action_type="trap_triggered",
-                payload={
-                    "player_name": player_name,
-                    "steamid": steamid,
-                    "player_id": player_id,
-                    "reason": action.reason,
-                    "message": trap_msg,
-                },
-            )
-            self.db.add(bot_action)
-            self.db.commit()
-            logger.info(f"[TRAP] Queued bot notification for {steamid}")
+            from discord_bot import bot as discord_bot
+            discord_bot.schedule(discord_bot.execute_bot_action("trap_triggered", {
+                "player_name": player_name,
+                "steamid": steamid,
+                "player_id": player_id,
+                "reason": action.reason,
+                "message": trap_msg,
+            }))
+            logger.info(f"[TRAP] Notified bot for {steamid}")
         except Exception as e:
             logger.error(f"_handle_trap_triggered error: {e}")
 

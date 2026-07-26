@@ -5,12 +5,14 @@ from config import get_settings
 
 settings = get_settings()
 
+_CONNECT_ARGS = {"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30}
+
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
     pool_recycle=3600,
     pool_size=10,
-    max_overflow=20,
+    max_overflow=15,
     # Without these, a stalled MySQL connection (network blip, server-side lock/
     # load spike) blocks the calling thread forever. Background worker tasks run
     # each on their own thread with only a soft timeout (task_scheduler can't
@@ -19,13 +21,35 @@ engine = create_engine(
     # exhaust the pool and freeze the whole app for every request. These
     # timeouts guarantee pymysql raises instead of blocking indefinitely, so
     # the thread unwinds and its connection is released back to the pool.
-    connect_args={"connect_timeout": 10, "read_timeout": 30, "write_timeout": 30},
+    connect_args=_CONNECT_ARGS,
+)
+
+# Separate engine/pool for the game-server-facing API (routes/game_api.py,
+# routes/moderation.py's api_router, routes/dispatch.py's api_router,
+# routes/world_state.py, routes/cache_sync.py) — a flood of slow admin-panel/
+# analytics requests on `engine` above must never be able to exhaust the
+# connections the actual Barotrauma game servers need to keep working. Same
+# MySQL instance, same settings, just a physically separate connection pool
+# so the two request classes can never compete for the same connection slot.
+game_engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    pool_size=8,
+    max_overflow=10,
+    connect_args=_CONNECT_ARGS,
 )
 
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine,
+)
+
+GameSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=game_engine,
 )
 
 Base = declarative_base()
@@ -39,6 +63,17 @@ BLANK_XLSX_TEMPLATE_NAME = "Пустая таблица"
 
 def get_db():
     db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_game_db():
+    """Same shape as get_db(), bound to the separate game_engine pool — use
+    this for game-server-facing routes so admin-panel/analytics DB load can
+    never starve them (see the game_engine comment above)."""
+    db = GameSessionLocal()
     try:
         yield db
     finally:
@@ -181,6 +216,10 @@ def _apply_migrations():
         ("departments", "discord_category_id", "VARCHAR(50)"),
         # sub_projects: manual drag-and-drop card ordering.
         ("sub_projects", "sort_order", "INT NOT NULL DEFAULT 0"),
+        # server_actions: structured data for action types that don't fit the
+        # original kick/ban/message columns — torpedo strike coordinates,
+        # cargo item list, etc. (see routes/dispatch.py's new action types).
+        ("server_actions", "payload", "JSON"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:
@@ -223,6 +262,107 @@ def _apply_migrations():
                 conn.commit()
         except Exception:
             pass
+
+
+def _relax_server_player_privileges_unique_steamid():
+    """server_player_privileges used to have UNIQUE(steamid), allowing exactly
+    one privilege row per player — which forced a manual grant and a
+    department-derived (is_auto) grant to fight over the same row, and made
+    per-server-scoped grants (ASPER1 vs ASPER2) impossible. Drops that unique
+    index so multiple rows can coexist per player (one manual per
+    server_scope + one auto), summed together at read time by
+    privilege_resolution.py. Idempotent: finds whatever the unique index is
+    actually named (this table was originally created via raw SQL, not
+    SQLAlchemy's create_all, so the name isn't guaranteed) and re-adds a
+    plain (non-unique) index on steamid for lookup performance. Once the
+    unique index no longer exists this is a no-op on every later startup."""
+    text = __import__('sqlalchemy').text
+    db_name = settings.database_url.split("/")[-1].split("?")[0]
+    with engine.connect() as conn:
+        try:
+            idx_rows = conn.execute(text(
+                "SELECT s.INDEX_NAME FROM information_schema.STATISTICS s "
+                "WHERE s.TABLE_SCHEMA=:db AND s.TABLE_NAME='server_player_privileges' "
+                "AND s.NON_UNIQUE=0 AND s.INDEX_NAME != 'PRIMARY' AND s.COLUMN_NAME='steamid' "
+                "AND (SELECT COUNT(*) FROM information_schema.STATISTICS s2 "
+                "     WHERE s2.TABLE_SCHEMA=s.TABLE_SCHEMA AND s2.TABLE_NAME=s.TABLE_NAME "
+                "     AND s2.INDEX_NAME=s.INDEX_NAME) = 1"
+            ), {"db": db_name}).fetchall()
+
+            if not idx_rows:
+                return
+
+            for (index_name,) in idx_rows:
+                conn.execute(text(f"ALTER TABLE `server_player_privileges` DROP INDEX `{index_name}`"))
+                conn.commit()
+
+            has_any_index = conn.execute(text(
+                "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA=:db AND TABLE_NAME='server_player_privileges' AND COLUMN_NAME='steamid'"
+            ), {"db": db_name}).scalar()
+            if not has_any_index:
+                conn.execute(text(
+                    "ALTER TABLE `server_player_privileges` ADD INDEX `ix_server_player_privileges_steamid` (`steamid`)"
+                ))
+                conn.commit()
+        except Exception as e:
+            conn.rollback()
+            import logging as _logging
+            _logging.getLogger(__name__).warning("server_player_privileges unique-steamid relax failed: %s", e)
+
+
+_MISSING_INDEX_COLUMNS = [
+    # (table, column) — added as index=True in models.py but the live MySQL
+    # table (created before these fields existed / before this pass) may not
+    # actually have the index yet. High priority: game-server hot paths
+    # polled on every request cycle. Medium: background-task/admin-panel
+    # filter columns previously full-scanned.
+    ("server_actions", "status_asper1"),
+    ("server_actions", "status_asper2"),
+    ("player_punishments", "is_active"),
+    ("players_data", "linked_admin_id"),
+    ("players_data", "steam_avatar_fetched_at"),
+    ("players_data", "last_login_time"),
+    ("tickets", "status"),
+    ("tickets", "awaiting_admin"),
+    ("tickets", "player_id"),
+    ("player_anomalies", "status"),
+    ("player_anomalies", "score"),
+    ("player_anomalies", "last_seen_at"),
+    ("anticheat_events", "reviewed"),
+]
+
+
+def _add_missing_indexes():
+    """Idempotent one-off: adds a plain index for each (table, column) pair in
+    _MISSING_INDEX_COLUMNS if the live table doesn't already have one on that
+    column — mirrors the information_schema.STATISTICS check pattern from
+    _relax_server_player_privileges_unique_steamid. These columns are all
+    declared index=True in models.py, but Base.metadata.create_all only
+    creates indexes for brand-new tables — it never alters existing ones, so
+    tables created before a given column got its index=True need this to
+    actually pick it up on the live DB."""
+    text = __import__('sqlalchemy').text
+    db_name = settings.database_url.split("/")[-1].split("?")[0]
+    with engine.connect() as conn:
+        for table, column in _MISSING_INDEX_COLUMNS:
+            try:
+                has_index = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                    "WHERE TABLE_SCHEMA=:db AND TABLE_NAME=:table AND COLUMN_NAME=:column"
+                ), {"db": db_name, "table": table, "column": column}).scalar()
+                if has_index:
+                    continue
+                conn.execute(text(
+                    f"ALTER TABLE `{table}` ADD INDEX `ix_{table}_{column}` (`{column}`)"
+                ))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Adding missing index on %s.%s failed: %s", table, column, e
+                )
 
 
 def _backfill_round_pairing():
@@ -430,6 +570,8 @@ def init_db():
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
     _apply_migrations()
+    _relax_server_player_privileges_unique_steamid()
+    _add_missing_indexes()
     _backfill_round_pairing()
     _seed_blank_templates()
     _backfill_permission_splits()

@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2,
-  Pencil, Check, X, KeyRound,
+  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -27,7 +27,6 @@ import {
 } from "@/components/ui/dialog"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
-import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import type { PlayerDetailResponse, Note } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
 
@@ -35,6 +34,10 @@ interface AdminOption { id: number; discord_username: string | null }
 
 function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
+}
+
+function copyToClipboard(text: string, label: string) {
+  navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
 }
 
 function fmtPlayTime(hours: number): string {
@@ -67,6 +70,8 @@ export function PlayerDetailPage() {
   const [linkAdminId, setLinkAdminId] = useState<string>("none")
   const [linkForcedName, setLinkForcedName] = useState("")
   const [discordIdDraft, setDiscordIdDraft] = useState("")
+  const [punishDialogOpen, setPunishDialogOpen] = useState(false)
+  const [punishForm, setPunishForm] = useState({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
 
   const queryKey = ["player-detail", playerId]
 
@@ -106,6 +111,12 @@ export function PlayerDetailPage() {
     mutationFn: (body: { rank_id?: number; kit_level?: number }) =>
       api.post(`/api/v1/admin/players/${playerId}/rank-kit`, body),
     onSuccess: () => { toast.success("Данные игрока обновлены"); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const syncMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/players/${playerId}/sync`, {}),
+    onSuccess: () => toast.success("Синхронизация запрошена — сервер обновит кэш при следующем опросе очереди"),
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -150,6 +161,24 @@ export function PlayerDetailPage() {
     onSuccess: () => { toast.success("Ловушка снята"); invalidate() },
   })
 
+  const createPunishmentMutation = useMutation({
+    mutationFn: () => api.post("/api/v1/admin/punishments", {
+      player_steamid: data?.player.player_steamid,
+      ptype: punishForm.ptype,
+      reason: punishForm.reason,
+      expires_days: punishForm.expires_days ? Number(punishForm.expires_days) : null,
+      notes: punishForm.notes,
+      server_name: punishForm.server_name || null,
+    }),
+    onSuccess: () => {
+      toast.success("Наказание выдано")
+      setPunishDialogOpen(false)
+      setPunishForm({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
+      invalidate()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   if (isLoading || !data) {
     return <div className="space-y-2"><Skeleton className="h-40" /><Skeleton className="h-64" /></div>
   }
@@ -175,54 +204,87 @@ export function PlayerDetailPage() {
       <Card className="overflow-hidden py-0">
         <div className="bg-gradient-to-r from-primary/15 via-card to-card px-6 py-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <PlayerAvatar url={player.steam_avatar_url} name={player.player_last_time_name} size={64} online={data.is_online} />
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-bold">{player.forced_display_name || player.player_last_time_name}</h1>
-                  {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
-                  {player.is_secret && <Badge variant="outline" className="border-warning/40 text-warning">🔒 Секретно</Badge>}
-                  {player.forced_display_name && (
-                    <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${player.player_last_time_name}`}>
-                      <Link2 className="mr-1 size-3" /> {player.linked_admin_name ?? "принудительное имя"}
-                    </Badge>
-                  )}
-                  {admin?.is_superuser && (
-                    <Button size="icon-xs" variant="ghost" onClick={openLinkDialog} title="Связать с пользователем Nexus Data">
-                      <Link2 className="size-3.5" />
-                    </Button>
-                  )}
-                </div>
-                <div className="mt-0.5 font-mono text-xs text-muted-foreground">{player.player_steamid}</div>
-                {player.discord_id && (
-                  <div className="mt-0.5 flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-                    Discord: {player.discord_id}
-                    {player.discord_id_confirmed ? (
-                      <Badge variant="outline" className="border-success/40 text-[10px] text-success">Подтверждён</Badge>
-                    ) : (
-                      <Badge variant="outline" className="border-warning/40 text-[10px] text-warning">Не точный</Badge>
-                    )}
-                  </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold">{player.forced_display_name || player.player_last_time_name}</h1>
+                {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
+                {player.is_secret && <Badge variant="outline" className="border-warning/40 text-warning">🔒 Секретно</Badge>}
+                {player.forced_display_name && (
+                  <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${player.player_last_time_name}`}>
+                    <Link2 className="mr-1 size-3" /> {player.linked_admin_name ?? "принудительное имя"}
+                  </Badge>
                 )}
-                {data.server_privilege?.server_group_name && (
-                  <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <KeyRound className="size-3" />
-                    {data.server_privilege.server_group_name}
-                    {data.server_privilege.is_auto ? (
-                      <Badge variant="outline" className="border-info/40 text-[10px] text-info">
-                        От отдела: {data.server_privilege.auto_source_department_name ?? "—"}
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[10px]">Назначено вручную</Badge>
-                    )}
-                  </div>
+                {admin?.is_superuser && (
+                  <Button size="icon-xs" variant="ghost" onClick={openLinkDialog} title="Связать с пользователем Nexus Data">
+                    <Link2 className="size-3.5" />
+                  </Button>
+                )}
+                {data.has_edit && (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    disabled={syncMutation.isPending}
+                    onClick={() => syncMutation.mutate()}
+                    title="Принудительно синхронизировать кэш игрока на сервере"
+                  >
+                    <RefreshCw className="size-3.5" />
+                  </Button>
                 )}
               </div>
+              <div className="mt-0.5 flex items-center gap-1 font-mono text-xs text-muted-foreground">
+                SteamID: {player.player_steamid}
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  className="size-4"
+                  onClick={() => copyToClipboard(player.player_steamid, "SteamID")}
+                  title="Скопировать SteamID"
+                >
+                  <Copy className="size-3" />
+                </Button>
+              </div>
+              {player.discord_id && (
+                <div className="mt-0.5 flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+                  Discord: {player.discord_id}
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="size-4"
+                    onClick={() => copyToClipboard(player.discord_id!, "Discord ID")}
+                    title="Скопировать Discord ID"
+                  >
+                    <Copy className="size-3" />
+                  </Button>
+                  {player.discord_id_confirmed ? (
+                    <Badge variant="outline" className="border-success/40 text-[10px] text-success">Подтверждён</Badge>
+                  ) : (
+                    <Badge variant="outline" className="border-warning/40 text-[10px] text-warning">Не точный</Badge>
+                  )}
+                </div>
+              )}
+              {data.server_privileges.length > 0 && (
+                <div className="mt-1 flex flex-col gap-1">
+                  {data.server_privileges.map((priv) => (
+                    <div key={priv.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <KeyRound className="size-3 shrink-0" />
+                      {priv.server_group_name ?? "Индивидуальные права"}
+                      <Badge variant="outline" className="text-[10px]">{priv.server_scope ?? "Все сервера"}</Badge>
+                      {priv.is_auto ? (
+                        <Badge variant="outline" className="border-info/40 text-[10px] text-info">
+                          От отдела: {priv.auto_source_department_name ?? "—"}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">Назначено вручную</Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="flex gap-4 text-center text-sm">
+            <div className="flex gap-4 text-left text-sm">
               <div><div className="text-lg font-bold">{fmtPlayTime(player.play_time_hours)}</div><div className="text-xs text-muted-foreground">наиграно</div></div>
               <Separator orientation="vertical" className="h-10" />
-              <div><div className="text-lg font-bold">{data.ranks[String(player.rank_id)] ?? player.rank_id}</div><div className="text-xs text-muted-foreground">ранг</div></div>
+              <div><div className="text-lg font-bold">{data.ranks[String(player.rank_id)] ?? player.rank_id}</div><div className="text-xs text-muted-foreground">звание</div></div>
               <Separator orientation="vertical" className="h-10" />
               <div><div className={`text-lg font-bold ${activePunishments ? "text-destructive" : ""}`}>{activePunishments}</div><div className="text-xs text-muted-foreground">активных наказаний</div></div>
             </div>
@@ -233,7 +295,7 @@ export function PlayerDetailPage() {
         {data.has_edit && (
           <CardContent className="grid grid-cols-1 gap-4 border-t py-4 sm:grid-cols-3">
             <div>
-              <div className="mb-1 text-xs text-muted-foreground">Ранг</div>
+              <div className="mb-1 text-xs text-muted-foreground">Звание</div>
               <Select
                 value={String(player.rank_id)}
                 onValueChange={(v) => rankKitMutation.mutate({ rank_id: Number(v) })}
@@ -288,14 +350,14 @@ export function PlayerDetailPage() {
       </Card>
 
       <Tabs defaultValue="stats">
-        <TabsList className="flex-wrap">
-          <TabsTrigger value="stats" className="gap-1.5"><Trophy className="h-3.5 w-3.5" /> Статистика</TabsTrigger>
-          <TabsTrigger value="rewards" className="gap-1.5"><Gift className="h-3.5 w-3.5" /> Награды {rewardsCount > 0 && `(${rewardsCount})`}</TabsTrigger>
-          <TabsTrigger value="notes" className="gap-1.5"><StickyNote className="h-3.5 w-3.5" /> Заметки ({data.notes.length})</TabsTrigger>
-          <TabsTrigger value="labels" className="gap-1.5"><Tags className="h-3.5 w-3.5" /> Метки ({data.label_pairs.length})</TabsTrigger>
-          <TabsTrigger value="traps" className="gap-1.5"><Radio className="h-3.5 w-3.5" /> Ловушки ({data.traps.length})</TabsTrigger>
-          <TabsTrigger value="punishments" className="gap-1.5"><Gavel className="h-3.5 w-3.5" /> Наказания ({data.punishments.length})</TabsTrigger>
-          <TabsTrigger value="history" className="gap-1.5"><HistoryIcon className="h-3.5 w-3.5" /> История</TabsTrigger>
+        <TabsList className="w-full flex-wrap">
+          <TabsTrigger value="stats" className="flex-1 gap-1.5"><Trophy className="h-3.5 w-3.5" /> Статистика</TabsTrigger>
+          <TabsTrigger value="rewards" className="flex-1 gap-1.5"><Gift className="h-3.5 w-3.5" /> Награды {rewardsCount > 0 && `(${rewardsCount})`}</TabsTrigger>
+          <TabsTrigger value="notes" className="flex-1 gap-1.5"><StickyNote className="h-3.5 w-3.5" /> Заметки ({data.notes.length})</TabsTrigger>
+          <TabsTrigger value="labels" className="flex-1 gap-1.5"><Tags className="h-3.5 w-3.5" /> Метки ({data.label_pairs.length})</TabsTrigger>
+          <TabsTrigger value="traps" className="flex-1 gap-1.5"><Radio className="h-3.5 w-3.5" /> Ловушки ({data.traps.length})</TabsTrigger>
+          <TabsTrigger value="punishments" className="flex-1 gap-1.5"><Gavel className="h-3.5 w-3.5" /> Наказания ({data.punishments.length})</TabsTrigger>
+          <TabsTrigger value="history" className="flex-1 gap-1.5"><HistoryIcon className="h-3.5 w-3.5" /> История</TabsTrigger>
         </TabsList>
 
         <TabsContent value="stats" className="space-y-4">
@@ -320,14 +382,16 @@ export function PlayerDetailPage() {
             <Card>
               <CardHeader><CardTitle className="text-sm">Статистика по ролям</CardTitle></CardHeader>
               <CardContent className="p-0">
-                <Table>
-                  <TableHeader><TableRow><TableHead>Роль</TableHead><TableHead>Раундов</TableHead><TableHead>MVP-очки</TableHead></TableRow></TableHeader>
-                  <TableBody>
-                    {data.role_stats.map((r) => (
-                      <TableRow key={r.id}><TableCell className="font-medium">{r.role}</TableCell><TableCell>{r.rounds_played}</TableCell><TableCell>{r.mvp_score}</TableCell></TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <div className="px-10 py-8">
+                  <Table>
+                    <TableHeader><TableRow><TableHead>Роль</TableHead><TableHead>Раундов</TableHead><TableHead>MVP-очки</TableHead></TableRow></TableHeader>
+                    <TableBody>
+                      {data.role_stats.map((r) => (
+                        <TableRow key={r.id}><TableCell className="font-medium">{r.role}</TableCell><TableCell>{r.rounds_played}</TableCell><TableCell>{r.mvp_score}</TableCell></TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </CardContent>
             </Card>
           )}
@@ -433,7 +497,12 @@ export function PlayerDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="punishments">
+        <TabsContent value="punishments" className="space-y-3">
+          {data.can_issue_punishment && (
+            <div className="flex justify-end">
+              <Button onClick={() => setPunishDialogOpen(true)}><Plus className="h-4 w-4" /> Выдать наказание</Button>
+            </div>
+          )}
           <Card className="overflow-hidden py-0">
             <CardContent className="p-0">
               <Table>
@@ -559,6 +628,52 @@ export function PlayerDetailPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={punishDialogOpen} onOpenChange={setPunishDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Выдать «{data.punishment_type_labels[punishForm.ptype] ?? punishForm.ptype}»</DialogTitle>
+            <DialogDescription>Наказание будет привязано к {player.player_steamid} и записано в историю игрока.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="mb-1.5 block">Тип</Label>
+              <Select value={punishForm.ptype} onValueChange={(v) => setPunishForm((f) => ({ ...f, ptype: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {data.punishment_types.map((t) => (
+                    <SelectItem key={t} value={t}>{data.punishment_type_labels[t] ?? t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Причина</Label>
+              <Input value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
+              <Input type="number" value={punishForm.expires_days} onChange={(e) => setPunishForm((f) => ({ ...f, expires_days: e.target.value }))} />
+            </div>
+            {(punishForm.ptype === "ban" || punishForm.ptype === "kick") && (
+              <div>
+                <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
+                <Input value={punishForm.server_name} onChange={(e) => setPunishForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
+              </div>
+            )}
+            <div>
+              <Label className="mb-1.5 block">Внутренние заметки</Label>
+              <Textarea value={punishForm.notes} onChange={(e) => setPunishForm((f) => ({ ...f, notes: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPunishDialogOpen(false)}>Отмена</Button>
+            <Button disabled={createPunishmentMutation.isPending} onClick={() => createPunishmentMutation.mutate()}>
+              Выдать
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
         <DialogContent>

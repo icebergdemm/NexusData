@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from typing import Optional
 import secrets
+import threading
+import time
 from datetime import datetime, timedelta
 from database import get_db
 from security import check_permission
@@ -233,6 +236,16 @@ async def login_page(request: Request, next: Optional[str] = Query(None), db: Se
 
     next_path = _safe_next_path(next)
 
+    # OAuth CSRF (login-CSRF) protection: the `state` param carries a random
+    # nonce we stash in the session and verify on the callback, NOT the raw
+    # next-path (which an attacker could set). The desired post-login
+    # destination is kept server-side in the session instead. SameSite=Lax
+    # doesn't protect the OAuth callback (it's a top-level GET), so this nonce
+    # is the actual guard against being logged into an account you didn't pick.
+    oauth_state = secrets.token_urlsafe(24)
+    request.session["oauth_state"] = oauth_state
+    request.session["oauth_next"] = next_path
+
     # Redirect only if server-side admin session exists and is valid.
     token = request.cookies.get("admin_token")
     if token:
@@ -243,11 +256,11 @@ async def login_page(request: Request, next: Optional[str] = Query(None), db: Se
 
         # Stale/invalid token cookie: clear it to prevent redirect loops.
         request.session.pop("username", None)
-        response = templates.TemplateResponse("login.html", {"request": request, "oauth_url": discord_auth.get_oauth_url(state=next_path)})
+        response = templates.TemplateResponse("login.html", {"request": request, "oauth_url": discord_auth.get_oauth_url(state=oauth_state)})
         response.delete_cookie("admin_token")
         return response
 
-    oauth_url = discord_auth.get_oauth_url(state=next_path)
+    oauth_url = discord_auth.get_oauth_url(state=oauth_state)
     return templates.TemplateResponse("login.html", {"request": request, "oauth_url": oauth_url})
 
 
@@ -291,6 +304,14 @@ async def discord_callback(
             status_code=400,
         )
 
+    # Verify the OAuth state nonce set by login_page (login-CSRF protection).
+    # Consume it from the session regardless of outcome so it can't be replayed.
+    expected_state = request.session.pop("oauth_state", None)
+    next_path = _safe_next_path(request.session.pop("oauth_next", None))
+    if not expected_state or not state or not secrets.compare_digest(str(state), str(expected_state)):
+        logger.warning("Discord callback with invalid/missing OAuth state — possible CSRF or expired login")
+        return RedirectResponse(url="/login?error=state_mismatch", status_code=302)
+
     try:
         # Exchange code for token
         token_data = await discord_auth.exchange_code(code)
@@ -332,7 +353,7 @@ async def discord_callback(
         db.add(admin_session)
         db.commit()
 
-        response = RedirectResponse(url=_safe_next_path(state), status_code=302)
+        response = RedirectResponse(url=next_path, status_code=302)
         response.set_cookie(
             "admin_token",
             token,
@@ -404,18 +425,20 @@ async def logout(request: Request, csrf_token: Optional[str] = Form(None), db: S
     return response
 
 
-@router.get("/adminold", response_class=HTMLResponse)
-async def admin_dashboard(
-    request: Request,
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin)
-):
-    """Admin dashboard with online chart"""
-    if "csrf_token" not in request.session:
-        request.session["csrf_token"] = secrets.token_urlsafe(32)
+_DASHBOARD_CACHE_TTL_SECONDS = 30.0
+_dashboard_cache: Optional[dict] = None
+_dashboard_cache_at = 0.0
+_dashboard_cache_lock = threading.Lock()
 
-    from services import _online_players, _online_players_lock
 
+def _compute_dashboard_chart(db: Session) -> dict:
+    """The actual heavy lifting behind /adminold — a full 24h session scan
+    plus a 24-slot x 6-sample nested Python loop. Deliberately a plain
+    (non-async) function so it can run via run_in_threadpool (see caller)
+    instead of blocking the shared event loop for its whole duration, and
+    its result is cached for _DASHBOARD_CACHE_TTL_SECONDS since this is the
+    single most-visited admin page and the underlying data doesn't need
+    sub-30s freshness."""
     # Use Moscow time for chart
     from datetime import timezone
     MSK = timezone(timedelta(hours=3))
@@ -457,27 +480,60 @@ async def admin_dashboard(
         peak_values.append(max(samples))
         avg_values.append(round(sum(samples) / len(samples), 1))
 
-    # Quick stats
     unique_today = len({s.player_id for s in sessions})
-    # Current online (combined from all servers, pruned of stale entries)
-    from services import _prune_stale_online
+    total_players = db.query(PlayerData).count()
+
+    return {
+        "chart_labels": chart_labels,
+        "peak_values": peak_values,
+        "avg_values": avg_values,
+        "unique_today": unique_today,
+        "total_players": total_players,
+    }
+
+
+def _cached_dashboard_chart(db: Session) -> dict:
+    global _dashboard_cache, _dashboard_cache_at
+    now = time.monotonic()
+    with _dashboard_cache_lock:
+        if _dashboard_cache is not None and (now - _dashboard_cache_at) < _DASHBOARD_CACHE_TTL_SECONDS:
+            return _dashboard_cache
+        data = _compute_dashboard_chart(db)
+        _dashboard_cache = data
+        _dashboard_cache_at = now
+        return data
+
+
+@router.get("/adminold", response_class=HTMLResponse)
+async def admin_dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin)
+):
+    """Admin dashboard with online chart"""
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    # Off the event loop (run_in_threadpool) — this used to run the full
+    # scan + nested-loop computation inline in this async def, blocking the
+    # shared event loop (and therefore every other request, including
+    # game-server ones dispatched to the same loop) for its whole duration.
+    chart_data = await run_in_threadpool(_cached_dashboard_chart, db)
+
+    # Current online (combined from all servers, pruned of stale entries) —
+    # in-memory only, cheap, deliberately NOT part of the cached snapshot
+    # above so it's always fresh.
+    from services import _online_players, _online_players_lock, _prune_stale_online
     with _online_players_lock:
         _prune_stale_online()
         current_online = len(_online_players)
-
-    # Total players
-    total_players = db.query(PlayerData).count()
 
     return templates.TemplateResponse("admin/dashboard.html", {
         "request": request,
         "admin": current_admin,
         "flashes": pop_flashes(request),
-        "chart_labels": chart_labels,
-        "peak_values": peak_values,
-        "avg_values": avg_values,
         "current_online": current_online,
-        "unique_today": unique_today,
-        "total_players": total_players,
+        **chart_data,
     })
 
 
@@ -1236,6 +1292,72 @@ async def api_players_search_suggestions(
     }
 
 
+# Seed defaults for the rank badge background colors (item: раздел "Игроки" —
+# выделение звания цветом) — grouped by rank tier per config/ranks.json's
+# current id->name mapping (0-1 Матрос, 2-4 Старшина, 5-6 Мичман, 7-9
+# Офицеры). Superuser can override any individual rank_id's color via
+# PATCH /api/v1/admin/players/rank-colors below — persisted in AppSetting,
+# this dict is only the fallback for whatever isn't overridden yet.
+_DEFAULT_RANK_COLORS = {
+    "0": "#4e379f", "1": "#4e379f",
+    "2": "#19742e", "3": "#19742e", "4": "#19742e",
+    "5": "#9f377c", "6": "#9f377c",
+    "7": "#351010", "8": "#351010", "9": "#351010",
+}
+
+
+def _get_rank_colors(db: Session) -> dict:
+    import json
+    from models import AppSetting
+    row = db.query(AppSetting).filter(AppSetting.key == "rank_colors").first()
+    overrides = {}
+    if row and row.value:
+        try:
+            overrides = json.loads(row.value)
+        except (ValueError, TypeError):
+            overrides = {}
+    return {**_DEFAULT_RANK_COLORS, **overrides}
+
+
+@router.patch("/api/v1/admin/players/rank-colors")
+async def api_set_rank_colors(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Superuser-only: override the background color shown for one or more
+    ranks in the Игроки table/badges. Body: {"colors": {"<rank_id>": "#hex"}}
+    — merges into whatever's already stored, doesn't require sending every
+    rank_id every time."""
+    import json
+    import re
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+    body = await request.json()
+    colors = body.get("colors")
+    if not isinstance(colors, dict):
+        raise HTTPException(status_code=400, detail="colors должен быть объектом {rank_id: hex}")
+    for rank_id, color in colors.items():
+        if not isinstance(color, str) or not re.match(r"^#[0-9a-fA-F]{6}$", color):
+            raise HTTPException(status_code=400, detail=f"Некорректный цвет для звания {rank_id}: {color!r}")
+
+    from models import AppSetting
+    row = db.query(AppSetting).filter(AppSetting.key == "rank_colors").first()
+    current = {}
+    if row and row.value:
+        try:
+            current = json.loads(row.value)
+        except (ValueError, TypeError):
+            current = {}
+    current.update(colors)
+    if row:
+        row.value = json.dumps(current)
+    else:
+        db.add(AppSetting(key="rank_colors", value=json.dumps(current)))
+    db.commit()
+    return {**_DEFAULT_RANK_COLORS, **current}
+
+
 @router.get("/api/v1/admin/players")
 async def api_players_list(
     page: int = Query(1, ge=1),
@@ -1305,6 +1427,7 @@ async def api_players_list(
         "selected_rank_id": rank_id,
         "selected_sort": sort,
         "ranks": settings.ranks_mapping,
+        "rank_colors": _get_rank_colors(db),
     }
 
 
@@ -1450,11 +1573,14 @@ async def api_player_detail(
         _prune_stale_online()
         is_online = player.player_steamid in _online_players
 
-    server_privilege = None
+    # A player can now hold several privilege rows at once (one manual grant
+    # per server_scope + one department-derived grant) — list every one of
+    # them rather than assuming there's only ever a single row.
+    server_privileges = []
     if player.player_steamid and check_permission(current_admin, "privileges", "view"):
         from models import ServerPlayerPrivilege, ServerPrivilegeGroup, Department
-        priv = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == player.player_steamid).first()
-        if priv:
+        privs = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == player.player_steamid).all()
+        for priv in privs:
             group_name = None
             if priv.server_group_id:
                 group = db.query(ServerPrivilegeGroup).filter(ServerPrivilegeGroup.id == priv.server_group_id).first()
@@ -1463,7 +1589,8 @@ async def api_player_detail(
             if priv.is_auto and priv.auto_source_department_id:
                 dept = db.query(Department).filter(Department.id == priv.auto_source_department_id).first()
                 auto_department_name = dept.name if dept else None
-            server_privilege = {
+            server_privileges.append({
+                "id": priv.id,
                 "server_group_id": priv.server_group_id,
                 "server_group_name": group_name,
                 "server_scope": priv.server_scope,
@@ -1471,7 +1598,7 @@ async def api_player_detail(
                 # human's manual grant — shown as "От отдела: X" when auto.
                 "is_auto": bool(priv.is_auto),
                 "auto_source_department_name": auto_department_name,
-            }
+            })
 
     return {
         "player": {
@@ -1519,12 +1646,73 @@ async def api_player_detail(
         "custom_talents": raw_achievements.get("talents", {}),
         "available_kval_kits": available_kval_kits,
         "is_online": is_online,
-        "server_privilege": server_privilege,
+        "server_privileges": server_privileges,
         "has_view": check_permission(current_admin, "players", "view"),
         "has_edit": check_permission(current_admin, "players", "edit"),
         "has_delete": check_permission(current_admin, "players", "delete"),
         "has_special": check_permission(current_admin, "players_special", "view"),
+        "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),
+        "punishment_types": PUNISHMENT_TYPES,
+        "punishment_type_labels": PUNISHMENT_TYPE_LABELS,
     }
+
+
+@router.post("/api/v1/admin/players/{player_id}/sync")
+async def api_player_force_sync(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Queue a forced cache resync for this one player — the game server
+    plugin skips its usual hash check and re-pulls the profile+privileges
+    straight from the API, overwriting its local SQLite cache. See
+    RoundManager_ND.cs's 'sync_player' case in ExecuteActionAsync."""
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await request.json() if await request.body() else {}
+    server_name = body.get("server_name") or None
+
+    action = ServerModerationService(db).enqueue_action(
+        {"action_type": "sync_player", "target_steamid": player.player_steamid},
+        admin_id=current_admin.id,
+        server_name=server_name,
+        payload={"scope": "player"},
+    )
+    log_admin_action(db, current_admin.id, "force_sync_player", {
+        "target": {"player_id": player.player_id, "steamid": player.player_steamid},
+    })
+    return {"status": "queued", "action_id": action.id}
+
+
+@router.post("/api/v1/admin/players/sync-all")
+async def api_players_force_sync_all(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Queue a forced cache resync for every player currently known to the
+    game server (its connected/cached set) — see 'sync_player' with
+    scope=all in RoundManager_ND.cs."""
+    if not check_permission(current_admin, "players", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    body = await request.json() if await request.body() else {}
+    server_name = body.get("server_name") or None
+
+    action = ServerModerationService(db).enqueue_action(
+        {"action_type": "sync_player", "target_steamid": "all"},
+        admin_id=current_admin.id,
+        server_name=server_name,
+        payload={"scope": "all"},
+    )
+    log_admin_action(db, current_admin.id, "force_sync_all_players", {"server_name": server_name})
+    return {"status": "queued", "action_id": action.id}
 
 
 @router.post("/api/v1/admin/players/{player_id}/link-admin")
@@ -1597,23 +1785,18 @@ async def api_update_player_rank_kit(
     db.refresh(player)
 
     if old_rank_id != new_rank_id and player.discord_id and player.discord_id_confirmed:
-        from models import DiscordBotAction
+        from discord_bot import bot as discord_bot
         rank_roles = settings.rank_discord_roles or {}
         old_discord_role = rank_roles.get(str(old_rank_id), "") if old_rank_id is not None else ""
         new_discord_role = rank_roles.get(str(new_rank_id), "") if new_rank_id is not None else ""
-        db.add(DiscordBotAction(
-            action_type="update_rank_role",
-            payload={
-                "discord_id": player.discord_id,
-                "remove_role_id": old_discord_role or None,
-                "add_role_id": new_discord_role or None,
-                "player_name": player.player_last_time_name,
-                "old_rank": settings.ranks_mapping.get(str(old_rank_id), ""),
-                "new_rank": settings.ranks_mapping.get(str(new_rank_id), ""),
-            },
-            queued_by_admin_id=current_admin.id,
-        ))
-        db.commit()
+        discord_bot.schedule(discord_bot.execute_bot_action("update_rank_role", {
+            "discord_id": player.discord_id,
+            "remove_role_id": old_discord_role or None,
+            "add_role_id": new_discord_role or None,
+            "player_name": player.player_last_time_name,
+            "old_rank": settings.ranks_mapping.get(str(old_rank_id), ""),
+            "new_rank": settings.ranks_mapping.get(str(new_rank_id), ""),
+        }))
 
     log_admin_action(db, current_admin.id, "update_player", {
         "target": {"player_id": player.player_id, "steamid": player.player_steamid, "name": player.player_last_time_name},
@@ -1832,28 +2015,22 @@ async def update_player(
 
         # If rank changed and player has confirmed discord_id, queue role update for bot
         if old_rank_id != new_rank_id and player.discord_id and player.discord_id_confirmed:
-            from models import DiscordBotAction
+            from discord_bot import bot as discord_bot
             rank_roles = settings.rank_discord_roles or {}
             old_discord_role = rank_roles.get(str(old_rank_id), "") if old_rank_id is not None else ""
             new_discord_role = rank_roles.get(str(new_rank_id), "") if new_rank_id is not None else ""
 
             logger.info(f"[RankChange] discord_id={player.discord_id}, old_rank={old_rank_id}->role={old_discord_role}, new_rank={new_rank_id}->role={new_discord_role}")
 
-            bot_action = DiscordBotAction(
-                action_type="update_rank_role",
-                payload={
-                    "discord_id": player.discord_id,
-                    "remove_role_id": old_discord_role or None,
-                    "add_role_id": new_discord_role or None,
-                    "player_name": player.player_last_time_name,
-                    "old_rank": settings.ranks_mapping.get(str(old_rank_id), ""),
-                    "new_rank": settings.ranks_mapping.get(str(new_rank_id), ""),
-                },
-                queued_by_admin_id=current_admin.id,
-            )
-            db.add(bot_action)
-            db.commit()
-            logger.info(f"[RankChange] Bot action created: {bot_action.id}")
+            discord_bot.schedule(discord_bot.execute_bot_action("update_rank_role", {
+                "discord_id": player.discord_id,
+                "remove_role_id": old_discord_role or None,
+                "add_role_id": new_discord_role or None,
+                "player_name": player.player_last_time_name,
+                "old_rank": settings.ranks_mapping.get(str(old_rank_id), ""),
+                "new_rank": settings.ranks_mapping.get(str(new_rank_id), ""),
+            }))
+            logger.info("[RankChange] Bot action dispatched")
         elif old_rank_id != new_rank_id:
             logger.info(f"[RankChange] Skipped: discord_id={player.discord_id}, confirmed={getattr(player, 'discord_id_confirmed', None)}")
 
@@ -3008,25 +3185,31 @@ async def api_assign_server_privilege(request: Request, db: Session = Depends(ge
     server_scope_raw = (body.get("server_scope") or "").strip().upper() or None
     server_scope = server_scope_raw if server_scope_raw in ("ASPER1", "ASPER2") else None
 
-    record = db.query(ServerPlayerPrivilege).filter(ServerPlayerPrivilege.steamid == steamid).first()
+    # Find-or-create the MANUAL row for this exact (steamid, server_scope) —
+    # never the player's auto (department-derived) row, which lives in a
+    # separate row task_sync_auto_server_privileges owns exclusively. This is
+    # what lets a manual grant and an auto grant coexist and sum instead of
+    # clobbering each other, and lets different scopes for the same player
+    # (global/ASPER1/ASPER2) each get their own row.
+    record = db.query(ServerPlayerPrivilege).filter(
+        ServerPlayerPrivilege.steamid == steamid,
+        ServerPlayerPrivilege.server_scope == server_scope,
+        ServerPlayerPrivilege.is_auto == False,
+    ).first()
     if record:
         record.server_group_id = server_group_id
         record.commands = commands
         record.allowed_action_ids = allowed_action_ids
         record.reason = reason
-        record.server_scope = server_scope
     else:
         player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
         record = ServerPlayerPrivilege(
             steamid=steamid, player_id=player.player_id if player else None,
             server_group_id=server_group_id, commands=commands, allowed_action_ids=allowed_action_ids,
             reason=reason, server_scope=server_scope, granted_by_admin_id=current_admin.id,
+            is_auto=False,
         )
         db.add(record)
-    # Any manual assign takes this row out of worker-managed territory —
-    # task_sync_auto_server_privileges never touches an is_auto=False row.
-    record.is_auto = False
-    record.auto_source_department_id = None
     db.commit()
     log_admin_action(db, current_admin.id, "assign_server_privilege", {
         "steamid": steamid, "group_id": server_group_id, "commands": commands, "server_scope": server_scope
@@ -3093,8 +3276,12 @@ async def assign_server_privilege(
     server_scope_raw = (form.get("server_scope") or "").strip().upper() or None
     server_scope = server_scope_raw if server_scope_raw in ("ASPER1", "ASPER2") else None
 
+    # Same find-or-create-by-(steamid, server_scope, manual-only) as the JSON
+    # API above — never touches the player's auto (department-derived) row.
     record = db.query(ServerPlayerPrivilege).filter(
-        ServerPlayerPrivilege.steamid == steamid
+        ServerPlayerPrivilege.steamid == steamid,
+        ServerPlayerPrivilege.server_scope == server_scope,
+        ServerPlayerPrivilege.is_auto == False,
     ).first()
 
     if record:
@@ -3102,7 +3289,6 @@ async def assign_server_privilege(
         record.commands = commands
         record.allowed_action_ids = allowed_action_ids
         record.reason = reason
-        record.server_scope = server_scope
     else:
         player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid).first()
         record = ServerPlayerPrivilege(
@@ -3114,6 +3300,7 @@ async def assign_server_privilege(
             reason=reason,
             server_scope=server_scope,
             granted_by_admin_id=current_admin.id,
+            is_auto=False,
         )
         db.add(record)
 
@@ -3879,6 +4066,30 @@ async def api_kits_list(
     }
 
 
+@router.post("/api/v1/admin/kits/sync")
+async def api_kits_force_sync(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Queue a forced reference-data resync (kit catalog + rank/kit/role
+    mappings) — the game server plugin re-pulls GET /server/cache/reference
+    and replaces its local kitCache regardless of the hash check. See
+    RoundManager_ND.cs's 'sync_reference' case in ExecuteActionAsync."""
+    _require_kits_permission(current_admin)
+
+    body = await request.json() if await request.body() else {}
+    server_name = body.get("server_name") or None
+
+    action = ServerModerationService(db).enqueue_action(
+        {"action_type": "sync_reference", "target_steamid": "system"},
+        admin_id=current_admin.id,
+        server_name=server_name,
+    )
+    log_admin_action(db, current_admin.id, "force_sync_reference", {"server_name": server_name})
+    return {"status": "queued", "action_id": action.id}
+
+
 @router.post("/api/v1/admin/kits")
 async def api_kits_add(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     _require_kits_permission(current_admin)
@@ -4598,8 +4809,6 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
         "discord_client_id": s.discord_client_id,
         "discord_client_secret": s.discord_client_secret,
         "discord_redirect_uri": s.discord_redirect_uri,
-        "use_discord_proxy": s.use_discord_proxy,
-        "discord_proxy_url": s.discord_proxy_url,
         "allowed_ips": ",".join(s.allowed_ips_list) if s.allowed_ips_list else s.allowed_ips,
         "rate_limit_enabled": s.rate_limit_enabled,
         "rate_limit_requests": s.rate_limit_requests,
@@ -4758,8 +4967,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
     field_map = {
         "debug": "DEBUG", "discord_trap_webhook_url": "DISCORD_TRAP_WEBHOOK_URL",
         "discord_client_id": "DISCORD_CLIENT_ID", "discord_client_secret": "DISCORD_CLIENT_SECRET",
-        "discord_redirect_uri": "DISCORD_REDIRECT_URI", "use_discord_proxy": "USE_DISCORD_PROXY",
-        "discord_proxy_url": "DISCORD_PROXY_URL", "allowed_ips": "ALLOWED_IPS",
+        "discord_redirect_uri": "DISCORD_REDIRECT_URI", "allowed_ips": "ALLOWED_IPS",
         "rate_limit_enabled": "RATE_LIMIT_ENABLED", "rate_limit_requests": "RATE_LIMIT_REQUESTS",
         "rate_limit_window": "RATE_LIMIT_WINDOW", "cors_origins": "CORS_ORIGINS",
         "sub_projects_webhook_url": "SUB_PROJECTS_WEBHOOK_URL",
@@ -4789,7 +4997,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
             continue
         val = body.get(field)
         if val is None:
-            if field in ("debug", "use_discord_proxy", "rate_limit_enabled"):
+            if field in ("debug", "rate_limit_enabled"):
                 val = "false"
         elif val is True or val in ("on", "1", "true", "yes"):
             val = "true"
@@ -4846,8 +5054,6 @@ async def admin_administration_config_save(
         "discord_client_id": "DISCORD_CLIENT_ID",
         "discord_client_secret": "DISCORD_CLIENT_SECRET",
         "discord_redirect_uri": "DISCORD_REDIRECT_URI",
-        "use_discord_proxy": "USE_DISCORD_PROXY",
-        "discord_proxy_url": "DISCORD_PROXY_URL",
         "allowed_ips": "ALLOWED_IPS",
         "rate_limit_enabled": "RATE_LIMIT_ENABLED",
         "rate_limit_requests": "RATE_LIMIT_REQUESTS",
@@ -4882,7 +5088,7 @@ async def admin_administration_config_save(
         val = form.get(field)
         if val is None:
             # checkboxes that are unchecked won't appear in form
-            if field in ("debug", "use_discord_proxy", "rate_limit_enabled"):
+            if field in ("debug", "rate_limit_enabled"):
                 val = "false"
         else:
             # normalize checkboxes

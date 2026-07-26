@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
+import { Pencil, Check, X } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -12,6 +13,8 @@ interface LabelCategory { id: number; name: string; color: string; icon: string 
 
 export function LabelCategoriesPage() {
   const [form, setForm] = useState({ name: "", color: "#888888", icon: "🏷" })
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState({ name: "", color: "#888888", icon: "🏷" })
   const queryClient = useQueryClient()
 
   const { data } = useQuery({
@@ -31,6 +34,18 @@ export function LabelCategoriesPage() {
     mutationFn: (id: number) => api.delete(`/api/v1/admin/label-categories/${id}`),
     onSuccess: () => { toast.success("Категория удалена"); invalidate() },
   })
+
+  const update = useMutation({
+    mutationFn: ({ id, ...body }: { id: number; name: string; color: string; icon: string }) =>
+      api.post(`/api/v1/admin/label-categories/${id}`, body),
+    onSuccess: () => { toast.success("Метка обновлена"); setEditingId(null); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const startEdit = (c: LabelCategory) => {
+    setEditingId(c.id)
+    setEditDraft({ name: c.name, color: c.color, icon: c.icon })
+  }
 
   return (
     <div className="space-y-4">
@@ -52,8 +67,56 @@ export function LabelCategoriesPage() {
             <TableBody>
               {data?.categories.map((c) => (
                 <TableRow key={c.id}>
-                  <TableCell><Badge style={{ backgroundColor: c.color }} className="text-white">{c.icon} {c.name}</Badge></TableCell>
-                  <TableCell className="text-right"><Button size="sm" variant="destructive" onClick={() => remove.mutate(c.id)}>Удалить</Button></TableCell>
+                  {editingId === c.id ? (
+                    <>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Input
+                            value={editDraft.icon}
+                            onChange={(e) => setEditDraft((d) => ({ ...d, icon: e.target.value }))}
+                            className="w-16"
+                          />
+                          <Input
+                            value={editDraft.name}
+                            onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))}
+                            className="w-40"
+                          />
+                          <Input
+                            type="color"
+                            value={editDraft.color}
+                            onChange={(e) => setEditDraft((d) => ({ ...d, color: e.target.value }))}
+                            className="w-16 p-1"
+                          />
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1.5">
+                          <Button
+                            size="sm"
+                            disabled={!editDraft.name.trim() || update.isPending}
+                            onClick={() => update.mutate({ id: c.id, ...editDraft })}
+                          >
+                            <Check className="size-3.5" /> Сохранить
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>
+                            <X className="size-3.5" /> Отмена
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell><Badge style={{ backgroundColor: c.color }} className="text-white">{c.icon} {c.name}</Badge></TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1.5">
+                          <Button size="sm" variant="outline" onClick={() => startEdit(c)}>
+                            <Pencil className="size-3.5" /> Изменить
+                          </Button>
+                          <Button size="sm" variant="destructive" onClick={() => remove.mutate(c.id)}>Удалить</Button>
+                        </div>
+                      </TableCell>
+                    </>
+                  )}
                 </TableRow>
               ))}
               {!data?.categories.length && <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground">Меток нет</TableCell></TableRow>}

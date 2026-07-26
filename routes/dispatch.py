@@ -11,13 +11,15 @@ from typing import Optional, List
 from datetime import datetime
 import secrets
 import logging
+import threading
+import httpx
 
-from database import get_db
-from security import verify_external_api_key_dependency, check_permission
+from database import get_db, get_game_db
+from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
 from models import (
     DispatchMessage, RoundEvent, AdminUser, AdminSession,
-    ServerAction, PlayerPunishment, PlayerData, DiscordBotAction,
+    ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting,
 )
 from schemas import DispatchMessageIn, RoundStartIn, RoundEndIn
 
@@ -35,6 +37,16 @@ api_router = APIRouter(
 panel_router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 templates.env.globals.update(check_permission=check_permission)
+
+# ── External dispatch client API (protected by the SEPARATE client_api_key —
+# same tier as world_state.py's client_router, never the game-server ingest
+# key or an admin session) — lets a third-party system send cargo/shuttle/
+# dispatcher-message requests without a logged-in admin. ────────────────────
+client_router = APIRouter(
+    prefix="/api/v1/client/dispatch",
+    tags=["client-api"],
+    dependencies=[Depends(verify_client_api_key_dependency)],
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -75,7 +87,7 @@ def get_round_state(db: Session, server_name: str) -> dict:
 
 
 @api_router.post("/dispatch")
-def post_dispatch_message(body: DispatchMessageIn, db: Session = Depends(get_db)):
+def post_dispatch_message(body: DispatchMessageIn, db: Session = Depends(get_game_db)):
     """Game server posts a radio terminal message from a player."""
     msg = DispatchMessage(
         steamid=body.steamid,
@@ -91,6 +103,13 @@ def post_dispatch_message(body: DispatchMessageIn, db: Session = Depends(get_db)
     # Queue Discord notification for dispatch messages
     _queue_dispatch_discord_notification(db, msg)
 
+    # Outgoing webhook — external dispatch system, if configured for this server
+    _send_dispatch_webhook(db, body.server_name, "dispatch_message", {
+        "steamid": body.steamid,
+        "player_name": body.player_name,
+        "text": body.text,
+    })
+
     return {"status": "ok", "id": msg.id}
 
 
@@ -105,15 +124,11 @@ def _resolve_dispatch_channel_key(server_name: str) -> Optional[str]:
 
 
 def _enqueue_dispatch_embed(db, channel_config_key: str, embed: dict):
-    action = DiscordBotAction(
-        action_type="send_embed",
-        payload={
-            "channel_config_key": channel_config_key,
-            "embed": embed,
-        },
-    )
-    db.add(action)
-    db.commit()
+    from discord_bot import bot as discord_bot
+    discord_bot.schedule(discord_bot.execute_bot_action("send_embed", {
+        "channel_config_key": channel_config_key,
+        "embed": embed,
+    }))
 
 
 def _queue_dispatch_discord_notification(db, msg: DispatchMessage):
@@ -153,7 +168,7 @@ def _queue_dispatch_discord_notification(db, msg: DispatchMessage):
 def get_dispatch_messages(
     limit: int = Query(50, ge=1, le=200),
     after_id: Optional[int] = Query(None, description="Get messages with id > after_id"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_game_db),
 ):
     """Get recent dispatch messages (for polling)."""
     q = db.query(DispatchMessage)
@@ -175,12 +190,23 @@ def get_dispatch_messages(
     ]
 
 
+@api_router.post("/dispatch/shuttle-departed")
+def post_shuttle_departed(body: dict, db: Session = Depends(get_game_db)):
+    """Game server reports that the supply shuttle has actually departed
+    (Harmony postfix on RespawnManager.DispatchShuttle in RoundManager_ND.cs —
+    fires for every real dispatch, forced or vanilla). Relayed to the
+    external dispatch webhook as 'shuttle_departed', if configured."""
+    server_name = (body or {}).get("server_name")
+    _send_dispatch_webhook(db, server_name, "shuttle_departed", {})
+    return {"status": "ok"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUND LIFECYCLE API
 # ══════════════════════════════════════════════════════════════════════════════
 
 @api_router.post("/round/start")
-def post_round_start(body: RoundStartIn, db: Session = Depends(get_db)):
+def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     """Game server reports round start."""
     event = RoundEvent(
         event_type="start",
@@ -199,7 +225,7 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_db)):
 
 
 @api_router.post("/round/end")
-def post_round_end(body: RoundEndIn, db: Session = Depends(get_db)):
+def post_round_end(body: RoundEndIn, db: Session = Depends(get_game_db)):
     """Game server reports round end."""
     # Link back to the start event that opened this round (the most recent
     # unpaired "start" for this server) so past rounds can be listed in one query.
@@ -236,12 +262,75 @@ def _queue_round_status_refresh(db, server_name: Optional[str]):
     (in addition to its regular 1-minute loop), so start/end feels instant."""
     if not server_name:
         return
-    action = DiscordBotAction(
-        action_type="refresh_round_status",
-        payload={"server_name": server_name},
-    )
-    db.add(action)
-    db.commit()
+    from discord_bot import bot as discord_bot
+    discord_bot.schedule(discord_bot.execute_bot_action("refresh_round_status", {"server_name": server_name}))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXTERNAL DISPATCH WEBHOOK (NexusData → third-party system)
+#
+# One outgoing webhook URL per server (ASPER1/ASPER2), superuser-configurable
+# via PATCH /api/v1/admin/dispatch/webhook-config, stored in AppSetting (same
+# key/value pattern as "rank_colors" in routes/admin.py). Fires for three
+# events: a player's radio message reaching dispatch (dispatch_message), a
+# supply-shuttle send being queued (shuttle_send_requested), and the game
+# engine confirming the shuttle actually departed (shuttle_departed, posted
+# by the plugin — see /server/dispatch/shuttle-departed below).
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _dispatch_webhook_setting_key(server_name: Optional[str]) -> Optional[str]:
+    sn = (server_name or "").strip().upper()
+    if sn == "ASPER1":
+        return "dispatch_webhook_url_asper1"
+    if sn == "ASPER2":
+        return "dispatch_webhook_url_asper2"
+    return None
+
+
+def _get_app_setting(db: Session, key: str) -> Optional[str]:
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    return row.value if row and row.value else None
+
+
+def _set_app_setting(db: Session, key: str, value: Optional[str]):
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+
+
+def _post_webhook_sync(url: str, payload: dict):
+    """Runs in its own daemon thread — never blocks the calling request, no
+    retries (best-effort). A dedicated thread (rather than asyncio.create_task)
+    is used because this is called from BOTH sync and async route handlers in
+    this file, and create_task requires a running event loop that plain sync
+    def handlers (run in FastAPI's worker thread pool) don't have."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(url, json=payload)
+            if resp.status_code >= 400:
+                logger.warning(f"Dispatch webhook {url} returned {resp.status_code}: {resp.text[:300]}")
+    except Exception as ex:
+        logger.warning(f"Dispatch webhook POST to {url} failed: {ex}")
+
+
+def _send_dispatch_webhook(db: Session, server_name: Optional[str], event: str, payload: dict):
+    """Best-effort outgoing notification — no-op if no URL is configured for
+    this server. Fire-and-forget, never raises, never blocks the caller."""
+    key = _dispatch_webhook_setting_key(server_name)
+    if not key:
+        return
+    url = _get_app_setting(db, key)
+    if not url:
+        return
+    body = {
+        "event": event,
+        "server_name": (server_name or "").strip().upper(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        **payload,
+    }
+    threading.Thread(target=_post_webhook_sync, args=(url, body), daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -276,19 +365,15 @@ async def dispatch_page(request: Request, db: Session = Depends(get_db), current
     })
 
 
-@panel_router.post("/api/v1/admin/dispatch/send")
-async def dispatch_send(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
-    """Admin sends a dispatcher message via the action queue.
-    
-    Creates a 'dispatch' action in ServerActionQueue. The game server picks it up,
-    sends it in-game, then ACKs. Until ACK is received, the action stays pending
-    and the frontend blocks further sends.
+def _send_dispatcher_message(db: Session, text: str, server_name: Optional[str], admin_id: Optional[int], sender_label: str) -> tuple:
+    """Shared by the admin panel endpoint and the external client endpoint.
+
+    Creates a 'dispatch' ServerAction. The game server picks it up, sends it
+    in-game, then ACKs. Until ACK is received, the action stays pending and
+    the admin-panel frontend blocks further sends (see /dispatch/pending —
+    this only checks action_type=="dispatch" regardless of who queued it).
     """
-    if not check_permission(current_admin, "dispatch", "edit"):
-        raise HTTPException(status_code=403)
-    body = await request.json()
-    text = body.get("text", "").strip()
-    server_name = body.get("server_name") or None  # optional: target specific server
+    text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
 
@@ -297,7 +382,7 @@ async def dispatch_send(request: Request, db: Session = Depends(get_db), current
     # Save to dispatch history
     msg = DispatchMessage(
         steamid=None,
-        player_name=current_admin.discord_username,
+        player_name=sender_label,
         text=full_text,
         sender_type="dispatcher",
         server_name=server_name,
@@ -311,7 +396,7 @@ async def dispatch_send(request: Request, db: Session = Depends(get_db), current
         target_steamid="broadcast",
         message_text=full_text,
         target_server=server_name,  # Send to specific server only
-        queued_by_admin_id=current_admin.id,
+        queued_by_admin_id=admin_id,
     )
     # If target_server is set, mark the OTHER server as done (not applicable)
     if server_name and server_name.upper() == "ASPER1":
@@ -326,6 +411,17 @@ async def dispatch_send(request: Request, db: Session = Depends(get_db), current
     # Mirror the dispatcher message into the corresponding Discord dispatch channel(s)
     _queue_dispatch_discord_notification(db, msg)
 
+    return msg, action
+
+
+@panel_router.post("/api/v1/admin/dispatch/send")
+async def dispatch_send(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
+    """Admin sends a dispatcher message via the action queue."""
+    if not check_permission(current_admin, "dispatch", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    server_name = body.get("server_name") or None  # optional: target specific server
+    msg, action = _send_dispatcher_message(db, body.get("text", ""), server_name, current_admin.id, current_admin.discord_username)
     return JSONResponse({"status": "ok", "id": msg.id, "action_id": action.id})
 
 
@@ -344,6 +440,179 @@ def dispatch_check_pending(
         (ServerAction.status_asper1 == 0) | (ServerAction.status_asper2 == 0),
     ).first()
     return {"pending": pending is not None, "action_id": pending.id if pending else None}
+
+
+@panel_router.get("/api/v1/admin/dispatch/webhook-config")
+def get_dispatch_webhook_config(db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
+    """Superuser-only: current outgoing webhook URLs (per server) for the
+    external dispatch integration. Not gated by the 'dispatch' permission
+    registry — this is a site-wide integration secret, superuser only."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+    return {
+        "ASPER1": _get_app_setting(db, "dispatch_webhook_url_asper1"),
+        "ASPER2": _get_app_setting(db, "dispatch_webhook_url_asper2"),
+    }
+
+
+@panel_router.patch("/api/v1/admin/dispatch/webhook-config")
+async def set_dispatch_webhook_config(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
+    """Superuser-only: set/clear the outgoing webhook URL for ASPER1/ASPER2.
+    Body: {"ASPER1": "https://..."|null, "ASPER2": "https://..."|null} —
+    keys are optional, only provided ones are updated."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+    body = await request.json()
+
+    if "ASPER1" in body:
+        url = (body.get("ASPER1") or "").strip() or None
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(status_code=400, detail="URL должен начинаться с http:// или https://")
+        _set_app_setting(db, "dispatch_webhook_url_asper1", url)
+    if "ASPER2" in body:
+        url = (body.get("ASPER2") or "").strip() or None
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(status_code=400, detail="URL должен начинаться с http:// или https://")
+        _set_app_setting(db, "dispatch_webhook_url_asper2", url)
+
+    db.commit()
+    return {
+        "ASPER1": _get_app_setting(db, "dispatch_webhook_url_asper1"),
+        "ASPER2": _get_app_setting(db, "dispatch_webhook_url_asper2"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dropdown actions ("Отправить/отозвать челнок", "Груз в очередь", "Торпедный
+# удар") — all queue a ServerAction the game server's own poll loop already
+# consumes (GET /api/v1/actions, see routes/moderation.py) the same way it
+# already does for kick/ban/dispatch. This side only ever queues a correctly
+# structured action + (for cargo) deducts warehouse stock — actually spawning
+# the cargo/moving the shuttle/firing the torpedo is the game server's job.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _mark_other_server_done(action: ServerAction, server_name: Optional[str]):
+    """Single-server-targeted actions don't need the OTHER server to do
+    anything — same convention as dispatch_send above."""
+    if server_name and server_name.upper() == "ASPER1":
+        action.status_asper2 = 1
+    elif server_name and server_name.upper() == "ASPER2":
+        action.status_asper1 = 1
+
+
+def _queue_shuttle_action(db: Session, server_name: Optional[str], command: str, admin_id: Optional[int]) -> ServerAction:
+    """Shared by the admin panel endpoint and the external client endpoint.
+    Queues supply_shuttle_send/recall and — for 'send' only — fires the
+    'shuttle_send_requested' outgoing webhook (recall has no webhook event
+    per the current spec)."""
+    if command not in ("send", "recall"):
+        raise HTTPException(status_code=400, detail="command должен быть send или recall")
+    if not server_name:
+        raise HTTPException(status_code=400, detail="Укажите сервер")
+
+    action = ServerAction(
+        action_type=f"supply_shuttle_{command}",
+        target_steamid="system",
+        target_server=server_name,
+        queued_by_admin_id=admin_id,
+    )
+    _mark_other_server_done(action, server_name)
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+
+    if command == "send":
+        _send_dispatch_webhook(db, server_name, "shuttle_send_requested", {})
+
+    return action
+
+
+@panel_router.post("/api/v1/admin/dispatch/actions/shuttle")
+async def dispatch_shuttle_action(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
+    if not check_permission(current_admin, "dispatch", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    command = body.get("command")
+    server_name = (body.get("server_name") or "").strip() or None
+    action = _queue_shuttle_action(db, server_name, command, current_admin.id)
+    return JSONResponse({"status": "ok", "action_id": action.id})
+
+
+@panel_router.post("/api/v1/admin/dispatch/actions/torpedo")
+async def dispatch_torpedo_action(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
+    if not check_permission(current_admin, "dispatch", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    server_name = (body.get("server_name") or "").strip() or None
+    x, y = body.get("x"), body.get("y")
+    if not server_name:
+        raise HTTPException(status_code=400, detail="Укажите сервер")
+    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        raise HTTPException(status_code=400, detail="Укажите координаты цели (x, y)")
+
+    action = ServerAction(
+        action_type="torpedo_strike",
+        target_steamid="system",
+        target_server=server_name,
+        payload={"x": x, "y": y},
+        queued_by_admin_id=current_admin.id,
+    )
+    _mark_other_server_done(action, server_name)
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+    return JSONResponse({"status": "ok", "action_id": action.id})
+
+
+def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, admin_id: Optional[int]) -> ServerAction:
+    """Shared by the admin panel endpoint and the external client endpoint.
+    Requested items are DEDUCTED from the virtual warehouse (routes/warehouse.py)
+    atomically with queuing the action — if stock is insufficient for anything
+    requested, the whole request is rejected and nothing is deducted or queued."""
+    if not server_name:
+        raise HTTPException(status_code=400, detail="Укажите сервер")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы один предмет")
+
+    to_deduct = []
+    for entry in items:
+        identifier = (entry.get("identifier") or "").strip() if isinstance(entry, dict) else ""
+        qty = entry.get("quantity") if isinstance(entry, dict) else None
+        if not identifier or not isinstance(qty, int) or qty <= 0:
+            raise HTTPException(status_code=400, detail="Некорректный предмет в грузе")
+        row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
+        if not row or row.quantity < qty:
+            available = row.quantity if row else 0
+            raise HTTPException(status_code=400, detail=f"На складе недостаточно «{identifier}» (нужно {qty}, есть {available})")
+        to_deduct.append((row, qty))
+
+    for row, qty in to_deduct:
+        row.quantity -= qty
+        row.updated_by_admin_id = admin_id
+
+    action = ServerAction(
+        action_type="cargo_spawn",
+        target_steamid="system",
+        target_server=server_name,
+        payload={"items": [{"identifier": e["identifier"], "quantity": e["quantity"]} for e in items]},
+        queued_by_admin_id=admin_id,
+    )
+    _mark_other_server_done(action, server_name)
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+    return action
+
+
+@panel_router.post("/api/v1/admin/dispatch/actions/cargo")
+async def dispatch_cargo_action(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
+    if not check_permission(current_admin, "dispatch", "edit"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    server_name = (body.get("server_name") or "").strip() or None
+    items = body.get("items") or []
+    action = _queue_cargo_action(db, server_name, items, current_admin.id)
+    return JSONResponse({"status": "ok", "action_id": action.id})
 
 
 @panel_router.get("/api/v1/admin/dispatch/messages")
@@ -421,3 +690,40 @@ def admin_round_status(db: Session = Depends(get_db), current_admin: AdminUser =
             "shuttle_arrival_at": live.shuttle_arrival_at.isoformat() + "Z" if live and live.shuttle_arrival_at else None,
         }
     return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXTERNAL DISPATCH CLIENT API (client_api_key — no admin session required)
+#
+# Mirrors the three admin-panel dispatch actions above (cargo/shuttle/message —
+# torpedo is intentionally not exposed here), so a third-party system can
+# drive dispatch the same way the web UI does. queued_by_admin_id is always
+# None here (no admin is involved), same convention as game-server-initiated
+# actions elsewhere (e.g. routes/game_api.py's traps/queue, unban).
+# ══════════════════════════════════════════════════════════════════════════════
+
+@client_router.post("/cargo")
+async def client_dispatch_cargo(request: Request, db: Session = Depends(get_game_db)):
+    body = await request.json()
+    server_name = (body.get("server_name") or "").strip() or None
+    items = body.get("items") or []
+    action = _queue_cargo_action(db, server_name, items, admin_id=None)
+    return {"status": "ok", "action_id": action.id}
+
+
+@client_router.post("/shuttle")
+async def client_dispatch_shuttle(request: Request, db: Session = Depends(get_game_db)):
+    body = await request.json()
+    server_name = (body.get("server_name") or "").strip() or None
+    command = body.get("command")
+    action = _queue_shuttle_action(db, server_name, command, admin_id=None)
+    return {"status": "ok", "action_id": action.id}
+
+
+@client_router.post("/message")
+async def client_dispatch_message(request: Request, db: Session = Depends(get_game_db)):
+    body = await request.json()
+    server_name = (body.get("server_name") or "").strip() or None
+    sender_label = (body.get("sender_name") or "").strip() or "Внешняя система"
+    msg, action = _send_dispatcher_message(db, body.get("text", ""), server_name, admin_id=None, sender_label=sender_label)
+    return {"status": "ok", "id": msg.id, "action_id": action.id}

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from database import get_db
+from database import get_game_db
 from services import KitService
 from schemas import KitOut, PaginatedResponse
 from security import verify_api_key_dependency
@@ -20,7 +20,7 @@ router = APIRouter(
 def get_all_kits(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_game_db)
 ):
     """Get all available kits with pagination"""
     service = KitService(db)
@@ -42,7 +42,7 @@ def get_all_kits(
 
 
 @router.get("/{kit_id}", response_model=KitOut)
-def get_kit(kit_id: int, db: Session = Depends(get_db)):
+def get_kit(kit_id: int, db: Session = Depends(get_game_db)):
     """Get kit by ID"""
     service = KitService(db)
     return service.get_kit(kit_id)

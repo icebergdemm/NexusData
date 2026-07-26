@@ -229,7 +229,12 @@ export function ServerPrivilegesPage() {
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editingPrivId ? "Изменить привилегии" : "Назначить привилегии"}</DialogTitle>
-            <DialogDescription>Игровые команды и группа привилегий для конкретного игрока по SteamID.</DialogDescription>
+            <DialogDescription>
+              Игровые команды и группа привилегий для конкретного игрока по SteamID.
+              У одного игрока может быть несколько грантов одновременно — по одному на
+              каждую область (глобально/ASPER1/ASPER2) плюс автоматический от отдела —
+              они суммируются, а не заменяют друг друга.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
@@ -247,8 +252,18 @@ export function ServerPrivilegesPage() {
               </Select>
             </div>
             <div>
-              <Label className="mb-1.5 block">Область (пусто = все)</Label>
-              <Input value={assignForm.server_scope} onChange={(e) => setAssignForm((f) => ({ ...f, server_scope: e.target.value }))} placeholder="ASPER1 / ASPER2" />
+              <Label className="mb-1.5 block">Область (пусто = все сервера)</Label>
+              <Input
+                value={assignForm.server_scope}
+                disabled={!!editingPrivId}
+                onChange={(e) => setAssignForm((f) => ({ ...f, server_scope: e.target.value }))}
+                placeholder="ASPER1 / ASPER2"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {editingPrivId
+                  ? "Область гранта нельзя сменить при редактировании — отзовите его и назначьте заново на нужную область."
+                  : "Каждая область — отдельный грант. Назначив ASPER1, а затем отдельно ASPER2, игрок получит оба одновременно."}
+              </p>
             </div>
             <div>
               <Label className="mb-1.5 block">Команды (по одной на строку)</Label>

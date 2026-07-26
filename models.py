@@ -28,7 +28,7 @@ class PlayerData(Base):
     player_id = Column(Integer, primary_key=True, index=True)
     player_last_time_name = Column(String(255), index=True)
     player_steamid = Column(String(50), unique=True, index=True)
-    last_login_time = Column(DateTime, default=func.now())
+    last_login_time = Column(DateTime, default=func.now(), index=True)
     play_time = Column(Integer, default=0)  # in seconds
     rank_id = Column(Integer, default=0)
     kit_level = Column(Integer, default=0)
@@ -47,7 +47,7 @@ class PlayerData(Base):
     # it's shown in ratings/punishments — regardless of whether the
     # underlying data (e.g. a punishment) came from the game-server API or
     # the admin panel, since this is resolved at display time, not baked in.
-    linked_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    linked_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
     forced_display_name = Column(String(255), nullable=True)
     # True when the link was created by the confirmed-Discord-ID auto-match
     # worker (task_auto_link_admins, every 10 min) rather than a superuser —
@@ -56,7 +56,7 @@ class PlayerData(Base):
 
     # Cached Steam avatar, refreshed periodically by task_fetch_steam_avatars.
     steam_avatar_url = Column(String(500), nullable=True)
-    steam_avatar_fetched_at = Column(DateTime, nullable=True)
+    steam_avatar_fetched_at = Column(DateTime, nullable=True, index=True)
 
     stats = relationship("PlayerStats", backref="player", uselist=False)
     # Named distinctly from the "linked_admin" local variable elsewhere (the
@@ -250,7 +250,15 @@ class ServerPlayerPrivilege(Base):
     __tablename__ = "server_player_privileges"
     
     id = Column(Integer, primary_key=True, index=True)
-    steamid = Column(String(50), unique=True, nullable=False, index=True)
+    # NOT unique — a player can have several rows at once (one manual grant
+    # per server_scope + one auto/department grant), which are UNIONED at
+    # read time (see privilege_resolution.py). Uniqueness per (steamid,
+    # server_scope, is_auto) is enforced at the application level (find-or-
+    # create in routes/admin.py's assign endpoint / workers.py's auto-sync),
+    # not via a DB constraint — see database.py's
+    # _relax_server_player_privileges_unique_steamid for the migration that
+    # dropped the old UNIQUE(steamid) index this column used to have.
+    steamid = Column(String(50), nullable=False, index=True)
     player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
     # FK to ServerPrivilegeGroup (nullable — can have only individual commands)
     server_group_id = Column(Integer, ForeignKey("server_privilege_groups.id"), nullable=True, index=True)
@@ -268,12 +276,13 @@ class ServerPlayerPrivilege(Base):
     expires_at = Column(DateTime, nullable=True)
     # NULL = all servers, 'ASPER1' = only ASPER1, 'ASPER2' = only ASPER2
     server_scope = Column(String(20), nullable=True, index=True)
-    # True when server_group_id was set by task_sync_auto_server_privileges
-    # (derived from a department access level/head role), not by a human via
-    # the assign endpoint — mirrors the is_auto/linked_admin_auto "never
-    # clobber a manual grant" convention used elsewhere. The manual assign
-    # endpoint always sets this back to False, taking the row out of
-    # worker-managed territory for good until cleared some other way.
+    # True when this row is owned by task_sync_auto_server_privileges (derived
+    # from a department access level/head role) rather than a human via the
+    # assign endpoint. Manual and auto grants for the same player now live in
+    # SEPARATE rows (see the steamid comment above) and are summed together
+    # at read time, rather than one clobbering the other — the worker only
+    # ever touches rows where is_auto=True, the assign endpoint only ever
+    # touches rows where is_auto=False.
     is_auto = Column(Boolean, nullable=False, default=False)
     # Which department's access level/head role produced the current
     # server_group_id when is_auto is True — drives the "От отдела: X" label.
@@ -291,7 +300,7 @@ class AnticheatEvent(Base):
     event_type = Column(String(128), nullable=False)
     details = Column(JSON, nullable=True)
     occurred_at = Column(DateTime, default=func.now())
-    reviewed = Column(Integer, default=0)  # 0 = not reviewed, 1 = reviewed
+    reviewed = Column(Integer, default=0, index=True)  # 0 = not reviewed, 1 = reviewed
 
 
 class ServerActionQueue(Base):
@@ -329,13 +338,19 @@ class ServerAction(Base):
     queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
-    # Per-server status: 0=pending, 1=done, 2=failed
-    status_asper1 = Column(Integer, default=0, nullable=False)
-    status_asper2 = Column(Integer, default=0, nullable=False)
+    # Per-server status: 0=pending, 1=done, 2=failed — indexed, polled by
+    # every connected game server every ~10s (GET /server/actions).
+    status_asper1 = Column(Integer, default=0, nullable=False, index=True)
+    status_asper2 = Column(Integer, default=0, nullable=False, index=True)
     error_asper1 = Column(String(500), nullable=True)
     error_asper2 = Column(String(500), nullable=True)
     executed_at_asper1 = Column(DateTime, nullable=True)
     executed_at_asper2 = Column(DateTime, nullable=True)
+    # Structured data for action types that don't fit the columns above
+    # (torpedo_strike: {"x", "y"}; cargo_spawn: {"items": [{"identifier",
+    # "quantity"}]}; supply_shuttle_send/recall: no payload needed) — see
+    # routes/dispatch.py's cargo/torpedo/shuttle endpoints.
+    payload = Column(JSON, nullable=True)
 
 
 class PlayerNote(Base):
@@ -453,18 +468,18 @@ class Ticket(Base):
     id = Column(Integer, primary_key=True, index=True)
     ticket_type = Column(String(50), nullable=False)  # help, player_report, bug, admin_report, department_report
     title = Column(String(255), nullable=False)
-    status = Column(String(20), nullable=False, default="open")  # open, waiting, closed
+    status = Column(String(20), nullable=False, default="open", index=True)  # open, waiting, closed
     discord_channel_id = Column(String(25), nullable=True, index=True)
     creator_discord_id = Column(String(25), nullable=False)
     creator_username = Column(String(255), nullable=True)
     creator_display_name = Column(String(255), nullable=True)
-    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
     assigned_role_ids = Column(JSON, default=lambda: [])  # Discord role IDs with access
     closed_by = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=func.now())
     closed_at = Column(DateTime, nullable=True)
     last_message_at = Column(DateTime, nullable=True)
-    awaiting_admin = Column(Integer, default=1)  # 1 = waiting for admin reply
+    awaiting_admin = Column(Integer, default=1, index=True)  # 1 = waiting for admin reply
 
 
 class TicketMessage(Base):
@@ -645,7 +660,7 @@ class PlayerPunishment(Base):
     issued_by_was_superuser = Column(Boolean, nullable=False, default=False)
     issued_at = Column(DateTime, default=func.now(), index=True)
     expires_at = Column(DateTime, nullable=True)           # NULL = permanent
-    is_active = Column(Integer, default=1)                 # 1 = active, 0 = void/overridden
+    is_active = Column(Integer, default=1, index=True)      # 1 = active, 0 = void/overridden
     notes = Column(String(2000), nullable=True)            # internal admin notes
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
@@ -1310,11 +1325,11 @@ class PlayerAnomaly(Base):
     player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=False, index=True)
     # The other account in a "twink" pairing — NULL for "behavior" findings.
     related_player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
-    score = Column(Integer, nullable=False, default=0)
+    score = Column(Integer, nullable=False, default=0, index=True)
     evidence = Column(JSON, default=lambda: {})
     detected_at = Column(DateTime, default=func.now(), index=True)
-    last_seen_at = Column(DateTime, default=func.now())
-    status = Column(String(20), nullable=False, default="new")  # new | reviewed | dismissed
+    last_seen_at = Column(DateTime, default=func.now(), index=True)
+    status = Column(String(20), nullable=False, default="new", index=True)  # new | reviewed | dismissed
     reviewed_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     # True if this specific finding triggered the automatic ban-evasion ban

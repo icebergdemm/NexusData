@@ -397,23 +397,8 @@ setInterval(loadHealth, 30000);
           <input type="url" name="discord_redirect_uri" value="{{ editable_cfg.discord_redirect_uri }}">
         </div>
 
-        <!-- Discord Proxy -->
-        <div class="config-section-title">Discord Proxy / Webhooks</div>
-        <div class="form-group form-group-full">
-          <div class="toggle-row">
-            <label class="switch">
-              <input type="checkbox" name="use_discord_proxy" {% if editable_cfg.use_discord_proxy %}checked{% endif %}>
-              <span class="slider"></span>
-            </label>
-            <div>
-              <div class="toggle-label">Использовать Discord Proxy</div>
-            </div>
-          </div>
-        </div>
-        <div class="form-group">
-          <label>Discord Proxy URL</label>
-          <input type="url" name="discord_proxy_url" value="{{ editable_cfg.discord_proxy_url }}">
-        </div>
+        <!-- Webhooks -->
+        <div class="config-section-title">Webhooks</div>
         <div class="form-group">
           <label>🪤 Webhook для ловушек</label>
           <input type="url" name="discord_trap_webhook_url" value="{{ editable_cfg.discord_trap_webhook_url }}" placeholder="https://discord.com/api/webhooks/...">

@@ -7,10 +7,19 @@ publish, etc.) plus the log/playtime-stats/replay background workers exist
 in exactly ONE process even when several uvicorn worker processes are also
 running — those are launched with WORKER_ROLE=web and skip starting any of
 this themselves (see main.py's startup() hook).
+
+The Discord bot (discord_bot/bot.py) also lives here in multi-worker mode,
+since it needs its own live asyncio event loop and this is the one process
+guaranteed to run exactly once. Accepted limitation: WORKER_ROLE=web
+processes are separate OS processes and can't call discord_bot.schedule(...)
+directly (different process, different memory) — no IPC is built for this,
+since multi-worker mode isn't actually used in production today. In
+single-process mode (the current default), the bot instead runs inside
+main.py's own startup hook, where every route CAN call schedule() directly.
 """
 
+import asyncio
 import logging
-import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,12 +56,14 @@ def main():
     # this thread is what actually stops/restarts the workers living here.
     watch_runtime_state()
 
-    logger.info("Scheduler/background workers started — idling to keep their threads alive")
+    logger.info("Scheduler/background workers started — running Discord bot on this process's event loop")
     # Every start_*() call above spawns its own daemon thread and returns
-    # immediately — this process just needs to stay alive for those threads
-    # to keep running.
-    while True:
-        time.sleep(3600)
+    # immediately; the Discord bot (in-process, see discord_bot/bot.py) needs
+    # an actual running event loop though — supervise_bot() both provides
+    # that (this replaces the old `while True: time.sleep(3600)` idle loop)
+    # and keeps the process alive for the background threads above.
+    from discord_bot import bot as discord_bot
+    asyncio.run(discord_bot.supervise_bot())
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Users, ChevronRight, ExternalLink, Copy, IdCard, Link2 } from "lucide-react"
+import { Users, ChevronRight, ExternalLink, Copy, IdCard, Link2, Palette, RefreshCw } from "lucide-react"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -14,11 +14,67 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { api } from "@/lib/api"
+import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayersListResponse } from "./types"
+
+/** Superuser-only popover — lets them tweak the background color shown
+ * behind each rank badge in the table below. Persisted server-side
+ * (AppSetting "rank_colors", routes/admin.py) so it applies for everyone,
+ * not just the editing admin. */
+function RankColorEditor({ ranks, rankColors }: { ranks: Record<string, string>; rankColors: Record<string, string> }) {
+  const queryClient = useQueryClient()
+  const [draft, setDraft] = useState<Record<string, string>>(rankColors)
+
+  useEffect(() => setDraft(rankColors), [rankColors])
+
+  const saveMutation = useMutation({
+    mutationFn: (colors: Record<string, string>) => api.patch("/api/v1/admin/players/rank-colors", { colors }),
+    onSuccess: () => {
+      toast.success("Цвета званий сохранены")
+      queryClient.invalidateQueries({ queryKey: ["players"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="icon" title="Настроить цвета званий">
+          <Palette className="size-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72">
+        <div className="mb-2 text-sm font-medium">Цвета званий</div>
+        <div className="space-y-2">
+          {Object.entries(ranks).map(([id, name]) => (
+            <div key={id} className="flex items-center justify-between gap-2">
+              <span className="text-sm">{name}</span>
+              <input
+                type="color"
+                value={draft[id] ?? "#888888"}
+                onChange={(e) => setDraft((cur) => ({ ...cur, [id]: e.target.value }))}
+                className="h-7 w-12 cursor-pointer rounded border bg-transparent"
+              />
+            </div>
+          ))}
+        </div>
+        <Button
+          className="mt-3 w-full"
+          size="sm"
+          disabled={saveMutation.isPending}
+          onClick={() => saveMutation.mutate(draft)}
+        >
+          Сохранить
+        </Button>
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 function copyToClipboard(text: string, label: string) {
   navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
@@ -44,6 +100,8 @@ function playerDisplayName(p: { player_last_time_name: string; forced_display_na
 
 export function PlayersListPage() {
   const navigate = useNavigate()
+  const { data: admin } = useCurrentAdmin()
+  const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [searchInput, setSearchInput] = useState("")
   const [search, setSearch] = useState<string | undefined>(undefined)
@@ -85,12 +143,27 @@ export function PlayersListPage() {
     setSuggestOpen(false)
   }
 
+  const syncPlayerMutation = useMutation({
+    mutationFn: (playerId: number) => api.post(`/api/v1/admin/players/${playerId}/sync`, {}),
+    onSuccess: () => toast.success("Синхронизация запрошена — сервер обновит кэш при следующем опросе очереди"),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const syncAllMutation = useMutation({
+    mutationFn: () => api.post("/api/v1/admin/players/sync-all", {}),
+    onSuccess: () => {
+      toast.success("Принудительная синхронизация всех игроков поставлена в очередь")
+      queryClient.invalidateQueries({ queryKey: ["players"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   return (
     <div>
       <PageHeader title="Игроки" description="Все зарегистрированные игроки сервера" icon={Users} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative max-w-xs">
+        <div className="relative min-w-48 flex-1">
           <SearchInput
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -120,7 +193,6 @@ export function PlayersListPage() {
             </div>
           )}
         </div>
-        <Button variant="secondary" onClick={submitSearch}>Найти</Button>
         <Select value={labelId} onValueChange={(v) => { setLabelId(v); setPage(1) }}>
           <SelectTrigger className="w-56">
             <SelectValue placeholder="Все метки" />
@@ -155,7 +227,22 @@ export function PlayersListPage() {
             <SelectItem value="last_login_asc">Последний вход: сначала давние</SelectItem>
           </SelectContent>
         </Select>
-        {data && <Badge variant="secondary" className="ml-auto font-normal">{data.total} всего</Badge>}
+        <Button variant="secondary" onClick={submitSearch}>Найти</Button>
+        <div className="ml-auto flex items-center gap-2">
+          {admin?.is_superuser && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={syncAllMutation.isPending}
+              onClick={() => syncAllMutation.mutate()}
+              title="Принудительно обновить кэш игроков на сервере, минуя проверку изменений"
+            >
+              <RefreshCw className="size-3.5" /> Синхронизировать всех
+            </Button>
+          )}
+          {admin?.is_superuser && data && <RankColorEditor ranks={data.ranks} rankColors={data.rank_colors} />}
+          {data && <Badge variant="secondary" className="font-normal">{data.total} всего</Badge>}
+        </div>
       </div>
 
       <Card className="overflow-hidden py-0">
@@ -165,6 +252,7 @@ export function PlayersListPage() {
               {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-9" />)}
             </div>
           ) : (
+            <div className="px-10 py-8">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -178,13 +266,16 @@ export function PlayersListPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data?.players.map((p) => (
+                {data?.players.map((p) => {
+                  const rankColor = data.rank_colors[String(p.rank_id)]
+                  return (
                   <AppContextMenu
                     key={p.player_id}
                     actions={[
                       { label: "Открыть в новой вкладке", icon: ExternalLink, onSelect: () => window.open(`/players/${p.player_id}`, "_blank") },
                       { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
                       { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(playerDisplayName(p), "Имя") },
+                      { label: "Синхронизировать с игрой", icon: RefreshCw, onSelect: () => syncPlayerMutation.mutate(p.player_id) },
                     ]}
                   >
                     <TableRow
@@ -205,7 +296,15 @@ export function PlayersListPage() {
                         )}
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{p.player_steamid}</TableCell>
-                      <TableCell><Badge variant="secondary">{p.rank_name || "-"}</Badge></TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="secondary"
+                          className="border-transparent text-white"
+                          style={rankColor ? { backgroundColor: rankColor } : undefined}
+                        >
+                          {p.rank_name || "-"}
+                        </Badge>
+                      </TableCell>
                       <TableCell>{p.kit_name || "-"}</TableCell>
                       <TableCell>{formatPlayTime(p.play_time_hours)}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">
@@ -214,7 +313,8 @@ export function PlayersListPage() {
                       <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
                     </TableRow>
                   </AppContextMenu>
-                ))}
+                  )
+                })}
                 {!data?.players.length && (
                   <TableRow>
                     <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
@@ -224,6 +324,7 @@ export function PlayersListPage() {
                 )}
               </TableBody>
             </Table>
+            </div>
           )}
 
           {data && data.total_pages > 1 && (
