@@ -201,6 +201,13 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "case_sensitive": False,
         "env_ignore_empty": True,
+        # A leftover/deprecated key in a deployed server's .env (e.g. from a
+        # field removed in a later code update — this has already happened
+        # with USE_DISCORD_PROXY/DISCORD_PROXY_URL) must never hard-crash the
+        # whole process at import time. pydantic-settings' default here is
+        # effectively "forbid", which turns "we cleaned up an old setting" in
+        # code into "every server still holding that .env line goes offline".
+        "extra": "ignore",
     }
 
 
