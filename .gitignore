@@ -69,5 +69,6 @@ migrate_logs_json_to_sqlite.py
 LevelTransition.cs
 # Проектная документация (dev/API/дизайн). Раннбуки в deploy/*.md остаются.
 /*.md
+!/README.md
 frontend/README.md
 /role-based-rating-system/
