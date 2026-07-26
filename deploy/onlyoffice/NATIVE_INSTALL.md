@@ -19,6 +19,24 @@ echo "deb [signed-by=/usr/share/keyrings/onlyoffice.gpg] https://download.onlyof
 sudo apt-get update
 ```
 
+**Известная проблема**: если `wget` тихо недокачает ключ (обрыв сети, редирект и
+т.п.), `gpg --dearmor` на пустом/битом вводе не выдаст ошибку — просто создаст
+пустой `onlyoffice.gpg`. Дальше `apt-get update` упадёт на этом же шаге с
+`NO_PUBKEY 8320CA65CB2DE8E5`, а `apt-get install onlyoffice-documentserver` —
+с `Unable to locate package` (репозиторий не читается без подписи). Проверьте
+перед тем как продолжать:
+
+```bash
+gpg --show-keys --keyid-format long /usr/share/keyrings/onlyoffice.gpg
+# должен показать 8320CA65CB2DE8E5 — если файл пуст/команда ничего не вывела,
+# получите ключ надёжнее — напрямую с keyserver по ID, а не по URL:
+sudo rm -f /usr/share/keyrings/onlyoffice.gpg
+sudo gpg --no-default-keyring --keyring /usr/share/keyrings/onlyoffice.gpg \
+  --keyserver keyserver.ubuntu.com --recv-keys 8320CA65CB2DE8E5
+# если keyserver.ubuntu.com недоступен (хостинг режет порт) — запасной:
+#   --keyserver hkps://keys.openpgp.org --recv-keys 8320CA65CB2DE8E5
+```
+
 ## 2. Установить пакет
 
 ```bash
