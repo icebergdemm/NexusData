@@ -846,6 +846,7 @@ class DiscordAuthService:
         `redirect_uri` must match exactly what was passed to get_oauth_url
         for this same login attempt — Discord rejects the exchange
         otherwise, even though the code itself is valid."""
+        effective_redirect_uri = redirect_uri or self.redirect_uri
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 response = await client.post(
@@ -855,15 +856,27 @@ class DiscordAuthService:
                         "client_secret": self.client_secret,
                         "grant_type": "authorization_code",
                         "code": code,
-                        "redirect_uri": redirect_uri or self.redirect_uri,
+                        "redirect_uri": effective_redirect_uri,
                     },
                     headers={"Content-Type": "application/x-www-form-urlencoded"}
                 )
                 response.raise_for_status()
                 return response.json()
 
+            except httpx.HTTPStatusError as e:
+                # Discord's error body (error/error_description) says exactly
+                # why — invalid_client (bad client_id/secret), invalid_grant
+                # (code already used/expired, OR redirect_uri doesn't match
+                # what was used for the /authorize step), etc. Logging only
+                # the status code (the old behavior) made every 401 look
+                # identical and impossible to diagnose without guessing.
+                logger.error(
+                    f"Failed to exchange code: {e.response.status_code} {e.response.text} "
+                    f"(redirect_uri sent: {effective_redirect_uri})"
+                )
+                raise HTTPException(status_code=500, detail="Authentication failed")
             except Exception as e:
-                logger.error(f"Failed to exchange code: {e}")
+                logger.error(f"Failed to exchange code: {e} (redirect_uri sent: {effective_redirect_uri})")
                 raise HTTPException(status_code=500, detail="Authentication failed")
 
     async def get_user_info(self, access_token: str) -> dict:
