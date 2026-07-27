@@ -370,6 +370,18 @@ def create_app() -> FastAPI:
     async def startup():
         logger.info(f"Starting {settings.app_name} v{settings.app_version}")
         logger.info(f"require_auth={settings.require_auth}, api_key={settings.api_key[:4]}*** (len={len(settings.api_key)})")
+
+        # Ограничиваем пул потоков, в который FastAPI отправляет синхронные
+        # обработчики и run_in_threadpool. По умолчанию их 40, и каждый
+        # тянет за собой стек, соединение к MySQL из пула и собственное
+        # thread-local подключение к SQLite логов со своим кэшем страниц —
+        # на контейнере с жёстким лимитом 2 ГБ это лишние сотни мегабайт.
+        # 12 потоков достаточно: параллелизм всё равно упирается в БД.
+        try:
+            import anyio.to_thread
+            anyio.to_thread.current_default_thread_limiter().total_tokens = 12
+        except Exception as e:
+            logger.warning(f"Не удалось ограничить пул потоков: {e}")
         try:
             init_db()
             logger.info("Database initialized")

@@ -11,8 +11,12 @@ engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
     pool_recycle=3600,
-    pool_size=10,
-    max_overflow=15,
+    # Размеры пулов подобраны под жёсткий лимит памяти контейнера (2 ГБ) и
+    # ограниченный пул потоков (12, см. main.py): держать десятки открытых
+    # соединений с их буферами незачем — параллелизм всё равно упирается в
+    # число потоков. Суммарно оба пула дают максимум 28 соединений вместо 43.
+    pool_size=5,
+    max_overflow=10,
     # Without these, a stalled MySQL connection (network blip, server-side lock/
     # load spike) blocks the calling thread forever. Background worker tasks run
     # each on their own thread with only a soft timeout (task_scheduler can't
@@ -35,8 +39,8 @@ game_engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
     pool_recycle=3600,
-    pool_size=8,
-    max_overflow=10,
+    pool_size=5,
+    max_overflow=8,
     connect_args=_CONNECT_ARGS,
 )
 

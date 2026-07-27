@@ -18,7 +18,13 @@ from database import SessionLocal
 
 # ── Members sync ─────────────────────────────────────────────────────────
 
-def sync_members(members: list) -> dict:
+def sync_members(members: list, run_automatch: bool = True) -> dict:
+    """Записывает порцию участников Discord.
+
+    run_automatch=False используется при потоковой синхронизации порциями —
+    автосопоставление вызывается один раз в конце (см. automatch_discord_ids),
+    иначе тяжёлая операция повторялась бы на каждую порцию.
+    """
     from models import DiscordMember
 
     db = SessionLocal()
@@ -47,8 +53,23 @@ def sync_members(members: list) -> dict:
                 db.add(record)
             synced += 1
         db.commit()
-        _auto_match_discord_ids(db)
+        if run_automatch:
+            _auto_match_discord_ids(db)
         return {"synced": synced}
+    finally:
+        db.close()
+
+
+def automatch_discord_ids() -> None:
+    """Автосопоставление имён Discord с игроками, отдельным вызовом.
+
+    Нужен, когда участники синхронизируются порциями: сопоставление читает
+    всех участников и всех неподтверждённых игроков разом, поэтому вызывать
+    его на каждую порцию нельзя.
+    """
+    db = SessionLocal()
+    try:
+        _auto_match_discord_ids(db)
     finally:
         db.close()
 

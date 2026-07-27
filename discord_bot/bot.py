@@ -51,7 +51,21 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Кэши discord.py урезаны под жёсткий лимит памяти контейнера (2 ГБ):
+#  - chunk_guilds_at_startup=False: по умолчанию при включённом members-intent
+#    библиотека выкачивает и ДЕРЖИТ В ПАМЯТИ всех участников сервера — на
+#    крупной гильдии это десятки/сотни мегабайт постоянно занятыми. Там, где
+#    участник действительно нужен, код уже делает fetch_member() при промахе
+#    кэша, а периодическая синхронизация читает участников потоком
+#    (см. sync_members_task).
+#  - max_messages=100 вместо 1000: кэш сообщений нужен лишь для реакций на
+#    свежие события, хранить тысячу объектов Message смысла нет.
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    chunk_guilds_at_startup=False,
+    max_messages=100,
+)
 
 # Anti-raid tracking
 _join_timestamps = []  # list of join times in last 60 seconds
@@ -194,23 +208,40 @@ async def sync_members_task():
     if not guild:
         return
 
-    members_data = []
-    for member in guild.members:
-        if member.bot:
-            continue
-        members_data.append({
-            "discord_id": str(member.id),
-            "username": str(member),
-            "display_name": member.display_name,
-            "avatar": str(member.display_avatar.url) if member.display_avatar else None,
-            "joined_at": member.joined_at.isoformat() if member.joined_at else None,
-            "role_ids": [str(r.id) for r in member.roles],
-        })
+    # Участники читаются ПОТОКОМ через HTTP (fetch_members), а не из кэша
+    # guild.members: постоянный кэш всех участников отключён ради экономии
+    # памяти (см. chunk_guilds_at_startup выше). Записываем в БД порциями,
+    # чтобы в памяти одновременно жил лишь небольшой кусок списка.
+    batch, synced = [], 0
+    try:
+        async for member in guild.fetch_members(limit=None):
+            if member.bot:
+                continue
+            batch.append({
+                "discord_id": str(member.id),
+                "username": str(member),
+                "display_name": member.display_name,
+                "avatar": str(member.display_avatar.url) if member.display_avatar else None,
+                "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+                "role_ids": [str(r.id) for r in member.roles],
+            })
+            if len(batch) >= 500:
+                res = await asyncio.to_thread(bot_data.sync_members, batch, False)
+                synced += (res or {}).get("synced", 0)
+                batch = []
+    except Exception as e:
+        logger.error(f"Не удалось получить участников гильдии: {e}")
+        return
 
-    if members_data:
-        result = await asyncio.to_thread(bot_data.sync_members, members_data)
-        if result:
-            logger.info(f"Synced {result.get('synced', 0)} members to NexusData")
+    if batch:
+        res = await asyncio.to_thread(bot_data.sync_members, batch, False)
+        synced += (res or {}).get("synced", 0)
+
+    # Автосопоставление имён с игроками — один раз в конце, а не на каждую
+    # порцию: операция тяжёлая (читает всех участников и игроков разом).
+    if synced:
+        await asyncio.to_thread(bot_data.automatch_discord_ids)
+    logger.info(f"Synced {synced} members to NexusData")
 
 
 @tasks.loop(hours=1)
