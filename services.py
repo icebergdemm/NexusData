@@ -1967,7 +1967,57 @@ class PunishmentService:
         self.db.add(p)
         self.db.commit()
         self.db.refresh(p)
+        self._notify_player_ingame(p)
         return p
+
+    def _notify_player_ingame(self, punishment) -> None:
+        """Ставит игровому серверу задачу показать игроку окно с причиной.
+
+        Только для предупреждений и выговоров: кик и бан игрок и так замечает —
+        его выкидывает с сервера, а окно показать уже некому.
+
+        Ошибки намеренно проглатываются: наказание уже сохранено, и если
+        уведомить игрока не вышло (сервер недоступен, игрок оффлайн), это не
+        повод откатывать саму запись о наказании.
+        """
+        if punishment.type not in ("warning", "reprimand"):
+            return
+        try:
+            from models import ServerAction
+
+            label = "Предупреждение" if punishment.type == "warning" else "Выговор"
+            reason = (punishment.reason or "").strip() or "причина не указана"
+            issued_by = (punishment.issued_by_name or "").strip()
+            text = f"{label} от администрации\n\nПричина: {reason}"
+            if issued_by:
+                text += f"\nВыдал: {issued_by}"
+
+            # Отправляем на тот сервер, где игрок сейчас находится: иначе
+            # второй сервер отчитается ошибкой «игрок не найден», и в панели
+            # это будет выглядеть как сбой, хотя всё в порядке. Если игрок
+            # оффлайн — target_server=None, задачу заберёт тот сервер, на
+            # который игрок зайдёт (и покажет окно при следующей проверке).
+            target_server = None
+            try:
+                for info in ServerModerationService(self.db).get_online_players():
+                    if info.get("player_steamid") == punishment.player_steamid:
+                        target_server = info.get("server_name")
+                        break
+            except Exception:
+                pass
+
+            self.db.add(ServerAction(
+                action_type="msg_box",
+                target_steamid=punishment.player_steamid,
+                reason=punishment.reason,
+                message_text=text,
+                target_server=target_server,
+                queued_by_admin_id=punishment.issued_by_admin_id,
+                created_at=_now_msk(),
+            ))
+            self.db.commit()
+        except Exception as e:
+            logger.warning(f"Не удалось поставить уведомление о наказании игроку: {e}")
 
     def update(self, punishment_id: int, **fields) -> bool:
         p = self.get_by_id(punishment_id)

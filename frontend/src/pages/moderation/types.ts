@@ -59,4 +59,5 @@ export interface ModerationOverview {
   ac_events: AnticheatEvent[]
   can_edit: boolean
   can_delete: boolean
+  can_issue_punishment: boolean
 }

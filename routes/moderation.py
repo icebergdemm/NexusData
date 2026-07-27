@@ -523,6 +523,9 @@ async def api_moderation_overview(
         "ac_events": ac_enriched,
         "can_edit": check_permission(current_admin, "moderation", "edit"),
         "can_delete": check_permission(current_admin, "moderation", "delete"),
+        # Быстрая выдача предупреждения прямо из списка онлайна — право то же,
+        # что и на обычную выдачу наказаний, а не moderation:edit.
+        "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),
     }
 
 

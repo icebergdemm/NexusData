@@ -65,6 +65,11 @@ export function ModerationPage() {
   const [actionReason, setActionReason] = useState("")
   const [actionServer, setActionServer] = useState("")
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
+  // Быстрая выдача предупреждения прямо из списка онлайна: отдельно от
+  // actionTarget, потому что это НЕ действие на сервере, а запись наказания
+  // (сервер получит из неё окно с причиной автоматически).
+  const [warnTarget, setWarnTarget] = useState<{ steamid: string; name: string } | null>(null)
+  const [warnReason, setWarnReason] = useState("")
   const queryClient = useQueryClient()
 
   const queryKey = ["moderation-overview", searchQuery]
@@ -90,6 +95,21 @@ export function ModerationPage() {
       toast.success("Действие поставлено в очередь")
       setActionTarget(null)
       setActionReason("")
+      queryClient.invalidateQueries({ queryKey: ["moderation-overview"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const warnMutation = useMutation({
+    mutationFn: () => api.post("/api/v1/admin/punishments", {
+      player_steamid: warnTarget?.steamid,
+      ptype: "warning",
+      reason: warnReason,
+    }),
+    onSuccess: () => {
+      toast.success("Предупреждение выдано — игрок увидит окно с причиной")
+      setWarnTarget(null)
+      setWarnReason("")
       queryClient.invalidateQueries({ queryKey: ["moderation-overview"] })
     },
     onError: (e: Error) => toast.error(e.message),
@@ -167,7 +187,7 @@ export function ModerationPage() {
                     <TableHead>Роль</TableHead>
                     <TableHead>Пинг</TableHead>
                     <TableHead>Дата входа</TableHead>
-                    {data.can_edit && <TableHead className="text-right">Действия</TableHead>}
+                    {(data.can_edit || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -180,6 +200,9 @@ export function ModerationPage() {
                         ...(p.player_id ? [{ label: "Открыть профиль", icon: ShieldAlert, onSelect: () => setSummaryPlayerId(p.player_id as number) }] : []),
                         { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
                         { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(name, "Имя") },
+                        ...(data.can_issue_punishment ? [
+                          { label: "Выдать предупреждение", separatorBefore: true, onSelect: () => setWarnTarget({ steamid: p.player_steamid, name }) },
+                        ] : []),
                         ...(data.can_edit ? [
                           { label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) },
                           { label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) },
@@ -201,12 +224,17 @@ export function ModerationPage() {
                         <TableCell>{p.job_id ?? "-"}</TableCell>
                         <TableCell>{p.ping ?? "-"}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.join_time)}</TableCell>
-                        {data.can_edit && (
+                        {(data.can_edit || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
-                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
-                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
-                              <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
+                              {data.can_issue_punishment && (
+                                <Button size="sm" variant="outline" onClick={() => setWarnTarget({ steamid: p.player_steamid, name })}>Предупреждение</Button>
+                              )}
+                              {data.can_edit && <>
+                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
+                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
+                                <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
+                              </>}
                             </div>
                           </TableCell>
                         )}
@@ -243,7 +271,7 @@ export function ModerationPage() {
                     <TableHead>Наиграно</TableHead>
                     <TableHead>Первый вход</TableHead>
                     <TableHead>Последний вход</TableHead>
-                    {data.can_edit && <TableHead className="text-right">Действия</TableHead>}
+                    {(data.can_edit || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -256,6 +284,9 @@ export function ModerationPage() {
                         { label: "Открыть профиль", icon: ShieldAlert, onSelect: () => setSummaryPlayerId(p.player_id) },
                         { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
                         { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(name, "Имя") },
+                        ...(data.can_issue_punishment ? [
+                          { label: "Выдать предупреждение", separatorBefore: true, onSelect: () => setWarnTarget({ steamid: p.player_steamid, name }) },
+                        ] : []),
                         ...(data.can_edit ? [
                           { label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) },
                           { label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) },
@@ -275,12 +306,17 @@ export function ModerationPage() {
                         <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.first_login)}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.last_login_time)}</TableCell>
-                        {data.can_edit && (
+                        {(data.can_edit || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
-                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
-                              <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
-                              <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
+                              {data.can_issue_punishment && (
+                                <Button size="sm" variant="outline" onClick={() => setWarnTarget({ steamid: p.player_steamid, name })}>Предупреждение</Button>
+                              )}
+                              {data.can_edit && <>
+                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
+                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
+                                <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
+                              </>}
                             </div>
                           </TableCell>
                         )}
@@ -370,6 +406,30 @@ export function ModerationPage() {
           </div>
           <DialogFooter>
             <Button onClick={() => actionMutation.mutate()} disabled={actionMutation.isPending}>Подтвердить</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!warnTarget} onOpenChange={(open) => !open && setWarnTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Выдать предупреждение - {warnTarget?.name}</DialogTitle>
+            <DialogDescription>
+              Предупреждение попадёт в историю наказаний игрока. Если он в игре - сразу увидит окно с причиной,
+              иначе окно покажется при следующем входе.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label className="mb-1.5 block">Причина</Label>
+            <Textarea value={warnReason} onChange={(e) => setWarnReason(e.target.value)} placeholder="За что выдано предупреждение" />
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={() => warnMutation.mutate()}
+              disabled={warnMutation.isPending || !warnReason.trim()}
+            >
+              Выдать
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
