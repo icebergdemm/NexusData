@@ -1,229 +1,395 @@
 {
  "species": "human",
+ "sprite_grid": {
+  "columns": 4,
+  "rows": 4,
+  "cell": 128
+ },
+ "sprite_base_url": "/static/appearance/",
  "heads": [
   {
    "tags": [
     "head1",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    0,
+    0
+   ]
   },
   {
    "tags": [
     "head2",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    1,
+    0
+   ]
   },
   {
    "tags": [
     "head3",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    2,
+    0
+   ]
   },
   {
    "tags": [
     "head4",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    3,
+    0
+   ]
   },
   {
    "tags": [
     "head5",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    0,
+    1
+   ]
   },
   {
    "tags": [
     "head6",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    1,
+    1
+   ]
   },
   {
    "tags": [
     "head7",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    2,
+    1
+   ]
   },
   {
    "tags": [
     "head8",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    3,
+    1
+   ]
   },
   {
    "tags": [
     "head9",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    0,
+    2
+   ]
   },
   {
    "tags": [
     "head10",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    1,
+    2
+   ]
   },
   {
    "tags": [
     "head11",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    2,
+    2
+   ]
   },
   {
    "tags": [
     "head12",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    3,
+    2
+   ]
   },
   {
    "tags": [
     "head13",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    0,
+    3
+   ]
   },
   {
    "tags": [
     "head14",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    1,
+    3
+   ]
   },
   {
    "tags": [
     "head15",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    2,
+    3
+   ]
   },
   {
    "tags": [
     "head16",
     "male"
    ],
-   "gender": "male"
+   "gender": "male",
+   "sheet": "Human_male_heads.png",
+   "cell": [
+    3,
+    3
+   ]
   },
   {
    "tags": [
     "head1",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    0,
+    0
+   ]
   },
   {
    "tags": [
     "head2",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    1,
+    0
+   ]
   },
   {
    "tags": [
     "head3",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    2,
+    0
+   ]
   },
   {
    "tags": [
     "head4",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    3,
+    0
+   ]
   },
   {
    "tags": [
     "head5",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    0,
+    1
+   ]
   },
   {
    "tags": [
     "head6",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    1,
+    1
+   ]
   },
   {
    "tags": [
     "head7",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    2,
+    1
+   ]
   },
   {
    "tags": [
     "head8",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    3,
+    1
+   ]
   },
   {
    "tags": [
     "head9",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    0,
+    2
+   ]
   },
   {
    "tags": [
     "head10",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    1,
+    2
+   ]
   },
   {
    "tags": [
     "head11",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    2,
+    2
+   ]
   },
   {
    "tags": [
     "head12",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    3,
+    2
+   ]
   },
   {
    "tags": [
     "head13",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    0,
+    3
+   ]
   },
   {
    "tags": [
     "head14",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    1,
+    3
+   ]
   },
   {
    "tags": [
     "head15",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    2,
+    3
+   ]
   },
   {
    "tags": [
     "head16",
     "female"
    ],
-   "gender": "female"
+   "gender": "female",
+   "sheet": "Human_female_heads.png",
+   "cell": [
+    3,
+    3
+   ]
   }
  ],
  "wearables": {
@@ -231,195 +397,430 @@
    "hair": [
     {
      "index": 0,
-     "name": "Hair 1"
+     "name": "Hair 1",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      0,
+      0
+     ]
     },
     {
      "index": 1,
-     "name": "Hair 2"
+     "name": "Hair 2",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      1,
+      0
+     ]
     },
     {
      "index": 2,
-     "name": "Hair 3"
+     "name": "Hair 3",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      2,
+      0
+     ]
     },
     {
      "index": 3,
-     "name": "Hair 4"
+     "name": "Hair 4",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      3,
+      0
+     ]
     },
     {
      "index": 4,
-     "name": "Hair 5"
+     "name": "Hair 5",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      0,
+      1
+     ]
     },
     {
      "index": 5,
-     "name": "Hair 6"
+     "name": "Hair 6",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      1,
+      1
+     ]
     },
     {
      "index": 6,
-     "name": "Hair 7"
+     "name": "Hair 7",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      2,
+      1
+     ]
     },
     {
      "index": 7,
-     "name": "Hair 8"
+     "name": "Hair 8",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      3,
+      1
+     ]
     },
     {
      "index": 8,
-     "name": "Hair 9"
+     "name": "Hair 9",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      0,
+      2
+     ]
     },
     {
      "index": 9,
-     "name": "Hair 10"
+     "name": "Hair 10",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      1,
+      2
+     ]
     },
     {
      "index": 10,
-     "name": "Hair 11"
+     "name": "Hair 11",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      2,
+      2
+     ]
     },
     {
      "index": 11,
-     "name": "Hair 12"
+     "name": "Hair 12",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      3,
+      2
+     ]
     },
     {
      "index": 12,
-     "name": "Hair 13"
+     "name": "Hair 13",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      0,
+      3
+     ]
     },
     {
      "index": 13,
-     "name": "Hair 14"
+     "name": "Hair 14",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      1,
+      3
+     ]
     },
     {
      "index": 14,
-     "name": "Hair 15"
+     "name": "Hair 15",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      2,
+      3
+     ]
     },
     {
      "index": 15,
-     "name": "Hair 16"
+     "name": "Hair 16",
+     "sheet": "Human_male_hair.png",
+     "cell": [
+      3,
+      3
+     ]
     }
    ],
    "beard": [
     {
      "index": 0,
-     "name": "Beard 1"
+     "name": "Beard 1",
+     "sheet": "Human_beards.png",
+     "cell": [
+      0,
+      0
+     ]
     },
     {
      "index": 1,
-     "name": "Beard 2"
+     "name": "Beard 2",
+     "sheet": "Human_beards.png",
+     "cell": [
+      1,
+      0
+     ]
     },
     {
      "index": 2,
-     "name": "Beard 3"
+     "name": "Beard 3",
+     "sheet": "Human_beards.png",
+     "cell": [
+      2,
+      0
+     ]
     },
     {
      "index": 3,
-     "name": "Beard 4"
+     "name": "Beard 4",
+     "sheet": "Human_beards.png",
+     "cell": [
+      3,
+      0
+     ]
     },
     {
      "index": 4,
-     "name": "Beard 5"
+     "name": "Beard 5",
+     "sheet": "Human_beards.png",
+     "cell": [
+      0,
+      1
+     ]
     },
     {
      "index": 5,
-     "name": "Beard 6"
+     "name": "Beard 6",
+     "sheet": "Human_beards.png",
+     "cell": [
+      1,
+      1
+     ]
     },
     {
      "index": 6,
-     "name": "Beard 7"
+     "name": "Beard 7",
+     "sheet": "Human_beards.png",
+     "cell": [
+      2,
+      1
+     ]
     },
     {
      "index": 7,
-     "name": "Beard 8"
+     "name": "Beard 8",
+     "sheet": "Human_beards.png",
+     "cell": [
+      3,
+      1
+     ]
     },
     {
      "index": 8,
-     "name": "Beard 9"
+     "name": "Beard 9",
+     "sheet": "Human_beards.png",
+     "cell": [
+      0,
+      2
+     ]
     },
     {
      "index": 9,
-     "name": "Beard 10"
+     "name": "Beard 10",
+     "sheet": "Human_beards.png",
+     "cell": [
+      1,
+      2
+     ]
     },
     {
      "index": 10,
-     "name": "Beard 11"
+     "name": "Beard 11",
+     "sheet": "Human_beards.png",
+     "cell": [
+      2,
+      2
+     ]
     },
     {
      "index": 11,
-     "name": "Beard 12"
+     "name": "Beard 12",
+     "sheet": "Human_beards.png",
+     "cell": [
+      3,
+      2
+     ]
     },
     {
      "index": 12,
-     "name": "Beard 13"
+     "name": "Beard 13",
+     "sheet": "Human_beards.png",
+     "cell": [
+      0,
+      3
+     ]
     },
     {
      "index": 13,
-     "name": "Beard 14"
+     "name": "Beard 14",
+     "sheet": "Human_beards.png",
+     "cell": [
+      1,
+      3
+     ]
     },
     {
      "index": 14,
-     "name": "Beard 15"
+     "name": "Beard 15",
+     "sheet": "Human_beards.png",
+     "cell": [
+      2,
+      3
+     ]
     },
     {
      "index": 15,
-     "name": "Beard 16"
+     "name": "Beard 16",
+     "sheet": "Human_beards.png",
+     "cell": [
+      3,
+      3
+     ]
     }
    ],
    "face_attachment": [
     {
      "index": 0,
-     "name": "FaceAttachment 1"
+     "name": "FaceAttachment 1",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      0
+     ]
     },
     {
      "index": 1,
-     "name": "FaceAttachment 2"
+     "name": "FaceAttachment 2",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      0
+     ]
     },
     {
      "index": 2,
-     "name": "FaceAttachment 3"
+     "name": "FaceAttachment 3",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      0
+     ]
     },
     {
      "index": 3,
-     "name": "FaceAttachment 4"
+     "name": "FaceAttachment 4",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      3,
+      0
+     ]
     },
     {
      "index": 4,
-     "name": "FaceAttachment 5"
+     "name": "FaceAttachment 5",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      1
+     ]
     },
     {
      "index": 5,
-     "name": "FaceAttachment 6"
+     "name": "FaceAttachment 6",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      1
+     ]
     },
     {
      "index": 6,
-     "name": "FaceAttachment 7"
+     "name": "FaceAttachment 7",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      1
+     ]
     },
     {
      "index": 7,
-     "name": "FaceAttachment 8"
+     "name": "FaceAttachment 8",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      3,
+      1
+     ]
     },
     {
      "index": 8,
-     "name": "FaceAttachment 9"
+     "name": "FaceAttachment 9",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      2
+     ]
     },
     {
      "index": 9,
-     "name": "FaceAttachment 10"
+     "name": "FaceAttachment 10",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      2
+     ]
     },
     {
      "index": 10,
-     "name": "FaceAttachment 11"
+     "name": "FaceAttachment 11",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      2
+     ]
     },
     {
      "index": 11,
-     "name": "FaceAttachment 12"
+     "name": "FaceAttachment 12",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      3,
+      2
+     ]
     },
     {
      "index": 12,
-     "name": "FaceAttachment 13"
+     "name": "FaceAttachment 13",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      3
+     ]
     },
     {
      "index": 13,
-     "name": "FaceAttachment 14"
+     "name": "FaceAttachment 14",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      3
+     ]
     },
     {
      "index": 14,
-     "name": "FaceAttachment 15"
+     "name": "FaceAttachment 15",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      3
+     ]
     }
    ]
   },
@@ -427,130 +828,285 @@
    "hair": [
     {
      "index": 0,
-     "name": "Hair 1"
+     "name": "Hair 1",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      0,
+      0
+     ]
     },
     {
      "index": 1,
-     "name": "Hair 2"
+     "name": "Hair 2",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      1,
+      0
+     ]
     },
     {
      "index": 2,
-     "name": "Hair 3"
+     "name": "Hair 3",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      2,
+      0
+     ]
     },
     {
      "index": 3,
-     "name": "Hair 4"
+     "name": "Hair 4",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      3,
+      0
+     ]
     },
     {
      "index": 4,
-     "name": "Hair 5"
+     "name": "Hair 5",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      0,
+      1
+     ]
     },
     {
      "index": 5,
-     "name": "Hair 6"
+     "name": "Hair 6",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      1,
+      1
+     ]
     },
     {
      "index": 6,
-     "name": "Hair 7"
+     "name": "Hair 7",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      2,
+      1
+     ]
     },
     {
      "index": 7,
-     "name": "Hair 8"
+     "name": "Hair 8",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      3,
+      1
+     ]
     },
     {
      "index": 8,
-     "name": "Hair 9"
+     "name": "Hair 9",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      0,
+      2
+     ]
     },
     {
      "index": 9,
-     "name": "Hair 10"
+     "name": "Hair 10",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      1,
+      2
+     ]
     },
     {
      "index": 10,
-     "name": "Hair 11"
+     "name": "Hair 11",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      2,
+      2
+     ]
     },
     {
      "index": 11,
-     "name": "Hair 12"
+     "name": "Hair 12",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      3,
+      2
+     ]
     },
     {
      "index": 12,
-     "name": "Hair 13"
+     "name": "Hair 13",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      0,
+      3
+     ]
     },
     {
      "index": 13,
-     "name": "Hair 14"
+     "name": "Hair 14",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      1,
+      3
+     ]
     },
     {
      "index": 14,
-     "name": "Hair 15"
+     "name": "Hair 15",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      2,
+      3
+     ]
     },
     {
      "index": 15,
-     "name": "Hair 16"
+     "name": "Hair 16",
+     "sheet": "Human_female_hair.png",
+     "cell": [
+      3,
+      3
+     ]
     }
    ],
    "beard": [],
    "face_attachment": [
     {
      "index": 0,
-     "name": "FaceAttachment 1"
+     "name": "FaceAttachment 1",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      0
+     ]
     },
     {
      "index": 1,
-     "name": "FaceAttachment 2"
+     "name": "FaceAttachment 2",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      0
+     ]
     },
     {
      "index": 2,
-     "name": "FaceAttachment 3"
+     "name": "FaceAttachment 3",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      0
+     ]
     },
     {
      "index": 3,
-     "name": "FaceAttachment 4"
+     "name": "FaceAttachment 4",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      3,
+      0
+     ]
     },
     {
      "index": 4,
-     "name": "FaceAttachment 5"
+     "name": "FaceAttachment 5",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      1
+     ]
     },
     {
      "index": 5,
-     "name": "FaceAttachment 6"
+     "name": "FaceAttachment 6",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      1
+     ]
     },
     {
      "index": 6,
-     "name": "FaceAttachment 7"
+     "name": "FaceAttachment 7",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      1
+     ]
     },
     {
      "index": 7,
-     "name": "FaceAttachment 8"
+     "name": "FaceAttachment 8",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      3,
+      1
+     ]
     },
     {
      "index": 8,
-     "name": "FaceAttachment 9"
+     "name": "FaceAttachment 9",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      2
+     ]
     },
     {
      "index": 9,
-     "name": "FaceAttachment 10"
+     "name": "FaceAttachment 10",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      2
+     ]
     },
     {
      "index": 10,
-     "name": "FaceAttachment 11"
+     "name": "FaceAttachment 11",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      2
+     ]
     },
     {
      "index": 11,
-     "name": "FaceAttachment 12"
+     "name": "FaceAttachment 12",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      3,
+      2
+     ]
     },
     {
      "index": 12,
-     "name": "FaceAttachment 13"
+     "name": "FaceAttachment 13",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      0,
+      3
+     ]
     },
     {
      "index": 13,
-     "name": "FaceAttachment 14"
+     "name": "FaceAttachment 14",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      1,
+      3
+     ]
     },
     {
      "index": 14,
-     "name": "FaceAttachment 15"
+     "name": "FaceAttachment 15",
+     "sheet": "Human_head_accessories.png",
+     "cell": [
+      2,
+      3
+     ]
     }
    ]
   }
@@ -620,5 +1176,15 @@
   "brokenenglish",
   "fearful",
   "crazy"
- ]
+ ],
+ "personality_labels": {
+  "professional": "Компетенция",
+  "laid-back": "Пофигизм",
+  "rude": "Грубость",
+  "tough": "Крутость",
+  "joker": "Чувство юмора",
+  "brokenenglish": "Сильный акцент",
+  "fearful": "Трусость",
+  "crazy": "Психоз"
+ }
 }

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session, joinedload
 import services_respawn_dolls as dolls_service
 from config import get_settings
 from database import get_db, get_game_db
-from models import AdminUser, AdminSession, RespawnDoll
+from models import AdminUser, AdminSession, PlayerData, RespawnDoll
 from security import check_permission, verify_external_api_key_dependency
 
 settings = get_settings()
@@ -193,6 +193,68 @@ def _parse_expires_at(raw) -> Optional[datetime]:
         raise HTTPException(status_code=400, detail="expires_at: некорректная дата")
 
 
+def _bind_candidates(db: Session, search: str, server: Optional[str], limit: int = 60) -> List[dict]:
+    """Игроки для привязки куклы: сначала те, кто сейчас в игре, затем
+    недавние из базы.
+
+    Онлайн-список берётся из памяти процесса (ServerModerationService), а не
+    из БД — он же используется на странице модерирования, так что админ видит
+    ровно тех, кого видит там.
+    """
+    from services import ServerModerationService
+
+    rows: List[dict] = []
+    seen: set = set()
+    needle = (search or "").strip().lower()
+
+    try:
+        for info in ServerModerationService(db).get_online_players(server):
+            steamid = dolls_service.normalize_steamid(info.get("player_steamid") or "")
+            if not steamid or steamid in seen:
+                continue
+            name = info.get("player_name") or steamid
+            if needle and needle not in name.lower() and needle not in steamid:
+                continue
+            seen.add(steamid)
+            rows.append({
+                "steamid": steamid,
+                "name": name,
+                "online": True,
+                "server": info.get("server_name"),
+                "avatar_url": None,
+                "last_login": None,
+            })
+    except Exception:
+        logger.exception("Не удалось получить список игроков онлайн для привязки куклы")
+
+    remaining = limit - len(rows)
+    if remaining > 0:
+        q = db.query(PlayerData)
+        if needle:
+            like = f"%{needle}%"
+            q = q.filter(or_(
+                PlayerData.player_last_time_name.ilike(like),
+                PlayerData.forced_display_name.ilike(like),
+                PlayerData.player_steamid.like(like),
+            ))
+        for p in q.order_by(PlayerData.last_login_time.desc()).limit(remaining + len(seen)).all():
+            steamid = dolls_service.normalize_steamid(p.player_steamid or "")
+            if not steamid or steamid in seen:
+                continue
+            seen.add(steamid)
+            rows.append({
+                "steamid": steamid,
+                "name": p.forced_display_name or p.player_last_time_name or steamid,
+                "online": False,
+                "server": None,
+                "avatar_url": p.steam_avatar_url,
+                "last_login": p.last_login_time.isoformat() if p.last_login_time else None,
+            })
+            if len(rows) >= limit:
+                break
+    return rows
+
+
 def _apply_payload(row: RespawnDoll, body: dict) -> dict:
     """Валидирует и раскладывает тело запроса по колонкам. Возвращает
     предупреждения (не блокируют сохранение — см. services_respawn_dolls)."""
@@ -251,8 +313,36 @@ async def api_list_dolls(
             "slots": sorted(dolls_service.INV_SLOTS),
             "limbs": sorted(dolls_service.LIMB_TYPES),
             "spawn_modes": sorted(dolls_service.SPAWN_MODES),
+            "states": sorted(dolls_service.DOLL_STATES),
         },
     })
+
+
+@admin_router.get("/api/v1/admin/dolls/players")
+async def api_bind_candidates(
+    search: Optional[str] = Query(None),
+    server: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Кандидаты на привязку куклы — онлайн сначала, затем недавние.
+
+    Нужен именно на шаге постановки в очередь: SteamID вводить руками не надо,
+    админ выбирает живого игрока из списка.
+    """
+    _require(current_admin, "view")
+    return JSONResponse({"players": _bind_candidates(db, search or "", server)})
+
+
+@admin_router.get("/api/v1/admin/dolls/reference")
+async def api_doll_reference(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Справочник конструктора: профессии с навыками, таланты, недуги, статы —
+    выгрузка из игрового контента с русскими названиями."""
+    _require(current_admin, "view")
+    return JSONResponse(dolls_service.doll_reference())
 
 
 @admin_router.get("/api/v1/admin/dolls/appearance")
@@ -277,12 +367,15 @@ async def api_create_doll(
     _require(current_admin, "create")
     body = await request.json()
 
+    # Новая кукла — черновик: она ещё не привязана к игроку и на игровой
+    # сервер не уходит. В очередь её ставят отдельным шагом (/queue), где и
+    # выбирают, кому она достанется.
     row = RespawnDoll(
         public_id=dolls_service.generate_public_id(),
         server="",
         spec={},
         created_by_admin_id=current_admin.id,
-        state="pending",
+        state="draft",
     )
     result = _apply_payload(row, body)
     db.add(row)
@@ -308,7 +401,7 @@ async def api_update_doll(
     row = db.query(RespawnDoll).filter(RespawnDoll.public_id == public_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Кукла не найдена")
-    if row.state != "pending":
+    if row.state not in dolls_service.EDITABLE_STATES:
         raise HTTPException(status_code=400, detail=f"Куклу в состоянии «{row.state}» изменить нельзя")
 
     body = await request.json()
@@ -319,6 +412,78 @@ async def api_update_doll(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "doll_update", {"public_id": public_id})
     return JSONResponse({"doll": _serialize_admin(row), **result})
+
+
+@admin_router.post("/api/v1/admin/dolls/{public_id}/queue")
+async def api_queue_doll(
+    public_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Постановка черновика в очередь на спавн: здесь и только здесь кукла
+    получает привязку к конкретным игрокам.
+
+    Разделение сделано намеренно: заготовку («капитан для ивента») собирают
+    заранее и переиспользуют, а SteamID известен лишь в момент, когда решают,
+    кому её выдать. Повторный вызов для уже стоящей в очереди куклы просто
+    меняет список привязок — это удобный способ перепривязать её на другого
+    игрока, не пересоздавая.
+    """
+    _require(current_admin, "create")
+    row = db.query(RespawnDoll).filter(RespawnDoll.public_id == public_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Кукла не найдена")
+    if row.state not in dolls_service.EDITABLE_STATES:
+        raise HTTPException(status_code=400, detail=f"Куклу в состоянии «{row.state}» поставить в очередь нельзя")
+
+    body = await request.json() if await request.body() else {}
+    payload = {
+        "server": body.get("server", row.server),
+        "spec": row.spec or {},
+        "bind_steamids": body.get("bind_steamids", row.bind_steamids or []),
+        "spawn_mode": body.get("spawn_mode", row.spawn_mode or "auto"),
+        "priority": body.get("priority", row.priority or 0),
+        "one_shot": body.get("one_shot", row.one_shot),
+        "team": body.get("team", row.team or 0),
+    }
+    if "expires_at" in body:
+        payload["expires_at"] = body["expires_at"]
+    result = _apply_payload(row, payload)
+
+    row.state = "pending"
+    row.state_message = None
+    db.commit()
+    db.refresh(row)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "doll_queue",
+                     {"public_id": public_id, "bind_steamids": row.bind_steamids})
+    return JSONResponse({"doll": _serialize_admin(row), **result})
+
+
+@admin_router.post("/api/v1/admin/dolls/{public_id}/unqueue")
+async def api_unqueue_doll(
+    public_id: str,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Снятие с очереди обратно в черновик — в отличие от отмены, куклу потом
+    можно поставить снова (например, привязав другого игрока)."""
+    _require(current_admin, "cancel")
+    row = db.query(RespawnDoll).filter(RespawnDoll.public_id == public_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Кукла не найдена")
+    if row.state != "pending":
+        raise HTTPException(status_code=400, detail=f"Кукла в состоянии «{row.state}» в очереди не стоит")
+
+    row.state = "draft"
+    db.commit()
+    db.refresh(row)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "doll_unqueue", {"public_id": public_id})
+    return JSONResponse({"status": "ok", "doll": _serialize_admin(row)})
 
 
 @admin_router.delete("/api/v1/admin/dolls/{public_id}")
@@ -334,7 +499,7 @@ async def api_cancel_doll(
     row = db.query(RespawnDoll).filter(RespawnDoll.public_id == public_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Кукла не найдена")
-    if row.state != "pending":
+    if row.state not in dolls_service.EDITABLE_STATES:
         raise HTTPException(status_code=400, detail=f"Кукла уже в состоянии «{row.state}» — отменять нечего")
 
     row.state = "cancelled"
@@ -371,7 +536,8 @@ async def api_clone_doll(
         bind_steamids=body.get("bind_steamids", []),
         spawn_mode=src.spawn_mode,
         team=src.team,
-        state="pending",
+        # Клон — тоже черновик: привязку выбирают при постановке в очередь.
+        state="draft",
         created_by_admin_id=current_admin.id,
     )
     # Прогоняем через ту же валидацию: у клона могли поменять привязки.

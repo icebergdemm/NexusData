@@ -47,6 +47,16 @@ _STEAMID_RE = re.compile(r"^\d{17}$")
 
 _item_catalog: Optional[Dict[str, Any]] = None
 _appearance_catalog: Optional[Dict[str, Any]] = None
+_doll_reference: Optional[Dict[str, Any]] = None
+
+# draft — кукла собрана, но ещё не поставлена в очередь: в /dolls/pending она
+# не попадает, игрок к ней не привязан. Привязка появляется отдельным шагом,
+# когда куклу реально ставят на спавн, — так одну и ту же заготовку можно
+# использовать для разных игроков и не выдумывать SteamID заранее.
+DOLL_STATES = {
+    "draft", "pending", "cancelled", "spawned", "spawned_with_errors", "failed", "expired",
+}
+EDITABLE_STATES = {"draft", "pending"}
 
 
 def appearance_catalog() -> Dict[str, Any]:
@@ -73,6 +83,27 @@ def appearance_catalog() -> Dict[str, Any]:
             logger.warning(f"Каталог внешности недоступен: {e}")
             _appearance_catalog = {"heads": [], "wearables": {}, "colors": {}, "personalities": []}
     return _appearance_catalog
+
+
+def doll_reference() -> Dict[str, Any]:
+    """Справочник конструктора (static/doll_reference.json): профессии с
+    навыками по умолчанию и числом вариантов снаряжения, таланты по
+    профессиям, недуги, типы статов — всё с русскими названиями.
+
+    Выгружается из игрового контента скриптом tools/build_doll_catalog.py.
+    Пустые списки — не ошибка: интерфейс тогда просто оставит свободный ввод
+    идентификаторов вместо выпадающих списков.
+    """
+    global _doll_reference
+    if _doll_reference is None:
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "doll_reference.json")
+            with open(path, encoding="utf-8") as f:
+                _doll_reference = json.load(f)
+        except Exception as e:
+            logger.warning(f"Справочник конструктора кукол недоступен: {e}")
+            _doll_reference = {"jobs": [], "skill_labels": {}, "talents": {}, "afflictions": [], "stat_types": []}
+    return _doll_reference
 
 
 def _validate_identity_against_catalog(identity: Dict[str, Any], warnings: List[str]) -> None:
@@ -275,6 +306,15 @@ def validate_doll_spec(spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
             talents = prog.get("talents")
             if talents is not None and not isinstance(talents, list):
                 errors.append("progression.talents: должен быть списком идентификаторов")
+            elif talents:
+                # Талант из чужой профессии движок просто не применит — это
+                # предупреждение, а не ошибка: на сервере могут стоять моды.
+                job_id = ((spec.get("job") or {}).get("identifier") or "").strip() if isinstance(spec.get("job"), dict) else ""
+                known = {t["identifier"] for t in (doll_reference().get("talents") or {}).get(job_id, [])}
+                if known:
+                    for t in talents:
+                        if str(t).strip() and str(t).strip() not in known:
+                            warnings.append(f"progression.talents: «{t}» не из дерева профессии «{job_id}» — может не примениться")
 
     # stats
     stats = spec.get("stats")
@@ -282,12 +322,16 @@ def validate_doll_spec(spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         if not isinstance(stats, list):
             errors.append("stats: должен быть списком")
         else:
+            known_stats = set(doll_reference().get("stat_types") or [])
             for i, st in enumerate(stats):
                 if not isinstance(st, dict):
                     errors.append(f"stats[{i}]: должен быть объектом")
                     continue
-                if not (st.get("stat_type") or "").strip():
+                stat_type = (st.get("stat_type") or "").strip()
+                if not stat_type:
                     errors.append(f"stats[{i}].stat_type: обязательное поле")
+                elif known_stats and stat_type not in known_stats:
+                    warnings.append(f"stats[{i}].stat_type: «{stat_type}» нет в перечне движка — стат будет проигнорирован")
                 value = st.get("value")
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     errors.append(f"stats[{i}].value: должно быть числом")
@@ -303,12 +347,16 @@ def validate_doll_spec(spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
                 if not isinstance(affl, list):
                     errors.append("health.afflictions: должен быть списком")
                 else:
+                    known_affl = {a["identifier"] for a in (doll_reference().get("afflictions") or [])}
                     for i, a in enumerate(affl):
                         if not isinstance(a, dict):
                             errors.append(f"health.afflictions[{i}]: должен быть объектом")
                             continue
-                        if not (a.get("identifier") or "").strip():
+                        ident = (a.get("identifier") or "").strip()
+                        if not ident:
                             errors.append(f"health.afflictions[{i}].identifier: обязательное поле")
+                        elif known_affl and ident not in known_affl:
+                            warnings.append(f"health.afflictions[{i}]: недуг «{ident}» не найден в контенте — проверьте идентификатор")
                         strength = a.get("strength")
                         if strength is not None and (isinstance(strength, bool) or not isinstance(strength, (int, float))):
                             errors.append(f"health.afflictions[{i}].strength: должно быть числом")

@@ -1,0 +1,1474 @@
+{
+ "jobs": [
+  {
+   "identifier": "captain",
+   "name": "Капитан",
+   "variants": 3,
+   "default_skills": {
+    "helm": 40,
+    "weapons": 25,
+    "mechanical": 15,
+    "electrical": 15,
+    "medical": 5
+   }
+  },
+  {
+   "identifier": "securityofficer",
+   "name": "Офицер охраны",
+   "variants": 3,
+   "default_skills": {
+    "weapons": 40,
+    "medical": 25,
+    "mechanical": 15,
+    "electrical": 15,
+    "helm": 5
+   }
+  },
+  {
+   "identifier": "medicaldoctor",
+   "name": "Врач",
+   "variants": 2,
+   "default_skills": {
+    "medical": 40,
+    "weapons": 15,
+    "mechanical": 15,
+    "electrical": 15,
+    "helm": 5
+   }
+  },
+  {
+   "identifier": "engineer",
+   "name": "Инженер",
+   "variants": 2,
+   "default_skills": {
+    "electrical": 40,
+    "mechanical": 25,
+    "weapons": 15,
+    "medical": 15,
+    "helm": 5
+   }
+  },
+  {
+   "identifier": "mechanic",
+   "name": "Механик",
+   "variants": 2,
+   "default_skills": {
+    "mechanical": 40,
+    "electrical": 25,
+    "weapons": 15,
+    "medical": 15,
+    "helm": 5
+   }
+  },
+  {
+   "identifier": "assistant",
+   "name": "Помощник",
+   "variants": 1,
+   "default_skills": {
+    "weapons": 20,
+    "mechanical": 20,
+    "electrical": 20,
+    "medical": 20,
+    "helm": 17
+   }
+  }
+ ],
+ "skill_labels": {
+  "helm": "Управление",
+  "weapons": "Оружие",
+  "medical": "Медицина",
+  "electrical": "Электрика",
+  "mechanical": "Механика"
+ },
+ "talents": {
+  "assistant": [
+   {
+    "identifier": "apprenticeship_captain",
+    "name": "apprenticeship_captain"
+   },
+   {
+    "identifier": "apprenticeship_doctor",
+    "name": "apprenticeship_doctor"
+   },
+   {
+    "identifier": "apprenticeship_engineer",
+    "name": "apprenticeship_engineer"
+   },
+   {
+    "identifier": "apprenticeship_mechanic",
+    "name": "apprenticeship_mechanic"
+   },
+   {
+    "identifier": "apprenticeship_security",
+    "name": "apprenticeship_security"
+   },
+   {
+    "identifier": "skedaddle",
+    "name": "Бегство"
+   },
+   {
+    "identifier": "nonthreatening",
+    "name": "Безвредный"
+   },
+   {
+    "identifier": "inspiringtunes",
+    "name": "Вдохновляющий мотив"
+   },
+   {
+    "identifier": "thefriendswemade",
+    "name": "Везде друзья"
+   },
+   {
+    "identifier": "loyalassistant",
+    "name": "Верный помощник"
+   },
+   {
+    "identifier": "tastytarget",
+    "name": "Вкусная цель"
+   },
+   {
+    "identifier": "waterprankster",
+    "name": "Водный хулиган"
+   },
+   {
+    "identifier": "bagitup",
+    "name": "Все свое ношу с собой"
+   },
+   {
+    "identifier": "graduationceremony",
+    "name": "Выпускной"
+   },
+   {
+    "identifier": "crewlayabout",
+    "name": "Дармоед"
+   },
+   {
+    "identifier": "indenturedservitude",
+    "name": "Долговое рабство"
+   },
+   {
+    "identifier": "enrollintoclowncollege",
+    "name": "Зачисление в клоуны"
+   },
+   {
+    "identifier": "truepotential",
+    "name": "Истинный талант"
+   },
+   {
+    "identifier": "chonkyhonks",
+    "name": "Классный клаксон"
+   },
+   {
+    "identifier": "psychoclown",
+    "name": "Клоун-псих"
+   },
+   {
+    "identifier": "jengamaster",
+    "name": "Мастер дженги"
+   },
+   {
+    "identifier": "disloyalscum",
+    "name": "Мерзкий предатель"
+   },
+   {
+    "identifier": "revengesquad",
+    "name": "Мститель"
+   },
+   {
+    "identifier": "mule",
+    "name": "Мул"
+   },
+   {
+    "identifier": "peerlearning",
+    "name": "Обмен опытом"
+   },
+   {
+    "identifier": "mailman",
+    "name": "Почтальон"
+   },
+   {
+    "identifier": "anappleaday",
+    "name": "Правильное питание"
+   },
+   {
+    "identifier": "logisticssystems",
+    "name": "Системы логистики"
+   },
+   {
+    "identifier": "thewaitinglist",
+    "name": "Список ожидания"
+   },
+   {
+    "identifier": "apprenticeship",
+    "name": "Стажер"
+   },
+   {
+    "identifier": "starterquest",
+    "name": "Стартовый квест"
+   },
+   {
+    "identifier": "journeyman",
+    "name": "Странник"
+   },
+   {
+    "identifier": "insurancepolicy",
+    "name": "Страховка"
+   },
+   {
+    "identifier": "playingcatchup",
+    "name": "Тормоз"
+   }
+  ],
+  "captain": [
+   {
+    "identifier": "emergencymaneuvers",
+    "name": "Аварийные маневры"
+   },
+   {
+    "identifier": "sailorwithnoname",
+    "name": "Безымянный моряк"
+   },
+   {
+    "identifier": "commendations",
+    "name": "Благодарности"
+   },
+   {
+    "identifier": "bigguns",
+    "name": "Большие пушки"
+   },
+   {
+    "identifier": "travelingtradesman",
+    "name": "Бродячий торговец"
+   },
+   {
+    "identifier": "quickdraw",
+    "name": "Быстрый стрелок"
+   },
+   {
+    "identifier": "yourreputation",
+    "name": "Ваша репутация..."
+   },
+   {
+    "identifier": "inspirationalleader",
+    "name": "Вдохновитель"
+   },
+   {
+    "identifier": "inspiringpresence",
+    "name": "Вдохновляющее присутствие"
+   },
+   {
+    "identifier": "veteran",
+    "name": "Ветеран"
+   },
+   {
+    "identifier": "prodigy",
+    "name": "Дарование"
+   },
+   {
+    "identifier": "campaigning",
+    "name": "Кампании"
+   },
+   {
+    "identifier": "helmsman",
+    "name": "Кормчий"
+   },
+   {
+    "identifier": "downwiththeship",
+    "name": "На дно"
+   },
+   {
+    "identifier": "lonewolf",
+    "name": "Одинокий волк"
+   },
+   {
+    "identifier": "gunsmith",
+    "name": "Оружейник"
+   },
+   {
+    "identifier": "bountyhunter",
+    "name": "Охотник за головами"
+   },
+   {
+    "identifier": "trickledown",
+    "name": "Перераспределение"
+   },
+   {
+    "identifier": "leadingbyexample",
+    "name": "По примеру"
+   },
+   {
+    "identifier": "figurehead",
+    "name": "Подставное лицо"
+   },
+   {
+    "identifier": "deputy",
+    "name": "Помощник"
+   },
+   {
+    "identifier": "drunkensailor",
+    "name": "Пьяный матрос"
+   },
+   {
+    "identifier": "family",
+    "name": "Семья"
+   },
+   {
+    "identifier": "networking",
+    "name": "Сети"
+   },
+   {
+    "identifier": "affiliation",
+    "name": "Склонность"
+   },
+   {
+    "identifier": "camaraderie",
+    "name": "Товарищество"
+   },
+   {
+    "identifier": "steadytune",
+    "name": "Устойчивая мелодия"
+   },
+   {
+    "identifier": "logisticsexpert",
+    "name": "Эксперт по логистике"
+   }
+  ],
+  "medicaldoctor": [
+   {
+    "identifier": "nopressure",
+    "name": "Без давления"
+   },
+   {
+    "identifier": "vitaminsupplements",
+    "name": "Витаминные добавки"
+   },
+   {
+    "identifier": "nobodyimportantdies",
+    "name": "Все, кто надо, живы"
+   },
+   {
+    "identifier": "geneticgenious",
+    "name": "Генетический гений"
+   },
+   {
+    "identifier": "bloodybusiness",
+    "name": "Грязные дела"
+   },
+   {
+    "identifier": "blooddonor",
+    "name": "Донор крови"
+   },
+   {
+    "identifier": "labcontacts",
+    "name": "Лабораторные контакты"
+   },
+   {
+    "identifier": "macrodosing",
+    "name": "Макродозы"
+   },
+   {
+    "identifier": "medicalassistance",
+    "name": "Медицинская помощь"
+   },
+   {
+    "identifier": "medicalexpertise",
+    "name": "Медицинская экспертиза"
+   },
+   {
+    "identifier": "medicalcompanion",
+    "name": "Медицинский компаньон"
+   },
+   {
+    "identifier": "healthinsurance",
+    "name": "Медстраховка"
+   },
+   {
+    "identifier": "genetampering",
+    "name": "Настройка генов"
+   },
+   {
+    "identifier": "dontdieonme",
+    "name": "Не умирай!"
+   },
+   {
+    "identifier": "whatastench",
+    "name": "Ну и вонь!"
+   },
+   {
+    "identifier": "exampleofhealth",
+    "name": "Образцовое здоровье"
+   },
+   {
+    "identifier": "stayinalive",
+    "name": "Остаться в живых"
+   },
+   {
+    "identifier": "firemanscarry",
+    "name": "Перенос на плече"
+   },
+   {
+    "identifier": "drsubmarine",
+    "name": "Подводный доктор"
+   },
+   {
+    "identifier": "blackmarketgenes",
+    "name": "Подпольные гены"
+   },
+   {
+    "identifier": "selfcare",
+    "name": "Самосохранение"
+   },
+   {
+    "identifier": "geneharvester",
+    "name": "Сборщик генов"
+   },
+   {
+    "identifier": "deliverysystem",
+    "name": "Служба доставки"
+   },
+   {
+    "identifier": "laresistance",
+    "name": "Сопротивление"
+   },
+   {
+    "identifier": "genesplicer",
+    "name": "Спайщик генов"
+   },
+   {
+    "identifier": "supersoldiers",
+    "name": "Суперсолдаты"
+   },
+   {
+    "identifier": "miracleworker",
+    "name": "Чудотворец"
+   },
+   {
+    "identifier": "plaguedoctor",
+    "name": "Чумной доктор"
+   },
+   {
+    "identifier": "emergencyresponse",
+    "name": "Экстренная помощь"
+   }
+  ],
+  "engineer": [
+   {
+    "identifier": "aggressiveengineering",
+    "name": "Агрессивная инженерия"
+   },
+   {
+    "identifier": "unlimitedpower",
+    "name": "Безграничная сила"
+   },
+   {
+    "identifier": "funwithfission",
+    "name": "Веселое расщепление"
+   },
+   {
+    "identifier": "militaryapplications",
+    "name": "Военное применение"
+   },
+   {
+    "identifier": "armsrace",
+    "name": "Гонка вооружений"
+   },
+   {
+    "identifier": "cruising",
+    "name": "Давилка"
+   },
+   {
+    "identifier": "buzzing",
+    "name": "Жужжалка"
+   },
+   {
+    "identifier": "grounded",
+    "name": "Заземление"
+   },
+   {
+    "identifier": "stationengineer",
+    "name": "Инженер станции"
+   },
+   {
+    "identifier": "weaponartisan",
+    "name": "Искусный оружейник"
+   },
+   {
+    "identifier": "phdinnuclearphysics",
+    "name": "Кандидат наук по ядерной физике"
+   },
+   {
+    "identifier": "samplecollection",
+    "name": "Коллекция образцов"
+   },
+   {
+    "identifier": "nuclearoption",
+    "name": "Крайняя мера"
+   },
+   {
+    "identifier": "heavyhitter",
+    "name": "Крепкий кулак"
+   },
+   {
+    "identifier": "betterthannew",
+    "name": "Лучше нового"
+   },
+   {
+    "identifier": "remotemonitor",
+    "name": "Монитор наблюдения"
+   },
+   {
+    "identifier": "melodicrespite",
+    "name": "Музыкальная пауза"
+   },
+   {
+    "identifier": "unstoppablecuriosity",
+    "name": "Неуемное любопытство"
+   },
+   {
+    "identifier": "dangerzone",
+    "name": "Опасная зона"
+   },
+   {
+    "identifier": "pyromaniac",
+    "name": "Пироманьяк"
+   },
+   {
+    "identifier": "submarineofthings",
+    "name": "Подлодка вещей"
+   },
+   {
+    "identifier": "gridmaintainer",
+    "name": "Ремонт сетей"
+   },
+   {
+    "identifier": "junctionjunkie",
+    "name": "Фанат соединений"
+   },
+   {
+    "identifier": "lightningwizard",
+    "name": "Электромаг"
+   },
+   {
+    "identifier": "egghead",
+    "name": "Яйцеголовый"
+   }
+  ],
+  "mechanic": [
+   {
+    "identifier": "berserker",
+    "name": "Берсерк"
+   },
+   {
+    "identifier": "mudraptorwrestler",
+    "name": "Борьба с рапторами"
+   },
+   {
+    "identifier": "scrapsavant",
+    "name": "Гений утилизации"
+   },
+   {
+    "identifier": "ironman",
+    "name": "Железный человек"
+   },
+   {
+    "identifier": "ironstorm",
+    "name": "Железный шторм"
+   },
+   {
+    "identifier": "oiledmachinery",
+    "name": "Идеальный механизм"
+   },
+   {
+    "identifier": "engineengineer",
+    "name": "Инженер по двигателям"
+   },
+   {
+    "identifier": "powerarmor",
+    "name": "МЕХаник"
+   },
+   {
+    "identifier": "massproduction",
+    "name": "Массовое производство"
+   },
+   {
+    "identifier": "machinemaniac",
+    "name": "Механик-маньяк"
+   },
+   {
+    "identifier": "modularrepairs",
+    "name": "Модульный ремонт"
+   },
+   {
+    "identifier": "pumpndump",
+    "name": "Надуть и сбросить"
+   },
+   {
+    "identifier": "ballastdenizen",
+    "name": "Обитатель камеры балласта"
+   },
+   {
+    "identifier": "toolmaintenance",
+    "name": "Обслуживание инструментов"
+   },
+   {
+    "identifier": "residualwaste",
+    "name": "Остаточные отходы"
+   },
+   {
+    "identifier": "heavylifting",
+    "name": "Поднятие тяжестей"
+   },
+   {
+    "identifier": "letitdrain",
+    "name": "Пусть течет"
+   },
+   {
+    "identifier": "hullfixer",
+    "name": "Ремонтник корпуса"
+   },
+   {
+    "identifier": "robotics",
+    "name": "Робототехника"
+   },
+   {
+    "identifier": "tinkerer",
+    "name": "Самоделкин"
+   },
+   {
+    "identifier": "salvagecrew",
+    "name": "Сбор добычи"
+   },
+   {
+    "identifier": "safetyfirst",
+    "name": "Техника безопасности"
+   },
+   {
+    "identifier": "foolhardy",
+    "name": "Удаль"
+   },
+   {
+    "identifier": "retrofit",
+    "name": "Улучшенная модель"
+   },
+   {
+    "identifier": "multifunctional",
+    "name": "Универсал"
+   },
+   {
+    "identifier": "miner",
+    "name": "Шахтер"
+   },
+   {
+    "identifier": "quickfixer",
+    "name": "Экспресс-ремонт"
+   },
+   {
+    "identifier": "iamthatguy",
+    "name": "Я тот самый человек"
+   }
+  ],
+  "securityofficer": [
+   {
+    "identifier": "boardingparty",
+    "name": "Абордажная команда"
+   },
+   {
+    "identifier": "rifleman",
+    "name": "Автоматчик"
+   },
+   {
+    "identifier": "warlord",
+    "name": "Военачальник"
+   },
+   {
+    "identifier": "warstories",
+    "name": "Военные истории"
+   },
+   {
+    "identifier": "daringdolphin",
+    "name": "Дерзкий дельфин"
+   },
+   {
+    "identifier": "stonewall",
+    "name": "Каменная стена"
+   },
+   {
+    "identifier": "swole",
+    "name": "Качок"
+   },
+   {
+    "identifier": "scavenger",
+    "name": "Мусорщик"
+   },
+   {
+    "identifier": "pacificationkit",
+    "name": "Набор для умиротворения"
+   },
+   {
+    "identifier": "dontpushit",
+    "name": "Не нарывайся"
+   },
+   {
+    "identifier": "inordinateexsanguination",
+    "name": "Неумеренное кровопускание"
+   },
+   {
+    "identifier": "implacable",
+    "name": "Неумолимый"
+   },
+   {
+    "identifier": "firstaidtraining",
+    "name": "Обучение первой помощи"
+   },
+   {
+    "identifier": "weaponsmith",
+    "name": "Оружейник"
+   },
+   {
+    "identifier": "beatcop",
+    "name": "Патрульный"
+   },
+   {
+    "identifier": "bythebook",
+    "name": "По уставу"
+   },
+   {
+    "identifier": "tandemfire",
+    "name": "Сила напарника"
+   },
+   {
+    "identifier": "protectandserve",
+    "name": "Служить и защищать"
+   },
+   {
+    "identifier": "commando",
+    "name": "Спецназовец"
+   },
+   {
+    "identifier": "specops",
+    "name": "Спецотдел"
+   },
+   {
+    "identifier": "easyturtle",
+    "name": "Спокойная черепаха"
+   },
+   {
+    "identifier": "extrapowder",
+    "name": "Суперпорох"
+   },
+   {
+    "identifier": "crustyseaman",
+    "name": "Суровый моряк"
+   },
+   {
+    "identifier": "gunrunner",
+    "name": "Торговец оружием"
+   },
+   {
+    "identifier": "slayer",
+    "name": "Убийца"
+   },
+   {
+    "identifier": "buff",
+    "name": "Усиление"
+   },
+   {
+    "identifier": "bootcamp",
+    "name": "Учебка"
+   },
+   {
+    "identifier": "physicalconditioning",
+    "name": "Физическая подготовка"
+   },
+   {
+    "identifier": "munitionsexpertise",
+    "name": "Эксперт по боеприпасам"
+   }
+  ]
+ },
+ "afflictions": [
+  {
+   "identifier": "bleedingnonstop",
+   "name": "Bleeding",
+   "max_strength": 100.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "blind_hard",
+   "name": "Blinded",
+   "max_strength": 10.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "blind",
+   "name": "Blinded",
+   "max_strength": 30.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "burning",
+   "name": "Burning",
+   "max_strength": 15.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "concealed",
+   "name": "Concealed",
+   "max_strength": 1.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "damageimmunity",
+   "name": "Damage immunity",
+   "max_strength": 1.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "doomofjove",
+   "name": "Doom of Jove",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "drag",
+   "name": "Drag",
+   "max_strength": 1.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "emp",
+   "name": "EMP",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "hallucinatingshortduration",
+   "name": "Hallucinating (short)",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "huskroulette",
+   "name": "Husk Roulette Participation",
+   "max_strength": 120.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "incrementalstun",
+   "name": "IncrementalStun",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "mysteryaffliction",
+   "name": "Mystery affliction",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "slowparalysis",
+   "name": "Paralysis",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "progressivestun",
+   "name": "ProgressiveStun",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "sensoryoverload",
+   "name": "Sensory Overload",
+   "max_strength": 30.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "slow",
+   "name": "Slow",
+   "max_strength": 80.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "electricshockwearoff",
+   "name": "Woozy",
+   "max_strength": 10.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "disguisedashusk",
+   "name": "disguisedashusk",
+   "max_strength": 1.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "drunknodebuffs",
+   "name": "drunknodebuffs",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "hallucinating_mindsunraveled",
+   "name": "hallucinating_mindsunraveled",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "husktransformimmunitytemporary",
+   "name": "husktransformimmunitytemporary",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "mantiscamouflage",
+   "name": "mantiscamouflage",
+   "max_strength": 10.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "psychoclown",
+   "name": "psychoclown",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "psychosisimmunity",
+   "name": "psychosisimmunity",
+   "max_strength": 60.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "recoilstabilized",
+   "name": "recoilstabilized",
+   "max_strength": 1.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "pressure",
+   "name": "Баротравма",
+   "max_strength": 1.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "disguised",
+   "name": "В маскировке",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "watchersgaze",
+   "name": "Взгляд Смотрителя",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "outsideinfluence",
+   "name": "Внешнее воздействие",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "internaldamage",
+   "name": "Внутренняя травма",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "inflamedlung",
+   "name": "Воспаление легких",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "drunkweakness",
+   "name": "Восприимчивость к алкоголю",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "hallucinating",
+   "name": "Галлюцинации",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "decreasedoxygenconsumption",
+   "name": "Гены акульего тигра",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "increasedwalkingspeed",
+   "name": "Гены богомола",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "naturalmeleeweapon",
+   "name": "Гены грязевого раптора",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "vigorondamage",
+   "name": "Гены моллюска",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "increasedmeleedamage",
+   "name": "Гены молотоглава",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "healdamage",
+   "name": "Гены молотоглава-матриарха",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "damageresistance",
+   "name": "Гены молоха",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "increasedmeleedamageondamage",
+   "name": "Гены охотника",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "increasedswimmingspeed",
+   "name": "Гены ползуна",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "hyperactivityondamage",
+   "name": "Гены проныры",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "husktransformimmunity",
+   "name": "Гены хаска",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "naturalrangedweapon",
+   "name": "Гены шипостая",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "haste",
+   "name": "Гиперактивность",
+   "max_strength": 600.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "hypersensitivity",
+   "name": "Гиперчувствительность",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "reaperstax",
+   "name": "Дань смерти",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "invertcontrols",
+   "name": "Дезориентация",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "decrepify",
+   "name": "Дряхлость",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "huskinfection",
+   "name": "Заражение паразитами",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "infection",
+   "name": "Зараженная рана",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "concussion",
+   "name": "Контузия",
+   "max_strength": 10.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "spaceherpes",
+   "name": "Космический герпес",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "bloodloss",
+   "name": "Кровопотеря",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "bleeding",
+   "name": "Кровотечение",
+   "max_strength": 100.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "xenobiology",
+   "name": "Ксенобиология",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "radiationsickness",
+   "name": "Лучевая болезнь",
+   "max_strength": 200.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "durationincrease",
+   "name": "Медленный метаболизм",
+   "max_strength": 600.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "musculardystrophy",
+   "name": "Мышечная дистрофия",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "opiateaddiction",
+   "name": "Наркотическая зависимость",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "opiatewithdrawal",
+   "name": "Наркотическая ломка",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "rigidjoints",
+   "name": "Негнущиеся суставы",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "oxygenlow",
+   "name": "Нехватка кислорода",
+   "max_strength": 200.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "stun",
+   "name": "Оглушение",
+   "max_strength": 30.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "electricshock",
+   "name": "Оглушение",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "gunshotwound",
+   "name": "Огнестрельная рана",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "burn",
+   "name": "Ожог",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "acidburn",
+   "name": "Ожог кислотой",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "drunk",
+   "name": "Опьянение",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "deliriuminepoisoning",
+   "name": "Отравление бредогеном",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "morbusinepoisoning",
+   "name": "Отравление морбузином",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "sufforinpoisoning",
+   "name": "Отравление страданитом",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "cyanidepoisoning",
+   "name": "Отравление цианидом",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "paralysis",
+   "name": "Паралич",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "opiateoverdose",
+   "name": "Передозировка опиатами",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "explosiondamage",
+   "name": "Повреждение глубоких тканей",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "organdamage",
+   "name": "Повреждение органа",
+   "max_strength": 200.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "increasedmeleedamage_temporary",
+   "name": "Повышается урон в ближнем бою (временно)",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "adrenalinerush",
+   "name": "Прилив адреналина",
+   "max_strength": 8.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "psychosis",
+   "name": "Психоз",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "lacerations",
+   "name": "Рваная рана",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "strengthen",
+   "name": "Решительность",
+   "max_strength": 600.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "mindsense",
+   "name": "Сенсор разума",
+   "max_strength": 600.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "blunttrauma",
+   "name": "Сильный ушиб",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "husksymbiosis",
+   "name": "Симбиоз",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "stabilozineeffect",
+   "name": "Стабилоцин",
+   "max_strength": 120.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "glassjaw",
+   "name": "Стеклянная челюсть",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "nausea",
+   "name": "Тошнота",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "tunnelvision",
+   "name": "Туннельное зрение",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "bitewounds",
+   "name": "Укусы",
+   "max_strength": 200.0,
+   "limb_specific": true
+  },
+  {
+   "identifier": "pressureresistance",
+   "name": "Устойчивость к высокому давлению",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "paralysisresistance",
+   "name": "Устойчивость к параличу",
+   "max_strength": 800.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "psychosisresistance",
+   "name": "Устойчивость к психозу",
+   "max_strength": 600.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "huskinfectionresistance",
+   "name": "Устойчивость к трупным паразитам",
+   "max_strength": 600.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "chemaddiction",
+   "name": "Химическая зависимость",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "chemwithdrawal",
+   "name": "Химическая ломка",
+   "max_strength": 100.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "acidreaction",
+   "name": "Эффекты \"Европовки\"",
+   "max_strength": 120.0,
+   "limb_specific": false
+  },
+  {
+   "identifier": "jovianradiation",
+   "name": "Юпитерианская радиация",
+   "max_strength": 100.0,
+   "limb_specific": false
+  }
+ ],
+ "stat_types": [
+  "ElectricalSkillBonus",
+  "HelmSkillBonus",
+  "MechanicalSkillBonus",
+  "MedicalSkillBonus",
+  "WeaponsSkillBonus",
+  "HelmSkillOverride",
+  "MedicalSkillOverride",
+  "WeaponsSkillOverride",
+  "ElectricalSkillOverride",
+  "MechanicalSkillOverride",
+  "MaximumHealthMultiplier",
+  "MovementSpeed",
+  "WalkingSpeed",
+  "SwimmingSpeed",
+  "PropulsionSpeed",
+  "BuffDurationMultiplier",
+  "DebuffDurationMultiplier",
+  "MedicalItemEffectivenessMultiplier",
+  "FlowResistance",
+  "AttackMultiplier",
+  "TeamAttackMultiplier",
+  "RangedAttackSpeed",
+  "RangedAttackMultiplier",
+  "TurretAttackSpeed",
+  "TurretPowerCostReduction",
+  "TurretChargeSpeed",
+  "MeleeAttackSpeed",
+  "MeleeAttackMultiplier",
+  "RangedSpreadReduction",
+  "RepairSpeed",
+  "MechanicalRepairSpeed",
+  "ElectricalRepairSpeed",
+  "DeconstructorSpeedMultiplier",
+  "RepairToolStructureRepairMultiplier",
+  "RepairToolStructureDamageMultiplier",
+  "RepairToolDeattachTimeMultiplier",
+  "MaxRepairConditionMultiplierMechanical",
+  "MaxRepairConditionMultiplierElectrical",
+  "IncreaseFabricationQuality",
+  "GeneticMaterialRefineBonus",
+  "GeneticMaterialTaintedProbabilityReductionOnCombine",
+  "SkillGainSpeed",
+  "ExtraLevelGain",
+  "HelmSkillGainSpeed",
+  "WeaponsSkillGainSpeed",
+  "MedicalSkillGainSpeed",
+  "ElectricalSkillGainSpeed",
+  "MechanicalSkillGainSpeed",
+  "MedicalItemApplyingMultiplier",
+  "BuffItemApplyingMultiplier",
+  "PoisonMultiplier",
+  "TinkeringDuration",
+  "TinkeringStrength",
+  "TinkeringDamage",
+  "ReputationGainMultiplier",
+  "ReputationLossMultiplier",
+  "MissionMoneyGainMultiplier",
+  "ExperienceGainMultiplier",
+  "MissionExperienceGainMultiplier",
+  "ExtraMissionCount",
+  "ExtraSpecialSalesCount",
+  "StoreSellMultiplier",
+  "StoreBuyMultiplierAffiliated",
+  "StoreBuyMultiplier",
+  "ShipyardBuyMultiplierAffiliated",
+  "ShipyardBuyMultiplier",
+  "MaxAttachableCount",
+  "ExplosionRadiusMultiplier",
+  "ExplosionDamageMultiplier",
+  "FabricationSpeed",
+  "BallastFloraDamageMultiplier",
+  "HoldBreathMultiplier",
+  "Apprenticeship",
+  "CPRBoost",
+  "LockedTalents",
+  "HireCostMultiplier",
+  "InventoryExtraStackSize",
+  "SoundRangeMultiplier",
+  "SightRangeMultiplier",
+  "DualWieldingPenaltyReduction",
+  "NaturalMeleeAttackMultiplier"
+ ]
+}
