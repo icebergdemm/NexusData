@@ -212,18 +212,47 @@ def _queue_role_sync(db: Session, target_admin: AdminUser, add_role_ids: set, re
     the whole loop-safety contract: see task_sync_department_roles's
     docstring for the full explanation."""
     if not target_admin.discord_id:
+        logger.warning(
+            "Синхронизация ролей пропущена: у сотрудника id=%s не привязан Discord ID",
+            target_admin.id,
+        )
         return
+
+    if not add_role_ids and not remove_role_ids:
+        # Самый частый случай «выдал уровень, а роль не появилась»: у уровня
+        # доступа (или у отдела — базовая роль) в настройках не указан
+        # discord_role_id, поэтому отправлять нечего. Раньше это проходило
+        # совершенно молча.
+        logger.warning(
+            "Синхронизация ролей: нечего отправлять для сотрудника id=%s — "
+            "у уровней доступа не задан Discord-роль (discord_role_id)",
+            target_admin.id,
+        )
+        return
+
     from discord_bot import bot as discord_bot
-    for role_id in add_role_ids:
-        discord_bot.schedule(discord_bot.execute_bot_action(
-            "sync_department_role",
-            {"discord_id": target_admin.discord_id, "add_role_id": role_id},
-        ))
-    for role_id in remove_role_ids:
-        discord_bot.schedule(discord_bot.execute_bot_action(
-            "sync_department_role",
-            {"discord_id": target_admin.discord_id, "remove_role_id": role_id},
-        ))
+    try:
+        for role_id in add_role_ids:
+            discord_bot.schedule(
+                discord_bot.execute_bot_action(
+                    "sync_department_role",
+                    {"discord_id": target_admin.discord_id, "add_role_id": role_id},
+                ),
+                description=f"выдача Discord-роли {role_id} сотруднику {target_admin.discord_id}",
+            )
+        for role_id in remove_role_ids:
+            discord_bot.schedule(
+                discord_bot.execute_bot_action(
+                    "sync_department_role",
+                    {"discord_id": target_admin.discord_id, "remove_role_id": role_id},
+                ),
+                description=f"снятие Discord-роли {role_id} с сотрудника {target_admin.discord_id}",
+            )
+    except RuntimeError as e:
+        # Бот не запущен (нет токена/не стартовал). Изменение в отделе при
+        # этом остаётся в силе — роли досинхронизирует фоновая задача
+        # workers.task_reconcile_department_discord_roles, когда бот поднимется.
+        logger.error("Синхронизация ролей не отправлена (бот не запущен): %s", e)
 
 
 def _set_kit_binding(db: Session, level: DepartmentAccessLevel, raw: Optional[dict], admin_id: int) -> None:

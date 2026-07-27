@@ -737,7 +737,20 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
             # membership) is workers.task_sync_department_roles.
             guild = bot.get_guild(GUILD_ID)
             if not guild:
-                return False, "Guild not found (bot not in cache for GUILD_ID)"
+                # Самая частая причина: бот не подключён к Discord (неверный
+                # токен, идёт переподключение) либо в GUILD_ID указан не тот
+                # сервер. Записываем в список сбоев, чтобы это было видно на
+                # странице «Discord-бот», а не только в логах.
+                msg = ("Сервер Discord недоступен боту: проверьте GUILD_ID и то, "
+                       "что бот подключён (см. статус на странице Discord-бота)")
+                _recent_role_sync_failures.append({
+                    "discord_id": payload.get("discord_id"),
+                    "add_role_id": payload.get("add_role_id"),
+                    "remove_role_id": payload.get("remove_role_id"),
+                    "error_message": msg,
+                    "executed_at": datetime.utcnow().isoformat(),
+                })
+                return False, msg
             discord_id = payload.get("discord_id")
             add_role_id = payload.get("add_role_id")
             remove_role_id = payload.get("remove_role_id")
@@ -1527,7 +1540,7 @@ async def setup_hook():
 _bot_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
-def schedule(coro):
+def schedule(coro, description: str = ""):
     """Thread-safe way to fire a coroutine at the bot's event loop from ANY
     context — a sync/threadpool-dispatched route handler or an async one.
     Returns a concurrent.futures.Future; most callers fire-and-forget it, but
@@ -1535,10 +1548,40 @@ def schedule(coro):
     asyncio.wrap_future) for check_channel_category's near-synchronous
     request/response contract. This is the direct replacement for every
     `db.add(DiscordBotAction(...))` call site — same action_type/payload
-    shape, delivered immediately instead of polled."""
+    shape, delivered immediately instead of polled.
+
+    Результат ОБЯЗАТЕЛЬНО логируется. Почти все вызывающие работают по схеме
+    «отправил и забыл», а execute_bot_action возвращает (False, причина)
+    вместо исключения — без этого колбэка любой сбой пропадал бесследно:
+    сайт рапортовал об успехе, в Discord ничего не происходило, в логах было
+    пусто. Самый коварный случай — бот запущен, но ещё (или уже) не подключён к
+    Discord: _bot_loop к этому моменту уже установлен, задача принимается,
+    а get_guild() возвращает None.
+    """
     if _bot_loop is None:
         raise RuntimeError("Discord bot is not running (schedule() called before supervise_bot() started it)")
-    return asyncio.run_coroutine_threadsafe(coro, _bot_loop)
+
+    label = description or getattr(coro, "__qualname__", "действие бота")
+    if not bot.is_ready():
+        logger.warning(
+            f"{label}: бот ещё не подключён к Discord — действие, скорее всего, "
+            f"не выполнится (проверьте токен и логи запуска бота)"
+        )
+
+    future = asyncio.run_coroutine_threadsafe(coro, _bot_loop)
+
+    def _log_outcome(f):
+        try:
+            result = f.result()
+        except Exception:
+            logger.exception(f"{label}: действие бота завершилось исключением")
+            return
+        # execute_bot_action возвращает (успех, причина)
+        if isinstance(result, tuple) and len(result) == 2 and result[0] is False:
+            logger.error(f"{label}: действие бота не выполнено — {result[1]}")
+
+    future.add_done_callback(_log_outcome)
+    return future
 
 
 async def supervise_bot():
