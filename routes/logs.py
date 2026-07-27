@@ -123,7 +123,7 @@ async def api_logs_events(
 
     offset = (page - 1) * page_size
 
-    events, total = await run_in_threadpool(
+    events, total, total_is_capped = await run_in_threadpool(
         search_logs,
         server_name=server if server else None,
         player_name=effective_player if effective_player else None,
@@ -150,6 +150,10 @@ async def api_logs_events(
             for e in events
         ],
         "total": total,
+        # True when there are more matches than `total` reports (the count is
+        # capped — see services_logs.COUNT_CAP): the UI shows "5000+" instead
+        # of a precise number rather than paying for a full-table COUNT(*).
+        "total_is_capped": total_is_capped,
         "page": page,
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if total > 0 else 1,

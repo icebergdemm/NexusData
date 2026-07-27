@@ -443,6 +443,13 @@ _log_cache_lock = threading.Lock()
 _log_worker_running = False
 _log_refresh_interval = 60  # 1 minute
 
+# Upper bound for search result counts (see search_logs). Text filters use a
+# leading-wildcard LIKE that no index can serve, so an exact COUNT(*) means a
+# full-table scan on every search; counting inside a LIMIT-ed subquery keeps
+# that bounded no matter how large the log history grows. Anything past this
+# is reported as "N+" — nobody pages to result 5000 of a log search anyway.
+COUNT_CAP = 5000
+
 # Thread-local SQLite connections (sqlite3 objects are not thread-safe to share)
 _tls = threading.local()
 
@@ -485,6 +492,13 @@ def _init_schema(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS ix_log_server  ON log_events(server, ts);
         CREATE INDEX IF NOT EXISTS ix_log_player  ON log_events(player);
         CREATE INDEX IF NOT EXISTS ix_log_action  ON log_events(action);
+        -- Every listing is ORDER BY ts DESC, and the action/category filter
+        -- is the most common non-text filter — a composite lets SQLite walk
+        -- straight down this index for "тип события + свежие сверху" instead
+        -- of scanning and sorting. (Text filters stay unindexable by design:
+        -- a leading-wildcard LIKE can't use any B-tree, which is exactly why
+        -- the COUNT above is capped.)
+        CREATE INDEX IF NOT EXISTS ix_log_action_ts ON log_events(action, ts);
 
         CREATE TABLE IF NOT EXISTS log_files (
             server   TEXT NOT NULL,
@@ -818,10 +832,14 @@ def search_logs(
     limit: int = 500,
     offset: int = 0,
     names_list: Optional[List[str]] = None,
-) -> Tuple[List[LogEvent], int]:
-    """Search log events via indexed SQL. Returns (events, total_count).
+) -> Tuple[List[LogEvent], int, bool]:
+    """Search log events via indexed SQL.
 
-    Constant memory: only `limit` rows are materialized, count is a COUNT(*).
+    Returns (events, total_count, total_is_capped). Constant memory: only
+    `limit` rows are materialized. `total_count` is capped at COUNT_CAP —
+    when total_is_capped is True there are more matches than reported and
+    the UI should render it as "COUNT_CAP+" (see the bounded-COUNT comment
+    below for why an exact total isn't worth its cost here).
     """
     try:
         conn = _get_conn()
@@ -832,7 +850,20 @@ def search_logs(
     where, params = _build_where(server_name, player_name, action_type,
                                  search_text, time_from, time_to, category, names_list)
 
-    total = conn.execute(f"SELECT COUNT(*) FROM log_events{where}", params).fetchone()[0]
+    # Bounded COUNT. A text filter is a leading-wildcard LIKE ("%name%"),
+    # which no index can serve — so a plain COUNT(*) scans the ENTIRE table
+    # every time, and that was the single most expensive part of a search
+    # (a short substring matches nearly every row). Counting inside a
+    # LIMIT-ed subquery caps the work at COUNT_CAP rows regardless of how
+    # big the table gets; the caller learns the count is a floor via the
+    # returned flag and renders it as "5000+". Exact totals aren't worth a
+    # full scan on every keystroke here.
+    capped = conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM log_events{where} LIMIT {COUNT_CAP + 1})",
+        params,
+    ).fetchone()[0]
+    total = min(capped, COUNT_CAP)
+    total_is_capped = capped > COUNT_CAP
 
     rows = conn.execute(
         f"SELECT ts, player, action, details, server, source_file FROM log_events{where} "
@@ -852,7 +883,7 @@ def search_logs(
         )
         for r in rows
     ]
-    return events, total
+    return events, total, total_is_capped
 
 
 def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
@@ -861,7 +892,7 @@ def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
     Old callers expected the full list; we cap to 5000 most-recent events to
     avoid loading the entire history into RAM. Prefer search_logs() instead.
     """
-    events, _ = search_logs(server_name=server_name, limit=5000, offset=0)
+    events, _total, _capped = search_logs(server_name=server_name, limit=5000, offset=0)
     return events
 
 

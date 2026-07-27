@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { toast } from "sonner"
 import { ScrollText, RefreshCw } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
@@ -23,7 +24,7 @@ interface LogEvent {
   server_name: string | null
   source_file: string | null
 }
-interface LogsResponse { events: LogEvent[]; total: number; page: number; page_size: number; total_pages: number }
+interface LogsResponse { events: LogEvent[]; total: number; total_is_capped: boolean; page: number; page_size: number; total_pages: number }
 interface LogStatEntry { event_count: number; last_refresh: string | null; oldest_event: string | null; newest_event: string | null }
 
 const ACTION_TYPES = [
@@ -51,17 +52,32 @@ export function LogsPage() {
   const [page, setPage] = useState(1)
   const queryClient = useQueryClient()
 
+  // Text filters run an unindexed substring scan over the whole log table
+  // server-side, so they're debounced — without this every keystroke fired
+  // its own request ("владимир" = 8 parallel full scans), which saturated
+  // the backend's worker threads and made the proxy serve the maintenance
+  // page. The inputs stay bound to the raw state, so typing is unaffected.
+  const debouncedPlayer = useDebouncedValue(player.trim())
+  const debouncedSearch = useDebouncedValue(search.trim())
+  // A 1-character substring matches essentially every row, making the query
+  // maximally expensive while being useless as a filter — wait for 2+.
+  const effectivePlayer = debouncedPlayer.length >= 2 ? debouncedPlayer : ""
+  const effectiveSearch = debouncedSearch.length >= 2 ? debouncedSearch : ""
+
   const { data, isLoading } = useQuery({
-    queryKey: ["logs-events", server, category, actionType, player, search, page],
+    queryKey: ["logs-events", server, category, actionType, effectivePlayer, effectiveSearch, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "100" })
       if (server !== "all") params.set("server", server)
       if (category !== "all") params.set("category", category)
       if (actionType !== "all") params.set("action_type", actionType)
-      if (player.trim()) params.set("player", player.trim())
-      if (search.trim()) params.set("search", search.trim())
+      if (effectivePlayer) params.set("player", effectivePlayer)
+      if (effectiveSearch) params.set("search", effectiveSearch)
       return api.get<LogsResponse>(`/api/v1/admin/logs/events?${params}`)
     },
+    // Keep showing the previous page/results while the next query runs
+    // instead of flashing an empty table between keystrokes.
+    placeholderData: (prev) => prev,
   })
 
   const { data: stats } = useQuery({
@@ -107,8 +123,8 @@ export function LogsPage() {
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <SearchInput value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Поиск по тексту события..." className="max-w-56" />
-        <SearchInput value={player} onChange={(e) => { setPlayer(e.target.value); setPage(1) }} placeholder="Игрок..." className="max-w-44" />
+        <SearchInput value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Поиск по тексту события (от 2 символов)..." className="max-w-56" />
+        <SearchInput value={player} onChange={(e) => { setPlayer(e.target.value); setPage(1) }} placeholder="Игрок (от 2 символов)..." className="max-w-44" />
         <Select value={server} onValueChange={(v) => { setServer(v); setPage(1) }}>
           <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -166,7 +182,7 @@ export function LogsPage() {
               {data && data.total_pages > 1 && (
                 <div className="flex items-center justify-center gap-2 border-t p-3">
                   <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Назад</Button>
-                  <span className="text-sm text-muted-foreground">Страница {data.page} из {data.total_pages} ({data.total.toLocaleString("ru-RU")})</span>
+                  <span className="text-sm text-muted-foreground">Страница {data.page} из {data.total_pages} ({data.total.toLocaleString("ru-RU")}{data.total_is_capped ? "+" : ""})</span>
                   <Button variant="outline" size="sm" disabled={page >= data.total_pages} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
                 </div>
               )}
