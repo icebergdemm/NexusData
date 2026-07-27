@@ -1692,6 +1692,17 @@ async def api_player_detail(
         "has_edit": check_permission(current_admin, "players", "edit"),
         "has_delete": check_permission(current_admin, "players", "delete"),
         "has_special": check_permission(current_admin, "players_special", "view"),
+        # Гранулярные права (см. permissions_registry) — фронтенд по ним
+        # прячет конкретные блоки профиля, чтобы не показывать действия,
+        # которые всё равно вернут 403.
+        "can_sync": check_permission(current_admin, "players", "sync"),
+        "can_edit_rank_kit": check_permission(current_admin, "players", "edit_rank_kit"),
+        "can_edit_discord_id": check_permission(current_admin, "players", "edit_discord_id"),
+        "can_manage_notes": check_permission(current_admin, "players", "manage_notes"),
+        "can_manage_labels": check_permission(current_admin, "players", "manage_labels"),
+        "can_manage_traps": check_permission(current_admin, "players", "manage_traps"),
+        "can_manage_achievements": check_permission(current_admin, "players", "manage_achievements"),
+        "can_manage_rewards": check_permission(current_admin, "players", "manage_rewards"),
         "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),
         "punishment_types": PUNISHMENT_TYPES,
         "punishment_type_labels": PUNISHMENT_TYPE_LABELS,
@@ -1709,7 +1720,7 @@ async def api_player_force_sync(
     plugin skips its usual hash check and re-pulls the profile+privileges
     straight from the API, overwriting its local SQLite cache. See
     RoundManager_ND.cs's 'sync_player' case in ExecuteActionAsync."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "sync"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
@@ -1740,7 +1751,7 @@ async def api_players_force_sync_all(
     """Queue a forced cache resync for every player currently known to the
     game server (its connected/cached set) — see 'sync_player' with
     scope=all in RoundManager_ND.cs."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "sync"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     body = await request.json() if await request.body() else {}
@@ -1803,7 +1814,7 @@ async def api_update_player_rank_kit(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players_special", "view")):
+    if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit_rank_kit") or check_permission(current_admin, "players_special", "view")):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -1876,7 +1887,7 @@ async def api_update_player_discord_id(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not (check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
+    if not (check_permission(current_admin, "players", "edit_discord_id") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -1900,7 +1911,7 @@ async def api_add_player_note(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_notes"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -1919,7 +1930,7 @@ async def api_update_player_note(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_notes"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -1939,7 +1950,7 @@ async def api_assign_player_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -1959,7 +1970,7 @@ async def api_remove_player_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerLabelService(db).remove(label_id)
@@ -1973,7 +1984,7 @@ async def api_set_player_trap(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_traps"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
@@ -1992,7 +2003,7 @@ async def api_deactivate_player_trap(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_traps"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerTrapService(db).deactivate(trap_id)
@@ -2007,7 +2018,7 @@ async def update_player(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Update player data (rank/kit) - requires 'delete' or 'special' permission"""
-    if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players_special", "view")):
+    if not (check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players", "edit_rank_kit") or check_permission(current_admin, "players_special", "view")):
         push_flash(request, "error", "Недостаточно прав для редактирования игрока")
         return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
@@ -2133,7 +2144,7 @@ async def update_player_discord_id(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Update player's Discord ID (confirmed by admin)."""
-    if not (check_permission(current_admin, "players", "edit") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
+    if not (check_permission(current_admin, "players", "edit_discord_id") or check_permission(current_admin, "players", "delete") or check_permission(current_admin, "players_special", "view")):
         push_flash(request, "error", "Недостаточно прав")
         return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
@@ -3413,7 +3424,7 @@ async def add_achievement(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Add achievement to player"""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_achievements"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     
     try:
@@ -3485,7 +3496,7 @@ async def delete_achievement(
     current_admin: AdminUser = Depends(get_current_admin)
 ):
     """Delete achievement from player"""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_achievements"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     
     try:
@@ -3557,7 +3568,7 @@ async def set_kval_kit(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Set (add or update) a kval-kit for a profession in player achievements."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -3591,7 +3602,7 @@ async def remove_kval_kit(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Remove a kval-kit entry for a profession from player achievements."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     player = _get_rewards_player(player_id, db)
@@ -3615,7 +3626,7 @@ async def set_reward_item(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Set (add or update) a custom item for a player."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -3649,7 +3660,7 @@ async def remove_reward_item(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Remove a custom item from player achievements."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     player = _get_rewards_player(player_id, db)
@@ -3673,7 +3684,7 @@ async def set_reward_stat(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Set a stat bonus. For 'all': {job_id:'all', value:5}. Per-profession: {job_id:'captain', stat_key:'mechanic', value:25}."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -3714,7 +3725,7 @@ async def remove_reward_stat(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Remove a stat. For 'all': just job_id=all. Per-profession: job_id=captain&stat_key=mechanic."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     player = _get_rewards_player(player_id, db)
@@ -3753,7 +3764,7 @@ async def add_reward_talent(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Add a talent. {job_id:'captain'|'all', talent_id:'talentid1'}."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
@@ -3785,7 +3796,7 @@ async def remove_reward_talent(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Remove a talent from a player's achievements."""
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     player = _get_rewards_player(player_id, db)
@@ -4468,7 +4479,7 @@ async def save_player_note(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_notes"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerNoteService(db).save_note(player_id, current_admin.id, content)
@@ -4490,7 +4501,7 @@ async def assign_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerLabelService(db).assign(player_id, category_id, note, current_admin.id)
@@ -4507,7 +4518,7 @@ async def remove_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerLabelService(db).remove(label_id)
@@ -4522,7 +4533,7 @@ async def label_categories_page(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
@@ -4542,7 +4553,7 @@ async def create_label_category(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     LabelCategoryService(db).create(name.strip(), color, icon, current_admin.id)
@@ -4557,7 +4568,7 @@ async def delete_label_category(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     ok = LabelCategoryService(db).delete(cat_id)
@@ -4568,7 +4579,7 @@ async def delete_label_category(
 
 @router.get("/api/v1/admin/label-categories")
 async def api_label_categories_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     cats = LabelCategoryService(db).get_all()
     return {"categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in cats]}
@@ -4576,7 +4587,7 @@ async def api_label_categories_list(db: Session = Depends(get_db), current_admin
 
 @router.post("/api/v1/admin/label-categories")
 async def api_create_label_category(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     body = await request.json()
     name = (body.get("name") or "").strip()
@@ -4588,7 +4599,7 @@ async def api_create_label_category(request: Request, db: Session = Depends(get_
 
 @router.post("/api/v1/admin/label-categories/{cat_id}")
 async def api_update_label_category(cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     body = await request.json()
     cat = LabelCategoryService(db).update(cat_id, body.get("name"), body.get("color"), body.get("icon"))
@@ -4599,7 +4610,7 @@ async def api_update_label_category(cat_id: int, request: Request, db: Session =
 
 @router.delete("/api/v1/admin/label-categories/{cat_id}")
 async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_label_categories"):
         raise HTTPException(status_code=403)
     ok = LabelCategoryService(db).delete(cat_id)
     if not ok:
@@ -4619,7 +4630,7 @@ async def set_trap(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_traps"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
@@ -4639,7 +4650,7 @@ async def deactivate_trap(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "edit"):
+    if not check_permission(current_admin, "players", "manage_traps"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerTrapService(db).deactivate(trap_id)

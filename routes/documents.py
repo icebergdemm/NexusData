@@ -179,6 +179,20 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
             )
             held_keys = set(member.held_level_keys or []) if member else set()
 
+    # "everyone" means different things depending on where the document
+    # lives, matching exactly what the share dialog promises when granting
+    # it (frontend ShareDialog's everyoneLabel):
+    #   - personal document  → "Все администраторы" (every ND admin)
+    #   - department document → "Все сотрудники отдела" (that department's
+    #     members only)
+    # Before this scoping, "everyone" was taken literally in both cases, so
+    # sharing a DEPARTMENT document with "Все" — labelled "Все сотрудники
+    # отдела" in the UI — actually exposed it site-wide, letting admins from
+    # unrelated departments read it. `member` is the caller's row in THIS
+    # document's department (resolved above), so requiring it is exactly
+    # "is an employee of this department".
+    everyone_applies = (member is not None) if document.department_id else True
+
     best = None
     for perm in document.permissions:
         matches = (
@@ -186,7 +200,7 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
             or (perm.grantee_type == "privilege_group" and admin.privilege_group_id
                 and perm.grantee_group_id == admin.privilege_group_id)
             or (perm.grantee_type == "access_level" and perm.grantee_access_level_key in held_keys)
-            or (perm.grantee_type == "everyone")
+            or (perm.grantee_type == "everyone" and everyone_applies)
         )
         if matches and (best is None or ACCESS_RANK[perm.level] > ACCESS_RANK[best]):
             best = perm.level
@@ -365,6 +379,46 @@ def _find_blank_template(db: Session, file_type: str) -> Optional[DocumentTempla
     return db.query(DocumentTemplate).filter(DocumentTemplate.name == name, DocumentTemplate.file_type == file_type).first()
 
 
+def _seed_default_permissions(db: Session, doc: Document) -> None:
+    """Baseline sharing applied the moment a document is created.
+
+    - Personal document: none — it stays private to its creator, who shares
+      it explicitly. (Creating personal documents is itself always allowed,
+      see security.check_permission's "create_personal" baseline.)
+    - Department document: view for that department's base access level, i.e.
+      "everyone who works in this department can read it". Without this a
+      freshly created department page was private to its author until they
+      remembered to open the sharing dialog — colleagues just couldn't see
+      the department's own documentation. The author can still narrow or
+      widen it afterwards; this is only the starting point.
+
+    Orders/news are skipped: those two modules already carry their own
+    department-wide baseline in get_document_access, so an explicit row
+    would be redundant.
+    """
+    if not doc.department_id or doc.is_order or doc.is_news:
+        return
+
+    from models import DepartmentAccessLevel
+
+    base = (
+        db.query(DepartmentAccessLevel)
+        .filter(DepartmentAccessLevel.department_id == doc.department_id, DepartmentAccessLevel.kind == "base")
+        .first()
+    )
+    if not base:
+        return
+
+    db.add(DocumentPermission(
+        document_id=doc.id,
+        grantee_type="access_level",
+        grantee_access_level_key=base.key,
+        level="view",
+        granted_by_admin_id=doc.owner_admin_id,
+    ))
+    db.commit()
+
+
 def _create_document_file(db: Session, doc: Document, template: Optional[DocumentTemplate]):
     """Copies a template's file (or the seeded blank for doc.file_type) into
     a new storage_filename for a freshly-created Document row."""
@@ -538,6 +592,17 @@ async def api_list_documents(
     order_col = Document.deleted_at.desc() if scope == "trash" else Document.updated_at.desc()
     docs = q.order_by(order_col).limit(500).all()
 
+    # Defense in depth: "shared"/"starred" select rows with plain SQL
+    # conditions that can't express the department-membership rule
+    # get_document_access applies to "everyone" grants on department
+    # documents (see everyone_applies there) — and a starred document may
+    # since have had its access revoked. Re-check each row so a listing can
+    # never surface something the caller couldn't open anyway. "mine"/
+    # "trash" are owner-filtered and "all" is the deliberate
+    # superuser-equivalent view_all grant, so neither needs it.
+    if scope in ("shared", "starred"):
+        docs = [d for d in docs if get_document_access(db, d, current_admin) is not None]
+
     starred_ids = {
         row[0] for row in db.query(DocumentStar.document_id).filter(DocumentStar.admin_id == current_admin.id).all()
     }
@@ -617,6 +682,7 @@ async def api_create_document(
     db.add(doc)
     db.commit()
     db.refresh(doc)
+    _seed_default_permissions(db, doc)
     _create_document_file(db, doc, template)
     db.commit()
     return JSONResponse({"id": doc.id})
@@ -669,6 +735,7 @@ async def api_import_document(
     db.add(doc)
     db.commit()
     db.refresh(doc)
+    _seed_default_permissions(db, doc)
 
     doc.storage_filename = _new_storage_filename(doc.id, 1, file_type, source_ext=ext)
     dst = os.path.join(_files_dir(), doc.storage_filename)
@@ -939,6 +1006,16 @@ async def api_get_document(
         "access_level": access,
         "is_starred": is_starred,
         "discord_message_id": doc.discord_message_id,
+        # True when the owner has never configured sharing beyond whatever
+        # was seeded at creation (_seed_default_permissions) — drives the
+        # "вы не настроили права" prompt the editor shows on exit, so a
+        # document doesn't silently stay visible to no one (personal) or to
+        # the whole department by default (department) just because its
+        # author never opened the sharing dialog.
+        "permissions_configured": any(
+            p.granted_by_admin_id != doc.owner_admin_id or p.grantee_type != "access_level"
+            for p in (doc.permissions or [])
+        ) if doc.department_id else bool(doc.permissions),
     })
 
 

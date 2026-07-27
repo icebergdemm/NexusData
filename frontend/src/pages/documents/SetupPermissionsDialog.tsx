@@ -23,9 +23,10 @@ interface ExtraGrant {
  * visible only to its owner. Prefilled from the destination folder's own
  * access grants (DepartmentFolderPermission), falling back to the
  * department's base access level (view-only) when the folder has none. */
-export function SetupPermissionsDialog({ documentId, open, onDone }: {
+export function SetupPermissionsDialog({ documentId, open, isDepartmentDoc = true, onDone }: {
   documentId: number
   open: boolean
+  isDepartmentDoc?: boolean
   onDone: () => void
 }) {
   const [accepted, setAccepted] = useState<Record<number, boolean>>({})
@@ -84,7 +85,11 @@ export function SetupPermissionsDialog({ documentId, open, onDone }: {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Настройте доступ к документу</DialogTitle>
-          <DialogDescription>Документ создан в отделе — выберите, кто ещё сможет его увидеть, прежде чем продолжить.</DialogDescription>
+          <DialogDescription>
+            {isDepartmentDoc
+              ? "Вы ещё не настраивали доступ. Сейчас документ видят сотрудники отдела с базовым уровнем — выберите, кто ещё сможет его увидеть."
+              : "Вы ещё не настраивали доступ — сейчас документ видите только вы. Выберите, с кем им поделиться."}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-1.5">

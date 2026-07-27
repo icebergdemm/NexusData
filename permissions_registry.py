@@ -28,7 +28,28 @@ _VED = [{"key": "view", "label": "Просмотр"}, {"key": "edit", "label": "
 
 PERMISSION_REGISTRY: dict[str, PageDef] = {
     "admin": {"label": "Администрирование", "actions": _VED},
-    "players": {"label": "Игроки", "actions": _VED},
+    # "Игроки" разбита на отдельные действия по тому же принципу, что и
+    # sub_projects: раньше ОДИН ключ "edit" открывал всё сразу — от заметок
+    # в личном деле до выдачи внутриигровых наград, рангов и постановки
+    # ловушек, хотя это совершенно разные по чувствительности вещи.
+    # Базовые view/edit/delete сохранены (их проверяют общие места вроде
+    # списка игроков и canEdit во фронтенде), а конкретные операции теперь
+    # гейтятся своими ключами — см. PERMISSION_ACTION_SPLITS ниже, который
+    # выдаёт их всем, у кого уже был "edit", чтобы никто ничего не потерял.
+    "players": {"label": "Игроки", "actions": [
+        {"key": "view", "label": "Просмотр списка и профилей"},
+        {"key": "edit", "label": "Изменение (базовое)"},
+        {"key": "delete", "label": "Удаление"},
+        {"key": "sync", "label": "Принудительная синхронизация с игровым сервером"},
+        {"key": "edit_rank_kit", "label": "Изменение ранга и уровня набора"},
+        {"key": "edit_discord_id", "label": "Привязка/подтверждение Discord ID"},
+        {"key": "manage_notes", "label": "Заметки в личном деле"},
+        {"key": "manage_labels", "label": "Назначение меток игрокам"},
+        {"key": "manage_label_categories", "label": "Управление категориями меток"},
+        {"key": "manage_traps", "label": "Ловушки (уведомление о входе игрока)"},
+        {"key": "manage_achievements", "label": "Достижения"},
+        {"key": "manage_rewards", "label": "Награды (наборы, предметы, статы, таланты)"},
+    ]},
     "players_special": {"label": "Игроки (спец. данные)", "actions": [{"key": "view", "label": "Просмотр"}]},
     "moderation": {"label": "Модерирование", "actions": [
         {"key": "view", "label": "Просмотр"},
@@ -153,6 +174,18 @@ PERMISSION_ACTION_SPLITS: dict[str, dict[str, list[str]]] = {
     # Granting it retroactively to existing "edit" holders would be a
     # privilege escalation, not a preservation of prior behavior.
     "documents": {"edit": ["manage_templates"]},
+    # "Игроки": до разбиения ОДИН ключ "edit" открывал все перечисленные
+    # операции без исключений (см. routes/admin.py — все они гейтились
+    # ровно `check_permission(admin, "players", "edit")`), поэтому все новые
+    # ключи выдаются каждому, у кого уже был "edit" — это сохранение
+    # текущих возможностей, а не расширение. "delete" не добавляет ничего
+    # нового: там, где он упоминался, это был лишь альтернативный вариант
+    # рядом с "edit", своих эксклюзивных операций у него не было.
+    "players": {
+        "edit": ["sync", "edit_rank_kit", "edit_discord_id", "manage_notes",
+                 "manage_labels", "manage_label_categories", "manage_traps",
+                 "manage_achievements", "manage_rewards"],
+    },
     # Inverted case from the others above: "departments":"view" ITSELF just
     # became baseline-True for everyone (own memberships only — see
     # api_list_departments). Before this change, "view"=True meant "see

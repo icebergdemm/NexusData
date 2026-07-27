@@ -58,10 +58,12 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
   // document (e.g. a department's Документация tab wants to return to its
   // own tab, not the generic /documents root). See documentation.tsx and
   // departments/detail.tsx for the sending/receiving side of this state.
-  const navState = location.state as { returnTo?: ReturnTarget; justCreated?: boolean } | null
+  const navState = location.state as { returnTo?: ReturnTarget } | null
   const returnTo = navState?.returnTo
-  const justCreated = !!navState?.justCreated
   const [setupPromptOpen, setSetupPromptOpen] = useState(false)
+  // Set once the exit prompt has been shown/dismissed, so declining it lets
+  // the next exit attempt actually leave instead of re-prompting forever.
+  const [setupPromptDone, setSetupPromptDone] = useState(false)
 
   function goBack() {
     if (returnTo) navigate(returnTo.pathname, returnTo.state ? { state: returnTo.state } : undefined)
@@ -69,7 +71,16 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
   }
 
   function requestExit() {
-    if (justCreated && !setupPromptOpen && data?.department_id) {
+    // Warn the owner on the way out if they never configured sharing —
+    // otherwise a document silently keeps whatever was seeded at creation:
+    // nothing at all for a personal one (nobody else can see it), or plain
+    // department-wide view for a department one. Driven by the backend's
+    // permissions_configured flag rather than the justCreated navigation
+    // state alone, so it still fires after a page refresh or when the
+    // author reopens a document they never got around to sharing. Shown at
+    // most once per editor session (setupPromptDone).
+    const needsSetup = data?.access_level === "owner" && !data?.permissions_configured
+    if (needsSetup && !setupPromptDone && !setupPromptOpen) {
       setSetupPromptOpen(true)
       return
     }
@@ -385,13 +396,12 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
       </div>
 
       <ShareDialog documentId={documentId} open={shareOpen} onOpenChange={setShareOpen} />
-      {!!data?.department_id && (
-        <SetupPermissionsDialog
-          documentId={documentId}
-          open={setupPromptOpen}
-          onDone={() => { setSetupPromptOpen(false); goBack() }}
-        />
-      )}
+      <SetupPermissionsDialog
+        documentId={documentId}
+        open={setupPromptOpen}
+        isDepartmentDoc={!!data?.department_id}
+        onDone={() => { setSetupPromptOpen(false); setSetupPromptDone(true); goBack() }}
+      />
       <VersionHistoryDialog
         documentId={documentId}
         open={historyOpen}

@@ -120,7 +120,9 @@ export function ShareDialog({ documentId, open, onOpenChange }: {
           <p className="flex items-center gap-1.5 text-xs text-warning">
             <TriangleAlert className="size-3.5 shrink-0" />
             {granteeKind === "everyone"
-              ? "Документ увидят все администраторы."
+              ? (isDeptDoc
+                  ? "Документ увидят все сотрудники этого отдела."
+                  : "Документ увидят все администраторы сайта.")
               : "Этот документ увидят все сотрудники отдела с базовым уровнем доступа."}
           </p>
         )}

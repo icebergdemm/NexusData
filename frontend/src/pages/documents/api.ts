@@ -52,6 +52,9 @@ export interface DocumentFull {
   access_level: AccessLevel
   is_starred: boolean
   discord_message_id: string | null
+  /** False until the owner configures sharing beyond what was seeded at
+   * creation — drives the "настройте доступ" prompt shown on editor exit. */
+  permissions_configured: boolean
 }
 
 export interface DocChildRef {
