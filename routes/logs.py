@@ -19,7 +19,7 @@ from security import check_permission
 from config import get_settings
 from models import AdminUser, AdminSession
 from services_logs import (
-    search_logs, get_unique_players, get_log_stats,
+    search_logs, get_unique_players, get_log_stats, get_fts_status,
     force_refresh_logs, LogEvent, get_player_map,
 )
 from services_sftp_filemanager import SFTPFileManager
@@ -202,6 +202,23 @@ async def api_logs_stats(
     stats = await run_in_threadpool(get_log_stats)
     # Values are already strings from JSON storage, no conversion needed
     return JSONResponse(stats)
+
+
+@router.get("/api/v1/admin/logs/search-index")
+async def api_logs_search_index(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Состояние полнотекстового индекса поиска (FTS5).
+
+    Пока фоновая доиндексация истории не завершена, поиск по тексту работает
+    по старому (медленному) пути, поэтому прогресс полезно видеть в интерфейсе.
+    """
+    if not check_permission(current_admin, "moderation", "view"):
+        raise HTTPException(status_code=403)
+
+    return JSONResponse(await run_in_threadpool(get_fts_status))
 
 
 @router.post("/api/v1/admin/logs/refresh")

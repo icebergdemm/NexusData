@@ -517,6 +517,12 @@ def _init_schema(conn: sqlite3.Connection):
             PRIMARY KEY (steamid, name)
         );
 
+        -- Прогресс/состояние полнотекстового индекса (см. _init_fts).
+        CREATE TABLE IF NOT EXISTS fts_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS log_meta (
             server        TEXT PRIMARY KEY,
             event_count   INTEGER,
@@ -526,6 +532,10 @@ def _init_schema(conn: sqlite3.Connection):
         );
     """)
     conn.commit()
+    # Полнотекстовый индекс + триггеры синхронизации. Ставится здесь, чтобы
+    # все новые события индексировались сразу; уже накопленная история
+    # доиндексируется в фоне (см. _init_fts / fts_backfill_step).
+    _init_fts(conn)
 
 
 def _ts_to_ms(dt: datetime) -> int:
@@ -691,6 +701,19 @@ def _log_worker_loop():
 
     _cleanup_counter = 0
     while _log_worker_running:
+        # Доиндексация накопленной истории в FTS — порциями, по одной за
+        # цикл, пока не будет пройдена вся таблица. Так 5+ млн строк
+        # индексируются постепенно, не блокируя ни старт приложения, ни
+        # обычную запись логов. Пока не достроено — поиск работает через
+        # LIKE (медленно, но корректно), см. search_logs.
+        try:
+            while fts_backfill_step():
+                if not _log_worker_running:
+                    break
+                time.sleep(1)  # уступить БД записи логов между порциями
+        except Exception as e:
+            logger.error(f"FTS backfill error: {e}")
+
         try:
             refresh_logs_for_server(1)
         except Exception as e:
@@ -791,9 +814,195 @@ _players_cache_ts: Dict[Optional[str], float] = {}
 _PLAYERS_CACHE_TTL = 60  # seconds
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# ПОЛНОТЕКСТОВЫЙ ПОИСК (FTS5)
+#
+# Текстовые фильтры раньше делали LIKE '%...%' — ведущий wildcard, который
+# не может использовать ни один B-tree-индекс, то есть полный скан таблицы
+# на каждый запрос. При 5+ млн событий и БД >2 ГБ это укладывало бэкенд.
+#
+# log_fts — это FTS5-таблица с внешним содержимым (content='log_events'):
+# сам текст в ней НЕ дублируется, хранится только инвертированный индекс,
+# что критично при уже двухгигабайтной базе. Синхронизацию с log_events
+# держат триггеры ниже.
+#
+# ВАЖНО о семантике: FTS ищет по НАЧАЛУ слова (префиксный поиск), а не по
+# произвольной подстроке. "влад" найдёт "Владимир", но "адим" — уже нет,
+# в отличие от прежнего LIKE. Это осознанный размен: подстрочный поиск в
+# принципе неиндексируем и именно он был причиной нагрузки.
+# ══════════════════════════════════════════════════════════════════════════
+
+_FTS_BACKFILL_BATCH = 20000   # строк за один шаг фонового бэкфилла
+_fts_available_cache: Optional[bool] = None
+
+
+def _fts_available(conn: sqlite3.Connection) -> bool:
+    """Собран ли SQLite с поддержкой FTS5 (кэшируется на процесс)."""
+    global _fts_available_cache
+    if _fts_available_cache is None:
+        try:
+            conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts_probe USING fts5(x)")
+            conn.execute("DROP TABLE IF EXISTS _fts_probe")
+            _fts_available_cache = True
+        except Exception as e:
+            logger.warning(f"FTS5 недоступен, поиск останется на LIKE: {e}")
+            _fts_available_cache = False
+    return _fts_available_cache
+
+
+def _fts_meta_get(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute("SELECT value FROM fts_meta WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _fts_meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO fts_meta (key, value) VALUES (?,?)", (key, str(value)))
+    conn.commit()
+
+
+def _init_fts(conn: sqlite3.Connection) -> bool:
+    """Создаёт FTS5-таблицу и триггеры синхронизации. Идемпотентно.
+
+    Триггеры ставятся сразу, поэтому все НОВЫЕ события индексируются с этого
+    момента, а уже накопленные 5+ млн строк доиндексируются в фоне
+    (fts_backfill_step) — старт приложения при этом не блокируется.
+    """
+    if not _fts_available(conn):
+        return False
+    try:
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS log_fts USING fts5(
+                player, details,
+                content='log_events', content_rowid='id',
+                tokenize="unicode61 remove_diacritics 2",
+                prefix='2 3'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS log_fts_ai AFTER INSERT ON log_events BEGIN
+                INSERT INTO log_fts(rowid, player, details)
+                VALUES (new.id, new.player, new.details);
+            END;
+            CREATE TRIGGER IF NOT EXISTS log_fts_ad AFTER DELETE ON log_events BEGIN
+                INSERT INTO log_fts(log_fts, rowid, player, details)
+                VALUES ('delete', old.id, old.player, old.details);
+            END;
+            CREATE TRIGGER IF NOT EXISTS log_fts_au AFTER UPDATE ON log_events BEGIN
+                INSERT INTO log_fts(log_fts, rowid, player, details)
+                VALUES ('delete', old.id, old.player, old.details);
+                INSERT INTO log_fts(rowid, player, details)
+                VALUES (new.id, new.player, new.details);
+            END;
+        """)
+        if _fts_meta_get(conn, "backfill_cursor") is None:
+            # Курсор идёт СВЕРХУ ВНИЗ (от новых id к старым): свежие логи
+            # ищут чаще всего, поэтому они индексируются первыми, и старые
+            # файлы — те, что реже всего перезаписываются при refresh —
+            # остаются неиндексированными дольше всех.
+            max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM log_events").fetchone()[0]
+            _fts_meta_set(conn, "backfill_cursor", max_id + 1)
+            _fts_meta_set(conn, "backfill_done", "1" if max_id == 0 else "0")
+        return True
+    except Exception as e:
+        logger.error(f"Не удалось инициализировать FTS5: {e}")
+        return False
+
+
+def fts_is_ready(conn: Optional[sqlite3.Connection] = None) -> bool:
+    """True, когда индекс покрывает всю историю и им можно искать."""
+    try:
+        conn = conn or _get_conn()
+        return _fts_available(conn) and _fts_meta_get(conn, "backfill_done") == "1"
+    except Exception:
+        return False
+
+
+def fts_backfill_step(batch: int = _FTS_BACKFILL_BATCH) -> bool:
+    """Индексирует одну порцию ранее накопленных строк.
+
+    Возвращает True, если работа ещё осталась. Порционно и с сохранением
+    курсора — чтобы не держать блокировку записи на 5 млн строк разом и
+    чтобы прогресс не терялся при перезапуске.
+    """
+    try:
+        conn = _get_conn()
+    except Exception as e:
+        logger.error(f"fts_backfill_step: БД недоступна: {e}")
+        return False
+    if not _fts_available(conn) or _fts_meta_get(conn, "backfill_done") == "1":
+        return False
+
+    try:
+        cursor = int(_fts_meta_get(conn, "backfill_cursor") or 0)
+        if cursor <= 1:
+            _fts_meta_set(conn, "backfill_done", "1")
+            logger.info("FTS-бэкфилл логов завершён")
+            return False
+
+        rows = conn.execute(
+            "SELECT id, player, details FROM log_events WHERE id < ? ORDER BY id DESC LIMIT ?",
+            (cursor, batch),
+        ).fetchall()
+        if not rows:
+            _fts_meta_set(conn, "backfill_done", "1")
+            logger.info("FTS-бэкфилл логов завершён")
+            return False
+
+        conn.executemany(
+            "INSERT INTO log_fts(rowid, player, details) VALUES (?,?,?)", rows
+        )
+        conn.commit()
+
+        new_cursor = rows[-1][0]  # наименьший id в порции (порядок DESC)
+        _fts_meta_set(conn, "backfill_cursor", new_cursor)
+        if len(rows) < batch or new_cursor <= 1:
+            _fts_meta_set(conn, "backfill_done", "1")
+            logger.info("FTS-бэкфилл логов завершён")
+            return False
+
+        logger.info(f"FTS-бэкфилл: проиндексировано до id={new_cursor}, осталось ниже него")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка FTS-бэкфилла: {e}")
+        return False
+
+
+def get_fts_status() -> dict:
+    """Состояние индекса для админки/диагностики."""
+    try:
+        conn = _get_conn()
+        if not _fts_available(conn):
+            return {"available": False, "ready": False, "progress_pct": 0}
+        done = _fts_meta_get(conn, "backfill_done") == "1"
+        cursor = int(_fts_meta_get(conn, "backfill_cursor") or 0)
+        max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM log_events").fetchone()[0]
+        # cursor идёт вниз к 1, поэтому доля готового = сколько уже пройдено сверху
+        pct = 100 if done else (int((max_id - cursor) / max_id * 100) if max_id else 0)
+        return {"available": True, "ready": done, "progress_pct": max(0, min(100, pct))}
+    except Exception:
+        return {"available": False, "ready": False, "progress_pct": 0}
+
+
+def _fts_query(text: str) -> str:
+    """Пользовательский ввод → безопасный префиксный FTS5-запрос.
+
+    Кавычки удваиваются (экранирование внутри фразы), спецсимволы синтаксиса
+    FTS5 при этом теряют своё значение — пользователь ищет текст, а не пишет
+    поисковые выражения. Последний токен становится префиксным, поэтому
+    "влад" находит "Владимир".
+    """
+    cleaned = text.replace('"', '""').strip()
+    return f'"{cleaned}"*' if cleaned else '""'
+
+
 def _build_where(server_name, player_name, action_type, search_text,
-                 time_from, time_to, category, names_list=None):
-    """Build a parameterized WHERE clause + params list for log queries."""
+                 time_from, time_to, category, names_list=None, use_fts=False):
+    """Собирает FROM/WHERE + параметры для запросов к логам.
+
+    use_fts=True — текстовые фильтры уходят в FTS5 (MATCH по индексу),
+    иначе используется прежний LIKE '%...%' (полный скан) как запасной путь,
+    пока фоновый бэкфилл не достроил индекс или если FTS5 недоступен.
+    Возвращает (from_sql, where, params).
+    """
     clauses, params = [], []
     if server_name:
         clauses.append("server = ?"); params.append(server_name)
@@ -809,16 +1018,36 @@ def _build_where(server_name, player_name, action_type, search_text,
     elif category == 'technical':
         ph = ",".join("?" * len(PLAYER_ACTIONS))
         clauses.append(f"action NOT IN ({ph})"); params.extend(PLAYER_ACTIONS)
-    if names_list:
-        ors = " OR ".join("player LIKE ?" for _ in names_list)
-        clauses.append(f"({ors})")
-        params.extend([f"%{n}%" for n in names_list])
-    elif player_name:
-        clauses.append("player LIKE ?"); params.append(f"%{player_name}%")
-    if search_text:
-        clauses.append("details LIKE ?"); params.append(f"%{search_text}%")
+
+    from_sql = "log_events"
+    if use_fts:
+        # Все текстовые условия объединяются в ОДНО выражение MATCH — FTS5
+        # допускает лишь один MATCH на таблицу, но его синтаксис сам
+        # поддерживает AND/OR и фильтр по колонке.
+        fts_terms = []
+        if names_list:
+            ors = " OR ".join(f"player:{_fts_query(n)}" for n in names_list)
+            fts_terms.append(f"({ors})")
+        elif player_name:
+            fts_terms.append(f"player:{_fts_query(player_name)}")
+        if search_text:
+            fts_terms.append(f"details:{_fts_query(search_text)}")
+        if fts_terms:
+            from_sql = "log_events JOIN log_fts ON log_fts.rowid = log_events.id"
+            clauses.append("log_fts MATCH ?")
+            params.append(" AND ".join(fts_terms))
+    else:
+        if names_list:
+            ors = " OR ".join("player LIKE ?" for _ in names_list)
+            clauses.append(f"({ors})")
+            params.extend([f"%{n}%" for n in names_list])
+        elif player_name:
+            clauses.append("player LIKE ?"); params.append(f"%{player_name}%")
+        if search_text:
+            clauses.append("details LIKE ?"); params.append(f"%{search_text}%")
+
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    return where, params
+    return from_sql, where, params
 
 
 def search_logs(
@@ -847,27 +1076,32 @@ def search_logs(
         logger.error(f"search_logs: DB unavailable: {e}")
         return [], 0
 
-    where, params = _build_where(server_name, player_name, action_type,
-                                 search_text, time_from, time_to, category, names_list)
+    # Текстовые фильтры идут через FTS5, как только индекс достроен; пока
+    # фоновый бэкфилл не закончил (или если FTS5 нет в сборке SQLite) —
+    # прежний LIKE-путь, чтобы поиск оставался корректным, пусть и медленным.
+    has_text_filter = bool(player_name or search_text or names_list)
+    use_fts = has_text_filter and fts_is_ready(conn)
 
-    # Bounded COUNT. A text filter is a leading-wildcard LIKE ("%name%"),
-    # which no index can serve — so a plain COUNT(*) scans the ENTIRE table
-    # every time, and that was the single most expensive part of a search
-    # (a short substring matches nearly every row). Counting inside a
-    # LIMIT-ed subquery caps the work at COUNT_CAP rows regardless of how
-    # big the table gets; the caller learns the count is a floor via the
-    # returned flag and renders it as "5000+". Exact totals aren't worth a
-    # full scan on every keystroke here.
+    from_sql, where, params = _build_where(server_name, player_name, action_type,
+                                           search_text, time_from, time_to, category,
+                                           names_list, use_fts=use_fts)
+
+    # Ограниченный COUNT. Через FTS он дёшев, но на LIKE-пути (пока индекс
+    # строится) COUNT(*) обязан просканировать всю таблицу — счёт внутри
+    # LIMIT-подзапроса ограничивает работу COUNT_CAP строками независимо от
+    # размера истории. Точный итог того не стоит: вызывающий получает флаг
+    # и показывает "5000+".
     capped = conn.execute(
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM log_events{where} LIMIT {COUNT_CAP + 1})",
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_sql}{where} LIMIT {COUNT_CAP + 1})",
         params,
     ).fetchone()[0]
     total = min(capped, COUNT_CAP)
     total_is_capped = capped > COUNT_CAP
 
     rows = conn.execute(
-        f"SELECT ts, player, action, details, server, source_file FROM log_events{where} "
-        f"ORDER BY ts DESC LIMIT ? OFFSET ?",
+        f"SELECT log_events.ts, log_events.player, log_events.action, log_events.details, "
+        f"log_events.server, log_events.source_file FROM {from_sql}{where} "
+        f"ORDER BY log_events.ts DESC LIMIT ? OFFSET ?",
         params + [limit, offset]
     ).fetchall()
 

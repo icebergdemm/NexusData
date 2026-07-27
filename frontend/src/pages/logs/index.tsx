@@ -26,6 +26,7 @@ interface LogEvent {
 }
 interface LogsResponse { events: LogEvent[]; total: number; total_is_capped: boolean; page: number; page_size: number; total_pages: number }
 interface LogStatEntry { event_count: number; last_refresh: string | null; oldest_event: string | null; newest_event: string | null }
+interface SearchIndexStatus { available: boolean; ready: boolean; progress_pct: number }
 
 const ACTION_TYPES = [
   "picked_up", "placed", "removed", "opened", "closed", "equipped", "unequipped", "dropped",
@@ -85,6 +86,14 @@ export function LogsPage() {
     queryFn: () => api.get<Record<string, LogStatEntry>>("/api/v1/admin/logs/stats"),
   })
 
+  // Пока полнотекстовый индекс достраивается в фоне, поиск по тексту идёт по
+  // медленному пути — показываем прогресс, чтобы это не выглядело поломкой.
+  const { data: searchIndex } = useQuery({
+    queryKey: ["logs-search-index"],
+    queryFn: () => api.get<SearchIndexStatus>("/api/v1/admin/logs/search-index"),
+    refetchInterval: (q) => (q.state.data?.ready === false ? 15000 : false),
+  })
+
   const refresh = useMutation({
     mutationFn: () => api.post("/api/v1/admin/logs/refresh"),
     onSuccess: () => { toast.success("Обновление логов запущено в фоне"); setTimeout(() => queryClient.invalidateQueries({ queryKey: ["logs-stats"] }), 5000) },
@@ -120,6 +129,15 @@ export function LogsPage() {
             </Card>
           ))}
         </div>
+      )}
+
+      {searchIndex?.available && !searchIndex.ready && (
+        <Card className="mb-4 border-warning/40">
+          <CardContent className="pt-6 text-sm text-muted-foreground">
+            Строится поисковый индекс по истории логов — {searchIndex.progress_pct}%.
+            Поиск по тексту уже работает, но пока медленнее обычного.
+          </CardContent>
+        </Card>
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
