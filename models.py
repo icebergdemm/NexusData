@@ -722,6 +722,37 @@ class RoundReplay(Base):
     manual_round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True)
 
 
+class SoundFile(Base):
+    """Звуковой файл (.wav/.mp3) для ивентов, залитый на игровой сервер по SFTP.
+
+    Строка живёт ДОЛЬШЕ файла на удалённом сервере: при удалении звука с
+    сервера запись остаётся с is_deleted_remotely=True, а локальная сжатая
+    копия сохраняется — благодаря этому звук можно восстановить обратно.
+    Уникальность (server_name, filename) поддерживается на уровне приложения:
+    повторная загрузка того же имени обновляет существующую запись.
+    """
+    __tablename__ = "sound_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(50), nullable=False, index=True)   # ASPER1 | ASPER2
+    filename = Column(String(255), nullable=False, index=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    # Имя файла локальной резервной копии (gzip) внутри sounds_backup_dir.
+    # Хранится отдельно от filename: имя на сервере можно переименовать, а
+    # копия при этом остаётся той же самой.
+    backup_filename = Column(String(255), nullable=True)
+    uploaded_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    uploaded_at = Column(DateTime, default=func.now())
+    # Файл удалён с удалённого сервера, но локальная копия цела — такие
+    # записи показываются в разделе «Удалённые» и доступны для восстановления.
+    is_deleted_remotely = Column(Boolean, nullable=False, default=False, index=True)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+
+    uploaded_by = relationship("AdminUser", foreign_keys=[uploaded_by_admin_id])
+    deleted_by = relationship("AdminUser", foreign_keys=[deleted_by_admin_id])
+
+
 class AppSetting(Base):
     """Generic runtime key-value settings editable from the admin panel."""
     __tablename__ = "app_settings"

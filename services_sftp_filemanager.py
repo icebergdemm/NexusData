@@ -236,6 +236,32 @@ class SFTPFileManager:
         finally:
             self._close(sftp)
 
+    def rename_file(self, relative_path: str, new_filename: str) -> bool:
+        """Переименовать файл, оставив его в той же директории.
+
+        new_filename — именно ИМЯ файла, не путь: любые разделители каталогов
+        отбрасываются, чтобы переименование не могло увести файл в другое
+        место (тот же принцип, что и в _safe_path).
+        """
+        sftp = None
+        try:
+            safe_name = os.path.basename(new_filename.replace('\\', '/')).strip()
+            if not safe_name:
+                raise RuntimeError("Некорректное имя файла")
+            sftp = self._connect()
+            old_path = self._safe_path(relative_path)
+            new_path = f"{os.path.dirname(old_path)}/{safe_name}"
+            if old_path == new_path:
+                return True
+            sftp.rename(old_path, new_path)
+            logger.info(f"Renamed {relative_path} -> {safe_name} on server {self.server_number}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to rename {relative_path} on server {self.server_number}: {e}")
+            raise RuntimeError(f"Ошибка переименования файла: {e}")
+        finally:
+            self._close(sftp)
+
     def create_directory(self, relative_path: str) -> bool:
         """Create a directory on the remote server."""
         sftp = None

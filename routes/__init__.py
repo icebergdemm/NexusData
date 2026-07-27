@@ -23,6 +23,7 @@ from .tasks import router as tasks_router
 from .world_state import router as world_state_router, admin_router as world_state_admin_router, client_router as world_state_client_router
 from .warehouse import admin_router as warehouse_admin_router, client_router as warehouse_client_router
 from .cache_sync import api_router as cache_sync_api_router
+from .sounds import router as sounds_router
 
 __all__ = [
     "status_router",
@@ -58,4 +59,5 @@ __all__ = [
     "warehouse_admin_router",
     "warehouse_client_router",
     "cache_sync_api_router",
+    "sounds_router",
 ]
