@@ -722,6 +722,48 @@ class RoundReplay(Base):
     manual_round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True)
 
 
+class RespawnDoll(Base):
+    """«Кукла» — заранее подготовленный персонаж для волны респавна.
+
+    Плагин RespawnDolls на игровом сервере работает ДЕКЛАРАТИВНО: раз в ~10 с
+    он запрашивает ПОЛНЫЙ список актуальных кукол (GET /game/dolls/pending) и
+    приводит своё состояние к нему. Отмена — это просто прекращение выдачи
+    куклы в этом списке, отдельной команды «удалить» не существует. Поэтому
+    строка живёт дольше самой куклы: отменённые/заспавненные не удаляются, а
+    меняют state и перестают попадать в выдачу — история остаётся в админке.
+    """
+    __tablename__ = "respawn_dolls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Уходит в JSON как "id" — по нему идёт вся синхронизация и отчёты плагина.
+    public_id = Column(String(64), unique=True, nullable=False, index=True)
+    server = Column(String(32), nullable=False, index=True)   # ASPER1 | ASPER2
+    label = Column(String(200), nullable=True)
+    # Тело куклы: identity / job / progression / stats / health / inventory.
+    # Хранится как есть, схема плагина шире, чем стоит раскладывать по колонкам.
+    spec = Column(JSON, nullable=False, default=dict)
+
+    priority = Column(Integer, nullable=False, default=0)
+    one_shot = Column(Boolean, nullable=False, default=True)
+    expires_at = Column(DateTime, nullable=True)
+    bind_steamids = Column(JSON, default=lambda: [])
+    spawn_mode = Column(String(16), nullable=False, default="auto")  # auto|player|bot
+    team = Column(Integer, nullable=False, default=0)
+
+    # pending | cancelled | spawned | spawned_with_errors | failed | expired
+    state = Column(String(32), nullable=False, default="pending", index=True)
+    state_message = Column(String(1000), nullable=True)
+    spawned_at = Column(DateTime, nullable=True)
+    spawned_steamid = Column(String(32), nullable=True)
+    spawned_character_name = Column(String(100), nullable=True)
+
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
 class SoundFile(Base):
     """Звуковой файл (.wav/.mp3) для ивентов, залитый на игровой сервер по SFTP.
 

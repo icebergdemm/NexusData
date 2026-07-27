@@ -38,6 +38,7 @@ import { DiscordBotPage } from "@/pages/discord-bot"
 import { AdministrationPage } from "@/pages/administration"
 import { LogsPage } from "@/pages/logs"
 import { SoundsPage } from "@/pages/sounds"
+import { RespawnDollsPage } from "@/pages/respawn-dolls"
 import { DocumentsPage } from "@/pages/documents"
 import { DepartmentsPage } from "@/pages/departments"
 import { DepartmentDetailPage } from "@/pages/departments/detail"
@@ -102,6 +103,7 @@ export default function App() {
           <Route path="moderation" element={<ModerationPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="sounds" element={<SoundsPage />} />
+          <Route path="respawn-dolls" element={<RespawnDollsPage />} />
           <Route path="punishments" element={<PunishmentsPage />} />
           <Route path="replays" element={<ReplaysListPage />} />
           <Route path="replays/rounds/:roundId" element={<RoundDetailPage />} />
