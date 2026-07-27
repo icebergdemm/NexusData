@@ -46,6 +46,79 @@ _COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?|\d{1,3}\s*,\s*\d{1,3
 _STEAMID_RE = re.compile(r"^\d{17}$")
 
 _item_catalog: Optional[Dict[str, Any]] = None
+_appearance_catalog: Optional[Dict[str, Any]] = None
+
+
+def appearance_catalog() -> Dict[str, Any]:
+    """Каталог внешности (static/appearance_catalog.json), выгружен из
+    Content/Characters/Human/Human.xml игрового контента.
+
+    Семантика подтверждена по исходникам движка (CharacterInfo.RecreateHead /
+    FilterElements):
+      • head_tags сверяется ТОЧНЫМ равенством множества тегов пресета
+        (SetEquals), т.е. корректное значение — весь набор, например
+        ["head3","male"]. Если передан один тег, движок возьмёт первый
+        пресет с ним; если совпадений нет — случайный.
+      • Причёски/бороды/аксессуары фильтруются по правилу «теги элемента ⊆
+        теги головы», поэтому индекс считается ВНУТРИ отфильтрованного по
+        полу списка. Бороды помечены male — у женских голов их список пуст.
+    """
+    global _appearance_catalog
+    if _appearance_catalog is None:
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "appearance_catalog.json")
+            with open(path, encoding="utf-8") as f:
+                _appearance_catalog = json.load(f)
+        except Exception as e:
+            logger.warning(f"Каталог внешности недоступен: {e}")
+            _appearance_catalog = {"heads": [], "wearables": {}, "colors": {}, "personalities": []}
+    return _appearance_catalog
+
+
+def _validate_identity_against_catalog(identity: Dict[str, Any], warnings: List[str]) -> None:
+    """Сверяет внешность с реальным контентом. Только предупреждения: на
+    сервере могут стоять моды со своими головами и причёсками."""
+    cat = appearance_catalog()
+    heads = cat.get("heads") or []
+    if not heads:
+        return
+
+    tags = identity.get("head_tags")
+    gender = None
+    if isinstance(tags, list) and tags:
+        tagset = {str(t).strip().lower() for t in tags}
+        gender = "female" if "female" in tagset else ("male" if "male" in tagset else None)
+        if not any(set(h["tags"]) == tagset for h in heads):
+            if len(tagset) == 1:
+                warnings.append(
+                    f"identity.head_tags: {sorted(tagset)} — точного пресета нет, движок возьмёт первый подходящий"
+                )
+            else:
+                warnings.append(
+                    f"identity.head_tags: набор {sorted(tagset)} не совпадает ни с одним пресетом — будет выбрана случайная голова"
+                )
+
+    wear = (cat.get("wearables") or {}).get(gender or "male") or {}
+    for field, kind, label in (
+        ("hair_index", "hair", "причёсок"),
+        ("beard_index", "beard", "бород"),
+        ("face_attachment_index", "face_attachment", "аксессуаров"),
+    ):
+        idx = identity.get(field)
+        if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
+            continue  # -1/не задано — «нет», это валидно
+        available = len(wear.get(kind) or [])
+        if available == 0:
+            warnings.append(f"identity.{field}: для этой головы {label} нет — значение будет проигнорировано")
+        elif idx >= available:
+            warnings.append(f"identity.{field}: индекс {idx} вне диапазона (доступно 0..{available - 1})")
+
+    personality = (identity.get("personality") or "").strip()
+    known = cat.get("personalities") or []
+    if personality and known and personality not in known:
+        warnings.append(
+            f"identity.personality: «{personality}» нет в контенте (доступны: {', '.join(known)})"
+        )
 
 
 def _catalog() -> Dict[str, Any]:
@@ -161,6 +234,8 @@ def validate_doll_spec(spec: Dict[str, Any]) -> Tuple[List[str], List[str]]:
             tags = identity.get("head_tags")
             if tags is not None and not isinstance(tags, list):
                 errors.append("identity.head_tags: должен быть списком строк")
+            else:
+                _validate_identity_against_catalog(identity, warnings)
 
     # job
     job = spec.get("job")

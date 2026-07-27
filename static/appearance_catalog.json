@@ -1,0 +1,624 @@
+{
+ "species": "human",
+ "heads": [
+  {
+   "tags": [
+    "head1",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head2",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head3",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head4",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head5",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head6",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head7",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head8",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head9",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head10",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head11",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head12",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head13",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head14",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head15",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head16",
+    "male"
+   ],
+   "gender": "male"
+  },
+  {
+   "tags": [
+    "head1",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head2",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head3",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head4",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head5",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head6",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head7",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head8",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head9",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head10",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head11",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head12",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head13",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head14",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head15",
+    "female"
+   ],
+   "gender": "female"
+  },
+  {
+   "tags": [
+    "head16",
+    "female"
+   ],
+   "gender": "female"
+  }
+ ],
+ "wearables": {
+  "male": {
+   "hair": [
+    {
+     "index": 0,
+     "name": "Hair 1"
+    },
+    {
+     "index": 1,
+     "name": "Hair 2"
+    },
+    {
+     "index": 2,
+     "name": "Hair 3"
+    },
+    {
+     "index": 3,
+     "name": "Hair 4"
+    },
+    {
+     "index": 4,
+     "name": "Hair 5"
+    },
+    {
+     "index": 5,
+     "name": "Hair 6"
+    },
+    {
+     "index": 6,
+     "name": "Hair 7"
+    },
+    {
+     "index": 7,
+     "name": "Hair 8"
+    },
+    {
+     "index": 8,
+     "name": "Hair 9"
+    },
+    {
+     "index": 9,
+     "name": "Hair 10"
+    },
+    {
+     "index": 10,
+     "name": "Hair 11"
+    },
+    {
+     "index": 11,
+     "name": "Hair 12"
+    },
+    {
+     "index": 12,
+     "name": "Hair 13"
+    },
+    {
+     "index": 13,
+     "name": "Hair 14"
+    },
+    {
+     "index": 14,
+     "name": "Hair 15"
+    },
+    {
+     "index": 15,
+     "name": "Hair 16"
+    }
+   ],
+   "beard": [
+    {
+     "index": 0,
+     "name": "Beard 1"
+    },
+    {
+     "index": 1,
+     "name": "Beard 2"
+    },
+    {
+     "index": 2,
+     "name": "Beard 3"
+    },
+    {
+     "index": 3,
+     "name": "Beard 4"
+    },
+    {
+     "index": 4,
+     "name": "Beard 5"
+    },
+    {
+     "index": 5,
+     "name": "Beard 6"
+    },
+    {
+     "index": 6,
+     "name": "Beard 7"
+    },
+    {
+     "index": 7,
+     "name": "Beard 8"
+    },
+    {
+     "index": 8,
+     "name": "Beard 9"
+    },
+    {
+     "index": 9,
+     "name": "Beard 10"
+    },
+    {
+     "index": 10,
+     "name": "Beard 11"
+    },
+    {
+     "index": 11,
+     "name": "Beard 12"
+    },
+    {
+     "index": 12,
+     "name": "Beard 13"
+    },
+    {
+     "index": 13,
+     "name": "Beard 14"
+    },
+    {
+     "index": 14,
+     "name": "Beard 15"
+    },
+    {
+     "index": 15,
+     "name": "Beard 16"
+    }
+   ],
+   "face_attachment": [
+    {
+     "index": 0,
+     "name": "FaceAttachment 1"
+    },
+    {
+     "index": 1,
+     "name": "FaceAttachment 2"
+    },
+    {
+     "index": 2,
+     "name": "FaceAttachment 3"
+    },
+    {
+     "index": 3,
+     "name": "FaceAttachment 4"
+    },
+    {
+     "index": 4,
+     "name": "FaceAttachment 5"
+    },
+    {
+     "index": 5,
+     "name": "FaceAttachment 6"
+    },
+    {
+     "index": 6,
+     "name": "FaceAttachment 7"
+    },
+    {
+     "index": 7,
+     "name": "FaceAttachment 8"
+    },
+    {
+     "index": 8,
+     "name": "FaceAttachment 9"
+    },
+    {
+     "index": 9,
+     "name": "FaceAttachment 10"
+    },
+    {
+     "index": 10,
+     "name": "FaceAttachment 11"
+    },
+    {
+     "index": 11,
+     "name": "FaceAttachment 12"
+    },
+    {
+     "index": 12,
+     "name": "FaceAttachment 13"
+    },
+    {
+     "index": 13,
+     "name": "FaceAttachment 14"
+    },
+    {
+     "index": 14,
+     "name": "FaceAttachment 15"
+    }
+   ]
+  },
+  "female": {
+   "hair": [
+    {
+     "index": 0,
+     "name": "Hair 1"
+    },
+    {
+     "index": 1,
+     "name": "Hair 2"
+    },
+    {
+     "index": 2,
+     "name": "Hair 3"
+    },
+    {
+     "index": 3,
+     "name": "Hair 4"
+    },
+    {
+     "index": 4,
+     "name": "Hair 5"
+    },
+    {
+     "index": 5,
+     "name": "Hair 6"
+    },
+    {
+     "index": 6,
+     "name": "Hair 7"
+    },
+    {
+     "index": 7,
+     "name": "Hair 8"
+    },
+    {
+     "index": 8,
+     "name": "Hair 9"
+    },
+    {
+     "index": 9,
+     "name": "Hair 10"
+    },
+    {
+     "index": 10,
+     "name": "Hair 11"
+    },
+    {
+     "index": 11,
+     "name": "Hair 12"
+    },
+    {
+     "index": 12,
+     "name": "Hair 13"
+    },
+    {
+     "index": 13,
+     "name": "Hair 14"
+    },
+    {
+     "index": 14,
+     "name": "Hair 15"
+    },
+    {
+     "index": 15,
+     "name": "Hair 16"
+    }
+   ],
+   "beard": [],
+   "face_attachment": [
+    {
+     "index": 0,
+     "name": "FaceAttachment 1"
+    },
+    {
+     "index": 1,
+     "name": "FaceAttachment 2"
+    },
+    {
+     "index": 2,
+     "name": "FaceAttachment 3"
+    },
+    {
+     "index": 3,
+     "name": "FaceAttachment 4"
+    },
+    {
+     "index": 4,
+     "name": "FaceAttachment 5"
+    },
+    {
+     "index": 5,
+     "name": "FaceAttachment 6"
+    },
+    {
+     "index": 6,
+     "name": "FaceAttachment 7"
+    },
+    {
+     "index": 7,
+     "name": "FaceAttachment 8"
+    },
+    {
+     "index": 8,
+     "name": "FaceAttachment 9"
+    },
+    {
+     "index": 9,
+     "name": "FaceAttachment 10"
+    },
+    {
+     "index": 10,
+     "name": "FaceAttachment 11"
+    },
+    {
+     "index": 11,
+     "name": "FaceAttachment 12"
+    },
+    {
+     "index": 12,
+     "name": "FaceAttachment 13"
+    },
+    {
+     "index": 13,
+     "name": "FaceAttachment 14"
+    },
+    {
+     "index": 14,
+     "name": "FaceAttachment 15"
+    }
+   ]
+  }
+ },
+ "colors": {
+  "hair": [
+   "#ded7cc",
+   "#d2a36f",
+   "#c77d52",
+   "#ac4934",
+   "#d8ba85",
+   "#cd975a",
+   "#a15837",
+   "#6a3b37",
+   "#bba981",
+   "#8b7e6c",
+   "#594349",
+   "#473637",
+   "#7b8478",
+   "#494e55",
+   "#3a3a3c",
+   "#343030"
+  ],
+  "facial_hair": [
+   "#ded7cc",
+   "#d2a36f",
+   "#c77d52",
+   "#ac4934",
+   "#d8ba85",
+   "#cd975a",
+   "#a15837",
+   "#6a3b37",
+   "#bba981",
+   "#8b7e6c",
+   "#594349",
+   "#473637",
+   "#7b8478",
+   "#494e55",
+   "#3a3a3c",
+   "#343030"
+  ],
+  "skin": [
+   "#fce1c6",
+   "#f3c696",
+   "#f3c696",
+   "#aa7744",
+   "#f4be98",
+   "#d69a70",
+   "#ab7046",
+   "#774929",
+   "#c8a583",
+   "#a57c53",
+   "#7a5026",
+   "#4a3219",
+   "#957966",
+   "#714d34",
+   "#532d12",
+   "#26190e"
+  ]
+ },
+ "personalities": [
+  "professional",
+  "laid-back",
+  "rude",
+  "tough",
+  "joker",
+  "brokenenglish",
+  "fearful",
+  "crazy"
+ ]
+}

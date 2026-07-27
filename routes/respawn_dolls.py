@@ -255,6 +255,19 @@ async def api_list_dolls(
     })
 
 
+@admin_router.get("/api/v1/admin/dolls/appearance")
+async def api_appearance_catalog(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Справочник внешности: пресеты голов, причёски/бороды/аксессуары по полу,
+    палитры цветов и черты характера — выгружено из игрового контента
+    (Content/Characters/Human/Human.xml), чтобы админ выбирал из реального
+    списка, а не угадывал числовые индексы."""
+    _require(current_admin, "view")
+    return JSONResponse(dolls_service.appearance_catalog())
+
+
 @admin_router.post("/api/v1/admin/dolls")
 async def api_create_doll(
     request: Request,

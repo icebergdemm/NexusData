@@ -37,6 +37,24 @@ interface Doll {
   created_by: string | null
   created_at: string | null
 }
+interface AppearanceCatalog {
+  heads: { tags: string[]; gender: string }[]
+  wearables: Record<string, { hair: { index: number; name: string }[]; beard: { index: number; name: string }[]; face_attachment: { index: number; name: string }[] }>
+  colors: { hair: string[]; facial_hair: string[]; skin: string[] }
+  personalities: string[]
+}
+interface Identity {
+  name?: string
+  head_tags?: string[]
+  hair_index?: number
+  beard_index?: number
+  face_attachment_index?: number
+  hair_color?: string
+  facial_hair_color?: string
+  skin_color?: string
+  personality?: string
+}
+
 interface DollsResponse {
   dolls: Doll[]
   can_create: boolean
@@ -73,11 +91,142 @@ const DEFAULT_SPEC = JSON.stringify(
   null, 2,
 )
 
-function DollDialog({ open, onOpenChange, editing, reference }: {
+
+/** Выбор внешности из РЕАЛЬНОГО игрового контента вместо угадывания индексов.
+ *
+ *  Единственный источник истины — текст JSON тела куклы: пикер читает из него
+ *  identity и патчит его же обратно. Так поля и JSON не разъезжаются, что
+ *  неизбежно случилось бы при отдельном состоянии для внешности.
+ *
+ *  Индексы причёсок/бород считаются внутри списка, отфильтрованного по полу
+ *  головы (правило движка «теги элемента ⊆ теги головы»), поэтому при смене
+ *  пола списки меняются, а бород у женских голов нет вовсе. */
+function AppearancePicker({ identity, onChange, catalog }: {
+  identity: Identity
+  onChange: (next: Identity) => void
+  catalog?: AppearanceCatalog
+}) {
+  if (!catalog?.heads.length) {
+    return <p className="text-xs text-muted-foreground">Справочник внешности недоступен — задайте identity вручную в JSON ниже.</p>
+  }
+
+  const tags = identity.head_tags ?? []
+  const gender = tags.includes("female") ? "female" : "male"
+  const headTag = tags.find((t) => t.startsWith("head")) ?? ""
+  const wear = catalog.wearables[gender] ?? { hair: [], beard: [], face_attachment: [] }
+
+  const set = (patch: Identity) => onChange({ ...identity, ...patch })
+  const setHead = (nextGender: string, nextHeadTag: string) => {
+    // Движок сверяет НАБОР тегов целиком, поэтому пишем оба тега сразу.
+    // Индексы сбрасываем: у другого пола другой список причёсок/бород.
+    set({
+      head_tags: [nextHeadTag || "head1", nextGender],
+      hair_index: undefined, beard_index: undefined, face_attachment_index: undefined,
+    })
+  }
+
+  const heads = catalog.heads.filter((h) => h.gender === gender)
+
+  const numSelect = (label: string, field: keyof Identity, list: { index: number; name: string }[]) => (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <Select
+        value={String(identity[field] ?? -1)}
+        onValueChange={(v) => set({ [field]: Number(v) } as Identity)}
+        disabled={!list.length}
+      >
+        <SelectTrigger><SelectValue placeholder={list.length ? "—" : "нет для этой головы"} /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="-1">Нет</SelectItem>
+          {list.map((w) => <SelectItem key={w.index} value={String(w.index)}>{w.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+
+  const colorRow = (label: string, field: keyof Identity, palette: string[]) => (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <div className="flex flex-wrap gap-1">
+        {palette.map((c) => (
+          <button
+            key={c}
+            type="button"
+            title={c}
+            onClick={() => set({ [field]: c } as Identity)}
+            className={`size-5 rounded border ${identity[field] === c ? "ring-2 ring-primary" : ""}`}
+            style={{ backgroundColor: c }}
+          />
+        ))}
+        {identity[field] && (
+          <button type="button" className="text-xs text-muted-foreground underline"
+            onClick={() => set({ [field]: undefined } as Identity)}>сбросить</button>
+        )}
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label className="text-xs">Имя персонажа</Label>
+          <Input value={identity.name ?? ""} onChange={(e) => set({ name: e.target.value })}
+            placeholder="Пусто — движок сгенерирует" />
+        </div>
+        <div>
+          <Label className="text-xs">Характер</Label>
+          <Select value={identity.personality ?? "none"}
+            onValueChange={(v) => set({ personality: v === "none" ? undefined : v })}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Не задан</SelectItem>
+              {catalog.personalities.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Пол</Label>
+          <Select value={gender} onValueChange={(v) => setHead(v, headTag)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="male">Мужской</SelectItem>
+              <SelectItem value="female">Женский</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Голова</Label>
+          <Select value={headTag || "head1"} onValueChange={(v) => setHead(gender, v)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {heads.map((h) => {
+                const t = h.tags.find((x) => x.startsWith("head")) ?? ""
+                return <SelectItem key={t} value={t}>{t}</SelectItem>
+              })}
+            </SelectContent>
+          </Select>
+        </div>
+        {numSelect("Причёска", "hair_index", wear.hair)}
+        {numSelect("Борода", "beard_index", wear.beard)}
+        {numSelect("Аксессуар лица", "face_attachment_index", wear.face_attachment)}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {colorRow("Цвет волос", "hair_color", catalog.colors.hair)}
+        {colorRow("Цвет бороды", "facial_hair_color", catalog.colors.facial_hair)}
+        {colorRow("Цвет кожи", "skin_color", catalog.colors.skin)}
+      </div>
+    </div>
+  )
+}
+
+function DollDialog({ open, onOpenChange, editing, reference, catalog }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   editing: Doll | null
   reference?: DollsResponse["reference"]
+  catalog?: AppearanceCatalog
 }) {
   const queryClient = useQueryClient()
   const [server, setServer] = useState(editing?.server ?? SERVERS[0])
@@ -89,6 +238,25 @@ function DollDialog({ open, onOpenChange, editing, reference }: {
   const [specText, setSpecText] = useState(
     editing ? JSON.stringify(editing.spec ?? {}, null, 2) : DEFAULT_SPEC,
   )
+
+  // Пикер внешности читает identity из текста JSON и патчит его же обратно —
+  // один источник истины, поля и JSON не могут разъехаться.
+  let parsedSpec: Record<string, unknown> = {}
+  let specValid = true
+  try {
+    parsedSpec = JSON.parse(specText || "{}") as Record<string, unknown>
+  } catch {
+    specValid = false
+  }
+  const identity = (parsedSpec.identity ?? {}) as Identity
+
+  const patchIdentity = (next: Identity) => {
+    const cleaned: Record<string, unknown> = {}
+    Object.entries(next).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") cleaned[k] = v
+    })
+    setSpecText(JSON.stringify({ ...parsedSpec, identity: cleaned }, null, 2))
+  }
 
   const save = useMutation({
     mutationFn: () => {
@@ -175,6 +343,13 @@ function DollDialog({ open, onOpenChange, editing, reference }: {
         </label>
 
         <div>
+          <Label className="text-xs">Внешность</Label>
+          {specValid
+            ? <AppearancePicker identity={identity} onChange={patchIdentity} catalog={catalog} />
+            : <p className="text-xs text-destructive">JSON ниже некорректен — исправьте его, чтобы редактировать внешность полями.</p>}
+        </div>
+
+        <div>
           <Label className="text-xs">
             Тело куклы (identity / job / progression / stats / health / inventory)
           </Label>
@@ -214,6 +389,12 @@ export function RespawnDollsPage() {
     // Плагин опрашивает сайт раз в ~10 с — статус меняется без действий
     // пользователя, поэтому список сам подтягивается.
     refetchInterval: 15000,
+  })
+
+  const { data: appearance } = useQuery({
+    queryKey: ["dolls-appearance"],
+    queryFn: () => api.get<AppearanceCatalog>("/api/v1/admin/dolls/appearance"),
+    staleTime: Infinity,   // выгрузка из игрового контента, при работе не меняется
   })
 
   const cancel = useMutation({
@@ -357,6 +538,7 @@ export function RespawnDollsPage() {
           onOpenChange={setDialogOpen}
           editing={editing}
           reference={data?.reference}
+          catalog={appearance}
         />
       )}
     </div>
