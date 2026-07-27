@@ -468,8 +468,17 @@ def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(LOG_DB_PATH, timeout=30, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")       # concurrent reads while writing
     conn.execute("PRAGMA synchronous=NORMAL")     # fast, still crash-safe with WAL
-    conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-8000")       # ~8MB page cache (negative = KB)
+    # ВРЕМЕННЫЕ структуры — НА ДИСК, не в RAM. Раньше здесь стояло
+    # temp_store=MEMORY, и в оперативку уходило всё временное: сортировки,
+    # временные B-деревья для DISTINCT по миллионам строк, рабочий набор
+    # VACUUM, слияния сегментов FTS5. На машине с 2 ГБ RAM и базой в
+    # несколько ГБ это и давало «зверское» потребление памяти — сами логи
+    # при этом никогда не грузились целиком, все выборки ограничены LIMIT.
+    conn.execute("PRAGMA temp_store=FILE")
+    # Кэш страниц выделяется НА КАЖДОЕ соединение, а соединения здесь
+    # thread-local: при пуле в несколько десятков потоков прежние 8 МБ
+    # превращались в сотни мегабайт. 2 МБ на поток — разумный потолок.
+    conn.execute("PRAGMA cache_size=-2000")       # ~2MB page cache (negative = KB)
     conn.execute("PRAGMA wal_autocheckpoint=1000")  # auto-checkpoint every ~1000 pages (~4MB)
     conn.execute("PRAGMA busy_timeout=30000")     # wait up to 30s on lock instead of erroring
     _init_schema(conn)
@@ -722,7 +731,7 @@ def _log_worker_loop():
             while fts_backfill_step():
                 if not _log_worker_running:
                     break
-                time.sleep(1)  # уступить БД записи логов между порциями
+                time.sleep(0.2)  # уступить БД записи логов между порциями
         except Exception as e:
             logger.error(f"FTS backfill error: {e}")
 
@@ -796,8 +805,23 @@ def cleanup_old_logs(retention_days: int = LOG_RETENTION_DAYS, vacuum: bool = Tr
     with _log_cache_lock:
         conn = _get_conn()
         if vacuum:
+            # VACUUM переписывает базу целиком во временную копию, поэтому
+            # требует свободного места примерно в размер самой базы. Без
+            # проверки на почти полном диске он падает уже в процессе,
+            # оставляя мусор. Если места мало — просто пропускаем: файл не
+            # уменьшится, но освободившиеся страницы всё равно переиспользуются
+            # под новые события, то есть база не растёт дальше.
             try:
-                conn.execute("VACUUM")
+                import shutil
+                db_size = os.path.getsize(LOG_DB_PATH)
+                free = shutil.disk_usage(LOG_STORAGE_DIR).free
+                if free < db_size * 1.2:
+                    logger.warning(
+                        f"VACUUM пропущен: на диске {free // (1024*1024)} МБ свободно, "
+                        f"для базы в {db_size // (1024*1024)} МБ этого мало"
+                    )
+                else:
+                    conn.execute("VACUUM")
             except Exception as e:
                 logger.warning(f"VACUUM после очистки логов не выполнен: {e}")
         for srv in [r[0] for r in conn.execute("SELECT DISTINCT server FROM log_events").fetchall()]:
@@ -873,7 +897,11 @@ _PLAYERS_CACHE_TTL = 60  # seconds
 # принципе неиндексируем и именно он был причиной нагрузки.
 # ══════════════════════════════════════════════════════════════════════════
 
-_FTS_BACKFILL_BATCH = 20000   # строк за один шаг фонового бэкфилла
+# Размер порции бэкфилла. Держится небольшим осознанно: строки порции
+# материализуются в память Python (id + имя + текст события), и на машине с
+# 2 ГБ RAM крупные порции дают заметные всплески потребления. 2000 строк —
+# это единицы мегабайт на шаг.
+_FTS_BACKFILL_BATCH = 2000
 _fts_available_cache: Optional[bool] = None
 
 
