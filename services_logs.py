@@ -700,7 +700,19 @@ def _log_worker_loop():
     logger.info("Log worker started")
 
     _cleanup_counter = 0
+    _first_pass = True
     while _log_worker_running:
+        # Ретенция идёт ПЕРЕД индексацией (и на первом же проходе, а не через
+        # час): при коротком сроке хранения незачем тратить время на
+        # индексацию строк, которые тут же будут удалены — после очистки
+        # объём работы для бэкфилла кратно меньше.
+        if _first_pass or _cleanup_counter >= 72:
+            _cleanup_counter = 0
+            try:
+                cleanup_old_logs()
+            except Exception as e:
+                logger.error(f"Log retention cleanup error: {e}")
+
         # Доиндексация накопленной истории в FTS — порциями, по одной за
         # цикл, пока не будет пройдена вся таблица. Так 5+ млн строк
         # индексируются постепенно, не блокируя ни старт приложения, ни
@@ -714,6 +726,8 @@ def _log_worker_loop():
         except Exception as e:
             logger.error(f"FTS backfill error: {e}")
 
+        _first_pass = False
+
         try:
             refresh_logs_for_server(1)
         except Exception as e:
@@ -724,14 +738,10 @@ def _log_worker_loop():
         except Exception as e:
             logger.error(f"Log worker error (server 2): {e}")
 
-        # Retention cleanup roughly once per ~6h (every 72 cycles of 5 min)
+        # Отсчёт до следующей ретенции: цикл длится _log_refresh_interval
+        # секунд (по умолчанию 60), т.е. 72 цикла ≈ раз в ~1.2 часа.
+        # Сама очистка выполняется в начале цикла (см. выше).
         _cleanup_counter += 1
-        if _cleanup_counter >= 72:
-            _cleanup_counter = 0
-            try:
-                cleanup_old_logs()
-            except Exception as e:
-                logger.error(f"Log retention cleanup error: {e}")
 
         # Sleep for refresh interval
         for _ in range(_log_refresh_interval):
@@ -742,35 +752,66 @@ def _log_worker_loop():
     logger.info("Log worker stopped")
 
 
-LOG_RETENTION_DAYS = 60  # delete log events older than this
+LOG_RETENTION_DAYS = 15  # события старше этого срока удаляются
+_CLEANUP_BATCH = 50000   # строк за одну транзакцию удаления
 
 
-def cleanup_old_logs(retention_days: int = LOG_RETENTION_DAYS):
-    """Delete log events older than retention window and reclaim disk space."""
+def cleanup_old_logs(retention_days: int = LOG_RETENTION_DAYS, vacuum: bool = True):
+    """Удаляет события старше срока хранения и возвращает место на диске.
+
+    Удаление идёт ПОРЦИЯМИ, а не одним DELETE: при переходе на более короткий
+    срок хранения (или на большой накопленной истории) единая транзакция на
+    миллионы строк надолго забирает блокировку записи, а с появлением FTS
+    каждая удаляемая строка ещё и дёргает триггер синхронизации индекса.
+    Порции с коммитом и освобождением _log_cache_lock между ними позволяют
+    фоновой закачке логов работать параллельно.
+
+    VACUUM выполняется один раз в конце и только если реально что-то удалено:
+    он переписывает файл БД целиком (нужен запас места примерно в размер базы)
+    и на время блокирует её, поэтому гонять его на каждую порцию нельзя.
+    """
     cutoff_ms = _ts_to_ms(datetime.utcnow() - timedelta(days=retention_days))
+    deleted = 0
+
+    while True:
+        with _log_cache_lock:
+            conn = _get_conn()
+            cur = conn.execute(
+                "DELETE FROM log_events WHERE id IN ("
+                "  SELECT id FROM log_events WHERE ts < ? LIMIT ?"
+                ")",
+                (cutoff_ms, _CLEANUP_BATCH),
+            )
+            n = cur.rowcount or 0
+            conn.commit()
+        deleted += n
+        if n < _CLEANUP_BATCH:
+            break
+        # Уступить БД фоновой закачке/поиску между порциями.
+        time.sleep(0.5)
+
+    if deleted <= 0:
+        return
+
     with _log_cache_lock:
         conn = _get_conn()
-        cur = conn.execute("DELETE FROM log_events WHERE ts < ?", (cutoff_ms,))
-        deleted = cur.rowcount
-        conn.commit()
-        if deleted and deleted > 0:
-            # Reclaim space and refresh meta
+        if vacuum:
             try:
                 conn.execute("VACUUM")
-            except Exception:
-                pass
-            for srv in [r[0] for r in conn.execute("SELECT DISTINCT server FROM log_events").fetchall()]:
-                row = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM log_events WHERE server=?", (srv,)).fetchone()
-                conn.execute(
-                    "INSERT OR REPLACE INTO log_meta (server, event_count, last_refresh, oldest_event, newest_event) VALUES (?,?,?,?,?)",
-                    (srv, row[0] or 0, datetime.utcnow().isoformat(),
-                     _ms_to_dt(row[1]).isoformat() if row[1] else None,
-                     _ms_to_dt(row[2]).isoformat() if row[2] else None)
-                )
-            conn.commit()
-            _players_cache.clear()
-            _players_cache_ts.clear()
-            logger.info(f"Log retention: deleted {deleted} events older than {retention_days}d")
+            except Exception as e:
+                logger.warning(f"VACUUM после очистки логов не выполнен: {e}")
+        for srv in [r[0] for r in conn.execute("SELECT DISTINCT server FROM log_events").fetchall()]:
+            row = conn.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM log_events WHERE server=?", (srv,)).fetchone()
+            conn.execute(
+                "INSERT OR REPLACE INTO log_meta (server, event_count, last_refresh, oldest_event, newest_event) VALUES (?,?,?,?,?)",
+                (srv, row[0] or 0, datetime.utcnow().isoformat(),
+                 _ms_to_dt(row[1]).isoformat() if row[1] else None,
+                 _ms_to_dt(row[2]).isoformat() if row[2] else None)
+            )
+        conn.commit()
+        _players_cache.clear()
+        _players_cache_ts.clear()
+    logger.info(f"Ретенция логов: удалено {deleted} событий старше {retention_days} дн.")
 
 
 def start_log_worker():
