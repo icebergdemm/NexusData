@@ -158,11 +158,16 @@
   "submarine_name": "Berilia",
   "mission": "Салваж",
   "location": "Outpost Alpha",
-  "players": [{"steamid": "7656...", "player_name": "Ivan"}]
+  "players": [{"steamid": "7656...", "player_name": "Ivan", "role": null}]
 }
 ```
 
 Ответ: `{"status": "ok", "round_id": 42}`
+
+Обязательных полей нет — все могут отсутствовать или быть `null`. В записях
+`players` по факту нужны только `steamid` и `player_name`; любые другие поля
+(`role`, `job` и т.п., в том числе пустые) сохраняются как есть и отдаются
+наружу без изменений.
 
 ### POST `/api/v1/server/round/end`
 
