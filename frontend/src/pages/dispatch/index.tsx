@@ -21,7 +21,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
-import { canEdit, useCurrentAdmin } from "@/lib/auth"
+import { canDo, useCurrentAdmin } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import type { ModerationOverview } from "@/pages/moderation/types"
 import { Warehouse } from "./Warehouse"
@@ -74,7 +74,7 @@ function ShuttleDialog({ open, onOpenChange, command, defaultServer }: {
   )
 }
 
-/** Superuser-only — configures the outgoing webhook URL (per server) that
+/** Требует права dispatch:manage_webhooks — configures the outgoing webhook URL (per server) that
  * notifies an external system about incoming dispatch messages, shuttle
  * send requests, and confirmed shuttle departures. See routes/dispatch.py's
  * _send_dispatch_webhook / /api/v1/admin/dispatch/webhook-config. */
@@ -236,7 +236,15 @@ export function DispatchPage() {
     }
   }
 
-  const canSend = canEdit(admin, "dispatch")
+  // Права диспетчерской разбиты по операциям: реплика в эфир, челнок, груз и
+  // торпедный удар — разные по последствиям вещи, и группе можно выдать
+  // только часть из них.
+  const canSend = canDo(admin, "dispatch", "send_message")
+  const canShuttle = canDo(admin, "dispatch", "shuttle")
+  const canCargo = canDo(admin, "dispatch", "cargo")
+  const canTorpedo = canDo(admin, "dispatch", "torpedo")
+  const canWebhooks = canDo(admin, "dispatch", "manage_webhooks")
+  const hasAnyAction = canShuttle || canCargo || canTorpedo
   const roundStates = overview ? Object.entries(overview.round_states) : []
   const onlinePlayers = overview?.online_players ?? []
 
@@ -246,7 +254,7 @@ export function DispatchPage() {
         title="Диспетчерская"
         description="Радиосвязь с игроками и статус раунда в реальном времени"
         icon={Radio}
-        actions={admin?.is_superuser && (
+        actions={canWebhooks && (
           <Button variant="outline" size="sm" onClick={() => setWebhookConfigOpen(true)}>
             <Settings className="size-3.5" /> Webhook
           </Button>
@@ -310,41 +318,57 @@ export function DispatchPage() {
               })}
             </div>
 
-            {canSend && (
+            {(canSend || hasAnyAction) && (
               <div className="flex items-center gap-2 border-t p-3">
-                <DropdownMenu>
+                {hasAnyAction && <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="outline" size="icon" className="shrink-0 rounded-full">
                       <MoreVertical className="size-4" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" side="top">
-                    <DropdownMenuItem onClick={() => setShuttleDialog("send")}>
-                      <Truck className="mr-1 size-4" /> Отправить челнок снабжения
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setShuttleDialog("recall")}>
-                      <CornerUpLeft className="mr-1 size-4" /> Отозвать челнок снабжения
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setCargoOpen(true)}>
-                      <PackagePlus className="mr-1 size-4" /> Создать груз в очередь на спавн
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setTorpedoOpen(true)}>
-                      <Zap className="mr-1 size-4" /> Сделать торпедный удар
-                    </DropdownMenuItem>
+                    {canShuttle && (
+                      <>
+                        <DropdownMenuItem onClick={() => setShuttleDialog("send")}>
+                          <Truck className="mr-1 size-4" /> Отправить челнок снабжения
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setShuttleDialog("recall")}>
+                          <CornerUpLeft className="mr-1 size-4" /> Отозвать челнок снабжения
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                    {canCargo && (
+                      <DropdownMenuItem onClick={() => setCargoOpen(true)}>
+                        <PackagePlus className="mr-1 size-4" /> Создать груз в очередь на спавн
+                      </DropdownMenuItem>
+                    )}
+                    {canTorpedo && (
+                      <DropdownMenuItem onClick={() => setTorpedoOpen(true)}>
+                        <Zap className="mr-1 size-4" /> Сделать торпедный удар
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
-                </DropdownMenu>
-                <Input
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && send()}
-                  placeholder="Диспетчер, введите сообщение..."
-                  maxLength={500}
-                  disabled={sending}
-                  autoComplete="off"
-                />
-                <Button onClick={send} disabled={sending || !text.trim()} size="icon" className="shrink-0 rounded-full">
-                  <Send className="size-4" />
-                </Button>
+                </DropdownMenu>}
+                {canSend ? (
+                  <>
+                    <Input
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && send()}
+                      placeholder="Диспетчер, введите сообщение..."
+                      maxLength={500}
+                      disabled={sending}
+                      autoComplete="off"
+                    />
+                    <Button onClick={send} disabled={sending || !text.trim()} size="icon" className="shrink-0 rounded-full">
+                      <Send className="size-4" />
+                    </Button>
+                  </>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    Нет права на отправку сообщений в эфир
+                  </span>
+                )}
               </div>
             )}
           </Card>
@@ -396,7 +420,7 @@ export function DispatchPage() {
       )}
       <CargoDialog open={cargoOpen} onOpenChange={setCargoOpen} defaultServer={server} />
       <TorpedoDialog open={torpedoOpen} onOpenChange={setTorpedoOpen} defaultServer={server} />
-      {admin?.is_superuser && (
+      {canWebhooks && (
         <WebhookConfigDialog open={webhookConfigOpen} onOpenChange={setWebhookConfigOpen} />
       )}
     </div>
