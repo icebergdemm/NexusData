@@ -8,18 +8,18 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import secrets
 import logging
 import threading
 import httpx
 
-from database import get_db, get_game_db
+from database import GameSessionLocal, get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
 from models import (
     DispatchMessage, RoundEvent, AdminUser, AdminSession,
-    ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting,
+    ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting, WorldRound,
 )
 from schemas import DispatchMessageIn, RoundStartIn, RoundEndIn
 
@@ -109,6 +109,7 @@ def post_dispatch_message(body: DispatchMessageIn, db: Session = Depends(get_gam
         "player_name": body.player_name,
         "text": body.text,
     })
+    _queue_ai_dispatcher_request(db, msg)
 
     return {"status": "ok", "id": msg.id}
 
@@ -125,10 +126,19 @@ def _resolve_dispatch_channel_key(server_name: str) -> Optional[str]:
 
 def _enqueue_dispatch_embed(db, channel_config_key: str, embed: dict):
     from discord_bot import bot as discord_bot
-    discord_bot.schedule(discord_bot.execute_bot_action("send_embed", {
+    coroutine = discord_bot.execute_bot_action("send_embed", {
         "channel_config_key": channel_config_key,
         "embed": embed,
-    }))
+    })
+    try:
+        discord_bot.schedule(coroutine)
+    except Exception as error:
+        coroutine.close()
+        logger.warning(
+            "Dispatch Discord notification skipped for %s: %s",
+            channel_config_key,
+            error,
+        )
 
 
 def _queue_dispatch_discord_notification(db, msg: DispatchMessage):
@@ -331,6 +341,93 @@ def _send_dispatch_webhook(db: Session, server_name: Optional[str], event: str, 
         **payload,
     }
     threading.Thread(target=_post_webhook_sync, args=(url, body), daemon=True).start()
+
+
+def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
+    """Forward a player's radio message to AsperAIDispatcher in the background.
+
+    The game-server ingest request must remain fast and successful even when the
+    AI service is unavailable. The AI performs its own callsign filtering; an
+    ignored response produces no game action.
+    """
+    url = (settings.ai_dispatcher_url or "").strip()
+    api_key = (settings.ai_dispatcher_api_key or "").strip()
+    server_name = (msg.server_name or "").strip().upper()
+    if not url or not api_key:
+        return
+    if server_name not in {"ASPER1", "ASPER2"}:
+        logger.warning(
+            "AI dispatcher skipped message %s: unsupported server_name=%r",
+            msg.id,
+            msg.server_name,
+        )
+        return
+
+    threshold = datetime.utcnow() - timedelta(seconds=15)
+    active_round = (
+        db.query(WorldRound)
+        .filter(
+            WorldRound.server_name == server_name,
+            WorldRound.last_update_at >= threshold,
+        )
+        .order_by(WorldRound.last_update_at.desc())
+        .first()
+    )
+    round_id = active_round.round_id if active_round else f"dispatch-{server_name}-{msg.id}"
+    payload = {
+        "event_id": f"nexus-dispatch-{msg.id}",
+        "round_id": round_id,
+        "server_name": server_name,
+        "text": msg.text,
+        "sender_name": msg.player_name,
+    }
+    threading.Thread(
+        target=_post_ai_dispatcher_sync,
+        args=(url, api_key, payload, server_name),
+        daemon=True,
+        name=f"AIDispatch-{msg.id}",
+    ).start()
+
+
+def _post_ai_dispatcher_sync(
+    url: str,
+    api_key: str,
+    payload: dict,
+    server_name: str,
+) -> None:
+    try:
+        with httpx.Client(timeout=settings.ai_dispatcher_timeout_seconds) as client:
+            response = client.post(
+                url,
+                headers={"X-API-Key": api_key},
+                json=payload,
+            )
+        response.raise_for_status()
+        result = response.json()
+        if result.get("status") != "answered":
+            return
+        reply = result.get("reply")
+        if not isinstance(reply, str) or not reply.strip():
+            logger.warning("AI dispatcher returned an empty reply for %s", payload["event_id"])
+            return
+
+        callback_db = GameSessionLocal()
+        try:
+            _send_dispatcher_message(
+                callback_db,
+                reply,
+                server_name,
+                admin_id=None,
+                sender_label="ИИ-диспетчер",
+            )
+        finally:
+            callback_db.close()
+    except Exception as error:
+        logger.warning(
+            "AI dispatcher request failed for %s: %s",
+            payload.get("event_id"),
+            error,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

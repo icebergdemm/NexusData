@@ -391,7 +391,11 @@ def _gzip_json_response(payload: dict) -> Response:
 
 
 @client_router.get("/world/state")
-async def api_client_world_state(round_id: Optional[str] = None, db: Session = Depends(get_game_db)):
+async def api_client_world_state(
+    round_id: Optional[str] = None,
+    server_name: Optional[str] = None,
+    db: Session = Depends(get_game_db),
+):
     """Structured world state for external client integrations (dedicated
     client_api_key, see security.py) — always the freshest row currently in
     the database at request time (every /world/snapshot upserts in place,
@@ -404,12 +408,20 @@ async def api_client_world_state(round_id: Optional[str] = None, db: Session = D
     Response body is gzip-compressed (Content-Encoding: gzip) regardless of
     the caller's Accept-Encoding header.
     """
+    normalized_server_name = (server_name or "").strip() or None
+
     if round_id:
-        r = db.query(WorldRound).filter(WorldRound.round_id == round_id).first()
+        query = db.query(WorldRound).filter(WorldRound.round_id == round_id)
+        if normalized_server_name:
+            query = query.filter(WorldRound.server_name == normalized_server_name)
+        r = query.first()
         if not r:
             raise HTTPException(status_code=404, detail="Раунд не найден")
         return _gzip_json_response({"rounds": [_serialize_round_full(r)]})
 
     threshold = datetime.utcnow() - timedelta(seconds=ACTIVE_THRESHOLD_SECONDS)
-    rows = db.query(WorldRound).filter(WorldRound.last_update_at >= threshold).all()
+    query = db.query(WorldRound).filter(WorldRound.last_update_at >= threshold)
+    if normalized_server_name:
+        query = query.filter(WorldRound.server_name == normalized_server_name)
+    rows = query.all()
     return _gzip_json_response({"rounds": [_serialize_round_full(r) for r in rows]})

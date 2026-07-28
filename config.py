@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # these read endpoints never needs the ingest credential. Empty by
     # default = these endpoints stay closed until explicitly configured.
     client_api_key: str = Field("")
+    # Optional bridge to AsperAIDispatcher. When configured, every player
+    # dispatch message is forwarded to the AI service; only addressed messages
+    # receive a reply, which is queued back into the game as a dispatch action.
+    ai_dispatcher_url: str = Field("")
+    ai_dispatcher_api_key: str = Field("")
+    ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"
