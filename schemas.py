@@ -348,13 +348,26 @@ class DispatchMessageOut(BaseModel):
 
 # ── Round lifecycle schemas ──────────────────────────────────────────────────
 
+# Значения записи игрока — Any, а НЕ str. Плагин присылает поля, которых у
+# части игроков просто нет (например role=null у наблюдателя без должности),
+# и при Dict[str, str] pydantic отклонял ВЕСЬ запрос целиком: раунд не
+# закрывался, событие end не создавалось, статус сервера залипал, а повтора
+# запроса у плагина нет. Список кладётся в JSON-колонку и отдаётся наружу как
+# есть, поэтому лишние или пустые поля никому не мешают — обязательны по факту
+# только steamid и player_name.
+_RoundPlayer = Dict[str, Any]
+
+
 class RoundStartIn(BaseModel):
     """Game server reports round start."""
     server_name: Optional[str] = None
-    submarine_name: str
+    # Необязательное: колонка в БД nullable, а поле используется только для
+    # отображения. Отклонять событие начала раунда из-за отсутствующего имени
+    # лодки нельзя — без него не с чем спарить событие конца.
+    submarine_name: Optional[str] = None
     mission: Optional[str] = None
     location: Optional[str] = None
-    players: List[Dict[str, str]] = Field(default_factory=list)  # [{steamid, player_name}]
+    players: List[_RoundPlayer] = Field(default_factory=list)  # [{steamid, player_name, role?, ...}]
 
 
 class RoundEndIn(BaseModel):
@@ -362,7 +375,7 @@ class RoundEndIn(BaseModel):
     server_name: Optional[str] = None
     mission_completed: bool = False
     reached_station: bool = False
-    players: List[Dict[str, str]] = Field(default_factory=list)  # [{steamid, player_name}]
+    players: List[_RoundPlayer] = Field(default_factory=list)  # [{steamid, player_name, role?, ...}]
 
 
 class AnticheatEventIn(BaseModel):

@@ -514,7 +514,7 @@ def _send_dispatcher_message(db: Session, text: str, server_name: Optional[str],
 @panel_router.post("/api/v1/admin/dispatch/send")
 async def dispatch_send(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
     """Admin sends a dispatcher message via the action queue."""
-    if not check_permission(current_admin, "dispatch", "edit"):
+    if not check_permission(current_admin, "dispatch", "send_message"):
         raise HTTPException(status_code=403)
     body = await request.json()
     server_name = body.get("server_name") or None  # optional: target specific server
@@ -541,11 +541,16 @@ def dispatch_check_pending(
 
 @panel_router.get("/api/v1/admin/dispatch/webhook-config")
 def get_dispatch_webhook_config(db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
-    """Superuser-only: current outgoing webhook URLs (per server) for the
-    external dispatch integration. Not gated by the 'dispatch' permission
-    registry — this is a site-wide integration secret, superuser only."""
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+    """Текущие адреса исходящих вебхуков внешней интеграции (по серверам).
+
+    Раньше было жёстко «только суперпользователь». Теперь это отдельное право
+    dispatch:manage_webhooks, которое НЕ выдаётся автоматически держателям
+    dispatch:edit (см. PERMISSION_ACTION_SPLITS): адрес вебхука — точка утечки
+    данных наружу, и она не должна открываться заодно с правом слать грузы.
+    Суперпользователь проходит любую проверку прав, поэтому доступ у него
+    сохраняется без отдельной ветки."""
+    if not check_permission(current_admin, "dispatch", "manage_webhooks"):
+        raise HTTPException(status_code=403, detail="Нет права на настройку вебхуков диспетчерской")
     return {
         "ASPER1": _get_app_setting(db, "dispatch_webhook_url_asper1"),
         "ASPER2": _get_app_setting(db, "dispatch_webhook_url_asper2"),
@@ -554,11 +559,11 @@ def get_dispatch_webhook_config(db: Session = Depends(get_db), current_admin: Ad
 
 @panel_router.patch("/api/v1/admin/dispatch/webhook-config")
 async def set_dispatch_webhook_config(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
-    """Superuser-only: set/clear the outgoing webhook URL for ASPER1/ASPER2.
-    Body: {"ASPER1": "https://..."|null, "ASPER2": "https://..."|null} —
-    keys are optional, only provided ones are updated."""
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+    """Задать или очистить адрес исходящего вебхука для ASPER1/ASPER2.
+    Тело: {"ASPER1": "https://..."|null, "ASPER2": "https://..."|null} —
+    ключи необязательны, обновляются только переданные."""
+    if not check_permission(current_admin, "dispatch", "manage_webhooks"):
+        raise HTTPException(status_code=403, detail="Нет права на настройку вебхуков диспетчерской")
     body = await request.json()
 
     if "ASPER1" in body:
@@ -626,7 +631,7 @@ def _queue_shuttle_action(db: Session, server_name: Optional[str], command: str,
 
 @panel_router.post("/api/v1/admin/dispatch/actions/shuttle")
 async def dispatch_shuttle_action(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
-    if not check_permission(current_admin, "dispatch", "edit"):
+    if not check_permission(current_admin, "dispatch", "shuttle"):
         raise HTTPException(status_code=403)
     body = await request.json()
     command = body.get("command")
@@ -637,7 +642,7 @@ async def dispatch_shuttle_action(request: Request, db: Session = Depends(get_db
 
 @panel_router.post("/api/v1/admin/dispatch/actions/torpedo")
 async def dispatch_torpedo_action(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
-    if not check_permission(current_admin, "dispatch", "edit"):
+    if not check_permission(current_admin, "dispatch", "torpedo"):
         raise HTTPException(status_code=403)
     body = await request.json()
     server_name = (body.get("server_name") or "").strip() or None
@@ -703,7 +708,7 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
 
 @panel_router.post("/api/v1/admin/dispatch/actions/cargo")
 async def dispatch_cargo_action(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(_get_current_admin)):
-    if not check_permission(current_admin, "dispatch", "edit"):
+    if not check_permission(current_admin, "dispatch", "cargo"):
         raise HTTPException(status_code=403)
     body = await request.json()
     server_name = (body.get("server_name") or "").strip() or None

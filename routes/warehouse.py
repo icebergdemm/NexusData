@@ -91,7 +91,7 @@ async def api_list_warehouse(
     )
     return JSONResponse({
         "items": [_serialize(w) for w in rows],
-        "can_edit": check_permission(current_admin, "dispatch", "edit"),
+        "can_edit": check_permission(current_admin, "dispatch", "manage_warehouse"),
     })
 
 
@@ -103,7 +103,7 @@ async def api_upsert_warehouse_item(
 ):
     """Add a new stock line, or set the absolute quantity of an existing
     one (same endpoint — upsert by identifier)."""
-    _require_dispatch(current_admin, "edit")
+    _require_dispatch(current_admin, "manage_warehouse")
     body = await request.json()
     identifier = (body.get("identifier") or "").strip()
     quantity = body.get("quantity")
@@ -134,7 +134,7 @@ async def api_adjust_warehouse_item(
     """Either {"quantity": N} — set absolute — or {"delta": N} — relative
     adjust (clamped at 0), whichever the caller provides. The +/- stepper
     in the UI uses `delta`; a manual "set exact amount" field uses `quantity`."""
-    _require_dispatch(current_admin, "edit")
+    _require_dispatch(current_admin, "manage_warehouse")
     row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
     if not row:
         raise HTTPException(status_code=404, detail="Предмет не найден на складе")
@@ -165,7 +165,7 @@ async def api_delete_warehouse_item(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    _require_dispatch(current_admin, "edit")
+    _require_dispatch(current_admin, "manage_warehouse")
     row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
     if not row:
         raise HTTPException(status_code=404, detail="Предмет не найден на складе")
