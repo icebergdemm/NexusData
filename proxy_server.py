@@ -114,7 +114,15 @@ _http_client: Optional[httpx.AsyncClient] = None
 @asynccontextmanager
 async def lifespan(_app):
     global _http_client
-    _http_client = httpx.AsyncClient()
+    # Таймаут по умолчанию у httpx — 5 секунд на всё, включая чтение ответа.
+    # Для этого прокси он слишком жёсткий: часть эндпоинтов легально работает
+    # дольше (выгрузка файла с игрового сервера по SFTP, экспорт логов,
+    # тяжёлый отчёт), и такой ответ подменялся страницей «идут работы».
+    # Разделяем: подключение к бэкенду остаётся коротким, чтобы реально
+    # упавший процесс определялся мгновенно, а чтение ответа — длинным.
+    _http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=180.0, write=180.0, pool=10.0)
+    )
     try:
         yield
     finally:

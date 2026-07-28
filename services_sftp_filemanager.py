@@ -207,12 +207,23 @@ class SFTPFileManager:
             self._close(sftp)
 
     def download_file(self, relative_path: str) -> Optional[bytes]:
-        """Download file content as bytes."""
+        """Download file content as bytes.
+
+        Uses prefetch: without it paramiko reads in 32 KB chunks and waits for
+        a round trip on each one, so a few-megabyte file takes minutes over a
+        normal-latency link. Prefetch pipelines the requests and turns the same
+        download into seconds.
+        """
         sftp = None
         try:
             sftp = self._connect()
             full_path = self._safe_path(relative_path)
             with sftp.open(full_path, 'rb') as f:
+                try:
+                    f.prefetch(sftp.stat(full_path).st_size)
+                except Exception:
+                    pass  # prefetch is an optimisation, not a requirement
+                f.set_pipelined(True)
                 data = f.read()
             return data
         except Exception as e:

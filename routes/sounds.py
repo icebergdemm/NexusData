@@ -246,7 +246,10 @@ async def api_get_sound_file(
     return Response(
         content=data,
         media_type=media,
-        headers={"Cache-Control": "private, max-age=300"},
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": f'inline; filename="{clean}"',
+        },
     )
 
 

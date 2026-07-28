@@ -374,4 +374,27 @@ def get_sound_bytes(db: Session, server_name: str, filename: str) -> Tuple[bytes
     data = mgr.download_file(clean)
     if data is None:
         raise ValueError("Файл не найден")
+
+    # Раз уж файл всё равно скачан — сохраняем локальную копию. Это ровно то,
+    # ради чего копии и заводились (восстановление после удаления с игрового
+    # сервера), а заодно следующее прослушивание пойдёт с диска, без SFTP.
+    # Копии нет у файлов, которые положили на сервер мимо панели.
+    if len(data) <= MAX_SOUND_BYTES:
+        try:
+            backup_filename = _write_backup(server_name, clean, data)
+            if rec:
+                rec.backup_filename = backup_filename
+                rec.size_bytes = len(data)
+            else:
+                db.add(SoundFile(
+                    server_name=server_name,
+                    filename=clean,
+                    size_bytes=len(data),
+                    backup_filename=backup_filename,
+                ))
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Не удалось сохранить локальную копию {clean}: {e}")
+
     return data, clean
