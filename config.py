@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Dict, Any
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # stall every other concurrent request site-wide (see main.py's startup
     # hook — gated on WORKER_ROLE so the scheduler never runs more than
     # once). 1 (default) preserves the exact previous single-process behavior.
-    uvicorn_workers: int = Field(1, env="UVICORN_WORKERS")
+    uvicorn_workers: int = Field(1)
 
     # CORS — stored as plain str to avoid pydantic-settings JSON pre-parsing errors;
     # converted to List[str] in __init__
@@ -51,15 +51,15 @@ class Settings(BaseSettings):
     cors_headers: List[str] = ["*"]
 
     # Security
-    secret_key: str = Field("your-secret-key-change-in-production", env="SECRET_KEY")
-    api_key: str = Field("your-api-key-change-in-production", env="API_KEY")
+    secret_key: str = Field("your-secret-key-change-in-production")
+    api_key: str = Field("your-api-key-change-in-production")
     # Separate dedicated key for read-only external "client" integrations
     # (world-state export, warehouse export — routes/world_state.py,
     # routes/warehouse.py) — intentionally NOT the same secret as `api_key`
     # (used by the Barotrauma server's own ingest calls), so a consumer of
     # these read endpoints never needs the ingest credential. Empty by
     # default = these endpoints stay closed until explicitly configured.
-    client_api_key: str = Field("", env="CLIENT_API_KEY")
+    client_api_key: str = Field("")
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"
@@ -100,8 +100,18 @@ class Settings(BaseSettings):
     extra_allowed_hosts_list: List[str] = []   # populated in __init__
 
     # Discord Bot (discord_bot/bot.py — runs in-process, see supervise_bot())
-    discord_bot_token: str = Field("", env="DISCORD_BOT_TOKEN")
-    discord_guild_id: str = Field("", env="GUILD_ID")
+    discord_bot_token: str = Field("")
+    # ВНИМАНИЕ: аргумент env= у Field в pydantic v2 не работает — он молча
+    # уходит в json_schema_extra, а имя переменной окружения выводится из
+    # ИМЕНИ ПОЛЯ. Для discord_guild_id это означало поиск DISCORD_GUILD_ID,
+    # тогда как в .env (и в прежнем discord_bot/.env, откуда настройка
+    # переехала) ключ называется GUILD_ID. Значение не читалось, GUILD_ID в
+    # боте становился 0, и get_guild(0) всегда возвращал None — роли Discord
+    # не выдавались с ошибкой «сервер недоступен боту», хотя всё настроено
+    # верно. Правильный способ задать имя переменной — validation_alias.
+    discord_guild_id: str = Field(
+        "", validation_alias=AliasChoices("GUILD_ID", "DISCORD_GUILD_ID")
+    )
 
     # Discord Trap Webhook
     discord_trap_webhook_url: str = ""
@@ -135,7 +145,7 @@ class Settings(BaseSettings):
     # ONLYOFFICE Document Server integration
     onlyoffice_document_server_url: str = "https://nd.rp-asper.ru/onlyoffice"  # public browser-facing URL, e.g. https://nd.rp-asper.ru:8082
     onlyoffice_callback_base_url: str = "https://nd.rp-asper.ru"    # our own base URL, reachable BY the Document Server (fetch + callback)
-    onlyoffice_jwt_secret: str = Field("", env="ONLYOFFICE_JWT_SECRET")
+    onlyoffice_jwt_secret: str = Field("")
 
     # SFTP Server 1
     sftp_server_1_host: str = ""

@@ -121,6 +121,22 @@ async def on_ready():
     global FORWARD_CHANNEL_ID, RATING_CHANNEL_ID
     logger.info(f"Bot ready: {bot.user} (guilds: {len(bot.guilds)})")
 
+    # Проверяем GUILD_ID сразу при подключении, а не при первой попытке выдать
+    # роль: неверный или незаполненный идентификатор ломает ВСЮ работу с
+    # ролями и отделами, но проявляется отложенно и выглядит как «Discord
+    # недоступен». Здесь видно, что бот подключён, и сразу понятно, тот ли
+    # сервер указан.
+    if not GUILD_ID:
+        logger.error(
+            "GUILD_ID не задан — работа с ролями работать не будет. "
+            "Укажите GUILD_ID в .env (идентификатор Discord-сервера)."
+        )
+    elif bot.get_guild(GUILD_ID) is None:
+        logger.error(
+            f"GUILD_ID={GUILD_ID}: бот не состоит в этом Discord-сервере. "
+            f"Доступны: {[(g.id, g.name) for g in bot.guilds]}"
+        )
+
     config = await asyncio.to_thread(bot_data.get_bot_config)
     if config:
         try:
