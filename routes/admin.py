@@ -4986,7 +4986,7 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     # Обновление кода из git: подменив каталог, remote или ветку, можно
     # заставить сервер выполнить чужой код. Это строго суперпользовательское,
     # даже несмотря на то, что саму команду `update` запускают из консоли.
-    "git_update_repo_dir", "git_update_remote", "git_update_branch",
+    "git_update_repo_dir", "git_update_repo_url", "git_update_remote", "git_update_branch",
     "git_update_build_frontend", "git_update_restart_backend",
     "git_update_token", "git_update_token_username",
 }
@@ -5072,6 +5072,7 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "pterodactyl_api_key": s.pterodactyl_api_key,
             "sub_projects_test_server_uuid": s.sub_projects_test_server_uuid,
             "git_update_repo_dir": s.git_update_repo_dir,
+            "git_update_repo_url": s.git_update_repo_url,
             "git_update_remote": s.git_update_remote,
             "git_update_branch": s.git_update_branch,
             "git_update_token": SECRET_PLACEHOLDER if s.git_update_token else "",
@@ -5225,6 +5226,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "pterodactyl_api_key": "PTERODACTYL_API_KEY",
         "sub_projects_test_server_uuid": "SUB_PROJECTS_TEST_SERVER_UUID",
         "git_update_repo_dir": "GIT_UPDATE_REPO_DIR",
+        "git_update_repo_url": "GIT_UPDATE_REPO_URL",
         "git_update_remote": "GIT_UPDATE_REMOTE",
         "git_update_branch": "GIT_UPDATE_BRANCH",
         "git_update_token": "GIT_UPDATE_TOKEN",

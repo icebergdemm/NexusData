@@ -72,6 +72,12 @@ const GIT_UPDATE_FIELDS: { key: string; label: string; placeholder?: string; hin
     placeholder: "пусто — каталог приложения",
     hint: "Путь в файловой системе, где уже лежит код: команда «update» делает git pull, а не clone. Адрес репозитория (https://…) сюда вписывать не нужно — он берётся из remote.",
   },
+  {
+    key: "git_update_repo_url",
+    label: "Адрес репозитория",
+    placeholder: "https://github.com/owner/repo.git",
+    hint: "Нужен только для команды «update bootstrap» — развернуть код там, где рабочей копии ещё нет. Когда она есть, адрес берётся из remote и это поле не используется.",
+  },
   { key: "git_update_remote", label: "Remote", placeholder: "origin" },
   { key: "git_update_branch", label: "Ветка", placeholder: "пусто — текущая" },
   {
@@ -272,7 +278,9 @@ export function AdministrationPage() {
               <div>update            — забрать код и пересобрать при необходимости</div>
               <div>update restart    — то же и сразу перезапустить backend</div>
               <div>update norestart  — то же без перезапуска</div>
-              <div>update status     — каталог, ветка и текущая ревизия</div>
+              <div>update bootstrap  — развернуть код по адресу репозитория,</div>
+              <div>&nbsp;                   если рабочей копии на сервере ещё нет</div>
+              <div>update status     — каталог, ветка, ревизия и проверка доступа</div>
             </div>
             <Button onClick={() => saveConfig.mutate()}>Сохранить конфигурацию</Button>
           </CardContent>

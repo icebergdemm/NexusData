@@ -56,6 +56,10 @@ _HELP = """
                                  при изменениях во frontend/ пересобрать его;
                                  аргумент разово перекрывает настройку
                                  перезапуска backend
+  update bootstrap             — развернуть код по адресу репозитория там,
+                                 где рабочей копии ещё нет; приводит каталог
+                                 к состоянию удалённой ветки, не трогая .env,
+                                 uploads/ и data/
   update status                — каталог, ветка, ревизия и проверка доступа
                                  к remote (для приватного репозитория нужен
                                  токен: «Администрирование» → «Обновление
@@ -159,18 +163,27 @@ def _update_cmd(rest: str):
     здесь только разбор аргумента и печать хода работы в консоль."""
     import services_git_update
 
-    action = rest.strip().lower()
+    parts = rest.strip().lower().split()
+    action = parts[0] if parts else ""
+    modifier = parts[1] if len(parts) > 1 else ""
+
     if action == "status":
         print(services_git_update.status_text())
         return
 
     force_restart = None
-    if action == "restart":
-        force_restart = True
-    elif action == "norestart":
-        force_restart = False
-    elif action:
-        print("Использование: update [restart|norestart] | update status")
+    for word in (action, modifier):
+        if word == "restart":
+            force_restart = True
+        elif word == "norestart":
+            force_restart = False
+
+    if action == "bootstrap":
+        services_git_update.run_bootstrap(print, force_restart=force_restart)
+        return
+
+    if action and action not in ("restart", "norestart"):
+        print("Использование: update [restart|norestart] | update bootstrap [restart|norestart] | update status")
         return
 
     services_git_update.run_update(print, force_restart=force_restart)

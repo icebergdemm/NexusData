@@ -125,6 +125,12 @@ class Settings(BaseSettings):
     git_update_repo_dir: str = ""
     git_update_remote: str = "origin"
     git_update_branch: str = ""
+    # Адрес репозитория. Нужен, чтобы развернуть код на сервере, где ещё нет
+    # рабочей копии (`update bootstrap`): на Pterodactyl обычно доступна только
+    # консоль, без shell'а, и сделать git clone руками попросту негде. Когда
+    # рабочая копия уже есть, адрес берётся из самого remote и это поле не
+    # используется.
+    git_update_repo_url: str = ""
     # Токен доступа для ПРИВАТНОГО репозитория по HTTPS (GitHub PAT,
     # GitLab/Gitea access token). Пусто — тянем как есть: для публичного
     # репозитория и для ssh-remote токен не нужен. Токен НЕ прописывается ни в

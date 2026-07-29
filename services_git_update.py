@@ -161,27 +161,42 @@ def repo_dir() -> str:
     return configured or os.path.dirname(os.path.abspath(__file__))
 
 
+def configured_url() -> str:
+    """Адрес репозитория из настроек (для `update bootstrap`)."""
+    return (get_settings().git_update_repo_url or "").strip()
+
+
+def is_repo(path: str) -> bool:
+    return os.path.isdir(path) and os.path.exists(os.path.join(path, ".git"))
+
+
+def looks_like_url(value: str) -> bool:
+    return bool(re.match(r"^[a-z][a-z0-9+.\-]*://", value, re.IGNORECASE)) or value.startswith("git@")
+
+
 def check_repo(path: str) -> Optional[str]:
     """Текст ошибки, если каталог не годится как репозиторий, иначе None."""
     # Частая путаница: в поле «Каталог репозитория» вписывают URL репозитория.
     # Общее «каталог не найден» описывает симптом, а не причину, и человек
     # идёт искать несуществующий каталог вместо того, чтобы поправить поле.
-    if re.match(r"^[a-z][a-z0-9+.\-]*://", path, re.IGNORECASE) or path.startswith("git@"):
+    if looks_like_url(path):
         return (
             f"В настройках указан адрес репозитория, а не каталог: {path}\n"
-            "  Это поле — путь в файловой системе СЕРВЕРА, где уже лежит код\n"
-            "  (команда `update` делает git pull, а не clone). Оставьте поле\n"
-            "  пустым, чтобы использовать каталог приложения."
+            "  Поле «Каталог репозитория» — путь в файловой системе СЕРВЕРА.\n"
+            "  Адрес репозитория вписывается в соседнее поле «Адрес\n"
+            "  репозитория», а этот каталог проще оставить пустым — тогда\n"
+            "  используется каталог приложения."
         )
     if not os.path.isdir(path):
         return f"Каталог не найден: {path}"
-    if not os.path.exists(os.path.join(path, ".git")):
-        return (
-            f"В каталоге нет репозитория git: {path}\n"
-            "  Код попал на сервер не через git clone, поэтому обновлять нечего.\n"
-            "  Либо укажите каталог с репозиторием, либо сделайте текущий\n"
-            "  каталог репозиторием (git init + git remote add origin …)."
+    if not is_repo(path):
+        hint = (
+            "  Задайте «Адрес репозитория» на странице «Администрирование» и\n"
+            "  выполните `update bootstrap` — код развернётся прямо отсюда."
+            if not configured_url() else
+            "  Выполните `update bootstrap` — код развернётся по указанному адресу."
         )
+        return f"В каталоге нет репозитория git: {path}\n{hint}"
     return None
 
 
@@ -205,8 +220,21 @@ def status_text() -> str:
         f"Сборка фронтенда: {'да' if settings.git_update_build_frontend else 'нет'}",
         f"Перезапуск после: {'да' if settings.git_update_restart_backend else 'нет'}",
     ]
+    if configured_url():
+        lines.insert(1, f"Адрес репозитория: {_redact(configured_url())}")
+
     if error:
         lines.append(f"ОШИБКА: {error}")
+        # Рабочей копии нет, но адрес есть — сразу проверяем, пустит ли он,
+        # чтобы не выяснять это уже в процессе разворачивания.
+        if not is_repo(path) and configured_url() and not looks_like_url(path):
+            url = configured_url()
+            args, env = _git_auth(path, url)
+            code, out = _run(["git"] + args + ["ls-remote", "--heads", url], path, 60, env=env)
+            lines.append(f"Доступ по адресу: {'есть — можно `update bootstrap`' if code == 0 else 'НЕТ'}")
+            if code != 0:
+                for line in out.splitlines()[:5]:
+                    lines.append(f"    {line}")
         return "\n".join(lines)
 
     code, branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], path, 30)
@@ -267,8 +295,8 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
 
     error = check_repo(path)
     if error:
-        emit(f"✗ {error}")
-        emit("  Укажите каталог репозитория на странице «Администрирование».")
+        for line in f"✗ {error}".splitlines():
+            emit(line)
         return False
 
     emit(f"Каталог: {path}")
@@ -335,6 +363,17 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
         line.startswith("frontend/") for line in changed_files.splitlines()
     )
 
+    return _finish(emit, path, frontend_touched, force_restart)
+
+
+def _finish(
+    emit: Callable[[str], None], path: str, frontend_touched: bool,
+    force_restart: Optional[bool],
+) -> bool:
+    """Общий хвост обновления и разворачивания: пересборка фронтенда и
+    перезапуск backend."""
+    settings = get_settings()
+
     if frontend_touched and settings.git_update_build_frontend:
         frontend_dir = os.path.join(path, "frontend")
         if not os.path.isdir(frontend_dir):
@@ -364,6 +403,109 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
 
     emit("✓ Обновление завершено.")
     return True
+
+
+def run_bootstrap(emit: Callable[[str], None], force_restart: Optional[bool] = None) -> bool:
+    """Развернуть код по адресу репозитория в каталоге, где рабочей копии ещё
+    нет (или где remote указывает не туда).
+
+    Зачем отдельной командой, а не молча внутри `update`: приведение каталога
+    к состоянию удалённой ветки перезаписывает отслеживаемые файлы, и делать
+    такое неожиданно для человека нельзя. Отдельная команда и есть
+    подтверждение.
+
+    Файлы вне репозитория (.env, uploads/, data/, frontend/dist,
+    node_modules) не трогаются: git reset --hard приводит в порядок только то,
+    что есть в самом коммите, а всё перечисленное в репозитории отсутствует.
+    """
+    settings = get_settings()
+    path = repo_dir()
+    url = configured_url()
+    remote = (settings.git_update_remote or "origin").strip()
+    branch = (settings.git_update_branch or "").strip() or "main"
+
+    if looks_like_url(path):
+        emit(f"✗ В поле «Каталог репозитория» указан адрес: {path}")
+        emit("  Туда нужен путь на сервере (или пусто — каталог приложения),")
+        emit("  а адрес — в поле «Адрес репозитория».")
+        return False
+    if not url:
+        emit("✗ Не задан адрес репозитория.")
+        emit("  «Администрирование» → «Обновление кода из git» → «Адрес репозитория».")
+        return False
+    if not looks_like_url(url):
+        emit(f"✗ «{url}» не похоже на адрес репозитория.")
+        emit("  Ожидается https://… или git@host:owner/repo.git")
+        return False
+    if not os.path.isdir(path):
+        emit(f"✗ Каталог не найден: {path}")
+        return False
+
+    emit(f"Каталог: {path}")
+    emit(f"Адрес:   {_redact(url)}")
+    emit(f"Ветка:   {branch}")
+
+    if not is_repo(path):
+        emit("→ git init (рабочей копии здесь ещё нет)")
+        code, out = _run(["git", "init"], path, 60, env=_base_env())
+        if code != 0:
+            emit(f"✗ git init не прошёл: {out}")
+            return False
+
+    # Remote может уже быть — тогда просто переставляем адрес: bootstrap
+    # используется и для переезда на другой репозиторий.
+    existing = remote_url(path, remote)
+    action = "set-url" if existing else "add"
+    code, out = _run(["git", "remote", action, remote, url], path, 60, env=_base_env())
+    if code != 0:
+        emit(f"✗ Не удалось настроить remote: {out}")
+        return False
+    if existing and existing != url:
+        emit(f"    remote {remote}: {_redact(existing)} → {_redact(url)}")
+
+    auth_args, env = _git_auth(path, url)
+    if _auth_config(url):
+        emit(f"Доступ:  по токену ({_token_username()})")
+
+    emit(f"→ git fetch {remote} {branch}")
+    code, out = _run(["git"] + auth_args + ["fetch", "--depth=1", remote, branch], path, _GIT_TIMEOUT, env=env)
+    for line in out.splitlines():
+        emit(f"    {line}")
+    if code != 0:
+        if _looks_like_auth_failure(out):
+            emit("✗ Репозиторий не пустил. Если он приватный — задайте токен доступа")
+            emit("  на странице «Администрирование» и проверьте `update status`.")
+        else:
+            emit("✗ git fetch не прошёл — проверьте адрес и название ветки.")
+        return False
+
+    # Сколько отслеживаемых файлов будет перезаписано — по этому видно
+    # масштаб происходящего до того, как оно случится.
+    code, tracked = _run(["git", "ls-tree", "-r", "--name-only", "FETCH_HEAD"], path, 60, env=_base_env())
+    if code == 0:
+        existing_files = [f for f in tracked.splitlines() if f and os.path.exists(os.path.join(path, f))]
+        if existing_files:
+            emit(f"! Будет приведено к состоянию {remote}/{branch}: {len(existing_files)} файлов на диске.")
+            emit("  Файлы вне репозитория (.env, uploads/, data/) не затрагиваются.")
+
+    emit(f"→ git reset --hard FETCH_HEAD")
+    code, out = _run(["git", "reset", "--hard", "FETCH_HEAD"], path, _GIT_TIMEOUT, env=_base_env())
+    for line in out.splitlines():
+        emit(f"    {line}")
+    if code != 0:
+        emit("✗ Не удалось привести каталог к состоянию удалённой ветки.")
+        return False
+
+    # Чтобы последующие `update` работали обычным git pull.
+    _run(["git", "branch", "-f", branch, "FETCH_HEAD"], path, 60, env=_base_env())
+    _run(["git", "checkout", branch], path, 60, env=_base_env())
+    _run(["git", "config", f"branch.{branch}.remote", remote], path, 30, env=_base_env())
+    _run(["git", "config", f"branch.{branch}.merge", f"refs/heads/{branch}"], path, 30, env=_base_env())
+
+    emit(f"Стало:   {current_revision(path)}")
+    emit("✓ Репозиторий развёрнут. Дальше достаточно обычного `update`.")
+
+    return _finish(emit, path, frontend_touched=True, force_restart=force_restart)
 
 
 def _restart_backend(emit: Callable[[str], None]) -> None:
