@@ -66,7 +66,12 @@ const SUPERUSER_CFG_FIELDS: { key: string; label: string }[] = [
  *  Тоже только для суперпользователей: подменив каталог, remote или ветку,
  *  можно заставить сервер выполнить чужой код. */
 const GIT_UPDATE_FIELDS: { key: string; label: string; placeholder?: string; hint?: string; secret?: boolean }[] = [
-  { key: "git_update_repo_dir", label: "Каталог репозитория", placeholder: "пусто — каталог приложения" },
+  {
+    key: "git_update_repo_dir",
+    label: "Каталог репозитория на сервере",
+    placeholder: "пусто — каталог приложения",
+    hint: "Путь в файловой системе, где уже лежит код: команда «update» делает git pull, а не clone. Адрес репозитория (https://…) сюда вписывать не нужно — он берётся из remote.",
+  },
   { key: "git_update_remote", label: "Remote", placeholder: "origin" },
   { key: "git_update_branch", label: "Ветка", placeholder: "пусто — текущая" },
   {
