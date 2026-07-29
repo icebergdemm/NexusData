@@ -400,12 +400,13 @@ export function PlayerDetailPage() {
         <TabsContent value="rewards">
           <RewardsSection
             playerId={playerId!}
-            canEdit={data.has_edit}
+            canEdit={data.can_manage_rewards}
             kvalKits={data.kval_kits}
             items={data.custom_items}
             stats={data.custom_stats}
             talents={data.custom_talents}
             availableKvalKits={data.available_kval_kits}
+            reference={data.reward_reference}
             onChanged={invalidate}
           />
         </TabsContent>

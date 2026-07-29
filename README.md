@@ -92,7 +92,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 - **С нуля / перенос на другую машину:** [`deploy/DEPLOYMENT.md`](deploy/DEPLOYMENT.md)
 - **Прокси и режим техработ:** [`deploy/PROXY_DEPLOYMENT.md`](deploy/PROXY_DEPLOYMENT.md)
-- **Автодеплой (push → сервер):** [`deploy/AUTODEPLOY.md`](deploy/AUTODEPLOY.md)
+- **Обновление кода на сервере (`update` в консоли):** [`deploy/AUTODEPLOY.md`](deploy/AUTODEPLOY.md)
 - **ONLYOFFICE (опционально):** [`deploy/onlyoffice/`](deploy/onlyoffice/)
 
 Обновление без простоя (в консоли прокси): `maintenance on` → `backend off` →

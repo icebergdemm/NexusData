@@ -87,6 +87,18 @@ export interface RoleActionRow { id: number; role: string; action_type: string; 
 
 export interface AvailableKvalKit { job: string; level: number; label: string }
 
+export interface RewardJob { identifier: string; name: string }
+export interface RewardTalent { identifier: string; name: string }
+
+/** Справочник для форм выдачи наград (routes/admin.py: _rewards_reference) —
+ * профессии, навыки и таланты с русскими названиями, чтобы идентификаторы не
+ * приходилось вписывать руками. */
+export interface RewardReference {
+  jobs: RewardJob[]
+  skill_labels: Record<string, string>
+  talents: Record<string, RewardTalent[]>
+}
+
 export interface PlayerDetailResponse {
   classified?: boolean
   player: PlayerDetailPlayer
@@ -109,6 +121,7 @@ export interface PlayerDetailResponse {
   custom_stats: Record<string, number | Record<string, number>>
   custom_talents: Record<string, string[]>
   available_kval_kits: AvailableKvalKit[]
+  reward_reference: RewardReference
   is_online: boolean
   // A player can hold several grants at once — one manual per server_scope
   // (global/ASPER1/ASPER2) plus one department-derived (is_auto) grant,
@@ -116,6 +129,10 @@ export interface PlayerDetailResponse {
   server_privileges: PlayerServerPrivilege[]
   has_view: boolean
   has_edit: boolean
+  /** Гранулярное право на выдачу наград (players:manage_rewards). Отдельно
+   * от has_edit: ручки наград проверяют именно его, и без этого флага
+   * интерфейс показывал бы кнопки, которые возвращают 403. */
+  can_manage_rewards: boolean
   has_delete: boolean
   has_special: boolean
   can_issue_punishment: boolean

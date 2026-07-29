@@ -1,122 +1,87 @@
-# Автодеплой: push в GitHub → автоматически на сервер
+# Обновление кода на сервере
 
-Каждый `git push` в ветку `main` автоматически выкатывается на сервер:
-GitHub Actions заходит по SSH и запускает [`deploy.sh`](deploy.sh), который
-подтягивает код, при необходимости пересобирает зависимости/фронтенд и
-перезапускает бэкенд с новым кодом — прокси при этом остаётся жив и показывает
-страницу техработ на пару секунд, пока бэкенд поднимается (без простоя
-публичного порта, без `sudo`).
+Автодеплоя по `git push` больше нет. Раньше здесь описывался workflow
+`.github/workflows/deploy.yml`, который заходил на сервер по SSH и запускал
+[`deploy.sh`](deploy.sh). Он удалён: боевой сервер переехал в контейнер
+Pterodactyl, где SSH-доступа нет, и workflow на каждом пуше безрезультатно
+ломился в `/opt/nexusdata`.
 
-```
-git push  ──►  GitHub Actions  ──SSH──►  сервер: deploy/deploy.sh
-                                          ├─ git reset --hard origin/main
-                                          ├─ pip install   (если менялся requirements.txt)
-                                          ├─ npm run build (если менялся frontend/)
-                                          └─ backend off→on (новый код) → ждём healthz=ok
-```
-
-Компоненты (все уже в репозитории):
-- [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) — триггер по push.
-- [`deploy/deploy.sh`](deploy.sh) — сам деплой, запускается на сервере.
+Как обновлять код сейчас — зависит от того, как развёрнут сервер.
 
 ---
 
-## Разовая настройка
+## Вариант 1. Pterodactyl (текущий боевой)
 
-### 1. На сервере: дать сервисному пользователю возможность заходить по SSH
+Обновление запускается **командой в консоли процесса** — вкладка «Консоль» в
+панели Pterodactyl:
 
-Деплой должен идти от имени пользователя, которому принадлежит `/opt/nexusdata`
-и под которым работает сервис (в инструкции это `nexus`). При установке он был
-создан с `nologin` — дадим ему оболочку и каталог `.ssh`:
-
-```bash
-sudo usermod -s /bin/bash nexus
-sudo -u nexus mkdir -p /home/nexus/.ssh
-sudo -u nexus chmod 700 /home/nexus/.ssh
-# если у nexus нет домашнего каталога:
-sudo mkhomedir_helper nexus 2>/dev/null || sudo mkdir -p /home/nexus && sudo chown nexus:nexus /home/nexus
+```
+update            забрать код и получить фронтенд при необходимости
+update restart    то же и сразу перезапустить backend
+update norestart  то же без перезапуска
+update bootstrap  развернуть код по адресу репозитория, если рабочей копии ещё нет
+update status     каталог, ветка, ревизия, доступ к remote и способ сборки фронтенда
 ```
 
-> Sudo для деплоя не нужен: перезапуск бэкенда идёт через `runtime_control`
-> (файл состояния), а не через `systemctl`. Пользователь `nexus` уже владеет
-> всеми нужными файлами (код, `venv/`, `data/runtime_state.json`).
+Из веба обновление не запускается намеренно: выполнение произвольного кода из
+браузера — совсем другой уровень риска, чем правка настроек.
 
-### 2. На своей машине: сгенерировать отдельный SSH-ключ для деплоя
+Настраивается на странице **«Администрирование» → «Обновление кода из git»**:
+каталог, remote, ветка, токен доступа для приватного репозитория, способ
+получения фронтенда. Реализация — [`services_git_update.py`](../services_git_update.py).
 
-Не используйте свой личный ключ — заведите выделенный только под деплой:
+### Фронтенд, когда на сервере нет Node.js
 
-```bash
-ssh-keygen -t ed25519 -f nexus_deploy_key -N "" -C "github-actions-deploy"
-# создаст nexus_deploy_key (приватный) и nexus_deploy_key.pub (публичный)
-```
+В контейнере Pterodactyl обычно нет Node.js, и ставить его туда незачем: сам
+Node плюс `node_modules` — это сотни мегабайт рядом с работающим приложением,
+а сборка ещё и ест память.
 
-### 3. Публичный ключ — на сервер
+Поэтому SPA собирается в GitHub Actions
+([`.github/workflows/frontend-dist.yml`](../.github/workflows/frontend-dist.yml)):
+содержимое `frontend/dist` уезжает отдельной веткой одним orphan-коммитом, а
+`update` забирает его оттуда тем же git и тем же токеном.
 
-```bash
-# содержимое nexus_deploy_key.pub добавить в authorized_keys пользователя nexus
-cat nexus_deploy_key.pub | ssh ВАШ_ЮЗЕР@СЕРВЕР "sudo tee -a /home/nexus/.ssh/authorized_keys && sudo chown nexus:nexus /home/nexus/.ssh/authorized_keys && sudo chmod 600 /home/nexus/.ssh/authorized_keys"
-```
-
-Проверьте, что заходит:
-```bash
-ssh -i nexus_deploy_key nexus@СЕРВЕР "cd /opt/nexusdata && git rev-parse --short HEAD"
-```
-
-### 4. Приватный ключ и параметры — в GitHub Secrets
-
-Репозиторий на GitHub → **Settings → Secrets and variables → Actions → New
-repository secret**. Добавьте:
-
-| Secret | Значение |
-|---|---|
-| `DEPLOY_SSH_KEY` | всё содержимое файла `nexus_deploy_key` (приватный ключ, с `-----BEGIN...` до `...END-----`) |
-| `DEPLOY_HOST` | IP или домен сервера |
-| `DEPLOY_USER` | `nexus` |
-| `DEPLOY_PORT` | порт SSH (можно не добавлять — по умолчанию `22`) |
-
-После этого приватный ключ можно удалить со своей машины — он больше не нужен
-локально (`rm nexus_deploy_key nexus_deploy_key.pub`).
-
-### 5. Закоммитить workflow и скрипт
-
-```bash
-git add .github/workflows/deploy.yml deploy/deploy.sh deploy/AUTODEPLOY.md
-git commit -m "Автодеплой: GitHub Actions + deploy.sh"
-git push
-```
-
-Этот же push уже запустит первый автодеплой. Откройте вкладку **Actions** на
-GitHub и наблюдайте за логами джобы «Deploy to production».
+Включается настройкой **«Ветка с готовой сборкой фронтенда»** = `frontend-dist`.
+Если она пуста, `update` собирает фронтенд локально через `npm` — тогда Node.js
+на сервере обязателен.
 
 ---
 
-## Как пользоваться дальше
+## Вариант 2. Классическая установка (systemd + venv)
 
-Просто работайте как обычно:
+Если сервер развёрнут по [`DEPLOYMENT.md`](DEPLOYMENT.md) — systemd-сервис и
+venv в `/opt/nexusdata` — остаётся скрипт [`deploy.sh`](deploy.sh). Теперь он
+запускается **вручную по SSH** от имени сервисного пользователя:
+
 ```bash
-# ...правки...
-git commit -am "..."
-git push          # ← через ~1–2 минуты изменения уже на проде
+cd /opt/nexusdata
+bash deploy/deploy.sh
 ```
 
-Запустить деплой вручную (без нового коммита): вкладка **Actions → Deploy to
-production → Run workflow**.
+Что он делает:
 
-## Проверка и откат
+```
+git reset --hard origin/main
+pip install       (только если менялся requirements.txt)
+npm run build     (только если менялся frontend/)
+backend off → on  через runtime_control
+ждём healthz=ok
+```
 
-- **Лог деплоя**: вкладка Actions на GitHub (по шагам, с выводом `deploy.sh`).
-- **Логи сервера**: `journalctl -u nexusdata -f`.
-- **Откат** на предыдущую версию: `git revert` + push (запустит деплой отката),
-  либо на сервере вручную `git reset --hard <старый_коммит> && bash deploy/deploy.sh`.
+Прокси при этом не перезапускается и пару секунд показывает страницу техработ,
+пока бэкенд поднимается с новым кодом — публичный порт не падает, `sudo` не
+нужен.
 
-## Заметки по безопасности
+### Если понадобится вернуть автозапуск по пушу
 
-- Ключ `DEPLOY_SSH_KEY` — выделенный, используется только Actions; при
-  компрометации просто удалите его строку из `authorized_keys` на сервере.
-- Включите защиту ветки `main` (Settings → Branches) — чтобы деплоил только
-  проверенный код.
-- Секреты GitHub Actions не видны в логах и в PR из форков.
-- Приватный ключ храните только в GitHub Secrets, не коммитьте в репозиторий.
-- (Опционально, жёстче) в `authorized_keys` можно ограничить ключ форс-командой
-  `command="cd /opt/nexusdata && bash deploy/deploy.sh",no-port-forwarding,no-pty`
-  — тогда этим ключом нельзя выполнить ничего, кроме деплоя.
+Нужен workflow с `appleboy/ssh-action`, который делает
+`cd /opt/nexusdata && bash deploy/deploy.sh`, и секреты репозитория
+`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`. Ключ стоит
+заводить отдельный, только под деплой, и ограничивать его в `authorized_keys`
+форс-командой:
+
+```
+command="cd /opt/nexusdata && bash deploy/deploy.sh",no-port-forwarding,no-pty
+```
+
+— тогда этим ключом нельзя выполнить ничего, кроме деплоя.

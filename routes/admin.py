@@ -1850,6 +1850,7 @@ async def api_player_detail(
         "custom_stats": raw_achievements.get("stats", {}),
         "custom_talents": raw_achievements.get("talents", {}),
         "available_kval_kits": available_kval_kits,
+        "reward_reference": _rewards_reference(db),
         "is_online": is_online,
         "server_privileges": server_privileges,
         "has_view": check_permission(current_admin, "players", "view"),
@@ -3722,6 +3723,52 @@ def _get_achievements_dict(player: "PlayerData") -> dict:
     if isinstance(raw, list):
         raw = {}
     return dict(raw)
+
+
+def _rewards_reference(db: Session) -> dict:
+    """Справочник для форм выдачи наград: профессии, навыки и таланты с
+    русскими названиями.
+
+    Без него интерфейс требовал вписывать идентификатор профессии руками
+    («captain», «securityofficer»), а опечатка молча создавала награду для
+    несуществующей профессии — игра её просто не находила, и понять почему
+    награда «не работает» было неоткуда.
+
+    Источник — тот же static/doll_reference.json, что и у конструктора кукол
+    (выгрузка из игрового контента). К нему добавляются профессии из таблицы
+    китов: там могут быть модовые, которых в выгрузке нет.
+    """
+    from models import Kit
+    import services_respawn_dolls
+
+    ref = services_respawn_dolls.doll_reference() or {}
+
+    jobs = []
+    seen = set()
+    for job in ref.get("jobs") or []:
+        identifier = (job.get("identifier") or "").strip()
+        if identifier and identifier not in seen:
+            seen.add(identifier)
+            jobs.append({"identifier": identifier, "name": job.get("name") or identifier})
+
+    try:
+        # Тот же фильтр, что и у страницы китов (api_kits_list), чтобы списки
+        # профессий там и здесь не разъезжались: `_k` — квал-киты, не профессии.
+        rows = db.query(Kit.job_id).filter(~Kit.job_id.like("%_k")).distinct().all()
+        for (job_id,) in rows:
+            job_id = (job_id or "").strip()
+            if job_id and job_id not in seen:
+                seen.add(job_id)
+                jobs.append({"identifier": job_id, "name": job_id})
+    except Exception as e:  # noqa: BLE001 — справочник не должен ронять карточку
+        logger.warning(f"Не удалось дополнить список профессий из китов: {e}")
+
+    jobs.sort(key=lambda j: j["name"].lower())
+    return {
+        "jobs": jobs,
+        "skill_labels": ref.get("skill_labels") or {},
+        "talents": ref.get("talents") or {},
+    }
 
 
 @router.post("/api/v1/admin/players/{player_id}/rewards/kval-kits")
