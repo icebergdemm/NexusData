@@ -65,10 +65,23 @@ const SUPERUSER_CFG_FIELDS: { key: string; label: string }[] = [
 /** Настройки консольной команды `update` (обновление кода из git).
  *  Тоже только для суперпользователей: подменив каталог, remote или ветку,
  *  можно заставить сервер выполнить чужой код. */
-const GIT_UPDATE_FIELDS: { key: string; label: string; placeholder?: string; hint?: string }[] = [
+const GIT_UPDATE_FIELDS: { key: string; label: string; placeholder?: string; hint?: string; secret?: boolean }[] = [
   { key: "git_update_repo_dir", label: "Каталог репозитория", placeholder: "пусто — каталог приложения" },
   { key: "git_update_remote", label: "Remote", placeholder: "origin" },
   { key: "git_update_branch", label: "Ветка", placeholder: "пусто — текущая" },
+  {
+    key: "git_update_token",
+    label: "Токен доступа (приватный репозиторий)",
+    placeholder: "пусто — репозиторий публичный или доступ по ssh-ключу",
+    hint: "GitHub Personal Access Token с правом на чтение репозитория. Уходит одним заголовком Authorization только на хост remote'а и не записывается ни в remote URL, ни в .git/config. Сохранённый токен наружу не отдаётся — поле показывает заглушку, замените её, чтобы задать новый.",
+    secret: true,
+  },
+  {
+    key: "git_update_token_username",
+    label: "Пользователь для токена",
+    placeholder: "x-access-token",
+    hint: "Для GitHub годится любое непустое значение, для GitLab — oauth2.",
+  },
 ]
 
 const GIT_UPDATE_TOGGLES: { key: string; label: string; hint: string }[] = [
@@ -225,10 +238,13 @@ export function AdministrationPage() {
                   <Label className="text-xs text-muted-foreground">{f.label}</Label>
                   <Input
                     className="mt-1"
+                    type={f.secret ? "password" : "text"}
+                    autoComplete={f.secret ? "new-password" : undefined}
                     placeholder={f.placeholder}
                     value={cfg[f.key] ?? ""}
                     onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))}
                   />
+                  {f.hint && <span className="mt-1 block text-xs text-muted-foreground">{f.hint}</span>}
                 </div>
               ))}
             </div>

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select"
 import { ArrowLeft, Crown, LogOut, MapPin, Ship, Target, Video, Link2, Link2Off } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { api } from "@/lib/api"
 
 interface RoundPlayer {
@@ -18,6 +19,8 @@ interface RoundPlayer {
   player_name: string
   real_name?: string
   role?: string
+  /** Профиль игрока в Nexus Data — null, если игрока в базе ещё нет. */
+  player_id?: number | null
   /** Игрока не было в раунде на момент его окончания. */
   left?: boolean
   left_at?: string | null
@@ -58,6 +61,7 @@ export function RoundDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [linkPickerOpen, setLinkPickerOpen] = useState(false)
+  const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ["round-detail", roundId],
@@ -133,11 +137,13 @@ export function RoundDetailPage() {
                 key={p.steamid}
                 className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
                   p.left ? "border-warning/40 bg-warning/5" : ""
-                }`}
+                } ${p.player_id != null ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-accent/40" : ""}`}
+                onClick={p.player_id != null ? () => setSummaryPlayerId(p.player_id!) : undefined}
+                title={p.player_id != null ? "Открыть профиль игрока" : "Игрока нет в базе Nexus Data"}
               >
                 <span className="flex flex-wrap items-center gap-1.5">
                   {isCaptain(p.role) && <Crown className="size-3.5 text-primary" />}
-                  <span className={p.left ? "text-muted-foreground" : undefined}>{p.player_name}</span>
+                  <span className={p.left ? "text-muted-foreground" : "font-medium"}>{p.player_name}</span>
                   {p.real_name && (
                     <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${p.real_name}`}>
                       принудительное имя
@@ -195,6 +201,12 @@ export function RoundDetailPage() {
           </CardContent>
         )}
       </Card>
+
+      <PlayerSummaryDialog
+        playerId={summaryPlayerId}
+        open={summaryPlayerId != null}
+        onOpenChange={(open) => { if (!open) setSummaryPlayerId(null) }}
+      />
     </div>
   )
 }

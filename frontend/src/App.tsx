@@ -25,6 +25,7 @@ import { SubProjectFormPage } from "@/pages/sub-projects/form"
 import { SubProjectCategoriesPage } from "@/pages/sub-projects/categories"
 import { SubProjectsPolygonListPage } from "@/pages/sub-projects-polygon"
 import { SubProjectsPolygonDetailPage } from "@/pages/sub-projects-polygon/detail"
+import { SubCheckerPage } from "@/pages/sub-checker"
 import { ReplaysListPage } from "@/pages/replays"
 import { ReplayPlayerPage } from "@/pages/replays/player"
 import { RoundDetailPage } from "@/pages/replays/round-detail"
@@ -115,6 +116,7 @@ export default function App() {
           <Route path="sub-projects/:projectId/edit" element={<SubProjectFormPage />} />
           <Route path="sub-projects-polygon" element={<SubProjectsPolygonListPage />} />
           <Route path="sub-projects-polygon/:projectId" element={<SubProjectsPolygonDetailPage />} />
+          <Route path="sub-checker" element={<SubCheckerPage />} />
           <Route path="ratings" element={<RatingsPage />} />
           <Route path="ratings/rewards" element={<RewardsConfigPage />} />
           <Route path="ratings/snapshots/:filename" element={<RatingSnapshotViewPage />} />

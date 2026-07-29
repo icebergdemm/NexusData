@@ -497,7 +497,43 @@ async def api_sub_project_detail(
         "can_publish_discord": _has(current_admin, "publish_discord", "publish_discord_all", is_owner),
         "can_change_owner": check_permission(current_admin, "sub_projects", "change_owner"),
         "can_edit_categories": can_edit_category_assign,
+        "can_check_gost": check_permission(current_admin, "sub_checker", "check"),
+        # Последний отчёт по каждой версии — карточка проекта показывает
+        # результат прошлой проверки рядом с версией, не запуская новую.
+        "checks": _latest_checks(db, project_id),
     }
+
+
+def _latest_checks(db: Session, project_id: int) -> dict:
+    """version_id → краткая сводка последней проверки этой версии.
+
+    Тянутся ТОЛЬКО нужные колонки: в SubCheckResult.report лежит полный отчёт
+    на несколько десятков килобайт, и загружать его сотнями строк ради пары
+    счётчиков в карточке проекта — верный способ раздуть ответ до мегабайт."""
+    from models import SubCheckResult
+    rows = (
+        db.query(
+            SubCheckResult.id, SubCheckResult.version_id, SubCheckResult.passed,
+            SubCheckResult.error_count, SubCheckResult.warning_count,
+            SubCheckResult.ship_class, SubCheckResult.tonnage, SubCheckResult.created_at,
+        )
+        .filter(SubCheckResult.project_id == project_id, SubCheckResult.version_id.isnot(None))
+        .order_by(SubCheckResult.id.desc())
+        .limit(200)
+        .all()
+    )
+    out: dict = {}
+    for row in rows:
+        key = str(row.version_id)
+        if key in out:
+            continue
+        out[key] = {
+            "id": row.id, "passed": bool(row.passed),
+            "error_count": row.error_count, "warning_count": row.warning_count,
+            "ship_class": row.ship_class, "tonnage": row.tonnage,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+    return out
 
 
 def _sub_project_form_to_data(name, author, project_type, crew, crew_min, crew_avg, crew_max,
@@ -620,7 +656,15 @@ async def api_sub_project_upload_version(
     version = svc.upload_version(project_id, sub_file, changelog or "", current_admin.id)
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "sub_version_upload", {"project_id": project_id, "version_id": version.id, "version_number": version.version_number})
-    return {"status": "ok", "version": _serialize_version(version)}
+
+    # Автопроверка по ГОСТу сразу после загрузки: результат едет тем же
+    # ответом, чтобы карточка проекта показала отчёт во всплывающем окне, не
+    # заставляя жать «Проверить корабль» отдельно. Провалившаяся проверка
+    # (битый файл, отключённый чекер) возвращает None и загрузку не отменяет —
+    # версия уже сохранена и это её состояние не меняет.
+    from routes.sub_checker import check_version_file
+    check = check_version_file(db, version, admin_id=current_admin.id, is_auto=True)
+    return {"status": "ok", "version": _serialize_version(version), "check": check}
 
 
 @router.delete("/api/v1/admin/sub-projects/{project_id}/versions/{version_id}")

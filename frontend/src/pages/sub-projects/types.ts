@@ -1,3 +1,5 @@
+import type { VersionCheckSummary } from "@/pages/sub-checker/types"
+
 export interface SubProjectCategory {
   id: number
   name: string
@@ -87,6 +89,9 @@ export interface SubProjectDetailResponse {
   can_publish_discord: boolean
   can_change_owner: boolean
   can_edit_categories: boolean
+  can_check_gost: boolean
+  /** version_id → сводка последней проверки этой версии по ГОСТу. */
+  checks: Record<string, VersionCheckSummary>
 }
 
 // ── "Тестовый полигон ASPER" — department-scoped zone ───────────────────────
@@ -111,4 +116,6 @@ export interface PolygonProjectDetailResponse {
   versions: SubProjectVersion[]
   can_edit_this: boolean
   sftp_server_2_name: string
+  can_check_gost: boolean
+  checks: Record<string, VersionCheckSummary>
 }

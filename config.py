@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     git_update_repo_dir: str = ""
     git_update_remote: str = "origin"
     git_update_branch: str = ""
+    # Токен доступа для ПРИВАТНОГО репозитория по HTTPS (GitHub PAT,
+    # GitLab/Gitea access token). Пусто — тянем как есть: для публичного
+    # репозитория и для ssh-remote токен не нужен. Токен НЕ прописывается ни в
+    # remote URL, ни в .git/config: он уходит одним заголовком Authorization
+    # только на хост этого remote (см. services_git_update.py).
+    git_update_token: str = ""
+    # Имя пользователя в паре к токену. Для GitHub годится любое непустое
+    # (общепринято x-access-token), для GitLab — oauth2.
+    git_update_token_username: str = "x-access-token"
     # Пересобирать фронтенд, если в обновлении менялось что-то во frontend/:
     # dist/ в репозитории нет, без сборки сайт останется на старой версии.
     git_update_build_frontend: bool = True

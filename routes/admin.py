@@ -4988,7 +4988,16 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     # даже несмотря на то, что саму команду `update` запускают из консоли.
     "git_update_repo_dir", "git_update_remote", "git_update_branch",
     "git_update_build_frontend", "git_update_restart_backend",
+    "git_update_token", "git_update_token_username",
 }
+
+# Токен доступа к репозиторию наружу отдаётся ЗАГЛУШКОЙ, а не значением:
+# в отличие от остальных секретов на этой странице он открывает чужой код,
+# который сервер потом сам же и выполнит, поэтому лишний раз гонять его по
+# сети и держать в состоянии страницы незачем. Пришедшая обратно заглушка
+# означает «не трогать» — сохраняется прежнее значение из .env.
+SECRET_PLACEHOLDER = "••••••••"
+MASKED_CFG_FIELDS = {"git_update_token"}
 
 
 def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
@@ -5065,6 +5074,8 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "git_update_repo_dir": s.git_update_repo_dir,
             "git_update_remote": s.git_update_remote,
             "git_update_branch": s.git_update_branch,
+            "git_update_token": SECRET_PLACEHOLDER if s.git_update_token else "",
+            "git_update_token_username": s.git_update_token_username,
             "git_update_build_frontend": s.git_update_build_frontend,
             "git_update_restart_backend": s.git_update_restart_backend,
         })
@@ -5216,6 +5227,8 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "git_update_repo_dir": "GIT_UPDATE_REPO_DIR",
         "git_update_remote": "GIT_UPDATE_REMOTE",
         "git_update_branch": "GIT_UPDATE_BRANCH",
+        "git_update_token": "GIT_UPDATE_TOKEN",
+        "git_update_token_username": "GIT_UPDATE_TOKEN_USERNAME",
         "git_update_build_frontend": "GIT_UPDATE_BUILD_FRONTEND",
         "git_update_restart_backend": "GIT_UPDATE_RESTART_BACKEND",
     }
@@ -5227,6 +5240,12 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
             # если оно затесалось в тело запроса.
             continue
         val = body.get(field)
+        if field in MASKED_CFG_FIELDS and (val is None or str(val) == SECRET_PLACEHOLDER):
+            # Пришла заглушка (поле не трогали) или поля нет в запросе вовсе —
+            # оставляем то, что уже лежит в .env. Иначе обычное сохранение
+            # страницы затирало бы секрет заглушкой или пустой строкой.
+            # Чтобы СТЕРЕТЬ токен, поле надо прислать пустой строкой.
+            continue
         if val is None:
             if field in ("debug", "rate_limit_enabled",
                          "git_update_build_frontend", "git_update_restart_backend"):
