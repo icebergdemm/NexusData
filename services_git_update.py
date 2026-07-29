@@ -257,14 +257,24 @@ def status_text() -> str:
         for line in out.splitlines()[:5]:
             lines.append(f"    {line}")
 
-    npm, checked = _resolve_npm()
-    if npm:
-        lines.append(f"npm:              {npm}")
+    dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+    if dist_branch:
+        lines.append(f"Фронтенд:         готовая сборка из ветки «{dist_branch}» (npm не нужен)")
+        code, out = _run(["git"] + args + ["ls-remote", "--heads", remote, dist_branch], path, 60, env=env)
+        if code == 0 and out.strip():
+            lines.append("    ветка на месте")
+        elif code == 0:
+            lines.append(f"    ВНИМАНИЕ: ветки «{dist_branch}» в репозитории нет —")
+            lines.append("    запустите workflow «Build frontend dist» на GitHub.")
     else:
-        lines.append("npm:              НЕ НАЙДЕН — сборка фронтенда при update отвалится")
-        lines.append("    Проверено: " + "; ".join(checked))
-        lines.append("    Установите Node.js/npm в контейнере или укажите путь к npm")
-        lines.append("    на странице «Администрирование».")
+        npm, checked = _resolve_npm()
+        if npm:
+            lines.append(f"Фронтенд:         локальная сборка, npm: {npm}")
+        else:
+            lines.append("Фронтенд:         НЕ СОБЕРЁТСЯ — npm не найден")
+            lines.append("    Проверено: " + "; ".join(checked))
+            lines.append("    Проще всего — брать готовую сборку из CI: задайте ветку")
+            lines.append("    в настройке «Ветка с готовой сборкой фронтенда».")
     return "\n".join(lines)
 
 
@@ -417,6 +427,105 @@ def _resolve_npm() -> Tuple[Optional[str], List[str]]:
     return None, checked
 
 
+def _git_dir(path: str) -> str:
+    """Настоящий каталог .git — он не всегда лежит рядом (worktree, submodule
+    кладут туда файл-указатель)."""
+    code, out = _run(["git", "rev-parse", "--absolute-git-dir"], path, 30, env=_base_env())
+    return out.strip() if code == 0 else os.path.join(path, ".git")
+
+
+def _fetch_prebuilt_frontend(emit: Callable[[str], None], path: str, remote: str, branch: str) -> bool:
+    """Забрать ГОТОВУЮ сборку фронтенда из отдельной ветки вместо локальной.
+
+    Ветку наполняет .github/workflows/frontend-dist.yml: в ней лежит
+    содержимое frontend/dist одним orphan-коммитом, который каждый раз
+    перезаписывается force-push'ем.
+
+    Извлечение идёт во ВРЕМЕННЫЙ индекс (GIT_INDEX_FILE): обычный
+    `git checkout FETCH_HEAD -- .` записал бы все файлы сборки в основной
+    индекс репозитория, и рабочая копия осталась бы с сотней "staged"
+    файлов, которых там быть не должно.
+    """
+    import shutil
+
+    dist = os.path.join(path, "frontend", "dist")
+    url = remote_url(path, remote)
+    args, env = _git_auth(path, url)
+
+    emit(f"→ git fetch {remote} {branch} (готовая сборка, npm не нужен)")
+    code, out = _run(["git"] + args + ["fetch", "--depth=1", remote, branch], path, _GIT_TIMEOUT, env=env)
+    for line in out.splitlines():
+        emit(f"    {line}")
+    if code != 0:
+        emit(f"✗ Не удалось забрать ветку «{branch}» с готовой сборкой.")
+        if _looks_like_auth_failure(out):
+            emit("  Репозиторий не пустил — проверьте токен (`update status`).")
+        else:
+            emit("  Проверьте, что ветка существует и её наполняет workflow")
+            emit("  «Build frontend dist» (вкладка Actions на GitHub).")
+        return False
+
+    git_dir = _git_dir(path)
+    index_file = os.path.join(git_dir, "nd-dist-index")
+    shutil.rmtree(dist, ignore_errors=True)
+    os.makedirs(dist, exist_ok=True)
+
+    extract_env = _base_env()
+    extract_env["GIT_INDEX_FILE"] = index_file
+    code, out = _run(
+        ["git", f"--git-dir={git_dir}", f"--work-tree={dist}", "checkout", "FETCH_HEAD", "--", "."],
+        path, _GIT_TIMEOUT, env=extract_env,
+    )
+    try:
+        os.remove(index_file)
+    except OSError:
+        pass
+    if code != 0:
+        for line in out.splitlines()[-10:]:
+            emit(f"    {line}")
+        emit("✗ Не удалось распаковать готовую сборку.")
+        return False
+
+    _warn_if_stale_build(emit, path, dist)
+    emit(f"✓ Готовая сборка фронтенда взята из ветки «{branch}».")
+    return True
+
+
+def _warn_if_stale_build(emit: Callable[[str], None], path: str, dist: str) -> None:
+    """Предупредить, если сборку собрали ДО последних правок во frontend/.
+
+    Гонка реальная: `update` может приехать раньше, чем workflow досчитает
+    сборку, и тогда сайт молча получит старый фронтенд под новым бэкендом.
+    Сравнивается не сам SHA (после frontend-коммита обычно идут ещё
+    backend-коммиты, и простое несовпадение ничего не значит), а наличие
+    правок именно во frontend/ между сборкой и текущим HEAD.
+    """
+    marker = os.path.join(dist, ".build-sha")
+    if not os.path.isfile(marker):
+        return
+    try:
+        with open(marker, "r", encoding="utf-8") as fh:
+            build_sha = fh.read().strip()
+    except OSError:
+        return
+    if not build_sha:
+        return
+
+    code, out = _run(
+        ["git", "diff", "--name-only", f"{build_sha}..HEAD", "--", "frontend/"],
+        path, 60, env=_base_env(),
+    )
+    if code != 0:
+        # Коммита сборки нет в истории (обычное дело на shallow-копии) —
+        # сказать что-то определённое нельзя, молчим.
+        return
+    changed = [line for line in out.splitlines() if line.strip()]
+    if changed:
+        emit(f"! Готовая сборка отстаёт: после неё во frontend/ поменялось {len(changed)} файлов.")
+        emit(f"  Собрана на {build_sha[:7]}. Дождитесь workflow «Build frontend dist»")
+        emit("  и повторите `update`, иначе сайт останется на прошлой версии.")
+
+
 def _finish(
     emit: Callable[[str], None], path: str, frontend_touched: bool,
     force_restart: Optional[bool],
@@ -430,23 +539,35 @@ def _finish(
         if not os.path.isdir(frontend_dir):
             emit("! Менялся frontend/, но каталога нет — сборка пропущена.")
         else:
-            npm, checked = _resolve_npm()
-            if not npm:
-                emit("✗ Не найден исполняемый npm — фронтенд остался старым.")
-                emit("  Проверено: " + "; ".join(checked))
-                emit("  Либо установите Node.js/npm в контейнере, либо укажите полный")
-                emit("  путь к npm в настройке «npm: путь к исполняемому файлу» на")
-                emit("  странице «Администрирование».")
-                return False
-            for cmd, label in ((["ci"], "установка зависимостей"), (["run", "build"], "сборка")):
-                emit(f"→ {npm} {' '.join(cmd)} ({label}, это надолго)…")
-                code, out = _run([npm] + cmd, frontend_dir, _BUILD_TIMEOUT)
-                if code != 0:
-                    for line in out.splitlines()[-20:]:
-                        emit(f"    {line}")
-                    emit(f"✗ npm {' '.join(cmd)} завершилась с ошибкой — фронтенд остался старым.")
+            dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+            if dist_branch:
+                # Готовая сборка из CI имеет приоритет над локальной: она
+                # быстрее, детерминированнее и не требует Node.js на сервере.
+                remote = (settings.git_update_remote or "origin").strip()
+                if not _fetch_prebuilt_frontend(emit, path, remote, dist_branch):
                     return False
-            emit("✓ Фронтенд пересобран.")
+            else:
+                npm, checked = _resolve_npm()
+                if not npm:
+                    emit("✗ Не найден исполняемый npm — фронтенд остался старым.")
+                    emit("  Проверено: " + "; ".join(checked))
+                    emit("  Варианты:")
+                    emit("   1. Брать готовую сборку из CI — задайте ветку в настройке")
+                    emit("      «Ветка с готовой сборкой фронтенда» (обычно frontend-dist).")
+                    emit("      Собирать SPA на сервере тогда не нужно вообще.")
+                    emit("   2. Указать полный путь к npm в настройке «npm: путь к")
+                    emit("      исполняемому файлу», если Node.js в контейнере всё-таки есть.")
+                    emit("   3. Установить Node.js/npm в контейнер.")
+                    return False
+                for cmd, label in ((["ci"], "установка зависимостей"), (["run", "build"], "сборка")):
+                    emit(f"→ {npm} {' '.join(cmd)} ({label}, это надолго)…")
+                    code, out = _run([npm] + cmd, frontend_dir, _BUILD_TIMEOUT)
+                    if code != 0:
+                        for line in out.splitlines()[-20:]:
+                            emit(f"    {line}")
+                        emit(f"✗ npm {' '.join(cmd)} завершилась с ошибкой — фронтенд остался старым.")
+                        return False
+                emit("✓ Фронтенд пересобран.")
     elif frontend_touched:
         emit("! Менялся frontend/, но пересборка отключена в настройках —")
         emit("  сайт продолжит отдавать старую сборку.")

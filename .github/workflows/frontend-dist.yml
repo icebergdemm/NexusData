@@ -1,0 +1,81 @@
+name: Build frontend dist
+
+# Собирает SPA и кладёт готовый frontend/dist в отдельную ветку, откуда его
+# забирает консольная команда `update` (services_git_update.py,
+# _fetch_prebuilt_frontend). Нужно там, где на сервере нет Node.js и поставить
+# его некуда — например, в контейнере Pterodactyl: собирать SPA рядом с
+# работающим приложением на контейнере с жёстким лимитом памяти всё равно
+# плохая идея.
+#
+# Чтобы это заработало, на сервере надо задать настройку «Ветка с готовой
+# сборкой фронтенда» = имя ветки ниже («Администрирование» → «Обновление кода
+# из git»).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-dist.yml"
+  workflow_dispatch: {}
+
+# Ветка перезаписывается целиком, поэтому две параллельные сборки бессмысленны:
+# выиграет та, что финиширует последней, независимо от того, чей код новее.
+concurrency:
+  group: frontend-dist
+  cancel-in-progress: true
+
+env:
+  DIST_BRANCH: frontend-dist
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      # Единственное, что нужно — force-push в ветку со сборкой.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Установка зависимостей
+        working-directory: frontend
+        run: npm ci
+
+      - name: Сборка
+        working-directory: frontend
+        run: npm run build
+
+      - name: Публикация сборки в ветку ${{ env.DIST_BRANCH }}
+        working-directory: frontend/dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Метка исходного коммита: по ней `update` на сервере понимает, не
+          # отстала ли сборка от кода, который он только что забрал.
+          echo "${GITHUB_SHA}" > .build-sha
+
+          # Отдельный репозиторий прямо в dist/: ветка должна содержать
+          # СОДЕРЖИМОЕ сборки в корне, без истории основного кода. Родительский
+          # .gitignore (в котором frontend/dist) на него не действует — git
+          # ищет правила только до корня своего репозитория.
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b "${DIST_BRANCH}"
+          git add -A
+          git commit -q -m "Сборка фронтенда из ${GITHUB_SHA:0:7}"
+
+          # force: каждый раз ровно один коммит, история сборок не копится.
+          git push -q --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${DIST_BRANCH}"
+
+          echo "Опубликовано в ветку ${DIST_BRANCH}: $(find . -type f -not -path './.git/*' | wc -l) файлов"

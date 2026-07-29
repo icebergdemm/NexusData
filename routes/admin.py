@@ -4989,6 +4989,7 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     "git_update_repo_dir", "git_update_repo_url", "git_update_remote", "git_update_branch",
     "git_update_build_frontend", "git_update_restart_backend",
     "git_update_token", "git_update_token_username", "git_update_npm_path",
+    "git_update_frontend_dist_branch",
 }
 
 # Токен доступа к репозиторию наружу отдаётся ЗАГЛУШКОЙ, а не значением:
@@ -5080,6 +5081,7 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "git_update_build_frontend": s.git_update_build_frontend,
             "git_update_restart_backend": s.git_update_restart_backend,
             "git_update_npm_path": s.git_update_npm_path,
+            "git_update_frontend_dist_branch": s.git_update_frontend_dist_branch,
         })
     return cfg
 
@@ -5235,6 +5237,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "git_update_build_frontend": "GIT_UPDATE_BUILD_FRONTEND",
         "git_update_restart_backend": "GIT_UPDATE_RESTART_BACKEND",
         "git_update_npm_path": "GIT_UPDATE_NPM_PATH",
+        "git_update_frontend_dist_branch": "GIT_UPDATE_FRONTEND_DIST_BRANCH",
     }
 
     for field, env_key in field_map.items():

@@ -94,10 +94,16 @@ const GIT_UPDATE_FIELDS: { key: string; label: string; placeholder?: string; hin
     hint: "Для GitHub годится любое непустое значение, для GitLab — oauth2.",
   },
   {
+    key: "git_update_frontend_dist_branch",
+    label: "Ветка с готовой сборкой фронтенда",
+    placeholder: "пусто — собирать локально через npm",
+    hint: "Обычно frontend-dist. Задайте, если на сервере нет Node.js: тогда «update» скачивает готовый dist из этой ветки и npm не нужен вообще. Ветку наполняет workflow «Build frontend dist» на GitHub при каждом изменении frontend/.",
+  },
+  {
     key: "git_update_npm_path",
     label: "npm: путь к исполняемому файлу",
     placeholder: "пусто — искать в PATH и частых местах установки",
-    hint: "Задайте, если сборка фронтенда падает с «Команда не найдена: npm» или «npm не найден» — типично для контейнера без интерактивного login-shell, где Node.js стоит через nvm: PATH процесса приложения его не видит. Посмотреть, что уже проверено, можно в `update status`.",
+    hint: "Нужен только при локальной сборке (когда ветка выше не задана), если она падает с «Команда не найдена: npm» — типично для контейнера без интерактивного login-shell, где Node.js стоит через nvm: PATH процесса приложения его не видит. Что уже проверено, показывает «update status».",
   },
 ]
 
