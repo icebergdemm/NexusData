@@ -160,8 +160,18 @@ def _maintenance_cmd(rest: str):
 
 def _update_cmd(rest: str):
     """`update` — обновление кода из git. Сама логика в services_git_update.py;
-    здесь только разбор аргумента и печать хода работы в консоль."""
+    здесь только разбор аргумента и печать хода работы в консоль.
+
+    Эта консоль живёт в master-процессе uvicorn (см. докстринг модуля) — в
+    многопроцессном режиме HTTP-запросы (в том числе сохранение настроек на
+    странице «Администрирование») обслуживают ОТДЕЛЬНЫЕ воркер-процессы.
+    Когда воркер пишет .env и сбрасывает у себя кэш get_settings(), master
+    об этом не узнаёт и продолжает работать со старыми значениями из своего
+    собственного @lru_cache. Поэтому сначала сбрасываем кэш здесь — .env на
+    диске уже актуален, и Settings() перечитает его заново."""
     import services_git_update
+    from config import reset_settings_cache
+    reset_settings_cache()
 
     parts = rest.strip().lower().split()
     action = parts[0] if parts else ""
