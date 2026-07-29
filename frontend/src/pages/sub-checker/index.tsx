@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
-  CheckCircle2, ClipboardCheck, FileUp, History, Loader2, Settings2, Ship, XCircle,
+  CheckCircle2, ClipboardCheck, History, Loader2, Settings2, Ship, XCircle,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 import { canDo, useCurrentAdmin } from "@/lib/auth"
 import { CheckerClasses } from "./classes"
+import { SubFileDropZone } from "./DropZone"
 import { SubCheckDialog, SubCheckReport } from "./report"
 import { CheckerSettings } from "./settings"
 import type { CheckerConfig, CheckResponse, ConfigResponse, HistoryRow, SubReport } from "./types"
@@ -39,7 +40,6 @@ function UploadTab({ canCheck }: { canCheck: boolean }) {
   const [file, setFile] = useState<File | null>(null)
   const [report, setReport] = useState<SubReport | null>(null)
   const queryClient = useQueryClient()
-  const inputRef = useRef<HTMLInputElement>(null)
 
   const check = useMutation({
     mutationFn: () => {
@@ -59,15 +59,13 @@ function UploadTab({ canCheck }: { canCheck: boolean }) {
     <div className="space-y-4">
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 p-4">
-          <input
-            ref={inputRef} type="file" accept=".sub" className="hidden"
-            onChange={(e) => { setFile(e.target.files?.[0] ?? null); setReport(null) }}
-          />
-          <Button variant="outline" disabled={!canCheck} onClick={() => inputRef.current?.click()}>
-            <FileUp className="size-4" /> Выбрать .sub файл
-          </Button>
-          <span className="text-sm text-muted-foreground">{file ? file.name : "Файл не выбран"}</span>
-          <div className="flex-1" />
+          <div className="min-w-[280px] flex-1">
+            <SubFileDropZone
+              file={file}
+              disabled={!canCheck}
+              onFile={(f) => { setFile(f); setReport(null) }}
+            />
+          </div>
           <Button disabled={!file || !canCheck || check.isPending} onClick={() => check.mutate()}>
             {check.isPending ? <Loader2 className="size-4 animate-spin" /> : <ClipboardCheck className="size-4" />}
             Проверить

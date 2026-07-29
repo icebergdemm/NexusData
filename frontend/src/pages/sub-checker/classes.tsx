@@ -1,6 +1,6 @@
-import { useRef, useState } from "react"
+import { useState } from "react"
 import { toast } from "sonner"
-import { ChevronDown, ChevronRight, Plus, RotateCcw, Save, Search, Trash2, Upload } from "lucide-react"
+import { ChevronDown, ChevronRight, Plus, RotateCcw, Save, Search, Trash2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
+import { SubFileDropZone } from "./DropZone"
 import type { ClassGroupSpec, ClassItemSpec, ShipClassSpec } from "./types"
 
 const REQUIREMENT_LABELS: Record<string, string> = {
@@ -216,12 +217,14 @@ export function CheckerClasses({ classes, onChange, canEdit, onSave, onReset, sa
   dirty: boolean
 }) {
   const [suggestions, setSuggestions] = useState<string[]>([])
-  const fileInput = useRef<HTMLInputElement>(null)
+  const [identifiersFile, setIdentifiersFile] = useState<File | null>(null)
+  const [loadingIdentifiers, setLoadingIdentifiers] = useState(false)
   const disabled = !canEdit
 
   const loadIdentifiers = async (file: File) => {
     const form = new FormData()
     form.set("sub_file", file)
+    setLoadingIdentifiers(true)
     try {
       const res = await api.postForm<{ identifiers: { identifier: string; count: number }[] }>(
         "/api/v1/admin/sub-checker/identifiers", form)
@@ -229,6 +232,11 @@ export function CheckerClasses({ classes, onChange, canEdit, onSave, onReset, sa
       toast.success(`Подсказки загружены: ${res.identifiers.length} идентификаторов`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Не удалось разобрать файл")
+    } finally {
+      setLoadingIdentifiers(false)
+      // Файл нужен только для извлечения подсказок, а не для хранения —
+      // очищаем зону загрузки, чтобы её можно было использовать снова.
+      setIdentifiersFile(null)
     }
   }
 
@@ -238,13 +246,14 @@ export function CheckerClasses({ classes, onChange, canEdit, onSave, onReset, sa
         {!canEdit && <Badge variant="outline">Только просмотр — нет права на изменение классов</Badge>}
         {dirty && canEdit && <Badge variant="secondary">Есть несохранённые изменения</Badge>}
         <div className="flex-1" />
-        <input
-          ref={fileInput} type="file" accept=".sub" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) loadIdentifiers(f); e.target.value = "" }}
-        />
-        <Button size="sm" variant="outline" disabled={disabled} onClick={() => fileInput.current?.click()}>
-          <Upload className="size-3.5" /> Подсказки из .sub
-        </Button>
+        <div className="w-56">
+          <SubFileDropZone
+            compact
+            file={identifiersFile}
+            disabled={disabled || loadingIdentifiers}
+            onFile={(f) => { setIdentifiersFile(f); if (f) loadIdentifiers(f) }}
+          />
+        </div>
         <Button size="sm" variant="outline" disabled={disabled || saving} onClick={onReset}>
           <RotateCcw className="size-3.5" /> Сбросить к ГОСТу
         </Button>
