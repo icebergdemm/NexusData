@@ -256,6 +256,15 @@ def status_text() -> str:
         lines.append("Доступ к remote:  НЕТ")
         for line in out.splitlines()[:5]:
             lines.append(f"    {line}")
+
+    npm, checked = _resolve_npm()
+    if npm:
+        lines.append(f"npm:              {npm}")
+    else:
+        lines.append("npm:              НЕ НАЙДЕН — сборка фронтенда при update отвалится")
+        lines.append("    Проверено: " + "; ".join(checked))
+        lines.append("    Установите Node.js/npm в контейнере или укажите путь к npm")
+        lines.append("    на странице «Администрирование».")
     return "\n".join(lines)
 
 
@@ -366,6 +375,48 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
     return _finish(emit, path, frontend_touched, force_restart)
 
 
+def _resolve_npm() -> Tuple[Optional[str], List[str]]:
+    """Путь к исполняемому npm и список мест, где его поискали (для
+    диагностики, если не нашли).
+
+    Явно заданный путь в настройках — приоритет. Дальше PATH этого процесса,
+    и только потом частые места установки Node.js помимо PATH: контейнер
+    Pterodactyl обычно НЕ login-shell, и если Node.js на нём стоит через nvm,
+    PATH процесса приложения его не увидит — nvm прописывает его в
+    ~/.bashrc/~/.profile, которые читает только интерактивный login-shell."""
+    import glob
+    import shutil
+
+    checked: List[str] = []
+
+    configured = (get_settings().git_update_npm_path or "").strip()
+    if configured:
+        checked.append(configured)
+        if os.path.isfile(configured) and os.access(configured, os.X_OK):
+            return configured, checked
+        return None, checked
+
+    for name in (("npm.cmd", "npm.exe", "npm") if os.name == "nt" else ("npm",)):
+        found = shutil.which(name)
+        checked.append(f"PATH ({name})")
+        if found:
+            return found, checked
+
+    home = os.path.expanduser("~")
+    candidates = [
+        "/usr/local/bin/npm", "/usr/bin/npm", "/opt/nodejs/bin/npm",
+        os.path.join(home, ".nvm", "versions", "node", "*", "bin", "npm"),
+        os.path.join(home, ".volta", "bin", "npm"),
+        os.path.join(home, "n", "bin", "npm"),
+    ]
+    for pattern in candidates:
+        checked.append(pattern)
+        for match in sorted(glob.glob(pattern), reverse=True):  # новые версии nvm первыми
+            if os.path.isfile(match) and os.access(match, os.X_OK):
+                return match, checked
+    return None, checked
+
+
 def _finish(
     emit: Callable[[str], None], path: str, frontend_touched: bool,
     force_restart: Optional[bool],
@@ -379,9 +430,16 @@ def _finish(
         if not os.path.isdir(frontend_dir):
             emit("! Менялся frontend/, но каталога нет — сборка пропущена.")
         else:
-            npm = "npm.cmd" if os.name == "nt" else "npm"
+            npm, checked = _resolve_npm()
+            if not npm:
+                emit("✗ Не найден исполняемый npm — фронтенд остался старым.")
+                emit("  Проверено: " + "; ".join(checked))
+                emit("  Либо установите Node.js/npm в контейнере, либо укажите полный")
+                emit("  путь к npm в настройке «npm: путь к исполняемому файлу» на")
+                emit("  странице «Администрирование».")
+                return False
             for cmd, label in ((["ci"], "установка зависимостей"), (["run", "build"], "сборка")):
-                emit(f"→ npm {' '.join(cmd)} ({label}, это надолго)…")
+                emit(f"→ {npm} {' '.join(cmd)} ({label}, это надолго)…")
                 code, out = _run([npm] + cmd, frontend_dir, _BUILD_TIMEOUT)
                 if code != 0:
                     for line in out.splitlines()[-20:]:

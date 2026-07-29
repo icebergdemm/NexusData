@@ -93,6 +93,12 @@ const GIT_UPDATE_FIELDS: { key: string; label: string; placeholder?: string; hin
     placeholder: "x-access-token",
     hint: "Для GitHub годится любое непустое значение, для GitLab — oauth2.",
   },
+  {
+    key: "git_update_npm_path",
+    label: "npm: путь к исполняемому файлу",
+    placeholder: "пусто — искать в PATH и частых местах установки",
+    hint: "Задайте, если сборка фронтенда падает с «Команда не найдена: npm» или «npm не найден» — типично для контейнера без интерактивного login-shell, где Node.js стоит через nvm: PATH процесса приложения его не видит. Посмотреть, что уже проверено, можно в `update status`.",
+  },
 ]
 
 const GIT_UPDATE_TOGGLES: { key: string; label: string; hint: string }[] = [
