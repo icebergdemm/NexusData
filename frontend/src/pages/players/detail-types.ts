@@ -118,6 +118,10 @@ export interface PlayerDetailResponse {
   kits: Record<string, string>
   kval_kits: Record<string, number>
   custom_items: Record<string, number>
+  /** Предметы, привязанные к профессии: {профессия: {item_id: количество}}.
+   * Отдельно от custom_items, потому что `items` в контракте с игровым
+   * сервером — плоский {item_id: количество}, и его форму менять нельзя. */
+  custom_job_items: Record<string, Record<string, number>>
   custom_stats: Record<string, number | Record<string, number>>
   custom_talents: Record<string, string[]>
   available_kval_kits: AvailableKvalKit[]

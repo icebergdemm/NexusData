@@ -107,6 +107,16 @@ class PlayerDataOut(PlayerDataBase):
     last_login_time: datetime
     rank_name: Optional[str] = None
     kit_name: Optional[str] = None
+    # Контракт с игровым плагином (см. локальный GAME_SERVER_API_GUIDE.md):
+    #   kval_kits: {job_id: level}
+    #   items:     {item_id: количество}            — выдаётся всегда
+    #   job_items: {job_id: {item_id: количество}}  — только на этой профессии
+    #   stats:     {"all": N} | {job_id: {skill: N}}
+    #   talents:   {job_id: [talent_id, ...]}
+    # `job_items` добавлен позже и НАМЕРЕННО отдельным ключом: форма `items`
+    # часть контракта, и вложить профессии внутрь неё означало бы сломать
+    # плагин, который её уже читает. Плагин, не знающий про job_items, просто
+    # не выдаёт профессиональные предметы — остальное работает как раньше.
     achievements_data: Optional[Dict[str, Any]] = Field(default=None, description="Raw achievements/rewards JSON from DB")
     steam_avatar_url: Optional[str] = None
     forced_display_name: Optional[str] = Field(default=None, description="Admin-assigned display name — takes precedence over player_last_time_name wherever the player's name is shown")
@@ -139,7 +149,10 @@ class PlayerDataOut(PlayerDataBase):
         # Also set the legacy 'achievements' list field for backward compatibility
         # (extract keys from dict if present)
         if isinstance(raw_ach, dict):
-            # Provide a flat list of item IDs for .NET clients that read 'achievements' field
+            # Provide a flat list of item IDs for .NET clients that read 'achievements' field.
+            # ТОЛЬКО общие `items`: профессиональные (job_items) сюда не
+            # попадают намеренно — плоский список теряет привязку к профессии,
+            # и клиент выдал бы их на любой профессии.
             items = raw_ach.get("items", {})
             data.achievements = list(items.keys()) if items else []
         from cache_versioning import compute_player_profile_hash

@@ -1847,6 +1847,7 @@ async def api_player_detail(
         "kits": settings.kits_mapping,
         "kval_kits": raw_achievements.get("kval_kits", {}),
         "custom_items": raw_achievements.get("items", {}),
+        "custom_job_items": raw_achievements.get("job_items", {}),
         "custom_stats": raw_achievements.get("stats", {}),
         "custom_talents": raw_achievements.get("talents", {}),
         "available_kval_kits": available_kval_kits,
@@ -3836,12 +3837,23 @@ async def set_reward_item(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Set (add or update) a custom item for a player."""
+    """Выдать (или изменить количество) дополнительный предмет.
+
+    Без job_id (или с job_id="all") предмет попадает в `items` — он выдаётся
+    независимо от выбранной профессии, как было всегда. С конкретной
+    профессией — в `job_items[job_id]`.
+
+    ОТДЕЛЬНЫМ ключом, а не вложением внутрь `items`: `items` — часть
+    контракта с игровым сервером ({item_id: количество}, см.
+    GAME_SERVER_API_GUIDE.md), и смена его формы сломала бы плагин, который
+    уже это читает. Новый ключ старый плагин просто игнорирует.
+    """
     if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
     item_id = body.get("item_id", "").strip()
+    job_id = (body.get("job_id") or "").strip()
     quantity = body.get("quantity")
     if not item_id:
         raise HTTPException(status_code=400, detail="item_id required")
@@ -3853,13 +3865,25 @@ async def set_reward_item(
         raise HTTPException(status_code=400, detail="quantity must be a positive integer")
     player = _get_rewards_player(player_id, db)
     ach = _get_achievements_dict(player)
-    items = dict(ach.get("items", {}))
-    items[item_id] = quantity
-    ach["items"] = items
+
+    if not job_id or job_id == "all":
+        items = dict(ach.get("items", {}))
+        items[item_id] = quantity
+        ach["items"] = items
+    else:
+        job_items = {k: dict(v) for k, v in (ach.get("job_items") or {}).items() if isinstance(v, dict)}
+        bucket = job_items.setdefault(job_id, {})
+        bucket[item_id] = quantity
+        ach["job_items"] = job_items
+
     player.achievements = ach
     db.commit()
-    log_admin_action(db, current_admin.id, "set_reward_item", {"player_id": player_id, "item_id": item_id, "quantity": quantity})
-    return JSONResponse({"status": "ok", "items": ach["items"]})
+    log_admin_action(db, current_admin.id, "set_reward_item", {
+        "player_id": player_id, "item_id": item_id, "quantity": quantity, "job_id": job_id or "all",
+    })
+    return JSONResponse({
+        "status": "ok", "items": ach.get("items", {}), "job_items": ach.get("job_items", {}),
+    })
 
 
 @router.delete("/api/v1/admin/players/{player_id}/rewards/items")
@@ -3867,24 +3891,44 @@ async def remove_reward_item(
     request: Request,
     player_id: int,
     item_id: str = Query(...),
+    job_id: Optional[str] = Query(None, description="Профессия; пусто или «all» — предмет из общего списка"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Remove a custom item from player achievements."""
+    """Снять дополнительный предмет — общий (`items`) или профессиональный
+    (`job_items[job_id]`), в зависимости от job_id."""
     if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     player = _get_rewards_player(player_id, db)
     ach = _get_achievements_dict(player)
-    items = dict(ach.get("items", {}))
-    if item_id not in items:
-        raise HTTPException(status_code=404, detail="Item not found")
-    del items[item_id]
-    ach["items"] = items
+    job = (job_id or "").strip()
+
+    if not job or job == "all":
+        items = dict(ach.get("items", {}))
+        if item_id not in items:
+            raise HTTPException(status_code=404, detail="Item not found")
+        del items[item_id]
+        ach["items"] = items
+    else:
+        job_items = {k: dict(v) for k, v in (ach.get("job_items") or {}).items() if isinstance(v, dict)}
+        if item_id not in job_items.get(job, {}):
+            raise HTTPException(status_code=404, detail="Item not found")
+        del job_items[job][item_id]
+        # Пустую профессию не оставляем: иначе в справочнике наград копятся
+        # профессии без предметов, которые интерфейсу нечем показать.
+        if not job_items[job]:
+            del job_items[job]
+        ach["job_items"] = job_items
+
     player.achievements = ach
     db.commit()
-    log_admin_action(db, current_admin.id, "remove_reward_item", {"player_id": player_id, "item_id": item_id})
-    return JSONResponse({"status": "ok", "items": ach["items"]})
+    log_admin_action(db, current_admin.id, "remove_reward_item", {
+        "player_id": player_id, "item_id": item_id, "job_id": job or "all",
+    })
+    return JSONResponse({
+        "status": "ok", "items": ach.get("items", {}), "job_items": ach.get("job_items", {}),
+    })
 
 
 @router.post("/api/v1/admin/players/{player_id}/rewards/stats")

@@ -23,6 +23,8 @@ interface RewardsSectionProps {
   canEdit: boolean
   kvalKits: Record<string, number>
   items: Record<string, number>
+  /** Предметы, привязанные к профессии: {профессия: {item_id: количество}}. */
+  jobItems: Record<string, Record<string, number>>
   stats: Record<string, number | Record<string, number>>
   talents: Record<string, string[]>
   availableKvalKits: AvailableKvalKit[]
@@ -66,7 +68,7 @@ function JobSelect({ value, onChange, reference, includeAll, placeholder = "Пр
 }
 
 export function RewardsSection({
-  playerId, canEdit, kvalKits, items, stats, talents, availableKvalKits, reference, onChanged,
+  playerId, canEdit, kvalKits, items, jobItems, stats, talents, availableKvalKits, reference, onChanged,
 }: RewardsSectionProps) {
   const queryClient = useQueryClient()
 
@@ -78,7 +80,7 @@ export function RewardsSection({
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <KvalKitsCard playerId={playerId} canEdit={canEdit} kvalKits={kvalKits} available={availableKvalKits} reference={reference} onDone={invalidateAndRefresh} />
-      <ItemsCard playerId={playerId} canEdit={canEdit} items={items} onDone={invalidateAndRefresh} />
+      <ItemsCard playerId={playerId} canEdit={canEdit} items={items} jobItems={jobItems} reference={reference} onDone={invalidateAndRefresh} />
       <StatsCard playerId={playerId} canEdit={canEdit} stats={stats} reference={reference} onDone={invalidateAndRefresh} />
       <TalentsCard playerId={playerId} canEdit={canEdit} talents={talents} reference={reference} onDone={invalidateAndRefresh} />
     </div>
@@ -142,23 +144,42 @@ function KvalKitsCard({ playerId, canEdit, kvalKits, available, reference, onDon
   )
 }
 
-function ItemsCard({ playerId, canEdit, items, onDone }: {
-  playerId: string; canEdit: boolean; items: Record<string, number>; onDone: () => void
+function ItemsCard({ playerId, canEdit, items, jobItems, reference, onDone }: {
+  playerId: string; canEdit: boolean
+  items: Record<string, number>
+  jobItems: Record<string, Record<string, number>>
+  reference: RewardReference | undefined
+  onDone: () => void
 }) {
   const { data: catalog } = useItemCatalog()
   const [search, setSearch] = useState("")
   const [itemId, setItemId] = useState("")
   const [qty, setQty] = useState("1")
+  const [jobId, setJobId] = useState(ALL_JOBS)
 
   const set = useMutation({
-    mutationFn: (v: { item_id: string; quantity: number }) => api.post(`/api/v1/admin/players/${playerId}/rewards/items`, v),
+    mutationFn: (v: { item_id: string; quantity: number; job_id: string }) => api.post(`/api/v1/admin/players/${playerId}/rewards/items`, v),
     onSuccess: () => { toast.success("Предмет выдан"); setItemId(""); setSearch(""); setQty("1"); onDone() },
     onError: (e: Error) => toast.error(e.message),
   })
   const remove = useMutation({
-    mutationFn: (item_id: string) => api.delete(`/api/v1/admin/players/${playerId}/rewards/items?item_id=${encodeURIComponent(item_id)}`),
+    mutationFn: (v: { item_id: string; job_id: string }) => {
+      const params = new URLSearchParams({ item_id: v.item_id })
+      if (v.job_id !== ALL_JOBS) params.set("job_id", v.job_id)
+      return api.delete(`/api/v1/admin/players/${playerId}/rewards/items?${params}`)
+    },
     onSuccess: () => { toast.success("Предмет удалён"); onDone() },
+    onError: (e: Error) => toast.error(e.message),
   })
+
+  // Общие предметы и профессиональные — одним списком, сгруппированным по
+  // профессии: так видно, что именно выдано «всем», а что только капитану.
+  const groups: { job: string; entries: [string, number][] }[] = []
+  if (Object.keys(items).length) groups.push({ job: ALL_JOBS, entries: Object.entries(items) })
+  for (const [job, bucket] of Object.entries(jobItems ?? {})) {
+    const entries = Object.entries(bucket ?? {})
+    if (entries.length) groups.push({ job, entries })
+  }
 
   // Тот же приём, что на складе Диспетчерской: каталог в пару сотен позиций
   // фильтруется на клиенте мгновенно, отдельный компонент-комбобокс ради
@@ -177,18 +198,32 @@ function ItemsCard({ playerId, canEdit, items, onDone }: {
     <Card>
       <CardHeader><CardTitle className="text-sm">📦 Дополнительные предметы</CardTitle></CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(items).map(([id, q]) => (
-            <Badge key={id} variant="outline" className="gap-1.5 border-warning/40 text-warning">
-              <ItemIcon identifier={id} size={16} />
-              {itemDisplayName(catalog, id)} ×{q}
-              {canEdit && <button onClick={() => remove.mutate(id)} className="ml-0.5 hover:text-destructive">✕</button>}
-            </Badge>
+        <div className="space-y-2">
+          {groups.map((group) => (
+            <div key={group.job} className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-semibold text-muted-foreground">{jobName(reference, group.job)}:</span>
+              {group.entries.map(([id, q]) => (
+                <Badge key={id} variant="outline" className="gap-1.5 border-warning/40 text-warning">
+                  <ItemIcon identifier={id} size={16} />
+                  {itemDisplayName(catalog, id)} ×{q}
+                  {canEdit && (
+                    <button onClick={() => remove.mutate({ item_id: id, job_id: group.job })} className="ml-0.5 hover:text-destructive">✕</button>
+                  )}
+                </Badge>
+              ))}
+            </div>
           ))}
-          {!Object.keys(items).length && <span className="text-sm text-muted-foreground">Нет доп. предметов</span>}
+          {!groups.length && <span className="text-sm text-muted-foreground">Нет доп. предметов</span>}
         </div>
         {canEdit && (
           <div className="space-y-2">
+            <JobSelect
+              value={jobId}
+              onChange={setJobId}
+              reference={reference}
+              includeAll
+              placeholder="Профессия…"
+            />
             {itemId ? (
               <div className="flex items-center gap-2 rounded-md border p-2">
                 <ItemIcon identifier={itemId} size={28} />
@@ -236,11 +271,21 @@ function ItemsCard({ playerId, canEdit, items, onDone }: {
             {itemId && (
               <div className="flex gap-2">
                 <Input type="number" min={1} placeholder="кол-во" value={qty} onChange={(e) => setQty(e.target.value)} className="w-24" />
-                <Button size="sm" className="flex-1" onClick={() => set.mutate({ item_id: itemId, quantity: Number(qty) || 1 })}>
-                  Выдать
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  disabled={set.isPending}
+                  onClick={() => set.mutate({ item_id: itemId, quantity: Number(qty) || 1, job_id: jobId })}
+                >
+                  Выдать {jobId === ALL_JOBS ? "всем" : jobName(reference, jobId)}
                 </Button>
               </div>
             )}
+            <p className="text-xs text-muted-foreground">
+              {jobId === ALL_JOBS
+                ? "Предмет выдаётся независимо от выбранной игроком профессии."
+                : `Предмет выдаётся только когда игрок заходит как «${jobName(reference, jobId)}».`}
+            </p>
           </div>
         )}
       </CardContent>
