@@ -12,7 +12,20 @@ import { WorldCanvas } from "@/pages/world-overview/WorldCanvas"
 import { worldStateApi } from "@/pages/world-overview/api"
 import { dispatchActionsApi } from "./actionsApi"
 
-const SERVERS = ["ASPER1", "ASPER2"]
+/** Имя сервера из мировой телеметрии → ASPER1/ASPER2.
+ *
+ *  Плагин присылает server_name в свободной форме («Asper 1», «asper1»,
+ *  «ASPER1»), а очередь действий различает серверы строго по ASPER1/ASPER2.
+ *  Сравнение строка-в-строку промахивалось, и диалог считал, что активного
+ *  раунда нет, хотя «Обзор мира» тот же раунд показывал. Сводим по цифре в
+ *  названии — ровно так же, как это делает бэкенд при выборе Discord-канала
+ *  диспетчерской (_resolve_dispatch_channel_key). */
+function resolveTargetServer(raw: string | null | undefined): string | null {
+  const name = (raw ?? "").toUpperCase()
+  if (name.includes("1")) return "ASPER1"
+  if (name.includes("2")) return "ASPER2"
+  return null
+}
 
 /** Torpedo strike — pick a server, click a point on that round's live map
  * (WorldCanvas in target-picking mode) to set the crosshair, confirm. Only
@@ -23,18 +36,24 @@ export function TorpedoDialog({ open, onOpenChange, defaultServer }: {
   onOpenChange: (open: boolean) => void
   defaultServer?: string
 }) {
-  const [serverName, setServerName] = useState(
-    defaultServer && SERVERS.includes(defaultServer) ? defaultServer : SERVERS[0]
-  )
+  // Выбираем не сервер, а конкретный активный раунд: бить всё равно можно
+  // только по карте, а карта есть лишь у раунда из мировой телеметрии.
+  const [roundId, setRoundId] = useState<string | null>(null)
   const [target, setTarget] = useState<{ x: number; y: number } | null>(null)
 
-  const { data: roundsData } = useQuery({
+  const { data: roundsData, isLoading: roundsLoading } = useQuery({
     queryKey: ["world-rounds"],
     queryFn: () => worldStateApi.listRounds(),
     enabled: open,
     refetchInterval: open ? 5000 : false,
   })
-  const round = roundsData?.rounds.find((r) => r.server_name === serverName) ?? null
+  const rounds = roundsData?.rounds ?? []
+  const round =
+    rounds.find((r) => r.round_id === roundId) ??
+    rounds.find((r) => resolveTargetServer(r.server_name) === resolveTargetServer(defaultServer)) ??
+    rounds[0] ??
+    null
+  const serverName = resolveTargetServer(round?.server_name)
 
   const { data: geometry } = useQuery({
     queryKey: ["world-geometry", round?.round_id],
@@ -50,7 +69,7 @@ export function TorpedoDialog({ open, onOpenChange, defaultServer }: {
   })
 
   const strikeMutation = useMutation({
-    mutationFn: () => dispatchActionsApi.torpedo(serverName, target!.x, target!.y),
+    mutationFn: () => dispatchActionsApi.torpedo(serverName!, target!.x, target!.y),
     onSuccess: () => {
       toast.success("Торпедный удар поставлен в очередь")
       onOpenChange(false)
@@ -67,11 +86,21 @@ export function TorpedoDialog({ open, onOpenChange, defaultServer }: {
           <DialogDescription>Выберите сервер и укажите точку удара кликом по карте раунда.</DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-3">
-          <Select value={serverName} onValueChange={(v) => { setServerName(v); setTarget(null) }}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+        <div className="flex flex-wrap items-center gap-3">
+          <Select
+            value={round?.round_id ?? ""}
+            onValueChange={(v) => { setRoundId(v); setTarget(null) }}
+            disabled={!rounds.length}
+          >
+            <SelectTrigger className="w-72">
+              <SelectValue placeholder={roundsLoading ? "Загрузка…" : "Активных раундов нет"} />
+            </SelectTrigger>
             <SelectContent>
-              {SERVERS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              {rounds.map((r) => (
+                <SelectItem key={r.round_id} value={r.round_id}>
+                  {r.server_name ?? "?"} — {r.level_name ?? "?"}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           {target ? (
@@ -81,10 +110,17 @@ export function TorpedoDialog({ open, onOpenChange, defaultServer }: {
           )}
         </div>
 
+        {round && !serverName && (
+          <p className="text-xs text-destructive">
+            Не удалось определить, какому серверу адресовать удар: раунд идёт на «{round.server_name ?? "?"}»,
+            а очередь действий различает только ASPER1 и ASPER2.
+          </p>
+        )}
+
         <div className="h-[420px]">
           {!round ? (
             <div className="flex h-full items-center justify-center rounded-lg border text-sm text-muted-foreground">
-              На сервере {serverName} нет активного раунда
+              {roundsLoading ? "Загрузка активных раундов…" : "Нет активных раундов"}
             </div>
           ) : !geometry || !state ? (
             <Skeleton className="h-full" />
@@ -105,7 +141,7 @@ export function TorpedoDialog({ open, onOpenChange, defaultServer }: {
           <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
           <Button
             variant="destructive"
-            disabled={!target || strikeMutation.isPending}
+            disabled={!target || !serverName || strikeMutation.isPending}
             onClick={() => strikeMutation.mutate()}
           >
             Нанести удар

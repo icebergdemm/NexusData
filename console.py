@@ -52,6 +52,11 @@ _HELP = """
                                  продолжает показывать страницу техработ
   maintenance on [текст]|off   — вкл/выкл режим технических работ
   db check                     — принудительно проверить подключение к БД
+  update [restart|norestart]   — забрать код из git (git pull --ff-only),
+                                 при изменениях во frontend/ пересобрать его;
+                                 аргумент разово перекрывает настройку
+                                 перезапуска backend
+  update status                — каталог, ветка и текущая ревизия
   help                         — эта справка
 """.strip()
 
@@ -146,6 +151,28 @@ def _maintenance_cmd(rest: str):
         print("Использование: maintenance on [текст]|off")
 
 
+def _update_cmd(rest: str):
+    """`update` — обновление кода из git. Сама логика в services_git_update.py;
+    здесь только разбор аргумента и печать хода работы в консоль."""
+    import services_git_update
+
+    action = rest.strip().lower()
+    if action == "status":
+        print(services_git_update.status_text())
+        return
+
+    force_restart = None
+    if action == "restart":
+        force_restart = True
+    elif action == "norestart":
+        force_restart = False
+    elif action:
+        print("Использование: update [restart|norestart] | update status")
+        return
+
+    services_git_update.run_update(print, force_restart=force_restart)
+
+
 def _handle(line: str):
     parts = line.strip().split(maxsplit=1)
     if not parts:
@@ -167,6 +194,8 @@ def _handle(line: str):
         _maintenance_cmd(rest)
     elif cmd == "db" and rest.strip().lower() == "check":
         _db_check()
+    elif cmd == "update":
+        _update_cmd(rest)
     else:
         print(f"Неизвестная команда: {line!r}. 'help' — список команд.")
 

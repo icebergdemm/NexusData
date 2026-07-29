@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 import secrets
 import threading
@@ -254,6 +254,85 @@ def _resolve_oauth_redirect_uri(request: Request) -> str:
     if host in _oauth_allowed_hosts():
         return f"{request.url.scheme}://{request.url.netloc}/auth/discord/callback"
     return settings.discord_redirect_uri
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Вход по ключу (/slogin) — запасной путь, когда Discord недоступен
+# ══════════════════════════════════════════════════════════════════════════
+
+def _issue_admin_session(db: Session, admin: AdminUser, response) -> None:
+    """Создаёт серверную сессию и ставит куку — та же схема, что у входа
+    через Discord (одна таблица сессий, один вид куки), чтобы способ входа
+    дальше нигде не приходилось различать."""
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds=settings.session_max_age)
+    db.add(AdminSession(admin_id=admin.id, token=token, created_at=now, expires_at=expires, revoked=0))
+    admin.last_login = now
+    db.commit()
+    response.set_cookie(
+        "admin_token", token,
+        httponly=True, max_age=settings.session_max_age,
+        samesite="lax", secure=not settings.debug,
+    )
+
+
+@router.get("/slogin", response_class=HTMLResponse)
+async def key_login_page(request: Request, next: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Страница входа по ключу. Отдельный адрес, а не кнопка на /login:
+    основной способ входа должен оставаться единственным очевидным, а этот —
+    для тех, кому его выдали."""
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    next_path = _safe_next_path(next)
+
+    token = request.cookies.get("admin_token")
+    if token:
+        session = db.query(AdminSession).filter(
+            AdminSession.token == token, AdminSession.revoked == 0
+        ).first()
+        if session and (session.expires_at is None or session.expires_at > datetime.utcnow()):
+            return RedirectResponse(url=next_path, status_code=302)
+
+    return templates.TemplateResponse("slogin.html", {
+        "request": request,
+        "csrf_token": request.session["csrf_token"],
+        "next_path": next_path,
+        "error": request.query_params.get("error"),
+    })
+
+
+@router.post("/slogin")
+async def key_login_submit(
+    request: Request,
+    key: str = Form(""),
+    next: str = Form("/admin"),
+    csrf_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    import services_login_keys
+
+    next_path = _safe_next_path(next)
+    if not secrets.compare_digest(str(csrf_token or ""), str(request.session.get("csrf_token") or "")):
+        return RedirectResponse(url="/slogin?error=csrf", status_code=302)
+
+    client_ip = request.client.host if request.client else None
+    if not services_login_keys.rate_limit_ok(client_ip):
+        logger.warning(f"Слишком много попыток входа по ключу с {client_ip}")
+        return RedirectResponse(url="/slogin?error=throttled", status_code=302)
+
+    admin = services_login_keys.resolve_admin(db, key, client_ip)
+    if not admin:
+        logger.warning(f"Неудачная попытка входа по ключу с {client_ip}")
+        return RedirectResponse(url="/slogin?error=invalid", status_code=302)
+
+    response = RedirectResponse(url=next_path, status_code=302)
+    _issue_admin_session(db, admin, response)
+    request.session["username"] = admin.discord_username
+    log_admin_action(db, admin.id, "login", {"method": "login_key", "ip": client_ip})
+    logger.info(f"Вход по ключу: {admin.discord_username} (id={admin.id}) с {client_ip}")
+    return response
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -740,6 +819,91 @@ async def api_delete_admin_user(admin_id: int, db: Session = Depends(get_db), cu
         "target": {"admin_id": target_admin.id, "discord_id": target_admin.discord_id, "username": target_admin.discord_username},
     })
     return {"status": "ok"}
+
+
+# ── Ключи входа без Discord (/slogin) ────────────────────────────────────
+# Только суперпользователь: ключ — это полноценный вход в чужой аккаунт со
+# всеми его правами, и раздача такого не должна зависеть от того, кому выдали
+# admin:edit.
+
+def _require_superuser(admin: AdminUser):
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+
+
+@router.get("/api/v1/admin/users/{admin_id}/login-keys")
+async def api_list_login_keys(
+    admin_id: int, db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    import services_login_keys
+    from models import AdminLoginKey
+
+    _require_superuser(current_admin)
+    rows = (
+        db.query(AdminLoginKey)
+        .options(joinedload(AdminLoginKey.created_by))
+        .filter(AdminLoginKey.admin_id == admin_id)
+        .order_by(AdminLoginKey.created_at.desc())
+        .all()
+    )
+    return {"keys": [services_login_keys.serialize(r) for r in rows]}
+
+
+@router.post("/api/v1/admin/users/{admin_id}/login-keys")
+async def api_create_login_key(
+    admin_id: int, request: Request, db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Создаёт ключ. Сам ключ возвращается ЕДИНСТВЕННЫЙ раз — в базе только
+    хеш, восстановить его потом нельзя даже суперпользователю."""
+    import services_login_keys
+
+    _require_superuser(current_admin)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    target = db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if getattr(target, "is_deleted", 0) == 1:
+        raise HTTPException(status_code=400, detail="Пользователь удалён — ключ ему не нужен")
+
+    body = await request.json() if await request.body() else {}
+    expires_days = body.get("expires_days")
+    if expires_days is not None and (not isinstance(expires_days, int) or expires_days < 0):
+        raise HTTPException(status_code=400, detail="Срок действия — целое число дней")
+
+    row, raw_key = services_login_keys.create_key(
+        db, admin_id, current_admin.id,
+        label=body.get("label"), expires_days=expires_days or None,
+    )
+    log_admin_action(db, current_admin.id, "login_key_create",
+                     {"target_admin_id": admin_id, "key_id": row.id})
+    return {"key": services_login_keys.serialize(row), "secret": raw_key}
+
+
+@router.delete("/api/v1/admin/users/{admin_id}/login-keys/{key_id}")
+async def api_revoke_login_key(
+    admin_id: int, key_id: int, db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Отзыв, а не удаление: строка остаётся, чтобы в аудите было видно, что
+    ключ существовал и когда им пользовались в последний раз."""
+    import services_login_keys
+    from models import AdminLoginKey
+
+    _require_superuser(current_admin)
+    row = db.query(AdminLoginKey).filter(
+        AdminLoginKey.id == key_id, AdminLoginKey.admin_id == admin_id
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ключ не найден")
+
+    row.revoked = True
+    db.commit()
+    log_admin_action(db, current_admin.id, "login_key_revoke",
+                     {"target_admin_id": admin_id, "key_id": key_id})
+    return {"key": services_login_keys.serialize(row)}
 
 
 @router.post("/api/v1/admin/users/{user_id}/assign-group")
@@ -4819,6 +4983,11 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     # Pterodactyl bearer token grants real power over game servers (department
     # test servers + the Sub-projects "Сервер 2"/ASPER2 control panel).
     "pterodactyl_panel_url", "pterodactyl_api_key", "sub_projects_test_server_uuid",
+    # Обновление кода из git: подменив каталог, remote или ветку, можно
+    # заставить сервер выполнить чужой код. Это строго суперпользовательское,
+    # даже несмотря на то, что саму команду `update` запускают из консоли.
+    "git_update_repo_dir", "git_update_remote", "git_update_branch",
+    "git_update_build_frontend", "git_update_restart_backend",
 }
 
 
@@ -4893,6 +5062,11 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "pterodactyl_panel_url": s.pterodactyl_panel_url,
             "pterodactyl_api_key": s.pterodactyl_api_key,
             "sub_projects_test_server_uuid": s.sub_projects_test_server_uuid,
+            "git_update_repo_dir": s.git_update_repo_dir,
+            "git_update_remote": s.git_update_remote,
+            "git_update_branch": s.git_update_branch,
+            "git_update_build_frontend": s.git_update_build_frontend,
+            "git_update_restart_backend": s.git_update_restart_backend,
         })
     return cfg
 
@@ -5039,6 +5213,11 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "pterodactyl_panel_url": "PTERODACTYL_PANEL_URL",
         "pterodactyl_api_key": "PTERODACTYL_API_KEY",
         "sub_projects_test_server_uuid": "SUB_PROJECTS_TEST_SERVER_UUID",
+        "git_update_repo_dir": "GIT_UPDATE_REPO_DIR",
+        "git_update_remote": "GIT_UPDATE_REMOTE",
+        "git_update_branch": "GIT_UPDATE_BRANCH",
+        "git_update_build_frontend": "GIT_UPDATE_BUILD_FRONTEND",
+        "git_update_restart_backend": "GIT_UPDATE_RESTART_BACKEND",
     }
 
     for field, env_key in field_map.items():
@@ -5049,7 +5228,8 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
             continue
         val = body.get(field)
         if val is None:
-            if field in ("debug", "rate_limit_enabled"):
+            if field in ("debug", "rate_limit_enabled",
+                         "git_update_build_frontend", "git_update_restart_backend"):
                 val = "false"
         elif val is True or val in ("on", "1", "true", "yes"):
             val = "true"
@@ -5140,7 +5320,8 @@ async def admin_administration_config_save(
         val = form.get(field)
         if val is None:
             # checkboxes that are unchecked won't appear in form
-            if field in ("debug", "rate_limit_enabled"):
+            if field in ("debug", "rate_limit_enabled",
+                         "git_update_build_frontend", "git_update_restart_backend"):
                 val = "false"
         else:
             # normalize checkboxes

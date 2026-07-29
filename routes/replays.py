@@ -18,6 +18,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
@@ -304,9 +305,90 @@ def _resolve_round_players(db: Session, players: list) -> list:
     return resolved
 
 
+def _merge_round_players(db: Session, start: Optional[RoundEvent], end_event: RoundEvent) -> list:
+    """Все, кто участвовал в раунде, а не только дожившие до его конца.
+
+    Раньше брался ОДИН из двух списков (стартовый, если он есть), поэтому
+    вышедшие в середине либо пропадали из отчёта (если брали конечный), либо
+    были неотличимы от досидевших (если брали стартовый). Для разбора жалоб
+    важно ровно обратное: видеть всех и понимать, кто ушёл и когда.
+
+    Итог: объединение обоих списков. Тот, кого нет в конечном, помечается
+    left=True, а время выхода берётся из его игровой сессии, попавшей в
+    границы раунда (player_sessions — тот же источник, что и в аналитике).
+    Сессии может не быть (игрок остался онлайн, но вышел из раунда), тогда
+    left_at=None и интерфейс покажет просто «вышел».
+    """
+    start_players = (start.players if start and start.players else None) or []
+    end_players = end_event.players or []
+
+    def key(entry) -> Optional[str]:
+        return entry.get("steamid") if isinstance(entry, dict) else None
+
+    end_ids = {key(p) for p in end_players if key(p)}
+
+    merged: dict = {}
+    order: list = []
+    # Конечный список — источник истины по должности: за раунд её могли сменить.
+    for entry in list(start_players) + list(end_players):
+        sid = key(entry)
+        if not sid:
+            continue
+        if sid not in merged:
+            order.append(sid)
+            merged[sid] = dict(entry)
+        else:
+            merged[sid].update({k: v for k, v in entry.items() if v is not None})
+
+    missing = [sid for sid in order if sid not in end_ids]
+    left_at = _resolve_leave_times(db, missing, start, end_event) if missing else {}
+
+    result = []
+    for sid in order:
+        entry = merged[sid]
+        if sid not in end_ids:
+            entry["left"] = True
+            moment = left_at.get(sid)
+            entry["left_at"] = moment.isoformat() if moment else None
+        result.append(entry)
+    return result
+
+
+def _resolve_leave_times(db: Session, steamids: list, start: Optional[RoundEvent],
+                         end_event: RoundEvent) -> dict:
+    """steamid → время выхода из игры в границах раунда (или None)."""
+    from models import PlayerData, PlayerSession
+
+    if not steamids:
+        return {}
+    started = start.created_at if start else None
+    ended = end_event.created_at
+    if not started or not ended:
+        return {}
+
+    rows = (
+        db.query(PlayerData.player_steamid, PlayerSession.logout_time)
+        .join(PlayerSession, PlayerSession.player_id == PlayerData.player_id)
+        .filter(
+            PlayerData.player_steamid.in_(steamids),
+            PlayerSession.logout_time.isnot(None),
+            PlayerSession.logout_time >= started,
+            PlayerSession.logout_time <= ended,
+        )
+        .all()
+    )
+    # Выходов за раунд может быть несколько (перезаход) — берём последний:
+    # именно после него игрока уже не было в раунде на момент его конца.
+    out: dict = {}
+    for steamid, logout_time in rows:
+        if steamid not in out or logout_time > out[steamid]:
+            out[steamid] = logout_time
+    return out
+
+
 def _serialize_round(db: Session, end_event: RoundEvent, replay=None) -> dict:
     start = end_event.paired_start
-    players = (start.players if start and start.players else None) or end_event.players or []
+    players = _merge_round_players(db, start, end_event)
     players = _resolve_round_players(db, players)
     return {
         "id": end_event.id,
@@ -320,6 +402,7 @@ def _serialize_round(db: Session, end_event: RoundEvent, replay=None) -> dict:
         "reached_station": bool(end_event.reached_station) if end_event.reached_station is not None else None,
         "players": players,
         "player_count": len(players),
+        "player_left_count": sum(1 for p in players if isinstance(p, dict) and p.get("left")),
         "replay": _serialize_replay(replay) if replay else None,
     }
 
@@ -493,6 +576,118 @@ async def api_replay_detail(request: Request, replay_id: int, db: Session = Depe
     if not replay:
         raise HTTPException(status_code=404, detail="Реплей не найден")
     return {"replay": _serialize_replay(replay)}
+
+
+def _round_for_replay(db: Session, replay) -> Optional[RoundEvent]:
+    """Событие конца раунда, которому соответствует эта демозапись.
+
+    Ручная привязка (manual_round_event_id) всегда главнее эвристики — она
+    для того и заведена. Иначе ищем раунд тем же способом, что и список
+    прошедших раундов, только с другой стороны: среди недавних раундов того
+    же сервера тот, для которого _find_matching_replay возвращает эту запись.
+    """
+    if replay.manual_round_event_id:
+        return db.query(RoundEvent).filter(RoundEvent.id == replay.manual_round_event_id).first()
+
+    q = db.query(RoundEvent).filter(RoundEvent.event_type == "end")
+    if replay.server_name:
+        q = q.filter(RoundEvent.server_name == replay.server_name)
+    anchor = replay.uploaded_at or replay.recorded_at
+    if anchor:
+        q = q.filter(
+            RoundEvent.created_at >= anchor - timedelta(hours=12),
+            RoundEvent.created_at <= anchor + timedelta(hours=12),
+        )
+    for end_event in q.order_by(RoundEvent.created_at.desc()).limit(50).all():
+        found = _find_matching_replay(db, end_event, end_event.paired_start)
+        if found and found.id == replay.id:
+            return end_event
+    return None
+
+
+@panel_router.get("/api/v1/admin/replays/{replay_id}/logs")
+async def api_replay_logs(
+    request: Request,
+    replay_id: int,
+    player: Optional[str] = Query(None),
+    action_type: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(2000, ge=100, le=5000),
+    db: Session = Depends(get_db),
+):
+    """Логи сервера за время раунда этой демозаписи, с привязкой к таймингу.
+
+    Каждому событию считается offset_ms — сдвиг от начала раунда, по нему
+    просмотрщик подсвечивает строки синхронно с воспроизведением. Границы
+    берутся по событиям раунда, а если начала нет — по времени записи демо и
+    её длительности.
+
+    Фильтры повторяют вкладку «Логи», кроме диапазона времени: он здесь задан
+    самим раундом, иначе привязка к таймингу теряет смысл.
+    """
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    # Логи — отдельная по чувствительности вещь (там переписка и консоль),
+    # поэтому мало права на просмотр демо: нужно и право на логи.
+    if not check_permission(admin, "moderation", "view"):
+        raise HTTPException(status_code=403, detail="Нет доступа к логам сервера")
+
+    replay = ReplayService(db).get_by_id(replay_id)
+    if not replay:
+        raise HTTPException(status_code=404, detail="Реплей не найден")
+
+    end_event = _round_for_replay(db, replay)
+    start_event = end_event.paired_start if end_event else None
+
+    started_at = (start_event.created_at if start_event else None) or replay.recorded_at
+    ended_at = (end_event.created_at if end_event else None)
+    if started_at and not ended_at:
+        ended_at = started_at + timedelta(milliseconds=replay.duration_ms or 0) + timedelta(minutes=5)
+
+    if not started_at or not ended_at:
+        return JSONResponse({
+            "events": [], "round_id": None, "started_at": None, "ended_at": None,
+            "unavailable_reason": "Не удалось определить раунд этой записи — привяжите её к раунду вручную.",
+        })
+
+    from services_logs import search_logs
+
+    events, total, total_is_capped = await run_in_threadpool(
+        search_logs,
+        server_name=replay.server_name or None,
+        player_name=player or None,
+        action_type=action_type or None,
+        search_text=search or None,
+        time_from=started_at,
+        time_to=ended_at,
+        category=category or None,
+        limit=limit,
+        offset=0,
+    )
+
+    # Логи приходят от новых к старым, а проигрывание идёт вперёд — разворачиваем.
+    rows = []
+    for e in sorted(events, key=lambda x: x.timestamp):
+        rows.append({
+            "timestamp": e.timestamp.isoformat(),
+            "offset_ms": int((e.timestamp - started_at).total_seconds() * 1000),
+            "player_name": e.player_name,
+            "action_type": e.action_type,
+            "details": e.details,
+        })
+
+    return JSONResponse({
+        "events": rows,
+        "total": total,
+        "total_is_capped": total_is_capped,
+        "round_id": end_event.id if end_event else None,
+        "server_name": replay.server_name,
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "unavailable_reason": None,
+    })
 
 
 @panel_router.delete("/api/v1/admin/replays/{replay_id}")

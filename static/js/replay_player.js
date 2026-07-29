@@ -358,9 +358,22 @@
   }
   function esc(t){const d=document.createElement("span");d.textContent=t;return d.innerHTML;}
   function fmtTime(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return String(m).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
+  // Наружу отдаём время не чаще ~4 раз в секунду: панель логов синхронизируется
+  // по нему, а перерисовывать её на каждый кадр незачем.
+  let lastTimeBroadcast = -1;
+  function broadcastTime(){
+    if(!demo)return;
+    const bucket=Math.floor(currentTimeMs/250);
+    if(bucket===lastTimeBroadcast)return;
+    lastTimeBroadcast=bucket;
+    window.dispatchEvent(new CustomEvent("baroreplay:time",{detail:{
+      timeMs:currentTimeMs,durationMs:demo.durationMs,playing:playing,
+    }}));
+  }
   function updateTimeUI(){
     if(!demo)return;document.getElementById("rpvTimeLabel").textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
     const seek=document.getElementById("rpvSeek");if(!seek.__dragging)seek.value=String(Math.round(currentTimeMs/demo.durationMs*1000)||0);
+    broadcastTime();
   }
   function setPlaying(p){playing=p;document.getElementById("rpvPlay").textContent=p?"⏸":"▶";if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();}
 
@@ -576,6 +589,20 @@
     const fo=document.getElementById("rpvFalloff");
     if(fo)fo.addEventListener("input",(e)=>{falloffDist=parseInt(e.target.value);});
   }
+
+  // Мост для внешнего интерфейса (панель логов в React-обёртке страницы):
+  // перемотка к моменту события и чтение текущего времени. Намеренно
+  // минимальный — вся отрисовка и разбор демо остаются здесь.
+  window.__BaroReplayUI = {
+    seekTo(ms){
+      if(!demo)return;
+      currentTimeMs=Math.max(0,Math.min(demo.durationMs,ms));
+      updateTimeUI();
+    },
+    getTimeMs(){return currentTimeMs;},
+    getDurationMs(){return demo?demo.durationMs:0;},
+    setPlaying(p){setPlaying(!!p);},
+  };
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   async function boot(){

@@ -156,6 +156,39 @@ class AdminSession(Base):
     revoked = Column(Integer, default=0)
 
 
+class AdminLoginKey(Base):
+    """Ключ входа на сайт без Discord (страница /slogin).
+
+    Заводится суперпользователем для конкретного администратора — на случай,
+    когда Discord недоступен: блокировки, потеря доступа к аккаунту, вход с
+    машины без браузерной сессии Discord.
+
+    Хранится ТОЛЬКО хеш: утечка таблицы не должна давать вход. Сам ключ
+    показывается один раз при создании и больше нигде не восстановим. Хеш —
+    обычный sha256 без «медленной» KDF, и это осознанно: ключ генерируем мы
+    сами, в нём 160 бит случайности, перебирать там нечего, а bcrypt на
+    каждой попытке входа дал бы только удобную точку для DoS.
+    """
+    __tablename__ = "admin_login_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key_hash = Column(String(64), unique=True, nullable=False, index=True)
+    # Первые символы ключа — чтобы в списке можно было отличить один от другого.
+    key_prefix = Column(String(16), nullable=False)
+    label = Column(String(200), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    expires_at = Column(DateTime, nullable=True)
+    revoked = Column(Boolean, nullable=False, default=False)
+    last_used_at = Column(DateTime, nullable=True)
+    last_used_ip = Column(String(45), nullable=True)
+    use_count = Column(Integer, nullable=False, default=0)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
 class AdminActionLog(Base):
     __tablename__ = "admin_action_logs"
 

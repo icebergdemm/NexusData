@@ -119,6 +119,20 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("GUILD_ID", "DISCORD_GUILD_ID")
     )
 
+    # Обновление кода из git (консольная команда `update`, см.
+    # services_git_update.py). Настраивается на странице «Администрирование».
+    # Пустой каталог — сам каталог приложения.
+    git_update_repo_dir: str = ""
+    git_update_remote: str = "origin"
+    git_update_branch: str = ""
+    # Пересобирать фронтенд, если в обновлении менялось что-то во frontend/:
+    # dist/ в репозитории нет, без сборки сайт останется на старой версии.
+    git_update_build_frontend: bool = True
+    # Перезапускать backend после обновления. По умолчанию выключено: рестарт
+    # рвёт открытые запросы, и решение «когда именно» лучше оставлять человеку
+    # (`update restart` делает это разово, не меняя настройку).
+    git_update_restart_backend: bool = False
+
     # Discord Trap Webhook
     discord_trap_webhook_url: str = ""
 

@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  History, PlayCircle, MapPin, Ship, Target, Users2, CheckCircle2, XCircle, Video, Crown,
+  History, PlayCircle, MapPin, Ship, Target, Users2, CheckCircle2, XCircle, Video, Crown, LogOut,
 } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
@@ -22,7 +22,15 @@ interface ReplaysResponse {
   replays: ReplayRow[]; total: number; page: number; total_pages: number
   retention_days: number; can_delete: boolean; is_superuser: boolean
 }
-interface RoundPlayer { steamid: string; player_name: string; real_name?: string; role?: string }
+interface RoundPlayer {
+  steamid: string
+  player_name: string
+  real_name?: string
+  role?: string
+  /** Игрока не было в раунде на момент его окончания. */
+  left?: boolean
+  left_at?: string | null
+}
 interface RoundRow {
   id: number
   server_name: string | null
@@ -35,6 +43,7 @@ interface RoundRow {
   reached_station: boolean | null
   players: RoundPlayer[]
   player_count: number
+  player_left_count: number
   replay: ReplayRow | null
 }
 interface RoundsResponse {
@@ -104,7 +113,12 @@ function RoundsTab() {
               <div className="flex items-center gap-1.5 text-muted-foreground"><MapPin className="size-3.5 shrink-0" /> {r.location ?? "-"}</div>
               <div className="flex items-center gap-1.5 text-muted-foreground"><Ship className="size-3.5 shrink-0" /> {r.submarine_name ?? "-"}</div>
               <div className="flex items-center gap-1.5 text-muted-foreground"><Target className="size-3.5 shrink-0" /> {r.mission ?? "-"}</div>
-              <div className="flex items-center gap-1.5 text-muted-foreground"><Users2 className="size-3.5 shrink-0" /> {r.player_count} игроков</div>
+              <div className="flex items-center gap-1.5 text-muted-foreground"><Users2 className="size-3.5 shrink-0" />
+                {r.player_count} игроков
+                {r.player_left_count > 0 && (
+                  <span className="text-warning">· {r.player_left_count} вышли</span>
+                )}
+              </div>
             </div>
             <div className="mt-3 flex items-center justify-between border-t pt-3">
               <div className="flex flex-wrap gap-1">
@@ -112,10 +126,14 @@ function RoundsTab() {
                   <Badge
                     key={p.steamid}
                     variant={isCaptain(p.role) ? "default" : "outline"}
-                    className="gap-1 text-xs"
-                    title={p.real_name ? `Настоящий ник: ${p.real_name}` : undefined}
+                    className={`gap-1 text-xs ${p.left ? "border-warning/50 text-warning" : ""}`}
+                    title={[
+                      p.real_name ? `Настоящий ник: ${p.real_name}` : null,
+                      p.left ? "Вышел до конца раунда" : null,
+                    ].filter(Boolean).join(" · ") || undefined}
                   >
                     {isCaptain(p.role) && <Crown className="size-3" />} {p.player_name}
+                    {p.left && <LogOut className="size-3" />}
                   </Badge>
                 ))}
                 {r.players.length > 8 && <Badge variant="outline" className="text-xs">+{r.players.length - 8}</Badge>}

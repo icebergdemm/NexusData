@@ -15,9 +15,10 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { UserCog, ShieldCheck } from "lucide-react"
+import { UserCog, ShieldCheck, KeyRound } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
+import { LoginKeysDialog } from "./LoginKeysDialog"
 import { useCurrentAdmin, usePermissionRegistry } from "@/lib/auth"
 import { PermissionMatrixEditor, type PermissionValue } from "./PermissionMatrixEditor"
 
@@ -53,6 +54,8 @@ export function UsersPage() {
   const [groupName, setGroupName] = useState("")
   const [groupPerms, setGroupPerms] = useState<PermissionValue>({})
   const [indivDialogOpen, setIndivDialogOpen] = useState(false)
+  // Ключи входа без Discord — только для суперпользователя (см. LoginKeysDialog).
+  const [keysTarget, setKeysTarget] = useState<{ id: number; name: string } | null>(null)
   const [indivTarget, setIndivTarget] = useState<AdminUserRow | null>(null)
   const [indivPerms, setIndivPerms] = useState<PermissionValue>({})
   const queryClient = useQueryClient()
@@ -157,7 +160,7 @@ export function UsersPage() {
             <CardContent>
               <Table>
                 <TableHeader>
-                  <TableRow><TableHead>Админ</TableHead><TableHead>Игрок</TableHead><TableHead>Группа прав</TableHead><TableHead>Индивидуальные права</TableHead><TableHead>Суперпользователь</TableHead>{data?.can_delete && <TableHead />}</TableRow>
+                  <TableRow><TableHead>Админ</TableHead><TableHead>Игрок</TableHead><TableHead>Группа прав</TableHead><TableHead>Индивидуальные права</TableHead><TableHead>Суперпользователь</TableHead>{me?.is_superuser && <TableHead>Вход по ключу</TableHead>}{data?.can_delete && <TableHead />}</TableRow>
                 </TableHeader>
                 <TableBody>
                   {data?.admins.map((a) => (
@@ -209,6 +212,16 @@ export function UsersPage() {
                           </Button>
                         )}
                       </TableCell>
+                      {me?.is_superuser && (
+                        <TableCell>
+                          <Button
+                            size="sm" variant="outline" className="gap-1.5"
+                            onClick={() => setKeysTarget({ id: a.id, name: a.discord_username ?? a.discord_id })}
+                          >
+                            <KeyRound className="size-3.5" /> Ключи
+                          </Button>
+                        </TableCell>
+                      )}
                       {data?.can_delete && (
                         <TableCell className="text-right">
                           {a.id !== me?.id && <Button size="sm" variant="destructive" onClick={() => deleteAdmin.mutate(a.id)}>Удалить</Button>}
@@ -296,6 +309,15 @@ export function UsersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {keysTarget && (
+        <LoginKeysDialog
+          key={keysTarget.id}
+          adminId={keysTarget.id}
+          adminName={keysTarget.name}
+          open={!!keysTarget}
+          onOpenChange={(o) => !o && setKeysTarget(null)}
+        />
+      )}
     </div>
   )
 }
