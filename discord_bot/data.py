@@ -10,6 +10,7 @@ task in workers.py) — bot.py wraps each call in asyncio.to_thread(...) so the
 blocking DB work never stalls the bot's asyncio event loop (same reasoning as
 the rest of this app's run_in_threadpool usage).
 """
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -344,16 +345,53 @@ def get_department_rating_leaderboard(department_id: int, limit: int = 10) -> Op
 
 # ── Tickets ───────────────────────────────────────────────────────────────
 
+def _tickets_config_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "tickets.json")
+
+
 def get_tickets_config() -> dict:
-    import os
     import json
 
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "tickets.json")
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(_tickets_config_path(), "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"types": {}, "category_id": "", "status_channel_id": ""}
+        return {"types": {}, "category_id": "", "status_channel_id": "", "manager_role_ids": []}
+
+
+def set_tickets_config(config: dict) -> None:
+    """Перезаписать config/tickets.json целиком — вызывается со страницы
+    «Discord бот» (routes/discord_bot_api.py), тем же файлом, который читает
+    и бот. Отдельной таблицы под это не заводилось: файл и так был
+    единственным источником правды, менять способ хранения ради веб-формы
+    незачем."""
+    import json
+
+    with open(_tickets_config_path(), "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def get_ticket_by_channel(channel_id: str) -> Optional[dict]:
+    """Активный (не закрытый) тикет по ID канала — источник истины для всего,
+    что должно работать по каналу, а не по значению, сохранённому в объекте
+    вида (кнопке/View), которое переживает рестарт бота хуже, чем БД."""
+    from models import Ticket
+
+    db = SessionLocal()
+    try:
+        ticket = (
+            db.query(Ticket)
+            .filter(Ticket.discord_channel_id == str(channel_id), Ticket.status != "closed")
+            .first()
+        )
+        if not ticket:
+            return None
+        return {
+            "id": ticket.id, "title": ticket.title, "ticket_type": ticket.ticket_type,
+            "creator_discord_id": ticket.creator_discord_id,
+        }
+    finally:
+        db.close()
 
 
 def get_open_tickets() -> list:
