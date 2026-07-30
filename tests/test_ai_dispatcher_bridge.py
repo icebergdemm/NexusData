@@ -1,7 +1,13 @@
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
 
-from routes.dispatch import _post_ai_dispatcher_sync
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from database import Base
+from models import RoundEvent, WorldRound
+from routes.dispatch import _post_ai_dispatcher_sync, _resolve_ai_conversation_round_id
 
 
 class _FakeResponse:
@@ -102,6 +108,60 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         )
 
         session_factory.assert_not_called()
+
+
+class AIConversationRoundTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            self.engine,
+            tables=[RoundEvent.__table__, WorldRound.__table__],
+        )
+        self.db = Session(self.engine)
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def test_round_event_keeps_asper2_conversation_stable_without_asper2_world_state(self):
+        self.db.add(
+            WorldRound(
+                round_id="world-asper1",
+                server_name="ASPER1",
+                last_update_at=datetime.utcnow(),
+            )
+        )
+        start = RoundEvent(
+            event_type="start",
+            server_name="ASPER2",
+            created_at=datetime.utcnow(),
+        )
+        self.db.add(start)
+        self.db.commit()
+
+        first = _resolve_ai_conversation_round_id(self.db, "ASPER2")
+        second = _resolve_ai_conversation_round_id(self.db, "ASPER2")
+
+        self.assertEqual(first, f"dispatch-ASPER2-round-{start.id}")
+        self.assertEqual(second, first)
+
+    def test_new_round_boundary_changes_conversation_id(self):
+        self.assertEqual(
+            _resolve_ai_conversation_round_id(self.db, "ASPER2"),
+            "dispatch-ASPER2-idle-0",
+        )
+        end = RoundEvent(
+            event_type="end",
+            server_name="ASPER2",
+            created_at=datetime.utcnow(),
+        )
+        self.db.add(end)
+        self.db.commit()
+
+        self.assertEqual(
+            _resolve_ai_conversation_round_id(self.db, "ASPER2"),
+            f"dispatch-ASPER2-idle-{end.id}",
+        )
 
 
 if __name__ == "__main__":

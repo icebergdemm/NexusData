@@ -363,17 +363,7 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         )
         return
 
-    threshold = datetime.utcnow() - timedelta(seconds=15)
-    active_round = (
-        db.query(WorldRound)
-        .filter(
-            WorldRound.server_name == server_name,
-            WorldRound.last_update_at >= threshold,
-        )
-        .order_by(WorldRound.last_update_at.desc())
-        .first()
-    )
-    round_id = active_round.round_id if active_round else f"dispatch-{server_name}-{msg.id}"
+    round_id = _resolve_ai_conversation_round_id(db, server_name)
     payload = {
         "event_id": f"nexus-dispatch-{msg.id}",
         "round_id": round_id,
@@ -387,6 +377,35 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         daemon=True,
         name=f"AIDispatch-{msg.id}",
     ).start()
+
+
+def _resolve_ai_conversation_round_id(db: Session, server_name: str) -> str:
+    """Вернуть стабильный ID беседы на время текущего раунда сервера."""
+
+    threshold = datetime.utcnow() - timedelta(seconds=15)
+    active_round = (
+        db.query(WorldRound)
+        .filter(
+            WorldRound.server_name == server_name,
+            WorldRound.last_update_at >= threshold,
+        )
+        .order_by(WorldRound.last_update_at.desc())
+        .first()
+    )
+    if active_round is not None:
+        return str(active_round.round_id)
+
+    latest_event = (
+        db.query(RoundEvent)
+        .filter(RoundEvent.server_name == server_name)
+        .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
+        .first()
+    )
+    if latest_event is None:
+        return f"dispatch-{server_name}-idle-0"
+    if latest_event.event_type == "start":
+        return f"dispatch-{server_name}-round-{latest_event.id}"
+    return f"dispatch-{server_name}-idle-{latest_event.id}"
 
 
 def _post_ai_dispatcher_sync(
