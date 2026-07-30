@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import {
-  CheckCircle2, ClipboardCheck, Download, Loader2, Undo2, UserCog, X, XCircle,
+  CheckCircle2, ClipboardCheck, Download, Loader2, RotateCw, Undo2, UserCog, X, XCircle,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { SubCheckDialog } from "@/pages/sub-checker/report"
@@ -86,6 +86,29 @@ export function SubProjectDetailPage() {
     onSuccess: (res) => { setCheckReport(res.report); setCheckOpen(true); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  // Версия уже проверялась (см. data.checks) — открываем готовый отчёт вместо
+  // того, чтобы гонять проверку заново на каждый клик. Перепроверка (runCheck)
+  // остаётся доступна отдельной кнопкой — например, после правки настроек
+  // ГОСТа старый отчёт мог устареть.
+  const [openingVersionId, setOpeningVersionId] = useState<number | null>(null)
+  const openExistingReport = async (versionId: number, resultId: number) => {
+    setOpeningVersionId(versionId)
+    try {
+      const res = await api.get<{ report: SubReport }>(`/api/v1/admin/sub-checker/results/${resultId}`)
+      setCheckReport(res.report)
+      setCheckOpen(true)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Не удалось загрузить отчёт")
+    } finally {
+      setOpeningVersionId(null)
+    }
+  }
+  const checkOrOpen = (versionId: number) => {
+    const existing = data?.checks?.[String(versionId)]
+    if (existing) openExistingReport(versionId, existing.id)
+    else runCheck.mutate(versionId)
+  }
 
   const deleteVersion = useMutation({
     mutationFn: (vid: number) => api.delete(`/api/v1/admin/sub-projects/${projectId}/versions/${vid}`),
@@ -230,14 +253,27 @@ export function SubProjectDetailPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <Button
-                size="sm"
-                disabled={runCheck.isPending}
-                onClick={() => runCheck.mutate(Number(checkVersionId || data.versions[0].id))}
-              >
-                {runCheck.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <ClipboardCheck className="size-3.5" />}
-                Проверить корабль
-              </Button>
+              {(() => {
+                const selectedId = Number(checkVersionId || data.versions[0].id)
+                const hasReport = !!data.checks?.[String(selectedId)]
+                const busy = runCheck.isPending || openingVersionId === selectedId
+                return (
+                  <>
+                    <Button size="sm" disabled={busy} onClick={() => checkOrOpen(selectedId)}>
+                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ClipboardCheck className="size-3.5" />}
+                      {hasReport ? "Открыть отчёт" : "Проверить корабль"}
+                    </Button>
+                    {hasReport && (
+                      <Button
+                        size="sm" variant="outline" title="Проверить заново"
+                        disabled={busy} onClick={() => runCheck.mutate(selectedId)}
+                      >
+                        <RotateCw className="size-3.5" />
+                      </Button>
+                    )}
+                  </>
+                )
+              })()}
             </div>
           )}
         </CardHeader>
@@ -290,9 +326,21 @@ export function SubProjectDetailPage() {
                       {hasActionsCol && (
                         <TableCell className="space-x-1 whitespace-nowrap text-right">
                           {data.can_check_gost && (
-                            <Button size="sm" variant="outline" title="Проверить по ГОСТу"
-                              disabled={runCheck.isPending} onClick={() => runCheck.mutate(v.id)}>
+                            <Button
+                              size="sm" variant="outline"
+                              title={data.checks?.[String(v.id)] ? "Открыть отчёт ГОСТ" : "Проверить по ГОСТу"}
+                              disabled={runCheck.isPending || openingVersionId === v.id}
+                              onClick={() => checkOrOpen(v.id)}
+                            >
                               <ClipboardCheck className="size-3.5" />
+                            </Button>
+                          )}
+                          {data.can_check_gost && data.checks?.[String(v.id)] && (
+                            <Button
+                              size="sm" variant="outline" title="Проверить заново"
+                              disabled={runCheck.isPending} onClick={() => runCheck.mutate(v.id)}
+                            >
+                              <RotateCw className="size-3.5" />
                             </Button>
                           )}
                           {data.can_download && (

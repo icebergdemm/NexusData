@@ -347,7 +347,17 @@ def _serialize_round_full(r: WorldRound) -> dict:
     """Geometry + dynamic state combined — unlike the admin API's split
     endpoints above (kept separate so the ~3s poll never re-sends the
     potentially multi-MB outline), an external client fetching a one-shot
-    snapshot wants everything in one response."""
+    snapshot wants everything in one response.
+
+    Deliberately WITHOUT `items`: this response already carries submarines
+    (`submarines`/`subs` — includes beacons, wrecks, outposts/stations, every
+    "Submarine" the level has, not just the player sub), their live state
+    (`hulls_state`/`doors_state`/`reactors`) and `characters` — the external
+    client only ever consumed those. `items` is by far the biggest part of
+    every snapshot (every item in the level, on every poll) and was pure dead
+    weight for this integration; dropping it is the actual JSON-size win.
+    Kept out of `_serialize_round_dynamic` too (admin API) would be wrong —
+    that one backs "Обзор мира"'s inventory popups, which need it."""
     return {
         "round_id": r.round_id,
         "server_name": r.server_name,
@@ -371,7 +381,6 @@ def _serialize_round_full(r: WorldRound) -> dict:
         "doors_state": r.last_doors_state or [],
         "reactors": r.last_reactors or [],
         "characters": r.last_characters or [],
-        "items": r.last_items or [],
         "last_update_at": r.last_update_at.isoformat() if r.last_update_at else None,
         "is_active": _is_active(r),
     }

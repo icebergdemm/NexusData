@@ -63,10 +63,22 @@ def _require_dispatch(admin: AdminUser, action: str = "view"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
 
+def _item_name(identifier: str) -> str:
+    """Русское название предмета по идентификатору — тот же справочник, что
+    и у «Обзор мира»/страницы складов (static/item_catalog.json). Отдаём его
+    прямо в ответе склада: раньше внешняя интеграция и человек, читающий JSON
+    руками, видели только identifier вроде "railgunshell" и должны были сами
+    держать под рукой каталог, чтобы понять, что это «Снаряд рельсотрона»."""
+    from routes.world_state import _load_item_catalog
+    entry = _load_item_catalog().get(identifier)
+    return (entry or {}).get("name") or identifier
+
+
 def _serialize(w: WarehouseItem) -> dict:
     return {
         "id": w.id,
         "identifier": w.identifier,
+        "name": _item_name(w.identifier),
         "quantity": w.quantity,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
         "updated_by": w.updated_by.discord_username if w.updated_by else None,
@@ -184,5 +196,8 @@ async def api_client_warehouse(db: Session = Depends(get_db)):
     the live table contents at request time, no caching layer."""
     rows = db.query(WarehouseItem).order_by(WarehouseItem.identifier).all()
     return JSONResponse({
-        "items": [{"identifier": w.identifier, "quantity": w.quantity} for w in rows],
+        "items": [
+            {"identifier": w.identifier, "name": _item_name(w.identifier), "quantity": w.quantity}
+            for w in rows
+        ],
     })
