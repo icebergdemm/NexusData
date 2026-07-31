@@ -119,6 +119,48 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("GUILD_ID", "DISCORD_GUILD_ID")
     )
 
+    # Обновление кода из git (консольная команда `update`, см.
+    # services_git_update.py). Настраивается на странице «Администрирование».
+    # Пустой каталог — сам каталог приложения.
+    git_update_repo_dir: str = ""
+    git_update_remote: str = "origin"
+    git_update_branch: str = ""
+    # Адрес репозитория. Нужен, чтобы развернуть код на сервере, где ещё нет
+    # рабочей копии (`update bootstrap`): на Pterodactyl обычно доступна только
+    # консоль, без shell'а, и сделать git clone руками попросту негде. Когда
+    # рабочая копия уже есть, адрес берётся из самого remote и это поле не
+    # используется.
+    git_update_repo_url: str = ""
+    # Токен доступа для ПРИВАТНОГО репозитория по HTTPS (GitHub PAT,
+    # GitLab/Gitea access token). Пусто — тянем как есть: для публичного
+    # репозитория и для ssh-remote токен не нужен. Токен НЕ прописывается ни в
+    # remote URL, ни в .git/config: он уходит одним заголовком Authorization
+    # только на хост этого remote (см. services_git_update.py).
+    git_update_token: str = ""
+    # Имя пользователя в паре к токену. Для GitHub годится любое непустое
+    # (общепринято x-access-token), для GitLab — oauth2.
+    git_update_token_username: str = "x-access-token"
+    # Пересобирать фронтенд, если в обновлении менялось что-то во frontend/:
+    # dist/ в репозитории нет, без сборки сайт останется на старой версии.
+    git_update_build_frontend: bool = True
+    # Ветка с ГОТОВОЙ сборкой фронтенда (её наполняет workflow
+    # .github/workflows/frontend-dist.yml). Задана — `update` скачивает dist
+    # оттуда и не трогает npm вообще. Это единственный рабочий вариант там,
+    # где Node.js в контейнере нет и поставить его некуда: собирать SPA рядом
+    # с приложением на контейнере с лимитом памяти всё равно плохая идея.
+    git_update_frontend_dist_branch: str = ""
+    # Явный путь к исполняемому файлу npm. Пусто — ищем сами: сначала в PATH,
+    # потом по частым местам установки (nvm и т.п.) — см. services_git_update.
+    # _resolve_npm(). Нужен, когда контейнер не login-shell (обычная ситуация
+    # на Pterodactyl) и nvm/менеджер версий Node добавляет npm в PATH только
+    # для интерактивных сессий, которых у процесса приложения нет — либо
+    # когда Node.js в образе контейнера вовсе не установлен.
+    git_update_npm_path: str = ""
+    # Перезапускать backend после обновления. По умолчанию выключено: рестарт
+    # рвёт открытые запросы, и решение «когда именно» лучше оставлять человеку
+    # (`update restart` делает это разово, не меняя настройку).
+    git_update_restart_backend: bool = False
+
     # Discord Trap Webhook
     discord_trap_webhook_url: str = ""
 

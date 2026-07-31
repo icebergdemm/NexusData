@@ -52,6 +52,18 @@ _HELP = """
                                  продолжает показывать страницу техработ
   maintenance on [текст]|off   — вкл/выкл режим технических работ
   db check                     — принудительно проверить подключение к БД
+  update [restart|norestart]   — забрать код из git (git pull --ff-only),
+                                 при изменениях во frontend/ пересобрать его;
+                                 аргумент разово перекрывает настройку
+                                 перезапуска backend
+  update bootstrap             — развернуть код по адресу репозитория там,
+                                 где рабочей копии ещё нет; приводит каталог
+                                 к состоянию удалённой ветки, не трогая .env,
+                                 uploads/ и data/
+  update status                — каталог, ветка, ревизия и проверка доступа
+                                 к remote (для приватного репозитория нужен
+                                 токен: «Администрирование» → «Обновление
+                                 кода из git»)
   help                         — эта справка
 """.strip()
 
@@ -146,6 +158,47 @@ def _maintenance_cmd(rest: str):
         print("Использование: maintenance on [текст]|off")
 
 
+def _update_cmd(rest: str):
+    """`update` — обновление кода из git. Сама логика в services_git_update.py;
+    здесь только разбор аргумента и печать хода работы в консоль.
+
+    Эта консоль живёт в master-процессе uvicorn (см. докстринг модуля) — в
+    многопроцессном режиме HTTP-запросы (в том числе сохранение настроек на
+    странице «Администрирование») обслуживают ОТДЕЛЬНЫЕ воркер-процессы.
+    Когда воркер пишет .env и сбрасывает у себя кэш get_settings(), master
+    об этом не узнаёт и продолжает работать со старыми значениями из своего
+    собственного @lru_cache. Поэтому сначала сбрасываем кэш здесь — .env на
+    диске уже актуален, и Settings() перечитает его заново."""
+    import services_git_update
+    from config import reset_settings_cache
+    reset_settings_cache()
+
+    parts = rest.strip().lower().split()
+    action = parts[0] if parts else ""
+    modifier = parts[1] if len(parts) > 1 else ""
+
+    if action == "status":
+        print(services_git_update.status_text())
+        return
+
+    force_restart = None
+    for word in (action, modifier):
+        if word == "restart":
+            force_restart = True
+        elif word == "norestart":
+            force_restart = False
+
+    if action == "bootstrap":
+        services_git_update.run_bootstrap(print, force_restart=force_restart)
+        return
+
+    if action and action not in ("restart", "norestart"):
+        print("Использование: update [restart|norestart] | update bootstrap [restart|norestart] | update status")
+        return
+
+    services_git_update.run_update(print, force_restart=force_restart)
+
+
 def _handle(line: str):
     parts = line.strip().split(maxsplit=1)
     if not parts:
@@ -167,6 +220,8 @@ def _handle(line: str):
         _maintenance_cmd(rest)
     elif cmd == "db" and rest.strip().lower() == "check":
         _db_check()
+    elif cmd == "update":
+        _update_cmd(rest)
     else:
         print(f"Неизвестная команда: {line!r}. 'help' — список команд.")
 

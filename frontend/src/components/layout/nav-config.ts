@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Radio, Users, ShieldAlert, Gavel, PlayCircle,
   Ship, Star, Bot, Ticket, UserCog, Settings, KeyRound, Wrench,
   Clock, ScrollText, BarChart3, Tags, FileText, NotebookText, Building2,
-  KanbanSquare, Globe2, Music, UserPlus,
+  KanbanSquare, Globe2, Music, UserPlus, ClipboardCheck,
 } from "lucide-react"
 import type { CurrentAdmin, PermissionPage } from "@/lib/auth"
 
@@ -59,6 +59,7 @@ export const NAV_GROUPS: NavGroup[] = [
         label: "Тестовый полигон ASPER", to: "/sub-projects-polygon", icon: Ship,
         isVisible: (admin) => !!admin && (admin.is_superuser || admin.my_departments.some((d) => d.test_server_view)),
       },
+      { label: "Чекер кораблей", to: "/sub-checker", icon: ClipboardCheck, permission: "sub_checker" },
       { label: "Рейтинг", to: "/ratings", icon: Star, permission: "ratings" },
     ],
   },

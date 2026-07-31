@@ -156,6 +156,7 @@ async def on_ready():
     publish_rating_task.start()
     publish_department_ratings_task.start()
     round_status_task.start()
+    reconcile_ticket_channels_task.start()
 
     # Initial ticket status refresh
     await refresh_ticket_status()
@@ -339,8 +340,15 @@ async def publish_rating_task():
                 msg = await channel.fetch_message(int(msg_id))
                 await msg.edit(embed=embed)
                 continue
-            except (discord.NotFound, discord.HTTPException):
-                pass
+            except discord.NotFound:
+                pass  # сообщение реально удалено — заведём новое ниже
+            except discord.HTTPException as e:
+                # Временная неполадка Discord — НЕ повод считать сообщение
+                # потерянным: иначе на каждый лимит запросов/5xx в чат уходит
+                # лишняя копия таблицы рейтинга, а старая остаётся висеть.
+                logger.warning(f"Не удалось обновить рейтинг {role}, попробуем в следующий раз: {e}")
+                await asyncio.sleep(15)
+                continue
 
         # Send new message
         try:
@@ -428,13 +436,18 @@ async def publish_department_ratings_task():
 
         key = str(department_id)
         msg_id = _department_rating_message_ids.get(key)
+        skip_send = False
         if msg_id:
             try:
                 msg = await channel.fetch_message(int(msg_id))
                 await msg.edit(embed=embed)
-            except (discord.NotFound, discord.HTTPException):
-                msg_id = None
-        if not msg_id:
+            except discord.NotFound:
+                msg_id = None  # сообщение реально удалено — заведём новое ниже
+            except discord.HTTPException as e:
+                # Временная неполадка — не значит, что сообщение потеряно.
+                logger.warning(f"Не удалось обновить рейтинг отдела {department_id}, попробуем позже: {e}")
+                skip_send = True
+        if not msg_id and not skip_send:
             try:
                 msg = await channel.send(embed=embed)
                 _department_rating_message_ids[key] = msg.id
@@ -447,8 +460,33 @@ async def publish_department_ratings_task():
         await asyncio.sleep(15)
 
 
-# Ticket status message ID (persisted)
-_ticket_status_msg_id = None
+# Ticket status message ID — persisted to disk (same pattern as
+# _round_status_message_ids below): a bare module-level variable resets to
+# None on every restart, and refresh_ticket_status() then sent a brand new
+# message every single time instead of editing the old one, leaving a trail
+# of stale "📊 Статус обращений" embeds in the channel.
+TICKET_STATUS_ID_FILE = os.path.join(_BOT_DIR, "ticket_status_message_id.json")
+
+
+def _load_ticket_status_id() -> Optional[int]:
+    try:
+        if os.path.exists(TICKET_STATUS_ID_FILE):
+            with open(TICKET_STATUS_ID_FILE, "r") as f:
+                return json.load(f).get("message_id")
+    except Exception:
+        pass
+    return None
+
+
+def _save_ticket_status_id(message_id: Optional[int]) -> None:
+    try:
+        with open(TICKET_STATUS_ID_FILE, "w") as f:
+            json.dump({"message_id": message_id}, f)
+    except Exception as e:
+        logger.warning(f"Failed to save ticket status message ID: {e}")
+
+
+_ticket_status_msg_id = _load_ticket_status_id()
 
 
 async def refresh_ticket_status():
@@ -496,12 +534,22 @@ async def refresh_ticket_status():
             msg = await channel.fetch_message(_ticket_status_msg_id)
             await msg.edit(embed=embed)
             return
-        except (discord.NotFound, discord.HTTPException):
+        except discord.NotFound:
+            # Сообщение действительно удалено — только тогда заводим новое.
             _ticket_status_msg_id = None
+            _save_ticket_status_id(None)
+        except discord.HTTPException as e:
+            # Временная неполадка Discord (лимит запросов, 5xx) — НЕ повод
+            # считать сообщение потерянным и плодить дубликат: молча выходим,
+            # следующий вызов (тикет создан/закрыт/новое сообщение) попробует
+            # снова с тем же id.
+            logger.warning(f"Не удалось обновить статус тикетов, попробуем позже: {e}")
+            return
 
     try:
         msg = await channel.send(embed=embed)
         _ticket_status_msg_id = msg.id
+        _save_ticket_status_id(msg.id)
     except Exception as e:
         logger.error(f"Failed to send ticket status: {e}")
 
@@ -595,8 +643,17 @@ async def refresh_round_status_embed(server_name: str):
             msg = await channel.fetch_message(int(msg_id))
             await msg.edit(embed=embed)
             return
-        except (discord.NotFound, discord.HTTPException):
-            pass
+        except discord.NotFound:
+            pass  # сообщение реально удалено — заведём новое ниже
+        except discord.HTTPException as e:
+            # Временная неполадка Discord (лимит запросов, 5xx на fetch) —
+            # раньше это тоже трактовалось как «сообщения больше нет» и
+            # каждую минуту при таком сбое в канал улетала лишняя копия
+            # статуса раунда, а старая молча оставалась висеть. Здесь просто
+            # пропускаем цикл — round_status_task вызовет эту функцию снова
+            # через минуту с тем же message_id.
+            logger.warning(f"Не удалось обновить статус раунда {server_name}, попробуем через минуту: {e}")
+            return
 
     try:
         msg = await channel.send(embed=embed)
@@ -611,6 +668,60 @@ async def round_status_task():
     """Refresh the round-status embed for every configured server every minute."""
     for server_name in ROUND_STATUS_SERVERS:
         await refresh_round_status_embed(server_name)
+
+
+@tasks.loop(minutes=30)
+async def reconcile_ticket_channels_task():
+    """Закрывает на сайте тикеты, чей канал в Discord уже не существует.
+
+    Раньше единственный способ закрыть тикет — кнопка «Закрыть обращение» —
+    почти всегда падал с ошибкой из-за бага с ticket_id=None у переживших
+    рестарт кнопок (см. close_button). Сотрудники в ответ просто удаляли
+    канал руками через Discord, не трогая сайт: канал пропадал, а запись
+    Ticket оставалась status="open" НАВСЕГДА — сайт показывал такие
+    обращения как открытые сколь угодно долго после того, как их фактически
+    закрыли. Кнопка теперь чинится (self.ticket_id разрешается по каналу),
+    но эта задача разгребает уже накопившиеся зависшие записи и страхует
+    на случай, если канал всё-таки удалят не через бота.
+
+    Существование канала проверяется через guild.get_channel: в отличие от
+    участников гильдии (см. sync_members_task), кэш каналов не урезается
+    настройками intents/chunking и надёжно отражает реальность без лишнего
+    HTTP-запроса на каждый тикет.
+    """
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    tickets = await asyncio.to_thread(bot_data.get_open_tickets)
+    if not tickets:
+        return
+
+    closed_any = False
+    for t in tickets:
+        channel_id = t.get("discord_channel_id")
+        if not channel_id:
+            continue
+        try:
+            channel_exists = guild.get_channel(int(channel_id)) is not None
+        except (ValueError, TypeError):
+            continue
+        if channel_exists:
+            continue
+
+        try:
+            ok = await asyncio.to_thread(
+                bot_data.close_ticket, t["id"], "Авто-закрытие (канал в Discord удалён)",
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось авто-закрыть тикет #{t['id']} с удалённым каналом: {e}")
+            continue
+        if ok:
+            closed_any = True
+            logger.info(f"Тикет #{t['id']} авто-закрыт: канал {channel_id} в Discord больше не существует")
+
+    if closed_any:
+        await refresh_ticket_status()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1198,7 +1309,17 @@ class TicketCloseView(discord.ui.View):
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
+
+        # self.ticket_id живёт только в памяти ЭТОГО экземпляра View. bot.add_view
+        # (register_persistent_views ниже) регистрирует на старте ОБЩИЙ экземпляр
+        # без ticket_id — он и подхватывает клики по кнопкам старых сообщений
+        # (отправленных в прошлых запусках бота), поэтому self.ticket_id там
+        # всегда None. Канал, из которого пришло взаимодействие, всегда известен
+        # и не зависит от рестартов — ищем тикет по нему, если своего id нет.
         ticket_id = self.ticket_id
+        if not ticket_id:
+            ticket = await asyncio.to_thread(bot_data.get_ticket_by_channel, str(channel.id))
+            ticket_id = ticket["id"] if ticket else None
 
         if not ticket_id or not await _close_ticket_with_retry(ticket_id, interaction.user.display_name):
             await interaction.followup.send(
@@ -1276,6 +1397,36 @@ async def cmd_setup_tickets(ctx):
     await ctx.message.delete()
 
 
+async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
+    """Администратор сервера или обладатель одной из настроенных ролей
+    персонала тикетов — общая проверка для /close и /ticket_add.
+
+    Роли берутся из ДВУХ мест: явного config["manager_role_ids"] (настраивается
+    на сайте, вкладка Discord бот → «Настройки тикетов» — это ЕДИНЫЙ список
+    именно для управления тикетами) и, для обратной совместимости с уже
+    настроенными типами, ping_roles каждого типа обращения (раньше /close
+    проверял только их — те, у кого есть хоть одна из ролей уведомления по
+    любому типу, могут закрывать любой тикет; сохраняем это поведение, а не
+    сужаем его молча)."""
+    if hasattr(user, "guild_permissions") and user.guild_permissions.administrator:
+        return True
+    if not config or not guild:
+        return False
+
+    role_ids = set(config.get("manager_role_ids") or [])
+    for tconf in (config.get("types") or {}).values():
+        role_ids.update(tconf.get("ping_roles") or [])
+
+    user_role_ids = {r.id for r in getattr(user, "roles", [])}
+    for role_id_str in role_ids:
+        try:
+            if int(role_id_str) in user_role_ids:
+                return True
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
 @bot.tree.command(name="close", description="Закрыть тикет через указанное время (только для администраторов)")
 @app_commands.describe(
     minutes="Через сколько минут закрыть (0 = через 15 секунд)",
@@ -1290,25 +1441,9 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
         await interaction.response.send_message("❌ Эта команда доступна только в тикет-каналах.", ephemeral=True)
         return
 
-    # Check permissions: user must have admin or be one of the ping roles for this ticket type
     user = interaction.user
-    has_perm = user.guild_permissions.administrator if hasattr(user, 'guild_permissions') else False
-
-    if not has_perm:
-        # Load ticket config ping roles and check if user has any of them
-        config = await asyncio.to_thread(bot_data.get_tickets_config)
-        if config:
-            for ttype, tconf in config.get("types", {}).items():
-                for role_id_str in tconf.get("ping_roles", []):
-                    try:
-                        role = interaction.guild.get_role(int(role_id_str))
-                        if role and role in user.roles:
-                            has_perm = True
-                            break
-                    except (ValueError, TypeError):
-                        pass
-                if has_perm:
-                    break
+    config = await asyncio.to_thread(bot_data.get_tickets_config)
+    has_perm = await _user_has_ticket_staff_permission(user, interaction.guild, config)
 
     if not has_perm:
         await interaction.response.send_message("❌ У вас нет прав для закрытия тикета.", ephemeral=True)
@@ -1338,18 +1473,11 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
     else:
         time_str = f"{minutes} минут"
 
-    # Find ticket_id by channel
-    open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
-    ticket_id = None
-    ticket_title = "Обращение"
-    creator_discord_id = None
-    if open_tickets:
-        for t in open_tickets:
-            if t.get("discord_channel_id") == channel_id_str:
-                ticket_id = t["id"]
-                ticket_title = t.get("title", "Обращение")
-                creator_discord_id = t.get("creator_discord_id")
-                break
+    # Find ticket by channel
+    ticket = await asyncio.to_thread(bot_data.get_ticket_by_channel, channel_id_str)
+    ticket_id = ticket["id"] if ticket else None
+    ticket_title = (ticket or {}).get("title", "Обращение")
+    creator_discord_id = (ticket or {}).get("creator_discord_id")
 
     await interaction.response.send_message(
         f"🔒 Администратор закрыл тикет, он будет удалён через **{time_str}**...\n"
@@ -1401,6 +1529,40 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
 
     task = asyncio.create_task(_do_close())
     _pending_close[channel_id_str] = task
+
+
+@bot.tree.command(name="ticket_add", description="Добавить участника в текущий тикет (только для персонала)")
+@app_commands.describe(member="Кого добавить в тикет — можно ввести Discord ID напрямую")
+async def slash_ticket_add_member(interaction: discord.Interaction, member: discord.Member):
+    """Slash command /ticket_add <member> — доступ по роли (см.
+    _user_has_ticket_staff_permission), а не для всех подряд: канал тикета
+    приватный именно потому, что в него не должен попадать кто попало."""
+    channel = interaction.channel
+
+    if not channel.name.startswith("ticket-"):
+        await interaction.response.send_message("❌ Эта команда доступна только в тикет-каналах.", ephemeral=True)
+        return
+
+    config = await asyncio.to_thread(bot_data.get_tickets_config)
+    if not await _user_has_ticket_staff_permission(interaction.user, interaction.guild, config):
+        await interaction.response.send_message("❌ У вас нет прав для этой команды.", ephemeral=True)
+        return
+
+    try:
+        await channel.set_permissions(
+            member, view_channel=True, send_messages=True, read_message_history=True,
+            reason=f"Добавлен в тикет админом {interaction.user}",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ У бота недостаточно прав, чтобы изменить доступ к каналу.", ephemeral=True,
+        )
+        return
+    except discord.HTTPException as e:
+        await interaction.response.send_message(f"❌ Не удалось добавить участника: {e}", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"✅ {member.mention} добавлен(а) в этот тикет.", ephemeral=False)
 
 
 @bot.command(name="setticketcategory")

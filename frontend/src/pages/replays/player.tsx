@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { ReplayLogsPanel } from "./ReplayLogsPanel"
 
 interface ReplayDetail {
   replay: {
@@ -81,7 +82,7 @@ export function ReplayPlayerPage() {
         .rpv-btn.active{background:var(--primary);border-color:var(--primary);}
         .rpv-seek{flex:1;min-width:160px;}
         .rpv-time{font-family:monospace;font-size:12px;color:var(--muted-foreground);white-space:nowrap;}
-        .rpv-side{display:flex;flex-direction:column;gap:12px;}
+        .rpv-side{display:flex;flex-direction:column;gap:12px;max-height:calc(70vh + 62px);overflow-y:auto;}
         .rpv-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
         .rpv-panel h3{font-size:13px;font-weight:700;color:var(--foreground);margin:0 0 10px;}
         .rpv-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:12px;color:var(--muted-foreground);}
@@ -150,6 +151,7 @@ export function ReplayPlayerPage() {
             <h3>💬 Чат</h3>
             <div className="rpv-chat" id="rpvChat" />
           </div>
+          {replayId && <ReplayLogsPanel replayId={replayId} />}
         </div>
       </div>
     </div>

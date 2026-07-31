@@ -27,7 +27,7 @@ from config import get_settings
 from models import AdminUser, Department, DepartmentMember
 from routes.departments import get_current_admin, get_member, require_department_module, get_department_or_404
 from routes.sub_projects import _get_sub_service, _serialize_project, _serialize_version
-from security import check_department_permission
+from security import check_department_permission, check_permission
 
 router = APIRouter()
 settings = get_settings()
@@ -126,7 +126,14 @@ async def api_polygon_detail(
         "versions": [_serialize_version(v) for v in versions],
         "can_edit_this": can_edit,
         "sftp_server_2_name": settings.sftp_server_2_name,
+        "can_check_gost": check_permission(current_admin, "sub_checker", "check"),
+        "checks": _latest_polygon_checks(db, project_id),
     }
+
+
+def _latest_polygon_checks(db: Session, project_id: int) -> dict:
+    from routes.sub_projects import _latest_checks
+    return _latest_checks(db, project_id)
 
 
 @router.post("/api/v1/admin/sub-projects-polygon")
@@ -198,7 +205,10 @@ async def api_polygon_upload_version(
     log_admin_action(db, current_admin.id, "sub_version_polygon_upload", {
         "project_id": project_id, "version_id": version.id, "version_number": version.version_number,
     })
-    return {"status": "ok", "version": _serialize_version(version)}
+    # Автопроверка по ГОСТу — как и в обычной зоне Sub-проектов.
+    from routes.sub_checker import check_version_file
+    check = check_version_file(db, version, admin_id=current_admin.id, is_auto=True)
+    return {"status": "ok", "version": _serialize_version(version), "check": check}
 
 
 @router.delete("/api/v1/admin/sub-projects-polygon/{project_id}/versions/{version_id}")

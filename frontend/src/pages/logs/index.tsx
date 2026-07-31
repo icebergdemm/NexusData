@@ -14,34 +14,12 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { api } from "@/lib/api"
+import { ACTION_COLOR, ACTION_TYPES, type LogEvent } from "./constants"
 import { useCurrentAdmin } from "@/lib/auth"
 
-interface LogEvent {
-  timestamp: string
-  player_name: string | null
-  action_type: string
-  details: string | null
-  server_name: string | null
-  source_file: string | null
-}
 interface LogsResponse { events: LogEvent[]; total: number; total_is_capped: boolean; page: number; page_size: number; total_pages: number }
 interface LogStatEntry { event_count: number; last_refresh: string | null; oldest_event: string | null; newest_event: string | null }
 interface SearchIndexStatus { available: boolean; ready: boolean; progress_pct: number }
-
-const ACTION_TYPES = [
-  "picked_up", "placed", "removed", "opened", "closed", "equipped", "unequipped", "dropped",
-  "reactor", "repair", "fabrication", "fabrication_cancel", "activated", "deactivated", "wire",
-  "pump", "settings_change", "console", "death", "chat", "login", "logout", "attack",
-  "structure", "kick", "name_change", "connection", "radio", "other",
-]
-
-const ACTION_COLOR: Record<string, string> = {
-  death: "text-destructive", kick: "text-destructive", attack: "text-destructive",
-  login: "text-success", connection: "text-success",
-  logout: "text-muted-foreground",
-  chat: "text-info", radio: "text-info",
-  console: "text-warning", settings_change: "text-warning",
-}
 
 export function LogsPage() {
   const { data: admin } = useCurrentAdmin()

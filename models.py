@@ -156,6 +156,39 @@ class AdminSession(Base):
     revoked = Column(Integer, default=0)
 
 
+class AdminLoginKey(Base):
+    """Ключ входа на сайт без Discord (страница /slogin).
+
+    Заводится суперпользователем для конкретного администратора — на случай,
+    когда Discord недоступен: блокировки, потеря доступа к аккаунту, вход с
+    машины без браузерной сессии Discord.
+
+    Хранится ТОЛЬКО хеш: утечка таблицы не должна давать вход. Сам ключ
+    показывается один раз при создании и больше нигде не восстановим. Хеш —
+    обычный sha256 без «медленной» KDF, и это осознанно: ключ генерируем мы
+    сами, в нём 160 бит случайности, перебирать там нечего, а bcrypt на
+    каждой попытке входа дал бы только удобную точку для DoS.
+    """
+    __tablename__ = "admin_login_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key_hash = Column(String(64), unique=True, nullable=False, index=True)
+    # Первые символы ключа — чтобы в списке можно было отличить один от другого.
+    key_prefix = Column(String(16), nullable=False)
+    label = Column(String(200), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    expires_at = Column(DateTime, nullable=True)
+    revoked = Column(Boolean, nullable=False, default=False)
+    last_used_at = Column(DateTime, nullable=True)
+    last_used_ip = Column(String(45), nullable=True)
+    use_count = Column(Integer, nullable=False, default=0)
+
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
 class AdminActionLog(Base):
     __tablename__ = "admin_action_logs"
 
@@ -1482,3 +1515,71 @@ class WarehouseItem(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     updated_by = relationship("AdminUser", foreign_keys=[updated_by_admin_id])
+
+
+class SubCheckerConfig(Base):
+    """Единственная строка с конфигурацией проверщика кораблей (ГОСТ).
+
+    Всё содержимое проверки — формулы, пороги оборудования, список
+    запрещённых предметов, классы и их наполнение — лежит в `data` (структура
+    описана в sub_checker_defaults.DEFAULT_CONFIG). История правок ведётся
+    отдельной таблицей sub_checker_config_revisions: настройки ГОСТа —
+    нормативный документ, и «кто и когда поменял порог» должно быть видно.
+    """
+    __tablename__ = "sub_checker_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    data = Column(JSON, nullable=False)
+    revision = Column(Integer, nullable=False, default=1)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    updated_by = relationship("AdminUser", foreign_keys=[updated_by_admin_id])
+
+
+class SubCheckerConfigRevision(Base):
+    """Снимок конфигурации проверщика перед каждой правкой."""
+    __tablename__ = "sub_checker_config_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    revision = Column(Integer, nullable=False, index=True)
+    data = Column(JSON, nullable=False)
+    comment = Column(String(500), nullable=True)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
+class SubCheckResult(Base):
+    """Результат одной проверки .sub-файла.
+
+    Хранится и для проверок конкретной версии проекта (project_id/version_id
+    заполнены — сюда же попадает автопроверка при загрузке новой версии), и
+    для разовых загрузок файла во вкладке чекера (оба поля NULL).
+    `report` — полный отчёт из services_sub_checker.check_sub_file.
+    """
+    __tablename__ = "sub_check_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("sub_projects.id"), nullable=True, index=True)
+    version_id = Column(Integer, ForeignKey("sub_project_versions.id"), nullable=True, index=True)
+    filename = Column(String(500), nullable=True)
+    submarine_name = Column(String(255), nullable=True)
+    ship_class = Column(String(64), nullable=True)
+    tonnage = Column(Float, nullable=True)
+    passed = Column(Boolean, nullable=False, default=False)
+    error_count = Column(Integer, nullable=False, default=0)
+    warning_count = Column(Integer, nullable=False, default=0)
+    # Ревизия конфигурации, по которой считали — без неё старый отчёт нечем
+    # объяснить после правки порогов.
+    config_revision = Column(Integer, nullable=True)
+    # True — проверка запущена автоматически при загрузке версии.
+    is_auto = Column(Boolean, nullable=False, default=False)
+    report = Column(JSON, nullable=True)
+    checked_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+    checked_by = relationship("AdminUser", foreign_keys=[checked_by_admin_id])
+    project = relationship("SubProject", foreign_keys=[project_id])
+    version = relationship("SubProjectVersion", foreign_keys=[version_id])

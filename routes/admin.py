@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 import secrets
 import threading
@@ -254,6 +254,85 @@ def _resolve_oauth_redirect_uri(request: Request) -> str:
     if host in _oauth_allowed_hosts():
         return f"{request.url.scheme}://{request.url.netloc}/auth/discord/callback"
     return settings.discord_redirect_uri
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Вход по ключу (/slogin) — запасной путь, когда Discord недоступен
+# ══════════════════════════════════════════════════════════════════════════
+
+def _issue_admin_session(db: Session, admin: AdminUser, response) -> None:
+    """Создаёт серверную сессию и ставит куку — та же схема, что у входа
+    через Discord (одна таблица сессий, один вид куки), чтобы способ входа
+    дальше нигде не приходилось различать."""
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds=settings.session_max_age)
+    db.add(AdminSession(admin_id=admin.id, token=token, created_at=now, expires_at=expires, revoked=0))
+    admin.last_login = now
+    db.commit()
+    response.set_cookie(
+        "admin_token", token,
+        httponly=True, max_age=settings.session_max_age,
+        samesite="lax", secure=not settings.debug,
+    )
+
+
+@router.get("/slogin", response_class=HTMLResponse)
+async def key_login_page(request: Request, next: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Страница входа по ключу. Отдельный адрес, а не кнопка на /login:
+    основной способ входа должен оставаться единственным очевидным, а этот —
+    для тех, кому его выдали."""
+    if "csrf_token" not in request.session:
+        request.session["csrf_token"] = secrets.token_urlsafe(32)
+
+    next_path = _safe_next_path(next)
+
+    token = request.cookies.get("admin_token")
+    if token:
+        session = db.query(AdminSession).filter(
+            AdminSession.token == token, AdminSession.revoked == 0
+        ).first()
+        if session and (session.expires_at is None or session.expires_at > datetime.utcnow()):
+            return RedirectResponse(url=next_path, status_code=302)
+
+    return templates.TemplateResponse("slogin.html", {
+        "request": request,
+        "csrf_token": request.session["csrf_token"],
+        "next_path": next_path,
+        "error": request.query_params.get("error"),
+    })
+
+
+@router.post("/slogin")
+async def key_login_submit(
+    request: Request,
+    key: str = Form(""),
+    next: str = Form("/admin"),
+    csrf_token: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    import services_login_keys
+
+    next_path = _safe_next_path(next)
+    if not secrets.compare_digest(str(csrf_token or ""), str(request.session.get("csrf_token") or "")):
+        return RedirectResponse(url="/slogin?error=csrf", status_code=302)
+
+    client_ip = request.client.host if request.client else None
+    if not services_login_keys.rate_limit_ok(client_ip):
+        logger.warning(f"Слишком много попыток входа по ключу с {client_ip}")
+        return RedirectResponse(url="/slogin?error=throttled", status_code=302)
+
+    admin = services_login_keys.resolve_admin(db, key, client_ip)
+    if not admin:
+        logger.warning(f"Неудачная попытка входа по ключу с {client_ip}")
+        return RedirectResponse(url="/slogin?error=invalid", status_code=302)
+
+    response = RedirectResponse(url=next_path, status_code=302)
+    _issue_admin_session(db, admin, response)
+    request.session["username"] = admin.discord_username
+    log_admin_action(db, admin.id, "login", {"method": "login_key", "ip": client_ip})
+    logger.info(f"Вход по ключу: {admin.discord_username} (id={admin.id}) с {client_ip}")
+    return response
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -740,6 +819,91 @@ async def api_delete_admin_user(admin_id: int, db: Session = Depends(get_db), cu
         "target": {"admin_id": target_admin.id, "discord_id": target_admin.discord_id, "username": target_admin.discord_username},
     })
     return {"status": "ok"}
+
+
+# ── Ключи входа без Discord (/slogin) ────────────────────────────────────
+# Только суперпользователь: ключ — это полноценный вход в чужой аккаунт со
+# всеми его правами, и раздача такого не должна зависеть от того, кому выдали
+# admin:edit.
+
+def _require_superuser(admin: AdminUser):
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователя")
+
+
+@router.get("/api/v1/admin/users/{admin_id}/login-keys")
+async def api_list_login_keys(
+    admin_id: int, db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    import services_login_keys
+    from models import AdminLoginKey
+
+    _require_superuser(current_admin)
+    rows = (
+        db.query(AdminLoginKey)
+        .options(joinedload(AdminLoginKey.created_by))
+        .filter(AdminLoginKey.admin_id == admin_id)
+        .order_by(AdminLoginKey.created_at.desc())
+        .all()
+    )
+    return {"keys": [services_login_keys.serialize(r) for r in rows]}
+
+
+@router.post("/api/v1/admin/users/{admin_id}/login-keys")
+async def api_create_login_key(
+    admin_id: int, request: Request, db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Создаёт ключ. Сам ключ возвращается ЕДИНСТВЕННЫЙ раз — в базе только
+    хеш, восстановить его потом нельзя даже суперпользователю."""
+    import services_login_keys
+
+    _require_superuser(current_admin)
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    target = db.query(AdminUser).filter(AdminUser.id == admin_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if getattr(target, "is_deleted", 0) == 1:
+        raise HTTPException(status_code=400, detail="Пользователь удалён — ключ ему не нужен")
+
+    body = await request.json() if await request.body() else {}
+    expires_days = body.get("expires_days")
+    if expires_days is not None and (not isinstance(expires_days, int) or expires_days < 0):
+        raise HTTPException(status_code=400, detail="Срок действия — целое число дней")
+
+    row, raw_key = services_login_keys.create_key(
+        db, admin_id, current_admin.id,
+        label=body.get("label"), expires_days=expires_days or None,
+    )
+    log_admin_action(db, current_admin.id, "login_key_create",
+                     {"target_admin_id": admin_id, "key_id": row.id})
+    return {"key": services_login_keys.serialize(row), "secret": raw_key}
+
+
+@router.delete("/api/v1/admin/users/{admin_id}/login-keys/{key_id}")
+async def api_revoke_login_key(
+    admin_id: int, key_id: int, db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Отзыв, а не удаление: строка остаётся, чтобы в аудите было видно, что
+    ключ существовал и когда им пользовались в последний раз."""
+    import services_login_keys
+    from models import AdminLoginKey
+
+    _require_superuser(current_admin)
+    row = db.query(AdminLoginKey).filter(
+        AdminLoginKey.id == key_id, AdminLoginKey.admin_id == admin_id
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ключ не найден")
+
+    row.revoked = True
+    db.commit()
+    log_admin_action(db, current_admin.id, "login_key_revoke",
+                     {"target_admin_id": admin_id, "key_id": key_id})
+    return {"key": services_login_keys.serialize(row)}
 
 
 @router.post("/api/v1/admin/users/{user_id}/assign-group")
@@ -1683,9 +1847,11 @@ async def api_player_detail(
         "kits": settings.kits_mapping,
         "kval_kits": raw_achievements.get("kval_kits", {}),
         "custom_items": raw_achievements.get("items", {}),
+        "custom_job_items": raw_achievements.get("job_items", {}),
         "custom_stats": raw_achievements.get("stats", {}),
         "custom_talents": raw_achievements.get("talents", {}),
         "available_kval_kits": available_kval_kits,
+        "reward_reference": _rewards_reference(db),
         "is_online": is_online,
         "server_privileges": server_privileges,
         "has_view": check_permission(current_admin, "players", "view"),
@@ -3560,6 +3726,52 @@ def _get_achievements_dict(player: "PlayerData") -> dict:
     return dict(raw)
 
 
+def _rewards_reference(db: Session) -> dict:
+    """Справочник для форм выдачи наград: профессии, навыки и таланты с
+    русскими названиями.
+
+    Без него интерфейс требовал вписывать идентификатор профессии руками
+    («captain», «securityofficer»), а опечатка молча создавала награду для
+    несуществующей профессии — игра её просто не находила, и понять почему
+    награда «не работает» было неоткуда.
+
+    Источник — тот же static/doll_reference.json, что и у конструктора кукол
+    (выгрузка из игрового контента). К нему добавляются профессии из таблицы
+    китов: там могут быть модовые, которых в выгрузке нет.
+    """
+    from models import Kit
+    import services_respawn_dolls
+
+    ref = services_respawn_dolls.doll_reference() or {}
+
+    jobs = []
+    seen = set()
+    for job in ref.get("jobs") or []:
+        identifier = (job.get("identifier") or "").strip()
+        if identifier and identifier not in seen:
+            seen.add(identifier)
+            jobs.append({"identifier": identifier, "name": job.get("name") or identifier})
+
+    try:
+        # Тот же фильтр, что и у страницы китов (api_kits_list), чтобы списки
+        # профессий там и здесь не разъезжались: `_k` — квал-киты, не профессии.
+        rows = db.query(Kit.job_id).filter(~Kit.job_id.like("%_k")).distinct().all()
+        for (job_id,) in rows:
+            job_id = (job_id or "").strip()
+            if job_id and job_id not in seen:
+                seen.add(job_id)
+                jobs.append({"identifier": job_id, "name": job_id})
+    except Exception as e:  # noqa: BLE001 — справочник не должен ронять карточку
+        logger.warning(f"Не удалось дополнить список профессий из китов: {e}")
+
+    jobs.sort(key=lambda j: j["name"].lower())
+    return {
+        "jobs": jobs,
+        "skill_labels": ref.get("skill_labels") or {},
+        "talents": ref.get("talents") or {},
+    }
+
+
 @router.post("/api/v1/admin/players/{player_id}/rewards/kval-kits")
 async def set_kval_kit(
     request: Request,
@@ -3625,12 +3837,23 @@ async def set_reward_item(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Set (add or update) a custom item for a player."""
+    """Выдать (или изменить количество) дополнительный предмет.
+
+    Без job_id (или с job_id="all") предмет попадает в `items` — он выдаётся
+    независимо от выбранной профессии, как было всегда. С конкретной
+    профессией — в `job_items[job_id]`.
+
+    ОТДЕЛЬНЫМ ключом, а не вложением внутрь `items`: `items` — часть
+    контракта с игровым сервером ({item_id: количество}, см.
+    GAME_SERVER_API_GUIDE.md), и смена его формы сломала бы плагин, который
+    уже это читает. Новый ключ старый плагин просто игнорирует.
+    """
     if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
     item_id = body.get("item_id", "").strip()
+    job_id = (body.get("job_id") or "").strip()
     quantity = body.get("quantity")
     if not item_id:
         raise HTTPException(status_code=400, detail="item_id required")
@@ -3642,13 +3865,25 @@ async def set_reward_item(
         raise HTTPException(status_code=400, detail="quantity must be a positive integer")
     player = _get_rewards_player(player_id, db)
     ach = _get_achievements_dict(player)
-    items = dict(ach.get("items", {}))
-    items[item_id] = quantity
-    ach["items"] = items
+
+    if not job_id or job_id == "all":
+        items = dict(ach.get("items", {}))
+        items[item_id] = quantity
+        ach["items"] = items
+    else:
+        job_items = {k: dict(v) for k, v in (ach.get("job_items") or {}).items() if isinstance(v, dict)}
+        bucket = job_items.setdefault(job_id, {})
+        bucket[item_id] = quantity
+        ach["job_items"] = job_items
+
     player.achievements = ach
     db.commit()
-    log_admin_action(db, current_admin.id, "set_reward_item", {"player_id": player_id, "item_id": item_id, "quantity": quantity})
-    return JSONResponse({"status": "ok", "items": ach["items"]})
+    log_admin_action(db, current_admin.id, "set_reward_item", {
+        "player_id": player_id, "item_id": item_id, "quantity": quantity, "job_id": job_id or "all",
+    })
+    return JSONResponse({
+        "status": "ok", "items": ach.get("items", {}), "job_items": ach.get("job_items", {}),
+    })
 
 
 @router.delete("/api/v1/admin/players/{player_id}/rewards/items")
@@ -3656,24 +3891,44 @@ async def remove_reward_item(
     request: Request,
     player_id: int,
     item_id: str = Query(...),
+    job_id: Optional[str] = Query(None, description="Профессия; пусто или «all» — предмет из общего списка"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Remove a custom item from player achievements."""
+    """Снять дополнительный предмет — общий (`items`) или профессиональный
+    (`job_items[job_id]`), в зависимости от job_id."""
     if not check_permission(current_admin, "players", "manage_rewards"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
     player = _get_rewards_player(player_id, db)
     ach = _get_achievements_dict(player)
-    items = dict(ach.get("items", {}))
-    if item_id not in items:
-        raise HTTPException(status_code=404, detail="Item not found")
-    del items[item_id]
-    ach["items"] = items
+    job = (job_id or "").strip()
+
+    if not job or job == "all":
+        items = dict(ach.get("items", {}))
+        if item_id not in items:
+            raise HTTPException(status_code=404, detail="Item not found")
+        del items[item_id]
+        ach["items"] = items
+    else:
+        job_items = {k: dict(v) for k, v in (ach.get("job_items") or {}).items() if isinstance(v, dict)}
+        if item_id not in job_items.get(job, {}):
+            raise HTTPException(status_code=404, detail="Item not found")
+        del job_items[job][item_id]
+        # Пустую профессию не оставляем: иначе в справочнике наград копятся
+        # профессии без предметов, которые интерфейсу нечем показать.
+        if not job_items[job]:
+            del job_items[job]
+        ach["job_items"] = job_items
+
     player.achievements = ach
     db.commit()
-    log_admin_action(db, current_admin.id, "remove_reward_item", {"player_id": player_id, "item_id": item_id})
-    return JSONResponse({"status": "ok", "items": ach["items"]})
+    log_admin_action(db, current_admin.id, "remove_reward_item", {
+        "player_id": player_id, "item_id": item_id, "job_id": job or "all",
+    })
+    return JSONResponse({
+        "status": "ok", "items": ach.get("items", {}), "job_items": ach.get("job_items", {}),
+    })
 
 
 @router.post("/api/v1/admin/players/{player_id}/rewards/stats")
@@ -4819,7 +5074,22 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     # Pterodactyl bearer token grants real power over game servers (department
     # test servers + the Sub-projects "Сервер 2"/ASPER2 control panel).
     "pterodactyl_panel_url", "pterodactyl_api_key", "sub_projects_test_server_uuid",
+    # Обновление кода из git: подменив каталог, remote или ветку, можно
+    # заставить сервер выполнить чужой код. Это строго суперпользовательское,
+    # даже несмотря на то, что саму команду `update` запускают из консоли.
+    "git_update_repo_dir", "git_update_repo_url", "git_update_remote", "git_update_branch",
+    "git_update_build_frontend", "git_update_restart_backend",
+    "git_update_token", "git_update_token_username", "git_update_npm_path",
+    "git_update_frontend_dist_branch",
 }
+
+# Токен доступа к репозиторию наружу отдаётся ЗАГЛУШКОЙ, а не значением:
+# в отличие от остальных секретов на этой странице он открывает чужой код,
+# который сервер потом сам же и выполнит, поэтому лишний раз гонять его по
+# сети и держать в состоянии страницы незачем. Пришедшая обратно заглушка
+# означает «не трогать» — сохраняется прежнее значение из .env.
+SECRET_PLACEHOLDER = "••••••••"
+MASKED_CFG_FIELDS = {"git_update_token"}
 
 
 def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
@@ -4893,6 +5163,16 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "pterodactyl_panel_url": s.pterodactyl_panel_url,
             "pterodactyl_api_key": s.pterodactyl_api_key,
             "sub_projects_test_server_uuid": s.sub_projects_test_server_uuid,
+            "git_update_repo_dir": s.git_update_repo_dir,
+            "git_update_repo_url": s.git_update_repo_url,
+            "git_update_remote": s.git_update_remote,
+            "git_update_branch": s.git_update_branch,
+            "git_update_token": SECRET_PLACEHOLDER if s.git_update_token else "",
+            "git_update_token_username": s.git_update_token_username,
+            "git_update_build_frontend": s.git_update_build_frontend,
+            "git_update_restart_backend": s.git_update_restart_backend,
+            "git_update_npm_path": s.git_update_npm_path,
+            "git_update_frontend_dist_branch": s.git_update_frontend_dist_branch,
         })
     return cfg
 
@@ -5039,6 +5319,16 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "pterodactyl_panel_url": "PTERODACTYL_PANEL_URL",
         "pterodactyl_api_key": "PTERODACTYL_API_KEY",
         "sub_projects_test_server_uuid": "SUB_PROJECTS_TEST_SERVER_UUID",
+        "git_update_repo_dir": "GIT_UPDATE_REPO_DIR",
+        "git_update_repo_url": "GIT_UPDATE_REPO_URL",
+        "git_update_remote": "GIT_UPDATE_REMOTE",
+        "git_update_branch": "GIT_UPDATE_BRANCH",
+        "git_update_token": "GIT_UPDATE_TOKEN",
+        "git_update_token_username": "GIT_UPDATE_TOKEN_USERNAME",
+        "git_update_build_frontend": "GIT_UPDATE_BUILD_FRONTEND",
+        "git_update_restart_backend": "GIT_UPDATE_RESTART_BACKEND",
+        "git_update_npm_path": "GIT_UPDATE_NPM_PATH",
+        "git_update_frontend_dist_branch": "GIT_UPDATE_FRONTEND_DIST_BRANCH",
     }
 
     for field, env_key in field_map.items():
@@ -5048,8 +5338,15 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
             # если оно затесалось в тело запроса.
             continue
         val = body.get(field)
+        if field in MASKED_CFG_FIELDS and (val is None or str(val) == SECRET_PLACEHOLDER):
+            # Пришла заглушка (поле не трогали) или поля нет в запросе вовсе —
+            # оставляем то, что уже лежит в .env. Иначе обычное сохранение
+            # страницы затирало бы секрет заглушкой или пустой строкой.
+            # Чтобы СТЕРЕТЬ токен, поле надо прислать пустой строкой.
+            continue
         if val is None:
-            if field in ("debug", "rate_limit_enabled"):
+            if field in ("debug", "rate_limit_enabled",
+                         "git_update_build_frontend", "git_update_restart_backend"):
                 val = "false"
         elif val is True or val in ("on", "1", "true", "yes"):
             val = "true"
@@ -5140,7 +5437,8 @@ async def admin_administration_config_save(
         val = form.get(field)
         if val is None:
             # checkboxes that are unchecked won't appear in form
-            if field in ("debug", "rate_limit_enabled"):
+            if field in ("debug", "rate_limit_enabled",
+                         "git_update_build_frontend", "git_update_restart_backend"):
                 val = "false"
         else:
             # normalize checkboxes

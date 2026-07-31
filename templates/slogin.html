@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Вход по ключу — Nexus Data</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap" rel="stylesheet" />
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            background: radial-gradient(circle at 50% 20%, #16202c 0%, #0a0e14 70%);
+            font-family: Manrope, system-ui, sans-serif; color: #e8edf3; padding: 24px;
+        }
+        .card {
+            width: 100%; max-width: 420px; background: rgba(18, 24, 33, .92);
+            border: 1px solid rgba(255, 255, 255, .08); border-radius: 14px;
+            padding: 28px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+        }
+        h1 { margin: 0 0 6px; font-size: 20px; font-weight: 800; }
+        .sub { margin: 0 0 20px; font-size: 13px; line-height: 1.5; color: #8b98a8; }
+        label { display: block; font-size: 12px; color: #8b98a8; margin-bottom: 6px; }
+        input[type=password], input[type=text] {
+            width: 100%; padding: 11px 12px; border-radius: 8px; font-size: 14px;
+            background: #0d1219; border: 1px solid rgba(255, 255, 255, .12); color: #e8edf3;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        input:focus { outline: none; border-color: #3894e0; }
+        button {
+            width: 100%; margin-top: 16px; padding: 11px; border: none; border-radius: 8px;
+            background: #3894e0; color: #fff; font-size: 14px; font-weight: 700;
+            font-family: inherit; cursor: pointer;
+        }
+        button:hover { background: #2d7cc0; }
+        .err {
+            margin-bottom: 16px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+            background: rgba(220, 60, 60, .12); border: 1px solid rgba(220, 60, 60, .35); color: #ff9d9d;
+        }
+        .alt { margin-top: 18px; text-align: center; font-size: 12px; }
+        .alt a { color: #8b98a8; text-decoration: none; }
+        .alt a:hover { color: #e8edf3; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Вход по ключу</h1>
+        <p class="sub">
+            Запасной вход для случаев, когда недоступен Discord.
+            Ключ выдаёт суперпользователь; он привязан лично к вам — не передавайте его.
+        </p>
+
+        {% if error == 'invalid' %}
+        <div class="err">Ключ не подошёл. Проверьте, что скопировали его целиком.</div>
+        {% elif error == 'throttled' %}
+        <div class="err">Слишком много попыток. Подождите несколько минут.</div>
+        {% elif error == 'csrf' %}
+        <div class="err">Форма устарела — страница перезагружена, попробуйте снова.</div>
+        {% endif %}
+
+        <form method="post" action="/slogin" autocomplete="off">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ next_path }}">
+            <label for="key">Ключ доступа</label>
+            <input type="password" id="key" name="key" placeholder="nd_…" required autofocus>
+            <button type="submit">Войти</button>
+        </form>
+
+        <div class="alt"><a href="/login">← Обычный вход через Discord</a></div>
+    </div>
+</body>
+</html>

@@ -9,11 +9,22 @@ import { Skeleton } from "@/components/ui/skeleton"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { ArrowLeft, Crown, MapPin, Ship, Target, Video, Link2, Link2Off } from "lucide-react"
+import { ArrowLeft, Crown, LogOut, MapPin, Ship, Target, Video, Link2, Link2Off } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { api } from "@/lib/api"
 
-interface RoundPlayer { steamid: string; player_name: string; real_name?: string; role?: string }
+interface RoundPlayer {
+  steamid: string
+  player_name: string
+  real_name?: string
+  role?: string
+  /** Профиль игрока в Nexus Data — null, если игрока в базе ещё нет. */
+  player_id?: number | null
+  /** Игрока не было в раунде на момент его окончания. */
+  left?: boolean
+  left_at?: string | null
+}
 interface ReplayRow { id: number; server_name: string | null; submarine_name: string | null; file_size: number | null; recorded_at: string | null }
 interface RoundDetail {
   id: number
@@ -27,12 +38,18 @@ interface RoundDetail {
   reached_station: boolean | null
   players: RoundPlayer[]
   player_count: number
+  player_left_count: number
   replay: ReplayRow | null
   manually_linked: boolean
 }
 
 function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
+}
+
+/** Только время: дата и так видна в шапке раунда. */
+function fmtTime(iso: string | null | undefined): string {
+  return iso ? new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "-"
 }
 
 function isCaptain(role: string | undefined): boolean {
@@ -44,6 +61,7 @@ export function RoundDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [linkPickerOpen, setLinkPickerOpen] = useState(false)
+  const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ["round-detail", roundId],
@@ -68,7 +86,12 @@ export function RoundDetailPage() {
 
   if (isLoading || !data) return <div className="space-y-3"><Skeleton className="h-20" /><Skeleton className="h-64" /></div>
 
-  const sortedPlayers = [...data.players].sort((a, b) => (isCaptain(b.role) ? 1 : 0) - (isCaptain(a.role) ? 1 : 0))
+  // Вышедшие уходят вниз списка: они не влияли на исход раунда, но должны
+  // остаться на виду. Внутри каждой группы капитан — первым.
+  const sortedPlayers = [...data.players].sort((a, b) => {
+    if (!!a.left !== !!b.left) return a.left ? 1 : -1
+    return (isCaptain(b.role) ? 1 : 0) - (isCaptain(a.role) ? 1 : 0)
+  })
 
   return (
     <div className="space-y-4">
@@ -100,16 +123,36 @@ export function RoundDetailPage() {
 
       <Card>
         <CardContent className="space-y-2 p-4">
-          <div className="text-xs font-semibold text-muted-foreground">Игроки ({data.player_count})</div>
+          <div className="text-xs font-semibold text-muted-foreground">
+            Игроки ({data.player_count})
+            {data.player_left_count > 0 && (
+              <span className="ml-1 font-normal text-warning">
+                · до конца не досидели: {data.player_left_count}
+              </span>
+            )}
+          </div>
           <div className="flex flex-col gap-1.5">
             {sortedPlayers.map((p) => (
-              <div key={p.steamid} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                <span className="flex items-center gap-1.5">
+              <div
+                key={p.steamid}
+                className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
+                  p.left ? "border-warning/40 bg-warning/5" : ""
+                } ${p.player_id != null ? "cursor-pointer transition-colors hover:border-primary/50 hover:bg-accent/40" : ""}`}
+                onClick={p.player_id != null ? () => setSummaryPlayerId(p.player_id!) : undefined}
+                title={p.player_id != null ? "Открыть профиль игрока" : "Игрока нет в базе Nexus Data"}
+              >
+                <span className="flex flex-wrap items-center gap-1.5">
                   {isCaptain(p.role) && <Crown className="size-3.5 text-primary" />}
-                  {p.player_name}
+                  <span className={p.left ? "text-muted-foreground" : "font-medium"}>{p.player_name}</span>
                   {p.real_name && (
                     <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${p.real_name}`}>
                       принудительное имя
+                    </Badge>
+                  )}
+                  {p.left && (
+                    <Badge variant="outline" className="gap-1 border-warning/50 text-warning">
+                      <LogOut className="size-3" />
+                      {p.left_at ? `вышел в ${fmtTime(p.left_at)}` : "вышел до конца раунда"}
                     </Badge>
                   )}
                 </span>
@@ -158,6 +201,12 @@ export function RoundDetailPage() {
           </CardContent>
         )}
       </Card>
+
+      <PlayerSummaryDialog
+        playerId={summaryPlayerId}
+        open={summaryPlayerId != null}
+        onOpenChange={(open) => { if (!open) setSummaryPlayerId(null) }}
+      />
     </div>
   )
 }

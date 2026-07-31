@@ -15,8 +15,12 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
-import { Download, X, Undo2, UserCog } from "lucide-react"
+import {
+  CheckCircle2, ClipboardCheck, Download, Loader2, RotateCw, Undo2, UserCog, X, XCircle,
+} from "lucide-react"
 import { api } from "@/lib/api"
+import { SubCheckDialog } from "@/pages/sub-checker/report"
+import type { CheckResponse, SubReport } from "@/pages/sub-checker/types"
 import type { SubProjectDetailResponse } from "./types"
 
 interface AdminOption { id: number; name: string }
@@ -38,6 +42,11 @@ export function SubProjectDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [changeOwnerOpen, setChangeOwnerOpen] = useState(false)
   const [newOwnerId, setNewOwnerId] = useState("")
+  // Отчёт чекера: показывается и после нажатия «Проверить корабль», и
+  // автоматически сразу после загрузки новой версии.
+  const [checkReport, setCheckReport] = useState<SubReport | null>(null)
+  const [checkOpen, setCheckOpen] = useState(false)
+  const [checkVersionId, setCheckVersionId] = useState("")
   const queryKey = ["sub-project-detail", projectId]
 
   const { data, isLoading } = useQuery({
@@ -58,11 +67,48 @@ export function SubProjectDetailPage() {
       const form = new FormData()
       form.set("sub_file", subFile!)
       form.set("changelog", changelog)
-      return api.postForm(`/api/v1/admin/sub-projects/${projectId}/versions`, form)
+      return api.postForm<{ check: CheckResponse | null }>(`/api/v1/admin/sub-projects/${projectId}/versions`, form)
     },
-    onSuccess: () => { toast.success("Версия загружена"); setChangelog(""); setSubFile(null); invalidate() },
+    onSuccess: (res) => {
+      toast.success("Версия загружена")
+      setChangelog(""); setSubFile(null); invalidate()
+      // Автопроверка по ГОСТу приезжает тем же ответом — сразу показываем
+      // отчёт, чтобы нарушения не уехали в загруженную версию незамеченными.
+      if (res?.check?.report) { setCheckReport(res.check.report); setCheckOpen(true) }
+      else toast.warning("Автопроверка по ГОСТу не выполнена — проверьте корабль вручную")
+    },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  const runCheck = useMutation({
+    mutationFn: (versionId: number) =>
+      api.post<CheckResponse>(`/api/v1/admin/sub-checker/projects/${projectId}/versions/${versionId}/check`),
+    onSuccess: (res) => { setCheckReport(res.report); setCheckOpen(true); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  // Версия уже проверялась (см. data.checks) — открываем готовый отчёт вместо
+  // того, чтобы гонять проверку заново на каждый клик. Перепроверка (runCheck)
+  // остаётся доступна отдельной кнопкой — например, после правки настроек
+  // ГОСТа старый отчёт мог устареть.
+  const [openingVersionId, setOpeningVersionId] = useState<number | null>(null)
+  const openExistingReport = async (versionId: number, resultId: number) => {
+    setOpeningVersionId(versionId)
+    try {
+      const res = await api.get<{ report: SubReport }>(`/api/v1/admin/sub-checker/results/${resultId}`)
+      setCheckReport(res.report)
+      setCheckOpen(true)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Не удалось загрузить отчёт")
+    } finally {
+      setOpeningVersionId(null)
+    }
+  }
+  const checkOrOpen = (versionId: number) => {
+    const existing = data?.checks?.[String(versionId)]
+    if (existing) openExistingReport(versionId, existing.id)
+    else runCheck.mutate(versionId)
+  }
 
   const deleteVersion = useMutation({
     mutationFn: (vid: number) => api.delete(`/api/v1/admin/sub-projects/${projectId}/versions/${vid}`),
@@ -190,7 +236,47 @@ export function SubProjectDetailPage() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-sm">Версии</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-sm">Версии</CardTitle>
+          {data.can_check_gost && data.versions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={checkVersionId || String(data.versions[0].id)}
+                onValueChange={setCheckVersionId}
+              >
+                <SelectTrigger className="h-8 w-[190px] text-xs"><SelectValue placeholder="Версия" /></SelectTrigger>
+                <SelectContent>
+                  {data.versions.map((v) => (
+                    <SelectItem key={v.id} value={String(v.id)}>
+                      v{v.version_number} · {fmtDate(v.uploaded_at)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {(() => {
+                const selectedId = Number(checkVersionId || data.versions[0].id)
+                const hasReport = !!data.checks?.[String(selectedId)]
+                const busy = runCheck.isPending || openingVersionId === selectedId
+                return (
+                  <>
+                    <Button size="sm" disabled={busy} onClick={() => checkOrOpen(selectedId)}>
+                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ClipboardCheck className="size-3.5" />}
+                      {hasReport ? "Открыть отчёт" : "Проверить корабль"}
+                    </Button>
+                    {hasReport && (
+                      <Button
+                        size="sm" variant="outline" title="Проверить заново"
+                        disabled={busy} onClick={() => runCheck.mutate(selectedId)}
+                      >
+                        <RotateCw className="size-3.5" />
+                      </Button>
+                    )}
+                  </>
+                )
+              })()}
+            </div>
+          )}
+        </CardHeader>
         <CardContent className="space-y-3">
           {data.can_upload_version && (
             <div className="flex flex-wrap items-center gap-2">
@@ -205,7 +291,7 @@ export function SubProjectDetailPage() {
             return (
               <Table>
                 <TableHeader>
-                  <TableRow><TableHead>Версия</TableHead><TableHead>Размер</TableHead><TableHead>Загружена</TableHead><TableHead>Серверы</TableHead>{hasActionsCol && <TableHead />}</TableRow>
+                  <TableRow><TableHead>Версия</TableHead><TableHead>Размер</TableHead><TableHead>Загружена</TableHead><TableHead>ГОСТ</TableHead><TableHead>Серверы</TableHead>{hasActionsCol && <TableHead />}</TableRow>
                 </TableHeader>
                 <TableBody>
                   {data.versions.map((v) => (
@@ -216,12 +302,47 @@ export function SubProjectDetailPage() {
                       </TableCell>
                       <TableCell>{fmtSize(v.file_size)}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{fmtDate(v.uploaded_at)}</TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {(() => {
+                          const check = data.checks?.[String(v.id)]
+                          if (!check) return <span className="text-xs text-muted-foreground">не проверялась</span>
+                          return (
+                            <span className="flex flex-wrap items-center gap-1">
+                              {check.passed
+                                ? <Badge className="gap-1 bg-success text-white"><CheckCircle2 className="size-3" /> ОК</Badge>
+                                : <Badge variant="destructive" className="gap-1"><XCircle className="size-3" /> {check.error_count}</Badge>}
+                              {check.warning_count > 0 && (
+                                <Badge variant="outline" className="border-warning/50 text-warning">{check.warning_count}</Badge>
+                              )}
+                              {check.ship_class && <span className="text-xs text-muted-foreground">{check.ship_class}</span>}
+                            </span>
+                          )
+                        })()}
+                      </TableCell>
                       <TableCell className="space-x-1">
                         <Badge variant={v.deployed_server_1 ? "default" : "secondary"}>{s1}</Badge>
                         <Badge variant={v.deployed_server_2 ? "default" : "secondary"}>{s2}</Badge>
                       </TableCell>
                       {hasActionsCol && (
                         <TableCell className="space-x-1 whitespace-nowrap text-right">
+                          {data.can_check_gost && (
+                            <Button
+                              size="sm" variant="outline"
+                              title={data.checks?.[String(v.id)] ? "Открыть отчёт ГОСТ" : "Проверить по ГОСТу"}
+                              disabled={runCheck.isPending || openingVersionId === v.id}
+                              onClick={() => checkOrOpen(v.id)}
+                            >
+                              <ClipboardCheck className="size-3.5" />
+                            </Button>
+                          )}
+                          {data.can_check_gost && data.checks?.[String(v.id)] && (
+                            <Button
+                              size="sm" variant="outline" title="Проверить заново"
+                              disabled={runCheck.isPending} onClick={() => runCheck.mutate(v.id)}
+                            >
+                              <RotateCw className="size-3.5" />
+                            </Button>
+                          )}
                           {data.can_download && (
                             <Button size="sm" variant="outline" asChild>
                               <a href={`/api/v1/admin/sub-projects/${projectId}/versions/${v.id}/download`}><Download className="size-3.5" /></a>
@@ -238,7 +359,7 @@ export function SubProjectDetailPage() {
                       )}
                     </TableRow>
                   ))}
-                  {!data.versions.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">Версий нет</TableCell></TableRow>}
+                  {!data.versions.length && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">Версий нет</TableCell></TableRow>}
                 </TableBody>
               </Table>
             )
@@ -291,6 +412,13 @@ export function SubProjectDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SubCheckDialog
+        report={checkReport}
+        open={checkOpen}
+        onOpenChange={setCheckOpen}
+        title={`Проверка по ГОСТу: ${project.name}`}
+      />
 
       <ConfirmDialog
         open={confirmDelete}
