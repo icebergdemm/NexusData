@@ -85,6 +85,80 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         )
         db.close.assert_called_once()
 
+    @patch("routes.dispatch._send_dispatcher_message")
+    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch.httpx.Client", _FakeClient)
+    def test_multi_part_answer_is_queued_in_order(self, session_factory, send_message):
+        _FakeClient.response_payload = {
+            "status": "answered",
+            "reply": "Корпус держится.",
+            "replies": [
+                "Корпус держится.",
+                "Кормовой отсек принимает воду; направьте туда механика.",
+            ],
+        }
+        db = Mock()
+        session_factory.return_value = db
+        payload = {
+            "event_id": "nexus-dispatch-44",
+            "round_id": "round-1",
+            "server_name": "ASPER2",
+            "text": "Диспетчер, состояние судна?",
+            "sender_name": "Капитан",
+        }
+
+        _post_ai_dispatcher_sync(
+            "http://dispatcher/api/v1/dispatcher/messages",
+            "dispatcher-secret",
+            payload,
+            "ASPER2",
+        )
+
+        self.assertEqual(send_message.call_count, 2)
+        self.assertEqual(
+            [call.args[1] for call in send_message.call_args_list],
+            [
+                "Корпус держится.",
+                "Кормовой отсек принимает воду; направьте туда механика.",
+            ],
+        )
+        for call in send_message.call_args_list:
+            self.assertEqual(call.args[0], db)
+            self.assertEqual(call.args[2], "ASPER2")
+            self.assertEqual(call.kwargs["admin_id"], None)
+            self.assertEqual(call.kwargs["sender_label"], "ИИ-диспетчер")
+        db.close.assert_called_once()
+
+    @patch("routes.dispatch._send_dispatcher_message")
+    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch.httpx.Client", _FakeClient)
+    def test_legacy_long_answer_is_split_without_cutting_words(self, session_factory, send_message):
+        reply = (
+            "Первый доклад содержит законченную сводку о состоянии корпуса и отсеков. "
+            "Второй доклад содержит отдельную рекомендацию экипажу по дальнейшему курсу. "
+            "Третий доклад подтверждает, что ближайшие навигационные контакты отмечены на карте."
+        )
+        _FakeClient.response_payload = {"status": "answered", "reply": reply}
+        session_factory.return_value = Mock()
+
+        _post_ai_dispatcher_sync(
+            "http://dispatcher/api/v1/dispatcher/messages",
+            "dispatcher-secret",
+            {
+                "event_id": "nexus-dispatch-45",
+                "round_id": "round-1",
+                "server_name": "ASPER1",
+                "text": "Диспетчер, дайте полную сводку.",
+                "sender_name": "Капитан",
+            },
+            "ASPER1",
+        )
+
+        sent = [call.args[1] for call in send_message.call_args_list]
+        self.assertGreater(len(sent), 1)
+        self.assertEqual(" ".join(sent), reply)
+        self.assertTrue(all(len("[Диспетчер] " + part) <= 200 for part in sent))
+
     @patch("routes.dispatch.GameSessionLocal")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
     def test_ignored_message_does_not_open_database(self, session_factory):

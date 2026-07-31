@@ -1405,7 +1405,7 @@ class ServerModerationService:
             from sqlalchemy import or_
             query = query.filter(or_(ServerAction.status_asper1 == 0, ServerAction.status_asper2 == 0))
 
-        return query.order_by(ServerAction.created_at).all()
+        return query.order_by(ServerAction.created_at, ServerAction.id).all()
 
     def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None, server_name: Optional[str] = None) -> bool:
         """ACK an action from a specific server (v2 table)."""

@@ -11,6 +11,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 import secrets
 import logging
+import re
 import threading
 import httpx
 
@@ -25,6 +26,10 @@ from schemas import DispatchMessageIn, RoundStartIn, RoundEndIn
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+_DISPATCHER_PREFIX = "[Диспетчер] "
+_BAROTRAUMA_RADIO_MAX_CHARS = 200
+_AI_REPLY_MAX_CHARS = _BAROTRAUMA_RADIO_MAX_CHARS - len(_DISPATCHER_PREFIX)
 
 # ── Game server API (protected by API key) ───────────────────────────────────
 api_router = APIRouter(
@@ -425,20 +430,21 @@ def _post_ai_dispatcher_sync(
         result = response.json()
         if result.get("status") != "answered":
             return
-        reply = result.get("reply")
-        if not isinstance(reply, str) or not reply.strip():
+        replies = _extract_ai_dispatcher_replies(result)
+        if not replies:
             logger.warning("AI dispatcher returned an empty reply for %s", payload["event_id"])
             return
 
         callback_db = GameSessionLocal()
         try:
-            _send_dispatcher_message(
-                callback_db,
-                reply,
-                server_name,
-                admin_id=None,
-                sender_label="ИИ-диспетчер",
-            )
+            for reply in replies:
+                _send_dispatcher_message(
+                    callback_db,
+                    reply,
+                    server_name,
+                    admin_id=None,
+                    sender_label="ИИ-диспетчер",
+                )
         finally:
             callback_db.close()
     except Exception as error:
@@ -447,6 +453,84 @@ def _post_ai_dispatcher_sync(
             payload.get("event_id"),
             error,
         )
+
+
+def _extract_ai_dispatcher_replies(result: dict) -> List[str]:
+    """Read the new multi-reply contract, falling back to the legacy reply."""
+
+    raw_replies = result.get("replies")
+    if isinstance(raw_replies, list):
+        candidates = [reply for reply in raw_replies if isinstance(reply, str) and reply.strip()]
+    else:
+        candidates = []
+
+    if not candidates:
+        legacy_reply = result.get("reply")
+        if isinstance(legacy_reply, str) and legacy_reply.strip():
+            candidates = [legacy_reply]
+
+    replies = []
+    for candidate in candidates:
+        replies.extend(_split_ai_radio_reply(candidate, max_chars=_AI_REPLY_MAX_CHARS))
+    return replies
+
+
+def _split_ai_radio_reply(reply: str, max_chars: int) -> List[str]:
+    """Defensively fit old or malformed AI replies into Barotrauma messages."""
+
+    compact = " ".join(reply.split())
+    if not compact:
+        return []
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?…])\s+", compact)
+        if sentence.strip()
+    ]
+    parts = []
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > max_chars:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.extend(_split_ai_radio_sentence(sentence, max_chars))
+            continue
+
+        candidate = f"{current} {sentence}" if current else sentence
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            parts.append(current)
+            current = sentence
+
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _split_ai_radio_sentence(sentence: str, max_chars: int) -> List[str]:
+    parts = []
+    remainder = sentence
+    while len(remainder) > max_chars:
+        window = remainder[:max_chars + 1]
+        clause_breaks = [
+            match.end()
+            for match in re.finditer(r"[,;:—–-](?=\s)", window[:max_chars])
+        ]
+        cut_at = clause_breaks[-1] if clause_breaks else window.rfind(" ", 0, max_chars + 1)
+        if cut_at <= 0:
+            cut_at = max_chars - 1
+            part = f"{remainder[:cut_at]}…"
+            remainder = remainder[cut_at:]
+        else:
+            part = remainder[:cut_at].rstrip()
+            remainder = remainder[cut_at:].lstrip()
+        if part:
+            parts.append(part)
+    if remainder:
+        parts.append(remainder)
+    return parts
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -493,7 +577,7 @@ def _send_dispatcher_message(db: Session, text: str, server_name: Optional[str],
     if not text:
         raise HTTPException(status_code=400, detail="text required")
 
-    full_text = f"[Диспетчер] {text}"
+    full_text = f"{_DISPATCHER_PREFIX}{text}"
 
     # Save to dispatch history
     msg = DispatchMessage(
