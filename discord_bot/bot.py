@@ -1565,6 +1565,61 @@ async def slash_ticket_add_member(interaction: discord.Interaction, member: disc
     await interaction.response.send_message(f"✅ {member.mention} добавлен(а) в этот тикет.", ephemeral=False)
 
 
+@bot.tree.command(name="ticket_remove", description="Убрать участника из текущего тикета (только для персонала)")
+@app_commands.describe(member="Кого убрать из тикета — нельзя убрать автора обращения")
+async def slash_ticket_remove_member(interaction: discord.Interaction, member: discord.Member):
+    """Slash command /ticket_remove <member> — обратная операция к
+    /ticket_add. Автора тикета убрать нельзя: у него доступ к собственному
+    обращению не привилегия, которую отбирают вручную, а гарантия — если
+    обращение исчерпано, для этого есть /close, а не выкидывание заявителя
+    из его же тикета."""
+    channel = interaction.channel
+
+    if not channel.name.startswith("ticket-"):
+        await interaction.response.send_message("❌ Эта команда доступна только в тикет-каналах.", ephemeral=True)
+        return
+
+    config = await asyncio.to_thread(bot_data.get_tickets_config)
+    if not await _user_has_ticket_staff_permission(interaction.user, interaction.guild, config):
+        await interaction.response.send_message("❌ У вас нет прав для этой команды.", ephemeral=True)
+        return
+
+    ticket = await asyncio.to_thread(bot_data.get_ticket_by_channel, str(channel.id))
+    if not ticket:
+        await interaction.response.send_message(
+            "❌ Не удалось определить автора этого тикета (обращение уже закрыто на сайте?) — "
+            "команда недоступна, пока это не выяснится.",
+            ephemeral=True,
+        )
+        return
+    if ticket.get("creator_discord_id") == str(member.id):
+        await interaction.response.send_message(
+            "❌ Нельзя убрать из тикета его автора. Если обращение исчерпано — закройте его командой `/close`.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        # overwrite=None стирает персональное разрешение целиком (то самое,
+        # что выставляет /ticket_add), а не просто выставляет запрет поверх
+        # него — так участник откатывается к обычным правам @everyone/ролей
+        # канала, а не получает противоречащий ролям персональный deny.
+        await channel.set_permissions(
+            member, overwrite=None,
+            reason=f"Убран из тикета админом {interaction.user}",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ У бота недостаточно прав, чтобы изменить доступ к каналу.", ephemeral=True,
+        )
+        return
+    except discord.HTTPException as e:
+        await interaction.response.send_message(f"❌ Не удалось убрать участника: {e}", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f"✅ {member.mention} убран(а) из этого тикета.", ephemeral=False)
+
+
 @bot.command(name="setticketcategory")
 @commands.has_permissions(administrator=True)
 async def cmd_set_ticket_category(ctx, category_id: str):
