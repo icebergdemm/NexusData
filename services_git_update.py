@@ -531,8 +531,16 @@ def _finish(
     force_restart: Optional[bool],
 ) -> bool:
     """Общий хвост обновления и разворачивания: пересборка фронтенда и
-    перезапуск backend."""
+    перезапуск backend.
+
+    Провал сборки фронтенда НЕ должен отменять перезапуск backend — раньше
+    отменял (ранний `return False` до шага перезапуска), и это тихо съедало
+    все бэкенд-фиксы: git pull отрабатывал, но процесс с новым Python-кодом
+    так и не поднимался, пока на сервере не появлялся npm или ветка с
+    готовой сборкой. У фронтенда и бэкенда разное время жизни изменений —
+    первый можно донастроить отдельно, второй ждать не должен."""
     settings = get_settings()
+    frontend_ok = True
 
     if frontend_touched and settings.git_update_build_frontend:
         frontend_dir = os.path.join(path, "frontend")
@@ -544,8 +552,7 @@ def _finish(
                 # Готовая сборка из CI имеет приоритет над локальной: она
                 # быстрее, детерминированнее и не требует Node.js на сервере.
                 remote = (settings.git_update_remote or "origin").strip()
-                if not _fetch_prebuilt_frontend(emit, path, remote, dist_branch):
-                    return False
+                frontend_ok = _fetch_prebuilt_frontend(emit, path, remote, dist_branch)
             else:
                 npm, checked = _resolve_npm()
                 if not npm:
@@ -558,16 +565,19 @@ def _finish(
                     emit("   2. Указать полный путь к npm в настройке «npm: путь к")
                     emit("      исполняемому файлу», если Node.js в контейнере всё-таки есть.")
                     emit("   3. Установить Node.js/npm в контейнер.")
-                    return False
-                for cmd, label in ((["ci"], "установка зависимостей"), (["run", "build"], "сборка")):
-                    emit(f"→ {npm} {' '.join(cmd)} ({label}, это надолго)…")
-                    code, out = _run([npm] + cmd, frontend_dir, _BUILD_TIMEOUT)
-                    if code != 0:
-                        for line in out.splitlines()[-20:]:
-                            emit(f"    {line}")
-                        emit(f"✗ npm {' '.join(cmd)} завершилась с ошибкой — фронтенд остался старым.")
-                        return False
-                emit("✓ Фронтенд пересобран.")
+                    frontend_ok = False
+                else:
+                    for cmd, label in ((["ci"], "установка зависимостей"), (["run", "build"], "сборка")):
+                        emit(f"→ {npm} {' '.join(cmd)} ({label}, это надолго)…")
+                        code, out = _run([npm] + cmd, frontend_dir, _BUILD_TIMEOUT)
+                        if code != 0:
+                            for line in out.splitlines()[-20:]:
+                                emit(f"    {line}")
+                            emit(f"✗ npm {' '.join(cmd)} завершилась с ошибкой — фронтенд остался старым.")
+                            frontend_ok = False
+                            break
+                    else:
+                        emit("✓ Фронтенд пересобран.")
     elif frontend_touched:
         emit("! Менялся frontend/, но пересборка отключена в настройках —")
         emit("  сайт продолжит отдавать старую сборку.")
@@ -580,8 +590,13 @@ def _finish(
         emit("! Backend не перезапущен — изменения в Python-коде вступят в силу")
         emit("  после команды `backend restart`.")
 
-    emit("✓ Обновление завершено.")
-    return True
+    if frontend_ok:
+        emit("✓ Обновление завершено.")
+    elif restart:
+        emit("! Обновление завершено НЕ полностью: backend перезапущен, фронтенд — нет (см. выше).")
+    else:
+        emit("! Обновление завершено НЕ полностью: фронтенд не собран (см. выше), backend не перезапускался.")
+    return frontend_ok
 
 
 def run_bootstrap(emit: Callable[[str], None], force_restart: Optional[bool] = None) -> bool:
