@@ -55,6 +55,14 @@ export function ReplayPlayerPage() {
 
     return () => {
       cancelled = true
+      // Скрипт держит собственный requestAnimationFrame-цикл и загрузку —
+      // удаление <script>-тегов ниже не останавливает уже выполнившийся код,
+      // только мешает будущей повторной загрузке. Без явной остановки старый
+      // цикл продолжал бы дёргать document.getElementById по узлам, которых
+      // здесь больше нет, как только эта страница размонтируется целиком
+      // (не просто сменился replayId — тогда #rpvCanvas переиспользуется тем
+      // же деревом, а вот уход со страницы плеера убирает его насовсем).
+      ;(window as unknown as { __BaroReplayUI?: { destroy?: () => void } }).__BaroReplayUI?.destroy?.()
       for (const s of scripts) s.remove()
     }
     // Re-run whenever the replay id changes (navigating from one replay to another)
@@ -75,6 +83,17 @@ export function ReplayPlayerPage() {
         #rpvCanvas:active{cursor:grabbing;}
         .rpv-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--muted-foreground);font-size:14px;background:#0A0E14;z-index:5;}
         .rpv-spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:rpvspin 0.8s linear infinite;}
+        .rpv-loading-bar{width:220px;height:5px;border-radius:3px;background:var(--border);overflow:hidden;}
+        .rpv-loading-bar-fill{height:100%;width:0%;background:var(--primary);border-radius:3px;transition:width 0.2s ease;}
+        .rpv-loading-bar-fill.indeterminate{width:40%!important;animation:rpvbarslide 1.1s ease-in-out infinite;}
+        @keyframes rpvbarslide{0%{transform:translateX(-100%);}100%{transform:translateX(350%);}}
+        .rpv-loading-stages{list-style:none;display:flex;flex-direction:column;gap:5px;margin:0;padding:0;font-size:12px;}
+        .rpv-loading-stages li{color:var(--muted-foreground);opacity:.45;display:flex;align-items:center;gap:6px;transition:opacity 0.2s,color 0.2s;}
+        .rpv-loading-stages li::before{content:"○";font-size:10px;}
+        .rpv-loading-stages li.done{opacity:.75;color:var(--success,#22d06f);}
+        .rpv-loading-stages li.done::before{content:"●";}
+        .rpv-loading-stages li.active{opacity:1;color:var(--foreground);font-weight:600;}
+        .rpv-loading-stages li.active::before{content:"◐";animation:rpvspin 0.9s linear infinite;display:inline-block;}
         @keyframes rpvspin{to{transform:rotate(360deg);}}
         .rpv-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px;margin-top:10px;}
         .rpv-btn{background:var(--background);border:1px solid var(--border);color:var(--foreground);border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;font-weight:600;}
@@ -118,6 +137,13 @@ export function ReplayPlayerPage() {
             <div className="rpv-loading" id="rpvLoading">
               <div className="rpv-spinner" />
               <div id="rpvLoadingText">{scriptsReady ? "Загрузка реплея..." : "Загрузка плеера..."}</div>
+              <div className="rpv-loading-bar"><div className="rpv-loading-bar-fill" id="rpvLoadingBarFill" /></div>
+              <ul className="rpv-loading-stages" id="rpvLoadingStages">
+                <li data-stage="download">Скачивание демо-записи</li>
+                <li data-stage="unpack">Распаковка</li>
+                <li data-stage="parse">Разбор данных раунда</li>
+                <li data-stage="scene">Подготовка сцены</li>
+              </ul>
             </div>
           </div>
 

@@ -168,8 +168,20 @@
     return {timeMs,ents,doors,water,subPos};
   }
 
+  /** Ошибка "не хватило памяти на буфер" (RangeError из new ArrayBuffer/
+   * Uint8Array, либо DOMException QuotaExceededError) — отдельный тип,
+   * чтобы boot() мог показать понятное сообщение вместо сырого текста
+   * движка JS, который ничего не говорит человеку без него. */
+  class OutOfMemoryError extends Error {
+    constructor(stage) { super(`Не хватило памяти браузера на ${stage}`); this.stage = stage; }
+  }
+  function isAllocationFailure(e) {
+    return e instanceof RangeError || e?.name === "QuotaExceededError" ||
+      /allocation failed|array buffer/i.test(e?.message || "");
+  }
+
   async function loadDemoBytes(url, onProgress) {
-    onProgress && onProgress("Скачивание...");
+    onProgress && onProgress({ stage: "download", percent: 0 });
     const resp = await fetch(url);
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     // Streaming download with progress
@@ -180,32 +192,57 @@
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value); received += value.length;
-      if (total && onProgress) onProgress(`Скачивание... ${Math.round(received/total*100)}%`);
+      if (onProgress) onProgress({ stage: "download", percent: total ? Math.round(received/total*100) : null, bytes: received, total });
     }
-    const buf = new Uint8Array(received); let off = 0;
+    let buf;
+    try {
+      buf = new Uint8Array(received);
+    } catch (e) {
+      if (isAllocationFailure(e)) throw new OutOfMemoryError("скачанный файл (" + fmtBytes(received) + ")");
+      throw e;
+    }
+    let off = 0;
     for (const c of chunks) { buf.set(c, off); off += c.length; }
     chunks.length = 0; // free chunk refs
-    onProgress && onProgress("Распаковка...");
     // ZIP?
     if (buf[0]===0x50 && buf[1]===0x4B && buf[2]===0x03 && buf[3]===0x04) {
-      const files = fflate.unzipSync(buf);
-      const name = Object.keys(files)[0];
-      const raw = files[name];
-      delete files[name];
-      // Ensure a tight ArrayBuffer (byteOffset 0) so absolute offsets are valid
-      if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
-      return raw.slice().buffer;
+      onProgress && onProgress({ stage: "unpack", percent: null });
+      try {
+        const files = fflate.unzipSync(buf);
+        const name = Object.keys(files)[0];
+        const raw = files[name];
+        delete files[name];
+        // Ensure a tight ArrayBuffer (byteOffset 0) so absolute offsets are valid
+        if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
+        return raw.slice().buffer;
+      } catch (e) {
+        if (isAllocationFailure(e)) throw new OutOfMemoryError("распаковку демо-записи");
+        throw e;
+      }
     }
     // GZIP?
     if (buf[0]===0x1F && buf[1]===0x8B) {
-      const raw = fflate.gunzipSync(buf);
-      if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
-      return raw.slice().buffer;
+      onProgress && onProgress({ stage: "unpack", percent: null });
+      try {
+        const raw = fflate.gunzipSync(buf);
+        if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
+        return raw.slice().buffer;
+      } catch (e) {
+        if (isAllocationFailure(e)) throw new OutOfMemoryError("распаковку демо-записи");
+        throw e;
+      }
     }
     return buf.buffer;
   }
 
-  window.__BaroReplay = { parseDemo, indexAtTime, decodeSnapshot, loadDemoBytes, C, POS_SCALE };
+  function fmtBytes(n) {
+    if (n < 1024) return n + " Б";
+    const units = ["КБ","МБ","ГБ"]; let v = n, i = -1;
+    do { v /= 1024; i++; } while (v >= 1024 && i < units.length - 1);
+    return v.toFixed(1) + " " + units[i];
+  }
+
+  window.__BaroReplay = { parseDemo, indexAtTime, decodeSnapshot, loadDemoBytes, OutOfMemoryError, fmtBytes, C, POS_SCALE };
 })();
 
 /* ═══ Main player application (memory-optimized) ═══ */
@@ -217,6 +254,23 @@
   const ctx = canvas.getContext("2d");
   const loadingEl = document.getElementById("rpvLoading");
   const loadingText = document.getElementById("rpvLoadingText");
+  const loadingBarFill = document.getElementById("rpvLoadingBarFill");
+  const loadingStages = document.getElementById("rpvLoadingStages");
+
+  // React перезагружает этот скрипт с нуля при каждом открытии реплея (см.
+  // player.tsx) — старый <script> тег снимается, но код в нём УЖЕ выполнился
+  // и продолжает жить своими замыканиями: ничто, кроме этого флага, не
+  // останавливает его requestAnimationFrame-цикл и загрузку. Если за это
+  // время пользователь ушёл со страницы плеера совсем (не просто открыл
+  // другой реплей — тогда #rpvCanvas и другие элементы переиспользуются),
+  // цикл продолжал бы дёргать document.getElementById для узлов, которых
+  // больше нет в DOM, и падал на "Cannot set properties of null" в loop().
+  let destroyed = false;
+  const globalListeners = []; // [target, type, handler] — снимаются в destroy()
+  function onGlobal(target, type, handler, opts) {
+    target.addEventListener(type, handler, opts);
+    globalListeners.push([target, type, handler, opts]);
+  }
 
   let demo = null;
   let cam = { x: 0, y: 0, zoom: 0.05 };
@@ -246,7 +300,7 @@
     canvas.height = Math.floor(r.height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
-  window.addEventListener("resize", resizeCanvas);
+  onGlobal(window, "resize", resizeCanvas);
   function cw(){return canvas.width/(window.devicePixelRatio||1);}
   function ch(){return canvas.height/(window.devicePixelRatio||1);}
   function sx(wx){return cw()/2+(wx-cam.x)*cam.zoom;}
@@ -350,7 +404,7 @@
   // ── Chat + Time ─────────────────────────────────────────────────────────
   let lastChatLen=-1;
   function updateChat(){
-    if(!demo)return;const box=document.getElementById("rpvChat");
+    if(!demo)return;const box=document.getElementById("rpvChat");if(!box)return;
     const visible=demo.chat.filter(c=>c.timeMs<=currentTimeMs).slice(-30);
     if(visible.length===lastChatLen)return;lastChatLen=visible.length;
     box.innerHTML=visible.map(c=>`<div class="rpv-chat-line"><b>${esc(c.author||"—")}</b>: ${esc(c.text||"")}</div>`).join("");
@@ -371,11 +425,13 @@
     }}));
   }
   function updateTimeUI(){
-    if(!demo)return;document.getElementById("rpvTimeLabel").textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
-    const seek=document.getElementById("rpvSeek");if(!seek.__dragging)seek.value=String(Math.round(currentTimeMs/demo.durationMs*1000)||0);
+    if(!demo)return;
+    const label=document.getElementById("rpvTimeLabel");if(!label)return; // страница уже ушла со плеера
+    label.textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
+    const seek=document.getElementById("rpvSeek");if(seek&&!seek.__dragging)seek.value=String(Math.round(currentTimeMs/demo.durationMs*1000)||0);
     broadcastTime();
   }
-  function setPlaying(p){playing=p;document.getElementById("rpvPlay").textContent=p?"⏸":"▶";if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();}
+  function setPlaying(p){playing=p;const btn=document.getElementById("rpvPlay");if(btn)btn.textContent=p?"⏸":"▶";if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();}
 
   // ── Voice playback (per-speaker Opus decoders, positional) ───────────────
   async function initAudio(){
@@ -506,6 +562,7 @@
 
   // ── Loop ─────────────────────────────────────────────────────────────────
   function loop(ts){
+    if(destroyed)return; // страница ушла со плеера — не трогаем DOM и не планируем следующий кадр
     const dt=lastFrame?(ts-lastFrame):0;lastFrame=ts;
     const prev=currentTimeMs;
     if(playing&&demo){currentTimeMs+=dt*speed;if(currentTimeMs>=demo.durationMs){currentTimeMs=demo.durationMs;setPlaying(false);}}
@@ -566,8 +623,8 @@
     canvas.addEventListener("wheel",(e)=>{e.preventDefault();cam.zoom=Math.max(0.005,Math.min(2,cam.zoom*(e.deltaY<0?1.1:0.9)));},{passive:false});
     let dragging=false,lastX=0,lastY=0;
     canvas.addEventListener("mousedown",(e)=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
-    window.addEventListener("mouseup",()=>{dragging=false;});
-    window.addEventListener("mousemove",(e)=>{if(!dragging)return;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;followSub=false;document.getElementById("rpvFollow").classList.remove("active");});
+    onGlobal(window,"mouseup",()=>{dragging=false;});
+    onGlobal(window,"mousemove",(e)=>{if(!dragging)return;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;followSub=false;document.getElementById("rpvFollow").classList.remove("active");});
 
     // Voice controls
     const ve=document.getElementById("rpvVoiceEnable");
@@ -593,6 +650,11 @@
   // Мост для внешнего интерфейса (панель логов в React-обёртке страницы):
   // перемотка к моменту события и чтение текущего времени. Намеренно
   // минимальный — вся отрисовка и разбор демо остаются здесь.
+  //
+  // destroy() вызывается из cleanup-функции React-эффекта (player.tsx) ПЕРЕД
+  // тем, как удалить <script>-теги этого инстанса и/или смонтировать новый —
+  // без него старый requestAnimationFrame-цикл продолжал бы жить и падать,
+  // как только пользователь уходит со страницы плеера совсем (см. loop()).
   window.__BaroReplayUI = {
     seekTo(ms){
       if(!demo)return;
@@ -602,23 +664,97 @@
     getTimeMs(){return currentTimeMs;},
     getDurationMs(){return demo?demo.durationMs:0;},
     setPlaying(p){setPlaying(!!p);},
+    destroy(){
+      if(destroyed)return;
+      destroyed=true;
+      playing=false;
+      resetDecoders();
+      if(audioCtx){try{audioCtx.close();}catch(e){/*ignore*/}audioCtx=null;}
+      for(const [target,type,handler,opts] of globalListeners){
+        try{target.removeEventListener(type,handler,opts);}catch(e){/*ignore*/}
+      }
+      globalListeners.length=0;
+    },
   };
+
+  // ── Загрузка: этапы и прогресс ──────────────────────────────────────────
+  // Каждый этап отмечается в списке #rpvLoadingStages (если он есть в
+  // разметке — старый статический шаблон его не содержит, поэтому все
+  // обращения защищены) классами done/active, а полоса прогресса заполняется
+  // только там, где реально известен процент (скачивание по Content-Length);
+  // для распаковки/разбора точного процента нет — полоса просто держит своё
+  // текущее положение, а крутится спиннер.
+  function setStage(stage, detail){
+    if(destroyed||!loadingText)return;
+    if(loadingStages){
+      let reached=false;
+      for(const li of loadingStages.children){
+        const key=li.dataset.stage;
+        if(key===stage){li.classList.add("active");li.classList.remove("done");reached=true;}
+        else if(!reached){li.classList.add("done");li.classList.remove("active");}
+        else{li.classList.remove("active","done");}
+      }
+    }
+    if(detail)loadingText.textContent=detail;
+  }
+  function setProgressBar(percent){
+    if(destroyed||!loadingBarFill)return;
+    if(percent==null){loadingBarFill.classList.add("indeterminate");return;}
+    loadingBarFill.classList.remove("indeterminate");
+    loadingBarFill.style.width=Math.max(0,Math.min(100,percent))+"%";
+  }
+  const STAGE_LABEL = {
+    download: "Скачивание демо-записи",
+    unpack: "Распаковка демо-записи",
+    parse: "Разбор данных раунда",
+    scene: "Подготовка сцены",
+  };
+  function onLoadProgress(p){
+    if(destroyed)return;
+    if(p.stage==="download"){
+      const pct=p.percent;
+      const size=p.total?` (${API.fmtBytes(p.bytes)} из ${API.fmtBytes(p.total)})`:(p.bytes?` (${API.fmtBytes(p.bytes)})`:"");
+      setStage("download", STAGE_LABEL.download+(pct!=null?`: ${pct}%`:"…")+size);
+      setProgressBar(pct);
+    } else if(p.stage==="unpack"){
+      setStage("unpack", STAGE_LABEL.unpack+"…");
+      setProgressBar(null);
+    }
+  }
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   async function boot(){
     resizeCanvas();wireUI();
     try{
-      const ab=await API.loadDemoBytes(window.REPLAY_URL,(m)=>{loadingText.textContent=m;});
-      loadingText.textContent="Разбор данных...";
+      const ab=await API.loadDemoBytes(window.REPLAY_URL, onLoadProgress);
+      if(destroyed)return; // ушли со страницы, пока файл качался/распаковывался
+
+      setStage("parse", STAGE_LABEL.parse+"…");
+      setProgressBar(null);
+      // Разбор — синхронная функция без промежуточных await, отдать кадр
+      // браузеру для отрисовки текста этапа перед тяжёлой работой:
+      await new Promise(requestAnimationFrame);
+      if(destroyed)return;
       demo=API.parseDemo(ab);
       // NOTE: ab (source buffer) is retained via demo.voice.buffer for lazy
       // opus packet slicing. This is intentional and far cheaper than copying
       // thousands of small packet arrays.
+
+      setStage("scene", STAGE_LABEL.scene+"…");
       autoFit();buildPlayersPanel();
+      if(destroyed)return;
+
       loadingEl.style.display="none";
       requestAnimationFrame(loop);
     }catch(e){
-      loadingEl.innerHTML='<div class="rpv-err">Ошибка: '+esc(e.message)+'</div>';console.error(e);
+      if(destroyed)return; // страница уже ушла — некому показывать ошибку
+      console.error(e);
+      const friendly = e instanceof API.OutOfMemoryError
+        ? e.message+". Файл слишком велик, чтобы браузер поместил его в память целиком. "
+          +"Попробуйте закрыть другие вкладки, использовать 64-битный браузер "
+          +"с бо́льшим объёмом ОЗУ, либо посмотреть эту запись на другом устройстве."
+        : "Ошибка: "+e.message;
+      loadingEl.innerHTML='<div class="rpv-err">'+esc(friendly)+'</div>';
     }
   }
   // Classic full-page load: DOMContentLoaded hasn't fired yet, wait for it.
