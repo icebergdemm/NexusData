@@ -213,10 +213,11 @@ export function DispatchPage() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [messages])
 
-  const pollPending = async () => {
+  const pollPending = async (targetServer: string) => {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const res = await api.get<{ pending: boolean }>("/api/v1/admin/dispatch/pending")
+      const query = targetServer ? `?${new URLSearchParams({ server: targetServer }).toString()}` : ""
+      const res = await api.get<{ pending: boolean }>(`/api/v1/admin/dispatch/pending${query}`)
       if (!res.pending) break
       await new Promise((r) => setTimeout(r, 2000))
     }
@@ -227,10 +228,15 @@ export function DispatchPage() {
     if (!trimmed || sending) return
     setText("")
     setSending(true)
+    let accepted = false
     try {
       await api.post("/api/v1/admin/dispatch/send", { text: trimmed, server_name: server || null })
-      await pollPending()
+      accepted = true
+      await pollPending(server)
       queryClient.invalidateQueries({ queryKey: ["dispatch-messages"] })
+    } catch (error) {
+      if (!accepted) setText(trimmed)
+      toast.error(error instanceof Error ? error.message : "Не удалось отправить радиограмму")
     } finally {
       setSending(false)
     }

@@ -8,12 +8,22 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime
+from dataclasses import dataclass, field
+from contextlib import contextmanager
+from queue import Full, Queue
 import secrets
 import logging
+import os
 import re
 import threading
+import time
 import httpx
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production runs on Linux
+    fcntl = None
 
 from database import GameSessionLocal, get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
@@ -30,6 +40,36 @@ logger = logging.getLogger(__name__)
 _DISPATCHER_PREFIX = "[Диспетчер] "
 _BAROTRAUMA_RADIO_MAX_CHARS = 200
 _AI_REPLY_MAX_CHARS = _BAROTRAUMA_RADIO_MAX_CHARS - len(_DISPATCHER_PREFIX)
+_AI_REPLY_MIN_DELAY_SECONDS = 4.0
+_AI_REPLY_MAX_DELAY_SECONDS = 12.0
+_AI_ACTION_ACK_POLL_SECONDS = 1.0
+_AI_CHANNEL_WAIT_TIMEOUT_SECONDS = 90.0
+_AI_ACTION_ACK_TIMEOUT_SECONDS = 90.0
+_AI_DISPATCH_QUEUE_MAXSIZE = 100
+_AI_DISPATCH_JOB_TTL_SECONDS = 180.0
+_AI_MAX_REPLY_PARTS = 3
+_AI_CONTINUATION_NOTICE = (
+    "Сводка объёмная; уточните, какой раздел передать отдельной радиограммой."
+)
+_AI_OVERSIZED_NOTICE = "Доклад слишком объёмный; уточните, какую часть передать отдельно."
+_AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+
+
+@dataclass(frozen=True)
+class _AIDispatchJob:
+    url: str
+    api_key: str
+    payload: dict
+    server_name: str
+    enqueued_at: float = field(default_factory=time.monotonic)
+
+
+# A dedicated FIFO per game server keeps concurrent radio calls in their
+# arrival order while allowing ASPER1 and ASPER2 to work independently.  The
+# workers are created lazily and never run on FastAPI's request thread.
+_ai_dispatch_job_queues: dict[str, Queue] = {}
+_ai_dispatch_job_queues_lock = threading.Lock()
+_dispatch_action_insert_lock = threading.RLock()
 
 # ── Game server API (protected by API key) ───────────────────────────────────
 api_router = APIRouter(
@@ -376,29 +416,145 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         "text": msg.text,
         "sender_name": msg.player_name,
     }
-    threading.Thread(
-        target=_post_ai_dispatcher_sync,
-        args=(url, api_key, payload, server_name),
-        daemon=True,
-        name=f"AIDispatch-{msg.id}",
-    ).start()
+    _enqueue_ai_dispatch_job(
+        _AIDispatchJob(
+            url=url,
+            api_key=api_key,
+            payload=payload,
+            server_name=server_name,
+        )
+    )
+
+
+def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> None:
+    """Put an AI request into the source server's non-blocking FIFO."""
+
+    with _ai_dispatch_job_queues_lock:
+        work_queue = _ai_dispatch_job_queues.get(job.server_name)
+        if work_queue is None:
+            work_queue = Queue(maxsize=_AI_DISPATCH_QUEUE_MAXSIZE)
+            _ai_dispatch_job_queues[job.server_name] = work_queue
+            worker = threading.Thread(
+                target=_ai_dispatch_worker,
+                args=(job.server_name, work_queue),
+                daemon=True,
+                name=f"AIDispatch-{job.server_name}",
+            )
+            worker.start()
+        try:
+            work_queue.put_nowait(job)
+        except Full:
+            logger.error(
+                "AI dispatch queue full; dropping request: event_id=%s server=%s maxsize=%s",
+                job.payload.get("event_id"),
+                job.server_name,
+                _AI_DISPATCH_QUEUE_MAXSIZE,
+            )
+            return
+        queue_size = work_queue.qsize()
+
+    logger.info(
+        "AI dispatch queued: event_id=%s server=%s queue_size=%s",
+        job.payload.get("event_id"),
+        job.server_name,
+        queue_size,
+    )
+
+
+def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
+    """Drain one server FIFO forever without occupying a web worker."""
+
+    while True:
+        job = work_queue.get()
+        try:
+            logger.info(
+                "AI dispatch started: event_id=%s server=%s queued_after=%s",
+                job.payload.get("event_id"),
+                server_name,
+                work_queue.qsize(),
+            )
+            # Each Uvicorn process owns its own in-memory FIFO.  The file lock
+            # extends the one-server-at-a-time guarantee across those workers
+            # on the same Nexus host; the kernel releases it if a worker dies.
+            with _ai_dispatch_process_lock(server_name):
+                if not _ai_dispatch_context_is_current(
+                    server_name,
+                    job.payload.get("round_id"),
+                    job.enqueued_at,
+                ):
+                    logger.warning(
+                        "AI dispatch dropped stale job before model call: event_id=%s "
+                        "server=%s round_id=%s age_seconds=%.1f",
+                        job.payload.get("event_id"),
+                        server_name,
+                        job.payload.get("round_id"),
+                        time.monotonic() - job.enqueued_at,
+                    )
+                    continue
+                _post_ai_dispatcher_sync(
+                    job.url,
+                    job.api_key,
+                    job.payload,
+                    job.server_name,
+                    enqueued_at=job.enqueued_at,
+                )
+        except Exception:
+            # _post_ai_dispatcher_sync is already defensive, but an unexpected
+            # failure must not kill the per-server FIFO and strand later calls.
+            logger.exception(
+                "AI dispatch worker failed: event_id=%s server=%s",
+                job.payload.get("event_id"),
+                server_name,
+            )
+        finally:
+            work_queue.task_done()
+
+
+@contextmanager
+def _ai_dispatch_process_lock(server_name: str):
+    """Serialize one server's AI delivery across local Uvicorn processes."""
+
+    with _dispatch_process_locks((server_name,), blocking=True, lock_scope="ai"):
+        yield
+
+
+@contextmanager
+def _dispatch_process_locks(server_names, *, blocking: bool, lock_scope: str = "ai"):
+    """Lock dispatch channels in stable order across local web processes."""
+
+    if fcntl is None:
+        logger.warning(
+            "Cross-process dispatch lock unavailable on this platform; servers=%s",
+            ",".join(server_names),
+        )
+        yield
+        return
+
+    os.makedirs(_AI_PROCESS_LOCK_DIR, exist_ok=True)
+    lock_files = []
+    operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    try:
+        for server_name in sorted(set(server_names)):
+            lock_path = os.path.join(
+                _AI_PROCESS_LOCK_DIR,
+                f".{lock_scope}-dispatch-{server_name}.lock",
+            )
+            lock_file = open(lock_path, "a+b")
+            try:
+                fcntl.flock(lock_file.fileno(), operation)
+            except Exception:
+                lock_file.close()
+                raise
+            lock_files.append(lock_file)
+        yield
+    finally:
+        for lock_file in reversed(lock_files):
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
 
 
 def _resolve_ai_conversation_round_id(db: Session, server_name: str) -> str:
     """Вернуть стабильный ID беседы на время текущего раунда сервера."""
-
-    threshold = datetime.utcnow() - timedelta(seconds=15)
-    active_round = (
-        db.query(WorldRound)
-        .filter(
-            WorldRound.server_name == server_name,
-            WorldRound.last_update_at >= threshold,
-        )
-        .order_by(WorldRound.last_update_at.desc())
-        .first()
-    )
-    if active_round is not None:
-        return str(active_round.round_id)
 
     latest_event = (
         db.query(RoundEvent)
@@ -406,11 +562,57 @@ def _resolve_ai_conversation_round_id(db: Session, server_name: str) -> str:
         .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
         .first()
     )
-    if latest_event is None:
-        return f"dispatch-{server_name}-idle-0"
-    if latest_event.event_type == "start":
-        return f"dispatch-{server_name}-round-{latest_event.id}"
-    return f"dispatch-{server_name}-idle-{latest_event.id}"
+    if latest_event is not None:
+        if latest_event.event_type == "start":
+            return f"dispatch-{server_name}-round-{latest_event.id}"
+        return f"dispatch-{server_name}-idle-{latest_event.id}"
+
+    # Some installations stream world snapshots without posting lifecycle
+    # events. In that fallback mode the latest known world round remains the
+    # stable anchor even if its telemetry pauses for more than 15 seconds.
+    latest_world_round = (
+        db.query(WorldRound)
+        .filter(WorldRound.server_name == server_name)
+        .order_by(WorldRound.last_update_at.desc())
+        .first()
+    )
+    if latest_world_round is not None:
+        return str(latest_world_round.round_id)
+    return f"dispatch-{server_name}-idle-0"
+
+
+def _ai_dispatch_context_is_current(
+    server_name: str,
+    expected_round_id: object,
+    enqueued_at: Optional[float],
+) -> bool:
+    """Reject queued work after its TTL or after the game round changed."""
+
+    db = GameSessionLocal()
+    try:
+        return _ai_dispatch_context_matches_db(
+            db,
+            server_name,
+            expected_round_id,
+            enqueued_at,
+        )
+    finally:
+        db.close()
+
+
+def _ai_dispatch_context_matches_db(
+    db: Session,
+    server_name: str,
+    expected_round_id: object,
+    enqueued_at: Optional[float],
+) -> bool:
+    """Check job age and round identity in one database snapshot."""
+
+    if enqueued_at is not None and time.monotonic() - enqueued_at > _AI_DISPATCH_JOB_TTL_SECONDS:
+        return False
+    if not isinstance(expected_round_id, str) or not expected_round_id:
+        return False
+    return _resolve_ai_conversation_round_id(db, server_name) == expected_round_id
 
 
 def _post_ai_dispatcher_sync(
@@ -418,6 +620,7 @@ def _post_ai_dispatcher_sync(
     api_key: str,
     payload: dict,
     server_name: str,
+    enqueued_at: Optional[float] = None,
 ) -> None:
     try:
         with httpx.Client(timeout=settings.ai_dispatcher_timeout_seconds) as client:
@@ -435,24 +638,360 @@ def _post_ai_dispatcher_sync(
             logger.warning("AI dispatcher returned an empty reply for %s", payload["event_id"])
             return
 
-        callback_db = GameSessionLocal()
-        try:
-            for reply in replies:
-                _send_dispatcher_message(
-                    callback_db,
-                    reply,
-                    server_name,
-                    admin_id=None,
-                    sender_label="ИИ-диспетчер",
-                )
-        finally:
-            callback_db.close()
+        _deliver_ai_dispatcher_replies(
+            replies,
+            server_name=server_name,
+            event_id=payload.get("event_id", "unknown"),
+            round_id=payload.get("round_id"),
+            enqueued_at=enqueued_at,
+        )
     except Exception as error:
         logger.warning(
             "AI dispatcher request failed for %s: %s",
             payload.get("event_id"),
             error,
         )
+
+
+def _ai_reply_delay_seconds(reply: str) -> float:
+    """Return a linear 4–12 second radio delay based on visible text length."""
+
+    text_length = min(len((reply or "").strip()), _AI_REPLY_MAX_CHARS)
+    length_ratio = text_length / _AI_REPLY_MAX_CHARS
+    delay_range = _AI_REPLY_MAX_DELAY_SECONDS - _AI_REPLY_MIN_DELAY_SECONDS
+    return _AI_REPLY_MIN_DELAY_SECONDS + delay_range * length_ratio
+
+
+def _deliver_ai_dispatcher_replies(
+    replies: List[str],
+    *,
+    server_name: str,
+    event_id: str,
+    round_id: Optional[str] = None,
+    enqueued_at: Optional[float] = None,
+) -> None:
+    """Deliver one AI answer serially, waiting for every game-server ACK.
+
+    Merely inserting rows several seconds apart is insufficient because
+    ``GET /server/actions`` returns every pending row in one poll.  Waiting for
+    the target server's ACK before delaying and inserting the next part keeps
+    at most one AI radiogram in flight.
+    """
+
+    for part_number, reply in enumerate(replies, start=1):
+        if round_id is not None and not _ai_dispatch_context_is_current(
+            server_name,
+            round_id,
+            enqueued_at,
+        ):
+            logger.warning(
+                "AI dispatch dropped stale reply before delay: event_id=%s server=%s "
+                "round_id=%s part=%s/%s",
+                event_id,
+                server_name,
+                round_id,
+                part_number,
+                len(replies),
+            )
+            return
+        delay_seconds = _ai_reply_delay_seconds(reply)
+        logger.info(
+            "AI dispatch delay: event_id=%s server=%s part=%s/%s chars=%s delay_seconds=%.2f",
+            event_id,
+            server_name,
+            part_number,
+            len(replies),
+            len(reply),
+            delay_seconds,
+        )
+        time.sleep(delay_seconds)
+
+        queue_kwargs = {}
+        if round_id is not None:
+            queue_kwargs = {
+                "expected_round_id": round_id,
+                "enqueued_at": enqueued_at,
+            }
+        action_id = _queue_ai_radio_action(
+            reply,
+            server_name,
+            event_id,
+            part_number,
+            len(replies),
+            **queue_kwargs,
+        )
+        if action_id is None:
+            logger.error(
+                "AI dispatch aborted before action queue: event_id=%s server=%s "
+                "part=%s/%s",
+                event_id,
+                server_name,
+                part_number,
+                len(replies),
+            )
+            return
+        logger.info(
+            "AI dispatch sent to action queue: event_id=%s server=%s part=%s/%s action_id=%s",
+            event_id,
+            server_name,
+            part_number,
+            len(replies),
+            action_id,
+        )
+        ack_kwargs = {}
+        if round_id is not None:
+            ack_kwargs = {
+                "expected_round_id": round_id,
+                "enqueued_at": enqueued_at,
+            }
+        ack_status = _wait_for_ai_dispatch_action_ack(
+            action_id,
+            server_name,
+            event_id,
+            **ack_kwargs,
+        )
+        if ack_status != 1:
+            logger.error(
+                "AI dispatch aborted after missing or failed ACK: event_id=%s server=%s "
+                "part=%s/%s action_id=%s status=%s",
+                event_id,
+                server_name,
+                part_number,
+                len(replies),
+                action_id,
+                ack_status,
+            )
+            return
+
+
+def _pending_dispatch_action_exists(db: Session, server_name: str) -> bool:
+    status_column = (
+        ServerAction.status_asper1
+        if server_name == "ASPER1"
+        else ServerAction.status_asper2
+    )
+    return (
+        db.query(ServerAction.id)
+        .filter(
+            ServerAction.action_type == "dispatch",
+            status_column == 0,
+        )
+        .first()
+        is not None
+    )
+
+
+def _queue_ai_radio_action(
+    reply: str,
+    server_name: str,
+    event_id: str,
+    part_number: int,
+    part_count: int,
+    *,
+    expected_round_id: Optional[str] = None,
+    enqueued_at: Optional[float] = None,
+) -> Optional[int]:
+    """Atomically wait for an idle channel, then create one dispatch action."""
+
+    logged_wait = False
+    deadline = time.monotonic() + _AI_CHANNEL_WAIT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        with _dispatch_process_locks(
+            (server_name,),
+            blocking=True,
+            lock_scope="channel",
+        ):
+            callback_db = GameSessionLocal()
+            try:
+                with _dispatch_action_insert_lock:
+                    if (
+                        expected_round_id is not None
+                        and not _ai_dispatch_context_matches_db(
+                            callback_db,
+                            server_name,
+                            expected_round_id,
+                            enqueued_at,
+                        )
+                    ):
+                        logger.warning(
+                            "AI dispatch dropped stale reply before action queue: "
+                            "event_id=%s server=%s round_id=%s part=%s/%s",
+                            event_id,
+                            server_name,
+                            expected_round_id,
+                            part_number,
+                            part_count,
+                        )
+                        return None
+                    if not _pending_dispatch_action_exists(callback_db, server_name):
+                        _, action = _send_dispatcher_message_locked(
+                            callback_db,
+                            reply,
+                            server_name,
+                            admin_id=None,
+                            sender_label="ИИ-диспетчер",
+                        )
+                        return int(action.id)
+            finally:
+                callback_db.close()
+
+        if not logged_wait:
+            logger.info(
+                "AI dispatch waiting for idle channel: event_id=%s server=%s part=%s/%s",
+                event_id,
+                server_name,
+                part_number,
+                part_count,
+            )
+            logged_wait = True
+        time.sleep(_AI_ACTION_ACK_POLL_SECONDS)
+
+    logger.error(
+        "AI dispatch channel wait timed out: event_id=%s server=%s part=%s/%s "
+        "timeout_seconds=%s",
+        event_id,
+        server_name,
+        part_number,
+        part_count,
+        _AI_CHANNEL_WAIT_TIMEOUT_SECONDS,
+    )
+    return None
+
+
+def _wait_for_ai_dispatch_action_ack(
+    action_id: int,
+    server_name: str,
+    event_id: str,
+    *,
+    expected_round_id: Optional[str] = None,
+    enqueued_at: Optional[float] = None,
+) -> Optional[int]:
+    """Wait off-request until the target game server ACKs an AI action."""
+
+    status_attr = "status_asper1" if server_name == "ASPER1" else "status_asper2"
+    deadline = time.monotonic() + _AI_ACTION_ACK_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if expected_round_id is not None and not _ai_dispatch_context_is_current(
+            server_name,
+            expected_round_id,
+            enqueued_at,
+        ):
+            _cancel_ai_dispatch_action(
+                action_id,
+                server_name,
+                event_id,
+                reason="Раунд завершился до подтверждения радиограммы",
+            )
+            return 2
+        callback_db = GameSessionLocal()
+        try:
+            action = (
+                callback_db.query(ServerAction)
+                .filter(ServerAction.id == action_id)
+                .first()
+            )
+            if action is None:
+                logger.warning(
+                    "AI dispatch action disappeared before ACK: event_id=%s server=%s action_id=%s",
+                    event_id,
+                    server_name,
+                    action_id,
+                )
+                return None
+            status = getattr(action, status_attr)
+            if status == 1:
+                logger.info(
+                    "AI dispatch ACK received: event_id=%s server=%s action_id=%s status=%s",
+                    event_id,
+                    server_name,
+                    action_id,
+                    status,
+                )
+                return 1
+            if status == 2:
+                logger.warning(
+                    "AI dispatch ACK reported failure: event_id=%s server=%s "
+                    "action_id=%s",
+                    event_id,
+                    server_name,
+                    action_id,
+                )
+                return 2
+        finally:
+            callback_db.close()
+
+        time.sleep(_AI_ACTION_ACK_POLL_SECONDS)
+
+    logger.error(
+        "AI dispatch ACK wait timed out: event_id=%s server=%s action_id=%s "
+        "timeout_seconds=%s",
+        event_id,
+        server_name,
+        action_id,
+        _AI_ACTION_ACK_TIMEOUT_SECONDS,
+    )
+    _cancel_ai_dispatch_action(
+        action_id,
+        server_name,
+        event_id,
+        reason="Истекло время ожидания подтверждения радиограммы",
+    )
+    return None
+
+
+def _cancel_ai_dispatch_action(
+    action_id: int,
+    server_name: str,
+    event_id: str,
+    *,
+    reason: str,
+) -> bool:
+    """Atomically fail an unacknowledged AI action so it cannot resurface."""
+
+    status_column = (
+        ServerAction.status_asper1
+        if server_name == "ASPER1"
+        else ServerAction.status_asper2
+    )
+    error_column = (
+        ServerAction.error_asper1
+        if server_name == "ASPER1"
+        else ServerAction.error_asper2
+    )
+    executed_column = (
+        ServerAction.executed_at_asper1
+        if server_name == "ASPER1"
+        else ServerAction.executed_at_asper2
+    )
+    callback_db = GameSessionLocal()
+    try:
+        updated = (
+            callback_db.query(ServerAction)
+            .filter(
+                ServerAction.id == action_id,
+                status_column == 0,
+            )
+            .update(
+                {
+                    status_column: 2,
+                    error_column: reason,
+                    executed_column: datetime.utcnow(),
+                },
+                synchronize_session=False,
+            )
+        )
+        callback_db.commit()
+    finally:
+        callback_db.close()
+    if updated:
+        logger.warning(
+            "AI dispatch action cancelled: event_id=%s server=%s action_id=%s reason=%s",
+            event_id,
+            server_name,
+            action_id,
+            reason,
+        )
+    return bool(updated)
 
 
 def _extract_ai_dispatcher_replies(result: dict) -> List[str]:
@@ -472,7 +1011,9 @@ def _extract_ai_dispatcher_replies(result: dict) -> List[str]:
     replies = []
     for candidate in candidates:
         replies.extend(_split_ai_radio_reply(candidate, max_chars=_AI_REPLY_MAX_CHARS))
-    return replies
+    if len(replies) <= _AI_MAX_REPLY_PARTS:
+        return replies
+    return [*replies[: _AI_MAX_REPLY_PARTS - 1], _AI_CONTINUATION_NOTICE]
 
 
 def _split_ai_radio_reply(reply: str, max_chars: int) -> List[str]:
@@ -510,6 +1051,8 @@ def _split_ai_radio_reply(reply: str, max_chars: int) -> List[str]:
 
 
 def _split_ai_radio_sentence(sentence: str, max_chars: int) -> List[str]:
+    """Create standalone clause messages; never cut an unfinished word sequence."""
+
     parts = []
     remainder = sentence
     while len(remainder) > max_chars:
@@ -518,19 +1061,29 @@ def _split_ai_radio_sentence(sentence: str, max_chars: int) -> List[str]:
             match.end()
             for match in re.finditer(r"[,;:—–-](?=\s)", window[:max_chars])
         ]
-        cut_at = clause_breaks[-1] if clause_breaks else window.rfind(" ", 0, max_chars + 1)
-        if cut_at <= 0:
-            cut_at = max_chars - 1
-            part = f"{remainder[:cut_at]}…"
-            remainder = remainder[cut_at:]
-        else:
-            part = remainder[:cut_at].rstrip()
-            remainder = remainder[cut_at:].lstrip()
+        if not clause_breaks:
+            parts.append(_AI_OVERSIZED_NOTICE)
+            return parts
+        cut_at = clause_breaks[-1]
+        part = _finish_ai_radio_clause(remainder[:cut_at], max_chars)
+        remainder = remainder[cut_at:].lstrip()
         if part:
             parts.append(part)
     if remainder:
-        parts.append(remainder)
+        parts.append(_finish_ai_radio_clause(remainder, max_chars))
     return parts
+
+
+def _finish_ai_radio_clause(value: str, max_chars: int) -> str:
+    clause = value.strip().rstrip(" ,;:—–-")
+    if not clause:
+        return ""
+    clause = f"{clause[0].upper()}{clause[1:]}"
+    if not clause.endswith((".", "!", "?", "…")):
+        if len(clause) >= max_chars:
+            return _AI_OVERSIZED_NOTICE
+        clause = f"{clause}."
+    return clause
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -570,9 +1123,60 @@ def _send_dispatcher_message(db: Session, text: str, server_name: Optional[str],
 
     Creates a 'dispatch' ServerAction. The game server picks it up, sends it
     in-game, then ACKs. Until ACK is received, the action stays pending and
-    the admin-panel frontend blocks further sends (see /dispatch/pending —
-    this only checks action_type=="dispatch" regardless of who queued it).
+    the admin-panel frontend blocks further sends (see /dispatch/pending). The
+    server-side lock and pending check also reject racing admin/client sends, so
+    they cannot overlap an AI transmission even with multiple Uvicorn workers.
     """
+    # The request session may already hold a MySQL REPEATABLE READ snapshot
+    # from authentication. A fresh session opened *after* the process lock is
+    # required, otherwise another worker's just-committed pending action can be
+    # invisible and two radiograms can be inserted.
+    del db
+    target_servers = _dispatch_target_servers(server_name)
+    normalized_server_name = target_servers[0] if server_name is not None else None
+    with _dispatch_process_locks(
+        target_servers,
+        blocking=True,
+        lock_scope="channel",
+    ):
+        channel_db = GameSessionLocal()
+        try:
+            with _dispatch_action_insert_lock:
+                if any(
+                    _pending_dispatch_action_exists(channel_db, target_server)
+                    for target_server in target_servers
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Канал диспетчерской занят",
+                    )
+                return _send_dispatcher_message_locked(
+                    channel_db,
+                    text,
+                    normalized_server_name,
+                    admin_id,
+                    sender_label,
+                )
+        finally:
+            channel_db.close()
+
+
+def _dispatch_target_servers(server_name: Optional[str]) -> tuple[str, ...]:
+    if server_name is None:
+        return ("ASPER1", "ASPER2")
+    normalized = str(server_name).strip().upper()
+    if normalized not in {"ASPER1", "ASPER2"}:
+        raise HTTPException(status_code=400, detail="server_name must be ASPER1 or ASPER2")
+    return (normalized,)
+
+
+def _send_dispatcher_message_locked(
+    db: Session,
+    text: str,
+    server_name: Optional[str],
+    admin_id: Optional[int],
+    sender_label: str,
+) -> tuple:
     text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
@@ -627,6 +1231,7 @@ async def dispatch_send(request: Request, db: Session = Depends(get_db), current
 
 @panel_router.get("/api/v1/admin/dispatch/pending")
 def dispatch_check_pending(
+    server: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(_get_current_admin),
 ):
@@ -635,10 +1240,20 @@ def dispatch_check_pending(
     """
     if not check_permission(current_admin, "dispatch", "view"):
         raise HTTPException(status_code=403)
-    pending = db.query(ServerAction).filter(
-        ServerAction.action_type == "dispatch",
-        (ServerAction.status_asper1 == 0) | (ServerAction.status_asper2 == 0),
-    ).first()
+    query = db.query(ServerAction).filter(ServerAction.action_type == "dispatch")
+    if server:
+        normalized_server = _dispatch_target_servers(server)[0]
+        status_column = (
+            ServerAction.status_asper1
+            if normalized_server == "ASPER1"
+            else ServerAction.status_asper2
+        )
+        query = query.filter(status_column == 0)
+    else:
+        query = query.filter(
+            (ServerAction.status_asper1 == 0) | (ServerAction.status_asper2 == 0)
+        )
+    pending = query.first()
     return {"pending": pending is not None, "action_id": pending.id if pending else None}
 
 

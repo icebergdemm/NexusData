@@ -100,33 +100,56 @@ async function sendDispatch() {
   const input = document.getElementById('dspInput');
   const btn = document.getElementById('dspSendBtn');
   const text = input.value.trim();
+  const targetServer = _currentServer;
   if (!text) return;
   input.value = '';
   btn.disabled = true;
   btn.textContent = '⏳...';
   input.disabled = true;
 
-  await fetch('/api/v1/admin/dispatch/send', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({text, server_name: _currentServer || null})
-  });
-  pollPending();
+  try {
+    const response = await fetch('/api/v1/admin/dispatch/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, server_name: targetServer || null})
+    });
+    if (!response.ok) {
+      let message = 'Не удалось отправить радиограмму';
+      try {
+        const body = await response.json();
+        if (body.detail) message = body.detail;
+      } catch(e) {}
+      input.value = text;
+      alert(message);
+      resetDispatchInput();
+      return;
+    }
+    pollPending(targetServer);
+  } catch(e) {
+    input.value = text;
+    alert('Нет связи с диспетчерской. Радиограмма не отправлена.');
+    resetDispatchInput();
+  }
 }
 
-async function pollPending() {
-  const btn = document.getElementById('dspSendBtn');
-  const input = document.getElementById('dspInput');
+async function pollPending(targetServer = _currentServer) {
   try {
-    const r = await fetch('/api/v1/admin/dispatch/pending');
+    const query = targetServer ? '?server=' + encodeURIComponent(targetServer) : '';
+    const r = await fetch('/api/v1/admin/dispatch/pending' + query);
     const data = await r.json();
     if (data.pending) { setTimeout(pollPending, 2000); return; }
   } catch(e) {}
+  resetDispatchInput();
+  loadMessages();
+}
+
+function resetDispatchInput() {
+  const btn = document.getElementById('dspSendBtn');
+  const input = document.getElementById('dspInput');
   btn.disabled = false;
   btn.textContent = '📤 Отправить';
   input.disabled = false;
   input.focus();
-  loadMessages();
 }
 
 document.getElementById('dspInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') sendDispatch(); });

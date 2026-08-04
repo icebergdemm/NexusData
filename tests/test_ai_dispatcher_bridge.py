@@ -1,13 +1,29 @@
 import unittest
 from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
 from models import RoundEvent, WorldRound
-from routes.dispatch import _post_ai_dispatcher_sync, _resolve_ai_conversation_round_id
+from routes.dispatch import (
+    _AIDispatchJob,
+    _ai_dispatch_job_queues,
+    _ai_reply_delay_seconds,
+    _cancel_ai_dispatch_action,
+    dispatch_check_pending,
+    _deliver_ai_dispatcher_replies,
+    _enqueue_ai_dispatch_job,
+    _extract_ai_dispatcher_replies,
+    _post_ai_dispatcher_sync,
+    _queue_ai_radio_action,
+    _resolve_ai_conversation_round_id,
+    _send_dispatcher_message,
+    _split_ai_radio_reply,
+    _wait_for_ai_dispatch_action_ack,
+)
 
 
 class _FakeResponse:
@@ -43,16 +59,13 @@ class AIDispatcherBridgeTests(unittest.TestCase):
     def setUp(self):
         _FakeClient.last_request = None
 
-    @patch("routes.dispatch._send_dispatcher_message")
-    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch._deliver_ai_dispatcher_replies")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
-    def test_answer_is_queued_for_the_source_server(self, session_factory, send_message):
+    def test_answer_is_queued_for_the_source_server(self, deliver_replies):
         _FakeClient.response_payload = {
             "status": "answered",
             "reply": "Связь установлена.",
         }
-        db = Mock()
-        session_factory.return_value = db
         payload = {
             "event_id": "nexus-dispatch-42",
             "round_id": "round-1",
@@ -76,19 +89,17 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 payload,
             ),
         )
-        send_message.assert_called_once_with(
-            db,
-            "Связь установлена.",
-            "ASPER2",
-            admin_id=None,
-            sender_label="ИИ-диспетчер",
+        deliver_replies.assert_called_once_with(
+            ["Связь установлена."],
+            server_name="ASPER2",
+            event_id="nexus-dispatch-42",
+            round_id="round-1",
+            enqueued_at=None,
         )
-        db.close.assert_called_once()
 
-    @patch("routes.dispatch._send_dispatcher_message")
-    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch._deliver_ai_dispatcher_replies")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
-    def test_multi_part_answer_is_queued_in_order(self, session_factory, send_message):
+    def test_multi_part_answer_is_queued_in_order(self, deliver_replies):
         _FakeClient.response_payload = {
             "status": "answered",
             "reply": "Корпус держится.",
@@ -97,8 +108,6 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 "Кормовой отсек принимает воду; направьте туда механика.",
             ],
         }
-        db = Mock()
-        session_factory.return_value = db
         payload = {
             "event_id": "nexus-dispatch-44",
             "round_id": "round-1",
@@ -114,32 +123,26 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             "ASPER2",
         )
 
-        self.assertEqual(send_message.call_count, 2)
-        self.assertEqual(
-            [call.args[1] for call in send_message.call_args_list],
+        deliver_replies.assert_called_once_with(
             [
                 "Корпус держится.",
                 "Кормовой отсек принимает воду; направьте туда механика.",
             ],
+            server_name="ASPER2",
+            event_id="nexus-dispatch-44",
+            round_id="round-1",
+            enqueued_at=None,
         )
-        for call in send_message.call_args_list:
-            self.assertEqual(call.args[0], db)
-            self.assertEqual(call.args[2], "ASPER2")
-            self.assertEqual(call.kwargs["admin_id"], None)
-            self.assertEqual(call.kwargs["sender_label"], "ИИ-диспетчер")
-        db.close.assert_called_once()
 
-    @patch("routes.dispatch._send_dispatcher_message")
-    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch._deliver_ai_dispatcher_replies")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
-    def test_legacy_long_answer_is_split_without_cutting_words(self, session_factory, send_message):
+    def test_legacy_long_answer_is_split_without_cutting_words(self, deliver_replies):
         reply = (
             "Первый доклад содержит законченную сводку о состоянии корпуса и отсеков. "
             "Второй доклад содержит отдельную рекомендацию экипажу по дальнейшему курсу. "
             "Третий доклад подтверждает, что ближайшие навигационные контакты отмечены на карте."
         )
         _FakeClient.response_payload = {"status": "answered", "reply": reply}
-        session_factory.return_value = Mock()
 
         _post_ai_dispatcher_sync(
             "http://dispatcher/api/v1/dispatcher/messages",
@@ -154,10 +157,12 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             "ASPER1",
         )
 
-        sent = [call.args[1] for call in send_message.call_args_list]
+        sent = deliver_replies.call_args.args[0]
         self.assertGreater(len(sent), 1)
         self.assertEqual(" ".join(sent), reply)
         self.assertTrue(all(len("[Диспетчер] " + part) <= 200 for part in sent))
+        self.assertEqual(deliver_replies.call_args.kwargs["server_name"], "ASPER1")
+        self.assertEqual(deliver_replies.call_args.kwargs["event_id"], "nexus-dispatch-45")
 
     @patch("routes.dispatch.GameSessionLocal")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
@@ -182,6 +187,475 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         )
 
         session_factory.assert_not_called()
+
+
+class AIReplyDeliveryQueueTests(unittest.TestCase):
+    def tearDown(self):
+        # These tests replace Thread.start, so no live worker owns the queues.
+        _ai_dispatch_job_queues.clear()
+
+    def test_delay_is_monotonic_and_stays_between_four_and_twelve_seconds(self):
+        delays = [
+            _ai_reply_delay_seconds(""),
+            _ai_reply_delay_seconds("Кратко."),
+            _ai_reply_delay_seconds("С" * 94),
+            _ai_reply_delay_seconds("Д" * 188),
+            _ai_reply_delay_seconds("П" * 500),
+        ]
+
+        self.assertEqual(delays[0], 4.0)
+        self.assertEqual(delays[-1], 12.0)
+        self.assertTrue(all(4.0 <= delay <= 12.0 for delay in delays))
+        self.assertEqual(delays, sorted(delays))
+
+    @patch("routes.dispatch.threading.Thread")
+    def test_one_fifo_is_created_per_server(self, thread_class):
+        thread_class.return_value = Mock()
+        first = _AIDispatchJob("http://ai", "key", {"event_id": "first"}, "ASPER1")
+        second = _AIDispatchJob("http://ai", "key", {"event_id": "second"}, "ASPER1")
+        other_server = _AIDispatchJob("http://ai", "key", {"event_id": "other"}, "ASPER2")
+
+        _enqueue_ai_dispatch_job(first)
+        _enqueue_ai_dispatch_job(second)
+        _enqueue_ai_dispatch_job(other_server)
+
+        self.assertEqual(thread_class.call_count, 2)
+        self.assertEqual(
+            [_ai_dispatch_job_queues["ASPER1"].get_nowait().payload["event_id"] for _ in range(2)],
+            ["first", "second"],
+        )
+        self.assertEqual(
+            _ai_dispatch_job_queues["ASPER2"].get_nowait().payload["event_id"],
+            "other",
+        )
+
+    @patch("routes.dispatch._wait_for_ai_dispatch_action_ack", return_value=1)
+    @patch("routes.dispatch._queue_ai_radio_action", side_effect=[101, 102])
+    @patch("routes.dispatch.time.sleep")
+    def test_parts_wait_for_delay_send_and_ack_strictly_in_order(
+        self,
+        sleep,
+        queue_action,
+        wait_for_ack,
+    ):
+        timeline = Mock()
+        timeline.attach_mock(sleep, "sleep")
+        timeline.attach_mock(queue_action, "send")
+        timeline.attach_mock(wait_for_ack, "ack")
+        replies = ["Принял.", "Держите курс к станции."]
+
+        _deliver_ai_dispatcher_replies(
+            replies,
+            server_name="ASPER1",
+            event_id="nexus-dispatch-50",
+        )
+
+        first_delay = _ai_reply_delay_seconds(replies[0])
+        second_delay = _ai_reply_delay_seconds(replies[1])
+        self.assertEqual(
+            timeline.mock_calls,
+            [
+                call.sleep(first_delay),
+                call.send(replies[0], "ASPER1", "nexus-dispatch-50", 1, 2),
+                call.ack(101, "ASPER1", "nexus-dispatch-50"),
+                call.sleep(second_delay),
+                call.send(replies[1], "ASPER1", "nexus-dispatch-50", 2, 2),
+                call.ack(102, "ASPER1", "nexus-dispatch-50"),
+            ],
+        )
+
+    @patch("routes.dispatch._send_dispatcher_message_locked")
+    @patch("routes.dispatch.time.sleep")
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_action_is_not_inserted_until_existing_dispatch_is_done(
+        self,
+        session_factory,
+        sleep,
+        send_message,
+    ):
+        busy_db = Mock()
+        busy_db.query.return_value.filter.return_value.first.return_value = (41,)
+        idle_db = Mock()
+        idle_db.query.return_value.filter.return_value.first.return_value = None
+        session_factory.side_effect = [busy_db, idle_db]
+        send_message.return_value = (Mock(), Mock(id=77))
+
+        action_id = _queue_ai_radio_action(
+            "Принял.",
+            "ASPER2",
+            "nexus-dispatch-51",
+            1,
+            1,
+        )
+
+        self.assertEqual(action_id, 77)
+        sleep.assert_called_once_with(1.0)
+        send_message.assert_called_once_with(
+            idle_db,
+            "Принял.",
+            "ASPER2",
+            admin_id=None,
+            sender_label="ИИ-диспетчер",
+        )
+        busy_db.close.assert_called_once()
+        idle_db.close.assert_called_once()
+
+    @patch("routes.dispatch.time.sleep")
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_ack_wait_stops_only_after_target_server_status_changes(
+        self,
+        session_factory,
+        sleep,
+    ):
+        pending_db = Mock()
+        pending_db.query.return_value.filter.return_value.first.return_value = Mock(
+            status_asper1=0,
+            status_asper2=1,
+        )
+        acknowledged_db = Mock()
+        acknowledged_db.query.return_value.filter.return_value.first.return_value = Mock(
+            status_asper1=1,
+            status_asper2=1,
+        )
+        session_factory.side_effect = [pending_db, acknowledged_db]
+
+        status = _wait_for_ai_dispatch_action_ack(77, "ASPER1", "nexus-dispatch-52")
+
+        self.assertEqual(status, 1)
+        sleep.assert_called_once_with(1.0)
+        pending_db.close.assert_called_once()
+        acknowledged_db.close.assert_called_once()
+
+    @patch("routes.dispatch.time.sleep")
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_failed_ack_is_terminal(self, session_factory, sleep):
+        failed_db = Mock()
+        failed_db.query.return_value.filter.return_value.first.return_value = Mock(
+            status_asper1=1,
+            status_asper2=2,
+        )
+        session_factory.return_value = failed_db
+
+        status = _wait_for_ai_dispatch_action_ack(78, "ASPER2", "nexus-dispatch-53")
+
+        self.assertEqual(status, 2)
+        sleep.assert_not_called()
+        failed_db.close.assert_called_once()
+
+    @patch("routes.dispatch._wait_for_ai_dispatch_action_ack", return_value=2)
+    @patch("routes.dispatch._queue_ai_radio_action", side_effect=[101, 102])
+    @patch("routes.dispatch.time.sleep")
+    def test_failed_ack_prevents_sending_continuation(
+        self,
+        sleep,
+        queue_action,
+        wait_for_ack,
+    ):
+        _deliver_ai_dispatcher_replies(
+            ["Первая часть.", "Вторая часть."],
+            server_name="ASPER1",
+            event_id="nexus-dispatch-54",
+        )
+
+        sleep.assert_called_once_with(_ai_reply_delay_seconds("Первая часть."))
+        queue_action.assert_called_once_with(
+            "Первая часть.",
+            "ASPER1",
+            "nexus-dispatch-54",
+            1,
+            2,
+        )
+        wait_for_ack.assert_called_once_with(101, "ASPER1", "nexus-dispatch-54")
+
+    @patch("routes.dispatch._queue_ai_radio_action")
+    @patch("routes.dispatch.time.sleep")
+    @patch("routes.dispatch._ai_dispatch_context_is_current", return_value=False)
+    def test_stale_round_is_dropped_before_delay(
+        self,
+        context_is_current,
+        sleep,
+        queue_action,
+    ):
+        _deliver_ai_dispatcher_replies(
+            ["Старая радиограмма."],
+            server_name="ASPER1",
+            event_id="nexus-dispatch-54-stale",
+            round_id="old-round",
+            enqueued_at=10.0,
+        )
+
+        context_is_current.assert_called_once_with("ASPER1", "old-round", 10.0)
+        sleep.assert_not_called()
+        queue_action.assert_not_called()
+
+    @patch("routes.dispatch._send_dispatcher_message_locked")
+    @patch("routes.dispatch._ai_dispatch_context_matches_db", return_value=False)
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_round_is_checked_again_atomically_before_action_insert(
+        self,
+        session_factory,
+        context_matches,
+        send_message,
+    ):
+        callback_db = Mock()
+        session_factory.return_value = callback_db
+
+        action_id = _queue_ai_radio_action(
+            "Запоздалая радиограмма.",
+            "ASPER2",
+            "nexus-dispatch-54-race",
+            1,
+            1,
+            expected_round_id="old-round",
+            enqueued_at=20.0,
+        )
+
+        self.assertIsNone(action_id)
+        context_matches.assert_called_once_with(
+            callback_db,
+            "ASPER2",
+            "old-round",
+            20.0,
+        )
+        send_message.assert_not_called()
+        callback_db.close.assert_called_once()
+
+    @patch("routes.dispatch._cancel_ai_dispatch_action")
+    @patch("routes.dispatch._AI_ACTION_ACK_TIMEOUT_SECONDS", 0)
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_ack_wait_has_a_deadline(self, session_factory, cancel_action):
+        self.assertIsNone(
+            _wait_for_ai_dispatch_action_ack(79, "ASPER1", "nexus-dispatch-55")
+        )
+        session_factory.assert_not_called()
+        cancel_action.assert_called_once_with(
+            79,
+            "ASPER1",
+            "nexus-dispatch-55",
+            reason="Истекло время ожидания подтверждения радиограммы",
+        )
+
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_cancelling_unacknowledged_action_marks_only_target_pending_status_failed(
+        self,
+        session_factory,
+    ):
+        callback_db = Mock()
+        update_query = callback_db.query.return_value.filter.return_value
+        update_query.update.return_value = 1
+        session_factory.return_value = callback_db
+
+        cancelled = _cancel_ai_dispatch_action(
+            79,
+            "ASPER2",
+            "nexus-dispatch-55",
+            reason="Тестовая отмена",
+        )
+
+        self.assertTrue(cancelled)
+        update_query.update.assert_called_once()
+        values = update_query.update.call_args.args[0]
+        self.assertEqual(values[next(key for key in values if key.key == "status_asper2")], 2)
+        self.assertEqual(
+            values[next(key for key in values if key.key == "error_asper2")],
+            "Тестовая отмена",
+        )
+        self.assertFalse(any(key.key == "status_asper1" for key in values))
+        callback_db.commit.assert_called_once()
+        callback_db.close.assert_called_once()
+
+    @patch("routes.dispatch._AI_CHANNEL_WAIT_TIMEOUT_SECONDS", 0)
+    @patch("routes.dispatch.GameSessionLocal")
+    def test_channel_wait_has_a_deadline(self, session_factory):
+        self.assertIsNone(
+            _queue_ai_radio_action(
+                "Доклад.",
+                "ASPER1",
+                "nexus-dispatch-56",
+                1,
+                1,
+            )
+        )
+        session_factory.assert_not_called()
+
+    @patch("routes.dispatch._AI_DISPATCH_QUEUE_MAXSIZE", 1)
+    @patch("routes.dispatch.threading.Thread")
+    def test_full_queue_drops_new_request_without_blocking(self, thread_class):
+        thread_class.return_value = Mock()
+        first = _AIDispatchJob("http://ai", "key", {"event_id": "first"}, "ASPER1")
+        overflow = _AIDispatchJob(
+            "http://ai",
+            "key",
+            {"event_id": "overflow"},
+            "ASPER1",
+        )
+
+        _enqueue_ai_dispatch_job(first)
+        _enqueue_ai_dispatch_job(overflow)
+
+        self.assertEqual(_ai_dispatch_job_queues["ASPER1"].qsize(), 1)
+        self.assertEqual(
+            _ai_dispatch_job_queues["ASPER1"].get_nowait().payload["event_id"],
+            "first",
+        )
+
+    def test_reply_extractor_caps_channel_occupancy_with_explicit_notice(self):
+        replies = _extract_ai_dispatcher_replies(
+            {
+                "replies": [
+                    "Первая законченная радиограмма.",
+                    "Вторая законченная радиограмма.",
+                    "Третья законченная радиограмма.",
+                    "Четвёртая законченная радиограмма.",
+                ]
+            }
+        )
+
+        self.assertEqual(
+            replies,
+            [
+                "Первая законченная радиограмма.",
+                "Вторая законченная радиограмма.",
+                "Сводка объёмная; уточните, какой раздел передать отдельной радиограммой.",
+            ],
+        )
+
+    def test_legacy_oversized_sentence_is_split_into_finished_clauses(self):
+        reply = (
+            "По карте поста впереди спокойный проход, держите текущий курс и малый ход, "
+            "контролируйте глубину и не теряйте бортовой маяк из виду, "
+            "при новом контакте доложите примерную дистанцию до цели."
+        )
+
+        parts = _split_ai_radio_reply(reply, 188)
+
+        self.assertEqual(len(parts), 2)
+        self.assertTrue(all(part.endswith((".", "!", "?", "…")) for part in parts))
+        self.assertTrue(
+            all(not part.endswith((",", ";", ":", "—", "-")) for part in parts)
+        )
+        self.assertTrue(parts[1][0].isupper())
+
+    def test_unbreakable_legacy_sentence_becomes_clarification_not_fragment(self):
+        parts = _split_ai_radio_reply(" ".join(["подробность"] * 80), 188)
+
+        self.assertEqual(
+            parts,
+            ["Доклад слишком объёмный; уточните, какую часть передать отдельно."],
+        )
+
+    def test_finishing_clause_never_exceeds_radio_limit(self):
+        parts = _split_ai_radio_reply(f"{'А' * 186}, {'б' * 188}", 188)
+
+        self.assertTrue(all(len(part) <= 188 for part in parts))
+        self.assertEqual(
+            parts[-1],
+            "Доклад слишком объёмный; уточните, какую часть передать отдельно.",
+        )
+
+    @patch("routes.dispatch._send_dispatcher_message_locked")
+    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch._dispatch_process_locks")
+    def test_manual_send_uses_short_channel_lock_during_ai_delay(
+        self,
+        process_locks,
+        session_factory,
+        send_locked,
+    ):
+        process_locks.return_value = MagicMock(
+            __enter__=Mock(return_value=None),
+            __exit__=Mock(return_value=False),
+        )
+        request_db = Mock()
+        channel_db = Mock()
+        channel_db.query.return_value.filter.return_value.first.return_value = None
+        session_factory.return_value = channel_db
+        send_locked.return_value = (Mock(id=10), Mock(id=11))
+
+        result = _send_dispatcher_message(
+            request_db,
+            "Ручная радиограмма.",
+            "ASPER1",
+            admin_id=7,
+            sender_label="Оператор",
+        )
+
+        self.assertEqual(result[1].id, 11)
+        process_locks.assert_called_once_with(
+            ("ASPER1",),
+            blocking=True,
+            lock_scope="channel",
+        )
+        send_locked.assert_called_once_with(
+            channel_db,
+            "Ручная радиограмма.",
+            "ASPER1",
+            7,
+            "Оператор",
+        )
+        request_db.query.assert_not_called()
+        channel_db.close.assert_called_once()
+
+    @patch("routes.dispatch.check_permission", return_value=True)
+    def test_pending_check_is_scoped_to_requested_server(self, _permission):
+        db = MagicMock()
+        action_query = MagicMock()
+        scoped_query = MagicMock()
+        db.query.return_value.filter.return_value = action_query
+        action_query.filter.return_value = scoped_query
+        scoped_query.first.return_value = Mock(id=91)
+
+        result = dispatch_check_pending(
+            server="asper2",
+            db=db,
+            current_admin=Mock(),
+        )
+
+        self.assertEqual(result, {"pending": True, "action_id": 91})
+        status_expression = str(action_query.filter.call_args.args[0])
+        self.assertIn("status_asper2", status_expression)
+        self.assertNotIn("status_asper1", status_expression)
+
+    @patch("routes.dispatch.check_permission", return_value=True)
+    def test_pending_check_rejects_unknown_server(self, _permission):
+        with self.assertRaises(HTTPException) as raised:
+            dispatch_check_pending(
+                server="ASPER3",
+                db=MagicMock(),
+                current_admin=Mock(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 400)
+
+    @patch("routes.dispatch.GameSessionLocal")
+    @patch("routes.dispatch._dispatch_process_locks")
+    def test_manual_send_is_rejected_when_dispatch_action_is_pending(
+        self,
+        process_locks,
+        session_factory,
+    ):
+        process_locks.return_value = MagicMock(
+            __enter__=Mock(return_value=None),
+            __exit__=Mock(return_value=False),
+        )
+        request_db = Mock()
+        channel_db = Mock()
+        channel_db.query.return_value.filter.return_value.first.return_value = (91,)
+        session_factory.return_value = channel_db
+
+        with self.assertRaises(HTTPException) as raised:
+            _send_dispatcher_message(
+                request_db,
+                "Ручная радиограмма.",
+                "ASPER2",
+                admin_id=7,
+                sender_label="Оператор",
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        request_db.query.assert_not_called()
+        channel_db.add.assert_not_called()
+        channel_db.close.assert_called_once()
 
 
 class AIConversationRoundTests(unittest.TestCase):
@@ -235,6 +709,69 @@ class AIConversationRoundTests(unittest.TestCase):
         self.assertEqual(
             _resolve_ai_conversation_round_id(self.db, "ASPER2"),
             f"dispatch-ASPER2-idle-{end.id}",
+        )
+
+    def test_telemetry_freshness_cannot_flip_event_anchored_conversation(self):
+        world_round = WorldRound(
+            round_id="world-asper1",
+            server_name="ASPER1",
+            last_update_at=datetime(2026, 1, 1),
+        )
+        start = RoundEvent(
+            event_type="start",
+            server_name="ASPER1",
+            created_at=datetime.utcnow(),
+        )
+        self.db.add_all([world_round, start])
+        self.db.commit()
+
+        expected = f"dispatch-ASPER1-round-{start.id}"
+        self.assertEqual(_resolve_ai_conversation_round_id(self.db, "ASPER1"), expected)
+
+        world_round.last_update_at = datetime.utcnow()
+        self.db.commit()
+        self.assertEqual(_resolve_ai_conversation_round_id(self.db, "ASPER1"), expected)
+
+    def test_round_end_overrides_still_fresh_world_snapshot(self):
+        self.db.add(
+            WorldRound(
+                round_id="ending-world",
+                server_name="ASPER1",
+                last_update_at=datetime.utcnow(),
+            )
+        )
+        end = RoundEvent(
+            event_type="end",
+            server_name="ASPER1",
+            created_at=datetime.utcnow(),
+        )
+        self.db.add(end)
+        self.db.commit()
+
+        self.assertEqual(
+            _resolve_ai_conversation_round_id(self.db, "ASPER1"),
+            f"dispatch-ASPER1-idle-{end.id}",
+        )
+
+    def test_world_round_is_stable_fallback_without_lifecycle_events(self):
+        world_round = WorldRound(
+            round_id="world-only-round",
+            server_name="ASPER1",
+            last_update_at=datetime(2026, 1, 1),
+        )
+        self.db.add(world_round)
+        self.db.commit()
+
+        self.assertEqual(
+            _resolve_ai_conversation_round_id(self.db, "ASPER1"),
+            "world-only-round",
+        )
+
+        world_round.last_update_at = datetime.utcnow()
+        self.db.commit()
+        self.assertEqual(
+            _resolve_ai_conversation_round_id(self.db, "ASPER1"),
+            "world-only-round",
         )
 
 
