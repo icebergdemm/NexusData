@@ -3,8 +3,8 @@
  * 1. Voice data is NOT stored in memory — skipped during parse, decoded on-demand
  * 2. World polygons stored as flat Int32Array (compact, no per-point objects)
  * 3. Snapshot entities stored as compact typed arrays
- * 4. Original ArrayBuffer freed after parse via explicit nullification
- * 5. Download uses streaming fetch for progress indication
+ * 4. File is never held as ONE giant ArrayBuffer — see PagedBuffer below
+ * 5. Download + decompression are fully streamed, chunk by chunk
  */
 (function () {
   "use strict";
@@ -26,28 +26,126 @@
     strLen: 8192,
   };
 
+  /** Ошибка "не хватило памяти на буфер" (RangeError из new ArrayBuffer/
+   * Uint8Array, либо DOMException QuotaExceededError). PagedBuffer держит
+   * страницы фиксированного маленького размера (см. ниже), так что это
+   * теперь означает по-настоящему нехватку памяти в системе, а не
+   * упирание в потолок одного JS-объекта — раньше сообщение об этой
+   * ошибке было буквально неправдой на любой современной машине. */
+  class OutOfMemoryError extends Error {
+    constructor(stage) { super(`Не хватило памяти браузера на ${stage}`); this.stage = stage; }
+  }
+  function isAllocationFailure(e) {
+    return e instanceof RangeError || e?.name === "QuotaExceededError" ||
+      /allocation failed|array buffer/i.test(e?.message || "");
+  }
+
+  // ── PagedBuffer ───────────────────────────────────────────────────────────
+  // Демо-файлы бывают гигабайты после распаковки (долгий раунд с позициями
+  // на 10 Гц сжимается в разы, а живая речь — почти нет). Чтение или
+  // распаковка ВСЕГО файла в ОДИН ArrayBuffer падает с "Array buffer
+  // allocation failed" не из-за нехватки реальной памяти на диске/в ОЗУ —
+  // движок JS ограничивает размер ОДНОГО буфера сам по себе, независимо от
+  // того, сколько всего свободно. PagedBuffer копит данные вместо этого в
+  // массиве буферов по PAGE_SIZE байт каждый — ни одна отдельная аллокация
+  // никогда не приближается к этому потолку, сколько бы всего памяти ни
+  // потребовалось суммарно.
+  //
+  // Публичный API (u8/u16/i16/u32/i32/f32/i64/slice) принимает АБСОЛЮТНОЕ
+  // смещение от начала логического потока байт и сам находит нужную
+  // страницу — почти все чтения попадают в одну страницу (быстрый путь,
+  // без копирования); значение, пересекающее границу страницы (редкость —
+  // страница держит десятки мегабайт, а любое поле формата — единицы-сотни
+  // байт), собирается через маленький временный буфер.
+  const PAGE_SIZE = 32 * 1024 * 1024; // 32 МБ — с большим запасом ниже потолка ArrayBuffer в любом браузере
+
+  function readU16(dv, o) { return dv.getUint16(o, true); }
+  function readI16(dv, o) { return dv.getInt16(o, true); }
+  function readU32(dv, o) { return dv.getUint32(o, true); }
+  function readI32(dv, o) { return dv.getInt32(o, true); }
+  function readF32(dv, o) { return dv.getFloat32(o, true); }
+  function readI64(dv, o) { return Number(dv.getBigInt64(o, true)); }
+
+  class PagedBuffer {
+    constructor() {
+      this.pages = [];   // Uint8Array[]
+      this._views = [];  // DataView[], лениво создаются по странице
+      this.length = 0;   // логический размер всего потока
+      this._cur = null;
+      this._curLen = 0;
+    }
+    _newPage() {
+      let page;
+      try { page = new Uint8Array(PAGE_SIZE); }
+      catch (e) { throw isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e; }
+      this._cur = page; this._curLen = 0;
+      this.pages.push(page); this._views.push(null);
+    }
+    /** Дописать очередной кусок байт (произвольной длины — границы кусков
+     * из сети/распаковщика никак не связаны с границами наших страниц). */
+    append(chunk) {
+      let off = 0;
+      while (off < chunk.length) {
+        if (!this._cur || this._curLen >= PAGE_SIZE) this._newPage();
+        const n = Math.min(PAGE_SIZE - this._curLen, chunk.length - off);
+        this._cur.set(chunk.subarray(off, off + n), this._curLen);
+        this._curLen += n; off += n; this.length += n;
+      }
+    }
+    _loc(off) { return [(off / PAGE_SIZE) | 0, off % PAGE_SIZE]; }
+    _view(p) {
+      let v = this._views[p];
+      if (!v) { const pg = this.pages[p]; v = new DataView(pg.buffer, pg.byteOffset, pg.byteLength); this._views[p] = v; }
+      return v;
+    }
+    u8(off) { const [p, w] = this._loc(off); return this.pages[p][w]; }
+    i8(off) { const v = this.u8(off); return v > 127 ? v - 256 : v; }
+    _prim(off, size, read) {
+      const [p, w] = this._loc(off);
+      if (w + size <= PAGE_SIZE) return read(this._view(p), w);
+      const scratch = new Uint8Array(size); // редкий случай значения на стыке страниц
+      for (let k = 0; k < size; k++) scratch[k] = this.u8(off + k);
+      return read(new DataView(scratch.buffer), 0);
+    }
+    u16(off) { return this._prim(off, 2, readU16); }
+    i16(off) { return this._prim(off, 2, readI16); }
+    u32(off) { return this._prim(off, 4, readU32); }
+    i32(off) { return this._prim(off, 4, readI32); }
+    f32(off) { return this._prim(off, 4, readF32); }
+    i64(off) { return this._prim(off, 8, readI64); }
+    /** Uint8Array на диапазон [off, off+len) — вид без копирования, если он
+     * целиком в одной странице (обычный случай), иначе — копия. */
+    slice(off, len) {
+      const [p, w] = this._loc(off);
+      if (w + len <= PAGE_SIZE) return this.pages[p].subarray(w, w + len);
+      const out = new Uint8Array(len);
+      for (let k = 0; k < len; k++) out[k] = this.u8(off + k);
+      return out;
+    }
+  }
+
   class Reader {
-    constructor(buf) { this.dv = new DataView(buf); this.o = 0; this.len = buf.byteLength; }
-    u8() { return this.dv.getUint8(this.o++); }
-    i8() { return this.dv.getInt8(this.o++); }
-    u16() { const v = this.dv.getUint16(this.o, true); this.o += 2; return v; }
-    i16() { const v = this.dv.getInt16(this.o, true); this.o += 2; return v; }
-    u32() { const v = this.dv.getUint32(this.o, true); this.o += 4; return v; }
-    i32() { const v = this.dv.getInt32(this.o, true); this.o += 4; return v; }
-    f32() { const v = this.dv.getFloat32(this.o, true); this.o += 4; return v; }
-    i64() { const v = this.dv.getBigInt64(this.o, true); this.o += 8; return Number(v); }
+    constructor(pb) { this.pb = pb; this.o = 0; this.len = pb.length; }
+    u8() { const v = this.pb.u8(this.o); this.o += 1; return v; }
+    i8() { const v = this.pb.i8(this.o); this.o += 1; return v; }
+    u16() { const v = this.pb.u16(this.o); this.o += 2; return v; }
+    i16() { const v = this.pb.i16(this.o); this.o += 2; return v; }
+    u32() { const v = this.pb.u32(this.o); this.o += 4; return v; }
+    i32() { const v = this.pb.i32(this.o); this.o += 4; return v; }
+    f32() { const v = this.pb.f32(this.o); this.o += 4; return v; }
+    i64() { const v = this.pb.i64(this.o); this.o += 8; return v; }
     skip(n) { this.o += n; }
     str() {
       const n = this.u16();
       if (n > 8192 || this.o + n > this.len) throw new Error("Строка вне границ (len=" + n + ") — файл повреждён или несовместим");
-      const b = new Uint8Array(this.dv.buffer, this.o, n); this.o += n;
+      const b = this.pb.slice(this.o, n); this.o += n;
       return new TextDecoder("utf-8").decode(b);
     }
     need(n) { if (this.o + n > this.len) throw new Error("Чтение за границей файла"); }
   }
 
-  function parseDemo(arrayBuffer) {
-    const r = new Reader(arrayBuffer);
+  function parseDemo(pagedBuffer) {
+    const r = new Reader(pagedBuffer);
     if (r.u8()!==66||r.u8()!==68||r.u8()!==77||r.u8()!==79)
       throw new Error("Неверная сигнатура файла (не .barodemo)");
     const header = {
@@ -106,14 +204,14 @@
       } else if (type === 0x06) { // EVENT
         events.push({timeMs:r.u32(),kind:r.u8(),subjectId:r.u16(),targetId:r.u16(),x:r.i32(),y:r.i32(),amount:r.f32(),text:r.str()});
         const e=events[events.length-1];if(e.timeMs>durationMs)durationMs=e.timeMs;
-      } else if (type === 0x07) { // VOICE — record offset, keep bytes in shared buffer
+      } else if (type === 0x07) { // VOICE — record offset, keep bytes in the paged buffer
         const t=r.u32(); const sid=r.u16(); const len=r.u16();
         voiceT.push(t); voiceSid.push(sid); voiceOff.push(r.o); voiceLen.push(len);
         r.skip(len); // do not copy now — slice lazily during playback
       } else if (type === 0xFF) { const t=r.u32();if(t>durationMs)durationMs=t;break; }
       else { throw new Error("Неизвестный тип фрейма 0x"+type.toString(16)+" — формат несовместим или файл повреждён"); }
     }
-    // Build compact voice index. We keep ONE reference to the source buffer;
+    // Build compact voice index. We keep ONE reference to the paged buffer;
     // packets are sliced on demand (small, short-lived) during playback.
     const voice = {
       count: voiceT.length,
@@ -121,7 +219,7 @@
       sid: Uint16Array.from(voiceSid),
       off: Int32Array.from(voiceOff),
       len: Uint16Array.from(voiceLen),
-      buffer: arrayBuffer,
+      store: pagedBuffer,
     };
     const snaps = {
       count: snapTimes.length,
@@ -129,7 +227,7 @@
       off: (snapOffsets.length && snapOffsets[snapOffsets.length-1] < 2**31) ? Int32Array.from(snapOffsets) : Float64Array.from(snapOffsets),
       ox: Int32Array.from(snapOx),
       oy: Int32Array.from(snapOy),
-      buffer: arrayBuffer,
+      store: pagedBuffer,
     };
     return {header,hasVoice,geometry,world,snaps,chat,events,spawns,durationMs,voice};
   }
@@ -140,99 +238,32 @@
     return res;
   }
 
-  // Decode a single snapshot on demand from the shared buffer.
+  // Decode a single snapshot on demand from the paged buffer.
   // Returns a transient object (only one is alive at a time during render).
   function decodeSnapshot(snaps, idx) {
     if (idx < 0 || idx >= snaps.count) return null;
-    const dv = new DataView(snaps.buffer);
+    const s = snaps.store;
     let o = snaps.off[idx];
     const ox = snaps.ox[idx], oy = snaps.oy[idx];
     o += 1; // skip frame-type byte (0x01)
-    const timeMs = dv.getUint32(o, true); o += 4;
-    const ec = dv.getUint16(o, true); o += 2;
+    const timeMs = s.u32(o); o += 4;
+    const ec = s.u16(o); o += 2;
     const ents = new Array(ec);
     for (let i=0;i<ec;i++){
-      const id=dv.getUint16(o,true);o+=2;
-      const px=dv.getInt16(o,true);o+=2;
-      const py=dv.getInt16(o,true);o+=2;
-      const fl=dv.getUint8(o);o+=1;
-      const hb=dv.getUint8(o);o+=1;
+      const id=s.u16(o);o+=2;
+      const px=s.i16(o);o+=2;
+      const py=s.i16(o);o+=2;
+      const fl=s.u8(o);o+=1;
+      const hb=s.u8(o);o+=1;
       ents[i]={id,x:ox+px*POS_SCALE,y:oy+py*POS_SCALE,flags:fl,healthPct:hb*200/255};
     }
-    const doors=new Map();const ddc=dv.getUint16(o,true);o+=2;
-    for(let i=0;i<ddc;i++){const id=dv.getUint16(o,true);o+=2;doors.set(id,dv.getUint8(o)/255);o+=1;}
-    const water=new Map();const hwc=dv.getUint16(o,true);o+=2;
-    for(let i=0;i<hwc;i++){const id=dv.getUint16(o,true);o+=2;water.set(id,dv.getUint8(o)/255);o+=1;}
-    const subPos=new Map();const spc=dv.getUint16(o,true);o+=2;
-    for(let i=0;i<spc;i++){const sid=dv.getUint16(o,true);o+=2;const x=dv.getInt32(o,true);o+=4;const y=dv.getInt32(o,true);o+=4;subPos.set(sid,{x,y});}
+    const doors=new Map();const ddc=s.u16(o);o+=2;
+    for(let i=0;i<ddc;i++){const id=s.u16(o);o+=2;doors.set(id,s.u8(o)/255);o+=1;}
+    const water=new Map();const hwc=s.u16(o);o+=2;
+    for(let i=0;i<hwc;i++){const id=s.u16(o);o+=2;water.set(id,s.u8(o)/255);o+=1;}
+    const subPos=new Map();const spc=s.u16(o);o+=2;
+    for(let i=0;i<spc;i++){const sid=s.u16(o);o+=2;const x=s.i32(o);o+=4;const y=s.i32(o);o+=4;subPos.set(sid,{x,y});}
     return {timeMs,ents,doors,water,subPos};
-  }
-
-  /** Ошибка "не хватило памяти на буфер" (RangeError из new ArrayBuffer/
-   * Uint8Array, либо DOMException QuotaExceededError) — отдельный тип,
-   * чтобы boot() мог показать понятное сообщение вместо сырого текста
-   * движка JS, который ничего не говорит человеку без него. */
-  class OutOfMemoryError extends Error {
-    constructor(stage) { super(`Не хватило памяти браузера на ${stage}`); this.stage = stage; }
-  }
-  function isAllocationFailure(e) {
-    return e instanceof RangeError || e?.name === "QuotaExceededError" ||
-      /allocation failed|array buffer/i.test(e?.message || "");
-  }
-
-  async function loadDemoBytes(url, onProgress) {
-    onProgress && onProgress({ stage: "download", percent: 0 });
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    // Streaming download with progress
-    const total = parseInt(resp.headers.get("content-length") || "0");
-    const reader = resp.body.getReader();
-    const chunks = []; let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value); received += value.length;
-      if (onProgress) onProgress({ stage: "download", percent: total ? Math.round(received/total*100) : null, bytes: received, total });
-    }
-    let buf;
-    try {
-      buf = new Uint8Array(received);
-    } catch (e) {
-      if (isAllocationFailure(e)) throw new OutOfMemoryError("скачанный файл (" + fmtBytes(received) + ")");
-      throw e;
-    }
-    let off = 0;
-    for (const c of chunks) { buf.set(c, off); off += c.length; }
-    chunks.length = 0; // free chunk refs
-    // ZIP?
-    if (buf[0]===0x50 && buf[1]===0x4B && buf[2]===0x03 && buf[3]===0x04) {
-      onProgress && onProgress({ stage: "unpack", percent: null });
-      try {
-        const files = fflate.unzipSync(buf);
-        const name = Object.keys(files)[0];
-        const raw = files[name];
-        delete files[name];
-        // Ensure a tight ArrayBuffer (byteOffset 0) so absolute offsets are valid
-        if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
-        return raw.slice().buffer;
-      } catch (e) {
-        if (isAllocationFailure(e)) throw new OutOfMemoryError("распаковку демо-записи");
-        throw e;
-      }
-    }
-    // GZIP?
-    if (buf[0]===0x1F && buf[1]===0x8B) {
-      onProgress && onProgress({ stage: "unpack", percent: null });
-      try {
-        const raw = fflate.gunzipSync(buf);
-        if (raw.byteOffset === 0 && raw.byteLength === raw.buffer.byteLength) return raw.buffer;
-        return raw.slice().buffer;
-      } catch (e) {
-        if (isAllocationFailure(e)) throw new OutOfMemoryError("распаковку демо-записи");
-        throw e;
-      }
-    }
-    return buf.buffer;
   }
 
   function fmtBytes(n) {
@@ -240,6 +271,98 @@
     const units = ["КБ","МБ","ГБ"]; let v = n, i = -1;
     do { v /= 1024; i++; } while (v >= 1024 && i < units.length - 1);
     return v.toFixed(1) + " " + units[i];
+  }
+
+  /** Скачивание + распаковка демо-записи ПОЛНОСТЬЮ потоковые: ни сжатые
+   * байты, ни распакованные никогда не собираются в один буфер целиком —
+   * каждый пришедший из сети кусок сразу уходит в потоковый распаковщик
+   * (fflate.Unzip/Gunzip), а тот сразу дописывает результат в PagedBuffer
+   * постранично. Раньше здесь сначала копился весь скачанный файл в один
+   * Uint8Array, потом fflate.unzipSync разворачивал его в ещё один — на
+   * 100-мегабайтном .zip с сильно сжимаемыми (повторяющимися) данными раунда
+   * распакованный .barodemo мог оказаться в разы, а то и на порядок больше
+   * (позиции/снапшоты на 10 Гц — исключительно избыточные данные), и именно
+   * ЭТОТ буфер утыкался в потолок размера одного ArrayBuffer в движке —
+   * независимо от того, сколько реальной оперативной памяти свободно.
+   */
+  async function loadDemoBytes(url, onProgress) {
+    onProgress && onProgress({ stage: "download", percent: 0 });
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const total = parseInt(resp.headers.get("content-length") || "0");
+    const reader = resp.body.getReader();
+
+    const store = new PagedBuffer();
+    let received = 0;
+    let format = null; // "zip" | "gzip" | "raw" — определяется по первым байтам потока
+    let sniff = [], sniffLen = 0; // копим байты, пока не наберём достаточно для сигнатуры
+    let unzipper = null, gunzip = null;
+    let streamError = null;
+
+    function routeToDecoder(chunk, final) {
+      try {
+        if (format === "zip") unzipper.push(chunk, final);
+        else if (format === "gzip") gunzip.push(chunk, final);
+        else store.append(chunk); // "raw" — несжатый .barodemo, как есть
+      } catch (e) {
+        streamError = isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e;
+      }
+    }
+    function decide(chunk, final) {
+      if (format) { routeToDecoder(chunk, final); return; }
+      sniff.push(chunk); sniffLen += chunk.length;
+      if (sniffLen < 4 && !final) return; // сигнатура ещё не вся пришла — ждём следующий кусок
+      const head = new Uint8Array(sniffLen);
+      let o = 0; for (const c of sniff) { head.set(c, o); o += c.length; }
+      sniff = null;
+      if (head[0]===0x50 && head[1]===0x4B && head[2]===0x03 && head[3]===0x04) {
+        format = "zip";
+        onProgress && onProgress({ stage: "unpack", percent: null });
+        unzipper = new fflate.Unzip((file) => {
+          file.ondata = (err, data) => {
+            if (err) { streamError = err; return; }
+            try { store.append(data); }
+            catch (e) { streamError = isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e; }
+          };
+          file.start();
+        });
+        unzipper.register(fflate.UnzipInflate);
+        routeToDecoder(head, final);
+      } else if (head[0]===0x1F && head[1]===0x8B) {
+        format = "gzip";
+        onProgress && onProgress({ stage: "unpack", percent: null });
+        gunzip = new fflate.Gunzip((data) => {
+          try { store.append(data); }
+          catch (e) { streamError = isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e; }
+        });
+        routeToDecoder(head, final);
+      } else {
+        format = "raw";
+        routeToDecoder(head, final);
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.length;
+      if (onProgress) onProgress({ stage: "download", percent: total ? Math.round(received/total*100) : null, bytes: received, total });
+      decide(value, false);
+      if (streamError) throw streamError;
+    }
+    // Явный завершающий пустой кусок с final=true — сигнал потоковым
+    // распаковщикам "это всё, посчитайте контрольные суммы и добейте выход"
+    // (проверено: fflate.Unzip/Gunzip одинаково корректно принимают такой
+    // отдельный финальный кусок и final=true на последнем куске с данными).
+    decide(new Uint8Array(0), true);
+    if (streamError) throw streamError;
+    if (format === "zip" && !store.length && received) {
+      // Пустое имя файла в zip/распаковщик так и не вызвал onfile — либо
+      // архив пуст, либо повреждён; отдельно, чтобы не путать с "файл и
+      // правда нулевого размера" (тогда received тоже 0).
+      throw new Error("Не удалось найти файл внутри .zip — архив повреждён или пуст");
+    }
+    return store;
   }
 
   window.__BaroReplay = { parseDemo, indexAtTime, decodeSnapshot, loadDemoBytes, OutOfMemoryError, fmtBytes, C, POS_SCALE };
@@ -513,7 +636,7 @@
     return Math.max(0,Math.min(1,gain));
   }
   function sliceVoicePacket(i){
-    return new Uint8Array(demo.voice.buffer, demo.voice.off[i], demo.voice.len[i]);
+    return demo.voice.store.slice(demo.voice.off[i], demo.voice.len[i]);
   }
   function voiceIndexAtTime(t){
     const V=demo.voice;let lo=0,hi=V.count-1,res=0;
@@ -684,14 +807,25 @@
   // только там, где реально известен процент (скачивание по Content-Length);
   // для распаковки/разбора точного процента нет — полоса просто держит своё
   // текущее положение, а крутится спиннер.
+  // Скачивание и распаковка теперь идут ОДНОВРЕМЕННО (каждый пришедший из
+  // сети кусок сразу уходит в потоковый распаковщик — см. loadDemoBytes),
+  // поэтому событие прогресса скачивания продолжает приходить и ПОСЛЕ того,
+  // как этап "unpack" уже начался. Список этапов не должен из-за этого
+  // откатываться визуально назад — двигаем маркер только вперёд; текст
+  // детали (проценты) при этом обновлять можно всегда, это просто честная
+  // информация о том, что скачивание фоном ещё продолжается.
+  const STAGE_KEYS = ["download","unpack","parse","scene"];
+  let maxStageIdx = -1;
   function setStage(stage, detail){
     if(destroyed||!loadingText)return;
+    const idx = STAGE_KEYS.indexOf(stage);
+    if(idx < maxStageIdx){ if(detail)loadingText.textContent=detail; return; }
+    maxStageIdx = idx;
     if(loadingStages){
-      let reached=false;
       for(const li of loadingStages.children){
-        const key=li.dataset.stage;
-        if(key===stage){li.classList.add("active");li.classList.remove("done");reached=true;}
-        else if(!reached){li.classList.add("done");li.classList.remove("active");}
+        const liIdx = STAGE_KEYS.indexOf(li.dataset.stage);
+        if(liIdx===idx){li.classList.add("active");li.classList.remove("done");}
+        else if(liIdx<idx){li.classList.add("done");li.classList.remove("active");}
         else{li.classList.remove("active","done");}
       }
     }
@@ -715,7 +849,12 @@
       const pct=p.percent;
       const size=p.total?` (${API.fmtBytes(p.bytes)} из ${API.fmtBytes(p.total)})`:(p.bytes?` (${API.fmtBytes(p.bytes)})`:"");
       setStage("download", STAGE_LABEL.download+(pct!=null?`: ${pct}%`:"…")+size);
-      setProgressBar(pct);
+      // Скачивание и распаковка теперь идут параллельно — событие "download"
+      // продолжает приходить и после того, как начался "unpack". Полосу
+      // прогресса переключаем на % скачивания только пока это ещё текущий
+      // (или ожидаемый) этап; иначе она откатывалась бы с "неопределённой"
+      // анимации распаковки обратно на процент скачивания и мигала бы.
+      if(maxStageIdx<=STAGE_KEYS.indexOf("download"))setProgressBar(pct);
     } else if(p.stage==="unpack"){
       setStage("unpack", STAGE_LABEL.unpack+"…");
       setProgressBar(null);
@@ -726,7 +865,7 @@
   async function boot(){
     resizeCanvas();wireUI();
     try{
-      const ab=await API.loadDemoBytes(window.REPLAY_URL, onLoadProgress);
+      const store=await API.loadDemoBytes(window.REPLAY_URL, onLoadProgress);
       if(destroyed)return; // ушли со страницы, пока файл качался/распаковывался
 
       setStage("parse", STAGE_LABEL.parse+"…");
@@ -735,10 +874,10 @@
       // браузеру для отрисовки текста этапа перед тяжёлой работой:
       await new Promise(requestAnimationFrame);
       if(destroyed)return;
-      demo=API.parseDemo(ab);
-      // NOTE: ab (source buffer) is retained via demo.voice.buffer for lazy
-      // opus packet slicing. This is intentional and far cheaper than copying
-      // thousands of small packet arrays.
+      demo=API.parseDemo(store);
+      // NOTE: store (PagedBuffer) остаётся жить в demo.voice.store/demo.snaps.store
+      // для ленивой распаковки voice-пакетов и снапшотов — так дешевле, чем
+      // заранее декодировать тысячи мелких пакетов в объекты JS.
 
       setStage("scene", STAGE_LABEL.scene+"…");
       autoFit();buildPlayersPanel();
