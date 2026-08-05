@@ -39,13 +39,27 @@ settings = get_settings()
 templates = Jinja2Templates(directory="templates")
 
 
-class _NoGzipForApiKeyClients:
-    """Strips Accept-Encoding from requests authenticated via API key (the
-    Barotrauma game-server plugin, external X-API-Key/client_api_key
-    integrations) before GZipMiddleware ever sees them, so it never
-    compresses those responses. Pure-ASGI (not BaseHTTPMiddleware) to avoid
-    buffering the whole request/response — this only ever touches request
-    headers, never the body.
+class _NoGzipForRawPayloads:
+    """Strips Accept-Encoding before GZipMiddleware ever sees the request, so
+    those responses go out untouched. Pure-ASGI (not BaseHTTPMiddleware) to
+    avoid buffering the whole request/response — this only ever touches
+    request headers, never the body.
+
+    Two cases:
+
+    1. Requests authenticated via API key (the Barotrauma game-server plugin,
+       external X-API-Key/client_api_key integrations) — those clients want
+       the raw bytes.
+
+    2. File-download endpoints (`.../download`). These serve payloads that are
+       ALREADY compressed (replay .barodemo.zip, gzipped .sub files), so
+       gzipping them again gains nothing while burning real CPU — at
+       compresslevel=9 on a 100+ МБ replay that is very much not free.
+       Worse, it actively broke the replay player's progress UI: Starlette's
+       GZipMiddleware `del headers["Content-Length"]` for STREAMING responses
+       (see its IdentityResponder.send_with_compression), and FileResponse is
+       streaming. The browser then reports no total size, so the player could
+       not compute a download percentage and showed a wrong/absent size.
 
     Must be registered via app.add_middleware(...) AFTER GZipMiddleware in
     create_app() — Starlette wraps middleware so the last one added is
@@ -60,12 +74,15 @@ class _NoGzipForApiKeyClients:
             await self.app(scope, receive, send)
             return
 
-        is_api_key_request = any(k == b"x-api-key" for k, _v in scope.get("headers") or [])
-        if not is_api_key_request:
-            query_string = scope.get("query_string", b"")
-            is_api_key_request = b"api_key=" in query_string
+        skip_gzip = any(k == b"x-api-key" for k, _v in scope.get("headers") or [])
+        if not skip_gzip:
+            skip_gzip = b"api_key=" in scope.get("query_string", b"")
+        if not skip_gzip:
+            # Только точное окончание пути: не ловим случайные совпадения
+            # вроде "/downloads" или "?x=/download".
+            skip_gzip = scope.get("path", "").rstrip("/").endswith("/download")
 
-        if is_api_key_request:
+        if skip_gzip:
             scope = {
                 **scope,
                 "headers": [
@@ -136,7 +153,7 @@ def create_app() -> FastAPI:
     # the way in — see Starlette's outermost-added-last ordering) fixes the
     # game server without touching admin-panel compression at all.
     app.add_middleware(GZipMiddleware, minimum_size=500)
-    app.add_middleware(_NoGzipForApiKeyClients)
+    app.add_middleware(_NoGzipForRawPayloads)
 
     # Exception handlers
     from starlette.responses import JSONResponse as _JSONResponse

@@ -337,7 +337,6 @@
       sniff = null;
       if (head[0]===0x50 && head[1]===0x4B && head[2]===0x03 && head[3]===0x04) {
         format = "zip";
-        onProgress && onProgress({ stage: "unpack", percent: null });
         unzipper = new fflate.Unzip((file) => {
           file.ondata = (err, data) => {
             if (err) { streamError = err; return; }
@@ -350,7 +349,6 @@
         routeToDecoder(head, final);
       } else if (head[0]===0x1F && head[1]===0x8B) {
         format = "gzip";
-        onProgress && onProgress({ stage: "unpack", percent: null });
         gunzip = new fflate.Gunzip((data) => {
           try { store.append(data); }
           catch (e) { streamError = e; }
@@ -370,6 +368,15 @@
       decide(value, false);
       if (streamError) throw streamError;
     }
+    // Этап "распаковка" объявляется ЗДЕСЬ, а не в момент распознавания
+    // сигнатуры. Распаковка технически идёт параллельно скачиванию (каждый
+    // кусок сразу уходит в распаковщик), но сигнатура распознаётся уже по
+    // ПЕРВЫМ 4 БАЙТАМ — объявляя этап там, интерфейс отмечал скачивание
+    // завершённым в самом его начале и весь остаток показывал "Распаковка"
+    // с бегущей полосой, одновременно печатая "Скачивание: 12%" в строке
+    // состояния. Здесь же скачивание действительно закончено, а распаковке
+    // осталось добить хвост — обе надписи говорят правду.
+    if (onProgress) onProgress({ stage: "unpack", percent: null });
     // Явный завершающий пустой кусок с final=true — сигнал потоковым
     // распаковщикам "это всё, посчитайте контрольные суммы и добейте выход"
     // (проверено: fflate.Unzip/Gunzip одинаково корректно принимают такой
@@ -869,12 +876,7 @@
       const pct=p.percent;
       const size=p.total?` (${API.fmtBytes(p.bytes)} из ${API.fmtBytes(p.total)})`:(p.bytes?` (${API.fmtBytes(p.bytes)})`:"");
       setStage("download", STAGE_LABEL.download+(pct!=null?`: ${pct}%`:"…")+size);
-      // Скачивание и распаковка теперь идут параллельно — событие "download"
-      // продолжает приходить и после того, как начался "unpack". Полосу
-      // прогресса переключаем на % скачивания только пока это ещё текущий
-      // (или ожидаемый) этап; иначе она откатывалась бы с "неопределённой"
-      // анимации распаковки обратно на процент скачивания и мигала бы.
-      if(maxStageIdx<=STAGE_KEYS.indexOf("download"))setProgressBar(pct);
+      setProgressBar(pct);
     } else if(p.stage==="unpack"){
       setStage("unpack", STAGE_LABEL.unpack+"…");
       setProgressBar(null);
