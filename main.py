@@ -297,12 +297,35 @@ def create_app() -> FastAPI:
     from starlette.responses import Response as _Response
 
     class CachedStaticFiles(_StaticFiles):
-        """StaticFiles with Cache-Control headers for browser caching."""
+        """StaticFiles with Cache-Control headers for browser caching.
+
+        static/js/ — исключение: там лежат hand-written скрипты вроде
+        replay_player.js, подключаемые по НЕВЕРСИОНИРОВАННОМУ <script src>
+        (frontend/src/pages/replays/player.tsx), и меняются они прямо в ходе
+        отладки. max-age=86400 + stale-while-revalidate=604800 (как у
+        остального /static — картинок, иконок предметов, которые почти
+        никогда не меняются) означает: браузер до СУТОК не пойдёт к серверу
+        вообще, а после — ещё до НЕДЕЛИ будет отдавать заведомо устаревшую
+        версию, попутно её фоново обновляя. На практике это уже воспроизвели:
+        `update` выкатывал фикс за фиксом, а у пользователя стабильно
+        исполнялся один и тот же кэшированный файл — новый код на диске был,
+        но браузер к нему не обращался.
+        no-cache (несмотря на название) НЕ отключает кэш — он обязывает
+        браузер каждый раз слать условный запрос (If-None-Match/
+        If-Modified-Since) и использовать кэш ТОЛЬКО если сервер подтвердит
+        "не изменилось" (304, без пересылки тела). Свежий код подхватывается
+        сразу после следующего запроса, а не после того как истечёт сутки/
+        неделя кэша.
+        """
         async def get_response(self, path, scope):
             response = await super().get_response(path, scope)
-            # Cache static assets for 1 day in browser, 7 days with revalidation
             if response.status_code == 200:
-                response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
+                normalized = str(path).replace("\\", "/")
+                if normalized == "js" or normalized.startswith("js/"):
+                    response.headers["Cache-Control"] = "no-cache"
+                else:
+                    # Cache static assets for 1 day in browser, 7 days with revalidation
+                    response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
             return response
 
     app.mount("/static", CachedStaticFiles(directory="static"), name="static")
