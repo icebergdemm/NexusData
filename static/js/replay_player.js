@@ -217,7 +217,15 @@
       count: voiceT.length,
       t: Int32Array.from(voiceT),
       sid: Uint16Array.from(voiceSid),
-      off: Int32Array.from(voiceOff),
+      // Файл теперь может быть сколь угодно большим (PagedBuffer больше не
+      // упирается в потолок одного ArrayBuffer — см. выше), а voice-пакеты
+      // разбросаны по всему файлу и попадаются позже снапшотов. Int32Array
+      // хранит смещения знаковыми 32-битными числами — на файле больше
+      // 2^31 байт (2 ГБ) это молча переполнилось бы и испортило смещение
+      // (не бросив ошибку сразу, а тихо подсунув чтение из другого места
+      // файла при воспроизведении голоса). Тот же переход на Float64Array
+      // при больших смещениях, что уже был у снапшотов ниже.
+      off: (voiceOff.length && voiceOff[voiceOff.length-1] < 2**31) ? Int32Array.from(voiceOff) : Float64Array.from(voiceOff),
       len: Uint16Array.from(voiceLen),
       store: pagedBuffer,
     };
@@ -299,13 +307,25 @@
     let unzipper = null, gunzip = null;
     let streamError = null;
 
+    // ВАЖНО: здесь и ниже ошибка НЕ переклассифицируется в OutOfMemoryError
+    // по одному лишь instanceof RangeError. Такая переклассификация уже
+    // однажды маскировала настоящую причину: любой RangeError откуда угодно
+    // из недр push()/inflate (в т.ч. реальный баг, не имеющий отношения к
+    // памяти) подписывался как "не хватило памяти браузера", и по такому
+    // сообщению нельзя было понять, что чинить. OutOfMemoryError бросает
+    // ТОЛЬКО PagedBuffer._newPage() — единственное место, где ошибка
+    // действительно означает именно нехватку памяти на аллокацию одной
+    // 32-мегабайтной страницы; если она произошла, то и долетит сюда уже
+    // готовым экземпляром OutOfMemoryError естественным путём — переносить
+    // её вручную не нужно. Любая другая ошибка сохраняет свой настоящий
+    // тип/сообщение/стек.
     function routeToDecoder(chunk, final) {
       try {
         if (format === "zip") unzipper.push(chunk, final);
         else if (format === "gzip") gunzip.push(chunk, final);
         else store.append(chunk); // "raw" — несжатый .barodemo, как есть
       } catch (e) {
-        streamError = isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e;
+        streamError = e;
       }
     }
     function decide(chunk, final) {
@@ -322,7 +342,7 @@
           file.ondata = (err, data) => {
             if (err) { streamError = err; return; }
             try { store.append(data); }
-            catch (e) { streamError = isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e; }
+            catch (e) { streamError = e; }
           };
           file.start();
         });
@@ -333,7 +353,7 @@
         onProgress && onProgress({ stage: "unpack", percent: null });
         gunzip = new fflate.Gunzip((data) => {
           try { store.append(data); }
-          catch (e) { streamError = isAllocationFailure(e) ? new OutOfMemoryError("распаковку демо-записи") : e; }
+          catch (e) { streamError = e; }
         });
         routeToDecoder(head, final);
       } else {
