@@ -48,8 +48,18 @@ export function ReplayPlayerPage() {
       })
     }
 
+    // ?v=<отпечаток сборки> — обязателен. Файл подключается напрямую тегом
+    // <script src>, минуя бандлер, поэтому контентного хэша в имени у него
+    // нет, и для браузера URL всегда один и тот же. Кэш /static раньше
+    // держал копию сутками (Cache-Control: max-age=86400), из-за чего
+    // выкаченные на сервер правки этого скрипта по несколько раз подряд
+    // просто не доезжали до пользователя — исполнялась старая копия, а
+    // ошибки в консоли указывали на строки, которых в новом файле уже нет.
+    // Сервер теперь отдаёт static/js/* с no-cache (main.py), но это не
+    // отменяет УЖЕ закэшированную копию: только смена URL заставляет
+    // браузер сходить за файлом заново.
     loadScript("https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js")
-      .then(() => loadScript("/static/js/replay_player.js"))
+      .then(() => loadScript(`/static/js/replay_player.js?v=${__BUILD_ID__}`))
       .then(() => { if (!cancelled) setScriptsReady(true) })
       .catch((e) => console.error(e))
 
