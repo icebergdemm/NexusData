@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
+import { RatingConfigSection } from "./config-section"
 
 const ROLE_LABELS: Record<string, string> = {
   captain: "Капитан", mechanic: "Механик", medic: "Врач", security: "СБ", engineer: "Инженер",
@@ -32,6 +33,7 @@ interface RatingsResponse {
   search_result: { player_name: string; player_steamid: string; ratings: Record<string, { rating: number; points: number }> } | null
   snapshots: Snapshot[]
   can_edit: boolean
+  is_superuser: boolean
 }
 
 export function RatingsPage() {
@@ -101,6 +103,8 @@ export function RatingsPage() {
         />
         <Button variant="secondary" onClick={() => setSearch(searchInput.trim())}>Найти</Button>
       </div>
+
+      {data?.is_superuser && <RatingConfigSection />}
 
       {data?.search_result && (
         <Card className="mb-4">

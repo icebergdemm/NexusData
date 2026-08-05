@@ -398,6 +398,7 @@ async def api_ratings_page(
         "rating_params": {"K": K, "S": S, "decay_threshold_days": DECAY_THRESHOLD_DAYS, "decay_rate": DECAY_RATE},
         "snapshots": get_snapshots_list(),
         "can_edit": check_permission(current_admin, "ratings", "edit"),
+        "is_superuser": bool(current_admin.is_superuser),
     }
 
 
@@ -549,6 +550,129 @@ async def api_rating_snapshot_restore(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "rating_snapshot_restore", {"filename": safe_name, "restored_records": restored})
     return {"status": "ok", "restored": restored, "title": snapshot.get("meta", {}).get("title", safe_name)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SUPERUSER-ONLY: formula config + manual rating adjustment (React SPA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def require_superuser(admin: AdminUser):
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Доступно только суперпользователям")
+
+
+@router.get("/api/v1/admin/ratings/config")
+async def api_rating_config_get(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Full rating-formula configuration (weights, penalties, decay/erosion
+    params) — superuser-only, shown on the Рейтинг page's config panel."""
+    require_superuser(current_admin)
+    import rating_constants as rc
+    return {
+        "config": rc.get_current_config(),
+        "defaults": rc.DEFAULT_CONFIG,
+        "roles": rc.ROLES,
+    }
+
+
+@router.put("/api/v1/admin/ratings/config")
+async def api_rating_config_save(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Persist and immediately apply an edited rating-formula config."""
+    require_superuser(current_admin)
+    import rating_constants as rc
+
+    body = await request.json()
+    try:
+        effective = rc.save_overrides_to_db(db, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "rating_config_save", {"config": effective})
+    return {"config": effective}
+
+
+@router.post("/api/v1/admin/ratings/config/reset")
+async def api_rating_config_reset(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Drop the saved override and restore the shipped defaults."""
+    require_superuser(current_admin)
+    import rating_constants as rc
+
+    effective = rc.reset_overrides_to_defaults(db)
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "rating_config_reset", {})
+    return {"config": effective}
+
+
+@router.post("/api/v1/admin/ratings/adjust")
+async def api_rating_adjust(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Manually add to or subtract from a player's rating for one role (or
+    every role at once). Superuser-only — see the Рейтинг page's config
+    panel. Mirrors /adminold/ratings/adjust's logic but as a JSON endpoint
+    and gated on is_superuser rather than the ratings:edit permission,
+    since this bypasses the normal points-from-actions computation."""
+    require_superuser(current_admin)
+    from rating_constants import ROLES
+    from rating_engine import compute_rating, get_or_create_rating, insert_history
+
+    body = await request.json()
+    steam_id = str(body.get("steam_id") or "").strip()
+    role = body.get("role") or ""
+    points_delta = body.get("points_delta")
+    reason = str(body.get("reason") or "").strip()
+
+    if not steam_id:
+        raise HTTPException(status_code=400, detail="Не указан steam_id")
+    try:
+        points_delta = float(points_delta)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="points_delta должен быть числом")
+    if points_delta == 0:
+        raise HTTPException(status_code=400, detail="points_delta не может быть 0")
+
+    roles_to_adjust = ROLES if role == "all" else [role]
+    if any(r not in ROLES for r in roles_to_adjust):
+        raise HTTPException(status_code=400, detail="Некорректная роль")
+
+    results = []
+    for r in roles_to_adjust:
+        record = get_or_create_rating(db, steam_id, r)
+        old_points = record.cumulative_points
+        old_rating = record.current_rating
+
+        record.cumulative_points = max(0.0, record.cumulative_points + points_delta)
+        record.current_rating = compute_rating(record.cumulative_points)
+
+        insert_history(db, steam_id, r, "admin_adjust", points_delta,
+                        old_points, record.cumulative_points,
+                        old_rating, record.current_rating,
+                        None, f"adjust_by_{current_admin.discord_username}: {reason}")
+        results.append({
+            "role": r,
+            "cumulative_points": record.cumulative_points,
+            "current_rating": record.current_rating,
+        })
+
+    db.commit()
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "rating_adjust", {
+        "steam_id": steam_id, "role": role, "delta": points_delta, "reason": reason,
+    })
+    return {"status": "ok", "steam_id": steam_id, "results": results}
 
 
 @router.post("/api/v1/admin/ratings/recalculate-all")

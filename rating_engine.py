@@ -27,10 +27,15 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 from models import PlayerRating, PlayerRoleAction, PlayerRoleStat, PlayerData
-from rating_constants import (
-    WEIGHT_MATRIX, ROLES, compute_rating,
-    DECAY_THRESHOLD_DAYS, DAILY_EROSION, INACTIVE_EXTRA_EROSION, DECAY_FACTOR_FLOOR,
-)
+import rating_constants as rc
+from rating_constants import compute_rating
+
+# NOTE: WEIGHT_MATRIX/ROLES/DECAY_* etc. are deliberately read as `rc.NAME`
+# at each point of use below, not imported by name up here — a superuser can
+# edit them at runtime (rating_constants.save_overrides_to_db), which mutates
+# rating_constants' module globals in place. Binding `WEIGHT_MATRIX = ...`
+# at import time would freeze this module onto the values that were current
+# when it was first imported and silently ignore later edits.
 
 # Re-export compute_rating so `from rating_engine import compute_rating` works
 __all__ = ["compute_rating", "calculate_all_ratings", "sync_ratings_to_db",
@@ -70,9 +75,9 @@ def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
             if not steam_id:
                 continue
             role = action.role
-            if role not in WEIGHT_MATRIX:
+            if role not in rc.WEIGHT_MATRIX:
                 continue
-            weight = WEIGHT_MATRIX[role].get(action.action_type, 0.0)
+            weight = rc.WEIGHT_MATRIX[role].get(action.action_type, 0.0)
             if weight:
                 points[steam_id][role] += float(action.value or 1) * weight
         last_id = batch[-1].id
@@ -82,7 +87,7 @@ def calculate_all_ratings(db: Session) -> Dict[str, Dict[str, dict]]:
     rounds_by_player_role: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for rs in db.query(PlayerRoleStat).all():
         steam_id = pid_to_steam.get(rs.player_id)
-        if steam_id and rs.role in ROLES:
+        if steam_id and rs.role in rc.ROLES:
             rounds_by_player_role[steam_id][rs.role] = int(rs.rounds_played or 0)
 
     result: Dict[str, Dict[str, dict]] = {}
@@ -167,7 +172,7 @@ def apply_daily_erosion(db: Session):
     - recovery toward 1.0 for recently active players
     """
     now = datetime.utcnow()
-    inactive_threshold = now - timedelta(days=DECAY_THRESHOLD_DAYS)
+    inactive_threshold = now - timedelta(days=rc.DECAY_THRESHOLD_DAYS)
 
     records = db.query(PlayerRating).filter(PlayerRating.current_rating > 0).all()
     changed = 0
@@ -183,13 +188,13 @@ def apply_daily_erosion(db: Session):
 
         for _ in range(days_elapsed):
             if is_inactive:
-                factor *= (1.0 - DAILY_EROSION - INACTIVE_EXTRA_EROSION)
+                factor *= (1.0 - rc.DAILY_EROSION - rc.INACTIVE_EXTRA_EROSION)
             else:
                 # Active players: tiny baseline erosion, but slowly recover toward 1.0
-                factor *= (1.0 - DAILY_EROSION)
+                factor *= (1.0 - rc.DAILY_EROSION)
                 factor = min(1.0, factor + 0.005)  # small daily recovery for active
 
-        factor = max(DECAY_FACTOR_FLOOR, min(1.0, factor))
+        factor = max(rc.DECAY_FACTOR_FLOOR, min(1.0, factor))
 
         # Recompute final rating from raw (compute_rating on stored points) * factor
         raw_rating = compute_rating(record.cumulative_points)
@@ -223,7 +228,7 @@ def recalculate_all():
 def get_player_ratings(db: Session, steam_id: str) -> Dict[str, dict]:
     """Get all ratings for a player from DB."""
     result = {}
-    for role in ROLES:
+    for role in rc.ROLES:
         record = db.query(PlayerRating).filter(
             PlayerRating.steam_id == steam_id,
             PlayerRating.role == role,

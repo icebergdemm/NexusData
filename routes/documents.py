@@ -142,15 +142,15 @@ def require_document_write_access(db: Session, admin: AdminUser, department_id: 
 def get_document_access(db: Session, document: Document, admin: AdminUser) -> Optional[str]:
     """Highest access level the admin has on this document, or None.
 
-    Regular documentation pages have NO automatic department-wide baseline:
-    a document with nothing explicitly configured on it (or on its folder)
-    is private to its creator — the department's "documentation" module
-    view/edit permission only gates creating pages and browsing the
-    directory/listing endpoints (require_document_write_access), never an
-    individual page's content. "Приказы"/"Новости" are the deliberate
-    exception — those two modules keep the department-wide baseline below
-    since they only make sense as broadcasts everyone with module view
-    access can read, same as before this policy split.
+    Every department module ("documentation"/"orders"/"news") carries a
+    department-wide baseline: holding that module's "view"/"edit" access
+    level (e.g. "Сотрудники просмотр") grants that level on every document
+    in the department, same as an explicit share would, so department
+    members aren't stuck reading only what happens to have been shared with
+    them individually — see the module-baseline block below. A document can
+    still be shared more narrowly/broadly on top of that baseline via
+    DocumentPermission rows (the loop above this comment), which only ever
+    add access, never take it away.
     """
     if admin.is_superuser or document.owner_admin_id == admin.id:
         return "owner"
@@ -205,10 +205,15 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
         if matches and (best is None or ACCESS_RANK[perm.level] > ACCESS_RANK[best]):
             best = perm.level
 
-    if dept and (document.is_news or document.is_order):
+    if dept:
         from security import check_department_permission
 
-        module = "news" if document.is_news else "orders"
+        if document.is_news:
+            module = "news"
+        elif document.is_order:
+            module = "orders"
+        else:
+            module = "documentation"
         if document.is_news:
             # News write access is head/superuser-only regardless of what
             # an access level's own "news":"edit" grant says (item 6) —
@@ -797,10 +802,13 @@ async def api_list_department_documents(
         q = q.filter(Document.is_order.is_(False), Document.is_news.is_(False))
     q = q.filter(Document.department_folder_id == folder_id) if folder_id is not None else q.filter(Document.department_folder_id.is_(None))
     docs = q.order_by(Document.title).all()
-    # Module "view" access (checked above) only unlocks the directory itself
-    # — an unshared documentation page is still private to its creator, so
-    # each row needs its own get_document_access check (orders/news keep
-    # their department-wide baseline and so pass this for everyone regardless).
+    # Module "view" access (checked above) already implies view on every
+    # document in this module (get_document_access's department-wide
+    # baseline), so this per-row check normally passes for everyone who got
+    # past the require_document_write_access gate above. Kept as
+    # defense-in-depth (e.g. a document sharing rule that narrows visibility
+    # some other way in the future) rather than assuming that gate alone is
+    # always sufficient.
     docs = [d for d in docs if get_document_access(db, d, current_admin) is not None]
     starred_ids = {
         row[0] for row in db.query(DocumentStar.document_id).filter(DocumentStar.admin_id == current_admin.id).all()

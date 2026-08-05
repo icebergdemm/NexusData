@@ -43,6 +43,22 @@ def main():
         logger.exception("Database initialization failed at startup — continuing in degraded mode")
         runtime_control.set_db_healthy(False)
 
+    # Same rating-config override load as main.py's startup hook (see there
+    # for why) — this process is the one that actually runs rating
+    # recalculation in multi-worker mode, so it must not run on stale
+    # in-memory defaults after a superuser edit + restart.
+    try:
+        from database import SessionLocal
+        import rating_constants
+        _db = SessionLocal()
+        try:
+            if rating_constants.load_overrides_from_db(_db):
+                logger.info("Rating config: applied saved override from AppSetting")
+        finally:
+            _db.close()
+    except Exception:
+        logger.exception("Failed to load rating config override at startup — using shipped defaults")
+
     from workers import start_playtime_worker, watch_runtime_state
     start_playtime_worker()  # starts the full task_scheduler with all periodic tasks
     from services_logs import start_log_worker

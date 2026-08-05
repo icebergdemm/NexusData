@@ -198,24 +198,31 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
     if page == "departments" and action == "view":
         return True
 
-    # Individual overrides
+    # Individual overrides. Note: an explicit False here must NOT short-circuit
+    # the function — it only means "Пользователи ND" isn't the source granting
+    # this action. The hybrid (department) tier below is additive and must
+    # still get a chance to grant it; only an explicit True can return early.
     ind = admin.individual_permissions or {}
     ind_pages = ind.get("pages", {})
-    if page in ind_pages and action in ind_pages[page]:
-        return bool(ind_pages[page][action])
+    if page in ind_pages and action in ind_pages[page] and bool(ind_pages[page][action]):
+        return True
 
-    # Group permissions
+    # Group permissions — same rule: only a granting True short-circuits.
     grp = getattr(admin, "privilege_group", None)
     if grp and grp.permissions:
         raw = grp.permissions
         # Support both {"pages": {page: {action: bool}}} and flat {page: {action: bool}}
         grp_pages = raw.get("pages", raw)
-        if page in grp_pages and action in grp_pages[page]:
-            return bool(grp_pages[page][action])
+        if page in grp_pages and action in grp_pages[page] and bool(grp_pages[page][action]):
+            return True
 
     # Hybrid tier: additive site-wide grants from a department access level,
     # settable only by a superuser (see routes/departments.py access-level
-    # PATCH gate). Never removes access, only adds.
+    # PATCH gate). Never removes access, only adds — so it's checked even when
+    # individual/group permissions above exist but don't grant this action,
+    # instead of being reached only when neither tier mentions the page/action
+    # at all (that used to let "Пользователи ND" silently override/erase
+    # department-granted access instead of summing with it).
     hybrid = getattr(admin, "_department_site_permissions", None)
     if hybrid:
         hybrid_pages = hybrid.get("pages", {})

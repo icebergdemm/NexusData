@@ -400,6 +400,23 @@ def create_app() -> FastAPI:
             runtime_control.set_db_healthy(False)
         app.state.start_time = datetime.utcnow()
 
+        # Apply any superuser-saved rating formula override (see the Рейтинг
+        # page's config panel) before this process computes/serves any
+        # rating — every worker process needs this, not just the one running
+        # the scheduler, since compute_rating() is called inline wherever a
+        # rating is displayed.
+        try:
+            from database import SessionLocal
+            import rating_constants
+            _db = SessionLocal()
+            try:
+                if rating_constants.load_overrides_from_db(_db):
+                    logger.info("Rating config: applied saved override from AppSetting")
+            finally:
+                _db.close()
+        except Exception:
+            logger.exception("Failed to load rating config override at startup — using shipped defaults")
+
         # WORKER_ROLE=web marks one of several parallel uvicorn worker
         # PROCESSES (see api_server.py's multi-worker mode) — every process
         # spawned by `uvicorn --workers N` runs this exact same startup hook,
