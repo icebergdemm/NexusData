@@ -1791,10 +1791,12 @@ async def on_message(message: discord.Message):
         # First find ticket_id by channel
         open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
         ticket_id = None
+        matched_ticket = None
         if open_tickets:
             for t in open_tickets:
                 if t.get("discord_channel_id") == channel_id:
                     ticket_id = t["id"]
+                    matched_ticket = t
                     break
 
         if ticket_id:
@@ -1811,6 +1813,29 @@ async def on_message(message: discord.Message):
             )
             # Update status embed
             await refresh_ticket_status()
+
+            # Отмена отложенного /close сообщением от сотрудника (item 6):
+            # раньше единственный способ отменить закрытие — набрать /close
+            # ЕЩЁ РАЗ (toggle), что неочевидно и требует помнить точную
+            # команду. Теперь достаточно ответить в тикете, будучи держателем
+            # одной из ping_roles ЭТОГО типа обращения — тех же ролей, что
+            # были потегованы при создании тикета (см. _create_ticket_channel).
+            # Сообщения от автора обращения или посторонних закрытие не отменяют.
+            if channel_id in _pending_close and not message.author.bot:
+                ticket_type = (matched_ticket or {}).get("type")
+                config = await asyncio.to_thread(bot_data.get_tickets_config)
+                type_ping_roles = ((config or {}).get("types", {}).get(ticket_type, {}) or {}).get("ping_roles", [])
+                member_role_ids = {str(r.id) for r in getattr(message.author, "roles", [])}
+                if type_ping_roles and any(rid in member_role_ids for rid in type_ping_roles):
+                    task = _pending_close.pop(channel_id, None)
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await message.channel.send(
+                                f"⏸️ Закрытие тикета автоматически отменено — {message.author.mention} ответил(а) в обращении."
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to announce auto-cancel close in {channel_id}: {e}")
 
     # Department chat channels (item 6): mirror messages from any linked
     # channel into NexusData. The bot's own sent messages (site → Discord,
