@@ -253,10 +253,19 @@ async def replay_player_page(request: Request, replay_id: int, db: Session = Dep
     if not replay:
         raise HTTPException(status_code=404, detail="Реплей не найден")
 
+    # recorded_at — наивный UTC (services_replays.py парсит его из заголовка
+    # самой демки через utcfromtimestamp) — .timestamp() трактовал бы его как
+    # локальное время ЭТОГО процесса, что на сервере с не-UTC TZ сдвинуло бы
+    # часы в плеере. epoch считаем вручную, без допущений о локальной зоне.
+    recorded_at_ms = None
+    if replay.recorded_at:
+        recorded_at_ms = int((replay.recorded_at - datetime(1970, 1, 1)).total_seconds() * 1000)
+
     return templates.TemplateResponse("admin/replay_player.html", {
         "request": request,
         "admin": admin,
         "replay": replay,
+        "recorded_at_ms": recorded_at_ms,
     })
 
 
@@ -845,10 +854,26 @@ async def api_replay_logs(
     end_event = _round_for_replay(db, replay)
     start_event = end_event.paired_start if end_event else None
 
-    started_at = (start_event.created_at if start_event else None) or replay.recorded_at
-    ended_at = (end_event.created_at if end_event else None)
-    if started_at and not ended_at:
-        ended_at = started_at + timedelta(milliseconds=replay.duration_ms or 0) + timedelta(minutes=5)
+    # ВАЖНО: якорем берём именно replay.recorded_at (время из заголовка самого
+    # демо-файла — см. services_replays.py), а не start_event.created_at (когда
+    # ND-сервер ПОЛУЧИЛ событие о старте раунда). Строки лога тоже парсятся из
+    # временных меток самого игрового сервера (services_logs.py: TIMESTAMP_RE),
+    # т.е. recorded_at и timestamp лога — одни и те же часы. created_at
+    # RoundEvent — часы ND-сервера, которые расходятся с игровым на секунды-
+    # минуты (сетевая задержка, отличие в системном времени) — раньше именно
+    # это расхождение и сдвигало подсветку лога относительно видео.
+    # start_event.created_at остаётся страховкой на случай отсутствующего
+    # recorded_at (не распарсился заголовок демки — редко, но бывает).
+    started_at = replay.recorded_at or (start_event.created_at if start_event else None)
+    if started_at and replay.duration_ms:
+        # Длительность — это то же самое "прошло N миллисекунд с начала",
+        # независимо от того, чьи это часы, поэтому безопасно складывать с
+        # recorded_at даже если абсолютное время последнего сбито.
+        ended_at = started_at + timedelta(milliseconds=replay.duration_ms) + timedelta(minutes=2)
+    elif started_at:
+        ended_at = started_at + timedelta(minutes=5)
+    else:
+        ended_at = None
 
     if not started_at or not ended_at:
         return JSONResponse({
