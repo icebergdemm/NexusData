@@ -120,6 +120,7 @@ class PlayerDataOut(PlayerDataBase):
     achievements_data: Optional[Dict[str, Any]] = Field(default=None, description="Raw achievements/rewards JSON from DB")
     steam_avatar_url: Optional[str] = None
     forced_display_name: Optional[str] = Field(default=None, description="Admin-assigned display name — takes precedence over player_last_time_name wherever the player's name is shown")
+    discord_id: Optional[str] = Field(default=None, description="Linked Discord user ID, if known")
     profile_hash: Optional[str] = Field(default=None, description="Change-detection hash for the game-server cache sync API (see cache_versioning.py) — unchanged hash means the plugin's local cache is still fresh")
 
     @computed_field

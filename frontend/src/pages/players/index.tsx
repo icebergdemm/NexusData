@@ -170,7 +170,7 @@ export function PlayersListPage() {
             onKeyDown={(e) => e.key === "Enter" && submitSearch()}
             onFocus={() => setSuggestOpen(true)}
             onBlur={() => { blurTimeout.current = setTimeout(() => setSuggestOpen(false), 150) }}
-            placeholder="Поиск по нику, SteamID, IP..."
+            placeholder="Поиск по нику, SteamID, Discord ID, IP..."
           />
           {suggestOpen && suggestions.length > 0 && (
             <div className="absolute top-full left-0 z-20 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-md">
@@ -258,6 +258,7 @@ export function PlayersListPage() {
                 <TableRow>
                   <TableHead>Игрок</TableHead>
                   <TableHead>SteamID</TableHead>
+                  <TableHead>Discord ID</TableHead>
                   <TableHead>Ранг</TableHead>
                   <TableHead>Набор</TableHead>
                   <TableHead>Наиграно</TableHead>
@@ -296,6 +297,7 @@ export function PlayersListPage() {
                         )}
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{p.player_steamid}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{p.discord_id ?? "-"}</TableCell>
                       <TableCell>
                         <Badge
                           variant="secondary"
@@ -317,7 +319,7 @@ export function PlayersListPage() {
                 })}
                 {!data?.players.length && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                       Ничего не найдено
                     </TableCell>
                   </TableRow>

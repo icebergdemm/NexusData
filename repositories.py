@@ -126,11 +126,12 @@ class PlayerRepository(BaseRepository):
         
         query_lower = f"%{query.lower()}%"
         
-        # Search by current nickname, steamid
+        # Search by current nickname, steamid, Discord ID
         direct_search = self.db.query(PlayerData).filter(
             or_(
                 PlayerData.player_last_time_name.ilike(query_lower),
                 PlayerData.player_steamid.ilike(query_lower),
+                PlayerData.discord_id.ilike(query_lower),
             )
         ).limit(limit).all()
         

@@ -3,6 +3,7 @@ export interface PlayerRow {
   player_last_time_name: string
   forced_display_name?: string | null
   player_steamid: string
+  discord_id?: string | null
   rank_id: number
   kit_level: number
   play_time: number

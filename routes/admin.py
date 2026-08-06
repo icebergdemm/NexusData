@@ -1595,6 +1595,7 @@ async def api_players_list(
             q = q.filter(or_(
                 PlayerData.player_last_time_name.ilike(f"%{search}%"),
                 PlayerData.player_steamid.ilike(f"%{search}%"),
+                PlayerData.discord_id.ilike(f"%{search}%"),
             ))
         from repositories import PlayerRepository
         sort_spec = PlayerRepository.SORT_COLUMNS.get(sort or "")
@@ -1869,6 +1870,7 @@ async def api_player_detail(
         "can_manage_traps": check_permission(current_admin, "players", "manage_traps"),
         "can_manage_achievements": check_permission(current_admin, "players", "manage_achievements"),
         "can_manage_rewards": check_permission(current_admin, "players", "manage_rewards"),
+        "can_set_forced_name": check_permission(current_admin, "players", "set_forced_name"),
         "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),
         "punishment_types": PUNISHMENT_TYPES,
         "punishment_type_labels": PUNISHMENT_TYPE_LABELS,
@@ -1971,6 +1973,39 @@ async def api_link_player_admin(
         "player_id": player_id, "admin_id": player.linked_admin_id, "forced_display_name": player.forced_display_name,
     })
     return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/players/{player_id}/forced-name")
+async def api_set_player_forced_name(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Установка принудительного отображаемого имени БЕЗ привязки к аккаунту
+    ND — раньше это было возможно только суперпользователю через /link-admin
+    заодно с привязкой аккаунта (которая выдаёт сайтовые права и поэтому
+    справедливо остаётся только для суперов). Здесь — отдельное действие
+    players:set_forced_name, ничего кроме forced_display_name не трогает."""
+    if not check_permission(current_admin, "players", "set_forced_name"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await request.json()
+    forced_name = (body.get("forced_display_name") or "").strip()
+    if len(forced_name) > 255:
+        raise HTTPException(status_code=400, detail="Слишком длинное имя")
+    player.forced_display_name = forced_name or None
+    db.commit()
+
+    log_admin_action(db, current_admin.id, "player_set_forced_name", {
+        "player_id": player_id, "forced_display_name": player.forced_display_name,
+    })
+    return {"status": "ok", "forced_display_name": player.forced_display_name}
 
 
 @router.post("/api/v1/admin/players/{player_id}/rank-kit")
