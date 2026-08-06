@@ -33,6 +33,12 @@ export function ReplayPlayerPage() {
     if (!replayId || !data) return
     ;(window as unknown as { REPLAY_URL: string }).REPLAY_URL = `/api/v1/admin/replays/${replayId}/download`
     ;(window as unknown as { HAS_VOICE: boolean }).HAS_VOICE = data.replay.has_voice
+    // recorded_at приходит без указания зоны (naive UTC, см. services_replays.py) —
+    // без явного "Z" Date.parse трактовал бы строку как локальное время браузера
+    // администратора, а не как UTC. Плеер сам переводит это в МСК (см. rpvClockLabel).
+    const recordedAtIso = data.replay.recorded_at
+    ;(window as unknown as { REPLAY_RECORDED_AT_MS: number | null }).REPLAY_RECORDED_AT_MS =
+      recordedAtIso ? Date.parse(recordedAtIso.endsWith("Z") ? recordedAtIso : recordedAtIso + "Z") : null
 
     const scripts: HTMLScriptElement[] = []
     let cancelled = false
@@ -163,6 +169,7 @@ export function ReplayPlayerPage() {
           <div className="rpv-controls">
             <button className="rpv-btn" id="rpvPlay">▶</button>
             <span className="rpv-time" id="rpvTimeLabel">00:00 / 00:00</span>
+            <span className="rpv-time" id="rpvClockLabel" title="Время по МСК в этот момент записи"></span>
             <input type="range" className="rpv-seek" id="rpvSeek" min={0} max={1000} defaultValue={0} />
             <div style={{ display: "flex", gap: 4 }}>
               <button className="rpv-btn rpv-speed" data-speed="0.5">0.5×</button>

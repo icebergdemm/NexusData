@@ -65,6 +65,7 @@
     <div class="rpv-controls">
       <button class="rpv-btn" id="rpvPlay">▶</button>
       <span class="rpv-time" id="rpvTimeLabel">00:00 / 00:00</span>
+      <span class="rpv-time" id="rpvClockLabel" title="Время по МСК в этот момент записи"></span>
       <input type="range" class="rpv-seek" id="rpvSeek" min="0" max="1000" value="0">
       <div style="display:flex;gap:4px;">
         <button class="rpv-btn rpv-speed" data-speed="0.5">0.5×</button>
@@ -112,6 +113,7 @@
 <script>
 window.REPLAY_URL = "/adminold/replays/{{ replay.id }}/download";
 window.HAS_VOICE = {{ 'true' if replay.has_voice else 'false' }};
+window.REPLAY_RECORDED_AT_MS = {{ recorded_at_ms if recorded_at_ms is not none else 'null' }};
 </script>
 <script src="/static/js/replay_player.js"></script>
 {% endblock %}

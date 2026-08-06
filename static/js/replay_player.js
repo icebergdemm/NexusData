@@ -611,11 +611,29 @@
       timeMs:currentTimeMs,durationMs:demo.durationMs,playing:playing,
     }}));
   }
+  // Часы по МСК на конкретный момент записи: window.REPLAY_RECORDED_AT_MS —
+  // время начала демки (из её собственного заголовка, см. player.tsx/
+  // replay_player.html) плюс текущее смещение воспроизведения, переведённое
+  // в МСК напрямую (+3ч от UTC) — специально НЕ через toLocaleString с зоной
+  // браузера админа: часовой пояс здесь должен быть фиксированным (МСК), а не
+  // зависеть от того, где сидит смотрящий запись.
+  const MSK_OFFSET_MS = 3*60*60*1000;
+  function fmtClockMsk(unixMs){
+    const d=new Date(unixMs+MSK_OFFSET_MS);
+    const p2=(n)=>String(n).padStart(2,"0");
+    return p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds())+" МСК";
+  }
   function updateTimeUI(){
     if(!demo)return;
     const label=document.getElementById("rpvTimeLabel");if(!label)return; // страница уже ушла со плеера
     label.textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
     const seek=document.getElementById("rpvSeek");if(seek&&!seek.__dragging)seek.value=String(Math.round(currentTimeMs/demo.durationMs*1000)||0);
+    const clock=document.getElementById("rpvClockLabel");
+    if(clock){
+      clock.textContent=(typeof window.REPLAY_RECORDED_AT_MS==="number")
+        ? fmtClockMsk(window.REPLAY_RECORDED_AT_MS+currentTimeMs)
+        : "";
+    }
     broadcastTime();
   }
   function setPlaying(p){playing=p;const btn=document.getElementById("rpvPlay");if(btn)btn.textContent=p?"⏸":"▶";if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();}
