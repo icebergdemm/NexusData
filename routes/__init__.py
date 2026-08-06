@@ -11,6 +11,7 @@ from .sub_checker import router as sub_checker_router
 from .game_api import router as game_api_router, public_router as game_public_router
 from .ratings import router as ratings_router
 from .discord_bot_api import panel_router as discord_bot_panel_router
+from .discord_viewer_api import router as discord_viewer_router
 from .tickets_api import panel_router as tickets_panel_router
 from .logs import router as logs_router
 from .dispatch import api_router as dispatch_api_router, panel_router as dispatch_panel_router, client_router as dispatch_client_router
@@ -43,6 +44,7 @@ __all__ = [
     "game_public_router",
     "ratings_router",
     "discord_bot_panel_router",
+    "discord_viewer_router",
     "tickets_panel_router",
     "logs_router",
     "dispatch_api_router",

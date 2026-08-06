@@ -744,6 +744,145 @@ async def check_channel_category(channel_id: int, category_id: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════
+# DISCORD VIEWER — просмотр/отправка сообщений от лица бота
+# (routes/discord_viewer_api.py, все вызовы через schedule()+wrap_future,
+# т.к. discord.py живёт в собственном event loop — см. schedule() ниже)
+# ═══════════════════════════════════════════════════════════
+
+def _viewer_guild() -> discord.Guild:
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        raise RuntimeError("Бот не подключён к серверу Discord (GUILD_ID недоступен)")
+    return guild
+
+
+def _serialize_author(user) -> dict:
+    return {
+        "id": str(user.id),
+        "username": str(user),
+        "display_name": getattr(user, "display_name", None) or user.name,
+        "avatar_url": str(user.display_avatar.url) if getattr(user, "display_avatar", None) else None,
+        "bot": bool(getattr(user, "bot", False)),
+    }
+
+
+def _serialize_message(msg: discord.Message) -> dict:
+    return {
+        "id": str(msg.id),
+        "content": msg.content,
+        "author": _serialize_author(msg.author),
+        "created_at": msg.created_at.isoformat(),
+        "edited_at": msg.edited_at.isoformat() if msg.edited_at else None,
+        "attachments": [
+            {"id": str(a.id), "filename": a.filename, "url": a.url, "content_type": a.content_type, "size": a.size}
+            for a in msg.attachments
+        ],
+        "embeds": [e.to_dict() for e in msg.embeds],
+        "reply_to_id": str(msg.reference.message_id) if msg.reference and msg.reference.message_id else None,
+    }
+
+
+async def viewer_get_tree() -> dict:
+    """Категории/каналы, доступные для просмотра именно этому боту (иначе
+    список выглядел бы полным, а половина каналов при открытии падала бы
+    403-й ошибкой Discord). Голосовые и форумные каналы не отдаются — вьюер
+    работает только с текстовыми (в т.ч. announcement-каналами)."""
+    guild = _viewer_guild()
+    me = guild.me
+    channels = []
+    for ch in guild.text_channels:
+        perms = ch.permissions_for(me)
+        if not perms.view_channel:
+            continue
+        channels.append({
+            "id": str(ch.id), "name": ch.name, "position": ch.position,
+            "can_send": perms.send_messages,
+            "category_id": str(ch.category_id) if ch.category_id else None,
+        })
+    categories = [{"id": str(c.id), "name": c.name, "position": c.position} for c in guild.categories]
+    categories.sort(key=lambda c: c["position"])
+    channels.sort(key=lambda c: c["position"])
+    return {
+        "guild": {"id": str(guild.id), "name": guild.name, "icon_url": str(guild.icon.url) if guild.icon else None},
+        "categories": categories,
+        "channels": channels,
+    }
+
+
+async def viewer_get_messages(channel_id: int, before: Optional[int], limit: int) -> list:
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        channel = await bot.fetch_channel(channel_id)
+    limit = max(1, min(limit, 100))
+    before_obj = discord.Object(id=before) if before else None
+    out = []
+    async for msg in channel.history(limit=limit, before=before_obj):
+        out.append(_serialize_message(msg))
+    return out  # порядок — от новых к старым (как отдаёт history())
+
+
+async def viewer_send_message(channel_id: int, content: str, filename: Optional[str], file_bytes: Optional[bytes]) -> dict:
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        channel = await bot.fetch_channel(channel_id)
+    import io
+    file_obj = discord.File(io.BytesIO(file_bytes), filename=filename) if file_bytes else None
+    msg = await channel.send(content=(content[:2000] if content else None), file=file_obj)
+    return _serialize_message(msg)
+
+
+async def viewer_export_messages(channel_id: int, max_messages: int) -> list:
+    """Полная выгрузка канала в JSON (см. routes/discord_viewer_api.py).
+    Ограничено max_messages, чтобы случайный экспорт древнего канала с
+    десятками тысяч сообщений не подвесил бота на несколько минут внутри
+    одного действия на общем event loop."""
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        channel = await bot.fetch_channel(channel_id)
+    max_messages = max(1, min(max_messages, 20000))
+    out = []
+    async for msg in channel.history(limit=max_messages, oldest_first=True):
+        out.append(_serialize_message(msg))
+    return out
+
+
+async def viewer_get_roles() -> list:
+    guild = _viewer_guild()
+    return [
+        {"id": str(r.id), "name": r.name, "color": f"#{r.color.value:06x}" if r.color.value else None,
+         "position": r.position, "managed": r.managed, "mentionable": r.mentionable}
+        for r in guild.roles if r.name != "@everyone"
+    ]
+
+
+async def viewer_update_member_roles(member_id: int, add_role_ids: list, remove_role_ids: list) -> dict:
+    guild = _viewer_guild()
+    member = guild.get_member(member_id)
+    if not member:
+        member = await guild.fetch_member(member_id)
+    errors = []
+    for rid in add_role_ids:
+        role = guild.get_role(int(rid))
+        if not role:
+            errors.append(f"роль {rid} не найдена")
+            continue
+        try:
+            await member.add_roles(role, reason="Ручное назначение через Discord-вьюер")
+        except Exception as e:
+            errors.append(f"выдать {rid}: {e}")
+    for rid in remove_role_ids:
+        role = guild.get_role(int(rid))
+        if not role:
+            errors.append(f"роль {rid} не найдена")
+            continue
+        try:
+            await member.remove_roles(role, reason="Ручное снятие через Discord-вьюер")
+        except Exception as e:
+            errors.append(f"снять {rid}: {e}")
+    return {"role_ids": [str(r.id) for r in member.roles], "errors": errors}
+
+
+# ═══════════════════════════════════════════════════════════
 # BOT ACTION EXECUTOR
 # ═══════════════════════════════════════════════════════════
 

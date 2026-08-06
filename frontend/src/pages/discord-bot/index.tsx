@@ -9,9 +9,11 @@ import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Bot, Plus, RefreshCw, Save, Send, Ticket as TicketIcon, Trash2 } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Bot, MessageSquare, Plus, RefreshCw, Save, Send, Settings, Ticket as TicketIcon, Trash2 } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
+import { DiscordViewerTab } from "./viewer"
 
 const KNOWN_KEYS: { key: string; label: string }[] = [
   { key: "forward_channel_id", label: "Пересылка сообщений" },
@@ -404,6 +406,15 @@ export function DiscordBotPage() {
   return (
     <div>
       <PageHeader title="Discord бот" description="Синхронизация участников, каналы уведомлений, анти-рейд" icon={Bot} />
+      <Tabs defaultValue="settings">
+        <TabsList className="mb-4">
+          <TabsTrigger value="settings"><Settings className="size-3.5" /> Настройки</TabsTrigger>
+          <TabsTrigger value="viewer"><MessageSquare className="size-3.5" /> Чат и участники</TabsTrigger>
+        </TabsList>
+        <TabsContent value="viewer">
+          <DiscordViewerTab />
+        </TabsContent>
+        <TabsContent value="settings">
       <div className="space-y-4">
       <div className="grid grid-cols-3 gap-4">
         <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.members_count ?? "-"}</div><div className="text-xs text-muted-foreground">Участников Discord в базе данных (не актуальное кол-во, а общее)</div></CardContent></Card>
@@ -498,6 +509,8 @@ export function DiscordBotPage() {
         </CardContent>
       </Card>
       </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
