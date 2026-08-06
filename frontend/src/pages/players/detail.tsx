@@ -69,6 +69,8 @@ export function PlayerDetailPage() {
   const [linkDialogOpen, setLinkDialogOpen] = useState(false)
   const [linkAdminId, setLinkAdminId] = useState<string>("none")
   const [linkForcedName, setLinkForcedName] = useState("")
+  const [forcedNameDialogOpen, setForcedNameDialogOpen] = useState(false)
+  const [forcedNameDraft, setForcedNameDraft] = useState("")
   const [discordIdDraft, setDiscordIdDraft] = useState("")
   const [punishDialogOpen, setPunishDialogOpen] = useState(false)
   const [punishForm, setPunishForm] = useState({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
@@ -105,6 +107,19 @@ export function PlayerDetailPage() {
     setLinkAdminId(data?.player.linked_admin_id ? String(data.player.linked_admin_id) : "none")
     setLinkForcedName(data?.player.forced_display_name ?? "")
     setLinkDialogOpen(true)
+  }
+
+  const forcedNameMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/players/${playerId}/forced-name`, {
+      forced_display_name: forcedNameDraft.trim() || null,
+    }),
+    onSuccess: () => { toast.success("Имя обновлено"); setForcedNameDialogOpen(false); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const openForcedNameDialog = () => {
+    setForcedNameDraft(data?.player.forced_display_name ?? "")
+    setForcedNameDialogOpen(true)
   }
 
   const rankKitMutation = useMutation({
@@ -217,6 +232,15 @@ export function PlayerDetailPage() {
                 {admin?.is_superuser && (
                   <Button size="icon-xs" variant="ghost" onClick={openLinkDialog} title="Связать с пользователем Nexus Data">
                     <Link2 className="size-3.5" />
+                  </Button>
+                )}
+                {/* players:set_forced_name — доступно и не-суперпользователям, в
+                    отличие от привязки аккаунта выше: меняет только отображаемое
+                    имя, без выдачи сайтовых прав через аккаунт. Суперам кнопка не
+                    нужна отдельно — у них уже есть полный диалог по ссылке выше. */}
+                {!admin?.is_superuser && data.can_set_forced_name && (
+                  <Button size="icon-xs" variant="ghost" onClick={openForcedNameDialog} title="Установить принудительное имя">
+                    <Pencil className="size-3.5" />
                   </Button>
                 )}
                 {data.has_edit && (
@@ -712,6 +736,30 @@ export function PlayerDetailPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>Отмена</Button>
             <Button disabled={linkAdminMutation.isPending} onClick={() => linkAdminMutation.mutate()}>Сохранить</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={forcedNameDialogOpen} onOpenChange={setForcedNameDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Принудительное имя</DialogTitle>
+            <DialogDescription>
+              Задайте отображаемое имя без привязки к аккаунту администратора. Оно будет показываться
+              в рейтинге и наказаниях вместо игрового ника. Оставьте поле пустым, чтобы вернуть игровой ник.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label className="mb-1.5 block">Отображаемое имя</Label>
+            <Input
+              value={forcedNameDraft}
+              onChange={(e) => setForcedNameDraft(e.target.value)}
+              placeholder={player.player_last_time_name}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setForcedNameDialogOpen(false)}>Отмена</Button>
+            <Button disabled={forcedNameMutation.isPending} onClick={() => forcedNameMutation.mutate()}>Сохранить</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

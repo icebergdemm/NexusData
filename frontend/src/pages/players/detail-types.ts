@@ -137,6 +137,10 @@ export interface PlayerDetailResponse {
    * от has_edit: ручки наград проверяют именно его, и без этого флага
    * интерфейс показывал бы кнопки, которые возвращают 403. */
   can_manage_rewards: boolean
+  /** players:set_forced_name — установка принудительного имени без привязки
+   * к аккаунту ND. Отдельно от has_edit/is_superuser: ручка привязки
+   * аккаунта (/link-admin) остаётся только для суперов, эта — нет. */
+  can_set_forced_name: boolean
   has_delete: boolean
   has_special: boolean
   can_issue_punishment: boolean
