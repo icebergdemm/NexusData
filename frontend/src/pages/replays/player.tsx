@@ -114,6 +114,9 @@ export function ReplayPlayerPage() {
         .rpv-side{display:flex;flex-direction:column;gap:12px;max-height:calc(70vh + 62px);overflow-y:auto;}
         .rpv-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
         .rpv-panel h3{font-size:13px;font-weight:700;color:var(--foreground);margin:0 0 10px;}
+        .rpv-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+        .rpv-mute-all{padding:3px 8px;font-size:11px;font-weight:600;}
+        .rpv-mute-all:disabled{opacity:.4;cursor:default;}
         .rpv-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:12px;color:var(--muted-foreground);}
         .rpv-row label{display:flex;align-items:center;gap:6px;cursor:pointer;}
         .rpv-slider{width:110px;}
@@ -180,7 +183,10 @@ export function ReplayPlayerPage() {
             <div className="rpv-row"><span title="Дистанция, на которой голос затухает до нуля">Радиус слышимости</span><input type="range" className="rpv-slider" id="rpvFalloff" min={500} max={8000} step={100} defaultValue={3000} /></div>
           </div>
           <div className="rpv-panel">
-            <h3>👥 Игроки</h3>
+            <h3 className="rpv-panel-head">
+              👥 Игроки
+              <button className="rpv-btn rpv-mute-all" id="rpvMuteAll">🔇 Заглушить всех</button>
+            </h3>
             <div className="rpv-players" id="rpvPlayers" />
           </div>
           <div className="rpv-panel">

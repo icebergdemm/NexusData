@@ -425,7 +425,11 @@
   let demo = null;
   let cam = { x: 0, y: 0, zoom: 0.05 };
   let currentTimeMs = 0, playing = false, speed = 1, lastFrame = 0;
-  let followSub = false, mainSubId = null;
+  let followSub = false, followSubId = null;
+  // Локальные габариты каждой структуры (подлодка, станция, обломки), считаются
+  // один раз по геометрии. В геометрии координаты относительные — мировые
+  // получаются прибавлением subPos из снапшота.
+  let subCenters = null;   // subId -> {cx,cy} — центр в локальных координатах
   // Per-frame decoded snapshot cache (avoid re-decoding within one frame)
   let _curSnap = null, _curSnapIdx = -1;
   function snapAt(t){
@@ -457,6 +461,41 @@
   function sy(wy){return ch()/2-(wy-cam.y)*cam.zoom;}
   function subPosAt(snap,sid){return(snap&&snap.subPos.get(sid))||{x:0,y:0};}
 
+  function buildSubCenters(){
+    const acc=new Map();
+    const add=(sid,x1,y1,x2,y2)=>{
+      let b=acc.get(sid);
+      if(!b){b={minX:Infinity,minY:Infinity,maxX:-Infinity,maxY:-Infinity};acc.set(sid,b);}
+      b.minX=Math.min(b.minX,x1,x2);b.maxX=Math.max(b.maxX,x1,x2);
+      b.minY=Math.min(b.minY,y1,y2);b.maxY=Math.max(b.maxY,y1,y2);
+    };
+    for(const h of demo.geometry.hulls)add(h.subId,h.x,h.y,h.x+h.w,h.y-h.h);
+    for(const w of demo.geometry.walls)add(w.subId,w.x,w.y,w.x+w.w,w.y-w.h);
+    subCenters=new Map();
+    for(const[sid,b]of acc)subCenters.set(sid,{cx:(b.minX+b.maxX)/2,cy:(b.minY+b.maxY)/2});
+  }
+  function subCenterAt(snap,sid){
+    const sp=subPosAt(snap,sid),c=subCenters&&subCenters.get(sid);
+    return{x:sp.x+(c?c.cx:0),y:sp.y+(c?c.cy:0)};
+  }
+  // Цель слежения выбирается по тому, на что пользователь сейчас смотрит:
+  // берётся структура, чей центр ближе всего к центру камеры. Раньше цель была
+  // жёстко привязана к структуре с наибольшим числом hull-ов, то есть почти
+  // всегда к главной подлодке — и режим «Следить» отдёргивал камеру от станции
+  // или обломков, которые пользователь как раз и разглядывал.
+  function pickFollowTarget(){
+    if(!demo)return null;
+    if(!subCenters)buildSubCenters();
+    const snap=snapAt(currentTimeMs);
+    let best=null,bestD=Infinity;
+    for(const sid of subCenters.keys()){
+      const c=subCenterAt(snap,sid);
+      const dx=c.x-cam.x,dy=c.y-cam.y,d=dx*dx+dy*dy;
+      if(d<bestD){bestD=d;best=sid;}
+    }
+    return best;
+  }
+
   function autoFit(){
     if(!demo||!demo.snaps.count)return;
     const snap=API.decodeSnapshot(demo.snaps,0);
@@ -472,9 +511,7 @@
     cam.x=(minX+maxX)/2;cam.y=(minY+maxY)/2;
     cam.zoom=Math.min(cw()/Math.max(1,maxX-minX),ch()/Math.max(1,maxY-minY))*0.8;
     cam.zoom=Math.max(0.005,Math.min(2,cam.zoom));
-    const counts={};for(const h of demo.geometry.hulls)counts[h.subId]=(counts[h.subId]||0)+1;
-    let best=null,bestN=-1;for(const k in counts)if(counts[k]>bestN){bestN=counts[k];best=parseInt(k);}
-    mainSubId=best;
+    buildSubCenters();
   }
 
   function teamColor(sp){
@@ -716,7 +753,7 @@
     const dt=lastFrame?(ts-lastFrame):0;lastFrame=ts;
     const prev=currentTimeMs;
     if(playing&&demo){currentTimeMs+=dt*speed;if(currentTimeMs>=demo.durationMs){currentTimeMs=demo.durationMs;setPlaying(false);}}
-    if(followSub&&demo&&mainSubId!=null){const sp=subPosAt(snapAt(currentTimeMs),mainSubId);cam.x=sp.x;cam.y=sp.y;}
+    if(followSub&&demo&&followSubId!=null){const c=subCenterAt(snapAt(currentTimeMs),followSubId);cam.x=c.x;cam.y=c.y;}
     render();updateChat();updateTimeUI();
     if(voiceEnabled){updateVoice(prev);updateSpeakingIndicators();}
     requestAnimationFrame(loop);
@@ -727,23 +764,35 @@
     const box=document.getElementById("rpvPlayers");
     if(!box)return;
 
-    // Collect candidate speaker IDs from voice track (these are the ones that matter)
+    // В панели только те, кто за раунд действительно подавал голос: есть
+    // голосовые пакеты либо сообщения в чате. Раньше сюда добавлялись все
+    // заспавненные сущности подряд, из-за чего список забивали NPC и монстры,
+    // никогда ничего не говорившие, — регулятор громкости и mute для них
+    // бессмысленны, а найти среди них живого игрока было невозможно.
     const ids=new Set();
     if(demo.voice&&demo.voice.count){
       for(let i=0;i<demo.voice.count;i++)ids.add(demo.voice.sid[i]);
     }
-    // Also include all spawned characters (so non-speaking players are listed too)
-    for(const sp of demo.spawns.values())ids.add(sp.id);
+    for(const c of demo.chat)if(c.senderId)ids.add(c.senderId);
+    // Подстраховка на «немой» записи (нет ни голоса, ни чата): показываем
+    // хотя бы людей, чтобы панель не оказалась пустой совсем.
+    if(ids.size===0){
+      for(const sp of demo.spawns.values())if(sp.species==="human")ids.add(sp.id);
+    }
 
     if(ids.size===0){
       box.innerHTML='<div style="color:var(--gray);font-size:12px;padding:8px;">Нет данных об игроках</div>';
       return;
     }
 
+    const nameOf=(id)=>{const sp=demo.spawns.get(id);return(sp&&sp.name)?sp.name:(sp&&sp.species?sp.species:("Игрок #"+id));};
+    const ordered=[...ids].sort((a,b)=>nameOf(a).localeCompare(nameOf(b),"ru"));
+
+    speakerState.clear();
     box.innerHTML="";
-    for(const id of ids){
+    for(const id of ordered){
       const sp=demo.spawns.get(id);
-      const name=(sp&&sp.name)?sp.name:(sp&&sp.species?sp.species:("Игрок #"+id));
+      const name=nameOf(id);
       const color=sp?teamColor(sp):C.team0;
       const st={mute:false,vol:1};speakerState.set(id,st);
       const row=document.createElement("div");
@@ -754,9 +803,27 @@
         `<button class="rpv-pmute" title="Заглушить">🔊</button>`;
       const vol=row.querySelector(".rpv-pvol"),mute=row.querySelector(".rpv-pmute");
       vol.addEventListener("input",()=>{st.vol=vol.value/100;applyGain(id);});
-      mute.addEventListener("click",()=>{st.mute=!st.mute;mute.textContent=st.mute?"🔇":"🔊";applyGain(id);});
+      mute.addEventListener("click",()=>{st.mute=!st.mute;mute.textContent=st.mute?"🔇":"🔊";applyGain(id);syncMuteAllBtn();});
       box.appendChild(row);
     }
+    syncMuteAllBtn();
+  }
+
+  // Кнопка работает как переключатель: пока заглушены не все — глушит всех,
+  // когда заглушены все — возвращает звук. Ярлык пересчитывается и после
+  // одиночных mute, иначе он врал бы о текущем состоянии панели.
+  function setAllMuted(m){
+    for(const[id,st]of speakerState){st.mute=m;applyGain(id);}
+    document.querySelectorAll(".rpv-player .rpv-pmute").forEach(b=>{b.textContent=m?"🔇":"🔊";});
+    syncMuteAllBtn();
+  }
+  function syncMuteAllBtn(){
+    const btn=document.getElementById("rpvMuteAll");
+    if(!btn)return;
+    const all=speakerState.size>0&&[...speakerState.values()].every(st=>st.mute);
+    btn.textContent=all?"🔈 Вернуть звук":"🔇 Заглушить всех";
+    btn.classList.toggle("active",all);
+    btn.disabled=speakerState.size===0;
   }
 
   // ── UI wiring ────────────────────────────────────────────────────────────
@@ -768,7 +835,12 @@
     const seek=document.getElementById("rpvSeek");
     seek.addEventListener("input",()=>{seek.__dragging=true;if(demo)currentTimeMs=seek.value/1000*demo.durationMs;});
     seek.addEventListener("change",()=>{seek.__dragging=false;});
-    document.getElementById("rpvFollow").addEventListener("click",(e)=>{followSub=!followSub;e.target.classList.toggle("active",followSub);});
+    document.getElementById("rpvFollow").addEventListener("click",(e)=>{
+      followSub=!followSub;
+      // Цель фиксируется в момент включения — по тому, что сейчас в центре кадра.
+      if(followSub)followSubId=pickFollowTarget();
+      e.target.classList.toggle("active",followSub);
+    });
     // Camera
     canvas.addEventListener("wheel",(e)=>{e.preventDefault();cam.zoom=Math.max(0.005,Math.min(2,cam.zoom*(e.deltaY<0?1.1:0.9)));},{passive:false});
     let dragging=false,lastX=0,lastY=0;
@@ -788,6 +860,11 @@
       } else {
         resetDecoders();
       }
+    });
+    const ma=document.getElementById("rpvMuteAll");
+    if(ma)ma.addEventListener("click",()=>{
+      const all=speakerState.size>0&&[...speakerState.values()].every(st=>st.mute);
+      setAllMuted(!all);
     });
     const mv=document.getElementById("rpvMasterVol");
     if(mv)mv.addEventListener("input",(e)=>{masterVol=e.target.value/100;});
