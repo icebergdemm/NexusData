@@ -52,6 +52,51 @@ maintenance off
 | `PROXY_PORT` | `8000` | Публичный порт (тот же, куда сейчас смотрит nginx) |
 | `BACKEND_HOST` | `127.0.0.1` | Куда прокси стучится за реальным бэкендом |
 | `BACKEND_PORT` | `8001` | Внутренний порт бэкенда |
+| `PROXY_FORWARDED_ALLOW_IPS` | `127.0.0.1` | От кого доверять заголовку `X-Forwarded-For` на входе в `proxy_server.py` (см. раздел «Реальный IP клиента» ниже) |
+
+## Реальный IP клиента (X-Forwarded-For) — обязательно, если перед сайтом есть внешний прокси/anti-DDoS
+
+Полная цепочка: **интернет → внешний прокси (например, anti-DDoS/CDN) →
+nginx на VDS → `proxy_server.py` → `api_server.py`**. Каждый хоп обязан
+знать, кому доверять заголовок `X-Forwarded-For`, иначе либо реальный IP
+клиента теряется (в логах/бане/наказаниях виден внутренний IP прокси, а не
+атакующий/пользователь), либо — хуже — любой клиент может ПОДДЕЛАТЬ свой
+видимый IP произвольным заголовком.
+
+**Если есть внешний прокси перед nginx** (например, IP вида `92.38.222.172`)
+— добавьте в конфиг nginx (в `server`/`http` блок, до `location`, которая
+проксирует на `proxy_server.py`):
+
+```nginx
+# Доверяем X-Forwarded-For ТОЛЬКО от этого конкретного IP внешнего прокси —
+# без этого nginx считает $remote_addr равным адресу прокси, а не клиента,
+# и хуже — не переписывает $remote_addr вовсе, так что ниже по цепочке в
+# X-Forwarded-For улетит то, что клиент сам придумал в заголовке.
+set_real_ip_from 92.38.222.172;
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+
+location / {
+    proxy_set_header X-Forwarded-For $remote_addr;   # replace, не $proxy_add_x_forwarded_for
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Host $host;
+    proxy_pass http://127.0.0.1:8000;
+}
+```
+
+Если внешних прокси/anti-DDoS несколько или их IP меняются — держите
+`set_real_ip_from` списком (по строке на IP/подсеть) вместо одного адреса.
+
+**Если nginx на VDS вообще нет** и `proxy_server.py` торчит в интернет
+напрямую (порт проброшен без промежуточного HTTP-прокси) — вместо правки
+nginx выставьте `PROXY_FORWARDED_ALLOW_IPS=92.38.222.172` в окружении
+`proxy_server.py`: тогда уже сам `proxy_server.py` доверится
+X-Forwarded-For, только если TCP-соединение реально пришло с этого IP.
+
+`proxy_server.py` дальше уже сам ПЕРЕПИСЫВАЕТ X-Forwarded-For на то
+значение, которому доверяет (см. `_real_client_ip`/`_proxy()` в коде) —
+дальше по цепочке к `api_server.py` заголовок клиента никогда не долетает
+как есть, только то, что решил сам `proxy_server.py`.
 
 `SERVER_HOST`/`SERVER_PORT` из `.env` для самого бэкенда теперь не используются
 напрямую в обычном режиме — прокси всегда переопределяет их в окружении
