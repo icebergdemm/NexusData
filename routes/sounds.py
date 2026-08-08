@@ -12,6 +12,7 @@ delete / restore. Настройки SFTP-каталогов правит ТОЛ
 import logging
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
@@ -243,12 +244,19 @@ async def api_get_sound_file(
         raise HTTPException(status_code=502, detail=str(e))
 
     media = "audio/mpeg" if clean.lower().endswith(".mp3") else "audio/wav"
+    # Имена звуков часто кириллические ("Свой БСО.mp3") — HTTP-заголовки
+    # обязаны быть latin-1, поэтому голый filename="..." с не-ASCII падал
+    # с UnicodeEncodeError прямо в Response.__init__ (500 без вменяемого
+    # ответа клиенту). ASCII-заглушка в filename= — для древних клиентов,
+    # которые не понимают filename*=; настоящее имя — в filename* (RFC 5987).
+    ascii_fallback = clean.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    encoded = quote(clean, safe="")
     return Response(
         content=data,
         media_type=media,
         headers={
             "Cache-Control": "private, max-age=300",
-            "Content-Disposition": f'inline; filename="{clean}"',
+            "Content-Disposition": f'inline; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}',
         },
     )
 
