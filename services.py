@@ -1445,6 +1445,17 @@ class ServerModerationService:
 
         self.db.commit()
 
+        logger.info(
+            "server_action.ack action_id=%s action_type=%s server=%s "
+            "success=%s status=%s error=%r",
+            row.id,
+            row.action_type,
+            server_name or "both",
+            effective_success,
+            status_val,
+            error_message,
+        )
+
         # ── Send personal notification to the admin who queued this action ──
         if row.queued_by_admin_id:
             try:

@@ -1421,6 +1421,12 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
     db.add(action)
     db.commit()
     db.refresh(action)
+    logger.info(
+        "dispatch.cargo.queued action_id=%s server=%s items=%r",
+        action.id,
+        server_name,
+        action.payload.get("items", []) if isinstance(action.payload, dict) else [],
+    )
     return action
 
 
