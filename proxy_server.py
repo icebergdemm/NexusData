@@ -57,6 +57,21 @@ BACKEND_HOST = os.environ.get("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8001"))
 BACKEND_BASE_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 
+# Это ГРАНИЦА ДОВЕРИЯ к X-Forwarded-For на первом хопе (реальный интернет ->
+# этот процесс). По умолчанию доверяем только localhost — если этот порт
+# смотрит в интернет напрямую (без nginx/другого reverse-proxy перед ним),
+# сюда прилетает СЫРОЙ TCP-адрес клиента и никакой X-Forwarded-For из
+# интернета доверять НЕЛЬЗЯ (иначе любой клиент подделает свой видимый IP
+# заголовком). Если перед этим процессом стоит nginx (или что-то ещё) на
+# loopback, оставляйте "127.0.0.1" — этого достаточно. Явный список того же
+# формата, что uvicorn принимает нативно ("127.0.0.1", "*", "10.0.0.0/8", ...
+# через запятую) — см. FORWARDED_ALLOW_IPS ниже по коду в api_server.py, тот
+# же принцип и та же переменная окружения, ЕСЛИ вы хотите завести её именно
+# под этот процесс — используйте PROXY_FORWARDED_ALLOW_IPS, чтобы не путать
+# с доверенным хопом api_server.py (который всегда должен доверять ТОЛЬКО
+# 127.0.0.1 — это мы сами, proxy_server.py, см. _proxy() ниже).
+_FORWARDED_ALLOW_IPS = os.environ.get("PROXY_FORWARDED_ALLOW_IPS", "127.0.0.1")
+
 # How often the watcher thread checks runtime_control + the child process's
 # liveness — console.py's _BACKEND_RESTART_WAIT_SECONDS is tuned to be
 # comfortably longer than this.
@@ -129,11 +144,36 @@ async def lifespan(_app):
         await _http_client.aclose()
 
 
+def _real_client_ip(request: Request) -> str:
+    """IP клиента, каким его видит ЭТОТ процесс — то есть уже прошедшее через
+    uvicorn.run(..., proxy_headers=True) при запуске (см. низ файла), которое
+    доверяет X-Forwarded-For только от FORWARDED_ALLOW_IPS (по умолчанию —
+    только localhost, см. api_server.py и переменную окружения). Если перед
+    этим процессом стоит nginx на loopback — request.client.host уже равен
+    настоящему IP клиента. Если нет — это сырой TCP-пир, тоже настоящий."""
+    return request.client.host if request.client else "unknown"
+
+
 async def _proxy(request: Request) -> Response:
     url = f"{BACKEND_BASE_URL}{request.url.path}"
     if request.url.query:
         url += f"?{request.url.query}"
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS]
+
+    # Переписываем X-Forwarded-* САМИ, а не пересылаем то, что пришло в
+    # запросе как есть. Раньше сюда просто копировался заголовок клиента —
+    # если этот процесс НЕ доверяет чужому X-Forwarded-For (см. docstring
+    # _real_client_ip выше), header от клиента мог быть ЛЮБОЙ, и backend
+    # (api_server.py), который доверяет X-Forwarded-For от 127.0.0.1 (то есть
+    # от НАС), слепо принял бы подделку. Теперь backend получает ровно то
+    # значение, которому мы сами доверяем на этом хопе — заменяем, а не
+    # добавляем, чтобы не оставить старый (возможно поддельный) заголовок
+    # висеть первым в списке при парсинге через запятую.
+    client_ip = _real_client_ip(request)
+    headers = [(k, v) for k, v in headers if k.lower() not in ("x-forwarded-for", "x-forwarded-proto", "x-forwarded-host")]
+    headers.append(("x-forwarded-for", client_ip))
+    headers.append(("x-forwarded-proto", request.url.scheme))
+    headers.append(("x-forwarded-host", request.headers.get("host", "")))
 
     try:
         upstream_request = _http_client.build_request(
@@ -236,9 +276,9 @@ if __name__ == "__main__":
     _start_backend()
     watcher = threading.Thread(target=_backend_watcher_loop, daemon=True, name="BackendWatcher")
     watcher.start()
-    logger.info(f"Proxy listening on {PROXY_HOST}:{PROXY_PORT}, backend at {BACKEND_BASE_URL}")
+    logger.info(f"Proxy listening on {PROXY_HOST}:{PROXY_PORT}, backend at {BACKEND_BASE_URL}, trusting X-Forwarded-For from: {_FORWARDED_ALLOW_IPS}")
     try:
-        uvicorn.run(app, host=PROXY_HOST, port=PROXY_PORT)
+        uvicorn.run(app, host=PROXY_HOST, port=PROXY_PORT, proxy_headers=True, forwarded_allow_ips=_FORWARDED_ALLOW_IPS)
     finally:
         _stop_watcher.set()
         _stop_backend()

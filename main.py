@@ -576,6 +576,17 @@ def create_app() -> FastAPI:
 
         return await call_next(request)
 
+    # ── Injection-guard + rate-limit — регистрируются ПОСЛЕДНИМИ, поэтому
+    # становятся САМЫМ внешним слоем (Starlette оборачивает в порядке
+    # добавления: последний добавленный отрабатывает первым на входящем
+    # запросе — тот же принцип, что и у maintenance_gate_middleware выше).
+    # Проверяются раньше вообще всего остального в приложении, включая
+    # maintenance-режим: заблокированный по IP или пойманный на инъекции
+    # клиент не должен тратить ресурсы даже на страницу техработ.
+    from middleware import InjectionGuardMiddleware, RateLimitMiddleware
+    app.add_middleware(RateLimitMiddleware, requests_per_window=settings.rate_limit_requests, window_seconds=settings.rate_limit_window)
+    app.add_middleware(InjectionGuardMiddleware)
+
     return app
 
 
