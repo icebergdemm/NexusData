@@ -47,11 +47,10 @@ _AI_CHANNEL_WAIT_TIMEOUT_SECONDS = 90.0
 _AI_ACTION_ACK_TIMEOUT_SECONDS = 90.0
 _AI_DISPATCH_QUEUE_MAXSIZE = 100
 _AI_DISPATCH_JOB_TTL_SECONDS = 180.0
+_AI_BRIEFING_INITIAL_DELAY_SECONDS = 8.0
+_AI_BRIEFING_RETRY_DELAY_SECONDS = 5.0
+_AI_BRIEFING_MAX_ATTEMPTS = 4
 _AI_MAX_REPLY_PARTS = 3
-_AI_CONTINUATION_NOTICE = (
-    "Сводка объёмная; уточните, какой раздел передать отдельной радиограммой."
-)
-_AI_OVERSIZED_NOTICE = "Доклад слишком объёмный; уточните, какую часть передать отдельно."
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 
 
@@ -61,6 +60,9 @@ class _AIDispatchJob:
     api_key: str
     payload: dict
     server_name: str
+    initial_delay_seconds: float = 0.0
+    retry_delay_seconds: float = 0.0
+    max_attempts: int = 1
     enqueued_at: float = field(default_factory=time.monotonic)
 
 
@@ -276,6 +278,7 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     db.refresh(event)
     logger.info(f"Round start: {body.server_name} | {body.submarine_name} | {len(body.players)} players")
     _queue_round_status_refresh(db, body.server_name)
+    _queue_ai_round_briefing(event)
     return {"status": "ok", "round_id": event.id}
 
 
@@ -426,6 +429,48 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
     )
 
 
+def _queue_ai_round_briefing(event: RoundEvent) -> None:
+    """Поставить первичный доклад после начала выхода в ту же FIFO, что и ответы."""
+
+    url = (settings.ai_dispatcher_url or "").strip()
+    api_key = (settings.ai_dispatcher_api_key or "").strip()
+    server_name = (event.server_name or "").strip().upper()
+    if not url or not api_key:
+        return
+    if server_name not in {"ASPER1", "ASPER2"}:
+        logger.warning(
+            "AI round briefing skipped: unsupported server_name=%r round_event_id=%s",
+            event.server_name,
+            event.id,
+        )
+        return
+
+    round_id = f"dispatch-{server_name}-round-{event.id}"
+    _enqueue_ai_dispatch_job(
+        _AIDispatchJob(
+            url=url,
+            api_key=api_key,
+            payload={
+                "event_id": f"nexus-round-briefing-{event.id}",
+                "round_id": round_id,
+                "server_name": server_name,
+                "text": "Первичный доклад по сектору.",
+                "sender_name": None,
+                "message_type": "round_briefing",
+                "briefing_context": {
+                    "submarine_name": event.submarine_name,
+                    "mission": event.mission,
+                    "location": event.location,
+                },
+            },
+            server_name=server_name,
+            initial_delay_seconds=_AI_BRIEFING_INITIAL_DELAY_SECONDS,
+            retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
+            max_attempts=_AI_BRIEFING_MAX_ATTEMPTS,
+        )
+    )
+
+
 def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> None:
     """Put an AI request into the source server's non-blocking FIFO."""
 
@@ -477,6 +522,8 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
             # extends the one-server-at-a-time guarantee across those workers
             # on the same Nexus host; the kernel releases it if a worker dies.
             with _ai_dispatch_process_lock(server_name):
+                if job.initial_delay_seconds > 0:
+                    time.sleep(job.initial_delay_seconds)
                 if not _ai_dispatch_context_is_current(
                     server_name,
                     job.payload.get("round_id"),
@@ -491,13 +538,33 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
                         time.monotonic() - job.enqueued_at,
                     )
                     continue
-                _post_ai_dispatcher_sync(
-                    job.url,
-                    job.api_key,
-                    job.payload,
-                    job.server_name,
-                    enqueued_at=job.enqueued_at,
-                )
+                for attempt in range(1, max(job.max_attempts, 1) + 1):
+                    delivered = _post_ai_dispatcher_sync(
+                        job.url,
+                        job.api_key,
+                        job.payload,
+                        job.server_name,
+                        enqueued_at=job.enqueued_at,
+                    )
+                    if delivered or attempt >= job.max_attempts:
+                        break
+                    logger.info(
+                        "AI dispatch retry scheduled: event_id=%s server=%s "
+                        "attempt=%s/%s delay_seconds=%.1f",
+                        job.payload.get("event_id"),
+                        server_name,
+                        attempt + 1,
+                        job.max_attempts,
+                        job.retry_delay_seconds,
+                    )
+                    if job.retry_delay_seconds > 0:
+                        time.sleep(job.retry_delay_seconds)
+                    if not _ai_dispatch_context_is_current(
+                        server_name,
+                        job.payload.get("round_id"),
+                        job.enqueued_at,
+                    ):
+                        break
         except Exception:
             # _post_ai_dispatcher_sync is already defensive, but an unexpected
             # failure must not kill the per-server FIFO and strand later calls.
@@ -621,7 +688,7 @@ def _post_ai_dispatcher_sync(
     payload: dict,
     server_name: str,
     enqueued_at: Optional[float] = None,
-) -> None:
+) -> bool:
     try:
         with httpx.Client(timeout=settings.ai_dispatcher_timeout_seconds) as client:
             response = client.post(
@@ -632,11 +699,11 @@ def _post_ai_dispatcher_sync(
         response.raise_for_status()
         result = response.json()
         if result.get("status") != "answered":
-            return
+            return True
         replies = _extract_ai_dispatcher_replies(result)
         if not replies:
             logger.warning("AI dispatcher returned an empty reply for %s", payload["event_id"])
-            return
+            return False
 
         _deliver_ai_dispatcher_replies(
             replies,
@@ -645,12 +712,14 @@ def _post_ai_dispatcher_sync(
             round_id=payload.get("round_id"),
             enqueued_at=enqueued_at,
         )
+        return True
     except Exception as error:
         logger.warning(
             "AI dispatcher request failed for %s: %s",
             payload.get("event_id"),
             error,
         )
+        return False
 
 
 def _ai_reply_delay_seconds(reply: str) -> float:
@@ -1011,9 +1080,13 @@ def _extract_ai_dispatcher_replies(result: dict) -> List[str]:
     replies = []
     for candidate in candidates:
         replies.extend(_split_ai_radio_reply(candidate, max_chars=_AI_REPLY_MAX_CHARS))
-    if len(replies) <= _AI_MAX_REPLY_PARTS:
-        return replies
-    return [*replies[: _AI_MAX_REPLY_PARTS - 1], _AI_CONTINUATION_NOTICE]
+    if len(replies) > _AI_MAX_REPLY_PARTS:
+        logger.warning(
+            "AI dispatcher exceeded reply part limit: parts=%s max_parts=%s",
+            len(replies),
+            _AI_MAX_REPLY_PARTS,
+        )
+    return replies[:_AI_MAX_REPLY_PARTS]
 
 
 def _split_ai_radio_reply(reply: str, max_chars: int) -> List[str]:
@@ -1062,8 +1135,7 @@ def _split_ai_radio_sentence(sentence: str, max_chars: int) -> List[str]:
             for match in re.finditer(r"[,;:—–-](?=\s)", window[:max_chars])
         ]
         if not clause_breaks:
-            parts.append(_AI_OVERSIZED_NOTICE)
-            return parts
+            raise ValueError("AI dispatcher returned an unsplittable oversized sentence")
         cut_at = clause_breaks[-1]
         part = _finish_ai_radio_clause(remainder[:cut_at], max_chars)
         remainder = remainder[cut_at:].lstrip()
@@ -1081,7 +1153,7 @@ def _finish_ai_radio_clause(value: str, max_chars: int) -> str:
     clause = f"{clause[0].upper()}{clause[1:]}"
     if not clause.endswith((".", "!", "?", "…")):
         if len(clause) >= max_chars:
-            return _AI_OVERSIZED_NOTICE
+            raise ValueError("AI dispatcher returned an oversized terminal clause")
         clause = f"{clause}."
     return clause
 

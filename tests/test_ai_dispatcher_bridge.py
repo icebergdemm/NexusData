@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from database import Base
 from models import RoundEvent, WorldRound
+import routes.dispatch as dispatch_routes
 from routes.dispatch import (
     _AIDispatchJob,
     _ai_dispatch_job_queues,
@@ -18,6 +19,7 @@ from routes.dispatch import (
     _enqueue_ai_dispatch_job,
     _extract_ai_dispatcher_replies,
     _post_ai_dispatcher_sync,
+    _queue_ai_round_briefing,
     _queue_ai_radio_action,
     _resolve_ai_conversation_round_id,
     _send_dispatcher_message,
@@ -58,6 +60,52 @@ class _FakeClient:
 class AIDispatcherBridgeTests(unittest.TestCase):
     def setUp(self):
         _FakeClient.last_request = None
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_round_start_briefing_is_queued_with_context(self, enqueue_job):
+        event = RoundEvent(
+            id=42,
+            event_type="start",
+            server_name="ASPER1",
+            submarine_name="Сигнатура",
+            mission="Доставка",
+            location="Европейский кряж",
+        )
+
+        with (
+            patch.object(
+                dispatch_routes.settings,
+                "ai_dispatcher_url",
+                "http://dispatcher/api/v1/dispatcher/messages",
+            ),
+            patch.object(
+                dispatch_routes.settings,
+                "ai_dispatcher_api_key",
+                "dispatcher-secret",
+            ),
+        ):
+            _queue_ai_round_briefing(event)
+
+        job = enqueue_job.call_args.args[0]
+        self.assertEqual(job.server_name, "ASPER1")
+        self.assertEqual(job.max_attempts, 4)
+        self.assertGreater(job.initial_delay_seconds, 0)
+        self.assertEqual(
+            job.payload,
+            {
+                "event_id": "nexus-round-briefing-42",
+                "round_id": "dispatch-ASPER1-round-42",
+                "server_name": "ASPER1",
+                "text": "Первичный доклад по сектору.",
+                "sender_name": None,
+                "message_type": "round_briefing",
+                "briefing_context": {
+                    "submarine_name": "Сигнатура",
+                    "mission": "Доставка",
+                    "location": "Европейский кряж",
+                },
+            },
+        )
 
     @patch("routes.dispatch._deliver_ai_dispatcher_replies")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
@@ -499,7 +547,7 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             "first",
         )
 
-    def test_reply_extractor_caps_channel_occupancy_with_explicit_notice(self):
+    def test_reply_extractor_caps_channel_occupancy_without_synthetic_text(self):
         replies = _extract_ai_dispatcher_replies(
             {
                 "replies": [
@@ -516,7 +564,7 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             [
                 "Первая законченная радиограмма.",
                 "Вторая законченная радиограмма.",
-                "Сводка объёмная; уточните, какой раздел передать отдельной радиограммой.",
+                "Третья законченная радиограмма.",
             ],
         )
 
@@ -536,22 +584,13 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
         )
         self.assertTrue(parts[1][0].isupper())
 
-    def test_unbreakable_legacy_sentence_becomes_clarification_not_fragment(self):
-        parts = _split_ai_radio_reply(" ".join(["подробность"] * 80), 188)
+    def test_unbreakable_legacy_sentence_is_rejected_without_synthetic_text(self):
+        with self.assertRaises(ValueError):
+            _split_ai_radio_reply(" ".join(["подробность"] * 80), 188)
 
-        self.assertEqual(
-            parts,
-            ["Доклад слишком объёмный; уточните, какую часть передать отдельно."],
-        )
-
-    def test_finishing_clause_never_exceeds_radio_limit(self):
-        parts = _split_ai_radio_reply(f"{'А' * 186}, {'б' * 188}", 188)
-
-        self.assertTrue(all(len(part) <= 188 for part in parts))
-        self.assertEqual(
-            parts[-1],
-            "Доклад слишком объёмный; уточните, какую часть передать отдельно.",
-        )
+    def test_oversized_terminal_clause_is_rejected_without_synthetic_text(self):
+        with self.assertRaises(ValueError):
+            _split_ai_radio_reply(f"{'А' * 186}, {'б' * 188}", 188)
 
     @patch("routes.dispatch._send_dispatcher_message_locked")
     @patch("routes.dispatch.GameSessionLocal")
