@@ -48,8 +48,8 @@ _AI_ACTION_ACK_TIMEOUT_SECONDS = 90.0
 _AI_DISPATCH_QUEUE_MAXSIZE = 100
 _AI_DISPATCH_JOB_TTL_SECONDS = 180.0
 _AI_BRIEFING_INITIAL_DELAY_SECONDS = 8.0
-_AI_BRIEFING_RETRY_DELAY_SECONDS = 5.0
-_AI_BRIEFING_MAX_ATTEMPTS = 4
+_AI_BRIEFING_RETRY_DELAY_SECONDS = 8.0
+_AI_BRIEFING_MAX_ATTEMPTS = 10
 _AI_MAX_REPLY_PARTS = 3
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 
@@ -265,9 +265,10 @@ def post_shuttle_departed(body: dict, db: Session = Depends(get_game_db)):
 @api_router.post("/round/start")
 def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     """Game server reports round start."""
+    server_name = (body.server_name or "").strip().upper() or None
     event = RoundEvent(
         event_type="start",
-        server_name=body.server_name,
+        server_name=server_name,
         submarine_name=body.submarine_name,
         mission=body.mission,
         location=body.location,
@@ -276,8 +277,8 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     db.add(event)
     db.commit()
     db.refresh(event)
-    logger.info(f"Round start: {body.server_name} | {body.submarine_name} | {len(body.players)} players")
-    _queue_round_status_refresh(db, body.server_name)
+    logger.info(f"Round start: {server_name} | {body.submarine_name} | {len(body.players)} players")
+    _queue_round_status_refresh(db, server_name)
     _queue_ai_round_briefing(event)
     return {"status": "ok", "round_id": event.id}
 
@@ -285,12 +286,13 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
 @api_router.post("/round/end")
 def post_round_end(body: RoundEndIn, db: Session = Depends(get_game_db)):
     """Game server reports round end."""
+    server_name = (body.server_name or "").strip().upper() or None
     # Link back to the start event that opened this round (the most recent
     # unpaired "start" for this server) so past rounds can be listed in one query.
     paired_start = (
         db.query(RoundEvent)
         .filter(
-            RoundEvent.server_name == body.server_name,
+            RoundEvent.server_name == server_name,
             RoundEvent.event_type == "start",
             ~RoundEvent.id.in_(
                 db.query(RoundEvent.paired_start_id).filter(RoundEvent.paired_start_id.isnot(None))
@@ -301,7 +303,7 @@ def post_round_end(body: RoundEndIn, db: Session = Depends(get_game_db)):
     )
     event = RoundEvent(
         event_type="end",
-        server_name=body.server_name,
+        server_name=server_name,
         mission_completed=1 if body.mission_completed else 0,
         reached_station=1 if body.reached_station else 0,
         players=body.players,
@@ -311,7 +313,7 @@ def post_round_end(body: RoundEndIn, db: Session = Depends(get_game_db)):
     db.commit()
     db.refresh(event)
     logger.info(f"Round end: {body.server_name} | mission={body.mission_completed} | station={body.reached_station}")
-    _queue_round_status_refresh(db, body.server_name)
+    _queue_round_status_refresh(db, server_name)
     return {"status": "ok", "round_id": event.id}
 
 
@@ -436,6 +438,12 @@ def _queue_ai_round_briefing(event: RoundEvent) -> None:
     api_key = (settings.ai_dispatcher_api_key or "").strip()
     server_name = (event.server_name or "").strip().upper()
     if not url or not api_key:
+        logger.warning(
+            "AI round briefing skipped: dispatcher bridge is not configured; "
+            "round_event_id=%s server=%r",
+            event.id,
+            event.server_name,
+        )
         return
     if server_name not in {"ASPER1", "ASPER2"}:
         logger.warning(
@@ -539,6 +547,13 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
                     )
                     continue
                 for attempt in range(1, max(job.max_attempts, 1) + 1):
+                    logger.info(
+                        "AI dispatch attempt: event_id=%s server=%s attempt=%s/%s",
+                        job.payload.get("event_id"),
+                        server_name,
+                        attempt,
+                        job.max_attempts,
+                    )
                     delivered = _post_ai_dispatcher_sync(
                         job.url,
                         job.api_key,
@@ -547,6 +562,15 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
                         enqueued_at=job.enqueued_at,
                     )
                     if delivered or attempt >= job.max_attempts:
+                        if not delivered:
+                            logger.error(
+                                "AI dispatch exhausted retries: event_id=%s server=%s "
+                                "attempts=%s age_seconds=%.1f",
+                                job.payload.get("event_id"),
+                                server_name,
+                                job.max_attempts,
+                                time.monotonic() - job.enqueued_at,
+                            )
                         break
                     logger.info(
                         "AI dispatch retry scheduled: event_id=%s server=%s "
@@ -698,7 +722,14 @@ def _post_ai_dispatcher_sync(
             )
         response.raise_for_status()
         result = response.json()
-        if result.get("status") != "answered":
+        result_status = result.get("status")
+        if result_status != "answered":
+            logger.info(
+                "AI dispatcher returned without answer: event_id=%s server=%s status=%r",
+                payload.get("event_id"),
+                server_name,
+                result_status,
+            )
             return True
         replies = _extract_ai_dispatcher_replies(result)
         if not replies:
@@ -712,11 +743,30 @@ def _post_ai_dispatcher_sync(
             round_id=payload.get("round_id"),
             enqueued_at=enqueued_at,
         )
+        logger.info(
+            "AI dispatcher answer accepted: event_id=%s server=%s reply_parts=%s",
+            payload.get("event_id"),
+            server_name,
+            len(replies),
+        )
         return True
+    except httpx.HTTPStatusError as error:
+        response = error.response
+        response_text = " ".join((response.text or "").split())[:500]
+        logger.warning(
+            "AI dispatcher HTTP error: event_id=%s server=%s status=%s response=%r",
+            payload.get("event_id"),
+            server_name,
+            response.status_code,
+            response_text,
+        )
+        return False
     except Exception as error:
         logger.warning(
-            "AI dispatcher request failed for %s: %s",
+            "AI dispatcher request failed: event_id=%s server=%s error_type=%s error=%s",
             payload.get("event_id"),
+            server_name,
+            type(error).__name__,
             error,
         )
         return False

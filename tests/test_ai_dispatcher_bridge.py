@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from database import Base
 from models import RoundEvent, WorldRound
 import routes.dispatch as dispatch_routes
+from schemas import RoundStartIn
 from routes.dispatch import (
     _AIDispatchJob,
     _ai_dispatch_job_queues,
@@ -25,6 +26,7 @@ from routes.dispatch import (
     _send_dispatcher_message,
     _split_ai_radio_reply,
     _wait_for_ai_dispatch_action_ack,
+    post_round_start,
 )
 
 
@@ -61,6 +63,35 @@ class AIDispatcherBridgeTests(unittest.TestCase):
     def setUp(self):
         _FakeClient.last_request = None
 
+    @patch("routes.dispatch._queue_ai_round_briefing")
+    @patch("routes.dispatch._queue_round_status_refresh")
+    def test_round_start_normalizes_server_and_queues_briefing(
+        self,
+        refresh_status,
+        queue_briefing,
+    ):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[RoundEvent.__table__])
+        db = Session(engine)
+        try:
+            result = post_round_start(
+                RoundStartIn(
+                    server_name=" asper1 ",
+                    submarine_name="Сигнатура",
+                    mission="Доставка",
+                ),
+                db,
+            )
+
+            event = db.query(RoundEvent).one()
+            self.assertEqual(result["round_id"], event.id)
+            self.assertEqual(event.server_name, "ASPER1")
+            refresh_status.assert_called_once_with(db, "ASPER1")
+            queue_briefing.assert_called_once_with(event)
+        finally:
+            db.close()
+            engine.dispose()
+
     @patch("routes.dispatch._enqueue_ai_dispatch_job")
     def test_round_start_briefing_is_queued_with_context(self, enqueue_job):
         event = RoundEvent(
@@ -88,8 +119,14 @@ class AIDispatcherBridgeTests(unittest.TestCase):
 
         job = enqueue_job.call_args.args[0]
         self.assertEqual(job.server_name, "ASPER1")
-        self.assertEqual(job.max_attempts, 4)
+        self.assertEqual(job.max_attempts, 10)
         self.assertGreater(job.initial_delay_seconds, 0)
+        self.assertGreater(job.retry_delay_seconds, 0)
+        self.assertGreaterEqual(
+            job.initial_delay_seconds
+            + (job.max_attempts - 1) * job.retry_delay_seconds,
+            80,
+        )
         self.assertEqual(
             job.payload,
             {
