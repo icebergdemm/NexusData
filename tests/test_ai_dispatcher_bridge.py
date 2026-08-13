@@ -584,7 +584,7 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             "first",
         )
 
-    def test_reply_extractor_caps_channel_occupancy_without_synthetic_text(self):
+    def test_reply_extractor_keeps_four_model_authored_parts(self):
         replies = _extract_ai_dispatcher_replies(
             {
                 "replies": [
@@ -602,6 +602,7 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
                 "Первая законченная радиограмма.",
                 "Вторая законченная радиограмма.",
                 "Третья законченная радиограмма.",
+                "Четвёртая законченная радиограмма.",
             ],
         )
 
