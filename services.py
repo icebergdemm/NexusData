@@ -1586,6 +1586,21 @@ class PlayerNoteService:
         self.db.refresh(note)
         return note
 
+    def delete_note(self, note_id: int, player_id: int) -> bool:
+        # player_id в фильтре — та же защита, что и у update_note: не даёт
+        # note_id с ЧУЖОГО профиля удалить заметку не в том контексте
+        # (эндпоинт всё равно берёт note_id из URL текущего профиля, но
+        # дублировать проверку на уровне сервиса дешевле, чем полагаться
+        # только на то, что вызывающий код никогда не ошибётся).
+        note = (self.db.query(PlayerNote)
+                .filter(PlayerNote.id == note_id, PlayerNote.player_id == player_id)
+                .first())
+        if not note:
+            return False
+        self.db.delete(note)
+        self.db.commit()
+        return True
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Label Categories
@@ -1996,10 +2011,10 @@ class PunishmentService:
         try:
             from models import ServerAction
 
-            label = "Предупреждение" if punishment.type == "warning" else "Выговор"
+            label = "предупреждение" if punishment.type == "warning" else "выговор"
             reason = (punishment.reason or "").strip() or "причина не указана"
             issued_by = (punishment.issued_by_name or "").strip()
-            text = f"{label} от администрации\n\nПричина: {reason}"
+            text = f"[Администрация]: Внимание! Вы получили {label}! Причина: {reason}"
             if issued_by:
                 text += f"\nВыдал: {issued_by}"
 

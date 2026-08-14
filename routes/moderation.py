@@ -204,6 +204,20 @@ def _moderation_action_permission(action_type: Optional[str]) -> str:
     return {"kick": "kick", "ban": "ban", "unban": "ban", "message": "message"}.get(action_type, "edit")
 
 
+_ADMIN_MSG_PREFIX = "[Администрация]: "
+
+
+def _prefix_admin_message(text: Optional[str]) -> Optional[str]:
+    """Сообщение игроку с сайта должно быть узнаваемо как официальное — иначе
+    в игровом чате/окне не отличить от розыгрыша другим игроком. Проверка на
+    уже проставленный префикс — на случай повторной отправки (сеть, ретрай),
+    чтобы префикс не задваивался."""
+    if not text:
+        return text
+    text = text.strip()
+    return text if text.startswith(_ADMIN_MSG_PREFIX) else f"{_ADMIN_MSG_PREFIX}{text}"
+
+
 @panel_router.get("/adminold/moderation", response_class=HTMLResponse)
 async def moderation_page(
     request: Request,
@@ -333,7 +347,7 @@ async def enqueue_moderation_action(
         target_steamid=target_steamid,
         reason=reason or None,
         duration_minutes=duration_minutes or None,
-        message_text=message_text or None,
+        message_text=_prefix_admin_message(message_text) if action_type == "message" else (message_text or None),
         server_name=server_name.strip().upper() if server_name and server_name.strip() else None,
     )
 
@@ -559,7 +573,7 @@ async def api_enqueue_moderation_action(
         target_steamid=target_steamid,
         reason=reason or None,
         duration_minutes=duration_minutes or None,
-        message_text=message_text or None,
+        message_text=_prefix_admin_message(message_text) if action_type == "message" else (message_text or None),
         server_name=server_name.strip().upper() if server_name and server_name.strip() else None,
     )
 
@@ -796,3 +810,170 @@ async def api_review_anomaly(
 
     from fastapi.responses import JSONResponse
     return JSONResponse({"status": "ok"})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# КОНСОЛЬ ИГРОВОГО СЕРВЕРА (Pterodactyl) — прямой доступ к консоли боевого
+# сервера, поэтому это самая чувствительная часть страницы «Модерирование».
+# Меры безопасности:
+#   1. Отдельное право НА КАЖДЫЙ сервер (moderation:console_server1/2) —
+#      никакого общего "console", которое давало бы доступ ко всем сразу.
+#   2. API-ключ Pterodactyl никогда не покидает бэкенд — команда идёт
+#      исключительно server-to-server (httpx), в браузер токен не отдаётся
+#      ни в каком виде (в т.ч. отдельный websocket-токен для живого вывода
+#      консоли сюда сознательно не реализован — см. GAME_SERVER_API_GUIDE.md
+#      про то, почему это отдельная, более объёмная задача).
+#   3. Каждая отправленная команда пишется в AdminActionLog ПОЛНЫМ текстом —
+#      это, по сути, RCE над игровым сервером, и должно быть безусловно
+#      разбираемо постфактум "кто, что и когда ввёл".
+#   4. Простой троттлинг на команду (см. _console_cooldowns) — защита от
+#      одной скомпрометированной сессии, заливающей консоль командами на
+#      машинной скорости.
+#   5. Валидация длины/пустоты на входе — то, что долетает до Pterodactyl,
+#      уже прошло через строгую проверку.
+# ════════════════════════════════════════════════════════════════════════════
+
+import time as _time
+
+_CONSOLE_SERVERS = {
+    "ASPER1": ("console_server1", lambda s: s.pterodactyl_server1_uuid),
+    "ASPER2": ("console_server2", lambda s: s.pterodactyl_server2_uuid),
+}
+_CONSOLE_COMMAND_MAX_LEN = 500
+_CONSOLE_COOLDOWN_SECONDS = 1.5
+_console_cooldowns: dict = {}  # (admin_id, server) -> monotonic timestamp последней команды
+
+
+def _console_target(server: str, admin: AdminUser):
+    """Проверяет право на КОНКРЕТНЫЙ сервер и настройку UUID. Возвращает
+    (panel_url, api_key, server_uuid) или бросает HTTPException."""
+    server = (server or "").strip().upper()
+    entry = _CONSOLE_SERVERS.get(server)
+    if not entry:
+        raise HTTPException(status_code=400, detail="Неизвестный сервер (ожидается ASPER1 или ASPER2)")
+    perm_key, uuid_getter = entry
+    if not check_permission(admin, "moderation", perm_key):
+        raise HTTPException(status_code=403, detail="Нет доступа к консоли этого сервера")
+
+    cfg = get_settings()
+    if not cfg.pterodactyl_panel_url or not cfg.pterodactyl_api_key:
+        raise HTTPException(status_code=503, detail="Интеграция с Pterodactyl не настроена")
+    server_uuid = uuid_getter(cfg)
+    if not server_uuid:
+        raise HTTPException(status_code=400, detail=f"UUID сервера {server} не настроен (pterodactyl_server{'1' if server=='ASPER1' else '2'}_uuid)")
+    return cfg.pterodactyl_panel_url, cfg.pterodactyl_api_key, server_uuid
+
+
+@panel_router.get("/api/v1/admin/moderation/console/permissions")
+async def api_console_permissions(request: Request, db: Session = Depends(get_db)):
+    """Какие консоли реально доступны текущему админу — фронтенд по этому
+    списку решает, что показывать (не полагаясь на 403 постфактум)."""
+    admin = get_current_admin(request, db)
+    return {
+        "servers": [
+            {"server": s, "enabled": check_permission(admin, "moderation", perm_key)}
+            for s, (perm_key, _) in _CONSOLE_SERVERS.items()
+        ],
+    }
+
+
+@panel_router.get("/api/v1/admin/moderation/console/{server}/status")
+async def api_console_status(server: str, request: Request, db: Session = Depends(get_db)):
+    admin = get_current_admin(request, db)
+    panel_url, api_key, server_uuid = _console_target(server, admin)
+
+    import httpx
+    url = f"{panel_url.rstrip('/')}/api/client/servers/{server_uuid}/resources"
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json().get("attributes", {})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Ошибка обращения к Pterodactyl: {e}")
+
+    resources = data.get("resources", {})
+    return {
+        "state": data.get("current_state"),
+        "cpu_percent": resources.get("cpu_absolute"),
+        "memory_bytes": resources.get("memory_bytes"),
+        "memory_limit_bytes": resources.get("memory_limit_bytes"),
+    }
+
+
+@panel_router.post("/api/v1/admin/moderation/console/{server}/command")
+async def api_console_command(server: str, request: Request, db: Session = Depends(get_db)):
+    admin = get_current_admin(request, db)
+    panel_url, api_key, server_uuid = _console_target(server, admin)
+    server_key = server.strip().upper()
+
+    now = _time.monotonic()
+    cooldown_key = (admin.id, server_key)
+    last = _console_cooldowns.get(cooldown_key)
+    if last is not None and (now - last) < _CONSOLE_COOLDOWN_SECONDS:
+        raise HTTPException(status_code=429, detail="Слишком часто — подождите немного между командами")
+
+    body = await request.json()
+    command = (body.get("command") or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Пустая команда")
+    if len(command) > _CONSOLE_COMMAND_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"Слишком длинная команда (максимум {_CONSOLE_COMMAND_MAX_LEN} символов)")
+
+    from routes.admin import log_admin_action
+    import httpx
+    url = f"{panel_url.rstrip('/')}/api/client/servers/{server_uuid}/command"
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json={"command": command})
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        # Команду не логируем как выполненную, но само НАМЕРЕНИЕ её отправить
+        # (кто, что, на какой сервер) — обязательно, даже если Pterodactyl
+        # не принял запрос: это тоже часть аудита действий с консолью.
+        log_admin_action(db, admin.id, "console_command_failed", {"server": server_key, "command": command, "error": str(e)})
+        raise HTTPException(status_code=502, detail=f"Ошибка обращения к Pterodactyl: {e}")
+
+    _console_cooldowns[cooldown_key] = now
+    log_admin_action(db, admin.id, "console_command", {"server": server_key, "command": command})
+    return {"status": "ok"}
+
+
+@panel_router.get("/api/v1/admin/moderation/console/{server}/history")
+async def api_console_history(server: str, request: Request, db: Session = Depends(get_db), limit: int = Query(50, ge=1, le=200)):
+    """Последние отправленные на этот сервер команды — журнал того, что
+    реально вводилось (не живой вывод консоли, см. докстринг раздела выше)."""
+    admin = get_current_admin(request, db)
+    _console_target(server, admin)  # проверка права, значения панели не нужны
+    server_key = server.strip().upper()
+
+    from sqlalchemy.orm import joinedload
+    from models import AdminActionLog
+    rows = (
+        db.query(AdminActionLog)
+        .filter(AdminActionLog.action.in_(["console_command", "console_command_failed"]))
+        .order_by(AdminActionLog.created_at.desc())
+        .limit(500)  # действия разных серверов вперемешку — фильтруем ниже по details
+        .all()
+    )
+    admin_ids = {r.admin_id for r in rows if r.admin_id}
+    admins = {a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()} if admin_ids else {}
+
+    out = []
+    for r in rows:
+        details = r.details or {}
+        if details.get("server") != server_key:
+            continue
+        out.append({
+            "id": r.id,
+            "admin_name": admins.get(r.admin_id, f"#{r.admin_id}"),
+            "command": details.get("command"),
+            "failed": r.action == "console_command_failed",
+            "error": details.get("error"),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+        if len(out) >= limit:
+            break
+    return {"history": out}
