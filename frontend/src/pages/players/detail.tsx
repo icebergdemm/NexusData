@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2,
-  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw,
+  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -25,6 +25,10 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
+} from "@/components/ui/alert-dialog"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayerDetailResponse, Note } from "./detail-types"
@@ -151,6 +155,12 @@ export function PlayerDetailPage() {
     mutationFn: ({ noteId, content }: { noteId: number; content: string }) =>
       api.post(`/api/v1/admin/players/${playerId}/notes/${noteId}`, { content }),
     onSuccess: () => { toast.success("Заметка обновлена"); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const deleteNoteMutation = useMutation({
+    mutationFn: (noteId: number) => api.delete(`/api/v1/admin/players/${playerId}/notes/${noteId}`),
+    onSuccess: () => { toast.success("Заметка удалена"); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -439,7 +449,7 @@ export function PlayerDetailPage() {
         <TabsContent value="notes">
           <Card>
             <CardContent className="space-y-3">
-              {data.has_edit && (
+              {data.can_manage_notes && (
                 <div className="flex gap-2">
                   <Textarea value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} placeholder="Личное дело игрока..." />
                   <Button onClick={() => noteMutation.mutate(noteDraft)} disabled={!noteDraft.trim()}>Сохранить</Button>
@@ -449,9 +459,11 @@ export function PlayerDetailPage() {
                 <NoteRow
                   key={n.id}
                   note={n}
-                  canEdit={data.has_edit}
+                  canEdit={data.can_manage_notes}
                   onSave={(content) => updateNoteMutation.mutate({ noteId: n.id, content })}
+                  onDelete={() => deleteNoteMutation.mutate(n.id)}
                   saving={updateNoteMutation.isPending}
+                  deleting={deleteNoteMutation.isPending}
                 />
               ))}
               {!data.notes.length && <div className="text-center text-muted-foreground">Заметок нет</div>}
@@ -790,9 +802,12 @@ function Stat({ label, value, icon: Icon, accent }: { label: string; value: numb
   )
 }
 
-function NoteRow({ note, canEdit, onSave, saving }: { note: Note; canEdit: boolean; onSave: (content: string) => void; saving: boolean }) {
+function NoteRow({ note, canEdit, onSave, onDelete, saving, deleting }: {
+  note: Note; canEdit: boolean; onSave: (content: string) => void; onDelete: () => void; saving: boolean; deleting: boolean
+}) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(note.content)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const startEdit = () => { setDraft(note.content); setEditing(true) }
   const save = () => {
@@ -816,14 +831,32 @@ function NoteRow({ note, canEdit, onSave, saving }: { note: Note; canEdit: boole
           <div className="flex items-start justify-between gap-2">
             <div className="whitespace-pre-wrap">{note.content}</div>
             {canEdit && (
-              <Button size="icon-xs" variant="ghost" className="shrink-0" onClick={startEdit} title="Редактировать">
-                <Pencil className="size-3.5" />
-              </Button>
+              <div className="flex shrink-0 gap-0.5">
+                <Button size="icon-xs" variant="ghost" onClick={startEdit} title="Редактировать">
+                  <Pencil className="size-3.5" />
+                </Button>
+                <Button size="icon-xs" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setConfirmDelete(true)} title="Удалить">
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
             )}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">{note.updated_at ? new Date(note.updated_at).toLocaleString("ru-RU") : "-"}</div>
         </>
       )}
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить заметку?</AlertDialogTitle>
+            <AlertDialogDescription>Действие необратимо. Заметка будет удалена из личного дела игрока безвозвратно.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction disabled={deleting} onClick={() => { onDelete(); setConfirmDelete(false) }}>Удалить</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

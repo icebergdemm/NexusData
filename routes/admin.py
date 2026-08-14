@@ -2160,6 +2160,25 @@ async def api_update_player_note(
     return {"status": "ok", "note": _serialize_note(note)}
 
 
+@router.delete("/api/v1/admin/players/{player_id}/notes/{note_id}")
+async def api_delete_player_note(
+    request: Request,
+    player_id: int,
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "manage_notes"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    ok = PlayerNoteService(db).delete_note(note_id, player_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Заметка не найдена")
+
+    log_admin_action(db, current_admin.id, "player_note_delete", {"player_id": player_id, "note_id": note_id})
+    return {"status": "ok"}
+
+
 @router.post("/api/v1/admin/players/{player_id}/labels")
 async def api_assign_player_label(
     request: Request,

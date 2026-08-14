@@ -141,6 +141,9 @@ export interface PlayerDetailResponse {
    * к аккаунту ND. Отдельно от has_edit/is_superuser: ручка привязки
    * аккаунта (/link-admin) остаётся только для суперов, эта — нет. */
   can_set_forced_name: boolean
+  /** players:manage_notes — отдельно от has_edit по той же причине, что и
+   * выше: у заметок личного дела своё собственное право, не общий "edit". */
+  can_manage_notes: boolean
   has_delete: boolean
   has_special: boolean
   can_issue_punishment: boolean
