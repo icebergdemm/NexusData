@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Radio, Users, ShieldAlert, Gavel, PlayCircle,
   Ship, Star, Bot, Ticket, UserCog, Settings, KeyRound, Wrench,
   Clock, ScrollText, BarChart3, Tags, FileText, NotebookText, Building2,
-  KanbanSquare, Globe2, Music, UserPlus, ClipboardCheck,
+  KanbanSquare, Globe2, Music, UserPlus, ClipboardCheck, Trophy,
 } from "lucide-react"
 import type { CurrentAdmin, PermissionPage } from "@/lib/auth"
 
@@ -40,6 +40,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Логи сервера", to: "/logs", icon: FileText, permission: "moderation" },
       { label: "Звуки для ивентов", to: "/sounds", icon: Music, permission: "sounds" },
       { label: "Куклы респавна", to: "/respawn-dolls", icon: UserPlus, permission: "respawn_dolls" },
+      { label: "Ачивки", to: "/achievements", icon: Trophy, permission: "achievements" },
       { label: "Наказания", to: "/punishments", icon: Gavel, permission: "punishments" },
     ],
   },

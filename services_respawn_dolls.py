@@ -19,10 +19,24 @@ import logging
 import os
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# expires_at приходит/уходит как наивный MSK-wall-clock (см. routes/respawn_dolls.py
+# _parse_expires_at и модульный докстринг там же) — тот же MSK, что и везде в этом
+# файле. Использовать datetime.utcnow() или naive_dt.timestamp() напрямую здесь
+# НЕЛЬЗЯ: первое сравнивает MSK-наивное значение с UTC-наивным (ошибка в 3 часа), а
+# второе трактует наивное время как локальное время процесса — на сервере с TZ,
+# отличным от MSK, все expires_at, уходящие плагину, сдвинулись бы на этот же оффсет
+# (тот же класс бага, что уже описан в routes/replays.py про recorded_at).
+MSK = timezone(timedelta(hours=3))
+
+
+def _now_msk() -> datetime:
+    return datetime.now(tz=MSK).replace(tzinfo=None)
+
 
 # Значения перечислений движка — из инструкции к плагину (раздел 3.8/3.7).
 INV_SLOTS = {
@@ -409,7 +423,7 @@ def validate_doll_meta(
         # Плагин такую куклу никогда не заспавнит — предупреждаем сразу.
         warnings.append("spawn_mode=player без привязанных SteamID: кукла никогда не заспавнится")
 
-    if expires_at is not None and expires_at <= datetime.utcnow():
+    if expires_at is not None and expires_at <= _now_msk():
         errors.append("expires_at: срок должен быть в будущем")
 
     if team is not None and (isinstance(team, bool) or not isinstance(team, int) or team not in (0, 1, 2)):
@@ -435,8 +449,12 @@ def serialize_for_plugin(row) -> Dict[str, Any]:
         "label": row.label,
         "priority": row.priority or 0,
         "one_shot": bool(row.one_shot),
-        # Плагин ждёт unix-секунды; 0 — бессрочно.
-        "expires_at": int(row.expires_at.timestamp()) if row.expires_at else 0,
+        # Плагин ждёт unix-секунды; 0 — бессрочно. row.expires_at — наивный
+        # MSK-wall-clock, поэтому эпоху считаем через replace(tzinfo=MSK), а
+        # не голым .timestamp() — тот трактовал бы наивное значение как
+        # локальное время ЭТОГО процесса и на сервере с не-MSK TZ сдвинул бы
+        # срок жизни куклы на офсет хоста (см. комментарий у MSK выше).
+        "expires_at": int(row.expires_at.replace(tzinfo=MSK).timestamp()) if row.expires_at else 0,
         "bind_steamids": row.bind_steamids or [],
         "spawn_mode": row.spawn_mode or "auto",
         "team": row.team or 0,

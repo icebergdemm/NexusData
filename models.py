@@ -797,6 +797,102 @@ class RespawnDoll(Base):
     created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
 
 
+class AchievementDef(Base):
+    """Определение ачивки — конструктор из цепочки событий + условий + наград.
+
+    Модель работы аналогична RespawnDoll: сайт — источник правды, плагин
+    (Achievements.cs) раз в PollIntervalSeconds забирает ПОЛНЫЙ список
+    активных (enabled=True) определений и держит его локально (SQLite),
+    сам считает прогресс по игровым событиям и сам выдаёт награды — сеть
+    участвует только в синхронизации определений и репорте фактов анлока
+    (см. ACHIEVEMENTS_API_GUIDE.md). Строка не привязана к конкретному
+    серверу: `servers` (пусто = все) фильтрует, где ачивка активна.
+    """
+    __tablename__ = "achievement_defs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Стабильный идентификатор — по нему идёт вся синхронизация, прогресс и
+    # цепочки (requires). Меняется только вручную; переименование "рвёт"
+    # прогресс игроков (тот привязан к key, не к id) — умышленно просто,
+    # без миграции старого прогресса на новый key.
+    key = Column(String(64), unique=True, nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    description = Column(String(1000), nullable=True)
+    icon = Column(String(16), nullable=True)  # эмодзи
+    category = Column(String(64), nullable=True, index=True)  # группировка в админке/на сайте
+    enabled = Column(Boolean, nullable=False, default=True)
+    # Скрытая ачивка — не показывается игроку/в публичных списках, пока не
+    # разблокирована (эффект чисто на стороне отображения, не на движке).
+    hidden = Column(Boolean, nullable=False, default=False)
+    # persistent — прогресс копится всегда; round — счётчик обнуляется в
+    # начале каждого раунда (для ачивок вида "за один рейс").
+    scope = Column(String(16), nullable=False, default="persistent")
+    # Пусто — активна на всех серверах; иначе список имён (ASPER1, ASPER2…).
+    servers = Column(JSON, nullable=False, default=list)
+
+    # Цепочка событий: {"event": "...", "conditions": {...}, "count": N,
+    # "distinct_by": "field"} — полная схема в ACHIEVEMENTS_API_GUIDE.md.
+    trigger = Column(JSON, nullable=False)
+    # [{"type": "item"|"stat"|"skill"|"talent", ...}, ...]
+    rewards = Column(JSON, nullable=False, default=list)
+    # Ключи ачивок-предпосылок — эта ачивка не отслеживается плагином, пока
+    # все перечисленные не разблокированы этим же игроком. Строит цепочки/
+    # деревья без отдельного рантайм-механизма (chain_group ниже — только
+    # UI-подсказка при создании следующей ступени, тот же requires).
+    requires = Column(JSON, nullable=False, default=list)
+    chain_group = Column(String(64), nullable=True, index=True)
+    chain_order = Column(Integer, nullable=False, default=0)
+    sort_order = Column(Integer, nullable=False, default=0)
+    # Слать ли игроку ЛС от бота при разблокировке (см. game_router.report).
+    notify_discord = Column(Boolean, nullable=False, default=True)
+
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
+
+
+class PlayerAchievementProgress(Base):
+    """Прогресс/разблокировка одной ачивки одним игроком.
+
+    Обновляется ТОЛЬКО через POST /api/v1/game/achievements/report (батчем,
+    идемпотентно — плагин сам решает, когда прогресс "существенно" изменился
+    и стоит репортить) либо ручной выдачей/сбросом из админки. `unlocked`
+    — терминальное состояние: реальный прогресс (retrigger после сброса
+    ачивки на сайте) начинается заново только если админ явно снял флаг.
+    """
+    __tablename__ = "player_achievement_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_steamid = Column(String(50), nullable=False, index=True)
+    achievement_key = Column(String(64), nullable=False, index=True)
+
+    progress = Column(Integer, nullable=False, default=0)
+    # Снимок trigger.count на момент последнего репорта — чтобы прогресс-бар
+    # не "убегал", если админ поменяет count в определении уже после того,
+    # как игрок начал копить прогресс.
+    target = Column(Integer, nullable=False, default=1)
+    # Для distinct_by-ачивок — список уже встреченных различных значений
+    # (напр. видов монстров), чтобы плагин(перезапуск)/сайт не задваивали счёт.
+    distinct_values = Column(JSON, nullable=False, default=list)
+
+    unlocked = Column(Boolean, nullable=False, default=False)
+    unlocked_at = Column(DateTime, nullable=True)
+    server_name = Column(String(32), nullable=True)
+    # Выдана вручную из админки (мимо обычной логики триггеров) — влияет
+    # только на отображение (бейдж "выдано вручную"), плагин это поле не читает.
+    granted_manually = Column(Boolean, nullable=False, default=False)
+    discord_notified = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("player_steamid", "achievement_key", name="uq_player_achievement"),
+    )
+
+
 class SoundFile(Base):
     """Звуковой файл (.wav/.mp3) для ивентов, залитый на игровой сервер по SFTP.
 

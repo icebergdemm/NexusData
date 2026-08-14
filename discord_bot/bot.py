@@ -950,6 +950,37 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
             logger.warning(f"send_embed: channel {channel_id} not found")
             return True, None  # Channel might not be in cache yet
 
+        elif action_type == "send_dm":
+            # Личное сообщение конкретному пользователю Discord (payload:
+            # discord_id + content и/или embed) — используется, например,
+            # уведомлением о разблокировке ачивки (routes/achievements.py).
+            # Намеренно тихий no-op на любой сбой (ЛС закрыты, вышел с
+            # сервера, бот не видит пользователя и т.п.): отсутствие ЛС не
+            # должно быть поводом ретраить или ронять вызывающий эндпоинт.
+            discord_id = payload.get("discord_id")
+            if not discord_id:
+                return True, None
+            try:
+                user = bot.get_user(int(discord_id)) or await bot.fetch_user(int(discord_id))
+            except Exception:
+                logger.warning(f"send_dm: пользователь {discord_id} не найден")
+                return True, None
+
+            content = payload.get("content")
+            embed_data = payload.get("embed")
+            try:
+                if embed_data:
+                    await user.send(content=content, embed=discord.Embed.from_dict(embed_data))
+                elif content:
+                    await user.send(content=content[:2000])
+                return True, None
+            except discord.Forbidden:
+                logger.info(f"send_dm: у {discord_id} закрыты ЛС от бота")
+                return True, None
+            except Exception as e:
+                logger.warning(f"send_dm: не удалось отправить {discord_id}: {e}")
+                return True, None
+
         elif action_type == "update_rank_role":
             # Update Discord roles when player rank changes
             guild = bot.get_guild(GUILD_ID)

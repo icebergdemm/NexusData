@@ -544,7 +544,11 @@ async def api_clone_doll(
     result = _apply_payload(row, {
         "server": row.server, "label": row.label, "spec": row.spec,
         "priority": row.priority, "one_shot": row.one_shot,
-        "expires_at": int(row.expires_at.timestamp()) if row.expires_at else None,
+        # row.expires_at — наивный MSK-wall-clock (см. _parse_expires_at выше);
+        # голый .timestamp() трактовал бы его как локальное время процесса и
+        # на сервере с TZ ≠ MSK ломал бы round-trip через _parse_expires_at
+        # (тот же класс бага, что и .timestamp() в serialize_for_plugin).
+        "expires_at": int(row.expires_at.replace(tzinfo=MSK).timestamp()) if row.expires_at else None,
         "bind_steamids": row.bind_steamids, "spawn_mode": row.spawn_mode, "team": row.team,
     })
     db.add(row)
