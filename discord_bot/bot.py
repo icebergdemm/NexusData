@@ -1655,6 +1655,25 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
         ephemeral=False
     )
 
+    # На сайт этот ответ иначе никогда не попадает: канал (и все его
+    # сообщения) удаляется через delay_seconds, а само сообщение бота
+    # on_message пропускает целиком (message.author.bot). Без этого
+    # финальное слово модератора терялось — в архиве тикета видно только
+    # переписку ДО закрытия, а решение приходится искать в логах Discord,
+    # которых для удалённого канала уже не существует. Пишем от имени
+    # РЕАЛЬНОГО админа (не "бот"/"system") — это его ответ, бот лишь
+    # передаёт его в канал.
+    if ticket_id:
+        await asyncio.to_thread(
+            bot_data.add_ticket_message,
+            ticket_id=ticket_id,
+            author_discord_id=str(user.id),
+            author_username=str(user),
+            author_display_name=user.display_name,
+            author_avatar_url=str(user.display_avatar.url) if user.display_avatar else None,
+            content=f"🔒 Тикет закрыт. Ответ: {answer}",
+        )
+
     async def _do_close():
         await asyncio.sleep(delay_seconds)
 

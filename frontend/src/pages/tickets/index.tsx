@@ -49,6 +49,7 @@ export function TicketsListPage() {
                     <div className="font-medium">{t.title}</div>
                     <div className="text-xs text-muted-foreground">
                       {meta?.name ?? t.ticket_type} · {t.creator_display_name || t.creator_username} · {fmtDate(t.created_at)}
+                      {t.status === "closed" && t.closed_by && <> · закрыл(а) {t.closed_by}</>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

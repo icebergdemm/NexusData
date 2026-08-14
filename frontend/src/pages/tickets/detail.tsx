@@ -66,6 +66,9 @@ export function TicketDetailPage() {
                   {` · игрок: ${data.player.forced_display_name || data.player.player_last_time_name}`}
                 </span>
               )}
+              {isClosed && ticket.closed_by && (
+                <span> · закрыл(а) {ticket.closed_by}{ticket.closed_at ? `, ${fmtDate(ticket.closed_at)}` : ""}</span>
+              )}
             </div>
           </div>
           {data.can_edit && !isClosed && (
