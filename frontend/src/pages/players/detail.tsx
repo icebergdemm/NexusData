@@ -202,7 +202,7 @@ export function PlayerDetailPage() {
     return (
       <Card>
         <CardContent className="text-center text-muted-foreground">
-          🔒 Профиль засекречен. Доступ только для суперпользователей.
+          🔒 Профиль засекречен. Нужен допуск (право «Игроки → Доступ к засекреченным профилям») или права суперпользователя.
         </CardContent>
       </Card>
     )

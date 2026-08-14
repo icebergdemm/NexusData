@@ -1283,7 +1283,15 @@ async def admin_player_detail(
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
 
-    if (is_secret or linked_admin) and not current_admin.is_superuser:
+    # См. комментарий в JSON-версии этого эндпоинта (api_player_detail) —
+    # привязка к суперу всегда только для супера, is_secret — по праву
+    # players_special:view.
+    if linked_admin and not current_admin.is_superuser:
+        return templates.TemplateResponse("admin/player_classified.html", {
+            "request": request,
+            "admin": current_admin,
+        })
+    if is_secret and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
         return templates.TemplateResponse("admin/player_classified.html", {
             "request": request,
             "admin": current_admin,
@@ -1733,7 +1741,15 @@ async def api_player_detail(
         AdminUser.discord_id == player.discord_id,
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
-    if (is_secret or linked_admin) and not current_admin.is_superuser:
+    # Профиль, привязанный к аккаунту СУПЕРПОЛЬЗОВАТЕЛЯ, защищён отдельно от
+    # обычной "секретности" и всегда только для супера — это про анонимность
+    # самого суперпользователя перед остальным персоналом, а не про допуск к
+    # засекреченным делам. А вот is_secret (явная пометка "секретно" на
+    # произвольном профиле) теперь открывается правом players_special:view —
+    # тем самым его наконец можно выдавать не только суперам.
+    if linked_admin and not current_admin.is_superuser:
+        return {"classified": True}
+    if is_secret and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
         return {"classified": True}
 
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
