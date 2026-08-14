@@ -187,6 +187,14 @@ class Settings(BaseSettings):
     # one department's own pterodactyl_server_uuid.
     sub_projects_test_server_uuid: str = ""
 
+    # Тот же Pterodactyl-панель (pterodactyl_panel_url/pterodactyl_api_key), но
+    # UUID БОЕВЫХ игровых серверов — для консоли на странице «Модерирование»
+    # (routes/moderation.py, права moderation:console_server1/console_server2).
+    # Намеренно ОТДЕЛЬНЫЕ от sub_projects_test_server_uuid — та переменная про
+    # тестовый сервер деплоя саб-карт, смешивать с боевыми серверами нельзя.
+    pterodactyl_server1_uuid: str = ""
+    pterodactyl_server2_uuid: str = ""
+
     # Document library file storage (real .docx/.xlsx files edited via ONLYOFFICE)
     documents_upload_dir: str = "uploads/documents"
 

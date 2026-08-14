@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Link2 } from "lucide-react"
+import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Link2, Terminal } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -23,6 +23,7 @@ import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { api } from "@/lib/api"
 import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
+import { ConsoleTab } from "./ConsoleTab"
 
 function copyToClipboard(text: string, label: string) {
   navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
@@ -145,6 +146,9 @@ export function ModerationPage() {
           </TabsTrigger>
           <TabsTrigger value="anomalies" className="gap-1.5">
             <ShieldAlert className="size-3.5" /> Аномалии
+          </TabsTrigger>
+          <TabsTrigger value="console" className="gap-1.5">
+            <Terminal className="size-3.5" /> Консоль
           </TabsTrigger>
         </TabsList>
 
@@ -383,6 +387,10 @@ export function ModerationPage() {
 
         <TabsContent value="anomalies">
           <AnomaliesTab setSummaryPlayerId={setSummaryPlayerId} />
+        </TabsContent>
+
+        <TabsContent value="console">
+          <ConsoleTab />
         </TabsContent>
       </Tabs>
 
