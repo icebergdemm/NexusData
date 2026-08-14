@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 from queue import Full, Queue
@@ -47,9 +47,11 @@ _AI_CHANNEL_WAIT_TIMEOUT_SECONDS = 90.0
 _AI_ACTION_ACK_TIMEOUT_SECONDS = 90.0
 _AI_DISPATCH_QUEUE_MAXSIZE = 100
 _AI_DISPATCH_JOB_TTL_SECONDS = 180.0
-_AI_BRIEFING_INITIAL_DELAY_SECONDS = 8.0
+_AI_BRIEFING_MIN_DELAY_SECONDS = 15
+_AI_BRIEFING_MAX_DELAY_SECONDS = 35
 _AI_BRIEFING_RETRY_DELAY_SECONDS = 8.0
 _AI_BRIEFING_MAX_ATTEMPTS = 10
+_AI_BRIEFING_LIFECYCLE_MATCH_SECONDS = 180.0
 _AI_MAX_REPLY_PARTS = 8
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 
@@ -279,7 +281,7 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     db.refresh(event)
     logger.info(f"Round start: {server_name} | {body.submarine_name} | {len(body.players)} players")
     _queue_round_status_refresh(db, server_name)
-    _queue_ai_round_briefing(event)
+    _queue_ai_round_briefing(event, db)
     return {"status": "ok", "round_id": event.id}
 
 
@@ -431,7 +433,65 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
     )
 
 
-def _queue_ai_round_briefing(event: RoundEvent) -> None:
+def _random_ai_briefing_delay_seconds() -> float:
+    """Choose a human-looking delay within the configured inclusive window."""
+
+    span = _AI_BRIEFING_MAX_DELAY_SECONDS - _AI_BRIEFING_MIN_DELAY_SECONDS + 1
+    return float(_AI_BRIEFING_MIN_DELAY_SECONDS + secrets.randbelow(span))
+
+
+def _world_round_matches_lifecycle_event(
+    world_round: WorldRound,
+    event: RoundEvent,
+) -> bool:
+    if (world_round.server_name or "").strip().upper() != (
+        event.server_name or ""
+    ).strip().upper():
+        return False
+    world_started_at = world_round.created_at or world_round.last_update_at
+    if world_started_at is None or event.created_at is None:
+        return False
+    return (
+        abs((world_started_at - event.created_at).total_seconds())
+        <= _AI_BRIEFING_LIFECYCLE_MATCH_SECONDS
+    )
+
+
+def _claim_world_briefing(db: Session, world_round: WorldRound) -> bool:
+    """Atomically claim one world round across all web workers."""
+
+    if world_round.id is None:
+        return False
+    claimed = (
+        db.query(WorldRound)
+        .filter(
+            WorldRound.id == world_round.id,
+            WorldRound.ai_briefing_queued_at.is_(None),
+        )
+        .update(
+            {WorldRound.ai_briefing_queued_at: datetime.utcnow()},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    if claimed:
+        db.refresh(world_round)
+    return claimed == 1
+
+
+def _latest_world_round(db: Session, server_name: str) -> Optional[WorldRound]:
+    return (
+        db.query(WorldRound)
+        .filter(WorldRound.server_name == server_name)
+        .order_by(WorldRound.last_update_at.desc(), WorldRound.id.desc())
+        .first()
+    )
+
+
+def _queue_ai_round_briefing(
+    event: RoundEvent,
+    db: Optional[Session] = None,
+) -> None:
     """Поставить первичный доклад после начала выхода в ту же FIFO, что и ответы."""
 
     url = (settings.ai_dispatcher_url or "").strip()
@@ -453,6 +513,22 @@ def _queue_ai_round_briefing(event: RoundEvent) -> None:
         )
         return
 
+    if db is not None:
+        world_round = _latest_world_round(db, server_name)
+        if world_round is not None and _world_round_matches_lifecycle_event(
+            world_round,
+            event,
+        ):
+            if not _claim_world_briefing(db, world_round):
+                logger.info(
+                    "AI round briefing already covered by world telemetry: "
+                    "round_event_id=%s world_round_id=%s server=%s",
+                    event.id,
+                    world_round.round_id,
+                    server_name,
+                )
+                return
+
     round_id = f"dispatch-{server_name}-round-{event.id}"
     _enqueue_ai_dispatch_job(
         _AIDispatchJob(
@@ -472,10 +548,74 @@ def _queue_ai_round_briefing(event: RoundEvent) -> None:
                 },
             },
             server_name=server_name,
-            initial_delay_seconds=_AI_BRIEFING_INITIAL_DELAY_SECONDS,
+            initial_delay_seconds=_random_ai_briefing_delay_seconds(),
             retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
             max_attempts=_AI_BRIEFING_MAX_ATTEMPTS,
         )
+    )
+
+
+def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
+    """Queue one briefing from first world telemetry when /round/start is absent."""
+
+    url = (settings.ai_dispatcher_url or "").strip()
+    api_key = (settings.ai_dispatcher_api_key or "").strip()
+    server_name = (world_round.server_name or "").strip().upper()
+    if not url or not api_key or server_name not in {"ASPER1", "ASPER2"}:
+        return
+    if world_round.ai_briefing_queued_at is not None:
+        return
+
+    latest_event = (
+        db.query(RoundEvent)
+        .filter(RoundEvent.server_name == server_name)
+        .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
+        .first()
+    )
+    if (
+        latest_event is not None
+        and latest_event.event_type == "start"
+        and _world_round_matches_lifecycle_event(world_round, latest_event)
+    ):
+        # The lifecycle path has already queued its job.  Persist the claim so
+        # every later snapshot and every other worker remains silent.
+        _claim_world_briefing(db, world_round)
+        return
+
+    if not _claim_world_briefing(db, world_round):
+        return
+
+    _enqueue_ai_dispatch_job(
+        _AIDispatchJob(
+            url=url,
+            api_key=api_key,
+            payload={
+                "event_id": f"nexus-world-briefing-{world_round.id}",
+                "round_id": world_round.round_id,
+                "server_name": server_name,
+                "text": "Первичный доклад по сектору.",
+                "sender_name": None,
+                "message_type": "round_briefing",
+                "briefing_context": {
+                    "submarine_name": world_round.sub_name,
+                    "mission": None,
+                    "location": world_round.level_name,
+                },
+            },
+            server_name=server_name,
+            initial_delay_seconds=_random_ai_briefing_delay_seconds(),
+            retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
+            max_attempts=_AI_BRIEFING_MAX_ATTEMPTS,
+        )
+    )
+    logger.info(
+        "AI world briefing queued from telemetry: event_id=%s round_id=%s "
+        "server=%s delay_range=%s-%s",
+        f"nexus-world-briefing-{world_round.id}",
+        world_round.round_id,
+        server_name,
+        _AI_BRIEFING_MIN_DELAY_SECONDS,
+        _AI_BRIEFING_MAX_DELAY_SECONDS,
     )
 
 
@@ -653,20 +793,34 @@ def _resolve_ai_conversation_round_id(db: Session, server_name: str) -> str:
         .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
         .first()
     )
+    latest_world_round = _latest_world_round(db, server_name)
+
+    # Some servers stream world telemetry but do not post lifecycle events.
+    # Prefer a clearly newer world round over an old start/end row so both the
+    # automatic briefing and later terminal messages share the real round ID.
+    if latest_world_round is not None:
+        world_started_at = (
+            latest_world_round.created_at or latest_world_round.last_update_at
+        )
+        event_created_at = latest_event.created_at if latest_event is not None else None
+        world_is_unrepresented = latest_event is None
+        if world_started_at is not None and event_created_at is not None:
+            if latest_event.event_type == "end":
+                world_is_unrepresented = world_started_at > event_created_at
+            elif latest_event.event_type == "start":
+                world_is_unrepresented = (
+                    world_started_at
+                    > event_created_at
+                    + timedelta(seconds=_AI_BRIEFING_LIFECYCLE_MATCH_SECONDS)
+                )
+        if world_is_unrepresented:
+            return str(latest_world_round.round_id)
+
     if latest_event is not None:
         if latest_event.event_type == "start":
             return f"dispatch-{server_name}-round-{latest_event.id}"
         return f"dispatch-{server_name}-idle-{latest_event.id}"
 
-    # Some installations stream world snapshots without posting lifecycle
-    # events. In that fallback mode the latest known world round remains the
-    # stable anchor even if its telemetry pauses for more than 15 seconds.
-    latest_world_round = (
-        db.query(WorldRound)
-        .filter(WorldRound.server_name == server_name)
-        .order_by(WorldRound.last_update_at.desc())
-        .first()
-    )
     if latest_world_round is not None:
         return str(latest_world_round.round_id)
     return f"dispatch-{server_name}-idle-0"

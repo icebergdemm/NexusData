@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, call, patch
 
 from fastapi import HTTPException
@@ -21,6 +21,7 @@ from routes.dispatch import (
     _extract_ai_dispatcher_replies,
     _post_ai_dispatcher_sync,
     _queue_ai_round_briefing,
+    _queue_ai_world_briefing,
     _queue_ai_radio_action,
     _resolve_ai_conversation_round_id,
     _send_dispatcher_message,
@@ -87,7 +88,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             self.assertEqual(result["round_id"], event.id)
             self.assertEqual(event.server_name, "ASPER1")
             refresh_status.assert_called_once_with(db, "ASPER1")
-            queue_briefing.assert_called_once_with(event)
+            queue_briefing.assert_called_once_with(event, db)
         finally:
             db.close()
             engine.dispose()
@@ -143,6 +144,115 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 },
             },
         )
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_world_telemetry_queues_one_briefing_without_round_start(self, enqueue_job):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[RoundEvent.__table__, WorldRound.__table__],
+        )
+        db = Session(engine)
+        try:
+            world_round = WorldRound(
+                round_id="world-round-42",
+                server_name="ASPER1",
+                sub_name="Сигнатура",
+                level_name="Европейский кряж",
+                last_update_at=datetime.utcnow(),
+            )
+            db.add(world_round)
+            db.commit()
+            db.refresh(world_round)
+
+            with (
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_url",
+                    "http://dispatcher/api/v1/dispatcher/messages",
+                ),
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_api_key",
+                    "dispatcher-secret",
+                ),
+                patch("routes.dispatch.secrets.randbelow", return_value=7),
+            ):
+                _queue_ai_world_briefing(world_round, db)
+                _queue_ai_world_briefing(world_round, db)
+
+            enqueue_job.assert_called_once()
+            job = enqueue_job.call_args.args[0]
+            self.assertEqual(job.initial_delay_seconds, 22.0)
+            self.assertEqual(job.max_attempts, 10)
+            self.assertEqual(
+                job.payload,
+                {
+                    "event_id": f"nexus-world-briefing-{world_round.id}",
+                    "round_id": "world-round-42",
+                    "server_name": "ASPER1",
+                    "text": "Первичный доклад по сектору.",
+                    "sender_name": None,
+                    "message_type": "round_briefing",
+                    "briefing_context": {
+                        "submarine_name": "Сигнатура",
+                        "mission": None,
+                        "location": "Европейский кряж",
+                    },
+                },
+            )
+            self.assertIsNotNone(world_round.ai_briefing_queued_at)
+        finally:
+            db.close()
+            engine.dispose()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_world_telemetry_does_not_duplicate_recent_lifecycle_briefing(
+        self,
+        enqueue_job,
+    ):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[RoundEvent.__table__, WorldRound.__table__],
+        )
+        db = Session(engine)
+        try:
+            now = datetime.utcnow()
+            world_round = WorldRound(
+                round_id="world-round-43",
+                server_name="ASPER1",
+                created_at=now,
+                last_update_at=now,
+            )
+            event = RoundEvent(
+                event_type="start",
+                server_name="ASPER1",
+                created_at=now,
+            )
+            db.add_all([world_round, event])
+            db.commit()
+            db.refresh(world_round)
+
+            with (
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_url",
+                    "http://dispatcher/api/v1/dispatcher/messages",
+                ),
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_api_key",
+                    "dispatcher-secret",
+                ),
+            ):
+                _queue_ai_world_briefing(world_round, db)
+
+            enqueue_job.assert_not_called()
+            self.assertIsNotNone(world_round.ai_briefing_queued_at)
+        finally:
+            db.close()
+            engine.dispose()
 
     @patch("routes.dispatch._deliver_ai_dispatcher_replies")
     @patch("routes.dispatch.httpx.Client", _FakeClient)
@@ -849,6 +959,26 @@ class AIConversationRoundTests(unittest.TestCase):
         self.assertEqual(
             _resolve_ai_conversation_round_id(self.db, "ASPER1"),
             "world-only-round",
+        )
+
+    def test_new_world_round_overrides_old_end_without_new_lifecycle_event(self):
+        old_end = RoundEvent(
+            event_type="end",
+            server_name="ASPER1",
+            created_at=datetime.utcnow() - timedelta(minutes=10),
+        )
+        world_round = WorldRound(
+            round_id="world-after-old-end",
+            server_name="ASPER1",
+            created_at=datetime.utcnow(),
+            last_update_at=datetime.utcnow(),
+        )
+        self.db.add_all([old_end, world_round])
+        self.db.commit()
+
+        self.assertEqual(
+            _resolve_ai_conversation_round_id(self.db, "ASPER1"),
+            "world-after-old-end",
         )
 
 

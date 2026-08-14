@@ -1490,6 +1490,9 @@ class WorldRound(Base):
     last_reactors = Column(JSON, nullable=True)
     last_characters = Column(JSON, nullable=True)
     last_items = Column(JSON, nullable=True)        # null = IncludeItems:false — never overwritten with null, see routes/world_state.py
+    # Persistent once-per-round claim for the automatic AI sector briefing.
+    # It prevents duplicate reports across Uvicorn workers and process restarts.
+    ai_briefing_queued_at = Column(DateTime, nullable=True)
     # Server-side receipt time (not the plugin's sent_at) — the single
     # source of truth for "is this round still live" (missing snapshots for
     # a few intervals = round over), independent of any clock skew on the

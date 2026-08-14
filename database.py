@@ -142,6 +142,8 @@ def _apply_migrations():
         ("players_data", "steam_avatar_fetched_at", "DATETIME"),
         # round_events: link an "end" row back to the "start" row that opened it
         ("round_events", "paired_start_id", "INT"),
+        # world_rounds: durable once-per-round claim for the automatic AI briefing
+        ("world_rounds", "ai_briefing_queued_at", "DATETIME"),
         # admin_users: flags accounts auto-provisioned by task_sync_department_roles
         ("admin_users", "created_by_worker", "TINYINT NOT NULL DEFAULT 0"),
         # discord_members: role IDs currently held, for department role sync

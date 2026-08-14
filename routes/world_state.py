@@ -132,6 +132,7 @@ async def world_init(request: Request, db: Session = Depends(get_game_db)):
     # the round shows up immediately even before the first snapshot lands.
     row.last_update_at = datetime.utcnow()
     db.commit()
+    _try_queue_ai_world_briefing(db, row)
     return JSONResponse({"status": "ok"})
 
 
@@ -175,7 +176,30 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         row.last_items = items
     row.last_update_at = datetime.utcnow()
     db.commit()
+    _try_queue_ai_world_briefing(db, row)
     return JSONResponse({"status": "ok"})
+
+
+def _try_queue_ai_world_briefing(db: Session, row: WorldRound) -> None:
+    """Best-effort start trigger when the lifecycle endpoint was not called.
+
+    World telemetry is the reliable signal present on every installation.  AI
+    delivery must never make ingest fail, so bridge errors stay in the log and
+    the snapshot still receives its normal 200 response.
+    """
+
+    try:
+        # Local import avoids a module cycle: dispatch imports WorldRound, while
+        # this route only needs the bridge after both modules are initialized.
+        from routes.dispatch import _queue_ai_world_briefing
+
+        _queue_ai_world_briefing(row, db)
+    except Exception:
+        logger.exception(
+            "AI world briefing trigger failed: round_id=%r server=%r",
+            row.round_id,
+            row.server_name,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
