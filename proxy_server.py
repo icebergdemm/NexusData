@@ -58,19 +58,19 @@ BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8001"))
 BACKEND_BASE_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 
 # Это ГРАНИЦА ДОВЕРИЯ к X-Forwarded-For на первом хопе (реальный интернет ->
-# этот процесс). По умолчанию доверяем только localhost — если этот порт
-# смотрит в интернет напрямую (без nginx/другого reverse-proxy перед ним),
-# сюда прилетает СЫРОЙ TCP-адрес клиента и никакой X-Forwarded-For из
-# интернета доверять НЕЛЬЗЯ (иначе любой клиент подделает свой видимый IP
-# заголовком). Если перед этим процессом стоит nginx (или что-то ещё) на
-# loopback, оставляйте "127.0.0.1" — этого достаточно. Явный список того же
-# формата, что uvicorn принимает нативно ("127.0.0.1", "*", "10.0.0.0/8", ...
-# через запятую) — см. FORWARDED_ALLOW_IPS ниже по коду в api_server.py, тот
-# же принцип и та же переменная окружения, ЕСЛИ вы хотите завести её именно
-# под этот процесс — используйте PROXY_FORWARDED_ALLOW_IPS, чтобы не путать
-# с доверенным хопом api_server.py (который всегда должен доверять ТОЛЬКО
-# 127.0.0.1 — это мы сами, proxy_server.py, см. _proxy() ниже).
-_FORWARDED_ALLOW_IPS = os.environ.get("PROXY_FORWARDED_ALLOW_IPS", "127.0.0.1")
+# этот процесс). По умолчанию — IP реального nginx-сервера перед этим
+# процессом (nd.rp-asper.ru проксирует на bapi.icedem.ru:8000 по сети, не
+# по loopback — см. deploy/PROXY_DEPLOYMENT.md), а не "127.0.0.1": здесь
+# TCP-пир всегда сам nginx, не localhost. Явный список того же формата, что
+# uvicorn принимает нативно ("1.2.3.4", "*", "10.0.0.0/8", ... через запятую)
+# — см. FORWARDED_ALLOW_IPS ниже по коду в api_server.py, тот же принцип и
+# та же переменная окружения, ЕСЛИ вы хотите завести её именно под этот
+# процесс — используйте PROXY_FORWARDED_ALLOW_IPS, чтобы не путать с
+# доверенным хопом api_server.py (который всегда должен доверять ТОЛЬКО
+# 127.0.0.1 — это мы сами, proxy_server.py, см. _proxy() ниже). Если у вас
+# другая топология (nginx на loopback, порт открыт в интернет напрямую) —
+# переопределите переменную окружения, дефолт этого IP не подойдёт.
+_FORWARDED_ALLOW_IPS = os.environ.get("PROXY_FORWARDED_ALLOW_IPS", "95.182.102.172")
 
 # How often the watcher thread checks runtime_control + the child process's
 # liveness — console.py's _BACKEND_RESTART_WAIT_SECONDS is tuned to be
