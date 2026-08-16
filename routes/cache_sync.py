@@ -111,13 +111,23 @@ def get_reference_bundle(db: Session = Depends(get_game_db)):
     ("наборы и прочая служебная информация"). Used for the plugin's initial
     load and for a forced 'sync_reference' action — bundled as one call
     since this data is small and changes rarely.
-    """
+
+    `kits` — сырой каталог, как и раньше (используется, например, для
+    civil-кита level 0, который не проходит через квал/спец/вариацию —
+    см. RoundManager_ND.cs, CustomJobItemsPath). `resolved_kits` — НОВОЕ,
+    полностью пре-резолвленные наборы по (job, base_level, kval_level,
+    variation), см. services_kit_resolution.py: с сайта плагину больше не
+    нужно самому собирать базовый+квал набор, применять ar_delete и решать,
+    не сработал ли спец-кит — это уже сделано здесь, отдаётся готовый
+    плоский список предметов + таланты + статы."""
     from schemas import KitOut
+    from services_kit_resolution import build_resolved_kits
 
     kits = db.query(Kit).all()
     mappings = _reference_mappings()
     return {
         "kits": [KitOut.model_validate(k) for k in kits],
+        "resolved_kits": build_resolved_kits(kits),
         **mappings,
         "reference_hash": compute_reference_data_hash(kits, mappings),
     }
