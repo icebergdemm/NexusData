@@ -8,10 +8,11 @@ Also supports reward group conditions based on playtime.
 import os
 import json
 import logging
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -193,29 +194,64 @@ def save_playtime_conditions(conditions: List[Dict]):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Rating reward conditions (top-N every N days)
+# Rating reward conditions (top-N по расписанию: день недели + время МСК)
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# ПОЛНОСТЬЮ ПЕРЕДЕЛАНО (была ежедневная в полночь безусловная раздача без
+# отмены — см. историю check_and_apply_rating_rewards ниже и её докстринг).
+# Формат правила теперь:
+#   {id, role, schedule: {weekday: 0..6 (0=Пн), time_msk: "HH:MM"},
+#    places: [{place, reward_group_id}]}
+# `id` — стабильный идентификатор правила (не пересчитывается от содержимого,
+# иначе переименование/перестановка правил рвало бы связь с уже выданными
+# наградами в RatingRewardHolder/RatingRewardScheduleState) — назначается
+# один раз при первом сохранении правила без id.
 
 RATING_REWARDS_FILE = "data/rating_rewards.json"
 
 
+def _generate_rule_id() -> str:
+    return f"rr_{secrets.token_hex(4)}"
+
+
 def load_rating_rewards() -> List[Dict]:
-    """Load rating-based reward conditions.
-    Format: [{role, check_interval_days, places: [{place, reward_group_id}]}]
-    """
+    """Load rating-based reward conditions, auto-assigning `id` to любому
+    правилу, у которого его ещё нет (напр. сохранённому до этого рефакторинга,
+    либо созданному через API без id) — и сразу персистит эту миграцию на
+    диск, чтобы id не менялся между вызовами."""
     _ensure_dirs()
+    rules = []
     if os.path.exists(RATING_REWARDS_FILE):
         try:
             with open(RATING_REWARDS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                rules = json.load(f)
         except Exception:
-            pass
-    return []
+            rules = []
+
+    changed = False
+    for rule in rules:
+        if not rule.get("id"):
+            rule["id"] = _generate_rule_id()
+            changed = True
+        if not isinstance(rule.get("schedule"), dict):
+            # Старый формат (check_interval_days) или вообще без расписания —
+            # безопасный дефолт: понедельник, полночь МСК. Админ должен
+            # перенастроить через UI, это не попытка угадать прежнюю семантику.
+            rule["schedule"] = {"weekday": 0, "time_msk": "00:00"}
+            changed = True
+    if changed:
+        save_rating_rewards(rules)
+    return rules
 
 
 def save_rating_rewards(rewards: List[Dict]):
-    """Save rating reward conditions."""
+    """Save rating reward conditions. Проставляет id тем правилам, у которых
+    его ещё нет (тот же приём, что и в load_rating_rewards — сохранение
+    может прийти и напрямую из API, в обход load)."""
     _ensure_dirs()
+    for rule in rewards:
+        if not rule.get("id"):
+            rule["id"] = _generate_rule_id()
     with open(RATING_REWARDS_FILE, 'w', encoding='utf-8') as f:
         json.dump(rewards, f, ensure_ascii=False, indent=2)
 
@@ -225,7 +261,22 @@ def save_rating_rewards(rewards: List[Dict]):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def apply_reward_group_to_player(player_steamid: str, group_id: str):
-    """Apply a reward group's items/stats/talents to a player's achievements."""
+    """Apply a reward group's items/stats/talents to a player's achievements.
+
+    КРИТИЧНО: `ach` обязан быть НОВЫМ dict-объектом, а не тем же самым, что
+    уже лежит в player.achievements. `player.achievements or {}` при
+    непустом achievements возвращает ССЫЛКУ НА ТОТ ЖЕ объект — мутация
+    "на месте" с последующим `player.achievements = ach` присваивает
+    атрибуту тот же объект, который там и так уже был, и SQLAlchemy эту
+    "смену" не видит (нечего сравнивать со старым значением — оно и есть
+    новое). Из-за этого одна и та же строка ОТСЮДА реально работала только
+    на первый вызов для игрока (когда achievements=None и `or {}` создаёт
+    настоящий новый объект) — на любой повторный вызов (а значит на любого
+    игрока, уже получавшего хоть одну награду когда-либо) изменения тихо
+    переставали сохраняться: без исключения, без ошибки в логах, commit
+    "проходил", но данные не менялись. Это и есть основная причина
+    "некорректно работает выдача наград за места в рейтинге" — воспроизведено
+    юнит-тестом на реальной БД (см. test_rating_rewards в истории задачи)."""
     from database import SessionLocal
     from models import PlayerData
 
@@ -242,9 +293,7 @@ def apply_reward_group_to_player(player_steamid: str, group_id: str):
             logger.warning(f"Player {player_steamid} not found for reward")
             return False
 
-        ach = player.achievements or {}
-        if isinstance(ach, list):
-            ach = {}
+        ach = {} if isinstance(player.achievements, list) else dict(player.achievements or {})
 
         # Apply items
         items = dict(ach.get("items", {}))
@@ -286,44 +335,277 @@ def apply_reward_group_to_player(player_steamid: str, group_id: str):
         db.close()
 
 
-def check_and_apply_rating_rewards():
-    """Check rating leaderboard and apply rewards to top players."""
-    from database import SessionLocal
-    from models import PlayerRating, PlayerData
-    from sqlalchemy import desc
+def revoke_reward_group_from_player(player_steamid: str, group_id: str) -> bool:
+    """Обратная операция к apply_reward_group_to_player — вычитает ровно то,
+    что эта группа когда-то добавила (та же арифметика, в обратную сторону).
 
-    rewards = load_rating_rewards()
-    if not rewards:
-        return
+    Ограничение по талантам: если ОДИН И ТОТ ЖЕ talent_id выдан игроку сразу
+    несколькими независимыми источниками (эта группа + другая активная
+    награда/ачивка), revoke снимет его, даже если другой источник по-прежнему
+    "считает", что он его выдал — отдельного учёта "кто именно выдал этот
+    конкретный талант" в текущей модели данных (плоский achievements JSON)
+    нет. Для items/stats это не проблема — там ведётся числовой баланс."""
+    from database import SessionLocal
+    from models import PlayerData
+
+    groups = load_reward_groups()
+    group = next((g for g in groups if g.get("id") == group_id), None)
+    if not group:
+        logger.warning(f"Reward group {group_id} not found for revoke")
+        return False
 
     db = SessionLocal()
     try:
-        for reward_config in rewards:
-            role = reward_config.get("role", "")
-            places = reward_config.get("places", [])
-            if not role or not places:
+        player = db.query(PlayerData).filter(PlayerData.player_steamid == player_steamid).first()
+        if not player:
+            return False
+
+        # См. предупреждение в apply_reward_group_to_player выше — тот же
+        # обязательный НОВЫЙ dict-объект, иначе SQLAlchemy не увидит изменение.
+        ach = {} if isinstance(player.achievements, list) else dict(player.achievements or {})
+
+        items = dict(ach.get("items", {}))
+        for item_id, qty in (group.get("items") or {}).items():
+            left = items.get(item_id, 0) - qty
+            if left > 0:
+                items[item_id] = left
+            else:
+                items.pop(item_id, None)
+        ach["items"] = items
+
+        stats = dict(ach.get("stats", {}))
+        for key, val in (group.get("stats") or {}).items():
+            if key == "all":
+                left = stats.get("all", 0) - val
+                stats["all"] = max(0, left)
+            else:
+                job_stats = dict(stats.get(key, {}))
+                for sk, sv in val.items() if isinstance(val, dict) else []:
+                    left = job_stats.get(sk, 0) - sv
+                    if left > 0:
+                        job_stats[sk] = left
+                    else:
+                        job_stats.pop(sk, None)
+                if job_stats:
+                    stats[key] = job_stats
+                else:
+                    stats.pop(key, None)
+        ach["stats"] = stats
+
+        talents = dict(ach.get("talents", {}))
+        for job_id, talent_list in (group.get("talents") or {}).items():
+            existing = [t for t in talents.get(job_id, []) if t not in talent_list]
+            if existing:
+                talents[job_id] = existing
+            else:
+                talents.pop(job_id, None)
+        ach["talents"] = talents
+
+        player.achievements = ach
+        db.commit()
+        logger.info(f"Revoked reward group {group_id} from player {player_steamid}")
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to revoke reward group: {e}")
+        return False
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Расписание правил (день недели + время МСК) и реконсиляция держателей
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Старая check_and_apply_rating_rewards() была фундаментально сломана:
+#   1. Не было расписания — раздача шла безусловно каждую полночь.
+#   2. Не было отзыва — apply_reward_group_to_player только ДОБАВЛЯЕТ, и без
+#      понятия "уже выдано в этом цикле" награда лидеру насчитывалась ЗАНОВО
+#      каждую полночь, пока он держит место (предметы копились бесконечно).
+#   3. Игрок, потерявший место, продолжал владеть уже выданной наградой
+#      навсегда — забрать её было нечем и не на основании чего.
+# reconcile_rating_rewards() читает текущих держателей (RatingRewardHolder),
+# сравнивает с тем, кто СЕЙЧАС занимает место в рейтинге, и делает МИНИМАЛЬНО
+# необходимое: снимает у того, кто больше не держит место (или у кого
+# сменилась выдаваемая группа), выдаёт новому держателю — и ничего не делает,
+# если всё уже верно (идемпотентно, безопасно вызывать сколько угодно раз).
+
+WEEKDAY_LABELS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+
+
+def _cycle_key(now_msk: datetime) -> str:
+    """ISO-неделя вида '2026-W33' — единица цикла: правило срабатывает не
+    больше одного раза за календарную ISO-неделю."""
+    iso = now_msk.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _rule_due(rule: Dict, now_msk: datetime, last_cycle_key: Optional[str]) -> Tuple[bool, str]:
+    """Правило "наступило", если сейчас его день недели, время >= назначенного
+    (и не сильно позже — окно в 1 час на случай, если сервер был недоступен
+    ровно в нужную минуту, но не бесконечно, иначе после долгого простоя
+    правило сработало бы даже спустя дни) — и оно ещё не срабатывало в
+    текущем ISO-цикле."""
+    schedule = rule.get("schedule") or {}
+    weekday = schedule.get("weekday")
+    time_msk = schedule.get("time_msk") or "00:00"
+    if weekday is None or not isinstance(weekday, int) or not (0 <= weekday <= 6):
+        return False, ""
+    try:
+        hh, mm = (int(x) for x in str(time_msk).split(":", 1))
+    except (ValueError, TypeError):
+        hh, mm = 0, 0
+
+    cycle = _cycle_key(now_msk)
+    if cycle == last_cycle_key:
+        return False, cycle  # уже сработало в этом цикле
+
+    if now_msk.weekday() != weekday:
+        return False, cycle
+
+    scheduled_today = now_msk.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if now_msk < scheduled_today:
+        return False, cycle
+    if now_msk - scheduled_today > timedelta(hours=1):
+        return False, cycle  # окно упущено — ждём следующего цикла, не досрабатываем задним числом
+
+    return True, cycle
+
+
+def _get_or_create_schedule_state(db, rule_id: str):
+    from models import RatingRewardScheduleState
+    state = db.query(RatingRewardScheduleState).filter(RatingRewardScheduleState.rule_id == rule_id).first()
+    if not state:
+        state = RatingRewardScheduleState(rule_id=rule_id)
+        db.add(state)
+    return state
+
+
+def reconcile_rating_rewards(force: bool = False, rule_id: Optional[str] = None) -> Dict:
+    """Приводит текущих держателей наград за место в рейтинге в соответствие
+    с настоящим состоянием лидерборда. force=True игнорирует расписание
+    (кнопка "Применить сейчас" в админке) — при этом ISO-цикл ВСЁ РАВНО
+    обновляется, чтобы принудительный прогон не привёл к повторному
+    срабатыванию по расписанию в течение той же недели.
+
+    rule_id — прогнать только одно правило (не используется воркером,
+    полезно для точечной проверки из админки)."""
+    from database import SessionLocal
+    from models import PlayerRating, RatingRewardHolder
+    from sqlalchemy import desc
+
+    rules = load_rating_rewards()
+    if rule_id:
+        rules = [r for r in rules if r.get("id") == rule_id]
+    if not rules:
+        return {"processed_rules": 0, "granted": 0, "revoked": 0}
+
+    now = _now_msk()
+    granted = 0
+    revoked = 0
+    processed = 0
+
+    db = SessionLocal()
+    try:
+        for rule in rules:
+            rid = rule.get("id")
+            role = rule.get("role", "")
+            places = rule.get("places", [])
+            if not rid or not role or not places:
                 continue
 
-            # Get leaderboard for this role
+            state = _get_or_create_schedule_state(db, rid)
+            if not force:
+                due, cycle = _rule_due(rule, now, state.last_cycle_key)
+                if not due:
+                    continue
+            else:
+                cycle = _cycle_key(now)
+
+            processed += 1
+
+            max_place = max((p.get("place", 0) for p in places), default=0)
             records = (
                 db.query(PlayerRating)
                 .filter(PlayerRating.role == role, PlayerRating.current_rating > 0)
                 .order_by(desc(PlayerRating.current_rating))
-                .limit(max(p.get("place", 0) for p in places))
+                .limit(max_place)
                 .all()
-            )
+            ) if max_place > 0 else []
 
             for place_config in places:
                 place = place_config.get("place", 0)
                 group_id = place_config.get("reward_group_id", "")
                 if place < 1 or not group_id:
                     continue
-                if place <= len(records):
-                    player_rating = records[place - 1]
-                    apply_reward_group_to_player(player_rating.steam_id, group_id)
+
+                current_steamid = records[place - 1].steam_id if place <= len(records) else None
+
+                holder = (
+                    db.query(RatingRewardHolder)
+                    .filter(RatingRewardHolder.rule_id == rid, RatingRewardHolder.place == place)
+                    .first()
+                )
+                prev_steamid = holder.steam_id if holder else None
+                prev_group_id = holder.reward_group_id if holder else None
+
+                if prev_steamid == current_steamid and prev_group_id == group_id:
+                    continue  # уже верно выдано — не трогаем
+
+                # Снять у прежнего держателя, если он был и его группа
+                # известна (иначе нечего/нечем снимать корректно).
+                if prev_steamid and prev_group_id:
+                    if revoke_reward_group_from_player(prev_steamid, prev_group_id):
+                        revoked += 1
+
+                # Выдать новому (если место сейчас вообще кем-то занято).
+                if current_steamid:
+                    if apply_reward_group_to_player(current_steamid, group_id):
+                        granted += 1
+
+                if holder is None:
+                    holder = RatingRewardHolder(rule_id=rid, place=place)
+                    db.add(holder)
+                holder.steam_id = current_steamid
+                holder.reward_group_id = group_id if current_steamid else None
+                holder.granted_at = now
+
+            state.last_cycle_key = cycle
+            state.last_run_at = now
+            db.commit()
 
     except Exception as e:
-        logger.error(f"Failed to check rating rewards: {e}")
+        db.rollback()
+        logger.error(f"Failed to reconcile rating rewards: {e}")
+    finally:
+        db.close()
+
+    return {"processed_rules": processed, "granted": granted, "revoked": revoked}
+
+
+def get_rating_reward_holders() -> List[Dict]:
+    """Текущие держатели наград по всем правилам — для отображения в админке
+    (видно, у кого что реально выдано прямо сейчас, без похода в БД руками)."""
+    from database import SessionLocal
+    from models import RatingRewardHolder, PlayerData
+
+    db = SessionLocal()
+    try:
+        rows = db.query(RatingRewardHolder).filter(RatingRewardHolder.steam_id.isnot(None)).all()
+        steamids = {r.steam_id for r in rows}
+        names = {}
+        if steamids:
+            for p in db.query(PlayerData.player_steamid, PlayerData.player_last_time_name, PlayerData.forced_display_name).filter(PlayerData.player_steamid.in_(steamids)).all():
+                names[p.player_steamid] = p.forced_display_name or p.player_last_time_name
+        return [
+            {
+                "rule_id": r.rule_id, "place": r.place, "steam_id": r.steam_id,
+                "player_name": names.get(r.steam_id),
+                "reward_group_id": r.reward_group_id,
+                "granted_at": r.granted_at.isoformat() if r.granted_at else None,
+            }
+            for r in rows
+        ]
     finally:
         db.close()
 
@@ -389,12 +671,10 @@ def _playtime_stats_worker_loop():
         logger.info("Midnight MSK — running playtime stats calculation")
         calculate_playtime_stats()
 
-        # Check and apply rewards
-        try:
-            check_and_apply_rating_rewards()
-        except Exception as e:
-            logger.error(f"Rating rewards check failed: {e}")
-
+        # Награды по рейтингу теперь проверяются отдельной периодической
+        # задачей по расписанию (workers.task_check_rating_reward_schedules,
+        # раз в 5 минут — правило само решает, наступило ли его время), а не
+        # раз в сутки здесь. См. reconcile_rating_rewards выше.
         try:
             check_and_apply_playtime_rewards()
         except Exception as e:

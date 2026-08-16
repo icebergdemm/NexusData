@@ -127,6 +127,17 @@ def task_recalculate_ratings() -> dict:
         db.close()
 
 
+def task_check_rating_reward_schedules() -> dict:
+    """Проверяет, не наступило ли назначенное время (день недели + время МСК)
+    у какого-нибудь правила награды за место в рейтинге, и если да —
+    реконсилирует держателей (выдаёт новому, забирает у прежнего, если место
+    сменилось). Каждое правило само решает по своему расписанию — задача
+    просто дёргает проверку часто (раз в 5 мин), а не спит до полуночи, как
+    было раньше (см. services_playtime_stats.reconcile_rating_rewards)."""
+    import services_playtime_stats
+    return services_playtime_stats.reconcile_rating_rewards()
+
+
 def task_sauron_twinks() -> dict:
     """Twink detection analysis. Triggered on demand, cached 10 min."""
     import services_sauron
@@ -974,6 +985,7 @@ def _start_simple_workers():
     for fn, interval in [
         (task_compensate_playtime, 30 * 60),
         (task_recalculate_ratings, 24 * 60 * 60),
+        (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
@@ -1008,6 +1020,15 @@ def _start_scheduler():
         interval_secs=24 * 60 * 60,
         priority=Priority.LOW,
         task_id="rating_recalc",
+    )
+
+    # Награды за место в рейтинге: правило само решает по своему расписанию
+    # (день недели + время МСК), проверка — раз в 5 мин, LOW priority.
+    scheduler.register_periodic(
+        task_check_rating_reward_schedules,
+        interval_secs=5 * 60,
+        priority=Priority.LOW,
+        task_id="rating_reward_schedules",
     )
 
     # Replay cleanup: BACKGROUND priority, every 6 hours

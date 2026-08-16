@@ -572,6 +572,47 @@ class RatingHistory(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+class RatingRewardHolder(Base):
+    """Текущий держатель награды за место в рейтинге — по одной строке на
+    (rule_id, place). Это то, чего не хватало старой системе: без записи
+    "кому и что выдано за это место" реконсиляция не может ни отличить
+    "уже выдано в этом цикле" от "выдать заново", ни понять, у кого
+    награду нужно забрать, когда место в рейтинге сменится.
+
+    rule_id — стабильный идентификатор правила из data/rating_rewards.json
+    (не role, т.к. на одну профессию может быть несколько правил с разным
+    расписанием — см. services_playtime_stats.load_rating_rewards).
+    """
+    __tablename__ = "rating_reward_holders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_id = Column(String(64), nullable=False, index=True)
+    place = Column(Integer, nullable=False)
+    steam_id = Column(String(50), nullable=True, index=True)  # null = место никем не занято на момент выдачи
+    reward_group_id = Column(String(64), nullable=True)  # какая именно группа выдана — для точного revoke
+    granted_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('rule_id', 'place', name='uq_rating_reward_holder_rule_place'),
+    )
+
+
+class RatingRewardScheduleState(Base):
+    """Когда правило награды по рейтингу последний раз реально сработало по
+    расписанию (день недели + время МСК) — без этого воркер, проверяющий
+    расписание каждые несколько минут, не смог бы отличить "ещё не наступило
+    назначенное время" от "уже сработало в этом цикле, не срабатывать снова
+    в том же окне". cycle_key — ISO-неделя (напр. "2026-W33"), в которую
+    правило уже было применено."""
+    __tablename__ = "rating_reward_schedule_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_id = Column(String(64), unique=True, nullable=False, index=True)
+    last_cycle_key = Column(String(16), nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+
+
 class SubProjectCategory(Base):
     """Flexible category system for sub-projects (manageable by superusers/assigned roles)."""
     __tablename__ = "sub_project_categories"

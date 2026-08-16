@@ -462,7 +462,7 @@ from services_playtime_stats import (
     load_reward_groups, save_reward_groups,
     load_playtime_conditions, save_playtime_conditions,
     load_rating_rewards, save_rating_rewards,
-    check_and_apply_rating_rewards, check_and_apply_playtime_rewards,
+    reconcile_rating_rewards, get_rating_reward_holders, check_and_apply_playtime_rewards,
 )
 
 
@@ -573,18 +573,37 @@ async def api_save_rating_rewards(
     return JSONResponse({"status": "ok"})
 
 
+@router.get("/api/v1/admin/rating-rewards/holders")
+async def api_get_rating_reward_holders(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Кто прямо сейчас реально держит награду за место в рейтинге, по
+    каждому правилу/месту — чтобы в админке было видно, что отзыв у
+    потерявших место действительно работает, а не просто настроен."""
+    if not check_permission(current_admin, "ratings", "view"):
+        raise HTTPException(status_code=403)
+    return JSONResponse({"holders": get_rating_reward_holders()})
+
+
 @router.post("/api/v1/admin/rewards/apply-now")
 async def api_apply_rewards_now(
     request: Request,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Force apply all reward checks (rating + playtime) now."""
+    """Force apply all reward checks (rating + playtime) now.
+
+    Награды по рейтингу — через reconcile_rating_rewards(force=True):
+    расписание правил игнорируется, но реконсиляция всё равно идемпотентна
+    (выдаёт/снимает только реальные расхождения с текущим лидербордом), так
+    что повторный вызов этой кнопки безопасен и не задваивает награды."""
     if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
     import threading
     def _apply():
-        check_and_apply_rating_rewards()
+        reconcile_rating_rewards(force=True)
         check_and_apply_playtime_rewards()
     threading.Thread(target=_apply, daemon=True).start()
     return JSONResponse({"status": "ok", "message": "Проверка наград запущена"})

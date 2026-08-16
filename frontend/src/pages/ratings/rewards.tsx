@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
-import { canEdit, useCurrentAdmin } from "@/lib/auth"
+import { canDo, useCurrentAdmin } from "@/lib/auth"
 import { RewardGroupsSection } from "./reward-groups-section"
 import { RatingRewardsSection } from "./rating-rewards-section"
 import { PlaytimeSection } from "./playtime-section"
@@ -10,7 +10,12 @@ import type { PlaytimeCondition, RatingRewardCondition, RewardGroup } from "./re
 
 export function RewardsConfigPage() {
   const { data: admin } = useCurrentAdmin()
-  const edit = canEdit(admin, "ratings")
+  // Бэкенд гейтит сохранение здесь именно ratings:manage_rewards, не
+  // ratings:edit (см. routes/logs.py) — раньше кнопки редактирования
+  // смотрели на другое право, чем реально требовал сервер: с одним правом
+  // без другого либо кнопок не было видно вовсе, либо они были видны и
+  // сохранение падало 403-й.
+  const edit = canDo(admin, "ratings", "manage_rewards")
 
   const { data: groups, isLoading: loadingGroups } = useQuery({
     queryKey: ["reward-groups"], queryFn: () => api.get<RewardGroup[]>("/api/v1/admin/reward-groups"),
