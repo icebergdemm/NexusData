@@ -5254,105 +5254,31 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
 
 @router.get("/api/v1/admin/administration")
 async def api_admin_administration(
-    period: str = Query("day"), twink_page: int = Query(1),
     db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin),
 ):
+    """Только конфигурация (.env) — статистика убрана отсюда: она дублировала
+    (сильно менее эффективно) уже существующую страницу «Аналитика», и была
+    основной причиной, по которой открытие «Администрирования» на несколько
+    секунд подвешивало ВЕСЬ сайт для всех.
+
+    До этой правки здесь синхронно, прямо в теле async-обработчика (то есть
+    БЛОКИРУЯ event loop uvicorn целиком — ни один другой запрос от любого
+    пользователя не обслуживался, пока это не закончится), выполнялись:
+      - db.query(PlayerSession).all() без индекса на login_time (полное
+        сканирование растущей на каждый вход/выход таблицы);
+      - вложенные Python-циклы O(слотов × сэмплов × сессий) для построения
+        графика "онлайн за период" — то же самое, что services_analytics.py
+        уже делает одним GROUP BY в SQL;
+      - TwinkDetectionService.get_all_twink_pairs() — self-JOIN по
+        player_ips на КАЖДОЙ загрузке страницы, результат которого фронтенд
+        при этом вообще нигде не отображал (мёртрая выдача, посчитанная
+        зря).
+    Именно эта комбинация (полный скан + O(n²)-подобные циклы + self-join,
+    всё без await/run_in_threadpool) и была наиболее вероятной причиной
+    полных зависаний сайта на 5-10 секунд при открытии этой страницы."""
     if not check_permission(current_admin, "admin", "edit"):
         raise HTTPException(status_code=403)
-
-    from sqlalchemy import text
-    from models import PlayerSession
-
-    now = datetime.utcnow()
-    period_map = {"day": now - timedelta(days=1), "week": now - timedelta(weeks=1), "month": now - timedelta(days=30), "all": None}
-    since = period_map.get(period, period_map["day"])
-
-    sess_q = db.query(PlayerSession)
-    if since:
-        sess_q = sess_q.filter(PlayerSession.login_time >= since)
-    sessions = sess_q.all()
-
-    unique_players = len({s.player_id for s in sessions})
-    total_sessions = len(sessions)
-    total_play_secs = sum((s.session_duration or 0) for s in sessions)
-    avg_session_mins = round(total_play_secs / 60 / max(total_sessions, 1))
-
-    events = []
-    for s in sessions:
-        events.append((s.login_time, +1))
-        if s.logout_time:
-            events.append((s.logout_time, -1))
-    events.sort(key=lambda x: x[0])
-    peak_concurrent = 0
-    current_count = 0
-    for _, delta in events:
-        current_count += delta
-        peak_concurrent = max(peak_concurrent, current_count)
-
-    if period == "day":
-        slot_count, slot_delta, label_fmt = 24, timedelta(hours=1), "%H:%M"
-    elif period == "week":
-        slot_count, slot_delta, label_fmt = 7 * 6, timedelta(hours=4), "%d.%m %H:%M"
-    elif period == "month":
-        slot_count, slot_delta, label_fmt = 30, timedelta(days=1), "%d.%m"
-    else:
-        slot_count, slot_delta, label_fmt = 52, timedelta(weeks=1), "%d.%m.%y"
-
-    slot_start_global = since if since else (now - slot_delta * slot_count)
-    chart_labels, peak_values, avg_values, min_values = [], [], [], []
-    N_SAMPLES = 10
-    for i in range(slot_count):
-        sl_start = slot_start_global + slot_delta * i
-        sl_end = sl_start + slot_delta
-        active = [s for s in sessions if s.login_time < sl_end and (s.logout_time is None or s.logout_time > sl_start)]
-        chart_labels.append(sl_start.strftime(label_fmt))
-        if not active:
-            peak_values.append(0); avg_values.append(0); min_values.append(0)
-            continue
-        slot_secs = slot_delta.total_seconds()
-        samples = []
-        for j in range(N_SAMPLES):
-            t = sl_start + timedelta(seconds=slot_secs * j / N_SAMPLES)
-            samples.append(sum(1 for s in active if s.login_time <= t and (s.logout_time is None or s.logout_time >= t)))
-        peak_values.append(max(samples))
-        avg_values.append(round(sum(samples) / len(samples), 1))
-        min_values.append(min(samples))
-
-    top_players_raw = db.execute(text(
-        "SELECT ps.player_id, pd.player_last_time_name, pd.player_steamid, pd.forced_display_name, "
-        "       SUM(ps.session_duration) as total_secs, COUNT(*) as sessions "
-        "FROM player_sessions ps LEFT JOIN players_data pd ON pd.player_id = ps.player_id "
-        + ("WHERE ps.login_time >= :since " if since else "")
-        + "GROUP BY ps.player_id ORDER BY total_secs DESC LIMIT 20"
-    ), {"since": since} if since else {}).fetchall()
-
-    twink_svc = TwinkDetectionService(db)
-    all_twinks = twink_svc.get_all_twink_pairs(min_signals=1)
-    twink_per_page = 30
-    twink_total = len(all_twinks)
-    twink_pages = max(1, (twink_total + twink_per_page - 1) // twink_per_page)
-    twink_page = max(1, min(twink_page, twink_pages))
-    twinks_paged = all_twinks[(twink_page - 1) * twink_per_page: twink_page * twink_per_page]
-
-    return {
-        "period": period,
-        "unique_players": unique_players, "total_sessions": total_sessions,
-        "avg_session_mins": avg_session_mins, "peak_concurrent": peak_concurrent,
-        "chart_labels": chart_labels, "peak_values": peak_values, "avg_values": avg_values, "min_values": min_values,
-        "top_players": [
-            {
-                "player_id": r[0],
-                "player_last_time_name": r[1],
-                "player_steamid": r[2],
-                "forced_display_name": r[3],
-                "total_secs": int(r[4] or 0),
-                "sessions": int(r[5]),
-            }
-            for r in top_players_raw
-        ],
-        "editable_cfg": _get_editable_config(current_admin),
-        "twinks": twinks_paged, "twink_page": twink_page, "twink_pages": twink_pages, "twink_total": twink_total,
-    }
+    return {"editable_cfg": _get_editable_config(current_admin)}
 
 
 @router.post("/api/v1/admin/administration/config")
