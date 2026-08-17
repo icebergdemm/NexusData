@@ -23,7 +23,7 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, sub_checker_router, game_api_router, game_public_router, ratings_router, discord_bot_panel_router, discord_viewer_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, dispatch_client_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router, cache_sync_api_router, sounds_router, dolls_game_router, dolls_admin_router, achievements_game_router, achievements_admin_router, error_log_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, sub_checker_router, game_api_router, game_public_router, ratings_router, discord_bot_panel_router, discord_viewer_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, dispatch_client_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router, cache_sync_api_router, sounds_router, dolls_game_router, dolls_admin_router, achievements_game_router, achievements_admin_router, error_log_router, perf_monitor_router
 from workers import start_playtime_worker, stop_all_workers, watch_runtime_state
 import runtime_control
 from datetime import datetime
@@ -290,6 +290,7 @@ def create_app() -> FastAPI:
     app.include_router(achievements_game_router)
     app.include_router(achievements_admin_router)
     app.include_router(error_log_router)
+    app.include_router(perf_monitor_router)
 
     # ── Register global Jinja2 filters for MSK time display ──────────────────
     from utils_time import utc_to_msk, format_msk
@@ -453,6 +454,21 @@ def create_app() -> FastAPI:
             runtime_control.set_db_healthy(False)
         app.state.start_time = datetime.utcnow()
 
+        # Event-loop lag watchdog (services_perf_monitor.py) — started
+        # unconditionally, NOT gated by WORKER_ROLE like the background
+        # scheduler below: it measures whether THIS process's own event loop
+        # (the one uvicorn uses to serve every HTTP request) is responsive,
+        # which matters for every process that ever serves a request,
+        # single-process default or one of several `--workers`. See the
+        # module docstring for why this is the most direct signal for
+        # "сайт полностью завис на несколько секунд".
+        try:
+            import asyncio as _asyncio_perf
+            import services_perf_monitor
+            _asyncio_perf.create_task(services_perf_monitor.event_loop_watchdog())
+        except Exception:
+            logger.exception("Failed to start event-loop watchdog")
+
         # Apply any superuser-saved rating formula override (see the Рейтинг
         # page's config panel) before this process computes/serves any
         # rating — every worker process needs this, not just the one running
@@ -556,7 +572,20 @@ def create_app() -> FastAPI:
             # Session may not be available for some requests
             pass
 
+        # Slow-request detection (services_perf_monitor.py) — the
+        # time.monotonic() calls and comparison cost microseconds on every
+        # request; the only real work (a DB write) happens in the rare case
+        # the threshold is actually exceeded, inside record_slow_request.
+        import time as _time_perf
+        _req_t0 = _time_perf.monotonic()
+
         response = await call_next(request)
+
+        try:
+            from services_perf_monitor import record_slow_request
+            record_slow_request(request.method, request.url.path, _time_perf.monotonic() - _req_t0)
+        except Exception:
+            pass
 
         # Add security headers
         response.headers["X-Content-Type-Options"] = "nosniff"

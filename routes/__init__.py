@@ -29,6 +29,7 @@ from .sounds import router as sounds_router
 from .respawn_dolls import game_router as dolls_game_router, admin_router as dolls_admin_router
 from .achievements import game_router as achievements_game_router, admin_router as achievements_admin_router
 from .error_log import router as error_log_router
+from .perf_monitor import router as perf_monitor_router
 
 __all__ = [
     "status_router",
@@ -72,4 +73,5 @@ __all__ = [
     "achievements_game_router",
     "achievements_admin_router",
     "error_log_router",
+    "perf_monitor_router",
 ]

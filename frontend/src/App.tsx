@@ -32,6 +32,7 @@ import { RoundDetailPage } from "@/pages/replays/round-detail"
 import { SessionsPage } from "@/pages/sessions"
 import { AuditPage } from "@/pages/audit"
 import { ErrorLogPage } from "@/pages/error-log"
+import { PerfMonitorPage } from "@/pages/perf-monitor"
 import { LabelCategoriesPage } from "@/pages/label-categories"
 import { UsersPage } from "@/pages/users"
 import { KitsPage } from "@/pages/kits"
@@ -133,6 +134,7 @@ export default function App() {
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="error-log" element={<ErrorLogPage />} />
+          <Route path="perf-monitor" element={<PerfMonitorPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="documents" element={<DocumentsPage />} />
           <Route path="tasks" element={<TasksListPage />} />

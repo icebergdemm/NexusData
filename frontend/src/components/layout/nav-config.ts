@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Radio, Users, ShieldAlert, Gavel, PlayCircle,
   Ship, Star, Bot, Ticket, UserCog, Settings, KeyRound, Wrench,
   Clock, ScrollText, BarChart3, Tags, FileText, NotebookText, Building2,
-  KanbanSquare, Globe2, Music, UserPlus, ClipboardCheck, Trophy, Bug,
+  KanbanSquare, Globe2, Music, UserPlus, ClipboardCheck, Trophy, Bug, Activity,
 } from "lucide-react"
 import type { CurrentAdmin, PermissionPage } from "@/lib/auth"
 
@@ -90,6 +90,10 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Аудит", to: "/audit", icon: ScrollText, permission: "audit" },
       {
         label: "Журнал ошибок", to: "/error-log", icon: Bug,
+        isVisible: (admin) => !!admin?.is_superuser,
+      },
+      {
+        label: "Мониторинг производительности", to: "/perf-monitor", icon: Activity,
         isVisible: (admin) => !!admin?.is_superuser,
       },
       { label: "Аналитика", to: "/analytics", icon: BarChart3, permission: "admin" },

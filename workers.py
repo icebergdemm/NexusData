@@ -928,6 +928,16 @@ def task_memory_maintenance() -> dict:
     }
 
 
+def task_sample_perf_resources() -> dict:
+    """CPU/RAM-сэмпл процесса+системы для страницы «Мониторинг
+    производительности» — см. services_perf_monitor.py про то, почему это
+    не пишет в БД на каждый вызов (только редкие аномалии) и почему это
+    BACKGROUND-приоритет (никогда не конкурирует с обслуживанием запросов).
+    Runs every 30s."""
+    import services_perf_monitor
+    return services_perf_monitor.sample_resources()
+
+
 def task_check_db_health() -> dict:
     """Lightweight periodic `SELECT 1` liveness probe, feeding
     runtime_control.set_db_healthy() automatically instead of relying solely
@@ -997,6 +1007,7 @@ def _start_simple_workers():
         (task_cleanup_online_snapshots, 6 * 60 * 60),
         (task_cleanup_server_actions, 6 * 60 * 60),
         (task_check_db_health, 30),
+        (task_sample_perf_resources, 30),
         (task_memory_maintenance, 5 * 60),
     ]:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
@@ -1152,6 +1163,17 @@ def _start_scheduler():
         interval_secs=30,
         priority=Priority.CRITICAL,
         task_id="db_health_check",
+    )
+
+    # Мониторинг производительности: BACKGROUND priority — сам по себе не
+    # должен ни на миг задержать обслуживание запросов (см. services_perf_
+    # monitor.py). Every 30s — тот же порядок, что и у liveness-проверки
+    # выше, достаточно часто для графика, не создаёт заметной нагрузки.
+    scheduler.register_periodic(
+        task_sample_perf_resources,
+        interval_secs=30,
+        priority=Priority.BACKGROUND,
+        task_id="perf_resource_sample",
     )
 
     # Memory maintenance (gc + malloc_trim + cache eviction): LOW priority so
