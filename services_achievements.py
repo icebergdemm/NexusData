@@ -363,6 +363,38 @@ EVENT_CATALOG: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Семантика полей событий — подсказка ТОЛЬКО для конструктора в админке
+# (какой виджет показать для значения условия: выбор предмета из каталога,
+# профессии, таланта, недуга или просто число/строка). На валидацию не влияет:
+# имена полей повторяются между событиями (item_id — везде предмет, job —
+# везде профессия), поэтому карта плоская, а не по событиям.
+FIELD_KINDS: Dict[str, str] = {
+    "item_id": "item",
+    "weapon": "item",
+    "job": "job",
+    "talent_id": "talent",
+    "affliction_id": "affliction",
+    "skill": "skill",
+    "level": "number",
+    "prev_level": "number",
+    "nearby_300": "number",
+    "nearby_600": "number",
+    "nearby_1000": "number",
+    "nearby_2000": "number",
+    "nearby_5000": "number",
+    "delta": "number",
+    "amount": "number",
+    "quantity": "number",
+    "strength": "number",
+    "duration": "number",
+    "duration_seconds": "number",
+    "water_percent": "number",
+    "oxygen_percent": "number",
+    "depth_meters": "number",
+    "change": "number",
+    "value": "number",
+}
+
 CONDITION_OPS = {"eq", "neq", "gt", "gte", "lt", "lte", "in", "not_in", "contains"}
 REWARD_TYPES = {"item", "stat", "skill", "talent"}
 SCOPES = {"persistent", "round"}
@@ -394,15 +426,26 @@ def achievements_reference() -> Dict[str, Any]:
     делает конструктор кукол (static/doll_reference.json), чтобы не вести
     два независимых каталога игрового контента."""
     ref = _doll_reference()
+    try:
+        from services_sounds import SERVERS as _SOUND_SERVERS
+        servers = [name for _num, name in _SOUND_SERVERS]
+    except Exception:  # список серверов — украшение UI, без него просто ручной ввод
+        logger.exception("achievements_reference: не удалось получить список серверов")
+        servers = []
     return {
         "events": {k: {"label": v["label"], "fields": v["fields"]} for k, v in EVENT_CATALOG.items()},
+        "field_kinds": dict(FIELD_KINDS),
         "condition_ops": sorted(CONDITION_OPS),
         "reward_types": sorted(REWARD_TYPES),
         "scopes": sorted(SCOPES),
         "skills": sorted(BASE_SKILLS),
+        "skill_labels": ref.get("skill_labels") or {},
         "jobs": ref.get("jobs") or [],
         "talents": ref.get("talents") or {},
         "stat_types": ref.get("stat_types") or [],
+        "afflictions": ref.get("afflictions") or [],
+        "zone_types": list(ZONE_TYPES),
+        "servers": servers,
     }
 
 

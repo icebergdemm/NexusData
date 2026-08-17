@@ -331,11 +331,19 @@ def _apply_payload(db: Session, row: AchievementDef, body: dict, is_new: bool) -
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors[:10]))
 
+    # Явно переданный ключ (даже пустой/None) затирает поле: конструктор в
+    # админке должен уметь СНЯТЬ описание/иконку/категорию, а не только
+    # заменить их на непустое. Отсутствующий в body ключ по-прежнему
+    # оставляет текущее значение (PATCH частичный).
+    def _opt_text(name: str, current: Optional[str]) -> Optional[str]:
+        raw = body[name] if name in body else current
+        return (raw or "").strip() or None
+
     row.key = key
     row.title = title
-    row.description = (body.get("description") or row.description or "").strip() or None
-    row.icon = (body.get("icon") or row.icon or "").strip() or None
-    row.category = (body.get("category") or row.category or "").strip() or None
+    row.description = _opt_text("description", row.description)
+    row.icon = _opt_text("icon", row.icon)
+    row.category = _opt_text("category", row.category)
     row.enabled = bool(body.get("enabled", row.enabled if row.enabled is not None else True))
     row.hidden = bool(body.get("hidden", row.hidden if row.hidden is not None else False))
     row.scope = scope
@@ -343,7 +351,7 @@ def _apply_payload(db: Session, row: AchievementDef, body: dict, is_new: bool) -
     row.trigger = trigger
     row.rewards = rewards or []
     row.requires = clean_requires
-    row.chain_group = (body.get("chain_group") or row.chain_group or "").strip() or None
+    row.chain_group = _opt_text("chain_group", row.chain_group)
     row.chain_order = int(chain_order or 0)
     row.sort_order = int(body.get("sort_order", row.sort_order if row.sort_order is not None else 0) or 0)
     row.notify_discord = bool(body.get("notify_discord", row.notify_discord if row.notify_discord is not None else True))
