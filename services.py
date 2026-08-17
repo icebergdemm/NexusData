@@ -1950,8 +1950,15 @@ class PunishmentService:
                 .order_by(self._model.issued_at.desc())
                 .all())
 
-    def list_by_type(self, ptype: str, search: str = "", limit: int = 100, offset: int = 0):
-        """Return paginated punishments of given type, optionally filtered by player name/steamid."""
+    def list_by_type(self, ptype: str, search: str = "", status: str = "", superuser_only: bool = False,
+                      limit: int = 100, offset: int = 0):
+        """Return paginated punishments of given type, optionally filtered by
+        player name/steamid/reason/issuer text, effective status
+        (active/expired/void) and whether the issuer was a superuser.
+
+        status фильтруется в SQL, а не через effective_status() постфактум —
+        иначе LIMIT/OFFSET резали бы страницу ДО фильтрации и total/пагинация
+        были бы враньём (то же соображение, что и в search выше)."""
         from models import PlayerData
         q = (self.db.query(self._model, PlayerData)
              .outerjoin(PlayerData, PlayerData.player_id == self._model.player_id)
@@ -1963,8 +1970,20 @@ class PunishmentService:
                 PlayerData.player_steamid.ilike(like) |
                 self._model.player_steamid.ilike(like) |
                 self._model.reason.ilike(like) |
-                self._model.issued_by_name.ilike(like)
+                self._model.issued_by_name.ilike(like) |
+                self._model.notes.ilike(like)
             )
+        if status == "void":
+            q = q.filter(self._model.is_active == 0)
+        elif status == "expired":
+            q = q.filter(self._model.is_active == 1, self._model.expires_at.isnot(None), self._model.expires_at < _now_msk())
+        elif status == "active":
+            q = q.filter(
+                self._model.is_active == 1,
+                (self._model.expires_at.is_(None)) | (self._model.expires_at >= _now_msk()),
+            )
+        if superuser_only:
+            q = q.filter(self._model.issued_by_was_superuser == True)  # noqa: E712
         total = q.count()
         rows = q.order_by(self._model.issued_at.desc()).offset(offset).limit(limit).all()
         return rows, total

@@ -1,12 +1,15 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Gavel, Plus, Star } from "lucide-react"
+import { Gavel, Plus, Star, StickyNote } from "lucide-react"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table"
@@ -16,6 +19,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { SearchInput } from "@/components/layout/SearchInput"
 import { api } from "@/lib/api"
 
 interface PunishmentRow {
@@ -61,15 +65,28 @@ function fmtDate(iso: string | null): string {
 export function PunishmentsPage() {
   const [tab, setTab] = useState("warning")
   const [page, setPage] = useState(1)
+  const [search, setSearch] = useState("")
+  const [status, setStatus] = useState("all")
+  const [superuserOnly, setSuperuserOnly] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ player_steamid: "", reason: "", expires_days: "", notes: "", server_name: "" })
   const queryClient = useQueryClient()
+  const debouncedSearch = useDebouncedValue(search.trim())
 
-  const queryKey = ["punishments", tab, page]
-  const { data } = useQuery({
+  const queryKey = ["punishments", tab, page, debouncedSearch, status, superuserOnly]
+  const { data, isFetching } = useQuery({
     queryKey,
-    queryFn: () => api.get<PunishmentsResponse>(`/api/v1/admin/punishments?${new URLSearchParams({ tab, page: String(page) })}`),
+    queryFn: () => api.get<PunishmentsResponse>(`/api/v1/admin/punishments?${new URLSearchParams({
+      tab, page: String(page), search: debouncedSearch,
+      ...(status !== "all" ? { status } : {}),
+      ...(superuserOnly ? { superuser_only: "true" } : {}),
+    })}`),
   })
+
+  const changeTab = (v: string) => { setTab(v); setPage(1) }
+  const changeSearch = (v: string) => { setSearch(v); setPage(1) }
+  const changeStatus = (v: string) => { setStatus(v); setPage(1) }
+  const changeSuperuserOnly = (v: boolean) => { setSuperuserOnly(v); setPage(1) }
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["punishments"] })
 
@@ -156,7 +173,7 @@ export function PunishmentsPage() {
         )}
       />
 
-      <Tabs value={tab} onValueChange={(v) => { setTab(v); setPage(1) }} className="mb-4">
+      <Tabs value={tab} onValueChange={changeTab} className="mb-4">
         <TabsList>
           {(data?.punishment_types ?? ["warning", "reprimand", "kick", "ban"]).map((t) => (
             <TabsTrigger key={t} value={t} className="gap-1.5">
@@ -166,6 +183,29 @@ export function PunishmentsPage() {
           ))}
         </TabsList>
       </Tabs>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <SearchInput
+          value={search}
+          onChange={(e) => changeSearch(e.target.value)}
+          placeholder="Игрок, SteamID, причина, кто выдал, заметки..."
+          className="max-w-sm"
+        />
+        <Select value={status} onValueChange={changeStatus}>
+          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Любой статус</SelectItem>
+            <SelectItem value="active">Активно</SelectItem>
+            <SelectItem value="expired">Истекло</SelectItem>
+            <SelectItem value="void">Отменено</SelectItem>
+          </SelectContent>
+        </Select>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <Checkbox checked={superuserOnly} onCheckedChange={(c) => changeSuperuserOnly(c === true)} />
+          Только выданные суперпользователями
+        </label>
+        {data && <span className="ml-auto text-xs text-muted-foreground">{data.total} записей</span>}
+      </div>
 
       <Card className="min-w-0 overflow-hidden py-0">
         <CardContent className="min-w-0 p-0">
@@ -195,6 +235,9 @@ export function PunishmentsPage() {
                       {r.issued_by_was_superuser && (
                         <span title="Выдано суперпользователем"><Star className="size-3.5 fill-warning text-warning" /></span>
                       )}
+                      {r.notes && (
+                        <span title={`Заметка для админов: ${r.notes}`}><StickyNote className="size-3.5 text-info" /></span>
+                      )}
                     </span>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">{fmtDate(r.issued_at)}</TableCell>
@@ -218,7 +261,11 @@ export function PunishmentsPage() {
                 </TableRow>
               ))}
               {!data?.rows.length && (
-                <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Наказаний нет</TableCell></TableRow>
+                <TableRow>
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    {isFetching ? "Загрузка…" : (search || status !== "all" || superuserOnly) ? "Ничего не найдено по этим фильтрам" : "Наказаний нет"}
+                  </TableCell>
+                </TableRow>
               )}
             </TableBody>
           </Table>

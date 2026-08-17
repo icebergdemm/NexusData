@@ -564,6 +564,9 @@ export function PlayerDetailPage() {
                           {p.issued_by_was_superuser && (
                             <span title="Выдано суперпользователем"><Star className="size-3.5 fill-warning text-warning" /></span>
                           )}
+                          {p.notes && (
+                            <span title={`Заметка для админов: ${p.notes}`}><StickyNote className="size-3.5 text-info" /></span>
+                          )}
                         </span>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{fmtDate(p.issued_at)}</TableCell>

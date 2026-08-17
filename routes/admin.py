@@ -5211,6 +5211,7 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
         "rate_limit_window": s.rate_limit_window,
         "cors_origins": ",".join(s.cors_origins_list) if s.cors_origins_list else s.cors_origins,
         "sub_projects_webhook_url": s.sub_projects_webhook_url,
+        "public_site_url": s.public_site_url,
         "sftp_server_1_name": s.sftp_server_1_name,
         "sftp_server_1_host": s.sftp_server_1_host,
         "sftp_server_1_port": s.sftp_server_1_port,
@@ -5377,6 +5378,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "rate_limit_enabled": "RATE_LIMIT_ENABLED", "rate_limit_requests": "RATE_LIMIT_REQUESTS",
         "rate_limit_window": "RATE_LIMIT_WINDOW", "cors_origins": "CORS_ORIGINS",
         "sub_projects_webhook_url": "SUB_PROJECTS_WEBHOOK_URL",
+        "public_site_url": "PUBLIC_SITE_URL",
         "sftp_server_1_name": "SFTP_SERVER_1_NAME", "sftp_server_1_host": "SFTP_SERVER_1_HOST",
         "sftp_server_1_port": "SFTP_SERVER_1_PORT", "sftp_server_1_username": "SFTP_SERVER_1_USERNAME",
         "sftp_server_1_password": "SFTP_SERVER_1_PASSWORD", "sftp_server_1_key_path": "SFTP_SERVER_1_KEY_PATH",
@@ -5867,6 +5869,8 @@ def _serialize_punishment_full(p, player) -> dict:
 async def api_punishments_list(
     tab: str = Query("warning"),
     search: str = Query(""),
+    status: str = Query("", description="active | expired | void | '' (все)"),
+    superuser_only: bool = Query(False),
     page: int = Query(1, ge=1),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -5875,10 +5879,15 @@ async def api_punishments_list(
         raise HTTPException(status_code=403)
     if tab not in PUNISHMENT_TYPES:
         tab = "warning"
+    if status not in ("", "active", "expired", "void"):
+        status = ""
 
     per_page = 50
     svc = PunishmentService(db)
-    rows, total = svc.list_by_type(tab, search=search, limit=per_page, offset=(page - 1) * per_page)
+    rows, total = svc.list_by_type(
+        tab, search=search, status=status, superuser_only=superuser_only,
+        limit=per_page, offset=(page - 1) * per_page,
+    )
     pages = max(1, (total + per_page - 1) // per_page)
     page = max(1, min(page, pages))
 
@@ -5891,6 +5900,8 @@ async def api_punishments_list(
     return {
         "tab": tab,
         "search": search,
+        "status": status,
+        "superuser_only": superuser_only,
         "rows": enriched,
         "total": total,
         "page": page,
