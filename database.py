@@ -336,6 +336,18 @@ _MISSING_INDEX_COLUMNS = [
     ("player_anomalies", "score"),
     ("player_anomalies", "last_seen_at"),
     ("anticheat_events", "reviewed"),
+    # player_sessions.login_time had NO index at all despite being the
+    # WHERE-clause filter of every analytics query (services_analytics.py)
+    # and the old Administration stats endpoint — a full table scan on a
+    # table that grows with every player login/logout is exactly why the
+    # Аналитика/Администрирование pages were "invaluably slow" for any
+    # range wider than what the 5-minute background snapshot cache covers.
+    ("player_sessions", "login_time"),
+    # round_events.event_type is filtered alongside server_name/created_at
+    # (both already indexed) in compute_submarine_popularity/
+    # compute_server_comparison — an index here lets MySQL pick the most
+    # selective single-column index instead of guessing.
+    ("round_events", "event_type"),
 ]
 
 

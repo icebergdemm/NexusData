@@ -225,6 +225,34 @@ class ErrorLogEntry(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+class PerfAnomaly(Base):
+    """Персистентный журнал аномалий производительности — заполняется
+    services_perf_monitor.py: три независимых детектора, каждый пишет свой
+    kind сюда, когда что-то ведёт себя ненормально.
+      - "event_loop_lag" — event loop процесса (uvicorn) не отвечал X секунд
+        подряд. САМЫЙ прямой индикатор "сайт полностью завис": пока event
+        loop заблокирован синхронным кодом где угодно в приложении, НИ ОДИН
+        запрос от НИКОГО не обслуживается — неважно, какой конкретно
+        обработчик виноват.
+      - "slow_request" — конкретный HTTP-запрос (see request_timing_
+        middleware в main.py) занял дольше порога. path/method заполнены.
+      - "high_cpu" / "high_memory" — периодический сэмплер (services_perf_
+        monitor.sample_resources, BACKGROUND-приоритет в планировщике)
+        поймал процесс в момент аномального потребления ресурсов.
+
+    Доступ — только суперпользователям (routes/perf_monitor.py), по той же
+    причине, что и у ErrorLogEntry: детали о внутреннем состоянии сервера."""
+    __tablename__ = "perf_anomalies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(30), nullable=False, index=True)
+    value = Column(Float, nullable=False)          # секунды (lag/duration) или проценты (cpu/mem)
+    path = Column(String(500), nullable=True)       # только для slow_request
+    method = Column(String(10), nullable=True)
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+
 class PlayerKill(Base):
     __tablename__ = "player_kills"
     
@@ -281,7 +309,7 @@ class PlayerSession(Base):
     id = Column(Integer, primary_key=True, index=True)
     player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=False, index=True)
     session_number = Column(Integer, nullable=False)
-    login_time = Column(DateTime, nullable=False)
+    login_time = Column(DateTime, nullable=False, index=True)
     logout_time = Column(DateTime, nullable=True)
     session_duration = Column(Integer, nullable=True)
     avg_ping = Column(Integer, nullable=True)
@@ -784,7 +812,7 @@ class RoundEvent(Base):
     __tablename__ = "round_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    event_type = Column(String(20), nullable=False)  # start | end
+    event_type = Column(String(20), nullable=False, index=True)  # start | end
     server_name = Column(String(100), nullable=True, index=True)
     submarine_name = Column(String(255), nullable=True)
     mission = Column(String(500), nullable=True)
