@@ -23,13 +23,22 @@ tempfile.tempdir = _app_tmp_dir
 from config import get_settings, reset_settings_cache
 from database import init_db
 import models  # ensure all models are registered before create_all
-from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, sub_checker_router, game_api_router, game_public_router, ratings_router, discord_bot_panel_router, discord_viewer_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, dispatch_client_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router, cache_sync_api_router, sounds_router, dolls_game_router, dolls_admin_router, achievements_game_router, achievements_admin_router
+from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, sub_checker_router, game_api_router, game_public_router, ratings_router, discord_bot_panel_router, discord_viewer_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, dispatch_client_router, replays_api_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, warehouse_admin_router, warehouse_client_router, cache_sync_api_router, sounds_router, dolls_game_router, dolls_admin_router, achievements_game_router, achievements_admin_router, error_log_router
 from workers import start_playtime_worker, stop_all_workers, watch_runtime_state
 import runtime_control
 from datetime import datetime
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+# Structured console/file/DB logging (logging_config.py) — was defined but
+# never actually wired up anywhere before this, so ERROR-level logs across
+# the whole app only ever reached Python's bare stderr "last resort" handler
+# and nothing was persisted anywhere searchable. This activates real
+# handlers (incl. services_error_log.DatabaseErrorHandler, which feeds the
+# "Журнал ошибок" admin page — superusers only, see routes/error_log.py).
+from logging_config import setup_logging
+setup_logging()
 
 # Ensure fresh settings on startup (clear any cached old instances)
 reset_settings_cache()
@@ -280,6 +289,7 @@ def create_app() -> FastAPI:
     app.include_router(dolls_admin_router)
     app.include_router(achievements_game_router)
     app.include_router(achievements_admin_router)
+    app.include_router(error_log_router)
 
     # ── Register global Jinja2 filters for MSK time display ──────────────────
     from utils_time import utc_to_msk, format_msk
@@ -529,6 +539,14 @@ def create_app() -> FastAPI:
         # to the React SPA before any of its 100 route handlers ever run.
         if request.url.path.startswith("/adminold"):
             return RedirectResponse(url="/admin", status_code=302)
+
+        # Method+path of the current request, for services_error_log's DB
+        # error handler to attach to any ERROR/CRITICAL log raised while
+        # handling it (see "Журнал ошибок" — superusers only). A ContextVar,
+        # not a global: isolated per-request via asyncio's per-task context
+        # copy, so concurrent requests never see each other's path.
+        from services_error_log import set_request_context
+        set_request_context(request.method, request.url.path)
 
         # Ensure CSRF token exists in session
         try:

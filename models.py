@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, UniqueConstraint, Text
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -196,6 +196,32 @@ class AdminActionLog(Base):
     admin_id = Column(Integer, index=True)
     action = Column(String(255))
     details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class ErrorLogEntry(Base):
+    """Персистентный журнал ERROR/CRITICAL-логов сайта и API — заполняется
+    services_error_log.DatabaseErrorHandler, подключённым к корневому
+    логгеру (см. logging_config.setup_logging). Отдельно от AdminActionLog
+    выше (там — действия админов, тут — сбои кода) и от файлового
+    logs/error.log (та же информация, но без поиска/фильтров в админке —
+    файл остаётся как есть, для ручного tail и на случай недоступности БД).
+
+    Доступ к странице просмотра — только суперпользователям (см.
+    routes/error_log.py), поэтому здесь нет отдельной ACL-обвязки в духе
+    permissions_registry."""
+    __tablename__ = "error_log_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    level = Column(String(10), nullable=False, index=True)          # ERROR / CRITICAL
+    logger_name = Column(String(255), nullable=True, index=True)
+    message = Column(Text, nullable=False)
+    traceback = Column(Text, nullable=True)
+    # Путь/метод текущего запроса, если ошибка случилась внутри обработки
+    # HTTP-запроса (см. services_error_log.set_request_context) — для фоновых
+    # потоков/воркеров остаются NULL, contextvars туда не наследуются.
+    path = Column(String(500), nullable=True, index=True)
+    method = Column(String(10), nullable=True)
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
