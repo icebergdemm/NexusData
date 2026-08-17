@@ -38,6 +38,15 @@ class LogEvent:
 LOGIN_RE = re.compile(r'^\[RoundManager_ND\] Вход: (.+?) \| SteamID: (\d+) \| IP: (.+)$')
 LOGOUT_RE = re.compile(r'^\[RoundManager_ND\] Выход: (.+?) \| SteamID: (\d+) \|')
 
+# [ShardLink] ban/kick propagation notices — matched BEFORE the generic
+# "any [Tag]-prefixed line is technical noise" rule (see _is_system in
+# parse_log_content), which would otherwise swallow these into 'other' with
+# no player attached. Found by inspecting real production logs — these were
+# some of the most common events in the whole file and were entirely
+# unsearchable/uncategorized before this.
+SHARD_BAN_RE = re.compile(r'^\[ShardLink\] (.+?) \(STEAM_\S+\) забанен на этом шарде')
+SHARD_KICK_RE = re.compile(r'^\[ShardLink\] (.+?) кикнут на этом шарде')
+
 # Action type classification patterns
 ACTION_PATTERNS = [
     (re.compile(r'^(.+?) picked up (.+)$'), 'picked_up'),
@@ -48,31 +57,58 @@ ACTION_PATTERNS = [
     (re.compile(r'^(.+?) equipped (.+)$'), 'equipped'),
     (re.compile(r'^(.+?) unequipped (.+)$'), 'unequipped'),
     (re.compile(r'^(.+?) dropped (.+)$'), 'dropped'),
+    (re.compile(r'^(.+?) threw (.+)$'), 'threw'),
     (re.compile(r'^(.+?) used (.+?) on (.+)$'), 'used'),
     (re.compile(r'^(.+?) used (.+)$'), 'used'),
     (re.compile(r'^(.+?) adjusted reactor settings: (.+)$'), 'reactor'),
     (re.compile(r'^(.+?) started repairing (.+)$'), 'repair'),
+    (re.compile(r'^(.+?) failed to repair (.+)$'), 'repair_failed'),
     (re.compile(r'^(.+?) started fabricating (.+)$'), 'fabrication'),
     (re.compile(r'^(.+?) cancelled the fabrication of (.+)$'), 'fabrication_cancel'),
     (re.compile(r'^(.+?) activated (.+)$'), 'activated'),
     (re.compile(r'^(.+?) deactivated (.+)$'), 'deactivated'),
+    (re.compile(r'^(.+?) attached (.+) to a wall$'), 'attached'),
     (re.compile(r'^(.+?) connected a wire (.+)$'), 'wire'),
     (re.compile(r'^(.+?) disconnected a wire (.+)$'), 'wire'),
     (re.compile(r'^(.+?) set the pumping speed of (.+)$'), 'pump'),
     (re.compile(r'^(.+?) turned (on|off) (.+)$'), 'pump'),
+    # "Set the recharge speed of" (supercapacitors) and "changed supply ratio
+    # of power group" (reactor power management) are both reactor/power
+    # settings tweaks distinct from "set the value" — same action_type
+    # bucket, player_name falls out of the default group(1) handling below.
+    (re.compile(r'^(.+?) set the recharge speed of (.+)$'), 'settings_change'),
+    (re.compile(r'^(.+?) changed supply ratio of power group (.+)$'), 'settings_change'),
     (re.compile(r'^(.+?) set the value (.+)$'), 'settings_change'),
+    (re.compile(r"^(.+?) has gained the talent '(.+?)'$"), 'talent_gained'),
+    (re.compile(r'^(.+?) grabbed (.+?)\'s body and received (.+)\.$'), 'looted_body'),
+    (re.compile(r'^Respawning (.+?) \(.+?\) as (.+)\.$'), 'respawn'),
     # Combat & death
     (re.compile(r'^(.+?) attacked by (.+?)\. (.+)$'), 'attack'),
     (re.compile(r'^(.+?) launched (.+)$'), 'attack'),
     (re.compile(r'^(.+) has died \(Cause of death: (.+)\)$'), 'death'),
-    (re.compile(r'^Outer wall (breached|repaired) by (.+)$'), 'structure'),
+    (re.compile(r'^(Inner|Outer) wall (breached|repaired) by (.+)$'), 'structure'),
     # Console
     (re.compile(r'^Console command "(.+)" executed by (.+)\.$'), 'console'),
-    # Kick/ban messages
+    (re.compile(r'^Client "(.+?)" sent a server command "(.+?)"\. Permission denied\.$'), 'command_denied'),
+    # Kick/ban messages — three independent wordings share the 'kick' type
+    # (Russian moderator-initiated, English admin-console "Client X kicked
+    # Y", English network-desync auto-kick); which capture group holds the
+    # target is disambiguated by content inside the dispatch loop, same
+    # trick already used for 'attack'/'radio' below.
     (re.compile(r'^Игрок (.+?) исключен с сервера (.*)$'), 'kick'),
+    (re.compile(r'^Client "(.+?)" kicked "(.+?)"\.$'), 'kick'),
+    (re.compile(r'^(.+?) was kicked because (.+)$'), 'kick'),
+    (re.compile(r'^Client "(.+?)" banned "(.+?)"\.$'), 'ban'),
     (re.compile(r'^(.+?) покидает сервер\.$'), 'logout'),
     (re.compile(r'^Игрок (.+?) отключился от игры\. (.*)$'), 'logout'),
+    (re.compile(r'^Игрок (.+?) присоединился к серверу\.$'), 'joined'),
+    (re.compile(r'^(.+?) is (?:not )?ready to start the game\.$'), 'ready'),
     (re.compile(r'^Игрок (.+?) сменил имя на (.+)\.$'), 'name_change'),
+    (re.compile(r'^Пользователь (.+?) ранее использовал имя "(.+?)" на сервере\.$'), 'name_history'),
+    # Terminal/computer text entry — functionally chat, just through a
+    # device instead of the chat box; kept as its own type so it's still
+    # distinguishable, but counted as a player action (see PLAYER_ACTIONS).
+    (re.compile(r'^(.+?) entered "(.+)" on (.+)$'), 'terminal'),
     # Network
     (re.compile(r'^Incoming connection from (.+)\.$'), 'connection'),
     (re.compile(r'^\[CustomRadioThirdFork\] (.+)$'), 'radio'),
@@ -80,8 +116,36 @@ ACTION_PATTERNS = [
     (re.compile(r'^(.+?): (.+)$'), 'chat'),
 ]
 
-# Timestamp pattern
-TIMESTAMP_RE = re.compile(r'^\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})\]$')
+# Timestamp pattern(s). Barotrauma's server log has shipped with at least two
+# header styles across versions/locales — 24-hour ("[03/15/2024 14:23:01]")
+# and 12-hour with an AM/PM suffix ("[3/15/2024 2:23:01 PM]", note the
+# non-padded day/hour too) — and BOTH can appear either as a standalone
+# header line (content follows on subsequent indented lines) OR inline with
+# the event text on the very same line ("[timestamp] SomePlayer: hi").
+# The old code only recognised the 24h zero-padded standalone form: a log
+# written in the other style never set current_timestamp at all, and since
+# every non-timestamp line is skipped while current_timestamp is None (see
+# below), that meant the ENTIRE file silently produced zero events — this is
+# the root cause of "не все логи вообще парсятся".
+_TIMESTAMP_PATTERNS = [
+    (re.compile(r'^\[(\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2} [APap][Mm])\]\s*(.*)$'), '%m/%d/%Y %I:%M:%S %p'),
+    (re.compile(r'^\[(\d{1,2}/\d{1,2}/\d{4} \d{1,2}:\d{2}:\d{2})\]\s*(.*)$'), '%m/%d/%Y %H:%M:%S'),
+]
+
+
+def _match_timestamp(line: str) -> Optional[Tuple[datetime, str]]:
+    """Returns (timestamp, rest_of_line) if `line` starts with a recognised
+    timestamp header, else None. rest_of_line is '' for a standalone header
+    line, or the inline event text that followed the timestamp on the same line."""
+    for pattern, fmt in _TIMESTAMP_PATTERNS:
+        m = pattern.match(line)
+        if not m:
+            continue
+        try:
+            return datetime.strptime(m.group(1), fmt), m.group(2)
+        except ValueError:
+            continue
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -90,75 +154,84 @@ TIMESTAMP_RE = re.compile(r'^\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})\]$')
 
 def parse_log_content(content: str, server_name: str = "", source_file: str = "") -> Tuple[List[LogEvent], Dict[str, str]]:
     """Parse raw log file content into structured LogEvent objects.
-    
+
     Returns: (events, player_map) where player_map is {player_name: steamid}
     """
-    events = []
+    # Files are UTF-8 WITH a BOM (confirmed against real server exports —
+    # raw bytes start EF BB BF), but they're read with plain 'utf-8', which
+    # leaves the BOM as a literal U+FEFF character on the first line. That
+    # breaks the very first timestamp match (_match_timestamp anchors on
+    # ^\[, and ﻿[ doesn't match), silently losing every line up to the
+    # SECOND timestamp header in the file. Stripping it here covers both
+    # read paths (SFTP download and local re-read) without touching them.
+    content = content.lstrip('﻿')
+
+    events: List[LogEvent] = []
     player_map: Dict[str, str] = {}  # name -> steamid
-    lines = content.split('\n')
-    current_timestamp = None
 
-    for line in lines:
-        line = line.rstrip()
-        if not line:
-            continue
-
-        # Check if this is a timestamp line
-        ts_match = TIMESTAMP_RE.match(line)
-        if ts_match:
-            try:
-                current_timestamp = datetime.strptime(ts_match.group(1), '%m/%d/%Y %H:%M:%S')
-            except ValueError:
-                pass
-            continue
-
-        # This is an action line (indented with spaces)
-        action_line = line.strip()
-        if not action_line or current_timestamp is None:
-            continue
+    def process_action_line(action_line: str, ts: datetime) -> None:
+        """Classify one already-timestamped line of content and append the
+        resulting event(s). Shared between the "standalone timestamp header,
+        content on following lines" format and the "[timestamp] content"
+        inline format — see _match_timestamp's docstring for why both need
+        to be supported."""
+        action_line = action_line.strip()
+        if not action_line:
+            return
 
         # Check for RoundManager login/logout (extract name→steamid)
         login_match = LOGIN_RE.match(action_line)
         if login_match:
-            pname = login_match.group(1)
-            steamid = login_match.group(2)
+            pname, steamid = login_match.group(1), login_match.group(2)
             player_map[pname] = steamid
             events.append(LogEvent(
-                timestamp=current_timestamp,
-                player_name=pname,
-                action_type='login',
-                details=action_line,
-                raw_line=action_line,
-                server_name=server_name,
-                source_file=source_file,
+                timestamp=ts, player_name=pname, action_type='login',
+                details=action_line, raw_line=action_line,
+                server_name=server_name, source_file=source_file,
             ))
-            continue
+            return
 
         logout_match = LOGOUT_RE.match(action_line)
         if logout_match:
-            pname = logout_match.group(1)
-            steamid = logout_match.group(2)
+            pname, steamid = logout_match.group(1), logout_match.group(2)
             player_map[pname] = steamid
             events.append(LogEvent(
-                timestamp=current_timestamp,
-                player_name=pname,
-                action_type='logout',
-                details=action_line,
-                raw_line=action_line,
-                server_name=server_name,
-                source_file=source_file,
+                timestamp=ts, player_name=pname, action_type='logout',
+                details=action_line, raw_line=action_line,
+                server_name=server_name, source_file=source_file,
             ))
-            continue
+            return
 
         # Skip [RoundManager_ND] internal messages (kit delivery, data loaded, etc.)
         if action_line.startswith('[RoundManager_ND]'):
-            continue
+            return
 
         # Skip noise: Saving client permissions, HTML fragments, etc.
         if action_line.startswith('Saving client permissions'):
-            continue
+            return
         if action_line.startswith('<') or action_line.startswith('</'):
-            continue
+            return
+
+        # [ShardLink] ban/kick propagation notices — MUST be checked before
+        # the generic "[Tag]-prefixed line is technical noise" rule right
+        # below, which would otherwise swallow these with no player
+        # attached (see SHARD_BAN_RE/SHARD_KICK_RE definitions for why).
+        shard_ban = SHARD_BAN_RE.match(action_line)
+        if shard_ban:
+            events.append(LogEvent(
+                timestamp=ts, player_name=shard_ban.group(1), action_type='ban',
+                details=action_line, raw_line=action_line,
+                server_name=server_name, source_file=source_file,
+            ))
+            return
+        shard_kick = SHARD_KICK_RE.match(action_line)
+        if shard_kick:
+            events.append(LogEvent(
+                timestamp=ts, player_name=shard_kick.group(1), action_type='kick',
+                details=action_line, raw_line=action_line,
+                server_name=server_name, source_file=source_file,
+            ))
+            return
 
         # Classify the action
         action_type = 'other'
@@ -176,15 +249,11 @@ def parse_log_content(content: str, server_name: str = "", source_file: str = ""
 
         if _is_system:
             events.append(LogEvent(
-                timestamp=current_timestamp,
-                player_name='',
-                action_type='other',
-                details=action_line,
-                raw_line=action_line,
-                server_name=server_name,
-                source_file=source_file,
+                timestamp=ts, player_name='', action_type='other',
+                details=action_line, raw_line=action_line,
+                server_name=server_name, source_file=source_file,
             ))
-            continue
+            return
 
         for pattern, atype in ACTION_PATTERNS:
             m = pattern.match(action_line)
@@ -201,9 +270,20 @@ def parse_log_content(content: str, server_name: str = "", source_file: str = ""
                     else:
                         player_name = m.group(1)
                 elif atype == 'structure':
-                    player_name = m.group(2)
+                    # "(Inner|Outer) wall (breached|repaired) by NAME" — name is group 3.
+                    player_name = m.group(3)
                 elif atype == 'kick':
-                    player_name = m.group(1)
+                    # Three independent wordings share this type (see
+                    # ACTION_PATTERNS) — only "Client "Admin" kicked
+                    # "Target"." has the player we care about in group 2,
+                    # the target; the other two have it in group 1.
+                    if action_line.startswith('Client "') and ' kicked "' in action_line:
+                        player_name = m.group(2)
+                    else:
+                        player_name = m.group(1)
+                elif atype == 'ban':
+                    # "Client "Admin" banned "Target"." — target is group 2.
+                    player_name = m.group(2)
                 elif atype == 'connection':
                     player_name = ''  # IP address, not a player name
                 elif atype == 'radio':
@@ -218,16 +298,38 @@ def parse_log_content(content: str, server_name: str = "", source_file: str = ""
                     player_name = m.group(1) if m.lastindex >= 1 else ''
                 break
 
-        event = LogEvent(
-            timestamp=current_timestamp,
-            player_name=player_name,
-            action_type=action_type,
-            details=action_line,
-            raw_line=action_line,
-            server_name=server_name,
-            source_file=source_file,
-        )
-        events.append(event)
+        events.append(LogEvent(
+            timestamp=ts, player_name=player_name, action_type=action_type,
+            details=action_line, raw_line=action_line,
+            server_name=server_name, source_file=source_file,
+        ))
+
+    current_timestamp: Optional[datetime] = None
+    for raw_line in content.split('\n'):
+        line = raw_line.rstrip()
+        if not line:
+            continue
+
+        ts_hit = _match_timestamp(line)
+        if ts_hit is not None:
+            current_timestamp, rest = ts_hit
+            if rest:
+                # Inline format: "[timestamp] content" on one line.
+                process_action_line(rest, current_timestamp)
+            # else: standalone header — content follows on subsequent lines.
+            continue
+
+        # Plain content line under the last-seen standalone header.
+        if current_timestamp is None:
+            # No timestamp has been seen yet at all — this would previously
+            # have silently dropped every such line for the whole file if
+            # the header format didn't match TIMESTAMP_RE exactly. Now that
+            # _match_timestamp covers both known formats this should be rare,
+            # but skipping (rather than guessing a timestamp) is still
+            # correct: a line with no established time is genuinely unusable
+            # for a time-ordered log.
+            continue
+        process_action_line(line, current_timestamp)
 
     return events, player_map
 
@@ -557,10 +659,12 @@ def _ms_to_dt(ms: int) -> datetime:
 
 # Action categories (module-level, shared)
 PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
-                  'unequipped', 'dropped', 'used', 'reactor', 'repair', 'fabrication',
-                  'fabrication_cancel', 'activated', 'deactivated', 'wire', 'pump',
-                  'settings_change', 'console', 'death', 'chat', 'login', 'logout',
-                  'attack', 'structure', 'kick', 'name_change'}
+                  'unequipped', 'dropped', 'threw', 'used', 'reactor', 'repair',
+                  'repair_failed', 'fabrication', 'fabrication_cancel', 'activated',
+                  'deactivated', 'attached', 'wire', 'pump', 'settings_change', 'console',
+                  'command_denied', 'death', 'chat', 'terminal', 'login', 'logout',
+                  'joined', 'ready', 'respawn', 'attack', 'structure', 'kick', 'ban',
+                  'name_change', 'name_history', 'talent_gained', 'looted_body'}
 
 
 def get_player_map() -> Dict[str, str]:
@@ -571,6 +675,26 @@ def get_player_map() -> Dict[str, str]:
         return {name: sid for name, sid in rows}
     except Exception as e:
         logger.error(f"get_player_map failed: {e}")
+        return {}
+
+
+def get_steamids_for_names(names: List[str]) -> Dict[str, str]:
+    """Targeted name→steamid lookup for just the given names (e.g. the
+    player names actually present on the current page of search results) —
+    used to make the "Игрок" column clickable (see routes/logs.py's
+    api_logs_events): resolving via a handful of names is cheap, unlike
+    loading the entire player_map for every request."""
+    if not names:
+        return {}
+    try:
+        conn = _get_conn()
+        placeholders = ",".join("?" * len(names))
+        rows = conn.execute(
+            f"SELECT name, steamid FROM player_map WHERE name IN ({placeholders})", names,
+        ).fetchall()
+        return {name: sid for name, sid in rows}
+    except Exception as e:
+        logger.error(f"get_steamids_for_names failed: {e}")
         return {}
 
 
@@ -1088,6 +1212,14 @@ def _build_where(server_name, player_name, action_type, search_text,
         ph = ",".join("?" * len(PLAYER_ACTIONS))
         clauses.append(f"action NOT IN ({ph})"); params.extend(PLAYER_ACTIONS)
 
+    # Игрок ищется и в структурированной колонке player (кто СОВЕРШИЛ
+    # действие — это единственное, что парсер извлекает как "актора"), и в
+    # тексте details: многие строки лога упоминают ВТОРОГО игрока, к
+    # которому лог тоже относится, но который парсером не извлекается
+    # отдельно (например, "X placed Y in the inventory of ИМЯ" — получатель
+    # предмета есть только в details). Раньше поиск по игроку смотрел
+    # только в player и пропускал ровно такие случаи — отсюда жалоба
+    # "не очень хорошо работает поиск по игроку, с которым связан лог".
     from_sql = "log_events"
     if use_fts:
         # Все текстовые условия объединяются в ОДНО выражение MATCH — FTS5
@@ -1095,10 +1227,12 @@ def _build_where(server_name, player_name, action_type, search_text,
         # поддерживает AND/OR и фильтр по колонке.
         fts_terms = []
         if names_list:
-            ors = " OR ".join(f"player:{_fts_query(n)}" for n in names_list)
+            ors = " OR ".join(
+                f"(player:{_fts_query(n)} OR details:{_fts_query(n)})" for n in names_list
+            )
             fts_terms.append(f"({ors})")
         elif player_name:
-            fts_terms.append(f"player:{_fts_query(player_name)}")
+            fts_terms.append(f"(player:{_fts_query(player_name)} OR details:{_fts_query(player_name)})")
         if search_text:
             fts_terms.append(f"details:{_fts_query(search_text)}")
         if fts_terms:
@@ -1107,11 +1241,13 @@ def _build_where(server_name, player_name, action_type, search_text,
             params.append(" AND ".join(fts_terms))
     else:
         if names_list:
-            ors = " OR ".join("player LIKE ?" for _ in names_list)
+            ors = " OR ".join("(player LIKE ? OR details LIKE ?)" for _ in names_list)
             clauses.append(f"({ors})")
-            params.extend([f"%{n}%" for n in names_list])
+            for n in names_list:
+                params.extend([f"%{n}%", f"%{n}%"])
         elif player_name:
-            clauses.append("player LIKE ?"); params.append(f"%{player_name}%")
+            clauses.append("(player LIKE ? OR details LIKE ?)")
+            params.extend([f"%{player_name}%", f"%{player_name}%"])
         if search_text:
             clauses.append("details LIKE ?"); params.append(f"%{search_text}%")
 

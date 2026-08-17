@@ -17,10 +17,10 @@ import json
 from database import get_db
 from security import check_permission
 from config import get_settings
-from models import AdminUser, AdminSession
+from models import AdminUser, AdminSession, PlayerData
 from services_logs import (
     search_logs, get_unique_players, get_log_stats, get_fts_status,
-    force_refresh_logs, LogEvent, get_player_map,
+    force_refresh_logs, LogEvent, get_player_map, get_steamids_for_names,
 )
 from services_sftp_filemanager import SFTPFileManager
 
@@ -107,13 +107,11 @@ async def api_logs_events(
         except ValueError:
             pass
 
-    # Category: player = events with known player actions, technical = system/noise
-    PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
-                      'unequipped', 'dropped', 'reactor', 'repair', 'fabrication',
-                      'fabrication_cancel', 'activated', 'deactivated', 'wire', 'pump',
-                      'settings_change', 'console', 'death', 'chat', 'login', 'logout',
-                      'attack', 'structure', 'kick', 'name_change'}
-    TECHNICAL_ACTIONS = {'connection', 'radio', 'other'}
+    # NB: category (player/technical) filtering itself lives in
+    # services_logs._build_where, against the canonical PLAYER_ACTIONS set
+    # defined there — a second, subtly different copy used to live here too
+    # (missing 'used', so `used`-events matched NEITHER category), unused by
+    # anything and only a source of future drift. Removed rather than fixed.
 
     # If player_names provided (comma-separated), search across all names
     effective_player = player
@@ -137,11 +135,35 @@ async def api_logs_events(
         names_list=names_list,
     )
 
+    # Resolve player_id for the "Игрок" column so it can link to the profile
+    # (see PlayerSummaryDialog on the frontend) — only for the handful of
+    # distinct names actually on this page, not the whole log history.
+    # name → steamid comes from the logs SQLite cache (built from
+    # login/logout lines during parsing), steamid → player_id from the main
+    # DB. A name with no known steamid (never logged in while logs were
+    # being captured, or a name that only appears as a "target" mention in
+    # someone else's details text) just stays unresolved — not every event
+    # can be linked, and that's fine, better than a broken link.
+    distinct_names = sorted({e.player_name for e in events if e.player_name})
+    name_to_steamid = await run_in_threadpool(get_steamids_for_names, distinct_names)
+    steamid_to_player_id: dict = {}
+    steamids = {sid for sid in name_to_steamid.values() if sid}
+    if steamids:
+        for pid, sid in db.query(PlayerData.player_id, PlayerData.player_steamid).filter(
+            PlayerData.player_steamid.in_(steamids)
+        ).all():
+            steamid_to_player_id[sid] = pid
+
+    def _player_id_for(name: str) -> Optional[int]:
+        sid = name_to_steamid.get(name)
+        return steamid_to_player_id.get(sid) if sid else None
+
     return JSONResponse({
         "events": [
             {
                 "timestamp": e.timestamp.isoformat(),
                 "player_name": e.player_name,
+                "player_id": _player_id_for(e.player_name) if e.player_name else None,
                 "action_type": e.action_type,
                 "details": e.details,
                 "server_name": e.server_name,

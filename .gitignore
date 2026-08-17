@@ -77,3 +77,7 @@ LevelTransition.cs
 frontend/README.md
 /role-based-rating-system/
 docs/ГОСТ КБ _ГАЙКА_.docx
+
+# Реальные сырые логи игрового сервера (SteamID/IP игроков) — использовались
+# как образец при отладке парсера в services_logs.py, в репозиторий не идут.
+/логи/

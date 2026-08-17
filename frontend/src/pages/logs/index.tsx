@@ -6,6 +6,7 @@ import { ScrollText, RefreshCw } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
@@ -13,8 +14,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { api } from "@/lib/api"
 import { ACTION_COLOR, ACTION_TYPES, type LogEvent } from "./constants"
+import { PlayerNamesFilter } from "./player-filter"
 import { useCurrentAdmin } from "@/lib/auth"
 
 interface LogsResponse { events: LogEvent[]; total: number; total_is_capped: boolean; page: number; page_size: number; total_pages: number }
@@ -26,31 +29,41 @@ export function LogsPage() {
   const [server, setServer] = useState("all")
   const [category, setCategory] = useState("all")
   const [actionType, setActionType] = useState("all")
-  const [player, setPlayer] = useState("")
+  const [consoleOnly, setConsoleOnly] = useState(false)
+  const [playerNames, setPlayerNames] = useState<string[]>([])
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
+  const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const queryClient = useQueryClient()
+
+  // Флажок "только консольные команды" — это то же самое, что выбрать тип
+  // действия console, просто отдельным переключателем, чтобы не лезть в
+  // выпадающий список ради самого частого запроса модераторов. Держит select
+  // синхронным (взаимоисключающе), а не отдельным AND-условием — "console"
+  // это единственный action_type, если галочка стоит.
+  const effectiveActionType = consoleOnly ? "console" : actionType
 
   // Text filters run an unindexed substring scan over the whole log table
   // server-side, so they're debounced — without this every keystroke fired
   // its own request ("владимир" = 8 parallel full scans), which saturated
   // the backend's worker threads and made the proxy serve the maintenance
   // page. The inputs stay bound to the raw state, so typing is unaffected.
-  const debouncedPlayer = useDebouncedValue(player.trim())
   const debouncedSearch = useDebouncedValue(search.trim())
   // A 1-character substring matches essentially every row, making the query
   // maximally expensive while being useless as a filter — wait for 2+.
-  const effectivePlayer = debouncedPlayer.length >= 2 ? debouncedPlayer : ""
   const effectiveSearch = debouncedSearch.length >= 2 ? debouncedSearch : ""
 
   const { data, isLoading } = useQuery({
-    queryKey: ["logs-events", server, category, actionType, effectivePlayer, effectiveSearch, page],
+    queryKey: ["logs-events", server, category, effectiveActionType, playerNames, effectiveSearch, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "100" })
       if (server !== "all") params.set("server", server)
       if (category !== "all") params.set("category", category)
-      if (actionType !== "all") params.set("action_type", actionType)
-      if (effectivePlayer) params.set("player", effectivePlayer)
+      if (effectiveActionType !== "all") params.set("action_type", effectiveActionType)
+      // Комбинация фильтров, как поиск с несколькими условиями в Discord:
+      // несколько игроков + свободный текст + сервер + категория + тип
+      // действия — всё применяется одновременно (AND на бэкенде).
+      if (playerNames.length) params.set("player_names", playerNames.join(","))
       if (effectiveSearch) params.set("search", effectiveSearch)
       return api.get<LogsResponse>(`/api/v1/admin/logs/events?${params}`)
     },
@@ -120,7 +133,7 @@ export function LogsPage() {
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <SearchInput value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Поиск по тексту события (от 2 символов)..." className="max-w-56" />
-        <SearchInput value={player} onChange={(e) => { setPlayer(e.target.value); setPage(1) }} placeholder="Игрок (от 2 символов)..." className="max-w-44" />
+        <PlayerNamesFilter names={playerNames} onChange={(v) => { setPlayerNames(v); setPage(1) }} server={server} />
         <Select value={server} onValueChange={(v) => { setServer(v); setPage(1) }}>
           <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -137,13 +150,18 @@ export function LogsPage() {
             <SelectItem value="technical">Технические</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={actionType} onValueChange={(v) => { setActionType(v); setPage(1) }}>
+        <Select value={actionType} onValueChange={(v) => { setActionType(v); setPage(1) }} disabled={consoleOnly}>
           <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Все типы действий</SelectItem>
             {ACTION_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
           </SelectContent>
         </Select>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <Checkbox checked={consoleOnly} onCheckedChange={(c) => { setConsoleOnly(c === true); setPage(1) }} />
+          Только консольные команды
+        </label>
+        {data && <span className="ml-auto text-xs text-muted-foreground">{data.total.toLocaleString("ru-RU")}{data.total_is_capped ? "+" : ""} событий</span>}
       </div>
 
       <Card className="overflow-hidden py-0">
@@ -165,7 +183,19 @@ export function LogsPage() {
                     <TableRow key={i}>
                       <TableCell className="text-xs whitespace-nowrap text-muted-foreground">{new Date(e.timestamp).toLocaleString("ru-RU")}</TableCell>
                       <TableCell><Badge variant="outline">{e.server_name ?? "-"}</Badge></TableCell>
-                      <TableCell className="truncate font-medium">{e.player_name ?? "-"}</TableCell>
+                      <TableCell className="truncate font-medium">
+                        {e.player_name ? (
+                          e.player_id ? (
+                            <button
+                              type="button"
+                              className="text-left text-primary underline-offset-2 hover:underline"
+                              onClick={() => setSummaryPlayerId(e.player_id!)}
+                            >
+                              {e.player_name}
+                            </button>
+                          ) : e.player_name
+                        ) : "-"}
+                      </TableCell>
                       <TableCell>
                         <span className={`font-mono text-xs ${ACTION_COLOR[e.action_type] ?? "text-foreground"}`}>{e.action_type}</span>
                       </TableCell>
@@ -186,6 +216,8 @@ export function LogsPage() {
           )}
         </CardContent>
       </Card>
+
+      <PlayerSummaryDialog playerId={summaryPlayerId} open={summaryPlayerId != null} onOpenChange={(o) => !o && setSummaryPlayerId(null)} />
     </div>
   )
 }
