@@ -260,6 +260,60 @@ def save_rating_rewards(rewards: List[Dict]):
 # Apply rewards to players
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _resolve_job_variation_items(cfg: Dict, variation: int) -> Dict[str, int]:
+    """Тот же приём, что и в services_kit_resolution._resolve_variation_items
+    для китов: вариация 2/3 фолбэкается на вариацию 1 (`items`), если явно не
+    задана — НЕ на предыдущую вариацию (вариация 3 фолбэкается на вариацию 1,
+    даже если вариация 2 задана). `cfg` — один элемент group["job_items"],
+    форма `{"items": {...}, "variation_2_items": {...}?, "variation_3_items": {...}?}`."""
+    if variation == 2 and cfg.get("variation_2_items"):
+        return cfg["variation_2_items"]
+    if variation == 3 and cfg.get("variation_3_items"):
+        return cfg["variation_3_items"]
+    return cfg.get("items") or {}
+
+
+def _apply_job_item_variations(ach: Dict, group: Dict, sign: int) -> None:
+    """Начисляет (sign=+1) или списывает (sign=-1) предметы группы по ролям
+    в `ach["job_item_variations"]` — НОВЫЙ, чисто добавочный ключ рядом с
+    уже существующим `job_items` (см. GAME_SERVER_API_GUIDE.md): старый
+    плагин, который про вариации не знает, просто его не читает и продолжает
+    работать как раньше на плоском `job_items`/`items`.
+
+    Форма: `{job_id: {"1": {item_id: qty}, "2": {...}, "3": {...}}}` — сайт
+    заранее резолвит фолбэк вариаций (см. _resolve_job_variation_items), так
+    что плагину остаётся только взять бакет по номеру выбранной игроком
+    вариации снаряжения, без своей логики фолбэка."""
+    by_job = {k: dict(v) for k, v in (ach.get("job_item_variations") or {}).items()}
+    for job_id, cfg in (group.get("job_items") or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        by_variation = dict(by_job.get(job_id, {}))
+        for variation in (1, 2, 3):
+            resolved = _resolve_job_variation_items(cfg, variation)
+            if not resolved:
+                continue
+            bucket = dict(by_variation.get(str(variation), {}))
+            for item_id, qty in resolved.items():
+                if sign > 0:
+                    bucket[item_id] = bucket.get(item_id, 0) + qty
+                else:
+                    left = bucket.get(item_id, 0) - qty
+                    if left > 0:
+                        bucket[item_id] = left
+                    else:
+                        bucket.pop(item_id, None)
+            if bucket:
+                by_variation[str(variation)] = bucket
+            else:
+                by_variation.pop(str(variation), None)
+        if by_variation:
+            by_job[job_id] = by_variation
+        else:
+            by_job.pop(job_id, None)
+    ach["job_item_variations"] = by_job
+
+
 def apply_reward_group_to_player(player_steamid: str, group_id: str):
     """Apply a reward group's items/stats/talents to a player's achievements.
 
@@ -322,6 +376,9 @@ def apply_reward_group_to_player(player_steamid: str, group_id: str):
                     existing.append(t)
             talents[job_id] = existing
         ach["talents"] = talents
+
+        # Предметы по ролям (с вариациями снаряжения) — см. _apply_job_item_variations.
+        _apply_job_item_variations(ach, group, sign=1)
 
         player.achievements = ach
         db.commit()
@@ -400,6 +457,9 @@ def revoke_reward_group_from_player(player_steamid: str, group_id: str) -> bool:
             else:
                 talents.pop(job_id, None)
         ach["talents"] = talents
+
+        # См. предупреждение выше — тот же обязательный НОВЫЙ dict-объект.
+        _apply_job_item_variations(ach, group, sign=-1)
 
         player.achievements = ach
         db.commit()
@@ -481,12 +541,24 @@ def _get_or_create_schedule_state(db, rule_id: str):
     return state
 
 
-def reconcile_rating_rewards(force: bool = False, rule_id: Optional[str] = None) -> Dict:
+def reconcile_rating_rewards(force: bool = False, rule_id: Optional[str] = None, force_reissue: bool = False) -> Dict:
     """Приводит текущих держателей наград за место в рейтинге в соответствие
     с настоящим состоянием лидерборда. force=True игнорирует расписание
-    (кнопка "Применить сейчас" в админке) — при этом ISO-цикл ВСЁ РАВНО
+    (кнопка "Проверить сейчас" в админке) — при этом ISO-цикл ВСЁ РАВНО
     обновляется, чтобы принудительный прогон не привёл к повторному
     срабатыванию по расписанию в течение той же недели.
+
+    force_reissue=True (кнопка "Проверить сейчас") дополнительно отключает
+    короткое замыкание "держатель и группа не изменились — не трогаем":
+    каждое место снимается у текущего держателя и выдаётся заново, даже если
+    steamid и reward_group_id совпадают с уже сохранёнными. Это нужно, чтобы
+    правка СОДЕРЖИМОГО группы (например, добавление предметов по ролям —
+    см. _apply_job_item_variations) реально долетела до уже выданных наград:
+    без force_reissue reconcile видит тот же rule_id/place/steamid, считает,
+    что выдавать нечего, и правка группы никогда не применяется задним числом.
+    Безопасно вызывать сколько угодно раз: revoke+apply от одной и той же
+    (текущей) версии группы — операции строго симметричные, поэтому итог
+    всегда сходится к содержимому группы прямо сейчас, а не задваивается.
 
     rule_id — прогнать только одно правило (не используется воркером,
     полезно для точечной проверки из админки)."""
@@ -549,7 +621,7 @@ def reconcile_rating_rewards(force: bool = False, rule_id: Optional[str] = None)
                 prev_steamid = holder.steam_id if holder else None
                 prev_group_id = holder.reward_group_id if holder else None
 
-                if prev_steamid == current_steamid and prev_group_id == group_id:
+                if prev_steamid == current_steamid and prev_group_id == group_id and not force_reissue:
                     continue  # уже верно выдано — не трогаем
 
                 # Снять у прежнего держателя, если он был и его группа

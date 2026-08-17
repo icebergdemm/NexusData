@@ -1,9 +1,29 @@
+/** Предметы под конкретную роль (профессию), с фолбэком по вариациям
+ * снаряжения — та же семантика, что у вариаций набора в конструкторе китов
+ * (services_kit_resolution._resolve_variation_items): `items` — вариация 1
+ * и одновременно фолбэк для 2/3, если те не заданы явно. Вариация 3
+ * фолбэкается НА items, а не на variation_2_items, даже если та заполнена. */
+export interface JobItemsVariation {
+  items: Record<string, number>
+  variation_2_items?: Record<string, number>
+  variation_3_items?: Record<string, number>
+}
+
 export interface RewardGroup {
   id: string
   name: string
   items: Record<string, number>
   stats: Record<string, number | string>
   talents: Record<string, string[]>
+  /** job_id → предметы этой роли по вариациям снаряжения. Опционально —
+   * группы без ролевых предметов это поле не заполняют. */
+  job_items?: Record<string, JobItemsVariation>
+}
+
+export interface JobReferenceJob {
+  identifier: string
+  name: string
+  variants: number
 }
 
 export interface RatingRewardPlace {

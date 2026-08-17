@@ -595,15 +595,37 @@ async def api_apply_rewards_now(
 ):
     """Force apply all reward checks (rating + playtime) now.
 
-    Награды по рейтингу — через reconcile_rating_rewards(force=True):
-    расписание правил игнорируется, но реконсиляция всё равно идемпотентна
-    (выдаёт/снимает только реальные расхождения с текущим лидербордом), так
-    что повторный вызов этой кнопки безопасен и не задваивает награды."""
+    Награды по рейтингу — через reconcile_rating_rewards(force=True,
+    force_reissue=True): расписание правил игнорируется, И каждое место
+    принудительно перевыдаётся (снимается у текущего держателя и выдаётся
+    заново), а не только при смене держателя/группы — см. докстринг
+    reconcile_rating_rewards про то, зачем это нужно (правки содержимого
+    уже привязанной группы наград иначе не долетали бы до тех, кому она уже
+    выдана). Операция идемпотентна — повторный вызов безопасен."""
     if not check_permission(current_admin, "ratings", "recalculate"):
         raise HTTPException(status_code=403)
     import threading
     def _apply():
-        reconcile_rating_rewards(force=True)
+        reconcile_rating_rewards(force=True, force_reissue=True)
         check_and_apply_playtime_rewards()
     threading.Thread(target=_apply, daemon=True).start()
-    return JSONResponse({"status": "ok", "message": "Проверка наград запущена"})
+    return JSONResponse({"status": "ok", "message": "Полная перевыдача наград запущена"})
+
+
+@router.get("/api/v1/admin/reward-groups/job-reference")
+async def api_reward_groups_job_reference(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Справочник профессий (identifier + русское название + число вариаций
+    снаряжения) для конструктора предметов по ролям в группах наград —
+    та же выгрузка игрового контента, что и у конструктора кукол
+    (services_respawn_dolls.doll_reference), но без требования права
+    respawn_dolls: доступ отдельным правом ratings:view, т.к. это чисто
+    справочные данные для страницы наград."""
+    if not check_permission(current_admin, "ratings", "view"):
+        raise HTTPException(status_code=403)
+    from services_respawn_dolls import doll_reference
+    ref = doll_reference()
+    return JSONResponse({"jobs": ref.get("jobs") or []})

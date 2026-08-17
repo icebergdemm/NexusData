@@ -1865,6 +1865,10 @@ async def api_player_detail(
         "kval_kits": raw_achievements.get("kval_kits", {}),
         "custom_items": raw_achievements.get("items", {}),
         "custom_job_items": raw_achievements.get("job_items", {}),
+        # Предметы по ролям с вариациями снаряжения, выданные группами наград
+        # (см. services_playtime_stats._apply_job_item_variations) — только для
+        # просмотра здесь, редактируются через настройку групп наград, не тут.
+        "custom_job_item_variations": raw_achievements.get("job_item_variations", {}),
         "custom_stats": raw_achievements.get("stats", {}),
         "custom_talents": raw_achievements.get("talents", {}),
         "available_kval_kits": available_kval_kits,

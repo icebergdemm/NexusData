@@ -50,7 +50,7 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
   const applyNow = useMutation({
     mutationFn: () => api.post("/api/v1/admin/rewards/apply-now"),
     onSuccess: () => {
-      toast.success("Проверка запущена — держатели обновятся в течение нескольких секунд")
+      toast.success("Полная перевыдача запущена — награды будут сняты и выданы заново, держатели обновятся в течение нескольких секунд")
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ["rating-reward-holders"] }), 3000)
     },
     onError: (e: Error) => toast.error(e.message),
@@ -112,7 +112,9 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
         <p className="text-xs text-muted-foreground">
           Автоматическая выдача групп наград топ-игрокам по каждой профессии — по расписанию (день недели + время МСК).
           При смене лидера награда автоматически снимается с прежнего держателя и выдаётся новому — задваивания и
-          «зависших» наград у потерявших место больше нет.
+          «зависших» наград у потерявших место больше нет. «Проверить сейчас» — принудительная итерация вне
+          расписания: у ВСЕХ текущих держателей награда снимается и выдаётся заново по актуальному содержимому
+          группы (полезно после правки самой группы — например, добавления предметов по ролям).
         </p>
         {conditions.map((c, i) => {
           const ruleHolders = c.id ? holders.filter((h) => h.rule_id === c.id) : []
