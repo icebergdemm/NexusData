@@ -658,12 +658,16 @@ def _ms_to_dt(ms: int) -> datetime:
 
 
 # Action categories (module-level, shared)
+# 'joined' и 'ready' сознательно ИСКЛЮЧЕНЫ (не в этом множестве, т.е.
+# считаются технической категорией) — по решению админа: "Игрок X
+# присоединился к серверу" дублирует login от RoundManager_ND, а "готов/не
+# готов к началу раунда" — служебное состояние лобби, не игровое действие.
 PLAYER_ACTIONS = {'picked_up', 'placed', 'removed', 'opened', 'closed', 'equipped',
                   'unequipped', 'dropped', 'threw', 'used', 'reactor', 'repair',
                   'repair_failed', 'fabrication', 'fabrication_cancel', 'activated',
                   'deactivated', 'attached', 'wire', 'pump', 'settings_change', 'console',
                   'command_denied', 'death', 'chat', 'terminal', 'login', 'logout',
-                  'joined', 'ready', 'respawn', 'attack', 'structure', 'kick', 'ban',
+                  'respawn', 'attack', 'structure', 'kick', 'ban',
                   'name_change', 'name_history', 'talent_gained', 'looted_body'}
 
 
@@ -797,9 +801,37 @@ def refresh_logs_for_server(server_number: int):
                     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                 except Exception:
                     pass
+
+                # The raw .txt has now been fully parsed into log_events (this
+                # commit is what makes it durable) — the source file itself
+                # served its purpose and just sat here forever otherwise
+                # (confirmed on the real server: hundreds of files accumulating
+                # with no cleanup at all). Delete AFTER commit, not before, so
+                # a crash mid-parse leaves the file in place for a retry next
+                # cycle instead of silently losing the round's log.
+                try:
+                    os.remove(filepath)
+                except OSError as e:
+                    logger.warning(f"Failed to remove parsed raw log {filename}: {e}")
             except Exception as e:
                 conn.rollback()
                 logger.warning(f"Failed to parse local log {filename}: {e}")
+
+        # One-off sweep for files parsed in an EARLIER run (before raw-file
+        # cleanup existed, or if a previous delete above failed) — anything
+        # already recorded in log_files but still sitting on disk is a leak.
+        try:
+            already_parsed = {row[0] for row in conn.execute(
+                "SELECT filename FROM log_files WHERE server=?", (server_name,)
+            ).fetchall()}
+            for filename in local_files:
+                if filename in already_parsed and filename not in {f for f, _ in files_to_parse}:
+                    try:
+                        os.remove(os.path.join(local_dir, filename))
+                    except OSError:
+                        pass
+        except Exception as e:
+            logger.warning(f"Raw log backlog cleanup failed for {server_name}: {e}")
 
         # Update meta for this server
         row = conn.execute(
