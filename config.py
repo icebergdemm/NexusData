@@ -203,6 +203,17 @@ class Settings(BaseSettings):
     onlyoffice_callback_base_url: str = "https://nd.rp-asper.ru"    # our own base URL, reachable BY the Document Server (fetch + callback)
     onlyoffice_jwt_secret: str = Field("")
 
+    # Our own public base URL, reachable BY Discord's servers (same idea as
+    # onlyoffice_callback_base_url above, different consumer). Used to build
+    # the image URL embedded in sub-project publish embeds
+    # (services_sub_projects.py's publish_to_discord) — that URL is fetched
+    # SERVER-SIDE by Discord to render the embed image, so it can't be built
+    # from request.base_url: behind nginx/proxy_server.py that often resolves
+    # to an internal scheme/host/port Discord can't reach, which is exactly
+    # why the image silently failed to attach some of the time while the
+    # rest of the embed (text) still posted fine.
+    public_site_url: str = "https://nd.rp-asper.ru"
+
     # SFTP Server 1
     sftp_server_1_host: str = ""
     sftp_server_1_port: int = 22

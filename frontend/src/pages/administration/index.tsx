@@ -30,6 +30,7 @@ const CFG_FIELDS: { key: string; label: string; type?: "checkbox" }[] = [
   { key: "discord_trap_webhook_url", label: "Discord Trap Webhook" },
   { key: "sub_projects_webhook_url", label: "Sub-projects Webhook" },
   { key: "sub_projects_discord_channel_id", label: "Sub-projects Discord Channel ID" },
+  { key: "public_site_url", label: "Публичный URL сайта (для картинок в эмбедах Discord)" },
   { key: "allowed_ips", label: "Allowed IPs (через запятую)" },
   { key: "cors_origins", label: "CORS Origins (через запятую)" },
   { key: "rate_limit_requests", label: "Rate limit: запросов" },

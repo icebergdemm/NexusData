@@ -765,10 +765,28 @@ class SubProjectService:
         if not project:
             raise HTTPException(status_code=404, detail="Проект не найден")
 
-        # Build image URL
+        # Build image URL — MUST be settings.public_site_url, not the
+        # request-derived base_url the caller passes in. Discord fetches an
+        # embed's image URL server-side to render it, so it needs an address
+        # reachable from Discord's own network. request.base_url reflects
+        # whatever scheme/host/port the app process itself sees the request
+        # arrive as — behind nginx/proxy_server.py that's frequently an
+        # internal one (http://127.0.0.1:8000 and similar), which Discord
+        # obviously can't reach: the embed still posts (text is inline, no
+        # fetch needed), but the image silently never attaches. This is
+        # exactly the bug reports of "картинка не прикрепляется" — it wasn't
+        # random, it depended on how the request happened to reach the app.
+        # base_url is kept as a last-resort fallback only for the (unusual)
+        # case public_site_url was left blank by misconfiguration.
+        effective_base = (settings.public_site_url or base_url or "").rstrip("/")
+        if not settings.public_site_url:
+            logger.warning(
+                "publish_to_discord: public_site_url не настроен — картинка эмбеда "
+                "использует request.base_url и может не прикрепиться в Discord"
+            )
         image_url = None
         if project.image_filename:
-            image_url = f"{base_url}/sub_projects/images/{project.image_filename}"
+            image_url = f"{effective_base}/sub_projects/images/{project.image_filename}"
 
         embed = self.build_embed(project, image_url)
 
