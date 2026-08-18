@@ -41,7 +41,7 @@ from typing import Optional
 import httpx
 import uvicorn
 from starlette.applications import Starlette
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
@@ -180,6 +180,17 @@ async def _proxy(request: Request) -> Response:
             request.method, url, headers=headers, content=request.stream(),
         )
         upstream = await _http_client.send(upstream_request, stream=True)
+    except ClientDisconnect:
+        # Клиент отвалился, пока мы ещё перекачивали наверх его же тело
+        # запроса — закрыл вкладку или отменил заливку файла на полпути.
+        # Это ШТАТНОЕ событие, а не сбой бэкенда, но раньше оно попадало в
+        # `except Exception` ниже: на каждый оборванный аплоад в лог писался
+        # полный traceback уровня ERROR, а форматирование стектрейса и
+        # синхронная запись в stdout происходят прямо в event loop и держат
+        # его. Страницу «идут работы» тут отдавать тоже некому — клиента
+        # уже нет, а 503 в её логах выглядит как ложное падение бэкенда.
+        logger.debug("Client disconnected while streaming request body")
+        return Response(status_code=499)
     except httpx.HTTPError as ex:
         logger.warning(f"Backend unreachable ({ex.__class__.__name__}) — serving maintenance page")
         return _serve_maintenance()
@@ -278,7 +289,8 @@ if __name__ == "__main__":
     watcher.start()
     logger.info(f"Proxy listening on {PROXY_HOST}:{PROXY_PORT}, backend at {BACKEND_BASE_URL}, trusting X-Forwarded-For from: {_FORWARDED_ALLOW_IPS}")
     try:
-        uvicorn.run(app, host=PROXY_HOST, port=PROXY_PORT, proxy_headers=True, forwarded_allow_ips=_FORWARDED_ALLOW_IPS)
+        uvicorn.run(app, host=PROXY_HOST, port=PROXY_PORT, proxy_headers=True,
+                    forwarded_allow_ips=_FORWARDED_ALLOW_IPS, access_log=False)
     finally:
         _stop_watcher.set()
         _stop_backend()

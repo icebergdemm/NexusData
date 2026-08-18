@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Tuple, NamedTuple
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 
 import paramiko
 from config import get_settings
@@ -1334,23 +1335,80 @@ class LogSearchResult(NamedTuple):
 # работают». Теперь счёт просто прерывается, а строки отдаются всегда.
 _COUNT_TIME_BUDGET_SEC = 2.0
 
+# Сколько максимум разрешено выбирать СТРОКИ страницы. Раньше бюджет стоял
+# только на COUNT, а сам SELECT не был ограничен ничем — и на редкой
+# комбинации фильтров (LIKE-путь, глубокий OFFSET, category='technical' с
+# несargable NOT IN) один запрос к /api/v1/admin/logs/events молотил по
+# 50+ минут. Хуже того, клиент к тому времени давно ушёл: read-timeout
+# прокси 180 с, после него пользователь видел ошибку и жал «обновить», а
+# ПРЕЖНИЙ скан продолжал жечь ядро в threadpool ещё почти час, и такие
+# сканы копились друг на друга. Ограничение делает тяжёлый запрос честно
+# падающим за 30 с вместо того, чтобы уносить сервер.
+_ROW_TIME_BUDGET_SEC = 30.0
+
+# Через сколько «виртуальных инструкций» SQLite дёргает progress-handler.
+# Это ПИТОНОВСКИЙ колбэк, и каждый его вызов забирает GIL. При прежних
+# 10 000 он срабатывал десятки тысяч раз в секунду, и поток из threadpool
+# на долгом скане непрерывно выдёргивал GIL у event loop'а — отсюда
+# «зависания сайта» по 0.5-0.8 с в перф-мониторе при живом, ничем не
+# занятом бэкенде. Миллион инструкций проверяет дедлайн всё ещё сотни раз
+# в секунду (точность прерывания — единицы миллисекунд), но обходится на
+# два порядка дешевле.
+_PROGRESS_GRANULARITY = 1_000_000
+
+
+class LogSearchTooSlow(Exception):
+    """Выборка не уложилась в _ROW_TIME_BUDGET_SEC и была прервана.
+
+    Отдельный тип, а не пустой результат: пустая таблица читается как
+    «событий нет» и уводит расследование не туда, тогда как здесь надо
+    сказать «уточните фильтры»."""
+
+
+class _Budget:
+    """Progress-handler SQLite: ненулевой ответ прерывает идущий запрос.
+
+    Помнит факт срабатывания, чтобы вызывающий мог отличить прерывание по
+    таймауту от настоящей ошибки БД, не разбирая текст исключения."""
+
+    __slots__ = ("deadline", "expired")
+
+    def __init__(self, seconds: float):
+        self.deadline = time.monotonic() + seconds
+        self.expired = False
+
+    def __call__(self) -> int:
+        if time.monotonic() > self.deadline:
+            self.expired = True
+            return 1
+        return 0
+
+
+@contextmanager
+def _apply_budget(conn: sqlite3.Connection, budget: "_Budget"):
+    """Вешает бюджет на соединение на время блока и обязательно снимает.
+
+    Соединения тут thread-local (см. _get_conn), поэтому handler никогда не
+    заденет запрос соседнего потока."""
+    conn.set_progress_handler(budget, _PROGRESS_GRANULARITY)
+    try:
+        yield
+    finally:
+        conn.set_progress_handler(None, 0)
+
 
 def _bounded_count(conn: sqlite3.Connection, sql: str, params: list) -> Optional[int]:
     """COUNT с ограничением по времени: None, если не уложились в бюджет.
 
-    Прерывание делается штатным progress-handler'ом SQLite (вызывается каждые
-    N виртуальных инструкций; ненулевой ответ прерывает запрос) — это
+    Прерывание делается штатным progress-handler'ом SQLite — это
     единственный способ остановить уже идущий скан, timeout соединения тут не
     поможет: он про ожидание блокировки, а не про длительность запроса.
     """
-    deadline = time.monotonic() + _COUNT_TIME_BUDGET_SEC
-    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
     try:
-        return conn.execute(sql, params).fetchone()[0]
+        with _apply_budget(conn, _Budget(_COUNT_TIME_BUDGET_SEC)):
+            return conn.execute(sql, params).fetchone()[0]
     except sqlite3.OperationalError:
         return None
-    finally:
-        conn.set_progress_handler(None, 0)
 
 
 def search_logs(
@@ -1402,14 +1460,23 @@ def search_logs(
     # Из-за этого соседние страницы могли показывать одни и те же события, а
     # другие — терять. id монотонно растёт со временем вставки, поэтому он и
     # доупорядочивает, и совпадает с ожидаемым «новые сверху».
+    budget = _Budget(_ROW_TIME_BUDGET_SEC)
     try:
-        rows = conn.execute(
-            f"SELECT log_events.ts, log_events.player, log_events.action, log_events.details, "
-            f"log_events.server, log_events.source_file FROM {from_sql}{where} "
-            f"ORDER BY log_events.ts DESC, log_events.id DESC LIMIT ? OFFSET ?",
-            params + [limit + 1, offset]
-        ).fetchall()
+        with _apply_budget(conn, budget):
+            rows = conn.execute(
+                f"SELECT log_events.ts, log_events.player, log_events.action, log_events.details, "
+                f"log_events.server, log_events.source_file FROM {from_sql}{where} "
+                f"ORDER BY log_events.ts DESC, log_events.id DESC LIMIT ? OFFSET ?",
+                params + [limit + 1, offset]
+            ).fetchall()
     except sqlite3.Error as e:
+        if budget.expired:
+            logger.warning(
+                f"search_logs: прерван по бюджету {_ROW_TIME_BUDGET_SEC}s "
+                f"(fts={use_fts}, offset={offset}, category={category!r}, "
+                f"text={bool(search_text)}, names={bool(names_list or player_name)})"
+            )
+            raise LogSearchTooSlow() from e
         logger.error(f"search_logs: query failed: {e}")
         return LogSearchResult([], 0, False, False)
 

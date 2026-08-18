@@ -881,20 +881,26 @@ async def api_replay_logs(
             "unavailable_reason": "Не удалось определить раунд этой записи — привяжите её к раунду вручную.",
         })
 
-    from services_logs import search_logs
+    from services_logs import search_logs, LogSearchTooSlow
 
-    events, total, total_is_capped, _has_more = await run_in_threadpool(
-        search_logs,
-        server_name=replay.server_name or None,
-        player_name=player or None,
-        action_type=action_type or None,
-        search_text=search or None,
-        time_from=started_at,
-        time_to=ended_at,
-        category=category or None,
-        limit=limit,
-        offset=0,
-    )
+    try:
+        events, total, total_is_capped, _has_more = await run_in_threadpool(
+            search_logs,
+            server_name=replay.server_name or None,
+            player_name=player or None,
+            action_type=action_type or None,
+            search_text=search or None,
+            time_from=started_at,
+            time_to=ended_at,
+            category=category or None,
+            limit=limit,
+            offset=0,
+        )
+    except LogSearchTooSlow:
+        return JSONResponse({
+            "events": [], "round_id": None, "started_at": None, "ended_at": None,
+            "unavailable_reason": "Слишком тяжёлый запрос к логам — уточните фильтры.",
+        })
 
     # Логи приходят от новых к старым, а проигрывание идёт вперёд — разворачиваем.
     rows = []

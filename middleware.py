@@ -1,7 +1,7 @@
 import re
-from fastapi import Request, HTTPException, status
+from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 import logging
 from collections import defaultdict
 from time import time
@@ -87,9 +87,28 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if len(self.request_history[ip]) >= self.requests_per_window:
             logger.warning(f"Rate limit exceeded for IP: {ip}")
-            raise HTTPException(
+            # ВОЗВРАЩАЕМ ответ, а не raise HTTPException. Внутри
+            # BaseHTTPMiddleware исключение уже некому превратить в ответ:
+            # ExceptionMiddleware, который делает из HTTPException аккуратный
+            # JSON, стоит НИЖЕ пользовательских middleware в стеке. Поэтому
+            # raise улетал наружу до ServerErrorMiddleware — клиент получал
+            # 500 вместо 429 (то есть «сервер сломался» вместо «притормози»),
+            # а в лог на КАЖДОЕ превышение лимита валился двойной traceback.
+            # anyio.EndOfStream в его верхней половине — внутренняя кухня
+            # BaseHTTPMiddleware, а не причина. Лимит по своей природе
+            # срабатывает очередями (скан, зациклившийся клиент), так что лог
+            # забивался пачками, а форматирование стектрейса и запись в stdout
+            # идут прямо в event loop и держат его.
+            # InjectionGuardMiddleware ниже в этом же файле всегда делал
+            # правильно — возвращал PlainTextResponse.
+            oldest = self.request_history[ip][0]
+            retry_after = max(1, int(self.window_seconds - (now - oldest)) + 1)
+            return JSONResponse(
+                # Форма тела ровно та же, что раньше отдавал бы FastAPI из
+                # HTTPException ({"detail": ...}) — фронтенду менять нечего.
+                {"detail": "Rate limit exceeded. Too many requests."},
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded. Too many requests."
+                headers={"Retry-After": str(retry_after)},
             )
 
         self.request_history[ip].append(now)

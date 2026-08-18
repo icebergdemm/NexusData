@@ -21,6 +21,7 @@ from models import AdminUser, AdminSession, PlayerData
 from services_logs import (
     search_logs, get_unique_players, get_log_stats, get_fts_status,
     force_refresh_logs, LogEvent, get_player_map, get_steamids_for_names,
+    LogSearchTooSlow,
 )
 from services_sftp_filemanager import SFTPFileManager
 
@@ -121,19 +122,29 @@ async def api_logs_events(
 
     offset = (page - 1) * page_size
 
-    events, total, total_is_capped, has_more = await run_in_threadpool(
-        search_logs,
-        server_name=server if server else None,
-        player_name=effective_player if effective_player else None,
-        action_type=action_type if action_type else None,
-        search_text=search if search else None,
-        time_from=dt_from,
-        time_to=dt_to,
-        category=category,
-        limit=page_size,
-        offset=offset,
-        names_list=names_list,
-    )
+    try:
+        events, total, total_is_capped, has_more = await run_in_threadpool(
+            search_logs,
+            server_name=server if server else None,
+            player_name=effective_player if effective_player else None,
+            action_type=action_type if action_type else None,
+            search_text=search if search else None,
+            time_from=dt_from,
+            time_to=dt_to,
+            category=category,
+            limit=page_size,
+            offset=offset,
+            names_list=names_list,
+        )
+    except LogSearchTooSlow:
+        # Осознанный отказ вместо пустой таблицы: такая комбинация фильтров
+        # заставляет SQLite сканировать всю историю, и раньше запрос молотил
+        # десятками минут уже после того, как клиент отвалился по таймауту.
+        raise HTTPException(
+            status_code=503,
+            detail="Слишком тяжёлый запрос к логам. Сузьте период или уточните фильтры "
+                   "(конкретный сервер, тип события), либо дождитесь достройки поискового индекса.",
+        )
 
     # Resolve player_id for the "Игрок" column so it can link to the profile
     # (see PlayerSummaryDialog on the frontend) — only for the handful of
