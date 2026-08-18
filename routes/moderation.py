@@ -201,7 +201,52 @@ panel_router = APIRouter()
 def _moderation_action_permission(action_type: Optional[str]) -> str:
     """Maps a kick/ban/unban/message action to its own registered permission
     (permissions_registry.py) instead of the generic "edit"."""
-    return {"kick": "kick", "ban": "ban", "unban": "ban", "message": "message"}.get(action_type, "edit")
+    return {"kick": "kick", "ban": "ban", "unban": "ban",
+            "message": "message", "msg_box": "message"}.get(action_type, "edit")
+
+
+# Сообщение игроку из панели ставится в очередь как msg_box, а не message:
+# message игровой сервер шлёт обычным чатом (Game.SendMessage) — оно тонет в
+# потоке игрового чата ровно тогда, когда важнее всего, чтобы его прочитали.
+# msg_box исполняется как `msg_box_to <steamid> "<text>"` и показывает
+# модальное окно поверх игры — тем же способом, которым игрок уже получает
+# уведомления о предупреждениях и выговорах (см. services.py,
+# _notify_player_about_punishment). Тип действия остаётся "message" во всём
+# внешнем контракте (форма, JSON-API, права) — подменяется только то, что
+# кладётся в очередь серверу.
+_MESSAGE_QUEUE_ACTION = "msg_box"
+
+
+def _queued_action_type(action_type: str) -> str:
+    return _MESSAGE_QUEUE_ACTION if action_type == "message" else action_type
+
+
+def _resolve_message_server(db: Session, steamid: str, chosen: Optional[str]) -> Optional[str]:
+    """Сервер, на который ставить окно с сообщением, если админ не выбрал его
+    явно: тот, где игрок сейчас онлайн. Иначе задачу заберут ОБА сервера, и
+    тот, где игрока нет, отчитается ошибкой «игрок не найден» — в панели это
+    выглядит как сбой, хотя всё в порядке. Игрок оффлайн → None: задача
+    останется в очереди, и окно покажет тот сервер, на который он зайдёт (тот
+    же приём, что и в services.py::_notify_player_about_punishment)."""
+    if chosen:
+        return chosen
+    try:
+        for info in ServerModerationService(db).get_online_players():
+            if info.get("player_steamid") == steamid:
+                return info.get("server_name")
+    except Exception:
+        pass
+    return None
+
+
+def _effective_server_name(db: Session, action_type: str, target_steamid: str,
+                           server_name: Optional[str]) -> Optional[str]:
+    """Нормализует выбранный админом сервер; для сообщений дополнительно
+    подставляет тот, где игрок сейчас онлайн (см. _resolve_message_server)."""
+    chosen = server_name.strip().upper() if server_name and server_name.strip() else None
+    if action_type in ("message", "msg_box"):
+        return _resolve_message_server(db, target_steamid, chosen)
+    return chosen
 
 
 _ADMIN_MSG_PREFIX = "[Администрация]: "
@@ -338,17 +383,17 @@ async def enqueue_moderation_action(
 
     await ensure_csrf(request, db)
 
-    if action_type not in ("kick", "ban", "unban", "message"):
+    if action_type not in ("kick", "ban", "unban", "message", "msg_box"):
         raise HTTPException(status_code=400, detail="Invalid action_type")
 
     from schemas import QueueActionIn
     action_in = QueueActionIn(
-        action_type=action_type,
+        action_type=_queued_action_type(action_type),
         target_steamid=target_steamid,
         reason=reason or None,
         duration_minutes=duration_minutes or None,
-        message_text=_prefix_admin_message(message_text) if action_type == "message" else (message_text or None),
-        server_name=server_name.strip().upper() if server_name and server_name.strip() else None,
+        message_text=_prefix_admin_message(message_text) if action_type in ("message", "msg_box") else (message_text or None),
+        server_name=_effective_server_name(db, action_type, target_steamid, server_name),
     )
 
     svc = ServerModerationService(db)
@@ -562,19 +607,19 @@ async def api_enqueue_moderation_action(
     message_text = body.get("message_text")
     server_name = body.get("server_name")
 
-    if action_type not in ("kick", "ban", "unban", "message"):
+    if action_type not in ("kick", "ban", "unban", "message", "msg_box"):
         raise HTTPException(status_code=400, detail="Invalid action_type")
     if not target_steamid:
         raise HTTPException(status_code=400, detail="target_steamid required")
 
     from schemas import QueueActionIn
     action_in = QueueActionIn(
-        action_type=action_type,
+        action_type=_queued_action_type(action_type),
         target_steamid=target_steamid,
         reason=reason or None,
         duration_minutes=duration_minutes or None,
-        message_text=_prefix_admin_message(message_text) if action_type == "message" else (message_text or None),
-        server_name=server_name.strip().upper() if server_name and server_name.strip() else None,
+        message_text=_prefix_admin_message(message_text) if action_type in ("message", "msg_box") else (message_text or None),
+        server_name=_effective_server_name(db, action_type, target_steamid, server_name),
     )
 
     svc = ServerModerationService(db)

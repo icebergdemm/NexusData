@@ -147,6 +147,9 @@ export interface PlayerDetailResponse {
   has_delete: boolean
   has_special: boolean
   can_issue_punishment: boolean
+  /** Право «Наказания → отзыв»: отмена наказания и разбан прямо здесь, в
+   *  профиле, а не только на общей странице наказаний. */
+  can_revoke_punishment: boolean
   punishment_types: string[]
   punishment_type_labels: Record<string, string>
 }

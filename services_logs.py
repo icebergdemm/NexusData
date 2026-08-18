@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, NamedTuple
 from dataclasses import dataclass, field
 
 import paramiko
@@ -46,6 +46,11 @@ LOGOUT_RE = re.compile(r'^\[RoundManager_ND\] Выход: (.+?) \| SteamID: (\d+
 # unsearchable/uncategorized before this.
 SHARD_BAN_RE = re.compile(r'^\[ShardLink\] (.+?) \(STEAM_\S+\) забанен на этом шарде')
 SHARD_KICK_RE = re.compile(r'^\[ShardLink\] (.+?) кикнут на этом шарде')
+
+# Теги, у которых в ACTION_PATTERNS есть собственный разбор с игроком —
+# они не должны попадать под общее правило «строка с [Тегом] = технический
+# шум» (см. _is_system в parse_log_content).
+TAGGED_PLAYER_RE = re.compile(r'^\[CustomRadioThirdFork\]')
 
 # Action type classification patterns
 ACTION_PATTERNS = [
@@ -242,8 +247,16 @@ def parse_log_content(content: str, server_name: str = "", source_file: str = ""
         # [DemoRecorder]) or a numbered spawn-manifest line ("2. Инопланетное
         # орудие (ID: ...)") is technical noise — classify as 'other' so the
         # chat-catching regex below doesn't mis-file it into player actions.
+        #
+        # Исключение — теги, для которых НИЖЕ есть собственный паттерн с
+        # разбором игрока (сейчас это [CustomRadioThirdFork], переключение
+        # канала рации). Без этой оговорки правило «строка с [Тегом] —
+        # технический шум» съедало их раньше, чем до них доходил разбор:
+        # в реальных логах это тысячи событий рации, которые оседали в
+        # 'other' без игрока и потому не находились ни фильтром по типу
+        # события, ни поиском по игроку.
         _is_system = (
-            action_line.startswith('[')
+            (action_line.startswith('[') and not TAGGED_PLAYER_RE.match(action_line))
             or re.match(r'^\d+\.\s', action_line) is not None
         )
 
@@ -610,6 +623,13 @@ def _init_schema(conn: sqlite3.Connection):
         -- a leading-wildcard LIKE can't use any B-tree, which is exactly why
         -- the COUNT above is capped.)
         CREATE INDEX IF NOT EXISTS ix_log_action_ts ON log_events(action, ts);
+        -- Сервер + тип события + время: комбинация фильтров «сервер + тип
+        -- действия/категория», которую панель шлёт чаще всего. Без неё
+        -- SQLite может взять только один из двух индексов и досеивать
+        -- остальное перебором — чем больше фильтров выбрано разом, тем
+        -- дольше отвечал запрос (ровно то, из-за чего вторая и третья
+        -- галочки фильтра выглядели «неработающими»: запрос не возвращался).
+        CREATE INDEX IF NOT EXISTS ix_log_server_action_ts ON log_events(server, action, ts);
 
         CREATE TABLE IF NOT EXISTS log_files (
             server   TEXT NOT NULL,
@@ -1287,6 +1307,52 @@ def _build_where(server_name, player_name, action_type, search_text,
     return from_sql, where, params
 
 
+class LogSearchResult(NamedTuple):
+    """Результат поиска по логам.
+
+    Кортеж (а не просто список) потому, что подвал таблицы должен знать не
+    только строки текущей страницы, но и есть ли следующая.
+
+    total          — сколько всего совпало; None, если посчитать не удалось
+                     за отведённый бюджет времени (см. _bounded_count).
+    total_is_capped — совпадений больше, чем показывает total ("5000+").
+    has_more       — есть ли ещё строки ПОСЛЕ текущей страницы. Считается
+                     отдельно от total (запросом limit+1) именно для того,
+                     чтобы перелистывание работало даже когда total неизвестен.
+    """
+    events: List[LogEvent]
+    total: Optional[int]
+    total_is_capped: bool
+    has_more: bool
+
+
+# Сколько секунд максимум разрешено считать общее число совпадений. Счёт —
+# сугубо справочная цифра в подвале таблицы; листание, наоборот, работать
+# обязано. Раньше COUNT по редкой комбинации фильтров сканировал всю историю,
+# запрос не укладывался в таймаут прокси, страница молча оставалась со
+# старыми строками — и это выглядело как «фильтры и перелистывание не
+# работают». Теперь счёт просто прерывается, а строки отдаются всегда.
+_COUNT_TIME_BUDGET_SEC = 2.0
+
+
+def _bounded_count(conn: sqlite3.Connection, sql: str, params: list) -> Optional[int]:
+    """COUNT с ограничением по времени: None, если не уложились в бюджет.
+
+    Прерывание делается штатным progress-handler'ом SQLite (вызывается каждые
+    N виртуальных инструкций; ненулевой ответ прерывает запрос) — это
+    единственный способ остановить уже идущий скан, timeout соединения тут не
+    поможет: он про ожидание блокировки, а не про длительность запроса.
+    """
+    deadline = time.monotonic() + _COUNT_TIME_BUDGET_SEC
+    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
+    try:
+        return conn.execute(sql, params).fetchone()[0]
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
 def search_logs(
     server_name: Optional[str] = None,
     player_name: Optional[str] = None,
@@ -1298,20 +1364,24 @@ def search_logs(
     limit: int = 500,
     offset: int = 0,
     names_list: Optional[List[str]] = None,
-) -> Tuple[List[LogEvent], int, bool]:
+) -> LogSearchResult:
     """Search log events via indexed SQL.
 
-    Returns (events, total_count, total_is_capped). Constant memory: only
-    `limit` rows are materialized. `total_count` is capped at COUNT_CAP —
-    when total_is_capped is True there are more matches than reported and
-    the UI should render it as "COUNT_CAP+" (see the bounded-COUNT comment
-    below for why an exact total isn't worth its cost here).
+    Все переданные фильтры применяются ОДНОВРЕМЕННО (AND) — см. _build_where.
+
+    Returns a LogSearchResult; constant memory: only `limit` rows are
+    materialized. `total` is capped at COUNT_CAP and may be None when counting
+    didn't fit into its time budget — `has_more` is authoritative for
+    pagination in both cases.
     """
     try:
         conn = _get_conn()
     except Exception as e:
         logger.error(f"search_logs: DB unavailable: {e}")
-        return [], 0
+        # Именно кортеж нужной формы: вызывающие распаковывают результат, и
+        # короткий кортеж на этом пути раньше валил весь запрос страницы
+        # логов пятисоткой вместо пустой таблицы.
+        return LogSearchResult([], 0, False, False)
 
     # Текстовые фильтры идут через FTS5, как только индекс достроен; пока
     # фоновый бэкфилл не закончил (или если FTS5 нет в сборке SQLite) —
@@ -1323,24 +1393,45 @@ def search_logs(
                                            search_text, time_from, time_to, category,
                                            names_list, use_fts=use_fts)
 
+    # Строки берутся ПЕРВЫМИ и с запасом в одну: наличие (limit+1)-й строки и
+    # есть ответ на вопрос «есть ли следующая страница», без всякого COUNT.
+    #
+    # Сортировка — по ts И по id: в реальных логах десятки строк делят одну и
+    # ту же секунду, а порядок одинаковых ts SQLite не гарантирует и вправе
+    # выбрать разный для разных OFFSET (планы запроса у страниц отличаются).
+    # Из-за этого соседние страницы могли показывать одни и те же события, а
+    # другие — терять. id монотонно растёт со временем вставки, поэтому он и
+    # доупорядочивает, и совпадает с ожидаемым «новые сверху».
+    try:
+        rows = conn.execute(
+            f"SELECT log_events.ts, log_events.player, log_events.action, log_events.details, "
+            f"log_events.server, log_events.source_file FROM {from_sql}{where} "
+            f"ORDER BY log_events.ts DESC, log_events.id DESC LIMIT ? OFFSET ?",
+            params + [limit + 1, offset]
+        ).fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"search_logs: query failed: {e}")
+        return LogSearchResult([], 0, False, False)
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
     # Ограниченный COUNT. Через FTS он дёшев, но на LIKE-пути (пока индекс
     # строится) COUNT(*) обязан просканировать всю таблицу — счёт внутри
     # LIMIT-подзапроса ограничивает работу COUNT_CAP строками независимо от
-    # размера истории. Точный итог того не стоит: вызывающий получает флаг
-    # и показывает "5000+".
-    capped = conn.execute(
+    # размера истории, а бюджет времени сверху — ещё и по времени. Точный
+    # итог того не стоит: вызывающий получает флаг и показывает "5000+".
+    capped = _bounded_count(
+        conn,
         f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_sql}{where} LIMIT {COUNT_CAP + 1})",
         params,
-    ).fetchone()[0]
-    total = min(capped, COUNT_CAP)
-    total_is_capped = capped > COUNT_CAP
-
-    rows = conn.execute(
-        f"SELECT log_events.ts, log_events.player, log_events.action, log_events.details, "
-        f"log_events.server, log_events.source_file FROM {from_sql}{where} "
-        f"ORDER BY log_events.ts DESC LIMIT ? OFFSET ?",
-        params + [limit, offset]
-    ).fetchall()
+    )
+    if capped is None:
+        total: Optional[int] = None
+        total_is_capped = True
+    else:
+        total = min(capped, COUNT_CAP)
+        total_is_capped = capped > COUNT_CAP
 
     events = [
         LogEvent(
@@ -1354,7 +1445,7 @@ def search_logs(
         )
         for r in rows
     ]
-    return events, total, total_is_capped
+    return LogSearchResult(events, total, total_is_capped, has_more)
 
 
 def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
@@ -1363,8 +1454,7 @@ def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:
     Old callers expected the full list; we cap to 5000 most-recent events to
     avoid loading the entire history into RAM. Prefer search_logs() instead.
     """
-    events, _total, _capped = search_logs(server_name=server_name, limit=5000, offset=0)
-    return events
+    return search_logs(server_name=server_name, limit=5000, offset=0).events
 
 
 def get_unique_players(server_name: Optional[str] = None) -> List[str]:

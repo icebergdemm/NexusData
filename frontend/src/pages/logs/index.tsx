@@ -20,7 +20,19 @@ import { ACTION_COLOR, ACTION_TYPES, type LogEvent } from "./constants"
 import { PlayerNamesFilter } from "./player-filter"
 import { useCurrentAdmin } from "@/lib/auth"
 
-interface LogsResponse { events: LogEvent[]; total: number; total_is_capped: boolean; page: number; page_size: number; total_pages: number }
+interface LogsResponse {
+  events: LogEvent[]
+  /** null — бэкенд не смог посчитать совпадения за отведённое время
+   *  (services_logs._bounded_count). Строки при этом всё равно приходят. */
+  total: number | null
+  total_is_capped: boolean
+  /** Есть ли страница после текущей. Считается независимо от total (запросом
+   *  на одну строку больше), поэтому листание работает и без точного счёта. */
+  has_more: boolean
+  page: number
+  page_size: number
+  total_pages: number | null
+}
 interface LogStatEntry { event_count: number; last_refresh: string | null; oldest_event: string | null; newest_event: string | null }
 interface SearchIndexStatus { available: boolean; ready: boolean; progress_pct: number }
 
@@ -53,7 +65,7 @@ export function LogsPage() {
   // maximally expensive while being useless as a filter — wait for 2+.
   const effectiveSearch = debouncedSearch.length >= 2 ? debouncedSearch : ""
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: ["logs-events", server, category, effectiveActionType, playerNames, effectiveSearch, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "100" })
@@ -161,8 +173,30 @@ export function LogsPage() {
           <Checkbox checked={consoleOnly} onCheckedChange={(c) => { setConsoleOnly(c === true); setPage(1) }} />
           Только консольные команды
         </label>
-        {data && <span className="ml-auto text-xs text-muted-foreground">{data.total.toLocaleString("ru-RU")}{data.total_is_capped ? "+" : ""} событий</span>}
+        {data && (
+          <span className="ml-auto text-xs text-muted-foreground">
+            {data.total != null ? `${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""} событий` : "много событий"}
+            {isFetching && !isLoading && " · обновление…"}
+          </span>
+        )}
       </div>
+
+      {/* Запрос логов может не дойти (таймаут на тяжёлой выборке, 429 от
+          лимитера, обрыв): react-query оставляет на экране строки ПРЕДЫДУЩЕГО
+          запроса (placeholderData), и молчаливый провал выглядит так, будто
+          новый фильтр или следующая страница «не работают». Поэтому ошибку
+          показываем явно и даём повторить. */}
+      {isError && (
+        <Card className="mb-4 border-destructive/50">
+          <CardContent className="flex flex-wrap items-center justify-between gap-2 pt-6 text-sm">
+            <span className="text-destructive">
+              Не удалось загрузить события: {(error as Error)?.message || "ошибка запроса"}.
+              {" "}Ниже — результат предыдущего запроса, он не соответствует текущим фильтрам.
+            </span>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>Повторить</Button>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="overflow-hidden py-0">
         <CardContent className="p-0">
@@ -205,11 +239,19 @@ export function LogsPage() {
                   {!data?.events.length && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Событий не найдено</TableCell></TableRow>}
                 </TableBody>
               </Table>
-              {data && data.total_pages > 1 && (
+              {/* Листание опирается на has_more, а не на total_pages: точное
+                  число совпадений под фильтром бэкенд считать не обязан (и
+                  специально не считает, когда это дорого), а «Вперёд» должно
+                  работать в любом случае. */}
+              {data && (data.has_more || page > 1) && (
                 <div className="flex items-center justify-center gap-2 border-t p-3">
-                  <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Назад</Button>
-                  <span className="text-sm text-muted-foreground">Страница {data.page} из {data.total_pages} ({data.total.toLocaleString("ru-RU")}{data.total_is_capped ? "+" : ""})</span>
-                  <Button variant="outline" size="sm" disabled={page >= data.total_pages} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
+                  <Button variant="outline" size="sm" disabled={page <= 1 || isFetching} onClick={() => setPage((p) => p - 1)}>Назад</Button>
+                  <span className="text-sm text-muted-foreground">
+                    Страница {page}
+                    {data.total_pages != null && ` из ${data.total_pages}`}
+                    {data.total != null && ` (${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""})`}
+                  </span>
+                  <Button variant="outline" size="sm" disabled={!data.has_more || isFetching} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
                 </div>
               )}
             </>

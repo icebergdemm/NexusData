@@ -4,7 +4,14 @@
 
 export function baseKitItemsList(items: unknown): string[] {
   if (items && typeof items === "object" && !Array.isArray(items)) {
-    return Object.values(items as Record<string, unknown>).map((v) => String(v))
+    // Обычная форма — {item_id: количество}: показываем идентификатор (с xN
+    // при количестве больше одного), а не голое значение. Раньше здесь
+    // печатались именно ЗНАЧЕНИЯ, то есть на карточке кита вместо предметов
+    // был ряд чисел «1, 1, 2». Легаси-форма {ключ: "item_id"} со строковыми
+    // значениями по-прежнему показывается значением.
+    return Object.entries(items as Record<string, unknown>).map(([k, v]) =>
+      typeof v === "number" ? (v !== 1 ? `${k} x${v}` : k) : String(v),
+    )
   }
   if (Array.isArray(items)) return items.map((v) => String(v))
   return []

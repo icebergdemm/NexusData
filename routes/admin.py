@@ -1892,6 +1892,10 @@ async def api_player_detail(
         "can_manage_rewards": check_permission(current_admin, "players", "manage_rewards"),
         "can_set_forced_name": check_permission(current_admin, "players", "set_forced_name"),
         "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),
+        # Отмена наказания и разбан доступны прямо в профиле игрока (вкладка
+        # «Наказания»), а не только на общей странице наказаний — право то же
+        # самое, что и там.
+        "can_revoke_punishment": check_permission(current_admin, "punishments", "revoke"),
         "punishment_types": PUNISHMENT_TYPES,
         "punishment_type_labels": PUNISHMENT_TYPE_LABELS,
     }

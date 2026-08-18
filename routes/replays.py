@@ -883,7 +883,7 @@ async def api_replay_logs(
 
     from services_logs import search_logs
 
-    events, total, total_is_capped = await run_in_threadpool(
+    events, total, total_is_capped, _has_more = await run_in_threadpool(
         search_logs,
         server_name=replay.server_name or None,
         player_name=player or None,

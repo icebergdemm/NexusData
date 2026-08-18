@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
-import type { PlayerDetailResponse, Note } from "./detail-types"
+import type { PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
 
 interface AdminOption { id: number; discord_username: string | null }
@@ -77,6 +77,9 @@ export function PlayerDetailPage() {
   const [forcedNameDraft, setForcedNameDraft] = useState("")
   const [discordIdDraft, setDiscordIdDraft] = useState("")
   const [punishDialogOpen, setPunishDialogOpen] = useState(false)
+  /** Наказание, для которого открыт диалог подтверждения отмены, и режим:
+   *  "void" — просто пометить отменённым, "unban" — плюс снять бан на серверах. */
+  const [revokeTarget, setRevokeTarget] = useState<{ row: PunishmentRow; mode: "void" | "unban" } | null>(null)
   const [punishForm, setPunishForm] = useState({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
 
   const queryKey = ["player-detail", playerId]
@@ -184,6 +187,22 @@ export function PlayerDetailPage() {
   const deactivateTrapMutation = useMutation({
     mutationFn: (trapId: number) => api.delete(`/api/v1/admin/players/${playerId}/traps/${trapId}`),
     onSuccess: () => { toast.success("Ловушка снята"); invalidate() },
+  })
+
+  // Отмена наказания/разбана — действие необратимое для игрока (бан снимается
+  // на серверах), поэтому спрашиваем подтверждение, как и на общей странице
+  // наказаний это делает отдельная кнопка.
+  const voidPunishmentMutation = useMutation({
+    mutationFn: (punishmentId: number) => api.post(`/api/v1/admin/punishments/${punishmentId}/void`),
+    onSuccess: () => { toast.success("Наказание отменено"); setRevokeTarget(null); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const unbanPunishmentMutation = useMutation({
+    // server_name: null — разбан уходит на оба сервера (см. api_punishment_unban).
+    mutationFn: (punishmentId: number) => api.post(`/api/v1/admin/punishments/${punishmentId}/unban`, { server_name: null }),
+    onSuccess: () => { toast.success("Разбан поставлен в очередь, наказание отменено"); setRevokeTarget(null); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const createPunishmentMutation = useMutation({
@@ -551,6 +570,7 @@ export function PlayerDetailPage() {
                     <TableHead>Выдал</TableHead>
                     <TableHead>Дата</TableHead>
                     <TableHead>Статус</TableHead>
+                    {data.can_revoke_punishment && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -575,10 +595,28 @@ export function PlayerDetailPage() {
                           {STATUS_LABEL[p.status]?.label ?? p.status}
                         </Badge>
                       </TableCell>
+                      {data.can_revoke_punishment && (
+                        <TableCell className="text-right">
+                          {p.status === "active" ? (
+                            <div className="flex justify-end gap-1.5 whitespace-nowrap">
+                              {p.type === "ban" && (
+                                <Button size="sm" variant="outline" onClick={() => setRevokeTarget({ row: p, mode: "unban" })}>
+                                  Разбан
+                                </Button>
+                              )}
+                              <Button size="sm" variant="outline" onClick={() => setRevokeTarget({ row: p, mode: "void" })}>
+                                Отменить
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                   {!data.punishments.length && (
-                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Наказаний нет</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={data.can_revoke_punishment ? 6 : 5} className="py-8 text-center text-muted-foreground">Наказаний нет</TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>
@@ -715,6 +753,43 @@ export function PlayerDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={revokeTarget != null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {revokeTarget?.mode === "unban" ? "Снять бан?" : "Отменить наказание?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {revokeTarget && (
+                <>
+                  «{data.punishment_type_labels[revokeTarget.row.type] ?? revokeTarget.row.type}»
+                  {revokeTarget.row.reason ? ` — ${revokeTarget.row.reason}` : ""}.{" "}
+                  {revokeTarget.mode === "unban"
+                    ? "Наказание будет помечено отменённым, а на игровые серверы уйдёт разбан игрока."
+                    : "Наказание будет помечено отменённым и перестанет учитываться как активное. Запись из истории не удаляется."}
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Назад</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={voidPunishmentMutation.isPending || unbanPunishmentMutation.isPending}
+              onClick={(e) => {
+                // Диалог закрывается по onSuccess мутации, а не мгновенно:
+                // иначе провалившийся запрос выглядел бы как выполненный.
+                e.preventDefault()
+                if (!revokeTarget) return
+                if (revokeTarget.mode === "unban") unbanPunishmentMutation.mutate(revokeTarget.row.id)
+                else voidPunishmentMutation.mutate(revokeTarget.row.id)
+              }}
+            >
+              {revokeTarget?.mode === "unban" ? "Разбанить" : "Отменить наказание"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
         <DialogContent>

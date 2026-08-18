@@ -11,11 +11,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { Wrench, RefreshCw } from "lucide-react"
+import { Wrench, RefreshCw, LayoutGrid, Braces } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
 import { JsonField } from "./json-field"
+import { KitItemsEditor } from "./items-editor"
 import { baseKitItemsList, qualKitChips } from "./preview"
 
 interface KitRow {
@@ -55,26 +56,65 @@ function buildVariationsPayload(f: VariationsFormState, itemsFallback: string) {
   }
 }
 
+/** Одна вариация: либо визуальная сетка предметов, либо тот же состав в виде
+ *  JSON. Режим общий для всех трёх вариаций и запоминается в рамках сессии —
+ *  переключать его на каждой вкладке заново незачем. */
+function ItemsField({ value, onChange, rows, visual, allowEmpty }: {
+  value: string; onChange: (v: string) => void; rows: number; visual: boolean; allowEmpty?: boolean
+}) {
+  if (!visual) return <JsonField value={value} onChange={onChange} rows={rows} allowEmpty={allowEmpty} />
+  // Для вариаций 2/3 пустое значение — не «пустой набор», а «наследовать
+  // вариацию 1». В визуальном режиме это состояние иначе не выразить: любое
+  // добавление предмета делает набор заданным, поэтому даём и явную надпись,
+  // и кнопку возврата к наследованию.
+  const isUnset = allowEmpty === true && !value.trim()
+  return (
+    <div className="space-y-1.5">
+      {allowEmpty && (
+        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>{isUnset ? "— не задано (используется вариация 1)" : "Задан свой состав для этой вариации"}</span>
+          {!isUnset && (
+            <Button type="button" size="sm" variant="ghost" className="h-6 text-xs" onClick={() => onChange("")}>
+              Вернуть к вариации 1
+            </Button>
+          )}
+        </div>
+      )}
+      <KitItemsEditor value={value} onChange={onChange} />
+    </div>
+  )
+}
+
 function VariationsEditor({ items, onItemsChange, itemsRows, form, onFormChange }: {
   items: string; onItemsChange: (v: string) => void; itemsRows: number
   form: VariationsFormState; onFormChange: (f: VariationsFormState) => void
 }) {
+  const [visual, setVisual] = useState(true)
   return (
     <div className="space-y-2">
       <Tabs defaultValue="1">
-        <TabsList className="h-8">
-          <TabsTrigger value="1" className="text-xs">Вариация 1</TabsTrigger>
-          <TabsTrigger value="2" className="text-xs">Вариация 2</TabsTrigger>
-          <TabsTrigger value="3" className="text-xs">Вариация 3</TabsTrigger>
-        </TabsList>
+        <div className="flex items-center gap-2">
+          <TabsList className="h-8">
+            <TabsTrigger value="1" className="text-xs">Вариация 1</TabsTrigger>
+            <TabsTrigger value="2" className="text-xs">Вариация 2</TabsTrigger>
+            <TabsTrigger value="3" className="text-xs">Вариация 3</TabsTrigger>
+          </TabsList>
+          <Button
+            type="button" size="sm" variant="ghost" className="ml-auto h-7 text-xs"
+            onClick={() => setVisual((v) => !v)}
+            title="Тот же состав, другой способ правки — переключение ничего не меняет в данных"
+          >
+            {visual ? <><Braces className="size-3.5" /> JSON</> : <><LayoutGrid className="size-3.5" /> Визуально</>}
+          </Button>
+        </div>
         <TabsContent value="1" className="mt-2">
-          <JsonField value={items} onChange={onItemsChange} rows={itemsRows} />
+          <ItemsField value={items} onChange={onItemsChange} rows={itemsRows} visual={visual} />
         </TabsContent>
         <TabsContent value="2" className="mt-2">
-          <JsonField value={form.variation2Items} onChange={(v) => onFormChange({ ...form, variation2Items: v })} rows={itemsRows} allowEmpty />
+          <ItemsField value={form.variation2Items} onChange={(v) => onFormChange({ ...form, variation2Items: v })} rows={itemsRows} visual={visual} allowEmpty />
         </TabsContent>
         <TabsContent value="3" className="mt-2">
-          <JsonField value={form.variation3Items} onChange={(v) => onFormChange({ ...form, variation3Items: v })} rows={itemsRows} allowEmpty />
+          <ItemsField value={form.variation3Items} onChange={(v) => onFormChange({ ...form, variation3Items: v })} rows={itemsRows} visual={visual} allowEmpty />
         </TabsContent>
       </Tabs>
       <div className="flex items-center gap-2 rounded-md border p-2">
@@ -109,7 +149,9 @@ function VariationBadges({ k }: { k: KitRow }) {
 const QUAL_LEVEL_NAMES: Record<number, string> = { 1: "I", 2: "II", 3: "III", 4: "IV", 5: "V" }
 
 export function KitsPage() {
-  const [newKit, setNewKit] = useState({ job_id: "", kit_level: "0", items: "[]" })
+  // Состав по умолчанию — объект {item_id: количество}: именно эту форму
+  // разбирает резолвер китов (services_kit_resolution.py::_flatten_items).
+  const [newKit, setNewKit] = useState({ job_id: "", kit_level: "0", items: "{}" })
   const [newKitVariations, setNewKitVariations] = useState<VariationsFormState>(EMPTY_VARIATIONS)
   const [newQual, setNewQual] = useState({
     base_job: "", kit_level: "1",
@@ -129,15 +171,15 @@ export function KitsPage() {
 
   const addKit = useMutation({
     mutationFn: () => api.post("/api/v1/admin/kits", {
-      job_id: newKit.job_id, kit_level: Number(newKit.kit_level), items: JSON.parse(newKit.items || "[]"),
+      job_id: newKit.job_id, kit_level: Number(newKit.kit_level), items: JSON.parse(newKit.items || "{}"),
       ...buildVariationsPayload(newKitVariations, "1"),
     }),
-    onSuccess: () => { toast.success("Кит создан"); setNewKit({ job_id: "", kit_level: "0", items: "[]" }); setNewKitVariations(EMPTY_VARIATIONS); invalidate() },
+    onSuccess: () => { toast.success("Кит создан"); setNewKit({ job_id: "", kit_level: "0", items: "{}" }); setNewKitVariations(EMPTY_VARIATIONS); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
   const updateKit = useMutation({
     mutationFn: (id: number) => api.post(`/api/v1/admin/kits/${id}`, {
-      job_id: editDraft.job_id, kit_level: Number(editDraft.kit_level), items: JSON.parse(editDraft.items || "[]"),
+      job_id: editDraft.job_id, kit_level: Number(editDraft.kit_level), items: JSON.parse(editDraft.items || "{}"),
       ...buildVariationsPayload(editVariations, "1"),
     }),
     onSuccess: () => { toast.success("Кит обновлён"); setEditingBaseId(null); invalidate() },
