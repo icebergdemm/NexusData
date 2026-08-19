@@ -25,12 +25,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
-from models import AdminUser, AdminSession, WorldRound
+from models import AICreatureAlert, AdminUser, AdminSession, WorldRound
+from services_creature_alerts import LargeCreatureSpawn, detect_large_creature_spawns
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -161,6 +163,20 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         # server's sequential delivery, but costs nothing to guard against).
         return JSONResponse({"status": "ok", "ignored": "stale_seq"})
 
+    claimed_alerts: list[AICreatureAlert] = []
+    if (settings.ai_dispatcher_url or "").strip() and (
+        settings.ai_dispatcher_api_key or ""
+    ).strip():
+        spawns = detect_large_creature_spawns(
+            previous_characters=row.last_characters,
+            current_characters=body.get("characters"),
+            submarines=row.submarines,
+            current_submarines=body.get("subs"),
+            large_species=settings.ai_large_creature_species_list,
+            abyss_species=settings.ai_abyss_creature_species_list,
+        )
+        claimed_alerts = _claim_large_creature_alerts(db, row, spawns)
+
     row.last_seq = seq
     row.last_t = body.get("t")
     row.last_sent_at = _ms_to_dt(body.get("sent_at"))
@@ -177,7 +193,52 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
     row.last_update_at = datetime.utcnow()
     db.commit()
     _try_queue_ai_world_briefing(db, row)
+    _try_queue_ai_large_creature_alert(db, row, claimed_alerts)
     return JSONResponse({"status": "ok"})
+
+
+def _claim_large_creature_alerts(
+    db: Session,
+    row: WorldRound,
+    spawns: list[LargeCreatureSpawn],
+) -> list[AICreatureAlert]:
+    """Claim every character once across snapshots and concurrent workers."""
+
+    claimed: list[AICreatureAlert] = []
+    for spawn in spawns:
+        alert = AICreatureAlert(
+            round_id=str(row.round_id),
+            character_id=spawn.character_id,
+            species=spawn.species,
+            distance_from_yasa_m_approx=spawn.distance_from_yasa_m_approx,
+        )
+        try:
+            with db.begin_nested():
+                db.add(alert)
+                db.flush()
+        except IntegrityError:
+            continue
+        claimed.append(alert)
+    return claimed
+
+
+def _try_queue_ai_large_creature_alert(
+    db: Session,
+    row: WorldRound,
+    alerts: list[AICreatureAlert],
+) -> None:
+    if not alerts:
+        return
+    try:
+        from routes.dispatch import _queue_ai_large_creature_alert
+
+        _queue_ai_large_creature_alert(row, alerts, db)
+    except Exception:
+        logger.exception(
+            "AI large-creature alert queue failed: round_id=%s alert_count=%s",
+            row.round_id,
+            len(alerts),
+        )
 
 
 def _try_queue_ai_world_briefing(db: Session, row: WorldRound) -> None:

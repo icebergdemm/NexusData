@@ -597,6 +597,8 @@ AI локально проверяет наличие обращения «Ди�
 AI_DISPATCHER_URL=http://127.0.0.1:8000/api/v1/dispatcher/messages
 AI_DISPATCHER_API_KEY=тот-же-ключ-что-DISPATCHER_API_KEY-в-AI
 AI_DISPATCHER_TIMEOUT_SECONDS=60
+AI_LARGE_CREATURE_SPECIES=Bonethresher,Tigerthresher,Moloch,Molochblack,Hammerhead,Hammerheadgold,Hammerheadmatriarch,Watcher,Spineling_giant,Crawlerbroodmother,Carrier
+AI_ABYSS_CREATURE_SPECIES=Endworm,Charybdis,Latcher,Doomworm
 ```
 
 Поток данных:
@@ -646,6 +648,16 @@ Uvicorn-процессах файловая блокировка гаранти�
 отправляет события жизненного цикла, резервным стабильным якорем служит
 последний известный `WorldRound`. AI ведёт одну ограниченную историю разговора
 на сервер и раунд.
+
+NexusData также отслеживает появление новых крупных контактов из списка
+`AI_LARGE_CREATURE_SPECIES`. Первый снимок раунда служит исходной точкой и не
+создаёт тревог; далее один идентификатор существа может создать только одну
+тревогу в пределах раунда. Существа из `AI_ABYSS_CREATURE_SPECIES` всегда
+игнорируются, даже если ошибочно добавлены в список крупных контактов.
+Расстояние вычисляется от подлодки Yasa, округляется и передаётся диспетчеру
+только в метрах. Вид существа, координаты, направление и азимут в AI не
+передаются. Автоматическая тревога использует `message_type: "threat_alert"`
+и проходит через общую FIFO-очередь радиограмм.
 
 Barotrauma принимает не более 200 символов одного радиосообщения. NexusData
 добавляет префикс `[Диспетчер] `, поэтому каждый элемент `replies` от AI

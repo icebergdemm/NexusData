@@ -66,6 +66,15 @@ class Settings(BaseSettings):
     ai_dispatcher_url: str = Field("")
     ai_dispatcher_api_key: str = Field("")
     ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
+    # Automatic captain alerts are allowlist-based. Abyss species stay denied
+    # even if an operator accidentally includes one in the allowlist.
+    ai_large_creature_species: str = (
+        "Bonethresher,Tigerthresher,Moloch,Molochblack,Hammerhead,Hammerheadgold,"
+        "Hammerheadmatriarch,Watcher,Spineling_giant,Crawlerbroodmother,Carrier"
+    )
+    ai_abyss_creature_species: str = "Endworm,Charybdis,Latcher,Doomworm"
+    ai_large_creature_species_list: List[str] = []
+    ai_abyss_creature_species_list: List[str] = []
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"
@@ -272,6 +281,14 @@ class Settings(BaseSettings):
         ))
         object.__setattr__(self, "extra_allowed_hosts_list", _str_to_list(
             self.extra_allowed_hosts,
+            [],
+        ))
+        object.__setattr__(self, "ai_large_creature_species_list", _str_to_list(
+            self.ai_large_creature_species,
+            [],
+        ))
+        object.__setattr__(self, "ai_abyss_creature_species_list", _str_to_list(
+            self.ai_abyss_creature_species,
             [],
         ))
 

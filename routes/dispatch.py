@@ -29,7 +29,7 @@ from database import GameSessionLocal, get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
 from models import (
-    DispatchMessage, RoundEvent, AdminUser, AdminSession,
+    DispatchMessage, RoundEvent, AdminUser, AdminSession, AICreatureAlert,
     ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting, WorldRound,
 )
 from schemas import DispatchMessageIn, RoundStartIn, RoundEndIn
@@ -51,6 +51,8 @@ _AI_BRIEFING_MIN_DELAY_SECONDS = 15
 _AI_BRIEFING_MAX_DELAY_SECONDS = 35
 _AI_BRIEFING_RETRY_DELAY_SECONDS = 8.0
 _AI_BRIEFING_MAX_ATTEMPTS = 10
+_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS = 5.0
+_AI_CREATURE_ALERT_MAX_ATTEMPTS = 3
 _AI_BRIEFING_LIFECYCLE_MATCH_SECONDS = 180.0
 _AI_MAX_REPLY_PARTS = 8
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
@@ -616,6 +618,58 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
         server_name,
         _AI_BRIEFING_MIN_DELAY_SECONDS,
         _AI_BRIEFING_MAX_DELAY_SECONDS,
+    )
+
+
+def _queue_ai_large_creature_alert(
+    world_round: WorldRound,
+    alerts: List[AICreatureAlert],
+    db: Session,
+) -> None:
+    """Queue one RP warning for newly spawned large, non-abyss contacts."""
+
+    if not alerts:
+        return
+    url = (settings.ai_dispatcher_url or "").strip()
+    api_key = (settings.ai_dispatcher_api_key or "").strip()
+    server_name = (world_round.server_name or "").strip().upper()
+    if not url or not api_key or server_name not in {"ASPER1", "ASPER2"}:
+        return
+
+    first_alert = min(alerts, key=lambda alert: int(alert.id or 0))
+    nearest_distance = min(
+        int(alert.distance_from_yasa_m_approx) for alert in alerts
+    )
+    conversation_round_id = _resolve_ai_conversation_round_id(db, server_name)
+    _enqueue_ai_dispatch_job(
+        _AIDispatchJob(
+            url=url,
+            api_key=api_key,
+            payload={
+                "event_id": f"nexus-creature-alert-{first_alert.id}",
+                "round_id": conversation_round_id,
+                "server_name": server_name,
+                "text": "Оперативное предупреждение о крупной отметке.",
+                "sender_name": None,
+                "message_type": "threat_alert",
+                "threat_context": {
+                    "contact_scope": "group" if len(alerts) > 1 else "single",
+                    "distance_from_yasa_m_approx": nearest_distance,
+                },
+            },
+            server_name=server_name,
+            retry_delay_seconds=_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS,
+            max_attempts=_AI_CREATURE_ALERT_MAX_ATTEMPTS,
+        )
+    )
+    logger.info(
+        "AI large-creature alert queued: event_id=%s round_id=%s server=%s "
+        "contact_scope=%s distance_from_yasa_m_approx=%s",
+        f"nexus-creature-alert-{first_alert.id}",
+        conversation_round_id,
+        server_name,
+        "group" if len(alerts) > 1 else "single",
+        nearest_distance,
     )
 
 

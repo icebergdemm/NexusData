@@ -1691,6 +1691,27 @@ class WorldRound(Base):
     last_update_at = Column(DateTime, nullable=True, index=True)
 
 
+class AICreatureAlert(Base):
+    """Durable once-per-character claim for automatic dispatcher warnings."""
+
+    __tablename__ = "ai_creature_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    round_id = Column(String(64), nullable=False, index=True)
+    character_id = Column(String(64), nullable=False)
+    species = Column(String(100), nullable=False)
+    distance_from_yasa_m_approx = Column(Integer, nullable=False)
+    detected_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "round_id",
+            "character_id",
+            name="uq_ai_creature_alert_round_character",
+        ),
+    )
+
+
 class WarehouseItem(Base):
     """Virtual dispatch resource warehouse — one row per Barotrauma item
     identifier (see static/item_catalog.json / tools/extract_barotrauma_items.py)
