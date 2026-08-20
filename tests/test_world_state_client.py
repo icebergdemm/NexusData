@@ -3,13 +3,14 @@ import gzip
 import json
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
 from models import WorldRound
-from routes.world_state import api_client_world_state
+from routes.world_state import _resolve_ingest_server_name, api_client_world_state
 
 
 class WorldStateClientTests(unittest.TestCase):
@@ -65,6 +66,23 @@ class WorldStateClientTests(unittest.TestCase):
         payload = json.loads(gzip.decompress(response.body))
 
         self.assertEqual(payload["rounds"][0]["server_name"], "ASPER1")
+
+
+class WorldStateIngestServerNameTests(unittest.TestCase):
+    def test_explicit_server_name_is_normalized_and_wins(self):
+        with patch("routes.world_state.settings.world_default_server_name", "ASPER1"):
+            self.assertEqual(
+                _resolve_ingest_server_name({"server_name": " asper2 "}, "ASPER1"),
+                "ASPER2",
+            )
+
+    def test_existing_server_name_survives_omitted_payload_field(self):
+        with patch("routes.world_state.settings.world_default_server_name", "ASPER1"):
+            self.assertEqual(_resolve_ingest_server_name({}, "asper2"), "ASPER2")
+
+    def test_default_repairs_snapshot_without_init(self):
+        with patch("routes.world_state.settings.world_default_server_name", "ASPER1"):
+            self.assertEqual(_resolve_ingest_server_name({}, None), "ASPER1")
 
 
 if __name__ == "__main__":

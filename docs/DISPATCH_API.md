@@ -597,6 +597,7 @@ AI локально проверяет наличие обращения «Ди�
 AI_DISPATCHER_URL=http://127.0.0.1:8000/api/v1/dispatcher/messages
 AI_DISPATCHER_API_KEY=тот-же-ключ-что-DISPATCHER_API_KEY-в-AI
 AI_DISPATCHER_TIMEOUT_SECONDS=60
+WORLD_DEFAULT_SERVER_NAME=ASPER1
 AI_LARGE_CREATURE_SPECIES=Bonethresher,Tigerthresher,Moloch,Molochblack,Hammerhead,Hammerheadgold,Hammerheadmatriarch,Watcher,Spineling_giant,Crawlerbroodmother,Carrier
 AI_ABYSS_CREATURE_SPECIES=Endworm,Charybdis,Latcher,Doomworm
 ```
@@ -648,6 +649,11 @@ Uvicorn-процессах файловая блокировка гаранти�
 отправляет события жизненного цикла, резервным стабильным якорем служит
 последний известный `WorldRound`. AI ведёт одну ограниченную историю разговора
 на сервер и раунд.
+
+`WORLD_DEFAULT_SERVER_NAME` используется только как страховка для старых
+сборок WorldStateStreamer, которые не передают `server_name` или присылают
+`world/snapshot` раньше `world/init`. Явное имя из payload всегда имеет
+приоритет, а уже сохранённое имя раунда не заменяется значением по умолчанию.
 
 NexusData также отслеживает появление новых крупных контактов из списка
 `AI_LARGE_CREATURE_SPECIES`. Первый снимок раунда служит исходной точкой и не

@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     ai_dispatcher_url: str = Field("")
     ai_dispatcher_api_key: str = Field("")
     ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
+    # Legacy WorldStateStreamer builds may omit server_name and even race
+    # snapshot ahead of world/init. Used only when neither the payload nor the
+    # existing round row identifies the source server.
+    world_default_server_name: str = Field("ASPER1", min_length=1, max_length=100)
     # Automatic captain alerts are allowlist-based. Abyss species stay denied
     # even if an operator accidentally includes one in the allowlist.
     ai_large_creature_species: str = (

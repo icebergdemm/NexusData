@@ -75,6 +75,17 @@ def _looks_gzip(raw: bytes) -> bool:
     return len(raw) >= 2 and raw[0] == 0x1F and raw[1] == 0x8B
 
 
+def _resolve_ingest_server_name(body: dict, existing: Optional[str]) -> str:
+    """Resolve source server without letting an omitted field erase it."""
+
+    explicit = body.get("server_name")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip().upper()
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip().upper()
+    return settings.world_default_server_name.strip().upper()
+
+
 async def _read_json_body(request: Request) -> dict:
     """Reads and JSON-decodes the request body, transparently gunzipping it
     first when the plugin's `CompressPayload: true` is on. Per the guide
@@ -114,7 +125,7 @@ async def world_init(request: Request, db: Session = Depends(get_game_db)):
         row = WorldRound(round_id=round_id)
         db.add(row)
 
-    row.server_name = body.get("server_name")
+    row.server_name = _resolve_ingest_server_name(body, row.server_name)
     row.level_seed = body.get("level_seed")
     row.level_name = body.get("level_name")
     row.level_type = body.get("level_type")
@@ -156,6 +167,8 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         # fills in the geometry columns whenever it lands.
         row = WorldRound(round_id=round_id)
         db.add(row)
+
+    row.server_name = _resolve_ingest_server_name(body, row.server_name)
 
     seq = body.get("seq")
     if seq is not None and row.last_seq is not None and seq < row.last_seq:
