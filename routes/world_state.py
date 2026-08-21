@@ -181,7 +181,6 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         settings.ai_dispatcher_api_key or ""
     ).strip():
         spawns = detect_large_creature_spawns(
-            previous_characters=row.last_characters,
             current_characters=body.get("characters"),
             submarines=row.submarines,
             current_submarines=body.get("subs"),
@@ -205,8 +204,11 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         row.last_items = items
     row.last_update_at = datetime.utcnow()
     db.commit()
-    _try_queue_ai_world_briefing(db, row)
+    # Operational warnings must enter the per-server FIFO before the delayed
+    # start briefing; otherwise an initial large contact can wait behind the
+    # 15–35 second briefing pause and several briefing radiograms.
     _try_queue_ai_large_creature_alert(db, row, claimed_alerts)
+    _try_queue_ai_world_briefing(db, row)
     return JSONResponse({"status": "ok"})
 
 

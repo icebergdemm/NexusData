@@ -26,7 +26,7 @@ def _positions():
     ]
 
 
-def test_detects_only_new_large_non_abyss_creatures_and_measures_from_yasa():
+def test_detects_large_non_abyss_creatures_and_measures_from_yasa():
     previous = [
         {
             "id": 1,
@@ -74,7 +74,6 @@ def test_detects_only_new_large_non_abyss_creatures_and_measures_from_yasa():
     ]
 
     result = detect_large_creature_spawns(
-        previous_characters=previous,
         current_characters=current,
         submarines=_submarines(),
         current_submarines=_positions(),
@@ -91,7 +90,7 @@ def test_detects_only_new_large_non_abyss_creatures_and_measures_from_yasa():
     ]
 
 
-def test_first_snapshot_or_missing_yasa_is_only_a_baseline():
+def test_first_snapshot_is_detected_once_yasa_is_available():
     current = [
         {
             "id": 2,
@@ -110,15 +109,74 @@ def test_first_snapshot_or_missing_yasa_is_only_a_baseline():
     }
 
     assert detect_large_creature_spawns(
-        previous_characters=None,
         submarines=_submarines(),
         **arguments,
-    ) == []
+    ) == [LargeCreatureSpawn("2", "Moloch", 500)]
+
+
+def test_missing_yasa_defers_detection_until_static_map_arrives():
+    current = [
+        {
+            "id": 2,
+            "species": "Moloch",
+            "human": False,
+            "dead": False,
+            "x": 40_000,
+            "y": 50_000,
+        }
+    ]
+    arguments = {
+        "current_characters": current,
+        "current_submarines": _positions(),
+        "large_species": ["Moloch"],
+        "abyss_species": [],
+    }
+
     assert detect_large_creature_spawns(
-        previous_characters=[],
         submarines=[{"id": 10, "name": "Акула"}],
         **arguments,
     ) == []
+    assert detect_large_creature_spawns(
+        submarines=_submarines(),
+        **arguments,
+    ) == [LargeCreatureSpawn("2", "Moloch", 500)]
+
+
+def test_configured_species_matches_variant_suffix_but_not_unrelated_prefab():
+    current = [
+        {
+            "id": 2,
+            "species": "Molochblack_m",
+            "human": False,
+            "dead": False,
+            "x": 40_000,
+            "y": 50_000,
+        },
+        {
+            "id": 3,
+            "species": "Molochbaby",
+            "human": False,
+            "dead": False,
+            "x": 40_000,
+            "y": 50_000,
+        },
+        {
+            "id": 4,
+            "species": "Endworm_m",
+            "human": False,
+            "dead": False,
+            "x": 40_000,
+            "y": 50_000,
+        },
+    ]
+
+    assert detect_large_creature_spawns(
+        current_characters=current,
+        submarines=_submarines(),
+        current_submarines=_positions(),
+        large_species=["Molochblack", "Endworm"],
+        abyss_species=["Endworm"],
+    ) == [LargeCreatureSpawn("2", "Molochblack_m", 500)]
 
 
 def test_claim_is_durable_and_deduplicated_per_round_and_character():

@@ -19,32 +19,28 @@ class LargeCreatureSpawn:
 
 def detect_large_creature_spawns(
     *,
-    previous_characters: Any,
     current_characters: Any,
     submarines: Any,
     current_submarines: Any,
     large_species: Iterable[str],
     abyss_species: Iterable[str],
 ) -> list[LargeCreatureSpawn]:
-    """Return new, alive, configured large creatures relative to Yasa.
+    """Return alive, configured large-creature observations relative to Yasa.
 
-    The first snapshot is a baseline and intentionally produces no alert.
-    Species in the abyss denylist are rejected even if accidentally added to
-    the large-creature allowlist.
+    This function deliberately evaluates every current snapshot. Durable
+    deduplication is handled by ``AICreatureAlert`` after the position of Yasa
+    becomes available. This avoids losing contacts when a snapshot races ahead
+    of ``world/init``. Species in the abyss denylist are rejected even if
+    accidentally added to the large-creature allowlist.
     """
 
-    if not isinstance(previous_characters, list) or not isinstance(current_characters, list):
+    if not isinstance(current_characters, list):
         return []
 
     yasa_position = _find_yasa_position(submarines, current_submarines)
     if yasa_position is None:
         return []
 
-    previous_ids = {
-        str(item["id"])
-        for item in previous_characters
-        if isinstance(item, dict) and _valid_id(item.get("id"))
-    }
     allowed = {str(value).strip().casefold() for value in large_species if str(value).strip()}
     denied = {str(value).strip().casefold() for value in abyss_species if str(value).strip()}
     if not allowed:
@@ -57,7 +53,7 @@ def detect_large_creature_spawns(
         if not isinstance(item, dict) or not _valid_id(item.get("id")):
             continue
         character_id = str(item["id"])
-        if character_id in previous_ids or character_id in seen_ids:
+        if character_id in seen_ids:
             continue
         if item.get("human") is not False or item.get("dead") is True:
             continue
@@ -65,7 +61,10 @@ def detect_large_creature_spawns(
         if not isinstance(species, str) or not species.strip():
             continue
         normalized_species = species.strip().casefold()
-        if normalized_species not in allowed or normalized_species in denied:
+        if not _species_matches(normalized_species, allowed) or _species_matches(
+            normalized_species,
+            denied,
+        ):
             continue
         x = _finite_number(item.get("x"))
         y = _finite_number(item.get("y"))
@@ -82,6 +81,12 @@ def detect_large_creature_spawns(
         )
         seen_ids.add(character_id)
     return result
+
+
+def _species_matches(species: str, configured: set[str]) -> bool:
+    """Match an exact prefab or a server-side variant such as ``*_m``/``*_f``."""
+
+    return species in configured or any(species.startswith(f"{base}_") for base in configured)
 
 
 def _find_yasa_position(submarines: Any, current_submarines: Any) -> tuple[float, float] | None:
