@@ -383,6 +383,35 @@ class AIDispatcherBridgeTests(unittest.TestCase):
 
         session_factory.assert_not_called()
 
+    @patch("routes.dispatch._deliver_ai_dispatcher_replies")
+    @patch("routes.dispatch.httpx.Client", _FakeClient)
+    def test_ignored_system_alert_is_retryable_failure(self, deliver_replies):
+        _FakeClient.response_payload = {
+            "status": "ignored",
+            "event_id": "nexus-creature-alert-12",
+            "reason": "not_addressed",
+        }
+
+        delivered = _post_ai_dispatcher_sync(
+            "http://dispatcher/api/v1/dispatcher/messages",
+            "dispatcher-secret",
+            {
+                "event_id": "nexus-creature-alert-12",
+                "round_id": "round-1",
+                "server_name": "ASPER1",
+                "text": "Оперативное предупреждение о крупной отметке.",
+                "message_type": "threat_alert",
+                "threat_context": {
+                    "contact_scope": "single",
+                    "distance_from_yasa_m_approx": 500,
+                },
+            },
+            "ASPER1",
+        )
+
+        self.assertFalse(delivered)
+        deliver_replies.assert_not_called()
+
 
 class AIReplyDeliveryQueueTests(unittest.TestCase):
     def tearDown(self):
@@ -410,9 +439,9 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
         second = _AIDispatchJob("http://ai", "key", {"event_id": "second"}, "ASPER1")
         other_server = _AIDispatchJob("http://ai", "key", {"event_id": "other"}, "ASPER2")
 
-        _enqueue_ai_dispatch_job(first)
-        _enqueue_ai_dispatch_job(second)
-        _enqueue_ai_dispatch_job(other_server)
+        self.assertTrue(_enqueue_ai_dispatch_job(first))
+        self.assertTrue(_enqueue_ai_dispatch_job(second))
+        self.assertTrue(_enqueue_ai_dispatch_job(other_server))
 
         self.assertEqual(thread_class.call_count, 2)
         self.assertEqual(
@@ -685,8 +714,8 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             "ASPER1",
         )
 
-        _enqueue_ai_dispatch_job(first)
-        _enqueue_ai_dispatch_job(overflow)
+        self.assertTrue(_enqueue_ai_dispatch_job(first))
+        self.assertFalse(_enqueue_ai_dispatch_job(overflow))
 
         self.assertEqual(_ai_dispatch_job_queues["ASPER1"].qsize(), 1)
         self.assertEqual(

@@ -67,6 +67,7 @@ class _AIDispatchJob:
     initial_delay_seconds: float = 0.0
     retry_delay_seconds: float = 0.0
     max_attempts: int = 1
+    creature_alert_ids: tuple[int, ...] = ()
     enqueued_at: float = field(default_factory=time.monotonic)
 
 
@@ -625,23 +626,36 @@ def _queue_ai_large_creature_alert(
     world_round: WorldRound,
     alerts: List[AICreatureAlert],
     db: Session,
-) -> None:
+) -> bool:
     """Queue one RP warning for newly spawned large, non-abyss contacts."""
 
     if not alerts:
-        return
+        return False
     url = (settings.ai_dispatcher_url or "").strip()
     api_key = (settings.ai_dispatcher_api_key or "").strip()
     server_name = (world_round.server_name or "").strip().upper()
     if not url or not api_key or server_name not in {"ASPER1", "ASPER2"}:
-        return
+        logger.warning(
+            "AI large-creature alert not queued: round_id=%s server=%r "
+            "url_configured=%s key_configured=%s",
+            world_round.round_id,
+            server_name,
+            bool(url),
+            bool(api_key),
+        )
+        _finish_ai_creature_alert_delivery(
+            tuple(int(alert.id) for alert in alerts if alert.id is not None),
+            delivered=False,
+        )
+        return False
 
     first_alert = min(alerts, key=lambda alert: int(alert.id or 0))
     nearest_distance = min(
         int(alert.distance_from_yasa_m_approx) for alert in alerts
     )
     conversation_round_id = _resolve_ai_conversation_round_id(db, server_name)
-    _enqueue_ai_dispatch_job(
+    alert_ids = tuple(int(alert.id) for alert in alerts if alert.id is not None)
+    queued = _enqueue_ai_dispatch_job(
         _AIDispatchJob(
             url=url,
             api_key=api_key,
@@ -660,8 +674,12 @@ def _queue_ai_large_creature_alert(
             server_name=server_name,
             retry_delay_seconds=_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS,
             max_attempts=_AI_CREATURE_ALERT_MAX_ATTEMPTS,
+            creature_alert_ids=alert_ids,
         )
     )
+    if not queued:
+        _finish_ai_creature_alert_delivery(alert_ids, delivered=False)
+        return False
     logger.info(
         "AI large-creature alert queued: event_id=%s round_id=%s server=%s "
         "contact_scope=%s distance_from_yasa_m_approx=%s",
@@ -671,9 +689,10 @@ def _queue_ai_large_creature_alert(
         "group" if len(alerts) > 1 else "single",
         nearest_distance,
     )
+    return True
 
 
-def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> None:
+def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> bool:
     """Put an AI request into the source server's non-blocking FIFO."""
 
     with _ai_dispatch_job_queues_lock:
@@ -697,7 +716,7 @@ def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> None:
                 job.server_name,
                 _AI_DISPATCH_QUEUE_MAXSIZE,
             )
-            return
+            return False
         queue_size = work_queue.qsize()
 
     logger.info(
@@ -706,6 +725,7 @@ def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> None:
         job.server_name,
         queue_size,
     )
+    return True
 
 
 def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
@@ -713,6 +733,7 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
 
     while True:
         job = work_queue.get()
+        delivered = False
         try:
             logger.info(
                 "AI dispatch started: event_id=%s server=%s queued_after=%s",
@@ -792,7 +813,58 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
                 server_name,
             )
         finally:
+            if job.creature_alert_ids:
+                _finish_ai_creature_alert_delivery(
+                    job.creature_alert_ids,
+                    delivered=delivered,
+                )
             work_queue.task_done()
+
+
+def _finish_ai_creature_alert_delivery(
+    alert_ids: tuple[int, ...],
+    *,
+    delivered: bool,
+) -> None:
+    """Complete or release an automatic contact-alert delivery lease."""
+
+    if not alert_ids:
+        return
+    callback_db = GameSessionLocal()
+    try:
+        values = (
+            {
+                AICreatureAlert.delivered_at: datetime.utcnow(),
+                AICreatureAlert.queued_at: None,
+            }
+            if delivered
+            else {AICreatureAlert.queued_at: None}
+        )
+        updated = (
+            callback_db.query(AICreatureAlert)
+            .filter(
+                AICreatureAlert.id.in_(alert_ids),
+                AICreatureAlert.delivered_at.is_(None),
+            )
+            .update(values, synchronize_session=False)
+        )
+        callback_db.commit()
+        logger.info(
+            "AI large-creature alert delivery state: alert_ids=%s delivered=%s updated=%s",
+            ",".join(str(alert_id) for alert_id in alert_ids),
+            delivered,
+            updated,
+        )
+    except Exception:
+        callback_db.rollback()
+        logger.exception(
+            "AI large-creature alert delivery state update failed: alert_ids=%s "
+            "delivered=%s",
+            ",".join(str(alert_id) for alert_id in alert_ids),
+            delivered,
+        )
+    finally:
+        callback_db.close()
 
 
 @contextmanager
@@ -932,25 +1004,34 @@ def _post_ai_dispatcher_sync(
         result = response.json()
         result_status = result.get("status")
         if result_status != "answered":
-            logger.info(
-                "AI dispatcher returned without answer: event_id=%s server=%s status=%r",
+            system_message = payload.get("message_type") in {
+                "round_briefing",
+                "threat_alert",
+            }
+            logger.warning(
+                "AI dispatcher returned without answer: event_id=%s server=%s "
+                "message_type=%r status=%r retry=%s",
                 payload.get("event_id"),
                 server_name,
+                payload.get("message_type"),
                 result_status,
+                system_message,
             )
-            return True
+            return not system_message
         replies = _extract_ai_dispatcher_replies(result)
         if not replies:
             logger.warning("AI dispatcher returned an empty reply for %s", payload["event_id"])
             return False
 
-        _deliver_ai_dispatcher_replies(
+        delivered = _deliver_ai_dispatcher_replies(
             replies,
             server_name=server_name,
             event_id=payload.get("event_id", "unknown"),
             round_id=payload.get("round_id"),
             enqueued_at=enqueued_at,
         )
+        if delivered is False:
+            return False
         logger.info(
             "AI dispatcher answer accepted: event_id=%s server=%s reply_parts=%s",
             payload.get("event_id"),
@@ -996,7 +1077,7 @@ def _deliver_ai_dispatcher_replies(
     event_id: str,
     round_id: Optional[str] = None,
     enqueued_at: Optional[float] = None,
-) -> None:
+) -> bool:
     """Deliver one AI answer serially, waiting for every game-server ACK.
 
     Merely inserting rows several seconds apart is insufficient because
@@ -1020,7 +1101,7 @@ def _deliver_ai_dispatcher_replies(
                 part_number,
                 len(replies),
             )
-            return
+            return False
         delay_seconds = _ai_reply_delay_seconds(reply)
         logger.info(
             "AI dispatch delay: event_id=%s server=%s part=%s/%s chars=%s delay_seconds=%.2f",
@@ -1056,7 +1137,7 @@ def _deliver_ai_dispatcher_replies(
                 part_number,
                 len(replies),
             )
-            return
+            return False
         logger.info(
             "AI dispatch sent to action queue: event_id=%s server=%s part=%s/%s action_id=%s",
             event_id,
@@ -1088,7 +1169,8 @@ def _deliver_ai_dispatcher_replies(
                 action_id,
                 ack_status,
             )
-            return
+            return False
+    return True
 
 
 def _pending_dispatch_action_exists(db: Session, server_name: str) -> bool:

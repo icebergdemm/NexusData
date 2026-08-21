@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -179,6 +180,45 @@ def test_configured_species_matches_variant_suffix_but_not_unrelated_prefab():
     ) == [LargeCreatureSpawn("2", "Molochblack_m", 500)]
 
 
+def test_expected_large_contact_families_all_trigger_but_abyss_does_not():
+    species = [
+        "Hammerhead",
+        "Hammerheadmatriarch_f",
+        "Crawlerbroodmother",
+        "Moloch_m",
+        "Molochblack",
+        "Endworm",
+    ]
+    characters = [
+        {
+            "id": index,
+            "species": prefab,
+            "human": False,
+            "dead": False,
+            "x": 20_000 + index * 100,
+            "y": 20_000,
+        }
+        for index, prefab in enumerate(species, start=1)
+    ]
+
+    detected = detect_large_creature_spawns(
+        current_characters=characters,
+        submarines=_submarines(),
+        current_submarines=_positions(),
+        large_species=[
+            "Hammerhead",
+            "Hammerheadmatriarch",
+            "Crawlerbroodmother",
+            "Moloch",
+            "Molochblack",
+            "Endworm",
+        ],
+        abyss_species=["Endworm"],
+    )
+
+    assert [item.species for item in detected] == species[:-1]
+
+
 def test_claim_is_durable_and_deduplicated_per_round_and_character():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
@@ -199,6 +239,37 @@ def test_claim_is_durable_and_deduplicated_per_round_and_character():
         assert len(first) == 1
         assert second == []
         assert db.query(AICreatureAlert).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_undelivered_alert_is_released_after_lease_but_delivered_alert_is_not():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        db.add(row)
+        db.commit()
+        spawn = LargeCreatureSpawn("42", "Hammerhead", 450)
+
+        first = _claim_large_creature_alerts(db, row, [spawn])
+        assert len(first) == 1
+        alert = first[0]
+
+        alert.queued_at = datetime.utcnow() - timedelta(minutes=6)
+        db.commit()
+        retried = _claim_large_creature_alerts(db, row, [spawn])
+        assert [item.id for item in retried] == [alert.id]
+
+        alert.delivered_at = datetime.utcnow()
+        alert.queued_at = None
+        db.commit()
+        assert _claim_large_creature_alerts(db, row, [spawn]) == []
     finally:
         db.close()
         engine.dispose()
@@ -231,6 +302,7 @@ def test_ai_payload_contains_only_scope_and_approximate_meters():
             _queue_ai_large_creature_alert(row, [alert], db)
 
         job = enqueue.call_args.args[0]
+        assert job.creature_alert_ids == (17,)
         assert job.payload["message_type"] == "threat_alert"
         assert job.payload["threat_context"] == {
             "contact_scope": "single",

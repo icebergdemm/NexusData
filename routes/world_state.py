@@ -25,6 +25,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 # protocol has no explicit "round ended" signal (see guide §7.7), so this is
 # purely a server-side staleness heuristic (~5 missed 3s intervals).
 ACTIVE_THRESHOLD_SECONDS = 15
+AI_CREATURE_ALERT_LEASE_SECONDS = 300
 
 router = APIRouter(
     prefix="/api/v1/world",
@@ -217,9 +219,11 @@ def _claim_large_creature_alerts(
     row: WorldRound,
     spawns: list[LargeCreatureSpawn],
 ) -> list[AICreatureAlert]:
-    """Claim every character once across snapshots and concurrent workers."""
+    """Lease undelivered contact alerts across snapshots and web workers."""
 
     claimed: list[AICreatureAlert] = []
+    now = datetime.utcnow()
+    expired_before = now - timedelta(seconds=AI_CREATURE_ALERT_LEASE_SECONDS)
     for spawn in spawns:
         alert = AICreatureAlert(
             round_id=str(row.round_id),
@@ -232,8 +236,48 @@ def _claim_large_creature_alerts(
                 db.add(alert)
                 db.flush()
         except IntegrityError:
+            # The durable row already exists. It can still be reclaimed if a
+            # previous worker died or exhausted delivery retries.
+            pass
+
+        alert = (
+            db.query(AICreatureAlert)
+            .filter(
+                AICreatureAlert.round_id == str(row.round_id),
+                AICreatureAlert.character_id == spawn.character_id,
+            )
+            .first()
+        )
+        if alert is None:
             continue
-        claimed.append(alert)
+        leased = (
+            db.query(AICreatureAlert)
+            .filter(
+                AICreatureAlert.id == alert.id,
+                AICreatureAlert.delivered_at.is_(None),
+                or_(
+                    AICreatureAlert.queued_at.is_(None),
+                    AICreatureAlert.queued_at < expired_before,
+                ),
+            )
+            .update(
+                {AICreatureAlert.queued_at: now},
+                synchronize_session=False,
+            )
+        )
+        if leased:
+            db.flush()
+            db.refresh(alert)
+            claimed.append(alert)
+
+    if spawns:
+        logger.info(
+            "AI large-contact detection: round_id=%s detected=%s leased=%s species=%s",
+            row.round_id,
+            len(spawns),
+            len(claimed),
+            ",".join(sorted({spawn.species for spawn in spawns})),
+        )
     return claimed
 
 

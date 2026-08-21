@@ -1692,7 +1692,7 @@ class WorldRound(Base):
 
 
 class AICreatureAlert(Base):
-    """Durable once-per-character claim for automatic dispatcher warnings."""
+    """Durable delivery state for automatic dispatcher contact warnings."""
 
     __tablename__ = "ai_creature_alerts"
 
@@ -1702,6 +1702,12 @@ class AICreatureAlert(Base):
     species = Column(String(100), nullable=False)
     distance_from_yasa_m_approx = Column(Integer, nullable=False)
     detected_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    # ``queued_at`` is a renewable delivery lease.  If a web worker dies after
+    # claiming an alert, a later world snapshot may reclaim it once the lease
+    # expires.  ``delivered_at`` permanently suppresses only alerts that really
+    # reached the game server's action queue and were acknowledged.
+    queued_at = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
