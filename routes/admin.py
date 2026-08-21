@@ -5161,13 +5161,23 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     "git_update_frontend_dist_branch",
 }
 
-# Токен доступа к репозиторию наружу отдаётся ЗАГЛУШКОЙ, а не значением:
-# в отличие от остальных секретов на этой странице он открывает чужой код,
-# который сервер потом сам же и выполнит, поэтому лишний раз гонять его по
-# сети и держать в состоянии страницы незачем. Пришедшая обратно заглушка
-# означает «не трогать» — сохраняется прежнее значение из .env.
+# Любой секрет с этой страницы отдаётся наружу ЗАГЛУШКОЙ, а не значением:
+# клиент не должен получать пароли/токены/вебхук-URL (в URL вшит токен),
+# чтобы они не светились в состоянии страницы, логах запросов и т.п.
+# Пришедшая обратно заглушка означает «не трогать» — сохраняется прежнее
+# значение из .env (см. обработчик сохранения). Чтобы СТЕРЕТЬ секрет, его
+# надо прислать пустой строкой.
 SECRET_PLACEHOLDER = "••••••••"
-MASKED_CFG_FIELDS = {"git_update_token"}
+MASKED_CFG_FIELDS = {
+    "discord_client_secret",
+    "discord_trap_webhook_url",
+    "sub_projects_webhook_url",
+    "sftp_server_1_password",
+    "sftp_server_2_password",
+    "onlyoffice_jwt_secret",
+    "pterodactyl_api_key",
+    "git_update_token",
+}
 
 
 def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
@@ -5202,32 +5212,35 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             from config import reset_settings_cache
             reset_settings_cache()
 
+    def _mask(key: str, value: str) -> str:
+        return SECRET_PLACEHOLDER if (key in MASKED_CFG_FIELDS and value) else value
+
     s = get_settings()
     cfg = {
         "debug": s.debug,
-        "discord_trap_webhook_url": s.discord_trap_webhook_url,
+        "discord_trap_webhook_url": _mask("discord_trap_webhook_url", s.discord_trap_webhook_url),
         "discord_client_id": s.discord_client_id,
-        "discord_client_secret": s.discord_client_secret,
+        "discord_client_secret": _mask("discord_client_secret", s.discord_client_secret),
         "discord_redirect_uri": s.discord_redirect_uri,
         "allowed_ips": ",".join(s.allowed_ips_list) if s.allowed_ips_list else s.allowed_ips,
         "rate_limit_enabled": s.rate_limit_enabled,
         "rate_limit_requests": s.rate_limit_requests,
         "rate_limit_window": s.rate_limit_window,
         "cors_origins": ",".join(s.cors_origins_list) if s.cors_origins_list else s.cors_origins,
-        "sub_projects_webhook_url": s.sub_projects_webhook_url,
+        "sub_projects_webhook_url": _mask("sub_projects_webhook_url", s.sub_projects_webhook_url),
         "public_site_url": s.public_site_url,
         "sftp_server_1_name": s.sftp_server_1_name,
         "sftp_server_1_host": s.sftp_server_1_host,
         "sftp_server_1_port": s.sftp_server_1_port,
         "sftp_server_1_username": s.sftp_server_1_username,
-        "sftp_server_1_password": s.sftp_server_1_password,
+        "sftp_server_1_password": _mask("sftp_server_1_password", s.sftp_server_1_password),
         "sftp_server_1_key_path": s.sftp_server_1_key_path,
         "sftp_server_1_remote_dir": s.sftp_server_1_remote_dir,
         "sftp_server_2_name": s.sftp_server_2_name,
         "sftp_server_2_host": s.sftp_server_2_host,
         "sftp_server_2_port": s.sftp_server_2_port,
         "sftp_server_2_username": s.sftp_server_2_username,
-        "sftp_server_2_password": s.sftp_server_2_password,
+        "sftp_server_2_password": _mask("sftp_server_2_password", s.sftp_server_2_password),
         "sftp_server_2_key_path": s.sftp_server_2_key_path,
         "sftp_server_2_remote_dir": s.sftp_server_2_remote_dir,
         "sftp_server_1_logs_dir": s.sftp_server_1_logs_dir,
@@ -5238,9 +5251,9 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
         cfg.update({
             "onlyoffice_document_server_url": s.onlyoffice_document_server_url,
             "onlyoffice_callback_base_url": s.onlyoffice_callback_base_url,
-            "onlyoffice_jwt_secret": s.onlyoffice_jwt_secret,
+            "onlyoffice_jwt_secret": _mask("onlyoffice_jwt_secret", s.onlyoffice_jwt_secret),
             "pterodactyl_panel_url": s.pterodactyl_panel_url,
-            "pterodactyl_api_key": s.pterodactyl_api_key,
+            "pterodactyl_api_key": _mask("pterodactyl_api_key", s.pterodactyl_api_key),
             "sub_projects_test_server_uuid": s.sub_projects_test_server_uuid,
             "git_update_repo_dir": s.git_update_repo_dir,
             "git_update_repo_url": s.git_update_repo_url,
@@ -5441,6 +5454,12 @@ async def admin_administration_config_save(
         if field in SUPERUSER_ONLY_CFG_FIELDS and not current_admin.is_superuser:
             continue
         val = form.get(field)
+        if field in MASKED_CFG_FIELDS and (val is None or str(val) == SECRET_PLACEHOLDER):
+            # Пришла заглушка (поле не трогали) или поля нет в форме вовсе —
+            # оставляем то, что уже лежит в .env. Иначе сохранение страницы
+            # затирало бы секрет заглушкой. Чтобы СТЕРЕТЬ секрет, его надо
+            # прислать пустой строкой.
+            continue
         if val is None:
             # checkboxes that are unchecked won't appear in form
             if field in ("debug", "rate_limit_enabled",

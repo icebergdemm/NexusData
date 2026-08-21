@@ -390,7 +390,7 @@ setInterval(loadHealth, 30000);
         </div>
         <div class="form-group">
           <label>Client Secret</label>
-          <input type="text" name="discord_client_secret" value="{{ editable_cfg.discord_client_secret }}" placeholder="••••••••">
+          <input type="password" name="discord_client_secret" value="{{ editable_cfg.discord_client_secret }}" placeholder="••••••••">
         </div>
         <div class="form-group form-group-full">
           <label>Redirect URI</label>
@@ -401,13 +401,13 @@ setInterval(loadHealth, 30000);
         <div class="config-section-title">Webhooks</div>
         <div class="form-group">
           <label>🪤 Webhook для ловушек</label>
-          <input type="url" name="discord_trap_webhook_url" value="{{ editable_cfg.discord_trap_webhook_url }}" placeholder="https://discord.com/api/webhooks/...">
+          <input type="password" name="discord_trap_webhook_url" value="{{ editable_cfg.discord_trap_webhook_url }}" placeholder="••••••••">
           <span class="hint">Срабатывает при входе игрока с активной ловушкой</span>
         </div>
 
         <div class="form-group form-group-full">
           <label>🚢 Webhook для sub-проектов</label>
-          <input type="url" name="sub_projects_webhook_url" value="{{ editable_cfg.sub_projects_webhook_url }}" placeholder="https://discord.com/api/webhooks/...">
+          <input type="password" name="sub_projects_webhook_url" value="{{ editable_cfg.sub_projects_webhook_url }}" placeholder="••••••••">
           <span class="hint">Глобальный webhook для публикации embed-сообщений sub-карт</span>
         </div>
 

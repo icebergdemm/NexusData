@@ -20,12 +20,12 @@ interface AdministrationResponse {
   editable_cfg: Record<string, string | number | boolean>
 }
 
-const CFG_FIELDS: { key: string; label: string; type?: "checkbox" }[] = [
+const CFG_FIELDS: { key: string; label: string; type?: "checkbox" | "password" }[] = [
   { key: "discord_client_id", label: "Discord Client ID" },
-  { key: "discord_client_secret", label: "Discord Client Secret" },
+  { key: "discord_client_secret", label: "Discord Client Secret", type: "password" },
   { key: "discord_redirect_uri", label: "Discord Redirect URI" },
-  { key: "discord_trap_webhook_url", label: "Discord Trap Webhook" },
-  { key: "sub_projects_webhook_url", label: "Sub-projects Webhook" },
+  { key: "discord_trap_webhook_url", label: "Discord Trap Webhook", type: "password" },
+  { key: "sub_projects_webhook_url", label: "Sub-projects Webhook", type: "password" },
   { key: "sub_projects_discord_channel_id", label: "Sub-projects Discord Channel ID" },
   { key: "public_site_url", label: "Публичный URL сайта (для картинок в эмбедах Discord)" },
   { key: "allowed_ips", label: "Allowed IPs (через запятую)" },
@@ -36,13 +36,13 @@ const CFG_FIELDS: { key: string; label: string; type?: "checkbox" }[] = [
   { key: "sftp_server_1_host", label: "SFTP 1: хост" },
   { key: "sftp_server_1_port", label: "SFTP 1: порт" },
   { key: "sftp_server_1_username", label: "SFTP 1: пользователь" },
-  { key: "sftp_server_1_password", label: "SFTP 1: пароль" },
+  { key: "sftp_server_1_password", label: "SFTP 1: пароль", type: "password" },
   { key: "sftp_server_1_remote_dir", label: "SFTP 1: удалённая папка" },
   { key: "sftp_server_2_name", label: "SFTP 2: имя" },
   { key: "sftp_server_2_host", label: "SFTP 2: хост" },
   { key: "sftp_server_2_port", label: "SFTP 2: порт" },
   { key: "sftp_server_2_username", label: "SFTP 2: пользователь" },
-  { key: "sftp_server_2_password", label: "SFTP 2: пароль" },
+  { key: "sftp_server_2_password", label: "SFTP 2: пароль", type: "password" },
   { key: "sftp_server_2_remote_dir", label: "SFTP 2: удалённая папка" },
 ]
 
@@ -51,12 +51,12 @@ const CFG_FIELDS: { key: string; label: string; type?: "checkbox" }[] = [
 // секрет, общий с самим Document Server. Рендерим их отдельным блоком, а не
 // подмешиваем в общий грид, чтобы не показывать пустые поля не-суперюзерам
 // (бэкенд просто не пришлёт эти ключи в editable_cfg для них).
-const SUPERUSER_CFG_FIELDS: { key: string; label: string }[] = [
+const SUPERUSER_CFG_FIELDS: { key: string; label: string; type?: "password" }[] = [
   { key: "onlyoffice_document_server_url", label: "ONLYOFFICE: URL Document Server" },
   { key: "onlyoffice_callback_base_url", label: "ONLYOFFICE: базовый URL NexusData (для колбэков)" },
-  { key: "onlyoffice_jwt_secret", label: "ONLYOFFICE: JWT-секрет" },
+  { key: "onlyoffice_jwt_secret", label: "ONLYOFFICE: JWT-секрет", type: "password" },
   { key: "pterodactyl_panel_url", label: "Pterodactyl: URL панели" },
-  { key: "pterodactyl_api_key", label: "Pterodactyl: Client API ключ" },
+  { key: "pterodactyl_api_key", label: "Pterodactyl: Client API ключ", type: "password" },
   { key: "sub_projects_test_server_uuid", label: "Sub-проекты: UUID тестового сервера (Сервер 2 / ASPER2)" },
 ]
 
@@ -147,13 +147,13 @@ export function AdministrationPage() {
         <CardContent className="space-y-4 py-4">
           <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>Здесь отображаются секреты в открытом виде (пароли SFTP, Discord client secret). Доступ только для суперпользователей.</span>
+            <span>Секреты (пароли SFTP, Discord client secret и т.п.) не отображаются — показывается заглушка. Чтобы сменить секрет, впишите новое значение; чтобы стереть — очистите поле. Доступ только для суперпользователей.</span>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {CFG_FIELDS.map((f) => (
               <div key={f.key}>
                 <Label className="text-xs text-muted-foreground">{f.label}</Label>
-                <Input className="mt-1" value={cfg[f.key] ?? ""} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} />
+                <Input className="mt-1" type={f.type === "password" ? "password" : "text"} autoComplete={f.type === "password" ? "new-password" : undefined} value={cfg[f.key] ?? ""} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} />
               </div>
             ))}
           </div>
@@ -173,7 +173,7 @@ export function AdministrationPage() {
               {SUPERUSER_CFG_FIELDS.map((f) => (
                 <div key={f.key}>
                   <Label className="text-xs text-muted-foreground">{f.label}</Label>
-                  <Input className="mt-1" value={cfg[f.key] ?? ""} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} />
+                  <Input className="mt-1" type={f.type === "password" ? "password" : "text"} autoComplete={f.type === "password" ? "new-password" : undefined} value={cfg[f.key] ?? ""} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} />
                 </div>
               ))}
             </div>
