@@ -13,8 +13,32 @@ const TEAM_COLORS: Record<string, string> = {
 }
 
 interface View { scale: number; offsetX: number; offsetY: number }
+interface WorldBounds { minX: number; maxX: number; minY: number; maxY: number }
 
 const POPUP_WIDTH = 260
+
+function getWorldBounds(geometry: WorldGeometry): WorldBounds {
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+
+  for (const polygon of geometry.outline) {
+    for (const [x, y] of polygon) {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
+    }
+  }
+
+  if (minX < maxX && minY < maxY) return { minX, maxX, minY, maxY }
+
+  const width = Math.max(geometry.outline_w || geometry.level_w || 100000, 1)
+  const height = Math.max(geometry.outline_h || geometry.level_h || 50000, 1)
+  return { minX: 0, maxX: width, minY: 0, maxY: height }
+}
 
 /** 2D canvas renderer for the live round: static geometry (outline/hulls/
  * walls/doors, sub-local — translated to world coordinates using the
@@ -54,12 +78,19 @@ export function WorldCanvas({
   const fitView = () => {
     const container = containerRef.current
     if (!container) return
-    const w = geometry.outline_w || geometry.level_w || 100000
-    const h = geometry.outline_h || geometry.level_h || 50000
+    const bounds = getWorldBounds(geometry)
+    const worldWidth = bounds.maxX - bounds.minX
+    const worldHeight = bounds.maxY - bounds.minY
+    const worldCenterX = (bounds.minX + bounds.maxX) / 2
+    const worldCenterY = (bounds.minY + bounds.maxY) / 2
     const cw = container.clientWidth || 800
     const ch = container.clientHeight || 500
-    const scale = Math.min(cw / w, ch / h) * 0.9
-    setView({ scale: scale || 0.01, offsetX: cw / 2, offsetY: ch / 2 })
+    const scale = Math.min(cw / worldWidth, ch / worldHeight) * 0.9
+    setView({
+      scale: scale || 0.01,
+      offsetX: cw / 2 - worldCenterX * scale,
+      offsetY: ch / 2 + worldCenterY * scale,
+    })
   }
 
   // Re-fit whenever a different round is selected.
