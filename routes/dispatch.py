@@ -1948,16 +1948,30 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
     requested, the whole request is rejected and nothing is deducted or queued."""
     if not server_name:
         raise HTTPException(status_code=400, detail="Укажите сервер")
+    normalized_server = _dispatch_target_servers(server_name)[0]
     if not isinstance(items, list) or not items:
         raise HTTPException(status_code=400, detail="Выберите хотя бы один предмет")
 
-    to_deduct = []
+    # Aggregate duplicate identifiers before checking the warehouse. Without
+    # this, two lines of 6 units could each pass against a stock of 10 and then
+    # drive it negative. Row locks also prevent simultaneous AI/manual orders
+    # from reserving the same stock twice on MySQL.
+    requested: dict[str, int] = {}
     for entry in items:
         identifier = (entry.get("identifier") or "").strip() if isinstance(entry, dict) else ""
         qty = entry.get("quantity") if isinstance(entry, dict) else None
         if not identifier or not isinstance(qty, int) or qty <= 0:
             raise HTTPException(status_code=400, detail="Некорректный предмет в грузе")
-        row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
+        requested[identifier] = requested.get(identifier, 0) + qty
+
+    to_deduct = []
+    for identifier, qty in requested.items():
+        row = (
+            db.query(WarehouseItem)
+            .filter(WarehouseItem.identifier == identifier)
+            .with_for_update()
+            .first()
+        )
         if not row or row.quantity < qty:
             available = row.quantity if row else 0
             raise HTTPException(status_code=400, detail=f"На складе недостаточно «{identifier}» (нужно {qty}, есть {available})")
@@ -1970,18 +1984,23 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
     action = ServerAction(
         action_type="cargo_spawn",
         target_steamid="system",
-        target_server=server_name,
-        payload={"items": [{"identifier": e["identifier"], "quantity": e["quantity"]} for e in items]},
+        target_server=normalized_server,
+        payload={
+            "items": [
+                {"identifier": identifier, "quantity": qty}
+                for identifier, qty in requested.items()
+            ],
+        },
         queued_by_admin_id=admin_id,
     )
-    _mark_other_server_done(action, server_name)
+    _mark_other_server_done(action, normalized_server)
     db.add(action)
     db.commit()
     db.refresh(action)
     logger.info(
         "dispatch.cargo.queued action_id=%s server=%s items=%r",
         action.id,
-        server_name,
+        normalized_server,
         action.payload.get("items", []) if isinstance(action.payload, dict) else [],
     )
     return action

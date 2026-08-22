@@ -6,9 +6,9 @@ static/item_catalog.json / tools/extract_barotrauma_items.py). Gated by the
 existing site-wide "dispatch" permission, not a new one — this is just
 another dispatch tool, not a separate feature.
 
-Future work (not yet built here): actually sending some of this stock out
-with the supply shuttle — see dispatch/index.tsx's "Отправить челнок
-снабжения" stub action, the eventual integration point.
+Поставка оформляется через общий `cargo_spawn` в routes/dispatch.py. Остатки
+резервируются атомарно при постановке действия; если игровой сервер вернёт
+неуспешный ACK, services.py один раз возвращает резерв на склад.
 
 Two routers:
 - `admin_router` (session-gated, "dispatch" permission) — the CRUD the

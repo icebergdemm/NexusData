@@ -1410,9 +1410,14 @@ class ServerModerationService:
     def acknowledge_action(self, action_id: int, success: bool, error_message: Optional[str] = None, server_name: Optional[str] = None) -> bool:
         """ACK an action from a specific server (v2 table)."""
         from datetime import datetime
-        from models import ServerAction
+        from models import ServerAction, WarehouseItem
 
-        row = self.db.query(ServerAction).filter(ServerAction.id == action_id).first()
+        row = (
+            self.db.query(ServerAction)
+            .filter(ServerAction.id == action_id)
+            .with_for_update()
+            .first()
+        )
         if not row:
             return False
 
@@ -1425,17 +1430,25 @@ class ServerModerationService:
         status_val = 1 if effective_success else 2
         now = datetime.utcnow()
 
+        # Remember whether this ACK actually transitions the addressed action
+        # from pending. Game plugins retry requests after network timeouts, so
+        # a duplicate failed ACK must never refund reserved cargo twice.
+        addressed_pending = False
+
         if server_name:
             sn = server_name.strip().upper()
             if "ASPER1" in sn or sn == "1":
+                addressed_pending = row.status_asper1 == 0
                 row.status_asper1 = status_val
                 row.error_asper1 = error_message  # Always record error text
                 row.executed_at_asper1 = now
             elif "ASPER2" in sn or sn == "2":
+                addressed_pending = row.status_asper2 == 0
                 row.status_asper2 = status_val
                 row.error_asper2 = error_message
                 row.executed_at_asper2 = now
         else:
+            addressed_pending = row.status_asper1 == 0 or row.status_asper2 == 0
             row.status_asper1 = status_val
             row.status_asper2 = status_val
             row.error_asper1 = error_message
@@ -1443,16 +1456,52 @@ class ServerModerationService:
             row.executed_at_asper1 = now
             row.executed_at_asper2 = now
 
+        cargo_refunded = False
+        payload = dict(row.payload or {})
+        if (
+            row.action_type == "cargo_spawn"
+            and not effective_success
+            and addressed_pending
+            and not payload.get("warehouse_refunded")
+        ):
+            for item in payload.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                identifier = str(item.get("identifier") or "").strip()
+                quantity = item.get("quantity")
+                if not identifier or not isinstance(quantity, int) or quantity <= 0:
+                    continue
+                stock = (
+                    self.db.query(WarehouseItem)
+                    .filter(WarehouseItem.identifier == identifier)
+                    .with_for_update()
+                    .first()
+                )
+                if stock is None:
+                    stock = WarehouseItem(identifier=identifier, quantity=0)
+                    self.db.add(stock)
+                stock.quantity += quantity
+                stock.updated_by_admin_id = row.queued_by_admin_id
+                cargo_refunded = True
+
+            # Persist the idempotency marker even if a malformed legacy action
+            # had no restorable items; otherwise every repeated ACK would try
+            # the same recovery path again.
+            payload["warehouse_refunded"] = True
+            payload["warehouse_refunded_at"] = now.isoformat()
+            row.payload = payload
+
         self.db.commit()
 
         logger.info(
             "server_action.ack action_id=%s action_type=%s server=%s "
-            "success=%s status=%s error=%r",
+            "success=%s status=%s cargo_refunded=%s error=%r",
             row.id,
             row.action_type,
             server_name or "both",
             effective_success,
             status_val,
+            cargo_refunded,
             error_message,
         )
 
@@ -1463,6 +1512,7 @@ class ServerModerationService:
                 action_labels = {
                     "ban": "Бан", "kick": "Кик", "unban": "Разбан",
                     "message": "Сообщение", "trap": "Ловушка",
+                    "cargo_spawn": "Поставка",
                 }
                 label = action_labels.get(row.action_type, row.action_type)
                 srv = server_name or "сервер"
@@ -1478,11 +1528,15 @@ class ServerModerationService:
                         link=None,
                     )
                 else:
+                    refund_note = " Товар возвращён на склад." if cargo_refunded else ""
                     create_notification(
                         self.db,
                         admin_id=row.queued_by_admin_id,
                         title=f"{label} — ошибка",
-                        body=f"{label} для {row.target_steamid} на {srv}: {error_message or 'неизвестная ошибка'}",
+                        body=(
+                            f"{label} для {row.target_steamid} на {srv}: "
+                            f"{error_message or 'неизвестная ошибка'}.{refund_note}"
+                        ),
                         ntype="error",
                         category="server_action",
                         icon="❌",

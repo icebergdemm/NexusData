@@ -229,7 +229,50 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
         if page in hybrid_pages and hybrid_pages[page].get(action):
             return True
 
+    # Управлять общим выключателем ИИ-диспетчера могут кураторы и старшие
+    # должности даже без отдельной галочки в группе. Для любых остальных
+    # пользователей по-прежнему работает обычное индивидуальное/групповое
+    # право dispatch:manage_ai, проверенное выше.
+    if page == "dispatch" and action == "manage_ai":
+        return _has_ai_dispatcher_management_rank(admin)
+
     return False
+
+
+def _has_ai_dispatcher_management_rank(admin) -> bool:
+    """Return True for the project's curator-or-higher panel ranks.
+
+    Privilege groups are database-defined and intentionally have no numeric
+    hierarchy, therefore this narrow allow-list mirrors the actual project
+    ladder instead of treating every holder of broad ``dispatch:edit`` as a
+    curator. Explicit ``dispatch:manage_ai`` grants remain the extensibility
+    mechanism for custom groups.
+    """
+
+    rank_names = {
+        "куратор",
+        "кураторы",
+        "старший куратор",
+        "старшие кураторы",
+        "главный куратор",
+        "главные кураторы",
+        "управляющий",
+        "управляющие",
+        "администратор",
+        "администраторы",
+        "главный администратор",
+        "главные администраторы",
+    }
+    group = getattr(admin, "privilege_group", None)
+    candidates = (
+        getattr(admin, "role", None),
+        getattr(group, "name", None) if group is not None else None,
+    )
+    return any(
+        str(candidate).strip().casefold() in rank_names
+        for candidate in candidates
+        if candidate
+    )
 
 
 _DEPT_SITE_PERMS_CACHE_TTL_SECONDS = 30.0
@@ -387,4 +430,3 @@ def enforce_rate_limit(db, admin, action: str = "general"):
     """Raise HTTPException(429) if over rate limit."""
     if not check_rate_limit(db, admin, action):
         raise HTTPException(status_code=429, detail="Превышен лимит действий. Попробуйте позже.")
-

@@ -1724,9 +1724,8 @@ class WarehouseItem(Base):
     with a quantity, managed from the Диспетчерская page (routes/warehouse.py).
     Gated by the same site-wide "dispatch" permission as the rest of that
     page — this isn't a separate feature/permission, just another dispatch
-    tool. Future work (not yet built): actually sending some of this stock
-    out with the supply shuttle — see dispatch/index.tsx's
-    "Отправить челнок снабжения" stub action, the eventual integration point."""
+    tool. Cargo orders reserve stock atomically in routes/dispatch.py; a
+    failed game-server ACK restores it exactly once in services.py."""
     __tablename__ = "warehouse_items"
 
     id = Column(Integer, primary_key=True, index=True)
