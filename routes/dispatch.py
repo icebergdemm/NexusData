@@ -43,13 +43,13 @@ _BAROTRAUMA_RADIO_MAX_CHARS = 200
 _AI_REPLY_MAX_CHARS = _BAROTRAUMA_RADIO_MAX_CHARS - len(_DISPATCHER_PREFIX)
 _AI_REPLY_MIN_DELAY_SECONDS = 4.0
 _AI_REPLY_MAX_DELAY_SECONDS = 12.0
+_AI_PRIORITY_REPLY_INTERVAL_SECONDS = 3.0
+_AI_PRIORITY_MESSAGE_TYPES = frozenset({"round_briefing", "threat_alert"})
 _AI_ACTION_ACK_POLL_SECONDS = 1.0
 _AI_CHANNEL_WAIT_TIMEOUT_SECONDS = 90.0
 _AI_ACTION_ACK_TIMEOUT_SECONDS = 90.0
 _AI_DISPATCH_QUEUE_MAXSIZE = 100
 _AI_DISPATCH_JOB_TTL_SECONDS = 180.0
-_AI_BRIEFING_MIN_DELAY_SECONDS = 15
-_AI_BRIEFING_MAX_DELAY_SECONDS = 35
 _AI_BRIEFING_RETRY_DELAY_SECONDS = 8.0
 _AI_BRIEFING_MAX_ATTEMPTS = 10
 _AI_CREATURE_ALERT_RETRY_DELAY_SECONDS = 5.0
@@ -66,7 +66,6 @@ class _AIDispatchJob:
     api_key: str
     payload: dict
     server_name: str
-    initial_delay_seconds: float = 0.0
     retry_delay_seconds: float = 0.0
     max_attempts: int = 1
     creature_alert_ids: tuple[int, ...] = ()
@@ -472,13 +471,6 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
     )
 
 
-def _random_ai_briefing_delay_seconds() -> float:
-    """Choose a human-looking delay within the configured inclusive window."""
-
-    span = _AI_BRIEFING_MAX_DELAY_SECONDS - _AI_BRIEFING_MIN_DELAY_SECONDS + 1
-    return float(_AI_BRIEFING_MIN_DELAY_SECONDS + secrets.randbelow(span))
-
-
 def _world_round_matches_lifecycle_event(
     world_round: WorldRound,
     event: RoundEvent,
@@ -594,7 +586,6 @@ def _queue_ai_round_briefing(
                 },
             },
             server_name=server_name,
-            initial_delay_seconds=_random_ai_briefing_delay_seconds(),
             retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
             max_attempts=_AI_BRIEFING_MAX_ATTEMPTS,
         )
@@ -652,19 +643,15 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
                 },
             },
             server_name=server_name,
-            initial_delay_seconds=_random_ai_briefing_delay_seconds(),
             retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
             max_attempts=_AI_BRIEFING_MAX_ATTEMPTS,
         )
     )
     logger.info(
-        "AI world briefing queued from telemetry: event_id=%s round_id=%s "
-        "server=%s delay_range=%s-%s",
+        "AI world briefing queued from telemetry: event_id=%s round_id=%s server=%s",
         f"nexus-world-briefing-{world_round.id}",
         world_round.round_id,
         server_name,
-        _AI_BRIEFING_MIN_DELAY_SECONDS,
-        _AI_BRIEFING_MAX_DELAY_SECONDS,
     )
 
 
@@ -825,8 +812,6 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
             # extends the one-server-at-a-time guarantee across those workers
             # on the same Nexus host; the kernel releases it if a worker dies.
             with _ai_dispatch_process_lock(server_name):
-                if job.initial_delay_seconds > 0:
-                    time.sleep(job.initial_delay_seconds)
                 if not _ai_dispatcher_enabled_now():
                     logger.info(
                         "AI dispatch suppressed by operator: event_id=%s server=%s",
@@ -1117,6 +1102,7 @@ def _post_ai_dispatcher_sync(
             replies,
             server_name=server_name,
             event_id=payload.get("event_id", "unknown"),
+            message_type=payload.get("message_type"),
             round_id=payload.get("round_id"),
             enqueued_at=enqueued_at,
             at_most_once_delivery=at_most_once_delivery,
@@ -1153,7 +1139,7 @@ def _post_ai_dispatcher_sync(
 
 
 def _ai_reply_delay_seconds(reply: str) -> float:
-    """Return a linear 4–12 second radio delay based on visible text length."""
+    """Return a linear 4–12 second interval for an ordinary continuation."""
 
     text_length = min(len((reply or "").strip()), _AI_REPLY_MAX_CHARS)
     length_ratio = text_length / _AI_REPLY_MAX_CHARS
@@ -1161,11 +1147,20 @@ def _ai_reply_delay_seconds(reply: str) -> float:
     return _AI_REPLY_MIN_DELAY_SECONDS + delay_range * length_ratio
 
 
+def _ai_inter_reply_delay_seconds(reply: str, message_type: Optional[str]) -> float:
+    """Return the pause before a continuation, never before the first part."""
+
+    if message_type in _AI_PRIORITY_MESSAGE_TYPES:
+        return _AI_PRIORITY_REPLY_INTERVAL_SECONDS
+    return _ai_reply_delay_seconds(reply)
+
+
 def _deliver_ai_dispatcher_replies(
     replies: List[str],
     *,
     server_name: str,
     event_id: str,
+    message_type: Optional[str] = None,
     round_id: Optional[str] = None,
     enqueued_at: Optional[float] = None,
     at_most_once_delivery: bool = False,
@@ -1185,7 +1180,7 @@ def _deliver_ai_dispatcher_replies(
             enqueued_at,
         ):
             logger.warning(
-                "AI dispatch dropped stale reply before delay: event_id=%s server=%s "
+                "AI dispatch dropped stale reply before send: event_id=%s server=%s "
                 "round_id=%s part=%s/%s",
                 event_id,
                 server_name,
@@ -1194,17 +1189,20 @@ def _deliver_ai_dispatcher_replies(
                 len(replies),
             )
             return False
-        delay_seconds = _ai_reply_delay_seconds(reply)
-        logger.info(
-            "AI dispatch delay: event_id=%s server=%s part=%s/%s chars=%s delay_seconds=%.2f",
-            event_id,
-            server_name,
-            part_number,
-            len(replies),
-            len(reply),
-            delay_seconds,
-        )
-        time.sleep(delay_seconds)
+        if part_number > 1:
+            delay_seconds = _ai_inter_reply_delay_seconds(reply, message_type)
+            logger.info(
+                "AI dispatch inter-part delay: event_id=%s server=%s message_type=%r "
+                "part=%s/%s chars=%s delay_seconds=%.2f",
+                event_id,
+                server_name,
+                message_type,
+                part_number,
+                len(replies),
+                len(reply),
+                delay_seconds,
+            )
+            time.sleep(delay_seconds)
 
         queue_kwargs = {}
         if round_id is not None:

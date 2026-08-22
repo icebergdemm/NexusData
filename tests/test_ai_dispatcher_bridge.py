@@ -14,6 +14,7 @@ from routes.dispatch import (
     _AIDispatchJob,
     _ai_dispatcher_enabled,
     _ai_dispatch_job_queues,
+    _ai_inter_reply_delay_seconds,
     _ai_reply_delay_seconds,
     _cancel_ai_dispatch_action,
     dispatch_check_pending,
@@ -204,12 +205,10 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         job = enqueue_job.call_args.args[0]
         self.assertEqual(job.server_name, "ASPER1")
         self.assertEqual(job.max_attempts, 10)
-        self.assertGreater(job.initial_delay_seconds, 0)
         self.assertGreater(job.retry_delay_seconds, 0)
         self.assertGreaterEqual(
-            job.initial_delay_seconds
-            + (job.max_attempts - 1) * job.retry_delay_seconds,
-            80,
+            (job.max_attempts - 1) * job.retry_delay_seconds,
+            70,
         )
         self.assertEqual(
             job.payload,
@@ -259,14 +258,12 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                     "ai_dispatcher_api_key",
                     "dispatcher-secret",
                 ),
-                patch("routes.dispatch.secrets.randbelow", return_value=7),
             ):
                 _queue_ai_world_briefing(world_round, db)
                 _queue_ai_world_briefing(world_round, db)
 
             enqueue_job.assert_called_once()
             job = enqueue_job.call_args.args[0]
-            self.assertEqual(job.initial_delay_seconds, 22.0)
             self.assertEqual(job.max_attempts, 10)
             self.assertEqual(
                 job.payload,
@@ -371,6 +368,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             ["Связь установлена."],
             server_name="ASPER2",
             event_id="nexus-dispatch-42",
+            message_type=None,
             round_id="round-1",
             enqueued_at=None,
             at_most_once_delivery=False,
@@ -409,6 +407,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             ],
             server_name="ASPER2",
             event_id="nexus-dispatch-44",
+            message_type=None,
             round_id="round-1",
             enqueued_at=None,
             at_most_once_delivery=False,
@@ -559,12 +558,10 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             event_id="nexus-dispatch-50",
         )
 
-        first_delay = _ai_reply_delay_seconds(replies[0])
         second_delay = _ai_reply_delay_seconds(replies[1])
         self.assertEqual(
             timeline.mock_calls,
             [
-                call.sleep(first_delay),
                 call.send(replies[0], "ASPER1", "nexus-dispatch-50", 1, 2),
                 call.ack(101, "ASPER1", "nexus-dispatch-50"),
                 call.sleep(second_delay),
@@ -572,6 +569,34 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
                 call.ack(102, "ASPER1", "nexus-dispatch-50"),
             ],
         )
+
+    def test_briefing_and_threat_parts_use_three_second_intervals(self):
+        for message_type in ("round_briefing", "threat_alert"):
+            with (
+                self.subTest(message_type=message_type),
+                patch("routes.dispatch.time.sleep") as sleep,
+                patch(
+                    "routes.dispatch._queue_ai_radio_action",
+                    side_effect=[101, 102],
+                ) as queue_action,
+                patch(
+                    "routes.dispatch._wait_for_ai_dispatch_action_ack",
+                    return_value=1,
+                ),
+            ):
+                _deliver_ai_dispatcher_replies(
+                    ["Первая часть.", "Вторая часть."],
+                    server_name="ASPER1",
+                    event_id=f"nexus-{message_type}-50",
+                    message_type=message_type,
+                )
+
+                sleep.assert_called_once_with(3.0)
+                self.assertEqual(queue_action.call_count, 2)
+                self.assertEqual(
+                    _ai_inter_reply_delay_seconds("Любая длина.", message_type),
+                    3.0,
+                )
 
     @patch("routes.dispatch._send_dispatcher_message_locked")
     @patch("routes.dispatch._find_existing_ai_radio_action", return_value=None)
@@ -673,7 +698,7 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             event_id="nexus-dispatch-54",
         )
 
-        sleep.assert_called_once_with(_ai_reply_delay_seconds("Первая часть."))
+        sleep.assert_not_called()
         queue_action.assert_called_once_with(
             "Первая часть.",
             "ASPER1",
@@ -700,6 +725,7 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
         )
 
         self.assertTrue(delivered)
+        sleep.assert_not_called()
         queue_action.assert_called_once()
         wait_for_ack.assert_called_once_with(
             101,
