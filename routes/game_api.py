@@ -292,17 +292,10 @@ def unban_player(body: UnbanRequest, db: Session = Depends(get_game_db)):
     if not steamid:
         raise HTTPException(status_code=400, detail="player_steamid required")
 
-    # Mark all active bans as void
-    active_bans = db.query(PlayerPunishment).filter(
-        PlayerPunishment.type == "ban",
-        PlayerPunishment.is_active == 1,
-        PlayerPunishment.player_steamid == steamid,
-    ).all()
-
-    voided_count = 0
-    for b in active_bans:
-        b.is_active = 0
-        voided_count += 1
+    # Mark every duplicate/current DB ban inactive before the game server
+    # removes the account from its native ban list.
+    from services import PunishmentService
+    voided_count = PunishmentService(db).set_all_active_bans_void(steamid)
 
     # Convert Steam64 → STEAM2 for the game server
     try:

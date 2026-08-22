@@ -25,7 +25,7 @@ from database import get_db, get_game_db
 from security import check_permission
 from config import get_settings
 from security import verify_external_api_key_dependency
-from services import ServerModerationService, PlayerService
+from services import PunishmentService, ServerModerationService, PlayerService
 from schemas import (
     ServerPlayersReport, ServerPlayersReportResult,
     AnticheatEventIn, AnticheatEventOut,
@@ -398,10 +398,13 @@ async def enqueue_moderation_action(
 
     svc = ServerModerationService(db)
     action = svc.enqueue_action(action_in, admin_id=current_admin.id)
+    voided_bans = 0
+    if action_type == "unban":
+        voided_bans = PunishmentService(db).set_all_active_bans_void(target_steamid)
     logger.info(
-        "Admin %s queued %s for %s on server=%s (action_id=%s)",
+        "Admin %s queued %s for %s on server=%s (action_id=%s voided_bans=%s)",
         current_admin.discord_username, action_type, target_steamid,
-        server_name or "all", action.id,
+        server_name or "all", action.id, voided_bans,
     )
 
     # For bans — also create a punishment record
@@ -624,9 +627,13 @@ async def api_enqueue_moderation_action(
 
     svc = ServerModerationService(db)
     action = svc.enqueue_action(action_in, admin_id=current_admin.id)
+    voided_bans = 0
+    if action_type == "unban":
+        voided_bans = PunishmentService(db).set_all_active_bans_void(target_steamid)
     logger.info(
-        "Admin %s queued %s for %s on server=%s (action_id=%s)",
-        current_admin.discord_username, action_type, target_steamid, server_name or "all", action.id,
+        "Admin %s queued %s for %s on server=%s (action_id=%s voided_bans=%s)",
+        current_admin.discord_username, action_type, target_steamid,
+        server_name or "all", action.id, voided_bans,
     )
 
     if action_type == "ban":

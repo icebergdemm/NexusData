@@ -2086,6 +2086,27 @@ class PunishmentService:
         """Mark punishment as inactive (void/irrelevant)."""
         return self.update(punishment_id, is_active=0)
 
+    def set_all_active_bans_void(self, player_steamid: str) -> int:
+        """Deactivate every DB ban for one Steam account.
+
+        A server unban is account-wide, so leaving an older duplicate ban
+        active makes ``/bans/check`` immediately block the player again.
+        """
+        steamid = (player_steamid or "").strip()
+        if not steamid:
+            return 0
+        updated = (
+            self.db.query(self._model)
+            .filter(
+                self._model.type == "ban",
+                self._model.is_active == 1,
+                self._model.player_steamid == steamid,
+            )
+            .update({self._model.is_active: 0}, synchronize_session=False)
+        )
+        self.db.commit()
+        return int(updated)
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def is_expired(self, punishment) -> bool:

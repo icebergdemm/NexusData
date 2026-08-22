@@ -5738,7 +5738,7 @@ async def admin_punishment_unban(
     steamid = p.player_steamid or ""
     steam2 = steam64_to_steam2(steamid) if steamid else None
 
-    svc.set_void(punishment_id)
+    voided_count = svc.set_all_active_bans_void(steamid)
 
     from models import ServerAction
     action = ServerAction(
@@ -5762,6 +5762,7 @@ async def admin_punishment_unban(
         "steamid": steamid,
         "server_name": server_name,
         "action_id": action.id,
+        "voided_punishments": voided_count,
     })
     push_flash(request, "success", f"Разбан поставлен в очередь (action_id={action.id}){srv_label}")
     return RedirectResponse(url=f"/adminold/punishments?tab=ban", status_code=302)
@@ -6009,7 +6010,7 @@ async def api_punishment_unban(
     steamid = p.player_steamid or ""
     steam2 = steam64_to_steam2(steamid) if steamid else None
 
-    svc.set_void(punishment_id)
+    voided_count = svc.set_all_active_bans_void(steamid)
 
     from models import ServerAction
     action = ServerAction(
@@ -6027,9 +6028,10 @@ async def api_punishment_unban(
     db.commit()
 
     log_admin_action(db, current_admin.id, "punishment_unban", {
-        "punishment_id": punishment_id, "steamid": steamid, "server_name": server_name, "action_id": action.id,
+        "punishment_id": punishment_id, "steamid": steamid, "server_name": server_name,
+        "action_id": action.id, "voided_punishments": voided_count,
     })
-    return {"status": "ok", "action_id": action.id}
+    return {"status": "ok", "action_id": action.id, "voided_punishments": voided_count}
 
 
 @router.delete("/api/v1/admin/punishments/{punishment_id}")

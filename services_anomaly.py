@@ -201,6 +201,12 @@ def _scan_ban_evasion(db: Session, deadline: float) -> dict:
                 stats["flagged"] += 1
 
                 if cand_id in online_player_ids and cand_id not in banned_player_ids:
+                    # Automatic enforcement is deliberately one-shot for a
+                    # stable player pair.  ``auto_banned`` stays in the audit
+                    # row after an administrator unbans the candidate; without
+                    # this guard every 30-minute scan simply banned them again.
+                    if row.auto_banned or row.status == "dismissed":
+                        continue
                     if _auto_ban_evader(db, cand, ip, banned_player):
                         row.auto_banned = True
                         stats["auto_banned"] += 1
