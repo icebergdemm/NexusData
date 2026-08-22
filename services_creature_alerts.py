@@ -1,4 +1,4 @@
-"""Detection helpers for automatic AI alerts about newly spawned large creatures."""
+"""Detection helpers for automatic AI alerts about newly observed creatures."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 
 WORLD_UNITS_PER_METER = 100.0
+YASA_ALERT_RADIUS_METERS = 200.0
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,8 @@ class LargeCreatureSpawn:
     character_id: str
     species: str
     distance_from_yasa_m_approx: int
+    contact_class: str = "large"
+    yasa_perimeter: bool = False
 
 
 def detect_large_creature_spawns(
@@ -25,27 +28,25 @@ def detect_large_creature_spawns(
     large_species: Iterable[str],
     abyss_species: Iterable[str],
 ) -> list[LargeCreatureSpawn]:
-    """Return alive, configured large-creature observations relative to Yasa.
+    """Return newly alertable observations relative to Yasa.
 
     This function deliberately evaluates every current snapshot. Durable
     deduplication is handled by ``AICreatureAlert`` after the position of Yasa
     becomes available. This avoids losing contacts when a snapshot races ahead
-    of ``world/init``. Species in the abyss denylist are rejected even if
-    accidentally added to the large-creature allowlist.
+    of ``world/init``. Configured large contacts are alertable at any distance;
+    every other non-abyss creature becomes alertable inside Yasa's 200-metre
+    perimeter. Species in the abyss denylist are always rejected.
     """
 
     if not isinstance(current_characters, list):
         return []
 
-    yasa_position = _find_yasa_position(submarines, current_submarines)
+    yasa_position = find_yasa_position(submarines, current_submarines)
     if yasa_position is None:
         return []
 
     allowed = {str(value).strip().casefold() for value in large_species if str(value).strip()}
     denied = {str(value).strip().casefold() for value in abyss_species if str(value).strip()}
-    if not allowed:
-        return []
-
     result: list[LargeCreatureSpawn] = []
     seen_ids: set[str] = set()
     yasa_x, yasa_y = yasa_position
@@ -55,16 +56,13 @@ def detect_large_creature_spawns(
         character_id = str(item["id"])
         if character_id in seen_ids:
             continue
-        if item.get("human") is not False or item.get("dead") is True:
+        if not _false_flag(item.get("human")) or _truthy_flag(item.get("dead")):
             continue
         species = item.get("species")
         if not isinstance(species, str) or not species.strip():
             continue
         normalized_species = species.strip().casefold()
-        if not _species_matches(normalized_species, allowed) or _species_matches(
-            normalized_species,
-            denied,
-        ):
+        if _species_matches(normalized_species, denied):
             continue
         x = _finite_number(item.get("x"))
         y = _finite_number(item.get("y"))
@@ -72,11 +70,17 @@ def detect_large_creature_spawns(
             continue
 
         distance_m = math.hypot(x - yasa_x, y - yasa_y) / WORLD_UNITS_PER_METER
+        is_large = _species_matches(normalized_species, allowed)
+        in_yasa_perimeter = distance_m <= YASA_ALERT_RADIUS_METERS
+        if not is_large and not in_yasa_perimeter:
+            continue
         result.append(
             LargeCreatureSpawn(
                 character_id=character_id,
                 species=species.strip(),
                 distance_from_yasa_m_approx=_round_distance(distance_m),
+                contact_class="large" if is_large else "unclassified",
+                yasa_perimeter=in_yasa_perimeter,
             )
         )
         seen_ids.add(character_id)
@@ -89,29 +93,58 @@ def _species_matches(species: str, configured: set[str]) -> bool:
     return species in configured or any(species.startswith(f"{base}_") for base in configured)
 
 
-def _find_yasa_position(submarines: Any, current_submarines: Any) -> tuple[float, float] | None:
+def is_configured_large_species(species: Any, configured: Iterable[str]) -> bool:
+    if not isinstance(species, str) or not species.strip():
+        return False
+    normalized = species.strip().casefold()
+    values = {str(value).strip().casefold() for value in configured if str(value).strip()}
+    return _species_matches(normalized, values)
+
+
+def find_yasa_position(submarines: Any, current_submarines: Any) -> tuple[float, float] | None:
     if not isinstance(submarines, list) or not isinstance(current_submarines, list):
         return None
+
+    def is_yasa_name(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        name = value.casefold()
+        return "yasa" in name or "яса" in name
 
     yasa_ids = {
         str(item["id"])
         for item in submarines
         if isinstance(item, dict)
         and _valid_id(item.get("id"))
-        and isinstance(item.get("name"), str)
-        and "yasa" in item["name"].casefold()
+        and is_yasa_name(item.get("name"))
     }
-    if not yasa_ids:
-        return None
 
     for item in current_submarines:
-        if not isinstance(item, dict) or str(item.get("id")) not in yasa_ids:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id")) not in yasa_ids and not is_yasa_name(item.get("name")):
             continue
         x = _finite_number(item.get("x"))
         y = _finite_number(item.get("y"))
         if x is not None and y is not None:
             return x, y
     return None
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes"}
+    return bool(value)
+
+
+def _false_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in {"0", "false", "no"}
+    return value is False or (isinstance(value, int | float) and value == 0)
+
+
+def is_nonhuman_character(value: Any) -> bool:
+    return isinstance(value, dict) and _false_flag(value.get("human"))
 
 
 def _round_distance(distance_m: float) -> int:

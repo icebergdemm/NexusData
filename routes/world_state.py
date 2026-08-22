@@ -33,7 +33,12 @@ from database import get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
 from models import AICreatureAlert, AdminUser, AdminSession, WorldRound
-from services_creature_alerts import LargeCreatureSpawn, detect_large_creature_spawns
+from services_creature_alerts import (
+    LargeCreatureSpawn,
+    detect_large_creature_spawns,
+    find_yasa_position,
+    is_nonhuman_character,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -182,14 +187,37 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
     if (settings.ai_dispatcher_url or "").strip() and (
         settings.ai_dispatcher_api_key or ""
     ).strip():
+        characters = body.get("characters")
+        current_submarines = body.get("subs")
         spawns = detect_large_creature_spawns(
-            current_characters=body.get("characters"),
+            current_characters=characters,
             submarines=row.submarines,
-            current_submarines=body.get("subs"),
+            current_submarines=current_submarines,
             large_species=settings.ai_large_creature_species_list,
             abyss_species=settings.ai_abyss_creature_species_list,
         )
         claimed_alerts = _claim_large_creature_alerts(db, row, spawns)
+        if spawns or row.last_seq is None or (
+            isinstance(seq, int) and seq % 20 == 0
+        ):
+            character_rows = characters if isinstance(characters, list) else []
+            nonhuman_count = sum(
+                1
+                for character in character_rows
+                if is_nonhuman_character(character)
+            )
+            logger.info(
+                "AI contact scan: round_id=%s server=%s seq=%s characters=%s "
+                "nonhuman=%s yasa_found=%s candidates=%s leased=%s",
+                row.round_id,
+                row.server_name,
+                seq,
+                len(character_rows),
+                nonhuman_count,
+                find_yasa_position(row.submarines, current_submarines) is not None,
+                len(spawns),
+                len(claimed_alerts),
+            )
 
     row.last_seq = seq
     row.last_t = body.get("t")
@@ -225,9 +253,15 @@ def _claim_large_creature_alerts(
     now = datetime.utcnow()
     expired_before = now - timedelta(seconds=AI_CREATURE_ALERT_LEASE_SECONDS)
     for spawn in spawns:
+        # A large contact can first be reported in the sector and later cross
+        # Yasa's perimeter.  Keep those as two distinct, one-shot observations
+        # without a database migration by namespacing only the perimeter key.
+        alert_character_id = (
+            f"yasa:{spawn.character_id}" if spawn.yasa_perimeter else spawn.character_id
+        )
         alert = AICreatureAlert(
             round_id=str(row.round_id),
-            character_id=spawn.character_id,
+            character_id=alert_character_id,
             species=spawn.species,
             distance_from_yasa_m_approx=spawn.distance_from_yasa_m_approx,
         )
@@ -244,7 +278,7 @@ def _claim_large_creature_alerts(
             db.query(AICreatureAlert)
             .filter(
                 AICreatureAlert.round_id == str(row.round_id),
-                AICreatureAlert.character_id == spawn.character_id,
+                AICreatureAlert.character_id == alert_character_id,
             )
             .first()
         )

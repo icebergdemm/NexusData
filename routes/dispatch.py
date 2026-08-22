@@ -33,6 +33,7 @@ from models import (
     ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting, WorldRound,
 )
 from schemas import DispatchMessageIn, RoundStartIn, RoundEndIn
+from services_creature_alerts import is_configured_large_species
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -627,7 +628,7 @@ def _queue_ai_large_creature_alert(
     alerts: List[AICreatureAlert],
     db: Session,
 ) -> bool:
-    """Queue one RP warning for newly spawned large, non-abyss contacts."""
+    """Queue RP warnings for new large contacts and Yasa perimeter entries."""
 
     if not alerts:
         return False
@@ -649,47 +650,69 @@ def _queue_ai_large_creature_alert(
         )
         return False
 
-    first_alert = min(alerts, key=lambda alert: int(alert.id or 0))
-    nearest_distance = min(
-        int(alert.distance_from_yasa_m_approx) for alert in alerts
-    )
     conversation_round_id = _resolve_ai_conversation_round_id(db, server_name)
-    alert_ids = tuple(int(alert.id) for alert in alerts if alert.id is not None)
-    queued = _enqueue_ai_dispatch_job(
-        _AIDispatchJob(
-            url=url,
-            api_key=api_key,
-            payload={
-                "event_id": f"nexus-creature-alert-{first_alert.id}",
-                "round_id": conversation_round_id,
-                "server_name": server_name,
-                "text": "Оперативное предупреждение о крупной отметке.",
-                "sender_name": None,
-                "message_type": "threat_alert",
-                "threat_context": {
-                    "contact_scope": "group" if len(alerts) > 1 else "single",
-                    "distance_from_yasa_m_approx": nearest_distance,
-                },
-            },
-            server_name=server_name,
-            retry_delay_seconds=_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS,
-            max_attempts=_AI_CREATURE_ALERT_MAX_ATTEMPTS,
-            creature_alert_ids=alert_ids,
+    grouped_alerts: dict[tuple[str, bool], List[AICreatureAlert]] = {}
+    for alert in alerts:
+        contact_class = (
+            "large"
+            if is_configured_large_species(
+                alert.species,
+                settings.ai_large_creature_species_list,
+            )
+            else "unclassified"
         )
-    )
-    if not queued:
-        _finish_ai_creature_alert_delivery(alert_ids, delivered=False)
-        return False
-    logger.info(
-        "AI large-creature alert queued: event_id=%s round_id=%s server=%s "
-        "contact_scope=%s distance_from_yasa_m_approx=%s",
-        f"nexus-creature-alert-{first_alert.id}",
-        conversation_round_id,
-        server_name,
-        "group" if len(alerts) > 1 else "single",
-        nearest_distance,
-    )
-    return True
+        yasa_perimeter = str(alert.character_id).startswith("yasa:")
+        grouped_alerts.setdefault((contact_class, yasa_perimeter), []).append(alert)
+
+    all_queued = True
+    for (contact_class, yasa_perimeter), group in grouped_alerts.items():
+        first_alert = min(group, key=lambda alert: int(alert.id or 0))
+        nearest_distance = min(
+            int(alert.distance_from_yasa_m_approx) for alert in group
+        )
+        alert_ids = tuple(int(alert.id) for alert in group if alert.id is not None)
+        event_id = f"nexus-creature-alert-{first_alert.id}"
+        queued = _enqueue_ai_dispatch_job(
+            _AIDispatchJob(
+                url=url,
+                api_key=api_key,
+                payload={
+                    "event_id": event_id,
+                    "round_id": conversation_round_id,
+                    "server_name": server_name,
+                    "text": "Оперативное предупреждение о новой сонарной отметке.",
+                    "sender_name": None,
+                    "message_type": "threat_alert",
+                    "threat_context": {
+                        "contact_scope": "group" if len(group) > 1 else "single",
+                        "contact_class": contact_class,
+                        "yasa_perimeter": yasa_perimeter,
+                        "distance_from_yasa_m_approx": nearest_distance,
+                    },
+                },
+                server_name=server_name,
+                retry_delay_seconds=_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS,
+                max_attempts=_AI_CREATURE_ALERT_MAX_ATTEMPTS,
+                creature_alert_ids=alert_ids,
+            )
+        )
+        if not queued:
+            _finish_ai_creature_alert_delivery(alert_ids, delivered=False)
+            all_queued = False
+            continue
+        logger.info(
+            "AI creature alert queued: event_id=%s round_id=%s server=%s "
+            "contact_scope=%s contact_class=%s yasa_perimeter=%s "
+            "distance_from_yasa_m_approx=%s",
+            event_id,
+            conversation_round_id,
+            server_name,
+            "group" if len(group) > 1 else "single",
+            contact_class,
+            yasa_perimeter,
+            nearest_distance,
+        )
+    return all_queued
 
 
 def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> bool:

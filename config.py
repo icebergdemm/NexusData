@@ -60,9 +60,9 @@ class Settings(BaseSettings):
     # these read endpoints never needs the ingest credential. Empty by
     # default = these endpoints stay closed until explicitly configured.
     client_api_key: str = Field("")
-    # Optional bridge to AsperAIDispatcher. When configured, every player
-    # dispatch message is forwarded to the AI service; only addressed messages
-    # receive a reply, which is queued back into the game as a dispatch action.
+    # Optional bridge to AsperAIDispatcher. Every player terminal message is
+    # forwarded; the model returns respond=false for traffic unrelated to the
+    # dispatch post, otherwise its reply is queued back into the game.
     ai_dispatcher_url: str = Field("")
     ai_dispatcher_api_key: str = Field("")
     ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
@@ -70,8 +70,9 @@ class Settings(BaseSettings):
     # snapshot ahead of world/init. Used only when neither the payload nor the
     # existing round row identifies the source server.
     world_default_server_name: str = Field("ASPER1", min_length=1, max_length=100)
-    # Automatic captain alerts are allowlist-based. Abyss species stay denied
-    # even if an operator accidentally includes one in the allowlist.
+    # Large-contact alerts are allowlist-based. Any other non-abyss creature is
+    # also reported after entering the 200 m Yasa perimeter. Abyss species stay
+    # denied even if an operator accidentally includes one in the allowlist.
     ai_large_creature_species: str = (
         "Bonethresher,Tigerthresher,Moloch,Molochblack,Hammerhead,Hammerheadgold,"
         "Hammerheadmatriarch,Watcher,Spineling_giant,Crawlerbroodmother,Carrier"

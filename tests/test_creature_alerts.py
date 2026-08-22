@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from database import Base
 from models import AICreatureAlert, RoundEvent, WorldRound
 from routes.dispatch import _queue_ai_large_creature_alert
-from routes.world_state import _claim_large_creature_alerts
+from routes.world_state import _claim_large_creature_alerts, world_snapshot
 from services_creature_alerts import LargeCreatureSpawn, detect_large_creature_spawns
 
 
@@ -25,6 +28,34 @@ def _positions():
         {"id": 10, "x": 0, "y": 0},
         {"id": 11, "x": 10_000, "y": 10_000},
     ]
+
+
+def _request(payload: dict) -> Request:
+    body = json.dumps(payload).encode()
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/v1/world/snapshot",
+            "raw_path": b"/api/v1/world/snapshot",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 1),
+            "server": ("test", 80),
+        },
+        receive,
+    )
 
 
 def test_detects_large_non_abyss_creatures_and_measures_from_yasa():
@@ -84,10 +115,24 @@ def test_detects_large_non_abyss_creatures_and_measures_from_yasa():
 
     assert result == [
         LargeCreatureSpawn(
+            character_id="1",
+            species="Mudraptor",
+            distance_from_yasa_m_approx=140,
+            contact_class="unclassified",
+            yasa_perimeter=True,
+        ),
+        LargeCreatureSpawn(
             character_id="2",
             species="Moloch",
             distance_from_yasa_m_approx=500,
-        )
+        ),
+        LargeCreatureSpawn(
+            character_id="4",
+            species="Molochbaby",
+            distance_from_yasa_m_approx=140,
+            contact_class="unclassified",
+            yasa_perimeter=True,
+        ),
     ]
 
 
@@ -219,6 +264,104 @@ def test_expected_large_contact_families_all_trigger_but_abyss_does_not():
     assert [item.species for item in detected] == species[:-1]
 
 
+def test_any_non_abyss_creature_inside_yasa_perimeter_is_alertable():
+    detected = detect_large_creature_spawns(
+        current_characters=[
+            {"id": 1, "species": "Crawler", "human": False, "dead": False, "x": 29_900, "y": 10_000},
+            {"id": 2, "species": "Mudraptor", "human": False, "dead": False, "x": 30_100, "y": 10_000},
+            {"id": 3, "species": "Endworm", "human": False, "dead": False, "x": 10_100, "y": 10_000},
+        ],
+        submarines=_submarines(),
+        current_submarines=_positions(),
+        large_species=["Moloch"],
+        abyss_species=["Endworm"],
+    )
+
+    assert detected == [
+        LargeCreatureSpawn(
+            "1",
+            "Crawler",
+            200,
+            contact_class="unclassified",
+            yasa_perimeter=True,
+        )
+    ]
+
+
+def test_yasa_position_can_come_from_dynamic_cyrillic_name():
+    detected = detect_large_creature_spawns(
+        current_characters=[
+            {"id": 1, "species": "Crawler", "human": 0, "dead": 0, "x": 100, "y": 0},
+        ],
+        submarines=[],
+        current_submarines=[{"id": 99, "name": "Старательский участок Яса", "x": 0, "y": 0}],
+        large_species=[],
+        abyss_species=[],
+    )
+
+    assert detected == [
+        LargeCreatureSpawn(
+            "1",
+            "Crawler",
+            0,
+            contact_class="unclassified",
+            yasa_perimeter=True,
+        )
+    ]
+
+
+def test_world_snapshot_creates_and_queues_yasa_perimeter_event():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(
+            round_id="world-round",
+            server_name="ASPER1",
+            submarines=_submarines(),
+        )
+        db.add(row)
+        db.commit()
+        request = _request(
+            {
+                "round_id": "world-round",
+                "server_name": "ASPER1",
+                "seq": 1,
+                "subs": _positions(),
+                "characters": [
+                    {
+                        "id": 7,
+                        "species": "Crawler",
+                        "human": False,
+                        "dead": False,
+                        "x": 25_000,
+                        "y": 10_000,
+                    }
+                ],
+            }
+        )
+
+        with (
+            patch("routes.world_state.settings.ai_dispatcher_url", "http://dispatcher/api"),
+            patch("routes.world_state.settings.ai_dispatcher_api_key", "secret"),
+            patch("routes.world_state._try_queue_ai_large_creature_alert") as queue_alert,
+            patch("routes.world_state._try_queue_ai_world_briefing"),
+        ):
+            response = asyncio.run(world_snapshot(request, db))
+
+        assert response.status_code == 200
+        alert = db.query(AICreatureAlert).one()
+        assert alert.character_id == "yasa:7"
+        assert alert.distance_from_yasa_m_approx == 150
+        assert queue_alert.call_args.args[2][0].id == alert.id
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_claim_is_durable_and_deduplicated_per_round_and_character():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
@@ -239,6 +382,39 @@ def test_claim_is_durable_and_deduplicated_per_round_and_character():
         assert len(first) == 1
         assert second == []
         assert db.query(AICreatureAlert).count() == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_yasa_perimeter_crossing_is_distinct_from_prior_large_contact_alert():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        db.add(row)
+        db.commit()
+
+        sector_alert = LargeCreatureSpawn("42", "Moloch", 500)
+        perimeter_alert = LargeCreatureSpawn(
+            "42",
+            "Moloch",
+            180,
+            contact_class="large",
+            yasa_perimeter=True,
+        )
+
+        assert len(_claim_large_creature_alerts(db, row, [sector_alert])) == 1
+        assert len(_claim_large_creature_alerts(db, row, [perimeter_alert])) == 1
+        db.commit()
+
+        assert {
+            alert.character_id for alert in db.query(AICreatureAlert).all()
+        } == {"42", "yasa:42"}
     finally:
         db.close()
         engine.dispose()
@@ -306,6 +482,8 @@ def test_ai_payload_contains_only_scope_and_approximate_meters():
         assert job.payload["message_type"] == "threat_alert"
         assert job.payload["threat_context"] == {
             "contact_scope": "single",
+            "contact_class": "large",
+            "yasa_perimeter": False,
             "distance_from_yasa_m_approx": 725,
         }
         serialized = repr(job.payload).casefold()
@@ -316,6 +494,61 @@ def test_ai_payload_contains_only_scope_and_approximate_meters():
         assert "clock" not in serialized
         assert "x" not in job.payload["threat_context"]
         assert "y" not in job.payload["threat_context"]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[RoundEvent.__table__, WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        alerts = [
+            AICreatureAlert(
+                id=21,
+                round_id="world-round",
+                character_id="42",
+                species="Moloch",
+                distance_from_yasa_m_approx=700,
+            ),
+            AICreatureAlert(
+                id=22,
+                round_id="world-round",
+                character_id="yasa:43",
+                species="Crawler",
+                distance_from_yasa_m_approx=150,
+            ),
+        ]
+        db.add_all([row, *alerts])
+        db.commit()
+
+        with (
+            patch("routes.dispatch.settings.ai_dispatcher_url", "http://dispatcher/api"),
+            patch("routes.dispatch.settings.ai_dispatcher_api_key", "secret"),
+            patch("routes.dispatch._enqueue_ai_dispatch_job", return_value=True) as enqueue,
+        ):
+            assert _queue_ai_large_creature_alert(row, alerts, db)
+
+        contexts = [call.args[0].payload["threat_context"] for call in enqueue.call_args_list]
+        assert contexts == [
+            {
+                "contact_scope": "single",
+                "contact_class": "large",
+                "yasa_perimeter": False,
+                "distance_from_yasa_m_approx": 700,
+            },
+            {
+                "contact_scope": "single",
+                "contact_class": "unclassified",
+                "yasa_perimeter": True,
+                "distance_from_yasa_m_approx": 150,
+            },
+        ]
     finally:
         db.close()
         engine.dispose()
