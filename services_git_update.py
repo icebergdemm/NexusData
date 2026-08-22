@@ -14,6 +14,9 @@
   2. Пересборка фронтенда — ТОЛЬКО если менялось что-то во frontend/. Сборка
      занимает минуты и жрёт память, гонять её на каждый бэкенд-фикс незачем.
      Зато при изменениях она обязательна: dist/ в репозитории нет.
+     Готовая CI-сборка проверяется и при неизменном main: workflow может
+     закончиться уже после первого `update`, и повторная команда должна уметь
+     забрать догнавший её frontend-dist.
   3. Перезапуск backend — по флагу. Python-код перечитывается только при
      рестарте, так что без него обновление бэкенда не вступит в силу.
 
@@ -369,8 +372,31 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
 
     code, after = _run(["git", "rev-parse", "HEAD"], path, 30)
     if code == 0 and after.strip() == before.strip():
-        emit("Обновлений нет — код уже актуален.")
-        return True
+        emit("Обновлений в коде нет — main уже актуален.")
+
+        # GitHub Actions собирает frontend-dist асинхронно. Первый `update`
+        # нередко успевает забрать main раньше, чем workflow опубликует SPA.
+        # Раньше повторный `update` завершался прямо здесь и уже никогда не
+        # проверял готовую сборку, поэтому сервер мог бесконечно отдавать
+        # старый интерфейс при совершенно актуальном HEAD.
+        frontend_ok = True
+        dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+        if settings.git_update_build_frontend and dist_branch:
+            frontend_ok = _fetch_prebuilt_frontend(
+                emit,
+                path,
+                remote,
+                dist_branch,
+            )
+
+        restart = settings.git_update_restart_backend if force_restart is None else force_restart
+        if restart:
+            emit("→ Перезапуск backend…")
+            _restart_backend(emit)
+
+        if frontend_ok:
+            emit("✓ Код и фронтенд актуальны.")
+        return frontend_ok
 
     emit(f"Стало:   {current_revision(path)}")
 
