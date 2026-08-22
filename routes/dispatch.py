@@ -32,7 +32,7 @@ from models import (
     DispatchMessage, RoundEvent, AdminUser, AdminSession, AICreatureAlert,
     ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting, WorldRound,
 )
-from schemas import DispatchMessageIn, RoundStartIn, RoundEndIn
+from schemas import AIDispatcherConfigIn, DispatchMessageIn, RoundStartIn, RoundEndIn
 from services_creature_alerts import is_configured_large_species
 
 settings = get_settings()
@@ -57,6 +57,7 @@ _AI_CREATURE_ALERT_MAX_ATTEMPTS = 3
 _AI_BRIEFING_LIFECYCLE_MATCH_SECONDS = 180.0
 _AI_MAX_REPLY_PARTS = 8
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+_AI_DISPATCHER_ENABLED_SETTING = "dispatch_ai_enabled"
 
 
 @dataclass(frozen=True)
@@ -366,6 +367,35 @@ def _set_app_setting(db: Session, key: str, value: Optional[str]):
         db.add(AppSetting(key=key, value=value))
 
 
+def _ai_dispatcher_enabled(db: Session) -> bool:
+    """Return the persisted master switch; missing row preserves legacy ON."""
+
+    value = _get_app_setting(db, _AI_DISPATCHER_ENABLED_SETTING)
+    if value is None:
+        return True
+    return value.strip().casefold() not in {"0", "false", "off", "no"}
+
+
+def _ai_dispatcher_configured() -> bool:
+    return bool(
+        (settings.ai_dispatcher_url or "").strip()
+        and (settings.ai_dispatcher_api_key or "").strip()
+    )
+
+
+def _ai_dispatcher_enabled_now() -> bool:
+    """Read the shared DB switch from a background AI worker."""
+
+    worker_db = GameSessionLocal()
+    try:
+        return _ai_dispatcher_enabled(worker_db)
+    except Exception:
+        logger.exception("AI dispatcher runtime switch could not be read")
+        return False
+    finally:
+        worker_db.close()
+
+
 def _post_webhook_sync(url: str, payload: dict):
     """Runs in its own daemon thread — never blocks the calling request, no
     retries (best-effort). A dedicated thread (rather than asyncio.create_task)
@@ -406,6 +436,10 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
     AI service is unavailable. The AI performs its own callsign filtering; an
     ignored response produces no game action.
     """
+    if not _ai_dispatcher_enabled(db):
+        logger.info("AI dispatcher skipped message %s: disabled by operator", msg.id)
+        return
+
     url = (settings.ai_dispatcher_url or "").strip()
     api_key = (settings.ai_dispatcher_api_key or "").strip()
     server_name = (msg.server_name or "").strip().upper()
@@ -498,6 +532,13 @@ def _queue_ai_round_briefing(
 ) -> None:
     """Поставить первичный доклад после начала выхода в ту же FIFO, что и ответы."""
 
+    if db is not None and not _ai_dispatcher_enabled(db):
+        logger.info(
+            "AI round briefing skipped: disabled by operator; round_event_id=%s",
+            event.id,
+        )
+        return
+
     url = (settings.ai_dispatcher_url or "").strip()
     api_key = (settings.ai_dispatcher_api_key or "").strip()
     server_name = (event.server_name or "").strip().upper()
@@ -561,6 +602,9 @@ def _queue_ai_round_briefing(
 
 def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
     """Queue one briefing from first world telemetry when /round/start is absent."""
+
+    if not _ai_dispatcher_enabled(db):
+        return
 
     url = (settings.ai_dispatcher_url or "").strip()
     api_key = (settings.ai_dispatcher_api_key or "").strip()
@@ -631,6 +675,17 @@ def _queue_ai_large_creature_alert(
     """Queue RP warnings for new large contacts and Yasa perimeter entries."""
 
     if not alerts:
+        return False
+    if not _ai_dispatcher_enabled(db):
+        logger.info(
+            "AI creature alert suppressed: disabled by operator; round_id=%s alerts=%s",
+            world_round.round_id,
+            len(alerts),
+        )
+        _finish_ai_creature_alert_delivery(
+            tuple(int(alert.id) for alert in alerts if alert.id is not None),
+            delivered=True,
+        )
         return False
     url = (settings.ai_dispatcher_url or "").strip()
     api_key = (settings.ai_dispatcher_api_key or "").strip()
@@ -770,6 +825,14 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
             with _ai_dispatch_process_lock(server_name):
                 if job.initial_delay_seconds > 0:
                     time.sleep(job.initial_delay_seconds)
+                if not _ai_dispatcher_enabled_now():
+                    logger.info(
+                        "AI dispatch suppressed by operator: event_id=%s server=%s",
+                        job.payload.get("event_id"),
+                        server_name,
+                    )
+                    delivered = True
+                    continue
                 if not _ai_dispatch_context_is_current(
                     server_name,
                     job.payload.get("round_id"),
@@ -1734,6 +1797,65 @@ async def set_dispatch_webhook_config(request: Request, db: Session = Depends(ge
     return {
         "ASPER1": _get_app_setting(db, "dispatch_webhook_url_asper1"),
         "ASPER2": _get_app_setting(db, "dispatch_webhook_url_asper2"),
+    }
+
+
+@panel_router.get("/api/v1/admin/dispatch/ai-config")
+def get_dispatch_ai_config(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(_get_current_admin),
+):
+    """Return the global runtime state of the AI dispatcher bridge."""
+
+    if not check_permission(current_admin, "dispatch", "view"):
+        raise HTTPException(status_code=403, detail="Нет права на просмотр диспетчерской")
+    return {
+        "enabled": _ai_dispatcher_enabled(db),
+        "configured": _ai_dispatcher_configured(),
+    }
+
+
+@panel_router.patch("/api/v1/admin/dispatch/ai-config")
+def set_dispatch_ai_config(
+    body: AIDispatcherConfigIn,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(_get_current_admin),
+):
+    """Enable or disable every outbound request to AsperAIDispatcher."""
+
+    if not check_permission(current_admin, "dispatch", "manage_ai"):
+        raise HTTPException(
+            status_code=403,
+            detail="Нет права на управление ИИ-диспетчером",
+        )
+    if body.enabled and not _ai_dispatcher_configured():
+        raise HTTPException(
+            status_code=409,
+            detail="ИИ-диспетчер не настроен в окружении NexusData",
+        )
+
+    _set_app_setting(
+        db,
+        _AI_DISPATCHER_ENABLED_SETTING,
+        "true" if body.enabled else "false",
+    )
+    db.commit()
+    from routes.admin import log_admin_action
+
+    log_admin_action(
+        db,
+        current_admin.id,
+        "dispatch_ai_toggle",
+        {"enabled": body.enabled},
+    )
+    logger.info(
+        "AI dispatcher runtime switch changed: enabled=%s admin_id=%s",
+        body.enabled,
+        current_admin.id,
+    )
+    return {
+        "enabled": _ai_dispatcher_enabled(db),
+        "configured": _ai_dispatcher_configured(),
     }
 
 

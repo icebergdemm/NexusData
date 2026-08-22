@@ -360,6 +360,12 @@ class DispatchMessageOut(BaseModel):
     created_at: Optional[str] = None
 
 
+class AIDispatcherConfigIn(BaseModel):
+    """Runtime switch for all NexusData requests to AsperAIDispatcher."""
+
+    enabled: bool
+
+
 # ── Round lifecycle schemas ──────────────────────────────────────────────────
 
 # Значения записи игрока — Any, а НЕ str. Плагин присылает поля, которых у
@@ -466,4 +472,3 @@ class QueueActionIn(BaseModel):
 class QueueActionResult(BaseModel):
     status: str
     action_id: int
-

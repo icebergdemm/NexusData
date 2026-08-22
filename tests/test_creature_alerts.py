@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from database import Base
-from models import AICreatureAlert, RoundEvent, WorldRound
+from models import AICreatureAlert, AppSetting, RoundEvent, WorldRound
 from routes.dispatch import _queue_ai_large_creature_alert
 from routes.world_state import _claim_large_creature_alerts, world_snapshot
 from services_creature_alerts import LargeCreatureSpawn, detect_large_creature_spawns
@@ -314,7 +314,7 @@ def test_world_snapshot_creates_and_queues_yasa_perimeter_event():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
-        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+        tables=[WorldRound.__table__, AICreatureAlert.__table__, AppSetting.__table__],
     )
     db = Session(engine)
     try:
@@ -357,6 +357,61 @@ def test_world_snapshot_creates_and_queues_yasa_perimeter_event():
         assert alert.character_id == "yasa:7"
         assert alert.distance_from_yasa_m_approx == 150
         assert queue_alert.call_args.args[2][0].id == alert.id
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_world_snapshot_does_not_track_contacts_while_ai_is_disabled():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__, AppSetting.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(
+            round_id="world-disabled",
+            server_name="ASPER1",
+            submarines=_submarines(),
+        )
+        db.add_all(
+            [
+                row,
+                AppSetting(key="dispatch_ai_enabled", value="false"),
+            ]
+        )
+        db.commit()
+        request = _request(
+            {
+                "round_id": "world-disabled",
+                "server_name": "ASPER1",
+                "seq": 1,
+                "subs": _positions(),
+                "characters": [
+                    {
+                        "id": 7,
+                        "species": "Moloch",
+                        "human": False,
+                        "dead": False,
+                        "x": 25_000,
+                        "y": 10_000,
+                    }
+                ],
+            }
+        )
+
+        with (
+            patch("routes.world_state.settings.ai_dispatcher_url", "http://dispatcher/api"),
+            patch("routes.world_state.settings.ai_dispatcher_api_key", "secret"),
+            patch("routes.world_state._try_queue_ai_large_creature_alert") as queue_alert,
+            patch("routes.world_state._try_queue_ai_world_briefing"),
+        ):
+            response = asyncio.run(world_snapshot(request, db))
+
+        assert response.status_code == 200
+        assert db.query(AICreatureAlert).count() == 0
+        assert queue_alert.call_args.args[2] == []
     finally:
         db.close()
         engine.dispose()
@@ -455,7 +510,12 @@ def test_ai_payload_contains_only_scope_and_approximate_meters():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
-        tables=[RoundEvent.__table__, WorldRound.__table__, AICreatureAlert.__table__],
+        tables=[
+            RoundEvent.__table__,
+            WorldRound.__table__,
+            AICreatureAlert.__table__,
+            AppSetting.__table__,
+        ],
     )
     db = Session(engine)
     try:
@@ -503,7 +563,12 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
-        tables=[RoundEvent.__table__, WorldRound.__table__, AICreatureAlert.__table__],
+        tables=[
+            RoundEvent.__table__,
+            WorldRound.__table__,
+            AICreatureAlert.__table__,
+            AppSetting.__table__,
+        ],
     )
     db = Session(engine)
     try:

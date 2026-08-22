@@ -184,9 +184,14 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         return JSONResponse({"status": "ok", "ignored": "stale_seq"})
 
     claimed_alerts: list[AICreatureAlert] = []
+    ai_dispatcher_enabled = False
     if (settings.ai_dispatcher_url or "").strip() and (
         settings.ai_dispatcher_api_key or ""
     ).strip():
+        from routes.dispatch import _ai_dispatcher_enabled
+
+        ai_dispatcher_enabled = _ai_dispatcher_enabled(db)
+    if ai_dispatcher_enabled:
         characters = body.get("characters")
         current_submarines = body.get("subs")
         spawns = detect_large_creature_spawns(

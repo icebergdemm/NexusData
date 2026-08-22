@@ -606,6 +606,24 @@ AI_LARGE_CREATURE_SPECIES=Bonethresher,Tigerthresher,Moloch,Molochblack,Hammerhe
 AI_ABYSS_CREATURE_SPECIES=Endworm,Charybdis,Latcher,Doomworm
 ```
 
+На странице «Диспетчерская» доступен общий переключатель «ИИ-диспетчер».
+Его состояние хранится в `app_settings` под ключом `dispatch_ai_enabled` и
+применяется ко всем исходящим AI-запросам: сообщениям терминала, первичным
+докладам и автоматическим тревогам. Если записи ещё нет, интеграция считается
+включённой для сохранения прежнего поведения. Управление требует права
+`dispatch:manage_ai`; изменение фиксируется в журнале действий администратора.
+
+Административный API переключателя:
+
+- `GET /api/v1/admin/dispatch/ai-config` возвращает
+  `{"enabled": true, "configured": true}`;
+- `PATCH /api/v1/admin/dispatch/ai-config` принимает
+  `{"enabled": false}`.
+
+`configured=false` означает, что `AI_DISPATCHER_URL` или
+`AI_DISPATCHER_API_KEY` не заданы. Включить интеграцию в таком состоянии API
+не позволит.
+
 Поток данных:
 
 1. игровой сервер отправляет сообщение в `POST /api/v1/server/dispatch`;

@@ -7,11 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import RoundEvent, WorldRound
+from models import AppSetting, DispatchMessage, RoundEvent, WorldRound
 import routes.dispatch as dispatch_routes
-from schemas import RoundStartIn
+from schemas import AIDispatcherConfigIn, RoundStartIn
 from routes.dispatch import (
     _AIDispatchJob,
+    _ai_dispatcher_enabled,
     _ai_dispatch_job_queues,
     _ai_reply_delay_seconds,
     _cancel_ai_dispatch_action,
@@ -20,6 +21,7 @@ from routes.dispatch import (
     _enqueue_ai_dispatch_job,
     _extract_ai_dispatcher_replies,
     _post_ai_dispatcher_sync,
+    _queue_ai_dispatcher_request,
     _queue_ai_round_briefing,
     _queue_ai_world_briefing,
     _queue_ai_radio_action,
@@ -27,7 +29,9 @@ from routes.dispatch import (
     _send_dispatcher_message,
     _split_ai_radio_reply,
     _wait_for_ai_dispatch_action_ack,
+    get_dispatch_ai_config,
     post_round_start,
+    set_dispatch_ai_config,
 )
 
 
@@ -63,6 +67,84 @@ class _FakeClient:
 class AIDispatcherBridgeTests(unittest.TestCase):
     def setUp(self):
         _FakeClient.last_request = None
+
+    def test_ai_master_switch_defaults_to_enabled_and_persists_changes(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__])
+        db = Session(engine)
+        try:
+            with (
+                patch("routes.dispatch.check_permission", return_value=True),
+                patch("routes.admin.log_admin_action") as audit_log,
+                patch.object(dispatch_routes.settings, "ai_dispatcher_url", "http://dispatcher/api"),
+                patch.object(dispatch_routes.settings, "ai_dispatcher_api_key", "secret"),
+            ):
+                self.assertTrue(_ai_dispatcher_enabled(db))
+                self.assertEqual(
+                    get_dispatch_ai_config(db=db, current_admin=Mock()),
+                    {"enabled": True, "configured": True},
+                )
+                result = set_dispatch_ai_config(
+                    AIDispatcherConfigIn(enabled=False),
+                    db=db,
+                    current_admin=Mock(id=17),
+                )
+
+            self.assertEqual(result, {"enabled": False, "configured": True})
+            self.assertFalse(_ai_dispatcher_enabled(db))
+            audit_log.assert_called_once_with(
+                db,
+                17,
+                "dispatch_ai_toggle",
+                {"enabled": False},
+            )
+        finally:
+            db.close()
+            engine.dispose()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    @patch("routes.dispatch._ai_dispatcher_enabled", return_value=False)
+    def test_disabled_master_switch_skips_player_terminal_requests(
+        self,
+        _enabled,
+        enqueue_job,
+    ):
+        message = DispatchMessage(
+            id=52,
+            text="Нужен маршрут к маяку.",
+            player_name="Капитан",
+            server_name="ASPER1",
+        )
+
+        _queue_ai_dispatcher_request(MagicMock(), message)
+
+        enqueue_job.assert_not_called()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_disabled_master_switch_does_not_claim_world_briefing(self, enqueue_job):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[WorldRound.__table__, AppSetting.__table__],
+        )
+        db = Session(engine)
+        try:
+            world_round = WorldRound(round_id="world-disabled", server_name="ASPER1")
+            db.add_all(
+                [
+                    world_round,
+                    AppSetting(key="dispatch_ai_enabled", value="false"),
+                ]
+            )
+            db.commit()
+
+            _queue_ai_world_briefing(world_round, db)
+
+            enqueue_job.assert_not_called()
+            self.assertIsNone(world_round.ai_briefing_queued_at)
+        finally:
+            db.close()
+            engine.dispose()
 
     @patch("routes.dispatch._queue_ai_round_briefing")
     @patch("routes.dispatch._queue_round_status_refresh")
@@ -150,7 +232,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(
             engine,
-            tables=[RoundEvent.__table__, WorldRound.__table__],
+            tables=[RoundEvent.__table__, WorldRound.__table__, AppSetting.__table__],
         )
         db = Session(engine)
         try:
@@ -214,7 +296,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(
             engine,
-            tables=[RoundEvent.__table__, WorldRound.__table__],
+            tables=[RoundEvent.__table__, WorldRound.__table__, AppSetting.__table__],
         )
         db = Session(engine)
         try:

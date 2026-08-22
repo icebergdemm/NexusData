@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -147,6 +148,11 @@ interface DispatchMessage {
   created_at: string | null
 }
 
+interface AIDispatcherConfig {
+  enabled: boolean
+  configured: boolean
+}
+
 const SERVERS = [
   { key: "ASPER1", label: "ASPER1" },
   { key: "ASPER2", label: "ASPER2" },
@@ -194,6 +200,13 @@ export function DispatchPage() {
   const [torpedoOpen, setTorpedoOpen] = useState(false)
   const [webhookConfigOpen, setWebhookConfigOpen] = useState(false)
 
+  const canSend = canDo(admin, "dispatch", "send_message")
+  const canShuttle = canDo(admin, "dispatch", "shuttle")
+  const canCargo = canDo(admin, "dispatch", "cargo")
+  const canTorpedo = canDo(admin, "dispatch", "torpedo")
+  const canWebhooks = canDo(admin, "dispatch", "manage_webhooks")
+  const canManageAI = canDo(admin, "dispatch", "manage_ai")
+
   const { data: messages } = useQuery({
     queryKey: ["dispatch-messages", server],
     queryFn: () =>
@@ -207,6 +220,22 @@ export function DispatchPage() {
     queryKey: ["dispatch-overview", server],
     queryFn: () => api.get<ModerationOverview>(`/api/v1/admin/moderation/overview${server ? `?server=${server}` : ""}`),
     refetchInterval: 10000,
+  })
+
+  const { data: aiConfig } = useQuery({
+    queryKey: ["dispatch-ai-config"],
+    queryFn: () => api.get<AIDispatcherConfig>("/api/v1/admin/dispatch/ai-config"),
+    enabled: Boolean(admin),
+  })
+
+  const aiConfigMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api.patch<AIDispatcherConfig>("/api/v1/admin/dispatch/ai-config", { enabled }),
+    onSuccess: (nextConfig) => {
+      queryClient.setQueryData(["dispatch-ai-config"], nextConfig)
+      toast.success(nextConfig.enabled ? "ИИ-диспетчер включён" : "ИИ-диспетчер отключён")
+    },
+    onError: (error: Error) => toast.error(error.message),
   })
 
   useEffect(() => {
@@ -245,11 +274,6 @@ export function DispatchPage() {
   // Права диспетчерской разбиты по операциям: реплика в эфир, челнок, груз и
   // торпедный удар — разные по последствиям вещи, и группе можно выдать
   // только часть из них.
-  const canSend = canDo(admin, "dispatch", "send_message")
-  const canShuttle = canDo(admin, "dispatch", "shuttle")
-  const canCargo = canDo(admin, "dispatch", "cargo")
-  const canTorpedo = canDo(admin, "dispatch", "torpedo")
-  const canWebhooks = canDo(admin, "dispatch", "manage_webhooks")
   const hasAnyAction = canShuttle || canCargo || canTorpedo
   const roundStates = overview ? Object.entries(overview.round_states) : []
   const onlinePlayers = overview?.online_players ?? []
@@ -260,10 +284,42 @@ export function DispatchPage() {
         title="Диспетчерская"
         description="Радиосвязь с игроками и статус раунда в реальном времени"
         icon={Radio}
-        actions={canWebhooks && (
-          <Button variant="outline" size="sm" onClick={() => setWebhookConfigOpen(true)}>
-            <Settings className="size-3.5" /> Webhook
-          </Button>
+        actions={(
+          <>
+            {aiConfig && (
+              <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5">
+                <div className="flex flex-col">
+                  <Label htmlFor="ai-dispatcher-toggle" className="text-xs font-semibold">
+                    ИИ-диспетчер
+                  </Label>
+                  <span className="text-[10px] text-muted-foreground">
+                    {!aiConfig.configured
+                      ? "Не настроен"
+                      : aiConfig.enabled
+                        ? "Запросы включены"
+                        : "Запросы отключены"}
+                  </span>
+                </div>
+                <Switch
+                  id="ai-dispatcher-toggle"
+                  checked={aiConfig.configured && aiConfig.enabled}
+                  disabled={
+                    !canManageAI
+                    || aiConfigMutation.isPending
+                    || !aiConfig.configured
+                  }
+                  onCheckedChange={(enabled) => aiConfigMutation.mutate(enabled)}
+                  aria-label="Включить или отключить запросы к ИИ-диспетчеру"
+                  title={canManageAI ? undefined : "Нет права на управление ИИ-диспетчером"}
+                />
+              </div>
+            )}
+            {canWebhooks && (
+              <Button variant="outline" size="sm" onClick={() => setWebhookConfigOpen(true)}>
+                <Settings data-icon="inline-start" /> Webhook
+              </Button>
+            )}
+          </>
         )}
       />
 
