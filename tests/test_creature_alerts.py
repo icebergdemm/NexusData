@@ -442,7 +442,45 @@ def test_claim_is_durable_and_deduplicated_per_round_and_character():
         engine.dispose()
 
 
-def test_yasa_perimeter_crossing_is_distinct_from_prior_large_contact_alert():
+def test_new_character_id_creates_one_new_alert_in_same_round():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        db.add(row)
+        db.commit()
+
+        first = _claim_large_creature_alerts(
+            db,
+            row,
+            [LargeCreatureSpawn("42", "Moloch", 700)],
+        )
+        second = _claim_large_creature_alerts(
+            db,
+            row,
+            [LargeCreatureSpawn("43", "Moloch", 700)],
+        )
+        repeat = _claim_large_creature_alerts(
+            db,
+            row,
+            [LargeCreatureSpawn("43", "Moloch", 700)],
+        )
+        db.commit()
+
+        assert len(first) == 1
+        assert len(second) == 1
+        assert repeat == []
+        assert db.query(AICreatureAlert).count() == 2
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_large_contact_is_not_reported_again_when_it_crosses_yasa_perimeter():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -464,12 +502,12 @@ def test_yasa_perimeter_crossing_is_distinct_from_prior_large_contact_alert():
         )
 
         assert len(_claim_large_creature_alerts(db, row, [sector_alert])) == 1
-        assert len(_claim_large_creature_alerts(db, row, [perimeter_alert])) == 1
+        assert _claim_large_creature_alerts(db, row, [perimeter_alert]) == []
         db.commit()
 
         assert {
             alert.character_id for alert in db.query(AICreatureAlert).all()
-        } == {"42", "yasa:42"}
+        } == {"42"}
     finally:
         db.close()
         engine.dispose()
@@ -539,6 +577,7 @@ def test_ai_payload_contains_only_scope_and_approximate_meters():
 
         job = enqueue.call_args.args[0]
         assert job.creature_alert_ids == (17,)
+        assert job.at_most_once_delivery is True
         assert job.payload["message_type"] == "threat_alert"
         assert job.payload["threat_context"] == {
             "contact_scope": "single",

@@ -258,11 +258,15 @@ def _claim_large_creature_alerts(
     now = datetime.utcnow()
     expired_before = now - timedelta(seconds=AI_CREATURE_ALERT_LEASE_SECONDS)
     for spawn in spawns:
-        # A large contact can first be reported in the sector and later cross
-        # Yasa's perimeter.  Keep those as two distinct, one-shot observations
-        # without a database migration by namespacing only the perimeter key.
+        # A configured large contact is reported exactly once for its game
+        # character ID during the round. Crossing Yasa's perimeter later must
+        # not create a second warning for the same spawn. Unclassified small
+        # contacts are only visible inside the perimeter, so their namespace
+        # remains separate from the large-contact key space.
         alert_character_id = (
-            f"yasa:{spawn.character_id}" if spawn.yasa_perimeter else spawn.character_id
+            f"yasa:{spawn.character_id}"
+            if spawn.contact_class != "large" and spawn.yasa_perimeter
+            else spawn.character_id
         )
         alert = AICreatureAlert(
             round_id=str(row.round_id),

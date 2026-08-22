@@ -70,6 +70,7 @@ class _AIDispatchJob:
     retry_delay_seconds: float = 0.0
     max_attempts: int = 1
     creature_alert_ids: tuple[int, ...] = ()
+    at_most_once_delivery: bool = False
     enqueued_at: float = field(default_factory=time.monotonic)
 
 
@@ -749,6 +750,7 @@ def _queue_ai_large_creature_alert(
                 retry_delay_seconds=_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS,
                 max_attempts=_AI_CREATURE_ALERT_MAX_ATTEMPTS,
                 creature_alert_ids=alert_ids,
+                at_most_once_delivery=True,
             )
         )
         if not queued:
@@ -861,6 +863,7 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
                         job.payload,
                         job.server_name,
                         enqueued_at=job.enqueued_at,
+                        at_most_once_delivery=job.at_most_once_delivery,
                     )
                     if delivered or attempt >= job.max_attempts:
                         if not delivered:
@@ -1078,6 +1081,7 @@ def _post_ai_dispatcher_sync(
     payload: dict,
     server_name: str,
     enqueued_at: Optional[float] = None,
+    at_most_once_delivery: bool = False,
 ) -> bool:
     try:
         with httpx.Client(timeout=settings.ai_dispatcher_timeout_seconds) as client:
@@ -1115,6 +1119,7 @@ def _post_ai_dispatcher_sync(
             event_id=payload.get("event_id", "unknown"),
             round_id=payload.get("round_id"),
             enqueued_at=enqueued_at,
+            at_most_once_delivery=at_most_once_delivery,
         )
         if delivered is False:
             return False
@@ -1163,6 +1168,7 @@ def _deliver_ai_dispatcher_replies(
     event_id: str,
     round_id: Optional[str] = None,
     enqueued_at: Optional[float] = None,
+    at_most_once_delivery: bool = False,
 ) -> bool:
     """Deliver one AI answer serially, waiting for every game-server ACK.
 
@@ -1245,6 +1251,18 @@ def _deliver_ai_dispatcher_replies(
             **ack_kwargs,
         )
         if ack_status != 1:
+            if at_most_once_delivery:
+                logger.warning(
+                    "AI dispatch automatic alert will not be repeated after action attempt: "
+                    "event_id=%s server=%s part=%s/%s action_id=%s status=%s",
+                    event_id,
+                    server_name,
+                    part_number,
+                    len(replies),
+                    action_id,
+                    ack_status,
+                )
+                return True
             logger.error(
                 "AI dispatch aborted after missing or failed ACK: event_id=%s server=%s "
                 "part=%s/%s action_id=%s status=%s",
@@ -1318,6 +1336,23 @@ def _queue_ai_radio_action(
                             part_count,
                         )
                         return None
+                    existing_action = _find_existing_ai_radio_action(
+                        callback_db,
+                        server_name,
+                        event_id,
+                        part_number,
+                    )
+                    if existing_action is not None:
+                        logger.info(
+                            "AI dispatch reuses existing action: event_id=%s server=%s "
+                            "part=%s/%s action_id=%s",
+                            event_id,
+                            server_name,
+                            part_number,
+                            part_count,
+                            existing_action.id,
+                        )
+                        return int(existing_action.id)
                     if not _pending_dispatch_action_exists(callback_db, server_name):
                         _, action = _send_dispatcher_message_locked(
                             callback_db,
@@ -1325,6 +1360,11 @@ def _queue_ai_radio_action(
                             server_name,
                             admin_id=None,
                             sender_label="ИИ-диспетчер",
+                            action_payload={
+                                "ai_event_id": event_id,
+                                "ai_part_number": part_number,
+                                "ai_part_count": part_count,
+                            },
                         )
                         return int(action.id)
             finally:
@@ -1350,6 +1390,41 @@ def _queue_ai_radio_action(
         part_count,
         _AI_CHANNEL_WAIT_TIMEOUT_SECONDS,
     )
+    return None
+
+
+def _find_existing_ai_radio_action(
+    db: Session,
+    server_name: str,
+    event_id: str,
+    part_number: int,
+) -> Optional[ServerAction]:
+    """Find a durable prior delivery attempt for one AI event part.
+
+    The event marker lives in the existing JSON payload, so this works across
+    Uvicorn workers and process restarts without another migration. The small
+    bounded scan avoids database-specific JSON operators and remains portable
+    to both production MySQL and SQLite tests.
+    """
+
+    candidates = (
+        db.query(ServerAction)
+        .filter(
+            ServerAction.action_type == "dispatch",
+            ServerAction.target_server == server_name,
+            ServerAction.payload.isnot(None),
+        )
+        .order_by(ServerAction.id.desc())
+        .limit(200)
+        .all()
+    )
+    for action in candidates:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if (
+            payload.get("ai_event_id") == event_id
+            and payload.get("ai_part_number") == part_number
+        ):
+            return action
     return None
 
 
@@ -1504,8 +1579,15 @@ def _extract_ai_dispatcher_replies(result: dict) -> List[str]:
             candidates = [legacy_reply]
 
     replies = []
+    seen_replies: set[str] = set()
     for candidate in candidates:
-        replies.extend(_split_ai_radio_reply(candidate, max_chars=_AI_REPLY_MAX_CHARS))
+        for reply in _split_ai_radio_reply(candidate, max_chars=_AI_REPLY_MAX_CHARS):
+            dedup_key = " ".join(reply.split()).casefold()
+            if dedup_key in seen_replies:
+                logger.warning("AI dispatcher duplicate reply part suppressed")
+                continue
+            seen_replies.add(dedup_key)
+            replies.append(reply)
     if len(replies) > _AI_MAX_REPLY_PARTS:
         logger.warning(
             "AI dispatcher exceeded reply part limit: parts=%s max_parts=%s",
@@ -1674,6 +1756,7 @@ def _send_dispatcher_message_locked(
     server_name: Optional[str],
     admin_id: Optional[int],
     sender_label: str,
+    action_payload: Optional[dict] = None,
 ) -> tuple:
     text = (text or "").strip()
     if not text:
@@ -1699,6 +1782,7 @@ def _send_dispatcher_message_locked(
         message_text=full_text,
         target_server=server_name,  # Send to specific server only
         queued_by_admin_id=admin_id,
+        payload=action_payload,
     )
     # If target_server is set, mark the OTHER server as done (not applicable)
     if server_name and server_name.upper() == "ASPER1":

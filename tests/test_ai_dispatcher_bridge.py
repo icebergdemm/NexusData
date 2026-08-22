@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import AppSetting, DispatchMessage, RoundEvent, WorldRound
+from models import AppSetting, DispatchMessage, RoundEvent, ServerAction, WorldRound
 import routes.dispatch as dispatch_routes
 from schemas import AIDispatcherConfigIn, RoundStartIn
 from routes.dispatch import (
@@ -20,6 +20,7 @@ from routes.dispatch import (
     _deliver_ai_dispatcher_replies,
     _enqueue_ai_dispatch_job,
     _extract_ai_dispatcher_replies,
+    _find_existing_ai_radio_action,
     _post_ai_dispatcher_sync,
     _queue_ai_dispatcher_request,
     _queue_ai_round_briefing,
@@ -372,6 +373,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             event_id="nexus-dispatch-42",
             round_id="round-1",
             enqueued_at=None,
+            at_most_once_delivery=False,
         )
 
     @patch("routes.dispatch._deliver_ai_dispatcher_replies")
@@ -409,6 +411,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             event_id="nexus-dispatch-44",
             round_id="round-1",
             enqueued_at=None,
+            at_most_once_delivery=False,
         )
 
     @patch("routes.dispatch._deliver_ai_dispatcher_replies")
@@ -571,12 +574,14 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
         )
 
     @patch("routes.dispatch._send_dispatcher_message_locked")
+    @patch("routes.dispatch._find_existing_ai_radio_action", return_value=None)
     @patch("routes.dispatch.time.sleep")
     @patch("routes.dispatch.GameSessionLocal")
     def test_action_is_not_inserted_until_existing_dispatch_is_done(
         self,
         session_factory,
         sleep,
+        _existing_action,
         send_message,
     ):
         busy_db = Mock()
@@ -602,6 +607,11 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             "ASPER2",
             admin_id=None,
             sender_label="ИИ-диспетчер",
+            action_payload={
+                "ai_event_id": "nexus-dispatch-51",
+                "ai_part_number": 1,
+                "ai_part_count": 1,
+            },
         )
         busy_db.close.assert_called_once()
         idle_db.close.assert_called_once()
@@ -672,6 +682,70 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             2,
         )
         wait_for_ack.assert_called_once_with(101, "ASPER1", "nexus-dispatch-54")
+
+    @patch("routes.dispatch._wait_for_ai_dispatch_action_ack", return_value=2)
+    @patch("routes.dispatch._queue_ai_radio_action", return_value=101)
+    @patch("routes.dispatch.time.sleep")
+    def test_automatic_alert_is_not_repeated_after_one_action_attempt(
+        self,
+        sleep,
+        queue_action,
+        wait_for_ack,
+    ):
+        delivered = _deliver_ai_dispatcher_replies(
+            ["Группа крупных сонарных отметок в 1800 метрах от Yasa."],
+            server_name="ASPER1",
+            event_id="nexus-creature-alert-17",
+            at_most_once_delivery=True,
+        )
+
+        self.assertTrue(delivered)
+        queue_action.assert_called_once()
+        wait_for_ack.assert_called_once_with(
+            101,
+            "ASPER1",
+            "nexus-creature-alert-17",
+        )
+
+    def test_existing_ai_event_part_is_found_across_process_retries(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[ServerAction.__table__])
+        db = Session(engine)
+        try:
+            action = ServerAction(
+                action_type="dispatch",
+                target_steamid="broadcast",
+                target_server="ASPER1",
+                message_text="[Диспетчер] Контакт.",
+                payload={
+                    "ai_event_id": "nexus-creature-alert-17",
+                    "ai_part_number": 1,
+                    "ai_part_count": 1,
+                },
+            )
+            db.add(action)
+            db.commit()
+
+            found = _find_existing_ai_radio_action(
+                db,
+                "ASPER1",
+                "nexus-creature-alert-17",
+                1,
+            )
+
+            self.assertIsNotNone(found)
+            self.assertEqual(found.id, action.id)
+            self.assertIsNone(
+                _find_existing_ai_radio_action(
+                    db,
+                    "ASPER1",
+                    "nexus-creature-alert-18",
+                    1,
+                )
+            )
+        finally:
+            db.close()
+            engine.dispose()
 
     @patch("routes.dispatch._queue_ai_radio_action")
     @patch("routes.dispatch.time.sleep")
@@ -825,6 +899,21 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
                 "Третья законченная радиограмма.",
                 "Четвёртая законченная радиограмма.",
             ],
+        )
+
+    def test_reply_extractor_suppresses_duplicate_model_parts(self):
+        replies = _extract_ai_dispatcher_replies(
+            {
+                "replies": [
+                    "Группа крупных сонарных отметок в 1825 метрах от Yasa.",
+                    "  группа КРУПНЫХ сонарных отметок в 1825 метрах от Yasa.  ",
+                ]
+            }
+        )
+
+        self.assertEqual(
+            replies,
+            ["Группа крупных сонарных отметок в 1825 метрах от Yasa."],
         )
 
     def test_legacy_oversized_sentence_is_split_into_finished_clauses(self):

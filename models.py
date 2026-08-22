@@ -1692,7 +1692,7 @@ class WorldRound(Base):
 
 
 class AICreatureAlert(Base):
-    """Durable delivery state for automatic dispatcher contact warnings."""
+    """Durable one-alert-per-character state for dispatcher contact warnings."""
 
     __tablename__ = "ai_creature_alerts"
 
