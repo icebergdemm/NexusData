@@ -260,9 +260,14 @@ def status_text() -> str:
         for line in out.splitlines()[:5]:
             lines.append(f"    {line}")
 
-    dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+    dist_branch = _frontend_dist_branch(settings)
     if dist_branch:
-        lines.append(f"Фронтенд:         готовая сборка из ветки «{dist_branch}» (npm не нужен)")
+        configured_dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+        source_note = "" if configured_dist_branch else " (автовыбор: npm не найден)"
+        lines.append(
+            f"Фронтенд:         готовая сборка из ветки «{dist_branch}»"
+            f" (npm не нужен){source_note}"
+        )
         code, out = _run(["git"] + args + ["ls-remote", "--heads", remote, dist_branch], path, 60, env=env)
         if code == 0 and out.strip():
             lines.append("    ветка на месте")
@@ -380,7 +385,7 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
         # проверял готовую сборку, поэтому сервер мог бесконечно отдавать
         # старый интерфейс при совершенно актуальном HEAD.
         frontend_ok = True
-        dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+        dist_branch = _frontend_dist_branch(settings)
         if settings.git_update_build_frontend and dist_branch:
             frontend_ok = _fetch_prebuilt_frontend(
                 emit,
@@ -451,6 +456,24 @@ def _resolve_npm() -> Tuple[Optional[str], List[str]]:
             if os.path.isfile(match) and os.access(match, os.X_OK):
                 return match, checked
     return None, checked
+
+
+def _frontend_dist_branch(settings=None) -> str:
+    """Return the configured prebuilt branch or a safe Pterodactyl fallback.
+
+    An empty setting historically meant "build locally". That remains true
+    when npm exists. In a Python-only container, however, local compilation is
+    impossible, while this repository already publishes the conventional
+    ``frontend-dist`` branch. Selecting it automatically keeps ``update``
+    operational even when the administration page or environment variable is
+    unavailable.
+    """
+    settings = settings or get_settings()
+    configured = (settings.git_update_frontend_dist_branch or "").strip()
+    if configured:
+        return configured
+    npm, _checked = _resolve_npm()
+    return "" if npm else "frontend-dist"
 
 
 def _git_dir(path: str) -> str:
@@ -573,7 +596,7 @@ def _finish(
         if not os.path.isdir(frontend_dir):
             emit("! Менялся frontend/, но каталога нет — сборка пропущена.")
         else:
-            dist_branch = (settings.git_update_frontend_dist_branch or "").strip()
+            dist_branch = _frontend_dist_branch(settings)
             if dist_branch:
                 # Готовая сборка из CI имеет приоритет над локальной: она
                 # быстрее, детерминированнее и не требует Node.js на сервере.

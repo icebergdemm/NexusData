@@ -62,6 +62,7 @@ def test_update_restart_is_honoured_when_main_is_unchanged():
         patch.object(services_git_update, "_git_auth", return_value=([], {})),
         patch.object(services_git_update, "_auth_config", return_value=None),
         patch.object(services_git_update, "_run", side_effect=_unchanged_git_run),
+        patch.object(services_git_update, "_resolve_npm", return_value=("/usr/bin/npm", [])),
         patch.object(services_git_update, "_fetch_prebuilt_frontend") as fetch_dist,
         patch.object(services_git_update, "_restart_backend") as restart_backend,
     ):
@@ -70,3 +71,24 @@ def test_update_restart_is_honoured_when_main_is_unchanged():
     fetch_dist.assert_not_called()
     restart_backend.assert_called_once_with(output.append)
     assert "→ Перезапуск backend…" in output
+
+
+def test_update_uses_default_prebuilt_frontend_when_npm_is_missing():
+    output: list[str] = []
+
+    with (
+        patch.object(services_git_update, "get_settings", return_value=_settings(dist_branch="")),
+        patch.object(services_git_update, "repo_dir", return_value="/repo"),
+        patch.object(services_git_update, "check_repo", return_value=None),
+        patch.object(services_git_update, "current_revision", return_value="98c4570 — current"),
+        patch.object(services_git_update, "remote_url", return_value="https://example.test/repo.git"),
+        patch.object(services_git_update, "_git_auth", return_value=([], {})),
+        patch.object(services_git_update, "_auth_config", return_value=None),
+        patch.object(services_git_update, "_run", side_effect=_unchanged_git_run),
+        patch.object(services_git_update, "_resolve_npm", return_value=(None, ["PATH (npm)"])),
+        patch.object(services_git_update, "_fetch_prebuilt_frontend", return_value=True) as fetch_dist,
+        patch.object(services_git_update, "_restart_backend"),
+    ):
+        assert services_git_update.run_update(output.append, force_restart=False) is True
+
+    fetch_dist.assert_called_once_with(output.append, "/repo", "origin", "frontend-dist")
