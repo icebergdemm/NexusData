@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Radio, MoreVertical, Send, Truck, CornerUpLeft, PackagePlus, Zap, Settings,
-  MapPin, Ship, Target, Users2, Warehouse as WarehouseIcon,
+  Bot, MapPin, Ship, Target, Users2, Warehouse as WarehouseIcon,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -222,7 +222,11 @@ export function DispatchPage() {
     refetchInterval: 10000,
   })
 
-  const { data: aiConfig } = useQuery({
+  const {
+    data: aiConfig,
+    error: aiConfigError,
+    isPending: aiConfigPending,
+  } = useQuery({
     queryKey: ["dispatch-ai-config"],
     queryFn: () => api.get<AIDispatcherConfig>("/api/v1/admin/dispatch/ai-config"),
     enabled: Boolean(admin),
@@ -277,6 +281,27 @@ export function DispatchPage() {
   const hasAnyAction = canShuttle || canCargo || canTorpedo
   const roundStates = overview ? Object.entries(overview.round_states) : []
   const onlinePlayers = overview?.online_players ?? []
+  const aiStatus = aiConfigPending
+    ? "Проверка статуса"
+    : aiConfigError
+      ? "Статус недоступен"
+      : !aiConfig?.configured
+        ? "Не настроен"
+        : aiConfig.enabled
+          ? "Запросы включены"
+          : "Запросы отключены"
+  const aiToggleDisabled = !canManageAI
+    || aiConfigPending
+    || Boolean(aiConfigError)
+    || !aiConfig?.configured
+    || aiConfigMutation.isPending
+  const aiToggleTitle = !canManageAI
+    ? "Нет права на управление ИИ-диспетчером"
+    : aiConfigError
+      ? "Не удалось получить статус ИИ-диспетчера"
+      : !aiConfig?.configured
+        ? "ИИ-диспетчер не настроен в окружении NexusData"
+        : undefined
 
   return (
     <div>
@@ -284,43 +309,11 @@ export function DispatchPage() {
         title="Диспетчерская"
         description="Радиосвязь с игроками и статус раунда в реальном времени"
         icon={Radio}
-        actions={(
-          <>
-            {aiConfig && (
-              <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5">
-                <div className="flex flex-col">
-                  <Label htmlFor="ai-dispatcher-toggle" className="text-xs font-semibold">
-                    ИИ-диспетчер
-                  </Label>
-                  <span className="text-[10px] text-muted-foreground">
-                    {!aiConfig.configured
-                      ? "Не настроен"
-                      : aiConfig.enabled
-                        ? "Запросы включены"
-                        : "Запросы отключены"}
-                  </span>
-                </div>
-                <Switch
-                  id="ai-dispatcher-toggle"
-                  checked={aiConfig.configured && aiConfig.enabled}
-                  disabled={
-                    !canManageAI
-                    || aiConfigMutation.isPending
-                    || !aiConfig.configured
-                  }
-                  onCheckedChange={(enabled) => aiConfigMutation.mutate(enabled)}
-                  aria-label="Включить или отключить запросы к ИИ-диспетчеру"
-                  title={canManageAI ? undefined : "Нет права на управление ИИ-диспетчером"}
-                />
-              </div>
-            )}
-            {canWebhooks && (
-              <Button variant="outline" size="sm" onClick={() => setWebhookConfigOpen(true)}>
-                <Settings data-icon="inline-start" /> Webhook
-              </Button>
-            )}
-          </>
-        )}
+        actions={canWebhooks ? (
+          <Button variant="outline" size="sm" onClick={() => setWebhookConfigOpen(true)}>
+            <Settings data-icon="inline-start" /> Webhook
+          </Button>
+        ) : undefined}
       />
 
       <Tabs defaultValue="radio">
@@ -332,19 +325,39 @@ export function DispatchPage() {
         <TabsContent value="radio">
       <div className="flex h-[calc(100vh-13rem)] gap-4">
         <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <div className="flex justify-end gap-1 rounded-lg border bg-card p-1 self-end">
-            {SERVERS.map((s) => (
-              <button
-                key={s.key}
-                onClick={() => setServer(s.key)}
-                className={cn(
-                  "rounded-md px-3 py-1.5 text-xs font-bold transition-colors",
-                  server === s.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {s.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-1.5">
+              <Bot className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <div className="flex min-w-0 flex-col">
+                <Label htmlFor="ai-dispatcher-toggle" className="cursor-pointer text-xs font-semibold">
+                  ИИ-диспетчер
+                </Label>
+                <span className="text-[10px] text-muted-foreground">{aiStatus}</span>
+              </div>
+              <Switch
+                id="ai-dispatcher-toggle"
+                checked={Boolean(aiConfig?.configured && aiConfig.enabled)}
+                disabled={aiToggleDisabled}
+                onCheckedChange={(enabled) => aiConfigMutation.mutate(enabled)}
+                aria-label="Включить или отключить запросы к ИИ-диспетчеру"
+                title={aiToggleTitle}
+              />
+            </div>
+
+            <div className="flex gap-1 rounded-lg border bg-card p-1">
+              {SERVERS.map((s) => (
+                <button
+                  key={s.key}
+                  onClick={() => setServer(s.key)}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-xs font-bold transition-colors",
+                    server === s.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <Card className="flex flex-1 flex-col overflow-hidden p-0">
