@@ -183,6 +183,23 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         # server's sequential delivery, but costs nothing to guard against).
         return JSONResponse({"status": "ok", "ignored": "stale_seq"})
 
+    static_map_missing = not (
+        isinstance(row.sub_name, str)
+        and row.sub_name.strip()
+        and isinstance(row.submarines, list)
+        and row.submarines
+    )
+    if static_map_missing and (
+        row.last_seq is None or (isinstance(seq, int) and seq % 20 == 0)
+    ):
+        logger.warning(
+            "World snapshot received without static map: round_id=%s server=%s "
+            "seq=%s; game integration must resend POST /api/v1/world/init",
+            row.round_id,
+            row.server_name,
+            seq,
+        )
+
     claimed_alerts: list[AICreatureAlert] = []
     ai_dispatcher_enabled = False
     if (settings.ai_dispatcher_url or "").strip() and (
@@ -239,9 +256,8 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
         row.last_items = items
     row.last_update_at = datetime.utcnow()
     db.commit()
-    # Operational warnings must enter the per-server FIFO before the delayed
-    # start briefing; otherwise an initial large contact can wait behind the
-    # 15–35 second briefing pause and several briefing radiograms.
+    # Operational warnings enter the per-server FIFO before the briefing
+    # triggered by the same snapshot, so an initial contact is reported first.
     _try_queue_ai_large_creature_alert(db, row, claimed_alerts)
     _try_queue_ai_world_briefing(db, row)
     return JSONResponse({"status": "ok"})

@@ -34,6 +34,7 @@ from routes.dispatch import (
     get_dispatch_ai_config,
     post_round_start,
     set_dispatch_ai_config,
+    _world_round_navigation_ready,
 )
 
 
@@ -241,6 +242,8 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 server_name="ASPER1",
                 sub_name="Сигнатура",
                 level_name="Европейский кряж",
+                submarines=[{"id": 10, "name": "Сигнатура"}],
+                last_subs=[{"id": 10, "x": 100, "y": 200}],
                 last_update_at=datetime.utcnow(),
             )
             db.add(world_round)
@@ -282,6 +285,48 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 },
             )
             self.assertIsNotNone(world_round.ai_briefing_queued_at)
+        finally:
+            db.close()
+            engine.dispose()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_world_briefing_waits_for_static_map_and_reference_vessel(self, enqueue_job):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[RoundEvent.__table__, WorldRound.__table__, AppSetting.__table__],
+        )
+        db = Session(engine)
+        try:
+            world_round = WorldRound(
+                round_id="world-round-no-map",
+                server_name="ASPER1",
+                sub_name=None,
+                submarines=[],
+                last_subs=[{"id": 10, "x": 100, "y": 200}],
+                last_seq=20,
+                last_update_at=datetime.utcnow(),
+            )
+            db.add(world_round)
+            db.commit()
+
+            with (
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_url",
+                    "http://dispatcher/api/v1/dispatcher/messages",
+                ),
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_api_key",
+                    "dispatcher-secret",
+                ),
+            ):
+                _queue_ai_world_briefing(world_round, db)
+
+            self.assertFalse(_world_round_navigation_ready(world_round))
+            enqueue_job.assert_not_called()
+            self.assertIsNone(world_round.ai_briefing_queued_at)
         finally:
             db.close()
             engine.dispose()

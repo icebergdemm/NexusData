@@ -519,6 +519,34 @@ def _latest_world_round(db: Session, server_name: str) -> Optional[WorldRound]:
     )
 
 
+def _world_round_navigation_ready(world_round: WorldRound) -> bool:
+    """Return whether telemetry can anchor map objects to the escorted vessel."""
+
+    sub_name = world_round.sub_name
+    metadata = world_round.submarines
+    positions = world_round.last_subs
+    if not isinstance(sub_name, str) or not sub_name.strip():
+        return False
+    if not isinstance(metadata, list) or not isinstance(positions, list):
+        return False
+
+    wanted = sub_name.strip().casefold()
+    matching_ids = {
+        str(item.get("id"))
+        for item in metadata
+        if isinstance(item, dict)
+        and item.get("id") is not None
+        and isinstance(item.get("name"), str)
+        and item["name"].strip().casefold() == wanted
+    }
+    position_ids = {
+        str(item.get("id"))
+        for item in positions
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    return bool(matching_ids & position_ids)
+
+
 def _queue_ai_round_briefing(
     event: RoundEvent,
     db: Optional[Session] = None,
@@ -620,6 +648,19 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
         # The lifecycle path has already queued its job.  Persist the claim so
         # every later snapshot and every other worker remains silent.
         _claim_world_briefing(db, world_round)
+        return
+
+    if not _world_round_navigation_ready(world_round):
+        if world_round.last_seq is None or world_round.last_seq % 20 == 0:
+            logger.warning(
+                "AI world briefing waiting for static map: round_id=%s server=%s "
+                "sub_name=%r submarines=%s positions=%s",
+                world_round.round_id,
+                server_name,
+                world_round.sub_name,
+                len(world_round.submarines or []),
+                len(world_round.last_subs or []),
+            )
         return
 
     if not _claim_world_briefing(db, world_round):
