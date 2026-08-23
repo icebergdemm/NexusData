@@ -9,6 +9,7 @@ import { DashboardPage } from "@/pages/dashboard"
 import { RoundStatusPage } from "@/pages/round-status"
 import { DispatchPage } from "@/pages/dispatch"
 import { WorldOverviewPage } from "@/pages/world-overview"
+import { MonsterSpawnPage } from "@/pages/monster-spawn"
 import { PlayersListPage } from "@/pages/players"
 import { PlayerDetailPage } from "@/pages/players/detail"
 import { ModerationPage } from "@/pages/moderation"
@@ -101,6 +102,7 @@ export default function App() {
           <Route path="round-status" element={<RoundStatusPage />} />
           <Route path="dispatch" element={<DispatchPage />} />
           <Route path="world-overview" element={<WorldOverviewPage />} />
+          <Route path="monster-spawn" element={<MonsterSpawnPage />} />
           <Route path="players" element={<PlayersListPage />} />
           <Route path="players/:playerId" element={<PlayerDetailPage />} />
           <Route path="label-categories" element={<LabelCategoriesPage />} />

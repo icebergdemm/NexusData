@@ -1691,6 +1691,24 @@ class WorldRound(Base):
     last_update_at = Column(DateTime, nullable=True, index=True)
 
 
+class MonsterSpawnControl(Base):
+    """Desired and observed MonsterSpawnController state for one server."""
+
+    __tablename__ = "monster_spawn_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server = Column(String(100), unique=True, nullable=False, index=True)
+    config = Column(JSON, nullable=False, default=lambda: {})
+    memory = Column(JSON, nullable=False, default=lambda: {})
+    plans = Column(JSON, nullable=False, default=lambda: [])
+    telemetry = Column(JSON, nullable=False, default=lambda: {})
+    desired_revision = Column(Integer, nullable=False, default=0)
+    applied_revision = Column(Integer, nullable=False, default=0)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_seen_at = Column(DateTime, nullable=True, index=True)
+
+
 class AICreatureAlert(Base):
     """Durable one-alert-per-character state for dispatcher contact warnings."""
 

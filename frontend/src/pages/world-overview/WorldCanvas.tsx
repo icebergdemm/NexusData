@@ -14,6 +14,7 @@ const TEAM_COLORS: Record<string, string> = {
 
 interface View { scale: number; offsetX: number; offsetY: number }
 interface WorldBounds { minX: number; maxX: number; minY: number; maxY: number }
+export interface WorldMarker { id: string; x: number; y: number; label: string; color?: string; muted?: boolean }
 
 const POPUP_WIDTH = 260
 
@@ -54,6 +55,7 @@ function getWorldBounds(geometry: WorldGeometry): WorldBounds {
 export function WorldCanvas({
   geometry, state, selectedCharacterId, onSelectCharacter,
   targetMode = false, targetPoint = null, onPickTarget,
+  markers = [], selectedMarkerId = null, onSelectMarker, onMoveMarker,
 }: {
   geometry: WorldGeometry
   state: WorldState
@@ -62,6 +64,10 @@ export function WorldCanvas({
   targetMode?: boolean
   targetPoint?: { x: number; y: number } | null
   onPickTarget?: (x: number, y: number) => void
+  markers?: WorldMarker[]
+  selectedMarkerId?: string | null
+  onSelectMarker?: (id: string | null) => void
+  onMoveMarker?: (id: string, x: number, y: number) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -69,6 +75,7 @@ export function WorldCanvas({
   const viewRef = useRef(view)
   viewRef.current = view
   const dragRef = useRef<{ startX: number; startY: number; startOffsetX: number; startOffsetY: number; moved: boolean } | null>(null)
+  const markerDragRef = useRef<string | null>(null)
   const [fittedFor, setFittedFor] = useState<string | null>(null)
   // Tracks which character we've already auto-centered on, so re-selecting
   // the SAME character on every ~3s poll doesn't keep snapping the camera
@@ -235,6 +242,29 @@ export function WorldCanvas({
       }
     }
 
+    for (const marker of markers) {
+      const [sx, sy] = toScreen(marker.x, marker.y, view)
+      const selected = marker.id === selectedMarkerId
+      ctx.globalAlpha = marker.muted ? 0.35 : 1
+      ctx.fillStyle = marker.color || "#F6C453"
+      ctx.beginPath()
+      ctx.moveTo(sx, sy - 10)
+      ctx.lineTo(sx + 8, sy + 7)
+      ctx.lineTo(sx - 8, sy + 7)
+      ctx.closePath()
+      ctx.fill()
+      if (selected) {
+        ctx.strokeStyle = "#FFFFFF"
+        ctx.lineWidth = 2
+        ctx.stroke()
+      }
+      ctx.fillStyle = "rgba(255,255,255,.9)"
+      ctx.font = "10px sans-serif"
+      ctx.textAlign = "center"
+      ctx.fillText(marker.label, sx, sy - 14)
+      ctx.globalAlpha = 1
+    }
+
     if (targetMode && targetPoint) {
       const [sx, sy] = toScreen(targetPoint.x, targetPoint.y, view)
       ctx.strokeStyle = "#FF5A4E"
@@ -250,7 +280,7 @@ export function WorldCanvas({
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, state, view, selectedCharacterId, targetMode, targetPoint])
+  }, [geometry, state, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
@@ -270,9 +300,34 @@ export function WorldCanvas({
   }
 
   const onMouseDown = (e: React.MouseEvent) => {
+    if (!targetMode && onMoveMarker) {
+      const container = containerRef.current
+      if (container) {
+        const rect = container.getBoundingClientRect()
+        const mx = e.clientX - rect.left
+        const my = e.clientY - rect.top
+        const hit = markers.find((m) => {
+          const [sx, sy] = toScreen(m.x, m.y, view)
+          return Math.hypot(sx - mx, sy - my) < 14
+        })
+        if (hit) {
+          markerDragRef.current = hit.id
+          onSelectMarker?.(hit.id)
+          return
+        }
+      }
+    }
     dragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: view.offsetX, startOffsetY: view.offsetY, moved: false }
   }
   const onMouseMove = (e: React.MouseEvent) => {
+    if (markerDragRef.current) {
+      const container = containerRef.current
+      if (!container) return
+      const rect = container.getBoundingClientRect()
+      const [wx, wy] = toWorld(e.clientX - rect.left, e.clientY - rect.top, view)
+      onMoveMarker?.(markerDragRef.current, Math.round(wx), Math.round(wy))
+      return
+    }
     const drag = dragRef.current
     if (!drag) return
     const dx = e.clientX - drag.startX
@@ -281,6 +336,10 @@ export function WorldCanvas({
     setView((v) => ({ ...v, offsetX: drag.startOffsetX + dx, offsetY: drag.startOffsetY + dy }))
   }
   const onMouseUp = (e: React.MouseEvent) => {
+    if (markerDragRef.current) {
+      markerDragRef.current = null
+      return
+    }
     const drag = dragRef.current
     dragRef.current = null
     if (!drag || drag.moved) return
@@ -338,7 +397,7 @@ export function WorldCanvas({
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
-      onMouseLeave={() => { dragRef.current = null }}
+      onMouseLeave={() => { dragRef.current = null; markerDragRef.current = null }}
     >
       <canvas ref={canvasRef} />
       <Button

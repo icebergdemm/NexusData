@@ -5,7 +5,7 @@ export const PERMISSION_PAGES = [
   "admin", "players", "players_special", "moderation", "dispatch", "replays",
   "sessions", "audit", "privileges", "kits", "punishments", "sub_projects",
   "ratings", "discord_bot", "tickets", "analytics", "documents", "departments",
-  "tasks", "world_state", "sounds", "respawn_dolls", "sub_checker", "achievements",
+  "tasks", "world_state", "monster_spawn", "sounds", "respawn_dolls", "sub_checker", "achievements",
 ] as const
 
 export type PermissionPage = (typeof PERMISSION_PAGES)[number]
