@@ -9,6 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import { api } from "@/lib/api"
+import { Checkbox } from "@/components/ui/checkbox"
 
 interface AnomalyPlayer {
   player_id: number
@@ -34,6 +35,7 @@ interface Anomaly {
 interface AnomaliesResponse {
   anomalies: Anomaly[]
   can_manage: boolean
+  nd_autoban_enabled: boolean
 }
 
 function fmtDate(iso: string | null): string {
@@ -96,6 +98,11 @@ export function AnomaliesTab({ setSummaryPlayerId }: { setSummaryPlayerId: (id: 
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["moderation-anomalies"] }),
     onError: (e: Error) => toast.error(e.message),
   })
+  const autobanMutation = useMutation({
+    mutationFn: (enabled: boolean) => api.put("/api/v1/admin/moderation/anomalies/autoban", { enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["moderation-anomalies"] }),
+    onError: (e: Error) => toast.error(e.message),
+  })
 
   return (
     <div className="space-y-3">
@@ -117,6 +124,12 @@ export function AnomaliesTab({ setSummaryPlayerId }: { setSummaryPlayerId: (id: 
             <SelectItem value="all">Все</SelectItem>
           </SelectContent>
         </Select>
+        {data?.can_manage && (
+          <label className="ml-auto flex items-center gap-2 text-sm">
+            Автобан ND
+            <Checkbox checked={data.nd_autoban_enabled} disabled={autobanMutation.isPending} onCheckedChange={(enabled) => autobanMutation.mutate(enabled === true)} />
+          </label>
+        )}
       </div>
 
       <p className="text-xs text-muted-foreground">

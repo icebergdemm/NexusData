@@ -24,6 +24,7 @@ const KNOWN_KEYS: { key: string; label: string }[] = [
   { key: "round_status_channel_asper2_id", label: "Статус раунда ASPER2" },
   { key: "trap_channel_id", label: "Уведомления о ловушках" },
   { key: "punishment_channel_id", label: "Все наказания" },
+  { key: "mute_manager_role_ids", label: "Роли для /mute и /unmute (ID через запятую)" },
   { key: "ban_channel_id", label: "Блокировки игроков (баны, предупреждения, выговоры)" },
   { key: "sub_projects_channel_id", label: "Публикация Sub-карт" },
 ]

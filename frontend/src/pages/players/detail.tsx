@@ -919,7 +919,9 @@ function NoteRow({ note, canEdit, onSave, onDelete, saving, deleting }: {
               </div>
             )}
           </div>
-          <div className="mt-1 text-xs text-muted-foreground">{note.updated_at ? new Date(note.updated_at).toLocaleString("ru-RU") : "-"}</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {note.admin_name ? `Оставил(а): ${note.admin_name} · ` : ""}{note.updated_at ? new Date(note.updated_at).toLocaleString("ru-RU") : "-"}
+          </div>
         </>
       )}
 

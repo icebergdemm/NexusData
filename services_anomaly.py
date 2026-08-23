@@ -95,6 +95,10 @@ def _auto_ban_evader(db: Session, candidate, ip: str, banned_player) -> bool:
     ban-evasion alt that's currently online. Best-effort: a failure to queue
     the server action just means no auto-ban this pass, never raises."""
     from models import PlayerPunishment
+    from discord_bot import data as bot_data
+
+    if not bot_data.is_nd_autoban_enabled():
+        return False
 
     already = (
         db.query(PlayerPunishment)

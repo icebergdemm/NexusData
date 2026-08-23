@@ -68,9 +68,10 @@ function initials(name: string | null, id: number): string {
 export function AuditPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState("")
+  const [source, setSource] = useState<"" | "discord">("")
   const { data, isLoading } = useQuery({
-    queryKey: ["audit-logs", page],
-    queryFn: () => api.get<AuditResponse>(`/api/v1/admin/audit/logs?page=${page}&page_size=50`),
+    queryKey: ["audit-logs", page, source],
+    queryFn: () => api.get<AuditResponse>(`/api/v1/admin/audit/logs?page=${page}&page_size=50&source=${source}`),
   })
 
   const filtered = useMemo(() => {
@@ -93,6 +94,10 @@ export function AuditPage() {
       />
 
       <div className="mb-4">
+        <div className="mb-2 flex gap-2">
+          <Button size="sm" variant={!source ? "default" : "outline"} onClick={() => { setSource(""); setPage(1) }}>Действия панели</Button>
+          <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => { setSource("discord"); setPage(1) }}>Discord-логи</Button>
+        </div>
         <SearchInput
           value={search}
           onChange={(e) => setSearch(e.target.value)}

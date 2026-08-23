@@ -29,6 +29,7 @@ export interface PlayerStats {
 export interface Note {
   id: number
   admin_id: number | null
+  admin_name: string | null
   content: string
   created_at: string | null
   updated_at: string | null

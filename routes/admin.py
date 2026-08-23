@@ -1682,9 +1682,10 @@ def _serialize_session(s) -> dict:
     }
 
 
-def _serialize_note(n) -> dict:
+def _serialize_note(n, admin_name: Optional[str] = None) -> dict:
     return {
         "id": n.id, "admin_id": n.admin_id, "content": n.content,
+        "admin_name": admin_name,
         "created_at": n.created_at.isoformat() if n.created_at else None,
         "updated_at": n.updated_at.isoformat() if n.updated_at else None,
     }
@@ -1773,6 +1774,12 @@ async def api_player_detail(
     })
 
     notes = PlayerNoteService(db).get_notes(player_id)
+    note_admin_ids = {n.admin_id for n in notes if n.admin_id}
+    note_admin_names = {}
+    if note_admin_ids:
+        note_admin_names = {
+            a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(note_admin_ids)).all()
+        }
     label_pairs = PlayerLabelService(db).get_labels(player_id)
     traps = PlayerTrapService(db).get_traps(player_id)
     label_categories = LabelCategoryService(db).get_all()
@@ -1855,7 +1862,7 @@ async def api_player_detail(
         "names": [_serialize_name(n) for n in names],
         "role_stats": [_serialize_role_stat(s) for s in role_stats],
         "sessions": [_serialize_session(s) for s in sessions],
-        "notes": [_serialize_note(n) for n in notes],
+        "notes": [_serialize_note(n, note_admin_names.get(n.admin_id)) for n in notes],
         "label_pairs": [_serialize_label_pair(p) for p in label_pairs],
         "traps": [_serialize_trap(t) for t in traps],
         "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
@@ -2912,6 +2919,7 @@ async def api_system_health(
 @router.get("/api/v1/admin/audit/logs")
 async def api_audit_logs(
     request: Request,
+    source: Optional[str] = Query(None, pattern="^(discord)?$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=10, le=200),
     db: Session = Depends(get_db),
@@ -2924,9 +2932,14 @@ async def api_audit_logs(
     from fastapi.responses import JSONResponse
 
     offset = (page - 1) * page_size
-    total = db.query(AdminActionLog).count()
+    query = db.query(AdminActionLog)
+    if source == "discord":
+        query = query.filter(AdminActionLog.action.like("discord:%"))
+    elif source == "":
+        query = query.filter(~AdminActionLog.action.like("discord:%"))
+    total = query.count()
     logs = (
-        db.query(AdminActionLog)
+        query
         .order_by(AdminActionLog.created_at.desc())
         .offset(offset)
         .limit(page_size)

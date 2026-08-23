@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Gavel, Plus, Star, StickyNote } from "lucide-react"
+import { Gavel, Plus, Star, StickyNote, Pencil } from "lucide-react"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -69,6 +69,8 @@ export function PunishmentsPage() {
   const [status, setStatus] = useState("all")
   const [superuserOnly, setSuperuserOnly] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<PunishmentRow | null>(null)
+  const [editForm, setEditForm] = useState({ reason: "", expires_days: "", notes: "" })
   const [form, setForm] = useState({ player_steamid: "", reason: "", expires_days: "", notes: "", server_name: "" })
   const queryClient = useQueryClient()
   const debouncedSearch = useDebouncedValue(search.trim())
@@ -122,6 +124,18 @@ export function PunishmentsPage() {
     mutationFn: (id: number) => api.delete(`/api/v1/admin/punishments/${id}`),
     onSuccess: () => { toast.success("Удалено"); invalidate() },
   })
+  const editMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/punishments/${editTarget?.id}`, {
+      reason: editForm.reason, expires_days: editForm.expires_days ? Number(editForm.expires_days) : null, notes: editForm.notes,
+    }),
+    onSuccess: () => { toast.success("Наказание обновлено"); setEditTarget(null); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const openEdit = (row: PunishmentRow) => {
+    const days = row.expires_at ? Math.max(1, Math.ceil((new Date(row.expires_at).getTime() - Date.now()) / 86400000)) : ""
+    setEditForm({ reason: row.reason ?? "", expires_days: String(days), notes: row.notes ?? "" })
+    setEditTarget(row)
+  }
 
   return (
     <div className="min-w-0">
@@ -252,6 +266,7 @@ export function PunishmentsPage() {
                         {r.status === "active" && (
                           <Button size="sm" variant="outline" onClick={() => voidMutation.mutate(r.id)}>Отменить</Button>
                         )}
+                        <Button size="sm" variant="outline" onClick={() => openEdit(r)}><Pencil className="size-3.5" /> Изменить</Button>
                         {data.can_delete && (
                           <Button size="sm" variant="destructive" onClick={() => deleteMutation.mutate(r.id)}>Удалить</Button>
                         )}
@@ -279,6 +294,20 @@ export function PunishmentsPage() {
           )}
         </CardContent>
       </Card>
+      <Dialog open={!!editTarget} onOpenChange={(open) => !open && setEditTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Изменить наказание</DialogTitle>
+            <DialogDescription>{editTarget?.player_name || editTarget?.player_steamid}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div><Label className="mb-1.5 block">Причина</Label><Textarea value={editForm.reason} onChange={(e) => setEditForm((f) => ({ ...f, reason: e.target.value }))} /></div>
+            <div><Label className="mb-1.5 block">Новый срок в днях</Label><Input type="number" min="1" placeholder="Пусто = бессрочно" value={editForm.expires_days} onChange={(e) => setEditForm((f) => ({ ...f, expires_days: e.target.value }))} /></div>
+            <div><Label className="mb-1.5 block">Внутренняя заметка</Label><Textarea placeholder="Что важно знать модераторам..." value={editForm.notes} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} /></div>
+          </div>
+          <DialogFooter><Button disabled={editMutation.isPending} onClick={() => editMutation.mutate()}>Сохранить изменения</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -1344,6 +1344,48 @@ TICKET_TYPES = {
 _pending_close: dict = {}
 
 
+def _parse_mute_duration(value: str) -> timedelta:
+    """Parse compact Russian durations: 1с, 30м, 2нед3д, 1ч30м, and ASCII c."""
+    import re
+
+    units = {"с": 1, "c": 1, "м": 60, "ч": 3600, "д": 86400,
+             "нед": 7 * 86400, "мес": 30 * 86400, "г": 365 * 86400}
+    normalized = (value or "").strip().lower().replace(" ", "")
+    parts = re.findall(r"(\d+)(нед|мес|[сcмчдг])", normalized)
+    if not parts or "".join(f"{number}{unit}" for number, unit in parts) != normalized:
+        raise ValueError("Используйте формат вроде 1ч30м, 2нед3д или 1д")
+    seconds = sum(int(number) * units[unit] for number, unit in parts)
+    if seconds <= 0 or seconds > 3650 * 86400:
+        raise ValueError("Допустимая длительность: от 1 секунды до 10 лет")
+    return timedelta(seconds=seconds)
+
+
+async def _user_has_mute_permission(user) -> bool:
+    if getattr(user.guild_permissions, "administrator", False):
+        return True
+    raw = (await asyncio.to_thread(bot_data.get_bot_config)).get("mute_manager_role_ids", "")
+    allowed = {x.strip() for x in raw.split(",") if x.strip()}
+    return bool(allowed & {str(r.id) for r in getattr(user, "roles", [])})
+
+
+async def _send_mute_notification(channel, title: str, target, moderator, reason: str, expires_at: Optional[datetime] = None):
+    config = await asyncio.to_thread(bot_data.get_bot_config)
+    channel_id = config.get("punishment_channel_id") or config.get("ban_channel_id")
+    if not channel_id:
+        return
+    target_channel = bot.get_channel(int(channel_id))
+    if not target_channel:
+        return
+    embed = discord.Embed(title=title, color=0xe67e22)
+    embed.add_field(name="Нарушитель", value=target.mention, inline=False)
+    embed.add_field(name="Выдал", value=moderator.mention, inline=False)
+    if expires_at:
+        embed.add_field(name="До", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
+    if reason:
+        embed.add_field(name="Причина", value=reason[:1024], inline=False)
+    await target_channel.send(embed=embed)
+
+
 async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: str):
     """Create a ticket channel directly (no modal). Called from button handlers."""
     await interaction.response.defer(ephemeral=True)
@@ -1447,9 +1489,10 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
     )
     embed.set_footer(text=f"Тикет #{ticket_id}")
 
-    view = TicketCloseView(ticket_id=ticket_id, channel=channel)
     msg_content = f"{user.mention} {silent_pings}" if silent_pings.strip() else user.mention
-    await channel.send(content=msg_content, embed=embed, view=view)
+    # Tickets are closed only through /close, where the configured staff role
+    # check and delayed-close workflow are both enforced.
+    await channel.send(content=msg_content, embed=embed)
 
     await interaction.followup.send(f"✅ Обращение создано: {channel.mention}", ephemeral=True)
     await refresh_ticket_status()
@@ -1597,6 +1640,54 @@ async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
     return False
 
 
+@bot.tree.command(name="mute", description="Запретить пользователю писать вне тикетов")
+@app_commands.describe(member="Нарушитель", duration="Например: 1ч30м, 2нед3д", reason="Причина")
+async def slash_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: Optional[str] = None):
+    if not await _user_has_mute_permission(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав на мут.", ephemeral=True)
+        return
+    try:
+        delta = _parse_mute_duration(duration)
+    except ValueError as exc:
+        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        return
+    expires_at = datetime.utcnow() + delta
+    await asyncio.to_thread(bot_data.set_mute, str(member.id), expires_at, {
+        "id": str(interaction.user.id), "name": interaction.user.display_name,
+    }, reason or "")
+    await asyncio.to_thread(bot_data.log_discord_command, "mute", {
+        "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
+        "target_id": str(member.id), "target": member.display_name, "duration": duration,
+        "expires_at": expires_at.isoformat(), "reason": reason or "",
+    })
+    await interaction.response.send_message(f"🔇 {member.mention} получил(а) мут до <t:{int(expires_at.timestamp())}:F>.")
+    try:
+        await _send_mute_notification(interaction.channel, "🔇 Мут", member, interaction.user, reason or "", expires_at)
+    except Exception as exc:
+        logger.warning("Failed to publish mute notification: %s", exc)
+
+
+@bot.tree.command(name="unmute", description="Снять мут с пользователя")
+@app_commands.describe(member="Пользователь", reason="Причина снятия мута")
+async def slash_unmute(interaction: discord.Interaction, member: discord.Member, reason: Optional[str] = None):
+    if not await _user_has_mute_permission(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав на снятие мута.", ephemeral=True)
+        return
+    removed = await asyncio.to_thread(bot_data.remove_mute, str(member.id))
+    if not removed:
+        await interaction.response.send_message("У этого пользователя нет активного мута.", ephemeral=True)
+        return
+    await asyncio.to_thread(bot_data.log_discord_command, "unmute", {
+        "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
+        "target_id": str(member.id), "target": member.display_name, "reason": reason or "",
+    })
+    await interaction.response.send_message(f"🔊 Мут с {member.mention} снят.")
+    try:
+        await _send_mute_notification(interaction.channel, "🔊 Мут снят", member, interaction.user, reason or "")
+    except Exception as exc:
+        logger.warning("Failed to publish unmute notification: %s", exc)
+
+
 @bot.tree.command(name="close", description="Закрыть тикет через указанное время (только для администраторов)")
 @app_commands.describe(
     minutes="Через сколько минут закрыть (0 = через 15 секунд)",
@@ -1618,6 +1709,11 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
     if not has_perm:
         await interaction.response.send_message("❌ У вас нет прав для закрытия тикета.", ephemeral=True)
         return
+
+    await asyncio.to_thread(bot_data.log_discord_command, "close", {
+        "moderator_id": str(user.id), "moderator": user.display_name,
+        "channel_id": str(channel.id), "minutes": minutes, "answer": answer,
+    })
 
     channel_id_str = str(channel.id)
 
@@ -1752,6 +1848,10 @@ async def slash_ticket_add_member(interaction: discord.Interaction, member: disc
         return
 
     await interaction.response.send_message(f"✅ {member.mention} добавлен(а) в этот тикет.", ephemeral=False)
+    await asyncio.to_thread(bot_data.log_discord_command, "ticket_add", {
+        "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
+        "member_id": str(member.id), "channel_id": str(channel.id),
+    })
 
 
 @bot.tree.command(name="ticket_remove", description="Убрать участника из текущего тикета (только для персонала)")
@@ -1807,6 +1907,10 @@ async def slash_ticket_remove_member(interaction: discord.Interaction, member: d
         return
 
     await interaction.response.send_message(f"✅ {member.mention} убран(а) из этого тикета.", ephemeral=False)
+    await asyncio.to_thread(bot_data.log_discord_command, "ticket_remove", {
+        "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
+        "member_id": str(member.id), "channel_id": str(channel.id),
+    })
 
 
 @bot.command(name="setticketcategory")
@@ -1830,6 +1934,18 @@ async def cmd_set_ticket_status(ctx, channel: discord.TextChannel):
 async def on_message(message: discord.Message):
     if message.author.bot:
         await bot.process_commands(message)
+        return
+
+    # A mute is intentionally enforced by deleting messages instead of changing
+    # every channel's permissions. This covers channels created after the mute
+    # and leaves every ticket channel available for appeals/support.
+    channel_name = getattr(message.channel, "name", "") or ""
+    active_mutes = await asyncio.to_thread(bot_data.get_active_mutes)
+    if str(message.author.id) in active_mutes and not channel_name.startswith("ticket-"):
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
         return
 
     # Check if this is a ticket channel
@@ -1874,9 +1990,7 @@ async def on_message(message: discord.Message):
             if channel_id in _pending_close and not message.author.bot:
                 ticket_type = (matched_ticket or {}).get("type")
                 config = await asyncio.to_thread(bot_data.get_tickets_config)
-                type_ping_roles = ((config or {}).get("types", {}).get(ticket_type, {}) or {}).get("ping_roles", [])
-                member_role_ids = {str(r.id) for r in getattr(message.author, "roles", [])}
-                if type_ping_roles and any(rid in member_role_ids for rid in type_ping_roles):
+                if await _user_has_ticket_staff_permission(message.author, message.guild, config):
                     task = _pending_close.pop(channel_id, None)
                     if task and not task.done():
                         task.cancel()
@@ -1972,7 +2086,6 @@ async def setup_hook():
     slash commands. Runs on module import (not gated behind __main__ like it
     used to be) since this module is now imported, not exec'd as a script."""
     bot.add_view(TicketPanelView())
-    bot.add_view(TicketCloseView())
     try:
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} slash command(s)")

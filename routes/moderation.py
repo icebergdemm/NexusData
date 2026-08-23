@@ -832,7 +832,22 @@ async def api_list_anomalies(
     return JSONResponse({
         "anomalies": [_serialize_anomaly(db, a) for a in rows],
         "can_manage": check_permission(admin, "moderation", "manage_anticheat"),
+        "nd_autoban_enabled": __import__("discord_bot.data", fromlist=["data"]).is_nd_autoban_enabled(),
     })
+
+
+@panel_router.put("/api/v1/admin/moderation/anomalies/autoban")
+async def api_set_nd_autoban(request: Request, db: Session = Depends(get_db)):
+    admin = get_current_admin(request, db)
+    if not check_permission(admin, "moderation", "manage_anticheat"):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    from discord_bot import data as bot_data
+    bot_data.set_nd_autoban_enabled(enabled)
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "nd_autoban_set", {"enabled": enabled})
+    return {"status": "ok", "enabled": enabled}
 
 
 @panel_router.post("/api/v1/admin/moderation/anomalies/{anomaly_id}/review")
@@ -922,11 +937,62 @@ async def api_console_permissions(request: Request, db: Session = Depends(get_db
     списку решает, что показывать (не полагаясь на 403 постфактум)."""
     admin = get_current_admin(request, db)
     return {
+        "can_manage_settings": bool(admin.is_superuser),
         "servers": [
             {"server": s, "enabled": check_permission(admin, "moderation", perm_key)}
             for s, (perm_key, _) in _CONSOLE_SERVERS.items()
         ],
     }
+
+
+@panel_router.get("/api/v1/admin/moderation/console/settings")
+async def api_console_settings(request: Request, db: Session = Depends(get_db)):
+    """Console bindings are sensitive deployment settings, never shown to non-SUs."""
+    admin = get_current_admin(request, db)
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403)
+    cfg = get_settings()
+    return {
+        "panel_url": cfg.pterodactyl_panel_url,
+        "api_key": "********" if cfg.pterodactyl_api_key else "",
+        "server1_uuid": cfg.pterodactyl_server1_uuid,
+        "server2_uuid": cfg.pterodactyl_server2_uuid,
+    }
+
+
+@panel_router.put("/api/v1/admin/moderation/console/settings")
+async def api_console_settings_save(request: Request, db: Session = Depends(get_db)):
+    admin = get_current_admin(request, db)
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    mapping = {
+        "panel_url": "PTERODACTYL_PANEL_URL", "api_key": "PTERODACTYL_API_KEY",
+        "server1_uuid": "PTERODACTYL_SERVER1_UUID", "server2_uuid": "PTERODACTYL_SERVER2_UUID",
+    }
+    import os
+    existing = {}
+    if os.path.exists(".env"):
+        with open(".env", "r", encoding="utf-8") as env_file:
+            for line in env_file:
+                if "=" in line and not line.lstrip().startswith("#"):
+                    key, _, value = line.strip().partition("=")
+                    existing[key] = value
+    for field, env_key in mapping.items():
+        if field not in body:
+            continue
+        value = str(body[field] or "").strip()
+        if field == "api_key" and value == "********":
+            continue
+        existing[env_key] = value
+    with open(".env", "w", encoding="utf-8") as env_file:
+        for key, value in existing.items():
+            env_file.write(f"{key}={value}\n")
+    from config import reset_settings_cache
+    reset_settings_cache()
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "console_settings_save", {"servers": ["ASPER1", "ASPER2"]})
+    return {"status": "ok"}
 
 
 @panel_router.get("/api/v1/admin/moderation/console/{server}/status")

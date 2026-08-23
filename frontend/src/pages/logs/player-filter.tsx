@@ -31,7 +31,7 @@ export function PlayerNamesFilter({ names, onChange, server }: {
   const suggestions = useMemo(() => {
     const needle = query.trim().toLowerCase()
     const pool = (data?.players ?? []).filter((n) => !names.includes(n))
-    if (!needle) return pool.slice(0, 30)
+    if (!needle) return []
     return pool.filter((n) => n.toLowerCase().includes(needle)).slice(0, 30)
   }, [data, names, query])
 

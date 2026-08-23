@@ -21,7 +21,8 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, ApiError } from "@/lib/api"
 
-interface ConsolePermissions { servers: { server: string; enabled: boolean }[] }
+interface ConsolePermissions { servers: { server: string; enabled: boolean }[]; can_manage_settings: boolean }
+interface ConsoleSettings { panel_url: string; api_key: string; server1_uuid: string; server2_uuid: string }
 interface ConsoleStatus { state: string | null; cpu_percent: number | null; memory_bytes: number | null; memory_limit_bytes: number | null }
 interface ConsoleHistoryEntry {
   id: number; admin_name: string; command: string | null; failed: boolean; error: string | null; created_at: string | null
@@ -44,12 +45,24 @@ export function ConsoleTab() {
   const queryClient = useQueryClient()
   const [activeServer, setActiveServer] = useState<string | null>(null)
   const [command, setCommand] = useState("")
+  const [settings, setSettings] = useState<ConsoleSettings | null>(null)
 
   const { data: perms } = useQuery({
     queryKey: ["console-permissions"],
     queryFn: () => api.get<ConsolePermissions>("/api/v1/admin/moderation/console/permissions"),
   })
   const allowedServers = (perms?.servers ?? []).filter((s) => s.enabled).map((s) => s.server)
+  const { data: settingsData } = useQuery({
+    queryKey: ["console-settings"],
+    queryFn: () => api.get<ConsoleSettings>("/api/v1/admin/moderation/console/settings"),
+    enabled: !!perms?.can_manage_settings,
+  })
+  useEffect(() => { if (settingsData) setSettings(settingsData) }, [settingsData])
+  const saveSettings = useMutation({
+    mutationFn: () => api.put("/api/v1/admin/moderation/console/settings", settings),
+    onSuccess: () => { toast.success("Настройки консоли сохранены"); queryClient.invalidateQueries({ queryKey: ["console-settings"] }) },
+    onError: (e: ApiError) => toast.error(e.message),
+  })
 
   useEffect(() => {
     if (!activeServer && allowedServers.length) setActiveServer(allowedServers[0])
@@ -94,6 +107,20 @@ export function ConsoleTab() {
 
   return (
     <div className="space-y-4">
+      {perms.can_manage_settings && settings && (
+        <Card className="border-warning/40">
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-sm">Настройки подключения Pterodactyl</CardTitle>
+            <Button size="sm" onClick={() => saveSettings.mutate()} disabled={saveSettings.isPending}>Сохранить</Button>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2"><label className="mb-1 block text-xs text-muted-foreground">URL панели</label><Input value={settings.panel_url} placeholder="https://panel.example" onChange={(e) => setSettings({ ...settings, panel_url: e.target.value })} /></div>
+            <div className="sm:col-span-2"><label className="mb-1 block text-xs text-muted-foreground">Client API ключ</label><Input type="password" value={settings.api_key} placeholder="Новый ключ или оставьте маску" onChange={(e) => setSettings({ ...settings, api_key: e.target.value })} /></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">UUID ASPER1</label><Input value={settings.server1_uuid} onChange={(e) => setSettings({ ...settings, server1_uuid: e.target.value })} /></div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">UUID ASPER2</label><Input value={settings.server2_uuid} onChange={(e) => setSettings({ ...settings, server2_uuid: e.target.value })} /></div>
+          </CardContent>
+        </Card>
+      )}
       <Tabs value={activeServer ?? allowedServers[0]} onValueChange={setActiveServer}>
         <TabsList>
           {allowedServers.map((s) => <TabsTrigger key={s} value={s}>{s}</TabsTrigger>)}

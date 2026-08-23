@@ -135,6 +135,79 @@ def set_bot_config(key: str, value: str) -> None:
         db.close()
 
 
+def get_json_bot_config(key: str, default):
+    """Read structured bot settings while keeping the simple key/value config table."""
+    import json
+
+    raw = get_bot_config().get(key)
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def set_json_bot_config(key: str, value) -> None:
+    import json
+
+    set_bot_config(key, json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def is_nd_autoban_enabled() -> bool:
+    """The default preserves the former behaviour for existing installations."""
+    return get_bot_config().get("nd_autoban_enabled", "1") != "0"
+
+
+def set_nd_autoban_enabled(enabled: bool) -> None:
+    set_bot_config("nd_autoban_enabled", "1" if enabled else "0")
+
+
+def get_active_mutes() -> dict:
+    """Return only unexpired mutes and prune stale records on read."""
+    mutes = get_json_bot_config("discord_mutes", {})
+    now = datetime.utcnow()
+    active = {}
+    for discord_id, value in mutes.items():
+        try:
+            if datetime.fromisoformat(value["expires_at"]) > now:
+                active[str(discord_id)] = value
+        except (KeyError, TypeError, ValueError):
+            continue
+    if active != mutes:
+        set_json_bot_config("discord_mutes", active)
+    return active
+
+
+def set_mute(discord_id: str, expires_at: datetime, issued_by: dict, reason: str = "") -> None:
+    mutes = get_active_mutes()
+    mutes[str(discord_id)] = {
+        "expires_at": expires_at.isoformat(), "issued_by": issued_by, "reason": reason,
+    }
+    set_json_bot_config("discord_mutes", mutes)
+
+
+def remove_mute(discord_id: str) -> bool:
+    mutes = get_active_mutes()
+    if str(discord_id) not in mutes:
+        return False
+    del mutes[str(discord_id)]
+    set_json_bot_config("discord_mutes", mutes)
+    return True
+
+
+def log_discord_command(action: str, details: dict) -> None:
+    """Discord operators do not necessarily have a site account, so admin_id is NULL."""
+    from models import AdminActionLog
+
+    db = SessionLocal()
+    try:
+        db.add(AdminActionLog(admin_id=None, action=f"discord:{action}", details=details))
+        db.commit()
+    finally:
+        db.close()
+
+
 # ── Anti-raid ─────────────────────────────────────────────────────────────
 
 def report_antiraid_event(event_type: str, discord_id: str = None, username: str = None, details: dict = None) -> int:

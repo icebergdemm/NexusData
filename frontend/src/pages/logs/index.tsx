@@ -44,6 +44,8 @@ export function LogsPage() {
   const [consoleOnly, setConsoleOnly] = useState(false)
   const [playerNames, setPlayerNames] = useState<string[]>([])
   const [search, setSearch] = useState("")
+  const [timeFrom, setTimeFrom] = useState("")
+  const [timeTo, setTimeTo] = useState("")
   const [page, setPage] = useState(1)
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const queryClient = useQueryClient()
@@ -66,7 +68,7 @@ export function LogsPage() {
   const effectiveSearch = debouncedSearch.length >= 2 ? debouncedSearch : ""
 
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
-    queryKey: ["logs-events", server, category, effectiveActionType, playerNames, effectiveSearch, page],
+    queryKey: ["logs-events", server, category, effectiveActionType, playerNames, effectiveSearch, timeFrom, timeTo, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "100" })
       if (server !== "all") params.set("server", server)
@@ -77,6 +79,8 @@ export function LogsPage() {
       // действия — всё применяется одновременно (AND на бэкенде).
       if (playerNames.length) params.set("player_names", playerNames.join(","))
       if (effectiveSearch) params.set("search", effectiveSearch)
+      if (timeFrom) params.set("time_from", timeFrom)
+      if (timeTo) params.set("time_to", timeTo)
       return api.get<LogsResponse>(`/api/v1/admin/logs/events?${params}`)
     },
     // Keep showing the previous page/results while the next query runs
@@ -146,6 +150,8 @@ export function LogsPage() {
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <SearchInput value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Поиск по тексту события (от 2 символов)..." className="max-w-56" />
         <PlayerNamesFilter names={playerNames} onChange={(v) => { setPlayerNames(v); setPage(1) }} server={server} />
+        <input type="datetime-local" value={timeFrom} onChange={(e) => { setTimeFrom(e.target.value); setPage(1) }} className="h-9 rounded-md border bg-background px-2 text-sm" title="С даты" />
+        <input type="datetime-local" value={timeTo} onChange={(e) => { setTimeTo(e.target.value); setPage(1) }} className="h-9 rounded-md border bg-background px-2 text-sm" title="По дату" />
         <Select value={server} onValueChange={(v) => { setServer(v); setPage(1) }}>
           <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
