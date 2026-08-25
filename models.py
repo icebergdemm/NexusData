@@ -1720,10 +1720,13 @@ class AICreatureAlert(Base):
     species = Column(String(100), nullable=False)
     distance_from_yasa_m_approx = Column(Integer, nullable=False)
     detected_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    # Refreshed from every snapshot while this entity is present. Contact
+    # tracking uses it for a grace period after the last member disappears.
+    last_seen_at = Column(DateTime, default=func.now(), nullable=True)
     # ``queued_at`` is a renewable delivery lease.  If a web worker dies after
     # claiming an alert, a later world snapshot may reclaim it once the lease
-    # expires.  ``delivered_at`` permanently suppresses only alerts that really
-    # reached the game server's action queue and were acknowledged.
+    # expires. ``delivered_at`` permanently consumes rows which either reached
+    # the game-server action queue or were absorbed into an existing track.
     queued_at = Column(DateTime, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
 

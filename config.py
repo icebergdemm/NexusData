@@ -78,6 +78,11 @@ class Settings(BaseSettings):
         "Hammerheadmatriarch,Watcher,Spineling_giant,Crawlerbroodmother,Carrier"
     )
     ai_abyss_creature_species: str = "Endworm,Charybdis,Latcher,Doomworm"
+    # New entity IDs may appear while one creature group is instantiated over
+    # several telemetry snapshots. Keep nearby same-species IDs under one
+    # tracked sonar contact instead of announcing every member separately.
+    ai_creature_alert_tracking_seconds: int = Field(600, ge=0, le=3600)
+    ai_creature_alert_tracking_distance_meters: int = Field(300, ge=0, le=5000)
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
     require_auth: bool = True

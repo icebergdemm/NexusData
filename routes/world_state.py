@@ -37,6 +37,7 @@ from services_creature_alerts import (
     LargeCreatureSpawn,
     detect_large_creature_spawns,
     find_yasa_position,
+    is_configured_large_species,
     is_nonhuman_character,
 )
 
@@ -268,11 +269,17 @@ def _claim_large_creature_alerts(
     row: WorldRound,
     spawns: list[LargeCreatureSpawn],
 ) -> list[AICreatureAlert]:
-    """Lease undelivered contact alerts across snapshots and web workers."""
+    """Lease new tracked contacts across snapshots and web workers.
 
-    claimed: list[AICreatureAlert] = []
+    Character IDs provide exact once-per-entity durability. A second layer
+    treats new IDs of the same species at approximately the same range from
+    Yasa as members of an already observed contact. Groups which the game
+    instantiates over several snapshots therefore produce one warning.
+    """
+
     now = datetime.utcnow()
     expired_before = now - timedelta(seconds=AI_CREATURE_ALERT_LEASE_SECONDS)
+    current: list[tuple[LargeCreatureSpawn, AICreatureAlert]] = []
     for spawn in spawns:
         # A configured large contact is reported exactly once for its game
         # character ID during the round. Crossing Yasa's perimeter later must
@@ -289,6 +296,7 @@ def _claim_large_creature_alerts(
             character_id=alert_character_id,
             species=spawn.species,
             distance_from_yasa_m_approx=spawn.distance_from_yasa_m_approx,
+            last_seen_at=now,
         )
         try:
             with db.begin_nested():
@@ -309,6 +317,73 @@ def _claim_large_creature_alerts(
         )
         if alert is None:
             continue
+        # Follow the live range of exact entity IDs. This does not emit a new
+        # warning; it only keeps later members attached to the current group.
+        alert.distance_from_yasa_m_approx = spawn.distance_from_yasa_m_approx
+        alert.last_seen_at = now
+        current.append((spawn, alert))
+
+    candidates = [
+        (spawn, alert)
+        for spawn, alert in current
+        if alert.delivered_at is None
+        and (alert.queued_at is None or alert.queued_at < expired_before)
+    ]
+    candidate_ids = {int(alert.id) for _, alert in candidates if alert.id is not None}
+
+    # A delivered or actively queued member which is still present keeps its
+    # track alive regardless of age. Recently announced contacts also remain
+    # anchors briefly after disappearing, covering staggered spawns and entity
+    # ID recycling without hiding a materially different range or species.
+    anchors = [alert for _, alert in current if int(alert.id or 0) not in candidate_ids]
+    tracking_seconds = settings.ai_creature_alert_tracking_seconds
+    if tracking_seconds > 0:
+        tracked_after = now - timedelta(seconds=tracking_seconds)
+        recent = (
+            db.query(AICreatureAlert)
+            .filter(
+                AICreatureAlert.round_id == str(row.round_id),
+                or_(
+                    AICreatureAlert.last_seen_at >= tracked_after,
+                    AICreatureAlert.delivered_at >= tracked_after,
+                    AICreatureAlert.queued_at >= tracked_after,
+                ),
+            )
+            .all()
+        )
+        anchor_ids = {int(alert.id) for alert in anchors if alert.id is not None}
+        anchors.extend(
+            alert
+            for alert in recent
+            if alert.id is not None
+            and int(alert.id) not in candidate_ids
+            and int(alert.id) not in anchor_ids
+        )
+
+    suppressed: list[AICreatureAlert] = []
+    pending: list[AICreatureAlert] = []
+    for spawn, alert in candidates:
+        if any(_same_tracked_contact(spawn, anchor) for anchor in anchors):
+            # The durable outbox has consumed this entity through an existing
+            # track, so it must never surface later as a delayed duplicate.
+            alert.delivered_at = now
+            alert.queued_at = None
+            suppressed.append(alert)
+        else:
+            pending.append(alert)
+
+    if suppressed:
+        db.flush()
+        logger.info(
+            "AI contact tracking: round_id=%s absorbed=%s active_tracks=%s species=%s",
+            row.round_id,
+            len(suppressed),
+            len(anchors),
+            ",".join(sorted({alert.species for alert in suppressed})),
+        )
+
+    claimed: list[AICreatureAlert] = []
+    for alert in pending:
         leased = (
             db.query(AICreatureAlert)
             .filter(
@@ -338,6 +413,42 @@ def _claim_large_creature_alerts(
             ",".join(sorted({spawn.species for spawn in spawns})),
         )
     return claimed
+
+
+def _same_tracked_contact(
+    spawn: LargeCreatureSpawn,
+    anchor: AICreatureAlert,
+) -> bool:
+    """Return whether a new entity belongs to an announced sonar contact."""
+
+    anchor_yasa_perimeter = str(anchor.character_id).startswith("yasa:")
+    anchor_contact_class = (
+        "large"
+        if is_configured_large_species(
+            anchor.species,
+            settings.ai_large_creature_species_list,
+        )
+        else "unclassified"
+    )
+    spawn_yasa_perimeter = spawn.contact_class != "large" and spawn.yasa_perimeter
+    return (
+        anchor_contact_class == spawn.contact_class
+        and anchor_yasa_perimeter == spawn_yasa_perimeter
+        and _species_tracking_key(anchor.species) == _species_tracking_key(spawn.species)
+        and abs(
+            int(anchor.distance_from_yasa_m_approx)
+            - int(spawn.distance_from_yasa_m_approx)
+        )
+        <= settings.ai_creature_alert_tracking_distance_meters
+    )
+
+
+def _species_tracking_key(species: str) -> str:
+    value = str(species).strip().casefold()
+    for suffix in ("_male", "_female", "_m", "_f"):
+        if value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
 
 
 def _try_queue_ai_large_creature_alert(

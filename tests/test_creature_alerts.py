@@ -442,7 +442,7 @@ def test_claim_is_durable_and_deduplicated_per_round_and_character():
         engine.dispose()
 
 
-def test_new_character_id_creates_one_new_alert_in_same_round():
+def test_new_character_id_extends_recent_same_species_track_without_alert():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -472,9 +472,84 @@ def test_new_character_id_creates_one_new_alert_in_same_round():
         db.commit()
 
         assert len(first) == 1
-        assert len(second) == 1
+        assert second == []
         assert repeat == []
         assert db.query(AICreatureAlert).count() == 2
+        tracked = (
+            db.query(AICreatureAlert)
+            .filter(AICreatureAlert.character_id == "43")
+            .one()
+        )
+        assert tracked.delivered_at is not None
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_tracked_contact_does_not_hide_different_species_or_distant_group():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        db.add(row)
+        db.commit()
+
+        assert len(
+            _claim_large_creature_alerts(
+                db,
+                row,
+                [LargeCreatureSpawn("42", "Moloch", 700)],
+            )
+        ) == 1
+        different_species = _claim_large_creature_alerts(
+            db,
+            row,
+            [LargeCreatureSpawn("43", "Hammerhead", 700)],
+        )
+        distant_group = _claim_large_creature_alerts(
+            db,
+            row,
+            [LargeCreatureSpawn("44", "Moloch", 1_100)],
+        )
+
+        assert [alert.character_id for alert in different_species] == ["43"]
+        assert [alert.character_id for alert in distant_group] == ["44"]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_same_species_contact_can_alert_again_after_tracking_window():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[WorldRound.__table__, AICreatureAlert.__table__],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        old = AICreatureAlert(
+            round_id="world-round",
+            character_id="42",
+            species="Moloch",
+            distance_from_yasa_m_approx=700,
+            delivered_at=datetime.utcnow() - timedelta(minutes=11),
+            last_seen_at=datetime.utcnow() - timedelta(minutes=11),
+        )
+        db.add_all([row, old])
+        db.commit()
+
+        claimed = _claim_large_creature_alerts(
+            db,
+            row,
+            [LargeCreatureSpawn("43", "Moloch", 700)],
+        )
+
+        assert [alert.character_id for alert in claimed] == ["43"]
     finally:
         db.close()
         engine.dispose()
@@ -544,7 +619,7 @@ def test_undelivered_alert_is_released_after_lease_but_delivered_alert_is_not():
         engine.dispose()
 
 
-def test_ai_payload_contains_only_scope_and_approximate_meters():
+def test_ai_payload_contains_contact_names_and_approximate_meters():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -584,10 +659,11 @@ def test_ai_payload_contains_only_scope_and_approximate_meters():
             "contact_class": "large",
             "yasa_perimeter": False,
             "distance_from_yasa_m_approx": 725,
+            "contact_names": ["Moloch"],
         }
         serialized = repr(job.payload).casefold()
-        assert "moloch" not in serialized
-        assert "species" not in serialized
+        assert "moloch" in serialized
+        assert "contact_names" in serialized
         assert "direction" not in serialized
         assert "azimuth" not in serialized
         assert "clock" not in serialized
@@ -645,12 +721,14 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "contact_class": "large",
                 "yasa_perimeter": False,
                 "distance_from_yasa_m_approx": 700,
+                "contact_names": ["Moloch"],
             },
             {
                 "contact_scope": "single",
                 "contact_class": "unclassified",
                 "yasa_perimeter": True,
                 "distance_from_yasa_m_approx": 150,
+                "contact_names": ["Crawler"],
             },
         ]
     finally:

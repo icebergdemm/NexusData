@@ -735,21 +735,8 @@ def _queue_ai_large_creature_alert(
         return False
 
     conversation_round_id = _resolve_ai_conversation_round_id(db, server_name)
-    grouped_alerts: dict[tuple[str, bool], List[AICreatureAlert]] = {}
-    for alert in alerts:
-        contact_class = (
-            "large"
-            if is_configured_large_species(
-                alert.species,
-                settings.ai_large_creature_species_list,
-            )
-            else "unclassified"
-        )
-        yasa_perimeter = str(alert.character_id).startswith("yasa:")
-        grouped_alerts.setdefault((contact_class, yasa_perimeter), []).append(alert)
-
     all_queued = True
-    for (contact_class, yasa_perimeter), group in grouped_alerts.items():
+    for contact_class, yasa_perimeter, group in _group_ai_creature_alerts(alerts):
         first_alert = min(group, key=lambda alert: int(alert.id or 0))
         nearest_distance = min(
             int(alert.distance_from_yasa_m_approx) for alert in group
@@ -772,6 +759,9 @@ def _queue_ai_large_creature_alert(
                         "contact_class": contact_class,
                         "yasa_perimeter": yasa_perimeter,
                         "distance_from_yasa_m_approx": nearest_distance,
+                        "contact_names": sorted(
+                            {str(alert.species).strip() for alert in group}
+                        ),
                     },
                 },
                 server_name=server_name,
@@ -798,6 +788,42 @@ def _queue_ai_large_creature_alert(
             nearest_distance,
         )
     return all_queued
+
+
+def _group_ai_creature_alerts(
+    alerts: List[AICreatureAlert],
+) -> List[tuple[str, bool, List[AICreatureAlert]]]:
+    """Combine one snapshot's nearby contacts without merging distant groups."""
+
+    buckets: dict[tuple[str, bool], List[List[AICreatureAlert]]] = {}
+    for alert in alerts:
+        contact_class = (
+            "large"
+            if is_configured_large_species(
+                alert.species,
+                settings.ai_large_creature_species_list,
+            )
+            else "unclassified"
+        )
+        yasa_perimeter = str(alert.character_id).startswith("yasa:")
+        distance_groups = buckets.setdefault((contact_class, yasa_perimeter), [])
+        for group in distance_groups:
+            distances = [
+                int(member.distance_from_yasa_m_approx) for member in group
+            ] + [int(alert.distance_from_yasa_m_approx)]
+            if max(distances) - min(distances) <= (
+                settings.ai_creature_alert_tracking_distance_meters
+            ):
+                group.append(alert)
+                break
+        else:
+            distance_groups.append([alert])
+
+    return [
+        (contact_class, yasa_perimeter, group)
+        for (contact_class, yasa_perimeter), distance_groups in buckets.items()
+        for group in distance_groups
+    ]
 
 
 def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> bool:
