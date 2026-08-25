@@ -1124,6 +1124,19 @@ def _post_ai_dispatcher_sync(
                 "round_briefing",
                 "threat_alert",
             }
+            report_disabled = (
+                system_message
+                and result_status == "ignored"
+                and result.get("reason") == "report_disabled"
+            )
+            if report_disabled:
+                logger.info(
+                    "AI dispatcher report disabled: event_id=%s server=%s message_type=%r",
+                    payload.get("event_id"),
+                    server_name,
+                    payload.get("message_type"),
+                )
+                return True
             logger.warning(
                 "AI dispatcher returned without answer: event_id=%s server=%s "
                 "message_type=%r status=%r retry=%s",

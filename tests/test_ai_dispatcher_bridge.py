@@ -541,6 +541,31 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         self.assertFalse(delivered)
         deliver_replies.assert_not_called()
 
+    @patch("routes.dispatch._deliver_ai_dispatcher_replies")
+    @patch("routes.dispatch.httpx.Client", _FakeClient)
+    def test_disabled_system_report_is_acknowledged_without_delivery(self, deliver_replies):
+        _FakeClient.response_payload = {
+            "status": "ignored",
+            "event_id": "nexus-round-briefing-12",
+            "reason": "report_disabled",
+        }
+
+        delivered = _post_ai_dispatcher_sync(
+            "http://dispatcher/api/v1/dispatcher/messages",
+            "dispatcher-secret",
+            {
+                "event_id": "nexus-round-briefing-12",
+                "round_id": "round-1",
+                "server_name": "ASPER1",
+                "text": "Служебное событие начала выхода.",
+                "message_type": "round_briefing",
+            },
+            "ASPER1",
+        )
+
+        self.assertTrue(delivered)
+        deliver_replies.assert_not_called()
+
 
 class AIReplyDeliveryQueueTests(unittest.TestCase):
     def tearDown(self):
