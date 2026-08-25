@@ -717,7 +717,7 @@ def test_distant_ai_payload_hides_contact_names():
         engine.dispose()
 
 
-def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
+def test_yasa_perimeter_contacts_share_one_alert_even_when_sizes_differ():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -777,22 +777,74 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "contact_ids": ["42"],
             },
             {
-                "contact_scope": "single",
-                "contact_class": "unclassified",
-                "yasa_perimeter": True,
-                "distance_from_yasa_m_approx": 150,
-                "contact_names": ["Crawler"],
-                "contact_ids": ["43"],
-            },
-            {
-                "contact_scope": "single",
+                "contact_scope": "group",
                 "contact_class": "large",
                 "yasa_perimeter": True,
-                "distance_from_yasa_m_approx": 225,
-                "contact_names": ["Hammerhead"],
-                "contact_ids": ["44"],
+                "distance_from_yasa_m_approx": 150,
+                "contact_names": ["Crawler", "Hammerhead"],
+                "contact_ids": ["43", "44"],
             },
         ]
+        assert enqueue.call_count == 2
+        assert enqueue.call_args_list[1].args[0].creature_alert_ids == (22, 23)
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_regular_and_giant_spinelings_near_yasa_queue_one_warning():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            RoundEvent.__table__,
+            WorldRound.__table__,
+            AICreatureAlert.__table__,
+            AppSetting.__table__,
+        ],
+    )
+    db = Session(engine)
+    try:
+        row = WorldRound(round_id="world-round", server_name="ASPER1")
+        alerts = [
+            AICreatureAlert(
+                id=31,
+                round_id="world-round",
+                character_id="yasa:spineling-1",
+                species="Spineling",
+                distance_from_yasa_m_approx=110,
+                yasa_perimeter=True,
+            ),
+            AICreatureAlert(
+                id=32,
+                round_id="world-round",
+                character_id="giant-spineling-1",
+                species="Spineling_giant",
+                distance_from_yasa_m_approx=130,
+                yasa_perimeter=True,
+            ),
+        ]
+        db.add_all([row, *alerts])
+        db.commit()
+
+        with (
+            patch("routes.dispatch.settings.ai_dispatcher_url", "http://dispatcher/api"),
+            patch("routes.dispatch.settings.ai_dispatcher_api_key", "secret"),
+            patch("routes.dispatch._enqueue_ai_dispatch_job", return_value=True) as enqueue,
+        ):
+            assert _queue_ai_large_creature_alert(row, alerts, db)
+
+        assert enqueue.call_count == 1
+        job = enqueue.call_args.args[0]
+        assert job.creature_alert_ids == (31, 32)
+        assert job.payload["threat_context"] == {
+            "contact_scope": "group",
+            "contact_class": "large",
+            "yasa_perimeter": True,
+            "distance_from_yasa_m_approx": 110,
+            "contact_names": ["Spineling", "Spineling_giant"],
+            "contact_ids": ["giant-spineling-1", "spineling-1"],
+        }
     finally:
         db.close()
         engine.dispose()

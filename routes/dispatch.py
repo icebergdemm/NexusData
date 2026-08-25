@@ -1058,7 +1058,14 @@ def _queue_ai_large_creature_alert(
 def _group_ai_creature_alerts(
     alerts: List[AICreatureAlert],
 ) -> List[tuple[str, bool, List[AICreatureAlert]]]:
-    """Combine one snapshot's nearby contacts without merging distant groups."""
+    """Combine one snapshot's nearby contacts without merging distant groups.
+
+    Inside Yasa's perimeter every contact is part of the same local optical and
+    sonar picture. Splitting that picture by ``large``/``unclassified`` caused
+    two consecutive warnings when regular and giant spinelings spawned
+    together. Nearby perimeter marks are therefore grouped first and the whole
+    group is classified as large when at least one member is large.
+    """
 
     buckets: dict[tuple[str, bool], List[List[AICreatureAlert]]] = {}
     for alert in alerts:
@@ -1073,7 +1080,8 @@ def _group_ai_creature_alerts(
         yasa_perimeter = bool(alert.yasa_perimeter) or str(
             alert.character_id
         ).startswith("yasa:")
-        distance_groups = buckets.setdefault((contact_class, yasa_perimeter), [])
+        bucket_class = "perimeter" if yasa_perimeter else contact_class
+        distance_groups = buckets.setdefault((bucket_class, yasa_perimeter), [])
         for group in distance_groups:
             distances = [
                 int(member.distance_from_yasa_m_approx) for member in group
@@ -1086,11 +1094,24 @@ def _group_ai_creature_alerts(
         else:
             distance_groups.append([alert])
 
-    return [
-        (contact_class, yasa_perimeter, group)
-        for (contact_class, yasa_perimeter), distance_groups in buckets.items()
-        for group in distance_groups
-    ]
+    grouped: List[tuple[str, bool, List[AICreatureAlert]]] = []
+    for (bucket_class, yasa_perimeter), distance_groups in buckets.items():
+        for group in distance_groups:
+            contact_class = bucket_class
+            if yasa_perimeter:
+                contact_class = (
+                    "large"
+                    if any(
+                        is_configured_large_species(
+                            member.species,
+                            settings.ai_large_creature_species_list,
+                        )
+                        for member in group
+                    )
+                    else "unclassified"
+                )
+            grouped.append((contact_class, yasa_perimeter, group))
+    return grouped
 
 
 def _enqueue_ai_dispatch_job(job: _AIDispatchJob) -> bool:
