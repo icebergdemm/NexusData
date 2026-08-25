@@ -26,7 +26,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from database import get_db, get_game_db
@@ -664,7 +664,77 @@ async def api_get_world_state(round_id: str, request: Request, db: Session = Dep
     }
 
 
-def _serialize_round_full(r: WorldRound) -> dict:
+def _serialize_ai_tracked_contacts(db: Session, r: WorldRound) -> list[dict]:
+    """Expose durable contact movement facts to the AI-only client payload."""
+
+    tracked_after = datetime.utcnow() - timedelta(
+        seconds=max(
+            settings.ai_creature_alert_tracking_seconds,
+            ACTIVE_THRESHOLD_SECONDS,
+        )
+    )
+    try:
+        rows = (
+            db.query(AICreatureAlert)
+            .filter(
+                AICreatureAlert.round_id == str(r.round_id),
+                AICreatureAlert.last_seen_at >= tracked_after,
+            )
+            .order_by(AICreatureAlert.last_seen_at.desc(), AICreatureAlert.id)
+            .all()
+        )
+    except SQLAlchemyError:
+        # Keep the client endpoint available during a rolling schema update.
+        db.rollback()
+        return []
+    result: list[dict] = []
+    for row in rows:
+        distance = int(row.distance_from_yasa_m_approx)
+        reported_distance = (
+            int(row.reported_distance_from_yasa_m_approx)
+            if row.reported_distance_from_yasa_m_approx is not None
+            else None
+        )
+        change = distance - reported_distance if reported_distance is not None else None
+        if change is None:
+            movement = "unknown"
+        elif change <= -25:
+            movement = "closer"
+        elif change >= 25:
+            movement = "farther"
+        else:
+            movement = "stable"
+        yasa_perimeter = distance <= 250
+        result.append(
+            {
+                "contact_id": str(row.character_id).removeprefix("yasa:"),
+                "contact_class": (
+                    "large"
+                    if is_configured_large_species(
+                        row.species,
+                        settings.ai_large_creature_species_list,
+                    )
+                    else "unclassified"
+                ),
+                "yasa_perimeter": yasa_perimeter,
+                "distance_from_yasa_m_approx": distance,
+                "reported_distance_from_yasa_m_approx": reported_distance,
+                "distance_change_from_reported_m": change,
+                "movement_relative_to_yasa": movement,
+                "contact_names": [row.species] if yasa_perimeter else [],
+                "last_seen_at": (
+                    row.last_seen_at.isoformat() if row.last_seen_at else None
+                ),
+            }
+        )
+    return result
+
+
+def _serialize_round_full(
+    r: WorldRound,
+    *,
+    tracked_contacts: Optional[list[dict]] = None,
+) -> dict:
     """Geometry + dynamic state combined — unlike the admin API's split
     endpoints above (kept separate so the ~3s poll never re-sends the
     potentially multi-MB outline), an external client fetching a one-shot
@@ -702,6 +772,7 @@ def _serialize_round_full(r: WorldRound) -> dict:
         "doors_state": r.last_doors_state or [],
         "reactors": r.last_reactors or [],
         "characters": r.last_characters or [],
+        "tracked_contacts": tracked_contacts or [],
         "last_update_at": r.last_update_at.isoformat() if r.last_update_at else None,
         "is_active": _is_active(r),
     }
@@ -747,11 +818,30 @@ async def api_client_world_state(
         r = query.first()
         if not r:
             raise HTTPException(status_code=404, detail="Раунд не найден")
-        return _gzip_json_response({"rounds": [_serialize_round_full(r)]})
+        return _gzip_json_response(
+            {
+                "rounds": [
+                    _serialize_round_full(
+                        r,
+                        tracked_contacts=_serialize_ai_tracked_contacts(db, r),
+                    )
+                ]
+            }
+        )
 
     threshold = datetime.utcnow() - timedelta(seconds=ACTIVE_THRESHOLD_SECONDS)
     query = db.query(WorldRound).filter(WorldRound.last_update_at >= threshold)
     if normalized_server_name:
         query = query.filter(WorldRound.server_name == normalized_server_name)
     rows = query.all()
-    return _gzip_json_response({"rounds": [_serialize_round_full(r) for r in rows]})
+    return _gzip_json_response(
+        {
+            "rounds": [
+                _serialize_round_full(
+                    r,
+                    tracked_contacts=_serialize_ai_tracked_contacts(db, r),
+                )
+                for r in rows
+            ]
+        }
+    )

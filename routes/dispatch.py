@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import Optional, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -30,7 +31,8 @@ from security import verify_external_api_key_dependency, verify_client_api_key_d
 from config import get_settings
 from models import (
     DispatchMessage, RoundEvent, AdminUser, AdminSession, AICreatureAlert,
-    ServerAction, PlayerPunishment, PlayerData, WarehouseItem, AppSetting, WorldRound,
+    AIDispatcherReminder, ServerAction, PlayerPunishment, PlayerData, WarehouseItem,
+    AppSetting, WorldRound,
 )
 from schemas import AIDispatcherConfigIn, DispatchMessageIn, RoundStartIn, RoundEndIn
 from services_creature_alerts import is_configured_large_species
@@ -54,6 +56,11 @@ _AI_BRIEFING_RETRY_DELAY_SECONDS = 8.0
 _AI_BRIEFING_MAX_ATTEMPTS = 10
 _AI_CREATURE_ALERT_RETRY_DELAY_SECONDS = 5.0
 _AI_CREATURE_ALERT_MAX_ATTEMPTS = 3
+_AI_REMINDER_RETRY_DELAY_SECONDS = 5.0
+_AI_REMINDER_MAX_ATTEMPTS = 3
+_AI_REMINDER_LEASE_SECONDS = 300
+_AI_REMINDER_MAX_BATCH = 20
+_AI_REMINDER_MAX_PER_ROUND = 32
 _AI_BRIEFING_LIFECYCLE_MATCH_SECONDS = 180.0
 _AI_MAX_REPLY_PARTS = 8
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
@@ -69,6 +76,7 @@ class _AIDispatchJob:
     retry_delay_seconds: float = 0.0
     max_attempts: int = 1
     creature_alert_ids: tuple[int, ...] = ()
+    reminder_ids: tuple[int, ...] = ()
     at_most_once_delivery: bool = False
     enqueued_at: float = field(default_factory=time.monotonic)
 
@@ -460,6 +468,11 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         "server_name": server_name,
         "text": msg.text,
         "sender_name": msg.player_name,
+        "communication_context": _build_ai_communication_context(
+            db,
+            server_name,
+            sender_name=msg.player_name,
+        ),
     }
     _enqueue_ai_dispatch_job(
         _AIDispatchJob(
@@ -517,6 +530,217 @@ def _latest_world_round(db: Session, server_name: str) -> Optional[WorldRound]:
         .order_by(WorldRound.last_update_at.desc(), WorldRound.id.desc())
         .first()
     )
+
+
+def _build_ai_communication_context(
+    db: Session,
+    server_name: str,
+    *,
+    sender_name: Optional[str] = None,
+) -> dict:
+    """Describe roleplay addressees without exposing world object IDs to the model."""
+
+    def roleplay_vessel_name(raw_name: str) -> str:
+        clean_name = raw_name.strip()
+        normalized = clean_name.casefold().replace("_", "").replace("-", "")
+        if "beacon" in normalized or "маяк" in normalized:
+            return "Маяк"
+        if any(
+            token in normalized
+            for token in ("снегир", "snegir", "snowfinch", "shuttle")
+        ):
+            return "Снегирь"
+        return clean_name.replace("_", " ")
+
+    world_round = _latest_world_round(db, server_name)
+    raw_vessel_name = (
+        world_round.sub_name.strip()
+        if world_round is not None
+        and isinstance(world_round.sub_name, str)
+        and world_round.sub_name.strip()
+        else None
+    )
+    vessel_name = roleplay_vessel_name(raw_vessel_name) if raw_vessel_name else None
+    source = None
+    targets: list[dict] = []
+    submarine_names_by_id: dict[str, str] = {}
+    if world_round is not None and isinstance(world_round.submarines, list):
+        submarine_names_by_id = {
+            str(item["id"]): roleplay_vessel_name(str(item["name"]))
+            for item in world_round.submarines
+            if isinstance(item, dict)
+            and item.get("id") is not None
+            and isinstance(item.get("name"), str)
+            and item["name"].strip()
+        }
+    occupied_submarine_ids: set[str] = set()
+    if world_round is not None and isinstance(world_round.last_characters, list):
+        for character in world_round.last_characters:
+            if not isinstance(character, dict) or character.get("human") not in {
+                True,
+                1,
+                "1",
+                "true",
+            }:
+                continue
+            character_submarine_id = None
+            for key in ("sub", "sub_id", "submarine", "submarine_id"):
+                value = character.get(key)
+                if value is not None:
+                    character_submarine_id = str(value)
+                    occupied_submarine_ids.add(character_submarine_id)
+                    break
+            if sender_name and sender_name.strip():
+                character_name = next(
+                    (
+                        str(character[key]).strip()
+                        for key in ("name", "character_name", "player_name")
+                        if isinstance(character.get(key), str)
+                        and str(character[key]).strip()
+                    ),
+                    None,
+                )
+                if (
+                    character_name
+                    and character_name.casefold() == sender_name.strip().casefold()
+                ):
+                    vessel_name_for_sender = submarine_names_by_id.get(
+                        character_submarine_id or "",
+                        vessel_name,
+                    )
+                    source = {
+                        "kind": "player",
+                        "name": sender_name.strip(),
+                        "vessel_name": vessel_name_for_sender,
+                    }
+
+    if sender_name and sender_name.strip() and source is None:
+        source = {
+            "kind": "player",
+            "name": sender_name.strip(),
+            "vessel_name": vessel_name,
+        }
+    if source is not None:
+        targets.append(source)
+
+    if vessel_name:
+        targets.append({"kind": "vessel", "name": vessel_name, "vessel_name": None})
+
+    if world_round is not None and isinstance(world_round.submarines, list):
+        for item in world_round.submarines:
+            if not isinstance(item, dict) or item.get("id") is None:
+                continue
+            raw_name = item.get("name")
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                continue
+            name = raw_name.strip()
+            normalized = name.casefold().replace("_", "").replace("-", "")
+            if raw_vessel_name and name.casefold() == raw_vessel_name.casefold():
+                continue
+            if any(
+                token in normalized
+                for token in ("снегир", "snegir", "snowfinch", "shuttle")
+            ):
+                targets.append(
+                    {"kind": "supply_shuttle", "name": "Снегирь", "vessel_name": None}
+                )
+                continue
+            if (
+                "beacon" in normalized or "маяк" in normalized
+            ) and str(item["id"]) in occupied_submarine_ids:
+                roleplay_name = "Маяк" if "beaconstation" in normalized else name
+                targets.append(
+                    {"kind": "beacon", "name": roleplay_name, "vessel_name": None}
+                )
+
+    unique_targets: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for target in targets:
+        key = (
+            str(target.get("kind") or ""),
+            str(target.get("name") or "").casefold(),
+            str(target.get("vessel_name") or "").casefold(),
+        )
+        if key not in seen:
+            seen.add(key)
+            unique_targets.append(target)
+
+    if source is not None:
+        default_target = source["name"]
+        if source.get("vessel_name"):
+            default_target = f'{source["name"]}, борт «{source["vessel_name"]}»'
+    elif vessel_name:
+        default_target = f'Борт «{vessel_name}»'
+    else:
+        default_target = "Неопределено"
+    journal_started_at = world_round.created_at if world_round is not None else None
+    try:
+        latest_start = (
+            db.query(RoundEvent)
+            .filter(
+                RoundEvent.server_name == server_name,
+                RoundEvent.event_type == "start",
+            )
+            .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
+            .first()
+        )
+        latest_end = (
+            db.query(RoundEvent)
+            .filter(
+                RoundEvent.server_name == server_name,
+                RoundEvent.event_type == "end",
+            )
+            .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
+            .first()
+        )
+        if latest_start is not None and (
+            latest_end is None or latest_start.created_at > latest_end.created_at
+        ):
+            journal_started_at = latest_start.created_at
+        elif latest_end is not None and (
+            journal_started_at is None or journal_started_at <= latest_end.created_at
+        ):
+            journal_started_at = None
+    except SQLAlchemyError:
+        db.rollback()
+    try:
+        if journal_started_at is None:
+            recent_rows = []
+        else:
+            recent_rows = (
+                db.query(DispatchMessage)
+                .filter(
+                    DispatchMessage.server_name == server_name,
+                    # SQLite stores CURRENT_TIMESTAMP without fractions while
+                    # SQLAlchemy binds ``.000000``; one-second tolerance also
+                    # covers a radio line racing the round-start insert.
+                    DispatchMessage.created_at
+                    >= journal_started_at - timedelta(seconds=1),
+                )
+                .order_by(DispatchMessage.created_at.desc(), DispatchMessage.id.desc())
+                .limit(16)
+                .all()
+            )
+    except SQLAlchemyError:
+        # Supports rolling migrations and isolated unit-test schemas. The
+        # current request still remains available through the normal envelope.
+        db.rollback()
+        recent_rows = []
+    return {
+        "source": source,
+        "default_target": default_target,
+        "available_targets": unique_targets,
+        "recent_messages": [
+            {
+                "sender_name": row.player_name,
+                "sender_type": row.sender_type,
+                "text": row.text,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in reversed(recent_rows)
+            if row.sender_type in {"player", "dispatcher"}
+        ],
+    }
 
 
 def _world_round_navigation_ready(world_round: WorldRound) -> bool:
@@ -612,6 +836,27 @@ def _queue_ai_round_briefing(
                     "mission": event.mission,
                     "location": event.location,
                 },
+                "communication_context": (
+                    _build_ai_communication_context(db, server_name)
+                    if db is not None
+                    else {
+                        "source": None,
+                        "default_target": (
+                            f'Борт «{event.submarine_name}»'
+                            if event.submarine_name
+                            else "Неопределено"
+                        ),
+                        "available_targets": (
+                            [{
+                                "kind": "vessel",
+                                "name": event.submarine_name,
+                                "vessel_name": None,
+                            }]
+                            if event.submarine_name
+                            else []
+                        ),
+                    }
+                ),
             },
             server_name=server_name,
             retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
@@ -682,6 +927,10 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
                     "mission": None,
                     "location": world_round.level_name,
                 },
+                "communication_context": _build_ai_communication_context(
+                    db,
+                    server_name,
+                ),
             },
             server_name=server_name,
             retry_delay_seconds=_AI_BRIEFING_RETRY_DELAY_SECONDS,
@@ -767,7 +1016,14 @@ def _queue_ai_large_creature_alert(
                             if yasa_perimeter
                             else []
                         ),
+                        "contact_ids": sorted(
+                            {str(alert.character_id).removeprefix("yasa:") for alert in group}
+                        ),
                     },
+                    "communication_context": _build_ai_communication_context(
+                        db,
+                        server_name,
+                    ),
                 },
                 server_name=server_name,
                 retry_delay_seconds=_AI_CREATURE_ALERT_RETRY_DELAY_SECONDS,
@@ -966,6 +1222,8 @@ def _ai_dispatch_worker(server_name: str, work_queue: Queue) -> None:
                     job.creature_alert_ids,
                     delivered=delivered,
                 )
+            if job.reminder_ids:
+                _finish_ai_reminder_delivery(job.reminder_ids, delivered=delivered)
             work_queue.task_done()
 
 
@@ -980,22 +1238,22 @@ def _finish_ai_creature_alert_delivery(
         return
     callback_db = GameSessionLocal()
     try:
-        values = (
-            {
-                AICreatureAlert.delivered_at: datetime.utcnow(),
-                AICreatureAlert.queued_at: None,
-            }
-            if delivered
-            else {AICreatureAlert.queued_at: None}
-        )
-        updated = (
+        rows = (
             callback_db.query(AICreatureAlert)
             .filter(
                 AICreatureAlert.id.in_(alert_ids),
                 AICreatureAlert.delivered_at.is_(None),
             )
-            .update(values, synchronize_session=False)
+            .all()
         )
+        for row in rows:
+            row.queued_at = None
+            if delivered:
+                row.delivered_at = datetime.utcnow()
+                row.reported_distance_from_yasa_m_approx = (
+                    row.distance_from_yasa_m_approx
+                )
+        updated = len(rows)
         callback_db.commit()
         logger.info(
             "AI large-creature alert delivery state: alert_ids=%s delivered=%s updated=%s",
@@ -1013,6 +1271,252 @@ def _finish_ai_creature_alert_delivery(
         )
     finally:
         callback_db.close()
+
+
+def _finish_ai_reminder_delivery(
+    reminder_ids: tuple[int, ...],
+    *,
+    delivered: bool,
+) -> None:
+    callback_db = GameSessionLocal()
+    try:
+        values = (
+            {
+                AIDispatcherReminder.completed_at: datetime.utcnow(),
+                AIDispatcherReminder.queued_at: None,
+            }
+            if delivered
+            else {AIDispatcherReminder.queued_at: None}
+        )
+        callback_db.query(AIDispatcherReminder).filter(
+            AIDispatcherReminder.id.in_(reminder_ids),
+            AIDispatcherReminder.completed_at.is_(None),
+            AIDispatcherReminder.cancelled_at.is_(None),
+        ).update(values, synchronize_session=False)
+        callback_db.commit()
+    except Exception:
+        callback_db.rollback()
+        logger.exception("AI reminder delivery state update failed: ids=%s", reminder_ids)
+    finally:
+        callback_db.close()
+
+
+def _persist_ai_dispatcher_reminders(
+    result: dict,
+    *,
+    payload: dict,
+    server_name: str,
+) -> int:
+    """Persist model-authored follow-ups idempotently before returning."""
+
+    raw_reminders = result.get("reminders")
+    if not isinstance(raw_reminders, list) or not raw_reminders:
+        return 0
+
+    source_event_id = str(payload.get("event_id") or "unknown")[:128]
+    round_id = str(payload.get("round_id") or "")[:128]
+    if not round_id:
+        logger.warning(
+            "AI reminder ignored without round_id: event_id=%s server=%s",
+            source_event_id,
+            server_name,
+        )
+        return 0
+    communication_context = payload.get("communication_context")
+    if not isinstance(communication_context, dict):
+        communication_context = None
+
+    now = datetime.utcnow()
+    reminder_db = GameSessionLocal()
+    inserted = 0
+    try:
+        existing_count = (
+            reminder_db.query(AIDispatcherReminder)
+            .filter(
+                AIDispatcherReminder.round_id == round_id,
+                AIDispatcherReminder.server_name == server_name,
+                AIDispatcherReminder.cancelled_at.is_(None),
+            )
+            .count()
+        )
+        for sequence, raw in enumerate(raw_reminders[:2], start=1):
+            if existing_count + inserted >= _AI_REMINDER_MAX_PER_ROUND:
+                logger.warning(
+                    "AI reminder round limit reached: round_id=%s server=%s max=%s",
+                    round_id,
+                    server_name,
+                    _AI_REMINDER_MAX_PER_ROUND,
+                )
+                break
+            if not isinstance(raw, dict):
+                continue
+            note = " ".join(str(raw.get("note") or "").split())[:1000]
+            try:
+                delay_seconds = int(raw.get("delay_seconds"))
+            except (TypeError, ValueError):
+                continue
+            if not note or not 10 <= delay_seconds <= 3600:
+                logger.warning(
+                    "AI reminder rejected: event_id=%s sequence=%s delay=%r note=%s",
+                    source_event_id,
+                    sequence,
+                    raw.get("delay_seconds"),
+                    bool(note),
+                )
+                continue
+            reminder = AIDispatcherReminder(
+                source_event_id=source_event_id,
+                sequence=sequence,
+                round_id=round_id,
+                server_name=server_name,
+                note=note,
+                communication_context=communication_context,
+                due_at=now + timedelta(seconds=delay_seconds),
+            )
+            try:
+                with reminder_db.begin_nested():
+                    reminder_db.add(reminder)
+                    reminder_db.flush()
+            except IntegrityError:
+                continue
+            inserted += 1
+        reminder_db.commit()
+    except Exception:
+        reminder_db.rollback()
+        logger.exception(
+            "AI reminder persistence failed: event_id=%s server=%s",
+            source_event_id,
+            server_name,
+        )
+        return 0
+    finally:
+        reminder_db.close()
+
+    if inserted:
+        logger.info(
+            "AI reminders persisted: event_id=%s server=%s count=%s",
+            source_event_id,
+            server_name,
+            inserted,
+        )
+    return inserted
+
+
+def _queue_due_ai_dispatcher_reminders() -> dict:
+    """Lease due notes and enqueue fresh model turns for the same round."""
+
+    if not (settings.ai_dispatcher_url or "").strip() or not (
+        settings.ai_dispatcher_api_key or ""
+    ).strip():
+        return {"status": "not_configured", "queued": 0, "cancelled": 0}
+
+    reminder_db = GameSessionLocal()
+    queued_count = 0
+    cancelled_count = 0
+    now = datetime.utcnow()
+    expired_before = now - timedelta(seconds=_AI_REMINDER_LEASE_SECONDS)
+    try:
+        if not _ai_dispatcher_enabled(reminder_db):
+            return {"status": "disabled", "queued": 0, "cancelled": 0}
+        due_rows = (
+            reminder_db.query(AIDispatcherReminder)
+            .filter(
+                AIDispatcherReminder.due_at <= now,
+                AIDispatcherReminder.completed_at.is_(None),
+                AIDispatcherReminder.cancelled_at.is_(None),
+                (
+                    AIDispatcherReminder.queued_at.is_(None)
+                    | (AIDispatcherReminder.queued_at < expired_before)
+                ),
+            )
+            .order_by(AIDispatcherReminder.due_at, AIDispatcherReminder.id)
+            .limit(_AI_REMINDER_MAX_BATCH)
+            .all()
+        )
+        for reminder in due_rows:
+            if (
+                _resolve_ai_conversation_round_id(
+                    reminder_db,
+                    reminder.server_name,
+                )
+                != reminder.round_id
+            ):
+                reminder.cancelled_at = now
+                cancelled_count += 1
+                continue
+            claimed = (
+                reminder_db.query(AIDispatcherReminder)
+                .filter(
+                    AIDispatcherReminder.id == reminder.id,
+                    AIDispatcherReminder.completed_at.is_(None),
+                    AIDispatcherReminder.cancelled_at.is_(None),
+                    (
+                        AIDispatcherReminder.queued_at.is_(None)
+                        | (AIDispatcherReminder.queued_at < expired_before)
+                    ),
+                )
+                .update(
+                    {AIDispatcherReminder.queued_at: now},
+                    synchronize_session=False,
+                )
+            )
+            reminder_db.commit()
+            if not claimed:
+                continue
+            queued = _enqueue_ai_dispatch_job(
+                _AIDispatchJob(
+                    url=settings.ai_dispatcher_url.strip(),
+                    api_key=settings.ai_dispatcher_api_key.strip(),
+                    payload={
+                        "event_id": f"nexus-reminder-{reminder.id}",
+                        "round_id": reminder.round_id,
+                        "server_name": reminder.server_name,
+                        "text": "Отложенная проверка диспетчерского поста.",
+                        "sender_name": None,
+                        "message_type": "scheduled_follow_up",
+                        "follow_up_context": {
+                            "reminder_id": reminder.id,
+                            "note": reminder.note,
+                            "scheduled_at": reminder.created_at.isoformat(),
+                            "due_at": reminder.due_at.isoformat(),
+                        },
+                        "communication_context": (
+                            reminder.communication_context
+                            if isinstance(reminder.communication_context, dict)
+                            else _build_ai_communication_context(
+                                reminder_db,
+                                reminder.server_name,
+                            )
+                        ),
+                    },
+                    server_name=reminder.server_name,
+                    retry_delay_seconds=_AI_REMINDER_RETRY_DELAY_SECONDS,
+                    max_attempts=_AI_REMINDER_MAX_ATTEMPTS,
+                    reminder_ids=(int(reminder.id),),
+                )
+            )
+            if queued:
+                queued_count += 1
+            else:
+                reminder.queued_at = None
+                reminder_db.commit()
+        reminder_db.commit()
+    except Exception:
+        reminder_db.rollback()
+        logger.exception("AI due-reminder queue failed")
+        return {
+            "status": "error",
+            "queued": queued_count,
+            "cancelled": cancelled_count,
+        }
+    finally:
+        reminder_db.close()
+
+    return {
+        "status": "ok",
+        "queued": queued_count,
+        "cancelled": cancelled_count,
+    }
 
 
 @contextmanager
@@ -1180,19 +1684,36 @@ def _post_ai_dispatcher_sync(
                 system_message,
             )
             return not system_message
-        replies = _extract_ai_dispatcher_replies(result)
-        if not replies:
+        default_target = (
+            (payload.get("communication_context") or {}).get("default_target")
+            if isinstance(payload.get("communication_context"), dict)
+            else None
+        ) or "Неопределено"
+        transmissions = _extract_ai_dispatcher_transmissions(
+            result,
+            default_target=default_target,
+        )
+        _persist_ai_dispatcher_reminders(
+            result,
+            payload=payload,
+            server_name=server_name,
+        )
+        if not transmissions:
             logger.warning("AI dispatcher returned an empty reply for %s", payload["event_id"])
             return False
 
+        delivery_kwargs = {}
+        if isinstance(result.get("transmissions"), list):
+            delivery_kwargs["targets"] = [item["target"] for item in transmissions]
         delivered = _deliver_ai_dispatcher_replies(
-            replies,
+            [item["message"] for item in transmissions],
             server_name=server_name,
             event_id=payload.get("event_id", "unknown"),
             message_type=payload.get("message_type"),
             round_id=payload.get("round_id"),
             enqueued_at=enqueued_at,
             at_most_once_delivery=at_most_once_delivery,
+            **delivery_kwargs,
         )
         if delivered is False:
             return False
@@ -1200,7 +1721,7 @@ def _post_ai_dispatcher_sync(
             "AI dispatcher answer accepted: event_id=%s server=%s reply_parts=%s",
             payload.get("event_id"),
             server_name,
-            len(replies),
+            len(transmissions),
         )
         return True
     except httpx.HTTPStatusError as error:
@@ -1251,6 +1772,7 @@ def _deliver_ai_dispatcher_replies(
     round_id: Optional[str] = None,
     enqueued_at: Optional[float] = None,
     at_most_once_delivery: bool = False,
+    targets: Optional[List[str]] = None,
 ) -> bool:
     """Deliver one AI answer serially, waiting for every game-server ACK.
 
@@ -1260,7 +1782,14 @@ def _deliver_ai_dispatcher_replies(
     at most one AI radiogram in flight.
     """
 
-    for part_number, reply in enumerate(replies, start=1):
+    normalized_targets = targets or ["Неопределено"] * len(replies)
+    if len(normalized_targets) != len(replies):
+        raise ValueError("Количество адресатов должно совпадать с количеством сообщений")
+
+    for part_number, (reply, target) in enumerate(
+        zip(replies, normalized_targets),
+        start=1,
+    ):
         if round_id is not None and not _ai_dispatch_context_is_current(
             server_name,
             round_id,
@@ -1297,12 +1826,14 @@ def _deliver_ai_dispatcher_replies(
                 "expected_round_id": round_id,
                 "enqueued_at": enqueued_at,
             }
+        target_kwargs = {"target": target} if targets is not None else {}
         action_id = _queue_ai_radio_action(
             reply,
             server_name,
             event_id,
             part_number,
             len(replies),
+            **target_kwargs,
             **queue_kwargs,
         )
         if action_id is None:
@@ -1386,6 +1917,7 @@ def _queue_ai_radio_action(
     part_number: int,
     part_count: int,
     *,
+    target: str = "Неопределено",
     expected_round_id: Optional[str] = None,
     enqueued_at: Optional[float] = None,
 ) -> Optional[int]:
@@ -1445,10 +1977,12 @@ def _queue_ai_radio_action(
                             server_name,
                             admin_id=None,
                             sender_label="ИИ-диспетчер",
+                            target_label=target,
                             action_payload={
                                 "ai_event_id": event_id,
                                 "ai_part_number": part_number,
                                 "ai_part_count": part_count,
+                                "ai_target": target,
                             },
                         )
                         return int(action.id)
@@ -1649,6 +2183,58 @@ def _cancel_ai_dispatch_action(
     return bool(updated)
 
 
+def _extract_ai_dispatcher_transmissions(
+    result: dict,
+    *,
+    default_target: str,
+) -> List[dict]:
+    """Read addressed AI output and fit every final prefixed line into 200 chars."""
+
+    raw_transmissions = result.get("transmissions")
+    candidates: list[tuple[str, str]] = []
+    if isinstance(raw_transmissions, list):
+        for item in raw_transmissions:
+            if not isinstance(item, dict):
+                continue
+            target = item.get("target")
+            message = item.get("message")
+            if isinstance(target, str) and target.strip() and isinstance(message, str):
+                candidates.append((target, message))
+
+    if not candidates:
+        candidates = [
+            (default_target, reply)
+            for reply in _extract_ai_dispatcher_replies(result)
+        ]
+
+    transmissions: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_target, raw_message in candidates:
+        target = " ".join(raw_target.split())[:100] or "Неопределено"
+        prefix = f"[Диспетчер] -> «{target}» "
+        content_limit = _BAROTRAUMA_RADIO_MAX_CHARS - len(prefix)
+        if content_limit < 24:
+            logger.warning("AI dispatcher target is too long and was replaced: %r", target)
+            target = "Неопределено"
+            prefix = f"[Диспетчер] -> «{target}» "
+            content_limit = _BAROTRAUMA_RADIO_MAX_CHARS - len(prefix)
+        for message in _split_ai_radio_reply(raw_message, max_chars=content_limit):
+            key = (target.casefold(), " ".join(message.split()).casefold())
+            if key in seen:
+                logger.warning("AI dispatcher duplicate addressed transmission suppressed")
+                continue
+            seen.add(key)
+            transmissions.append({"target": target, "message": message})
+
+    if len(transmissions) > _AI_MAX_REPLY_PARTS:
+        logger.warning(
+            "AI dispatcher exceeded transmission limit: parts=%s max_parts=%s",
+            len(transmissions),
+            _AI_MAX_REPLY_PARTS,
+        )
+    return transmissions[:_AI_MAX_REPLY_PARTS]
+
+
 def _extract_ai_dispatcher_replies(result: dict) -> List[str]:
     """Read the new multi-reply contract, falling back to the legacy reply."""
 
@@ -1842,12 +2428,23 @@ def _send_dispatcher_message_locked(
     admin_id: Optional[int],
     sender_label: str,
     action_payload: Optional[dict] = None,
+    target_label: Optional[str] = None,
 ) -> tuple:
     text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
 
-    full_text = f"{_DISPATCHER_PREFIX}{text}"
+    if target_label is not None:
+        target = " ".join(str(target_label).split())[:100] or "Неопределено"
+        prefix = f"[Диспетчер] -> «{target}» "
+    else:
+        prefix = _DISPATCHER_PREFIX
+    full_text = f"{prefix}{text}"
+    if len(full_text) > _BAROTRAUMA_RADIO_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="Сообщение диспетчера превышает лимит игрового терминала",
+        )
 
     # Save to dispatch history
     msg = DispatchMessage(

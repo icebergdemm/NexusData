@@ -968,6 +968,14 @@ def task_refresh_analytics() -> dict:
         db.close()
 
 
+def task_process_ai_dispatcher_reminders() -> dict:
+    """Enqueue due durable AI notes without importing routes at startup."""
+
+    from routes.dispatch import _queue_due_ai_dispatcher_reminders
+
+    return _queue_due_ai_dispatcher_reminders()
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # STARTUP: register all periodic tasks and start scheduler
 # ═══════════════════════════════════════════════════════════════════════
@@ -1009,6 +1017,7 @@ def _start_simple_workers():
         (task_check_db_health, 30),
         (task_sample_perf_resources, 30),
         (task_memory_maintenance, 5 * 60),
+        (task_process_ai_dispatcher_reminders, 5),
     ]:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
         t.start()
@@ -1184,6 +1193,13 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.LOW,
         task_id="memory_maintenance",
+    )
+
+    scheduler.register_periodic(
+        task_process_ai_dispatcher_reminders,
+        interval_secs=5,
+        priority=Priority.NORMAL,
+        task_id="ai_dispatcher_reminders",
     )
 
     scheduler.start()

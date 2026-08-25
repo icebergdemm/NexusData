@@ -225,6 +225,17 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                     "mission": "Доставка",
                     "location": "Европейский кряж",
                 },
+                "communication_context": {
+                    "source": None,
+                    "default_target": "Борт «Сигнатура»",
+                    "available_targets": [
+                        {
+                            "kind": "vessel",
+                            "name": "Сигнатура",
+                            "vessel_name": None,
+                        }
+                    ],
+                },
             },
         )
 
@@ -281,6 +292,18 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                         "submarine_name": "Сигнатура",
                         "mission": None,
                         "location": "Европейский кряж",
+                    },
+                    "communication_context": {
+                        "source": None,
+                        "default_target": "Борт «Сигнатура»",
+                        "available_targets": [
+                            {
+                                "kind": "vessel",
+                                "name": "Сигнатура",
+                                "vessel_name": None,
+                            }
+                        ],
+                        "recent_messages": [],
                     },
                 },
             )
@@ -702,10 +725,12 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
             "ASPER2",
             admin_id=None,
             sender_label="ИИ-диспетчер",
+            target_label="Неопределено",
             action_payload={
                 "ai_event_id": "nexus-dispatch-51",
                 "ai_part_number": 1,
                 "ai_part_count": 1,
+                "ai_target": "Неопределено",
             },
         )
         busy_db.close.assert_called_once()

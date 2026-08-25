@@ -1719,6 +1719,10 @@ class AICreatureAlert(Base):
     character_id = Column(String(64), nullable=False)
     species = Column(String(100), nullable=False)
     distance_from_yasa_m_approx = Column(Integer, nullable=False)
+    # Distance included in the last successfully delivered initial warning.
+    # Later snapshots keep ``distance_from_yasa_m_approx`` fresh, allowing a
+    # scheduled AI follow-up to compare the same durable character contact.
+    reported_distance_from_yasa_m_approx = Column(Integer, nullable=True)
     # True only when this alert was first classified within 250 m of Yasa.
     # Exact species names may be shared with AI only for these close contacts.
     yasa_perimeter = Column(Boolean, nullable=False, default=False)
@@ -1738,6 +1742,33 @@ class AICreatureAlert(Base):
             "round_id",
             "character_id",
             name="uq_ai_creature_alert_round_character",
+        ),
+    )
+
+
+class AIDispatcherReminder(Base):
+    """Durable delayed note authored by the AI dispatcher itself."""
+
+    __tablename__ = "ai_dispatcher_reminders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_event_id = Column(String(128), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    round_id = Column(String(128), nullable=False, index=True)
+    server_name = Column(String(20), nullable=False, index=True)
+    note = Column(String(1000), nullable=False)
+    communication_context = Column(JSON, nullable=True)
+    due_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    queued_at = Column(DateTime, nullable=True, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_event_id",
+            "sequence",
+            name="uq_ai_dispatcher_reminder_source_sequence",
         ),
     )
 

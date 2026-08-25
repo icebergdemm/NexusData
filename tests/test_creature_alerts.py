@@ -661,6 +661,7 @@ def test_distant_ai_payload_hides_contact_names():
             "yasa_perimeter": False,
             "distance_from_yasa_m_approx": 725,
             "contact_names": [],
+            "contact_ids": ["42"],
         }
         serialized = repr(job.payload).casefold()
         assert "moloch" not in serialized
@@ -732,6 +733,7 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "yasa_perimeter": False,
                 "distance_from_yasa_m_approx": 700,
                 "contact_names": [],
+                "contact_ids": ["42"],
             },
             {
                 "contact_scope": "single",
@@ -739,6 +741,7 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "yasa_perimeter": True,
                 "distance_from_yasa_m_approx": 150,
                 "contact_names": ["Crawler"],
+                "contact_ids": ["43"],
             },
             {
                 "contact_scope": "single",
@@ -746,6 +749,7 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "yasa_perimeter": True,
                 "distance_from_yasa_m_approx": 225,
                 "contact_names": ["Hammerhead"],
+                "contact_ids": ["44"],
             },
         ]
     finally:
