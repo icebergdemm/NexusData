@@ -13,7 +13,11 @@ from database import Base
 from models import AICreatureAlert, AppSetting, RoundEvent, WorldRound
 from routes.dispatch import _queue_ai_large_creature_alert
 from routes.world_state import _claim_large_creature_alerts, world_snapshot
-from services_creature_alerts import LargeCreatureSpawn, detect_large_creature_spawns
+from services_creature_alerts import (
+    LargeCreatureSpawn,
+    detect_large_creature_spawns,
+    is_configured_large_species,
+)
 
 
 def _submarines():
@@ -262,6 +266,43 @@ def test_expected_large_contact_families_all_trigger_but_abyss_does_not():
     )
 
     assert [item.species for item in detected] == species[:-1]
+
+
+def test_watcher_and_giant_spineling_are_always_large_contacts():
+    species = [
+        "Watcher",
+        "Watcher_f",
+        "Spineling_giant",
+        "GiantSpineling",
+        "SpinelingGiant_m",
+        "Spineling",
+    ]
+    characters = [
+        {
+            "id": index,
+            "species": prefab,
+            "human": False,
+            "dead": False,
+            "x": 70_000,
+            "y": 10_000,
+        }
+        for index, prefab in enumerate(species, start=1)
+    ]
+
+    detected = detect_large_creature_spawns(
+        current_characters=characters,
+        submarines=_submarines(),
+        current_submarines=_positions(),
+        # Simulate a production env value which replaced the defaults.
+        large_species=[],
+        abyss_species=[],
+    )
+
+    assert [item.species for item in detected] == species[:-1]
+    assert all(item.contact_class == "large" for item in detected)
+    assert is_configured_large_species("Watcher", [])
+    assert is_configured_large_species("Spineling_giant", [])
+    assert not is_configured_large_species("Spineling", [])
 
 
 def test_any_non_abyss_creature_inside_yasa_perimeter_is_alertable():

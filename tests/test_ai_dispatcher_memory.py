@@ -225,6 +225,45 @@ def test_tracked_contact_exposes_movement_but_hides_distant_species() -> None:
         engine.dispose()
 
 
+def test_tracked_watcher_and_giant_spineling_remain_large_without_env_allowlist() -> None:
+    engine = _engine_for(WorldRound.__table__, AICreatureAlert.__table__)
+    db = Session(engine)
+    try:
+        world_round = WorldRound(round_id="round-1", server_name="ASPER1")
+        db.add(world_round)
+        db.add_all(
+            [
+                AICreatureAlert(
+                    round_id="round-1",
+                    character_id="watcher-1",
+                    species="Watcher",
+                    distance_from_yasa_m_approx=1200,
+                    last_seen_at=datetime.utcnow(),
+                ),
+                AICreatureAlert(
+                    round_id="round-1",
+                    character_id="spineling-1",
+                    species="Spineling_giant",
+                    distance_from_yasa_m_approx=900,
+                    last_seen_at=datetime.utcnow(),
+                ),
+            ]
+        )
+        db.commit()
+
+        with patch("routes.world_state.settings.ai_large_creature_species_list", []):
+            contacts = _serialize_ai_tracked_contacts(db, world_round)
+
+        assert {item["contact_id"] for item in contacts} == {
+            "watcher-1",
+            "spineling-1",
+        }
+        assert all(item["contact_class"] == "large" for item in contacts)
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_successful_alert_delivery_records_comparison_baseline() -> None:
     engine = _engine_for(AICreatureAlert.__table__)
     db = Session(engine)

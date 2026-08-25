@@ -10,6 +10,23 @@ from typing import Any, Iterable
 WORLD_UNITS_PER_METER = 100.0
 YASA_ALERT_RADIUS_METERS = 250.0
 
+# These contacts must remain sector-wide large targets even when an old or
+# operator-supplied AI_LARGE_CREATURE_SPECIES value replaces the config
+# default. Giant Spineling appears under both word orders in server/mod
+# payloads, so aliases are compared without separators.
+BUILTIN_LARGE_CREATURE_SPECIES = frozenset(
+    {
+        "Watcher",
+        "Spineling_giant",
+        "GiantSpineling",
+    }
+)
+_BUILTIN_LARGE_CREATURE_KEYS = frozenset(
+    "".join(character for character in value.casefold() if character.isalnum())
+    for value in BUILTIN_LARGE_CREATURE_SPECIES
+)
+_SPECIES_VARIANT_SUFFIXES = ("_male", "_female", "_m", "_f")
+
 
 @dataclass(frozen=True)
 class LargeCreatureSpawn:
@@ -45,7 +62,6 @@ def detect_large_creature_spawns(
     if yasa_position is None:
         return []
 
-    allowed = {str(value).strip().casefold() for value in large_species if str(value).strip()}
     denied = {str(value).strip().casefold() for value in abyss_species if str(value).strip()}
     result: list[LargeCreatureSpawn] = []
     seen_ids: set[str] = set()
@@ -70,7 +86,7 @@ def detect_large_creature_spawns(
             continue
 
         distance_m = math.hypot(x - yasa_x, y - yasa_y) / WORLD_UNITS_PER_METER
-        is_large = _species_matches(normalized_species, allowed)
+        is_large = is_configured_large_species(species, large_species)
         in_yasa_perimeter = distance_m <= YASA_ALERT_RADIUS_METERS
         if not is_large and not in_yasa_perimeter:
             continue
@@ -98,7 +114,17 @@ def is_configured_large_species(species: Any, configured: Iterable[str]) -> bool
         return False
     normalized = species.strip().casefold()
     values = {str(value).strip().casefold() for value in configured if str(value).strip()}
-    return _species_matches(normalized, values)
+    return _species_matches(normalized, values) or _is_builtin_large_species(normalized)
+
+
+def _is_builtin_large_species(species: str) -> bool:
+    base = species
+    for suffix in _SPECIES_VARIANT_SUFFIXES:
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    key = "".join(character for character in base if character.isalnum())
+    return key in _BUILTIN_LARGE_CREATURE_KEYS
 
 
 def find_yasa_position(submarines: Any, current_submarines: Any) -> tuple[float, float] | None:
