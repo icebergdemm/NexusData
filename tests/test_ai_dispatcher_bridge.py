@@ -124,6 +124,41 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         enqueue_job.assert_not_called()
 
     @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    @patch("routes.dispatch._ai_dispatcher_enabled", return_value=True)
+    def test_player_terminal_request_retries_transient_ai_or_delivery_failure(
+        self,
+        _enabled,
+        enqueue_job,
+    ):
+        message = DispatchMessage(
+            id=53,
+            text="Говорит Щука, Диспетчер выйдите на связь",
+            player_name="Щука",
+            server_name="ASPER1",
+        )
+        db = MagicMock()
+
+        with (
+            patch("routes.dispatch._resolve_ai_conversation_round_id", return_value="round-1"),
+            patch(
+                "routes.dispatch._build_ai_communication_context",
+                return_value={
+                    "source": None,
+                    "default_target": "Неопределено",
+                    "available_targets": [],
+                    "recent_messages": [],
+                },
+            ),
+            patch.object(dispatch_routes.settings, "ai_dispatcher_url", "http://dispatcher/api"),
+            patch.object(dispatch_routes.settings, "ai_dispatcher_api_key", "secret"),
+        ):
+            _queue_ai_dispatcher_request(db, message)
+
+        job = enqueue_job.call_args.args[0]
+        self.assertEqual(job.retry_delay_seconds, 2.0)
+        self.assertEqual(job.max_attempts, 2)
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
     def test_disabled_master_switch_does_not_claim_world_briefing(self, enqueue_job):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(
@@ -863,6 +898,40 @@ class AIReplyDeliveryQueueTests(unittest.TestCase):
                     "nexus-creature-alert-18",
                     1,
                 )
+            )
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_failed_ai_event_part_does_not_block_fresh_delivery_attempt(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[ServerAction.__table__])
+        db = Session(engine)
+        try:
+            failed = ServerAction(
+                action_type="dispatch",
+                target_steamid="broadcast",
+                target_server="ASPER1",
+                message_text="[Диспетчер] -> «Щука» Пост на связи.",
+                status_asper1=2,
+                status_asper2=1,
+                payload={
+                    "ai_event_id": "nexus-dispatch-53",
+                    "ai_part_number": 1,
+                    "ai_part_count": 1,
+                },
+            )
+            db.add(failed)
+            db.commit()
+
+            assert (
+                _find_existing_ai_radio_action(
+                    db,
+                    "ASPER1",
+                    "nexus-dispatch-53",
+                    1,
+                )
+                is None
             )
         finally:
             db.close()

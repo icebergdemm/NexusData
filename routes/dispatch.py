@@ -52,6 +52,8 @@ _AI_CHANNEL_WAIT_TIMEOUT_SECONDS = 90.0
 _AI_ACTION_ACK_TIMEOUT_SECONDS = 90.0
 _AI_DISPATCH_QUEUE_MAXSIZE = 100
 _AI_DISPATCH_JOB_TTL_SECONDS = 180.0
+_AI_TERMINAL_RETRY_DELAY_SECONDS = 2.0
+_AI_TERMINAL_MAX_ATTEMPTS = 2
 _AI_BRIEFING_RETRY_DELAY_SECONDS = 8.0
 _AI_BRIEFING_MAX_ATTEMPTS = 10
 _AI_CREATURE_ALERT_RETRY_DELAY_SECONDS = 5.0
@@ -480,6 +482,8 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
             api_key=api_key,
             payload=payload,
             server_name=server_name,
+            retry_delay_seconds=_AI_TERMINAL_RETRY_DELAY_SECONDS,
+            max_attempts=_AI_TERMINAL_MAX_ATTEMPTS,
         )
     )
 
@@ -2043,6 +2047,16 @@ def _find_existing_ai_radio_action(
             payload.get("ai_event_id") == event_id
             and payload.get("ai_part_number") == part_number
         ):
+            target_status = (
+                action.status_asper1
+                if server_name == "ASPER1"
+                else action.status_asper2
+            )
+            # A rejected or timed-out action did not deliver the radiogram.
+            # Let the job retry create a fresh action; successful/pending rows
+            # are still reused to preserve idempotency across workers.
+            if target_status == 2:
+                continue
             return action
     return None
 
