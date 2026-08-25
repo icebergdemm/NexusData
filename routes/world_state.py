@@ -296,6 +296,7 @@ def _claim_large_creature_alerts(
             character_id=alert_character_id,
             species=spawn.species,
             distance_from_yasa_m_approx=spawn.distance_from_yasa_m_approx,
+            yasa_perimeter=spawn.yasa_perimeter,
             last_seen_at=now,
         )
         try:
@@ -421,7 +422,7 @@ def _same_tracked_contact(
 ) -> bool:
     """Return whether a new entity belongs to an announced sonar contact."""
 
-    anchor_yasa_perimeter = str(anchor.character_id).startswith("yasa:")
+    anchor_yasa_perimeter = _alert_is_yasa_perimeter(anchor)
     anchor_contact_class = (
         "large"
         if is_configured_large_species(
@@ -430,7 +431,7 @@ def _same_tracked_contact(
         )
         else "unclassified"
     )
-    spawn_yasa_perimeter = spawn.contact_class != "large" and spawn.yasa_perimeter
+    spawn_yasa_perimeter = spawn.yasa_perimeter
     return (
         anchor_contact_class == spawn.contact_class
         and anchor_yasa_perimeter == spawn_yasa_perimeter
@@ -449,6 +450,12 @@ def _species_tracking_key(species: str) -> str:
         if value.endswith(suffix):
             return value[: -len(suffix)]
     return value
+
+
+def _alert_is_yasa_perimeter(alert: AICreatureAlert) -> bool:
+    # Prefix compatibility covers rows created before the explicit column was
+    # added; all new rows, including large close contacts, use the boolean.
+    return bool(alert.yasa_perimeter) or str(alert.character_id).startswith("yasa:")
 
 
 def _try_queue_ai_large_creature_alert(

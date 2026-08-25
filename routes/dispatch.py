@@ -759,8 +759,13 @@ def _queue_ai_large_creature_alert(
                         "contact_class": contact_class,
                         "yasa_perimeter": yasa_perimeter,
                         "distance_from_yasa_m_approx": nearest_distance,
-                        "contact_names": sorted(
-                            {str(alert.species).strip() for alert in group}
+                        # Station optics/signature analysis identifies contacts
+                        # only inside Yasa's 250 m perimeter. Distant large
+                        # returns deliberately remain unnamed sonar marks.
+                        "contact_names": (
+                            sorted({str(alert.species).strip() for alert in group})
+                            if yasa_perimeter
+                            else []
                         ),
                     },
                 },
@@ -805,7 +810,9 @@ def _group_ai_creature_alerts(
             )
             else "unclassified"
         )
-        yasa_perimeter = str(alert.character_id).startswith("yasa:")
+        yasa_perimeter = bool(alert.yasa_perimeter) or str(
+            alert.character_id
+        ).startswith("yasa:")
         distance_groups = buckets.setdefault((contact_class, yasa_perimeter), [])
         for group in distance_groups:
             distances = [

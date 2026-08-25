@@ -267,8 +267,8 @@ def test_expected_large_contact_families_all_trigger_but_abyss_does_not():
 def test_any_non_abyss_creature_inside_yasa_perimeter_is_alertable():
     detected = detect_large_creature_spawns(
         current_characters=[
-            {"id": 1, "species": "Crawler", "human": False, "dead": False, "x": 29_900, "y": 10_000},
-            {"id": 2, "species": "Mudraptor", "human": False, "dead": False, "x": 30_100, "y": 10_000},
+            {"id": 1, "species": "Crawler", "human": False, "dead": False, "x": 34_900, "y": 10_000},
+            {"id": 2, "species": "Mudraptor", "human": False, "dead": False, "x": 35_100, "y": 10_000},
             {"id": 3, "species": "Endworm", "human": False, "dead": False, "x": 10_100, "y": 10_000},
         ],
         submarines=_submarines(),
@@ -281,7 +281,7 @@ def test_any_non_abyss_creature_inside_yasa_perimeter_is_alertable():
         LargeCreatureSpawn(
             "1",
             "Crawler",
-            200,
+            250,
             contact_class="unclassified",
             yasa_perimeter=True,
         )
@@ -356,6 +356,7 @@ def test_world_snapshot_creates_and_queues_yasa_perimeter_event():
         alert = db.query(AICreatureAlert).one()
         assert alert.character_id == "yasa:7"
         assert alert.distance_from_yasa_m_approx == 150
+        assert alert.yasa_perimeter is True
         assert queue_alert.call_args.args[2][0].id == alert.id
     finally:
         db.close()
@@ -619,7 +620,7 @@ def test_undelivered_alert_is_released_after_lease_but_delivered_alert_is_not():
         engine.dispose()
 
 
-def test_ai_payload_contains_contact_names_and_approximate_meters():
+def test_distant_ai_payload_hides_contact_names():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
@@ -659,10 +660,10 @@ def test_ai_payload_contains_contact_names_and_approximate_meters():
             "contact_class": "large",
             "yasa_perimeter": False,
             "distance_from_yasa_m_approx": 725,
-            "contact_names": ["Moloch"],
+            "contact_names": [],
         }
         serialized = repr(job.payload).casefold()
-        assert "moloch" in serialized
+        assert "moloch" not in serialized
         assert "contact_names" in serialized
         assert "direction" not in serialized
         assert "azimuth" not in serialized
@@ -702,6 +703,15 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 character_id="yasa:43",
                 species="Crawler",
                 distance_from_yasa_m_approx=150,
+                yasa_perimeter=True,
+            ),
+            AICreatureAlert(
+                id=23,
+                round_id="world-round",
+                character_id="44",
+                species="Hammerhead",
+                distance_from_yasa_m_approx=225,
+                yasa_perimeter=True,
             ),
         ]
         db.add_all([row, *alerts])
@@ -721,7 +731,7 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "contact_class": "large",
                 "yasa_perimeter": False,
                 "distance_from_yasa_m_approx": 700,
-                "contact_names": ["Moloch"],
+                "contact_names": [],
             },
             {
                 "contact_scope": "single",
@@ -729,6 +739,13 @@ def test_large_and_yasa_perimeter_contacts_are_sent_as_separate_alerts():
                 "yasa_perimeter": True,
                 "distance_from_yasa_m_approx": 150,
                 "contact_names": ["Crawler"],
+            },
+            {
+                "contact_scope": "single",
+                "contact_class": "large",
+                "yasa_perimeter": True,
+                "distance_from_yasa_m_approx": 225,
+                "contact_names": ["Hammerhead"],
             },
         ]
     finally:

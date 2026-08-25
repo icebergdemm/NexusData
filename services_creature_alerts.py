@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 
 WORLD_UNITS_PER_METER = 100.0
-YASA_ALERT_RADIUS_METERS = 200.0
+YASA_ALERT_RADIUS_METERS = 250.0
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ def detect_large_creature_spawns(
     deduplication is handled by ``AICreatureAlert`` after the position of Yasa
     becomes available. This avoids losing contacts when a snapshot races ahead
     of ``world/init``. Configured large contacts are alertable at any distance;
-    every other non-abyss creature becomes alertable inside Yasa's 200-metre
+    every other non-abyss creature becomes alertable inside Yasa's 250-metre
     perimeter. Species in the abyss denylist are always rejected.
     """
 

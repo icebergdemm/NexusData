@@ -150,6 +150,7 @@ def _apply_migrations():
         ("ai_creature_alerts", "queued_at", "DATETIME"),
         ("ai_creature_alerts", "delivered_at", "DATETIME"),
         ("ai_creature_alerts", "last_seen_at", "DATETIME"),
+        ("ai_creature_alerts", "yasa_perimeter", "TINYINT NOT NULL DEFAULT 0"),
         # admin_users: flags accounts auto-provisioned by task_sync_department_roles
         ("admin_users", "created_by_worker", "TINYINT NOT NULL DEFAULT 0"),
         # discord_members: role IDs currently held, for department role sync

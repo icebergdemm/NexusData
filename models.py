@@ -1719,6 +1719,9 @@ class AICreatureAlert(Base):
     character_id = Column(String(64), nullable=False)
     species = Column(String(100), nullable=False)
     distance_from_yasa_m_approx = Column(Integer, nullable=False)
+    # True only when this alert was first classified within 250 m of Yasa.
+    # Exact species names may be shared with AI only for these close contacts.
+    yasa_perimeter = Column(Boolean, nullable=False, default=False)
     detected_at = Column(DateTime, default=func.now(), nullable=False, index=True)
     # Refreshed from every snapshot while this entity is present. Contact
     # tracking uses it for a grace period after the last member disappears.
