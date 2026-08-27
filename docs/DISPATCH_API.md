@@ -116,6 +116,11 @@
 Побочные эффекты: сообщение уходит эмбедом в Discord-канал соответствующего
 сервера и в исходящий вебхук как событие `dispatch_message`.
 
+Строки, созданные внутри игрового сервера командами `msg_box` и `msg_box_to`,
+RoundManager передаёт с `player_name="Console"`. NexusData не отправляет такие
+строки в AsperAIDispatcher и исключает их из `communication_context.recent_messages`.
+В служебной ленте NexusData запись при этом может сохраняться для диагностики.
+
 ### GET `/api/v1/server/dispatch`
 
 Лента сообщений для опроса игровым сервером.

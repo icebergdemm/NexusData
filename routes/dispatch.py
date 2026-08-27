@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -67,6 +67,7 @@ _AI_BRIEFING_LIFECYCLE_MATCH_SECONDS = 180.0
 _AI_MAX_REPLY_PARTS = 8
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 _AI_DISPATCHER_ENABLED_SETTING = "dispatch_ai_enabled"
+_AI_IGNORED_SENDER_NAMES = frozenset({"console"})
 
 
 @dataclass(frozen=True)
@@ -446,6 +447,13 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
     AI service is unavailable. The AI performs its own callsign filtering; an
     ignored response produces no game action.
     """
+    if not _is_ai_visible_dispatch_message(msg):
+        logger.info(
+            "AI dispatcher skipped message %s: sender=%r is internal console output",
+            msg.id,
+            msg.player_name,
+        )
+        return
     if not _ai_dispatcher_enabled(db):
         logger.info("AI dispatcher skipped message %s: disabled by operator", msg.id)
         return
@@ -486,6 +494,18 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
             max_attempts=_AI_TERMINAL_MAX_ATTEMPTS,
         )
     )
+
+
+def _is_ai_visible_dispatch_message(msg: DispatchMessage) -> bool:
+    """Hide game-console echoes such as ``msg_box``/``msg_box_to`` from AI.
+
+    RoundManager reports these internally generated lines with ``Console`` as
+    the sender. They may remain in the operator journal, but must neither start
+    a model turn nor become part of its conversational context.
+    """
+
+    sender_name = (msg.player_name or "").strip().casefold()
+    return sender_name not in _AI_IGNORED_SENDER_NAMES
 
 
 def _world_round_matches_lifecycle_event(
@@ -715,6 +735,13 @@ def _build_ai_communication_context(
                 db.query(DispatchMessage)
                 .filter(
                     DispatchMessage.server_name == server_name,
+                    DispatchMessage.sender_type.in_(("player", "dispatcher")),
+                    or_(
+                        DispatchMessage.player_name.is_(None),
+                        func.lower(func.trim(DispatchMessage.player_name)).notin_(
+                            tuple(_AI_IGNORED_SENDER_NAMES)
+                        ),
+                    ),
                     # SQLite stores CURRENT_TIMESTAMP without fractions while
                     # SQLAlchemy binds ``.000000``; one-second tolerance also
                     # covers a radio line racing the round-start insert.
@@ -742,7 +769,7 @@ def _build_ai_communication_context(
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in reversed(recent_rows)
-            if row.sender_type in {"player", "dispatcher"}
+            if _is_ai_visible_dispatch_message(row)
         ],
     }
 

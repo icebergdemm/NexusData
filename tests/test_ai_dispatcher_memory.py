@@ -63,6 +63,12 @@ def test_communication_context_keeps_recent_chat_and_players_actual_vessel() -> 
                     text="Диспетчер, приём.",
                 ),
                 DispatchMessage(
+                    player_name="Console",
+                    sender_type="player",
+                    server_name="ASPER1",
+                    text="[Администрация]: внутренний msg_box_to.",
+                ),
+                DispatchMessage(
                     player_name="ИИ-диспетчер",
                     sender_type="dispatcher",
                     server_name="ASPER1",

@@ -124,6 +124,25 @@ class AIDispatcherBridgeTests(unittest.TestCase):
         enqueue_job.assert_not_called()
 
     @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    @patch("routes.dispatch._ai_dispatcher_enabled")
+    def test_console_action_queue_echo_is_not_forwarded_to_ai(
+        self,
+        enabled,
+        enqueue_job,
+    ):
+        message = DispatchMessage(
+            id=54,
+            text="[Администрация]: служебное окно",
+            player_name="  Console  ",
+            server_name="ASPER1",
+        )
+
+        _queue_ai_dispatcher_request(MagicMock(), message)
+
+        enabled.assert_not_called()
+        enqueue_job.assert_not_called()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
     @patch("routes.dispatch._ai_dispatcher_enabled", return_value=True)
     def test_player_terminal_request_retries_transient_ai_or_delivery_failure(
         self,
