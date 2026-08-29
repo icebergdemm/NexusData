@@ -562,6 +562,14 @@ _log_cache_lock = threading.Lock()
 _log_worker_running = False
 _log_refresh_interval = 60  # 1 minute
 
+# До 17.08.2026 англоязычный автокик по рассинхронизации не имел своего
+# ACTION_PATTERN. Если причина содержала двоеточие (обычно ``Events queued:
+# N``), последний общий chat-паттерн принимал ВСЮ часть до двоеточия за имя
+# игрока. В результате один матрос появлялся в автодополнении десятками
+# длинных вариантов с текстом ``was kicked because ...``.
+_AUTO_KICK_PLAYER_SEPARATOR = " was kicked because "
+_AUTO_KICK_PLAYER_REPAIR_KEY = "repair_auto_kick_player_v1"
+
 # Upper bound for search result counts (see search_logs). Text filters use a
 # leading-wildcard LIKE that no index can serve, so an exact COUNT(*) means a
 # full-table scan on every search; counting inside a LIMIT-ed subquery keeps
@@ -671,6 +679,71 @@ def _init_schema(conn: sqlite3.Connection):
     # все новые события индексировались сразу; уже накопленная история
     # доиндексируется в фоне (см. _init_fts / fts_backfill_step).
     _init_fts(conn)
+    _repair_legacy_auto_kick_players(conn)
+
+
+def _normalise_stored_player_name(name: str) -> str:
+    """Возвращает настоящее имя из известного legacy-значения автокика.
+
+    Это дешёвая защита для autocomplete на случай, если одноразовый ремонт
+    БД временно не смог взять write-lock. Новые строки парсер уже сохраняет
+    правильно, а отдельная миграция ниже чинит саму историю и тип события.
+    """
+    if _AUTO_KICK_PLAYER_SEPARATOR in name:
+        return name.split(_AUTO_KICK_PLAYER_SEPARATOR, 1)[0].strip()
+    return name.strip()
+
+
+def _repair_legacy_auto_kick_players(conn: sqlite3.Connection) -> int:
+    """Один раз исправляет загрязнённые player/action в накопленной SQLite.
+
+    Ограничение ``action='chat'`` осознанно ведёт UPDATE через существующий
+    индекс ix_log_action вместо полного перебора 1.6+ млн событий. Именно
+    chat выставлял прежний fallback-парсер, когда встречал двоеточие внутри
+    причины автокика. UPDATE-триггер FTS синхронизирует player/details.
+    """
+    try:
+        if _fts_meta_get(conn, _AUTO_KICK_PLAYER_REPAIR_KEY) == "1":
+            return 0
+        # Старые строки могли ещё не попасть в незавершённый FTS-бэкфилл.
+        # UPDATE-триггер добавил бы исправленную строку сейчас, а бэкфилл
+        # позже вставил бы тот же rowid второй раз. Поэтому меняем историю
+        # только после полного индекса; autocomplete всё равно сразу очищен
+        # через _normalise_stored_player_name(). Без FTS такого риска нет.
+        if _fts_available(conn) and _fts_meta_get(conn, "backfill_done") != "1":
+            return 0
+
+        # На старте одновременно могут открыться соединения log-worker и
+        # HTTP threadpool. IMMEDIATE + повторная проверка под блокировкой не
+        # дают им выполнять один и тот же массовый UPDATE параллельно.
+        conn.execute("BEGIN IMMEDIATE")
+        if _fts_meta_get(conn, _AUTO_KICK_PLAYER_REPAIR_KEY) == "1":
+            conn.commit()
+            return 0
+        if _fts_available(conn) and _fts_meta_get(conn, "backfill_done") != "1":
+            conn.commit()
+            return 0
+
+        cursor = conn.execute(
+            "UPDATE log_events INDEXED BY ix_log_action "
+            "SET player = trim(substr(player, 1, instr(player, ?) - 1)), "
+            "    action = 'kick' "
+            "WHERE action = 'chat' AND instr(player, ?) > 1",
+            (_AUTO_KICK_PLAYER_SEPARATOR, _AUTO_KICK_PLAYER_SEPARATOR),
+        )
+        repaired = max(cursor.rowcount or 0, 0)
+        conn.execute(
+            "INSERT OR REPLACE INTO fts_meta(key, value) VALUES (?, '1')",
+            (_AUTO_KICK_PLAYER_REPAIR_KEY,),
+        )
+        conn.commit()
+        if repaired:
+            logger.info("Логи: исправлено legacy-записей автокика: %d", repaired)
+        return repaired
+    except Exception:
+        conn.rollback()
+        logger.exception("Логи: не удалось исправить legacy-записи автокика")
+        return 0
 
 
 def _ts_to_ms(dt: datetime) -> int:
@@ -1184,6 +1257,7 @@ def fts_backfill_step(batch: int = _FTS_BACKFILL_BATCH) -> bool:
         cursor = int(_fts_meta_get(conn, "backfill_cursor") or 0)
         if cursor <= 1:
             _fts_meta_set(conn, "backfill_done", "1")
+            _repair_legacy_auto_kick_players(conn)
             logger.info("FTS-бэкфилл логов завершён")
             return False
 
@@ -1193,6 +1267,7 @@ def fts_backfill_step(batch: int = _FTS_BACKFILL_BATCH) -> bool:
         ).fetchall()
         if not rows:
             _fts_meta_set(conn, "backfill_done", "1")
+            _repair_legacy_auto_kick_players(conn)
             logger.info("FTS-бэкфилл логов завершён")
             return False
 
@@ -1205,6 +1280,7 @@ def fts_backfill_step(batch: int = _FTS_BACKFILL_BATCH) -> bool:
         _fts_meta_set(conn, "backfill_cursor", new_cursor)
         if len(rows) < batch or new_cursor <= 1:
             _fts_meta_set(conn, "backfill_done", "1")
+            _repair_legacy_auto_kick_players(conn)
             logger.info("FTS-бэкфилл логов завершён")
             return False
 
@@ -1646,7 +1722,13 @@ def get_unique_players(server_name: Optional[str] = None) -> List[str]:
             rows = conn.execute(
                 "SELECT DISTINCT player FROM log_events WHERE player IS NOT NULL AND player<>'' ORDER BY player"
             ).fetchall()
-        result = [r[0] for r in rows]
+        # Нормализация плюс set схлопывают десятки legacy-вариантов одного
+        # матроса в одну подсказку даже если ремонт БД не успел выполниться.
+        result = sorted({
+            clean
+            for row in rows
+            if (clean := _normalise_stored_player_name(row[0] or ""))
+        })
     except Exception as e:
         logger.error(f"get_unique_players failed: {e}")
         result = []

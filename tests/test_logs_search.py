@@ -169,6 +169,81 @@ class LogSearchTests(unittest.TestCase):
         self.assertEqual(len(result.events), 2)
         self.assertIsNone(result.total)
 
+    def test_network_autokick_parser_keeps_only_the_player_name(self):
+        line = (
+            "Ст. Матрос Энджел Шарнхорст was kicked because they were expecting "
+            "a very old network event (1 created 60.03 s ago). Events queued: 8"
+        )
+        events, _player_map = services_logs.parse_log_content(
+            f"[08/29/2026 00:53:00]\n{line}",
+            server_name="ASPER1",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].player_name, "Ст. Матрос Энджел Шарнхорст")
+        self.assertEqual(events[0].action_type, "kick")
+
+    def test_legacy_network_autokicks_are_repaired_and_deduplicated(self):
+        separator = services_logs._AUTO_KICK_PLAYER_SEPARATOR
+        player = "Ст. Матрос Энджел Шарнхорст"
+        plan = self.conn.execute(
+            "EXPLAIN QUERY PLAN UPDATE log_events INDEXED BY ix_log_action "
+            "SET player=trim(substr(player,1,instr(player,?)-1)), action='kick' "
+            "WHERE action='chat' AND instr(player,?)>1",
+            (separator, separator),
+        ).fetchall()
+        self.assertTrue(any("ix_log_action" in row[-1] for row in plan), plan)
+        legacy_players = [
+            f"{player}{separator}old network event (1) Events queued",
+            f"{player}{separator}old network event (2) Events queued",
+        ]
+        self.conn.execute(
+            "DELETE FROM fts_meta WHERE key=?",
+            (services_logs._AUTO_KICK_PLAYER_REPAIR_KEY,),
+        )
+        self.conn.executemany(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) "
+            "VALUES (?,?,?,?,?,?)",
+            [
+                (
+                    services_logs._ts_to_ms(datetime(2026, 8, 29, 14, 0)),
+                    "ASPER1",
+                    legacy_player,
+                    "chat",
+                    f"{legacy_player}: 8",
+                    "legacy.log",
+                )
+                for legacy_player in legacy_players
+            ],
+        )
+        self.conn.commit()
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('backfill_done', '0')"
+        )
+        self.conn.commit()
+        self.assertEqual(services_logs._repair_legacy_auto_kick_players(self.conn), 0)
+        dirty_count = self.conn.execute(
+            "SELECT COUNT(*) FROM log_events WHERE source_file='legacy.log' AND action='chat'"
+        ).fetchone()[0]
+        self.assertEqual(dirty_count, 2)
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('backfill_done', '1')"
+        )
+        self.conn.commit()
+        repaired = services_logs._repair_legacy_auto_kick_players(self.conn)
+        services_logs._players_cache.clear()
+        services_logs._players_cache_ts.clear()
+
+        rows = self.conn.execute(
+            "SELECT DISTINCT player, action FROM log_events WHERE source_file='legacy.log'"
+        ).fetchall()
+        self.assertEqual(repaired, 2)
+        self.assertEqual(rows, [(player, "kick")])
+        self.assertEqual(services_logs.get_unique_players("ASPER1").count(player), 1)
+        self.assertEqual(services_logs._repair_legacy_auto_kick_players(self.conn), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
