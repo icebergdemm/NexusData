@@ -1,12 +1,27 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { toast } from "sonner"
-import { ScrollText, RefreshCw } from "lucide-react"
-import { Card, CardContent } from "@/components/ui/card"
+import {
+  Filter,
+  LoaderCircle,
+  RefreshCw,
+  RotateCcw,
+  ScrollText,
+  Search,
+} from "lucide-react"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
@@ -22,70 +37,116 @@ import { useCurrentAdmin } from "@/lib/auth"
 
 interface LogsResponse {
   events: LogEvent[]
-  /** null — бэкенд не смог посчитать совпадения за отведённое время
-   *  (services_logs._bounded_count). Строки при этом всё равно приходят. */
+  /** null — подсчёт не уложился в короткий бюджет, сами строки доступны. */
   total: number | null
   total_is_capped: boolean
-  /** Есть ли страница после текущей. Считается независимо от total (запросом
-   *  на одну строку больше), поэтому листание работает и без точного счёта. */
   has_more: boolean
   page: number
   page_size: number
   total_pages: number | null
 }
-interface LogStatEntry { event_count: number; last_refresh: string | null; oldest_event: string | null; newest_event: string | null }
+
+interface LogStatEntry {
+  event_count: number
+  last_refresh: string | null
+  oldest_event: string | null
+  newest_event: string | null
+}
+
 interface SearchIndexStatus { available: boolean; ready: boolean; progress_pct: number }
+type PlayerScope = "actor" | "related"
+
+interface LogFilters {
+  server: string
+  category: string
+  actionType: string
+  consoleOnly: boolean
+  playerNames: string[]
+  playerScope: PlayerScope
+  search: string
+  timeFrom: string
+  timeTo: string
+}
+
+const makeDefaultFilters = (): LogFilters => ({
+  server: "all",
+  category: "all",
+  actionType: "all",
+  consoleOnly: false,
+  playerNames: [],
+  playerScope: "actor",
+  search: "",
+  timeFrom: "",
+  timeTo: "",
+})
+
+function filterSignature(filters: LogFilters) {
+  return [
+    filters.server,
+    filters.category,
+    filters.actionType,
+    filters.consoleOnly ? "1" : "0",
+    filters.playerNames.join("\u0000"),
+    filters.playerScope,
+    filters.search,
+    filters.timeFrom,
+    filters.timeTo,
+  ].join("\u0001")
+}
+
+function activeFilterCount(filters: LogFilters) {
+  return Number(filters.server !== "all")
+    + Number(filters.category !== "all")
+    + Number(filters.consoleOnly || filters.actionType !== "all")
+    + Number(filters.playerNames.length > 0)
+    + Number(Boolean(filters.search))
+    + Number(Boolean(filters.timeFrom || filters.timeTo))
+}
 
 export function LogsPage() {
   const { data: admin } = useCurrentAdmin()
-  const [server, setServer] = useState("all")
-  const [category, setCategory] = useState("all")
-  const [actionType, setActionType] = useState("all")
-  const [consoleOnly, setConsoleOnly] = useState(false)
-  const [playerNames, setPlayerNames] = useState<string[]>([])
-  const [search, setSearch] = useState("")
-  const [timeFrom, setTimeFrom] = useState("")
-  const [timeTo, setTimeTo] = useState("")
+  const [draftFilters, setDraftFilters] = useState<LogFilters>(makeDefaultFilters)
+  const [appliedFilters, setAppliedFilters] = useState<LogFilters>(makeDefaultFilters)
   const [page, setPage] = useState(1)
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const queryClient = useQueryClient()
 
-  // Флажок "только консольные команды" — это то же самое, что выбрать тип
-  // действия console, просто отдельным переключателем, чтобы не лезть в
-  // выпадающий список ради самого частого запроса модераторов. Держит select
-  // синхронным (взаимоисключающе), а не отдельным AND-условием — "console"
-  // это единственный action_type, если галочка стоит.
-  const effectiveActionType = consoleOnly ? "console" : actionType
-
-  // Text filters run an unindexed substring scan over the whole log table
-  // server-side, so they're debounced — without this every keystroke fired
-  // its own request ("владимир" = 8 parallel full scans), which saturated
-  // the backend's worker threads and made the proxy serve the maintenance
-  // page. The inputs stay bound to the raw state, so typing is unaffected.
-  const debouncedSearch = useDebouncedValue(search.trim())
-  // A 1-character substring matches essentially every row, making the query
-  // maximally expensive while being useless as a filter — wait for 2+.
-  const effectiveSearch = debouncedSearch.length >= 2 ? debouncedSearch : ""
+  const appliedActionType = appliedFilters.consoleOnly ? "console" : appliedFilters.actionType
+  const draftActionType = draftFilters.consoleOnly ? "console" : draftFilters.actionType
+  const hasPendingChanges = filterSignature(draftFilters) !== filterSignature(appliedFilters)
+  const appliedCount = activeFilterCount(appliedFilters)
 
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
-    queryKey: ["logs-events", server, category, effectiveActionType, playerNames, effectiveSearch, timeFrom, timeTo, page],
+    queryKey: [
+      "logs-events",
+      appliedFilters.server,
+      appliedFilters.category,
+      appliedActionType,
+      appliedFilters.playerNames.join("\u0000"),
+      appliedFilters.playerScope,
+      appliedFilters.search,
+      appliedFilters.timeFrom,
+      appliedFilters.timeTo,
+      page,
+    ],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "100" })
-      if (server !== "all") params.set("server", server)
-      if (category !== "all") params.set("category", category)
-      if (effectiveActionType !== "all") params.set("action_type", effectiveActionType)
-      // Комбинация фильтров, как поиск с несколькими условиями в Discord:
-      // несколько игроков + свободный текст + сервер + категория + тип
-      // действия — всё применяется одновременно (AND на бэкенде).
-      if (playerNames.length) params.set("player_names", playerNames.join(","))
-      if (effectiveSearch) params.set("search", effectiveSearch)
-      if (timeFrom) params.set("time_from", timeFrom)
-      if (timeTo) params.set("time_to", timeTo)
+      if (appliedFilters.server !== "all") params.set("server", appliedFilters.server)
+      if (appliedFilters.category !== "all") params.set("category", appliedFilters.category)
+      if (appliedActionType !== "all") params.set("action_type", appliedActionType)
+      if (appliedFilters.playerNames.length) {
+        params.set("player_names", appliedFilters.playerNames.join(","))
+        params.set("player_scope", appliedFilters.playerScope)
+      }
+      if (appliedFilters.search) params.set("search", appliedFilters.search)
+      if (appliedFilters.timeFrom) params.set("time_from", appliedFilters.timeFrom)
+      if (appliedFilters.timeTo) params.set("time_to", appliedFilters.timeTo)
       return api.get<LogsResponse>(`/api/v1/admin/logs/events?${params}`)
     },
-    // Keep showing the previous page/results while the next query runs
-    // instead of flashing an empty table between keystrokes.
-    placeholderData: (prev) => prev,
+    // Тяжёлый запрос, который уже вернул 503, не должен автоматически
+    // запускаться второй раз и занимать ещё один поток SQLite.
+    retry: false,
+    placeholderData: (previous) => previous,
   })
 
   const { data: stats } = useQuery({
@@ -93,45 +154,77 @@ export function LogsPage() {
     queryFn: () => api.get<Record<string, LogStatEntry>>("/api/v1/admin/logs/stats"),
   })
 
-  // Пока полнотекстовый индекс достраивается в фоне, поиск по тексту идёт по
-  // медленному пути — показываем прогресс, чтобы это не выглядело поломкой.
   const { data: searchIndex } = useQuery({
     queryKey: ["logs-search-index"],
     queryFn: () => api.get<SearchIndexStatus>("/api/v1/admin/logs/search-index"),
-    refetchInterval: (q) => (q.state.data?.ready === false ? 15000 : false),
+    refetchInterval: (query) => (query.state.data?.ready === false ? 15000 : false),
   })
 
   const refresh = useMutation({
     mutationFn: () => api.post("/api/v1/admin/logs/refresh"),
-    onSuccess: () => { toast.success("Обновление логов запущено в фоне"); setTimeout(() => queryClient.invalidateQueries({ queryKey: ["logs-stats"] }), 5000) },
-    onError: (e: Error) => toast.error(e.message),
+    onSuccess: () => {
+      toast.success("Обновление логов запущено в фоне")
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["logs-stats"] }), 5000)
+    },
+    onError: (refreshError: Error) => toast.error(refreshError.message),
   })
+
+  const updateDraft = <Key extends keyof LogFilters>(key: Key, value: LogFilters[Key]) => {
+    setDraftFilters((current) => ({ ...current, [key]: value }))
+  }
+
+  const applyFilters = (event: React.FormEvent) => {
+    event.preventDefault()
+    const trimmedSearch = draftFilters.search.trim()
+    if (trimmedSearch.length === 1) {
+      toast.error("Для поиска по тексту введите минимум 2 символа")
+      return
+    }
+    setAppliedFilters({
+      ...draftFilters,
+      search: trimmedSearch,
+      playerNames: [...draftFilters.playerNames],
+    })
+    setDraftFilters((current) => ({ ...current, search: trimmedSearch }))
+    setPage(1)
+  }
+
+  const resetFilters = () => {
+    setDraftFilters(makeDefaultFilters())
+    setAppliedFilters(makeDefaultFilters())
+    setPage(1)
+  }
+
+  const resultLabel = data?.total != null
+    ? `${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""} событий`
+    : data ? "много событий" : ""
 
   return (
     <div>
       <PageHeader
         title="Логи сервера"
-        description="События игровых серверов: действия игроков, консоль, подключения"
+        description="Быстрый разбор действий игроков, игровых событий и технических записей"
         icon={ScrollText}
         actions={admin?.is_superuser && (
           <Button variant="outline" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
-            <RefreshCw className={`h-4 w-4 ${refresh.isPending ? "animate-spin" : ""}`} /> Обновить из SFTP
+            <RefreshCw className={`h-4 w-4 ${refresh.isPending ? "animate-spin" : ""}`} />
+            Обновить из SFTP
           </Button>
         )}
       />
 
       {stats && Object.keys(stats).length > 0 && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2">
-          {Object.entries(stats).map(([sn, s]) => (
-            <Card key={sn}>
-              <CardContent className="flex items-center justify-between pt-6 text-sm">
+          {Object.entries(stats).map(([serverName, stat]) => (
+            <Card key={serverName} className="gap-0 py-4">
+              <CardContent className="flex items-center justify-between gap-4">
                 <div>
-                  <div className="font-semibold">{sn}</div>
+                  <div className="font-semibold">{serverName}</div>
                   <div className="text-xs text-muted-foreground">
-                    Обновлено: {s.last_refresh ? new Date(s.last_refresh).toLocaleString("ru-RU") : "-"}
+                    Обновлено: {stat.last_refresh ? new Date(stat.last_refresh).toLocaleString("ru-RU") : "-"}
                   </div>
                 </div>
-                <Badge variant="secondary">{s.event_count.toLocaleString("ru-RU")} событий</Badge>
+                <Badge variant="secondary">{stat.event_count.toLocaleString("ru-RU")} событий</Badge>
               </CardContent>
             </Card>
           ))}
@@ -139,125 +232,264 @@ export function LogsPage() {
       )}
 
       {searchIndex?.available && !searchIndex.ready && (
-        <Card className="mb-4 border-warning/40">
-          <CardContent className="pt-6 text-sm text-muted-foreground">
-            Строится поисковый индекс по истории логов — {searchIndex.progress_pct}%.
-            Поиск по тексту уже работает, но пока медленнее обычного.
+        <Card className="mb-4 border-warning/40 gap-0 py-4">
+          <CardContent className="text-sm text-muted-foreground">
+            Поисковый индекс истории готов на {searchIndex.progress_pct}%. Точный поиск действий игрока уже быстрый;
+            текст и упоминания временно могут отвечать медленнее.
           </CardContent>
         </Card>
       )}
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <SearchInput value={search} onChange={(e) => { setSearch(e.target.value); setPage(1) }} placeholder="Поиск по тексту события (от 2 символов)..." className="max-w-56" />
-        <PlayerNamesFilter names={playerNames} onChange={(v) => { setPlayerNames(v); setPage(1) }} server={server} />
-        <input type="datetime-local" value={timeFrom} onChange={(e) => { setTimeFrom(e.target.value); setPage(1) }} className="h-9 rounded-md border bg-background px-2 text-sm" title="С даты" />
-        <input type="datetime-local" value={timeTo} onChange={(e) => { setTimeTo(e.target.value); setPage(1) }} className="h-9 rounded-md border bg-background px-2 text-sm" title="По дату" />
-        <Select value={server} onValueChange={(v) => { setServer(v); setPage(1) }}>
-          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Все серверы</SelectItem>
-            <SelectItem value="ASPER1">ASPER1</SelectItem>
-            <SelectItem value="ASPER2">ASPER2</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={category} onValueChange={(v) => { setCategory(v); setPage(1) }}>
-          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Все категории</SelectItem>
-            <SelectItem value="player">Игровые</SelectItem>
-            <SelectItem value="technical">Технические</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select value={actionType} onValueChange={(v) => { setActionType(v); setPage(1) }} disabled={consoleOnly}>
-          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Все типы действий</SelectItem>
-            {ACTION_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <Checkbox checked={consoleOnly} onCheckedChange={(c) => { setConsoleOnly(c === true); setPage(1) }} />
-          Только консольные команды
-        </label>
-        {data && (
-          <span className="ml-auto text-xs text-muted-foreground">
-            {data.total != null ? `${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""} событий` : "много событий"}
-            {isFetching && !isLoading && " · обновление…"}
-          </span>
-        )}
-      </div>
+      <form onSubmit={applyFilters}>
+        <Card className="mb-4 gap-0 py-0">
+          <CardHeader className="border-b py-4">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Filter className="size-4 text-primary" />
+              Поиск и фильтры
+            </CardTitle>
+            <CardDescription>
+              Настройте условия и примените их одним запросом. Поля объединяются по принципу «И».
+            </CardDescription>
+            <CardAction className="flex items-center gap-2">
+              {hasPendingChanges && <Badge variant="outline">Есть изменения</Badge>}
+              {appliedCount > 0 && <Badge variant="secondary">Активно: {appliedCount}</Badge>}
+            </CardAction>
+          </CardHeader>
 
-      {/* Запрос логов может не дойти (таймаут на тяжёлой выборке, 429 от
-          лимитера, обрыв): react-query оставляет на экране строки ПРЕДЫДУЩЕГО
-          запроса (placeholderData), и молчаливый провал выглядит так, будто
-          новый фильтр или следующая страница «не работают». Поэтому ошибку
-          показываем явно и даём повторить. */}
+          <CardContent className="p-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-12">
+              <div className="space-y-2 xl:col-span-4">
+                <Label htmlFor="logs-search">Текст события</Label>
+                <SearchInput
+                  id="logs-search"
+                  value={draftFilters.search}
+                  onChange={(event) => updateDraft("search", event.target.value)}
+                  placeholder="Например: wire, название предмета…"
+                />
+              </div>
+
+              <div className="space-y-2 xl:col-span-4">
+                <Label>Игроки</Label>
+                <PlayerNamesFilter
+                  names={draftFilters.playerNames}
+                  onChange={(names) => updateDraft("playerNames", names)}
+                  server={draftFilters.server}
+                  scope={draftFilters.playerScope}
+                  className="w-full max-w-none"
+                />
+              </div>
+
+              <div className="space-y-2 xl:col-span-2">
+                <Label>Режим игрока</Label>
+                <Select
+                  value={draftFilters.playerScope}
+                  onValueChange={(value: PlayerScope) => updateDraft("playerScope", value)}
+                >
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="actor">Действия игрока</SelectItem>
+                    <SelectItem value="related">Включая упоминания</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2 xl:col-span-2">
+                <Label>Сервер</Label>
+                <Select value={draftFilters.server} onValueChange={(value) => updateDraft("server", value)}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Все серверы</SelectItem>
+                    <SelectItem value="ASPER1">ASPER1</SelectItem>
+                    <SelectItem value="ASPER2">ASPER2</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2 xl:col-span-3">
+                <Label>Тип действия</Label>
+                <Select
+                  value={draftFilters.actionType}
+                  onValueChange={(value) => updateDraft("actionType", value)}
+                  disabled={draftFilters.consoleOnly}
+                >
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Все типы действий</SelectItem>
+                    {ACTION_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2 xl:col-span-2">
+                <Label>Категория</Label>
+                <Select value={draftFilters.category} onValueChange={(value) => updateDraft("category", value)}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Все категории</SelectItem>
+                    <SelectItem value="player">Игровые</SelectItem>
+                    <SelectItem value="technical">Технические</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2 xl:col-span-2">
+                <Label htmlFor="logs-time-from">С даты</Label>
+                <Input
+                  id="logs-time-from"
+                  type="datetime-local"
+                  value={draftFilters.timeFrom}
+                  onChange={(event) => updateDraft("timeFrom", event.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2 xl:col-span-2">
+                <Label htmlFor="logs-time-to">По дату</Label>
+                <Input
+                  id="logs-time-to"
+                  type="datetime-local"
+                  value={draftFilters.timeTo}
+                  onChange={(event) => updateDraft("timeTo", event.target.value)}
+                />
+              </div>
+
+              <div className="flex items-end xl:col-span-3">
+                <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input px-3 text-sm text-muted-foreground dark:bg-input/30">
+                  <Checkbox
+                    checked={draftFilters.consoleOnly}
+                    onCheckedChange={(checked) => updateDraft("consoleOnly", checked === true)}
+                  />
+                  Только консольные команды
+                </label>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+              <p className="text-xs text-muted-foreground">
+                {draftFilters.playerScope === "actor"
+                  ? "«Действия игрока» ищет точное имя по быстрому индексу."
+                  : "«Включая упоминания» также ищет имя внутри текста и может потребовать период."}
+                {draftFilters.consoleOnly && ` Выбран тип: ${draftActionType}.`}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="ghost" onClick={resetFilters} disabled={isFetching}>
+                  <RotateCcw className="size-4" /> Сбросить
+                </Button>
+                <Button type="submit" disabled={isFetching || !hasPendingChanges}>
+                  {isFetching ? <LoaderCircle className="size-4 animate-spin" /> : <Search className="size-4" />}
+                  Применить
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </form>
+
       {isError && (
-        <Card className="mb-4 border-destructive/50">
-          <CardContent className="flex flex-wrap items-center justify-between gap-2 pt-6 text-sm">
-            <span className="text-destructive">
-              Не удалось загрузить события: {(error as Error)?.message || "ошибка запроса"}.
-              {" "}Ниже — результат предыдущего запроса, он не соответствует текущим фильтрам.
-            </span>
+        <Card className="mb-4 border-destructive/50 gap-0 py-4">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm">
+            <div>
+              <p className="font-medium text-destructive">Не удалось выполнить поиск</p>
+              <p className="mt-1 text-muted-foreground">
+                {(error as Error)?.message || "Ошибка запроса"}. Показанные ниже строки относятся к предыдущему запросу.
+              </p>
+            </div>
             <Button variant="outline" size="sm" onClick={() => refetch()}>Повторить</Button>
           </CardContent>
         </Card>
       )}
 
-      <Card className="overflow-hidden py-0">
+      <Card className="overflow-hidden gap-0 py-0">
+        <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="font-medium">Результаты</span>
+            {resultLabel && <Badge variant="secondary">{resultLabel}</Badge>}
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {isFetching && <><LoaderCircle className="size-3.5 animate-spin" /> Выполняется запрос…</>}
+            {!isFetching && appliedCount > 0 && <>Применено фильтров: {appliedCount}</>}
+          </div>
+        </div>
+
         <CardContent className="p-0">
-          {isLoading ? <div className="space-y-2 p-4">{Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-8" />)}</div> : (
+          {isLoading ? (
+            <div className="space-y-2 p-4">
+              {Array.from({ length: 10 }).map((_, index) => <Skeleton key={index} className="h-8" />)}
+            </div>
+          ) : (
             <>
               <Table>
-                <TableHeader>
+                <TableHeader className="bg-muted/35">
                   <TableRow>
-                    <TableHead className="w-36">Время</TableHead>
+                    <TableHead className="w-40 pl-4">Время</TableHead>
                     <TableHead className="w-24">Сервер</TableHead>
-                    <TableHead className="w-40">Игрок</TableHead>
-                    <TableHead className="w-32">Действие</TableHead>
-                    <TableHead>Детали</TableHead>
+                    <TableHead className="w-52">Игрок</TableHead>
+                    <TableHead className="w-36">Действие</TableHead>
+                    <TableHead className="pr-4">Детали</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
-                  {data?.events.map((e, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="text-xs whitespace-nowrap text-muted-foreground">{new Date(e.timestamp).toLocaleString("ru-RU")}</TableCell>
-                      <TableCell><Badge variant="outline">{e.server_name ?? "-"}</Badge></TableCell>
-                      <TableCell className="truncate font-medium">
-                        {e.player_name ? (
-                          e.player_id ? (
+                <TableBody className={isFetching ? "opacity-60" : undefined}>
+                  {data?.events.map((logEvent, index) => (
+                    <TableRow key={`${logEvent.timestamp}-${logEvent.server_name}-${logEvent.player_name}-${index}`}>
+                      <TableCell className="pl-4 text-xs whitespace-nowrap text-muted-foreground">
+                        {new Date(logEvent.timestamp).toLocaleString("ru-RU")}
+                      </TableCell>
+                      <TableCell><Badge variant="outline">{logEvent.server_name ?? "-"}</Badge></TableCell>
+                      <TableCell className="max-w-52 truncate font-medium" title={logEvent.player_name ?? undefined}>
+                        {logEvent.player_name ? (
+                          logEvent.player_id ? (
                             <button
                               type="button"
                               className="text-left text-primary underline-offset-2 hover:underline"
-                              onClick={() => setSummaryPlayerId(e.player_id!)}
+                              onClick={() => setSummaryPlayerId(logEvent.player_id!)}
                             >
-                              {e.player_name}
+                              {logEvent.player_name}
                             </button>
-                          ) : e.player_name
+                          ) : logEvent.player_name
                         ) : "-"}
                       </TableCell>
                       <TableCell>
-                        <span className={`font-mono text-xs ${ACTION_COLOR[e.action_type] ?? "text-foreground"}`}>{e.action_type}</span>
+                        <span className={`font-mono text-xs ${ACTION_COLOR[logEvent.action_type] ?? "text-foreground"}`}>
+                          {logEvent.action_type}
+                        </span>
                       </TableCell>
-                      <TableCell className="max-w-md truncate text-sm text-muted-foreground" title={e.details ?? undefined}>{e.details ?? "-"}</TableCell>
+                      <TableCell className="min-w-[420px] whitespace-normal break-words pr-4 text-sm text-muted-foreground">
+                        {logEvent.details ?? "-"}
+                      </TableCell>
                     </TableRow>
                   ))}
-                  {!data?.events.length && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Событий не найдено</TableCell></TableRow>}
+                  {!data?.events.length && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-14 text-center text-muted-foreground">
+                        Событий по выбранным условиям не найдено
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
-              {/* Листание опирается на has_more, а не на total_pages: точное
-                  число совпадений под фильтром бэкенд считать не обязан (и
-                  специально не считает, когда это дорого), а «Вперёд» должно
-                  работать в любом случае. */}
+
               {data && (data.has_more || page > 1) && (
                 <div className="flex items-center justify-center gap-2 border-t p-3">
-                  <Button variant="outline" size="sm" disabled={page <= 1 || isFetching} onClick={() => setPage((p) => p - 1)}>Назад</Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page <= 1 || isFetching}
+                    onClick={() => setPage((current) => current - 1)}
+                  >
+                    Назад
+                  </Button>
                   <span className="text-sm text-muted-foreground">
                     Страница {page}
                     {data.total_pages != null && ` из ${data.total_pages}`}
                     {data.total != null && ` (${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""})`}
                   </span>
-                  <Button variant="outline" size="sm" disabled={!data.has_more || isFetching} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!data.has_more || isFetching}
+                    onClick={() => setPage((current) => current + 1)}
+                  >
+                    Вперёд
+                  </Button>
                 </div>
               )}
             </>
@@ -265,7 +497,11 @@ export function LogsPage() {
         </CardContent>
       </Card>
 
-      <PlayerSummaryDialog playerId={summaryPlayerId} open={summaryPlayerId != null} onOpenChange={(o) => !o && setSummaryPlayerId(null)} />
+      <PlayerSummaryDialog
+        playerId={summaryPlayerId}
+        open={summaryPlayerId != null}
+        onOpenChange={(open) => !open && setSummaryPlayerId(null)}
+      />
     </div>
   )
 }

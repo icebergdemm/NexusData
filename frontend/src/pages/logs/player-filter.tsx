@@ -2,30 +2,33 @@
  *  встречавшимся в логах именам (`/api/v1/admin/logs/players`).
  *
  *  Раньше был один текстовый инпут на ОДНО имя-подстроку — нельзя было
- *  посмотреть "что делали Вася И Петя" одним запросом. Бэкенд уже умел
- *  принимать список имён (`player_names`, см. routes/logs.py), просто
- *  фронтенд им не пользовался. Свободный ввод (Enter) тоже работает — не
- *  обязательно выбирать из подсказки, это остаётся LIKE-подстрокой.
+ *  посмотреть "что делали Вася И Петя" одним запросом. В быстром режиме
+ *  имена сопоставляются с колонкой актора точно; отдельный related-режим
+ *  дополнительно ищет упоминания имени в тексте события.
  */
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { X } from "lucide-react"
+import { LoaderCircle, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { api } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
-export function PlayerNamesFilter({ names, onChange, server }: {
+export function PlayerNamesFilter({ names, onChange, server, scope, className }: {
   names: string[]
   onChange: (next: string[]) => void
   server: string
+  scope: "actor" | "related"
+  className?: string
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
 
-  const { data } = useQuery({
+  const { data, isFetching } = useQuery({
     queryKey: ["logs-players", server],
     queryFn: () => api.get<{ players: string[] }>(`/api/v1/admin/logs/players?${server !== "all" ? `server=${server}` : ""}`),
     staleTime: 60000,
+    enabled: open,
   })
 
   const suggestions = useMemo(() => {
@@ -46,7 +49,10 @@ export function PlayerNamesFilter({ names, onChange, server }: {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex h-9 min-w-44 max-w-72 flex-wrap items-center gap-1 rounded-md border bg-background px-2 py-1 text-left text-sm"
+          className={cn(
+            "flex min-h-9 min-w-44 max-w-72 flex-wrap items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-left text-sm shadow-xs focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+            className,
+          )}
           onClick={() => setOpen(true)}
         >
           {names.map((n) => (
@@ -62,7 +68,7 @@ export function PlayerNamesFilter({ names, onChange, server }: {
               </span>
             </Badge>
           ))}
-          {!names.length && <span className="text-muted-foreground">Игрок(и)…</span>}
+          {!names.length && <span className="text-muted-foreground">Выберите игрока…</span>}
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-0" align="start">
@@ -77,6 +83,11 @@ export function PlayerNamesFilter({ names, onChange, server }: {
           />
         </div>
         <div className="max-h-56 overflow-y-auto p-1">
+          {isFetching && (
+            <div className="flex items-center justify-center gap-2 px-2 py-4 text-xs text-muted-foreground">
+              <LoaderCircle className="size-3.5 animate-spin" /> Загружаем список игроков…
+            </div>
+          )}
           {suggestions.map((n) => (
             <button
               key={n}
@@ -87,12 +98,17 @@ export function PlayerNamesFilter({ names, onChange, server }: {
               {n}
             </button>
           ))}
-          {!suggestions.length && (
+          {!isFetching && !suggestions.length && (
             <p className="px-2 py-4 text-center text-xs text-muted-foreground">
               {query.trim() ? "Ничего похожего — Enter добавит как есть" : "Начните вводить имя"}
             </p>
           )}
         </div>
+        <p className="border-t px-3 py-2 text-[11px] leading-4 text-muted-foreground">
+          {scope === "actor"
+            ? "Точное имя: только события, совершённые игроком."
+            : "Имя ищется и в тексте чужих событий; запрос может быть медленнее."}
+        </p>
       </PopoverContent>
     </Popover>
   )

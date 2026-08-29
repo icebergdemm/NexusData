@@ -1241,7 +1241,8 @@ def _fts_query(text: str) -> str:
 
 
 def _build_where(server_name, player_name, action_type, search_text,
-                 time_from, time_to, category, names_list=None, use_fts=False):
+                 time_from, time_to, category, names_list=None, use_fts=False,
+                 player_scope="related"):
     """Собирает FROM/WHERE + параметры для запросов к логам.
 
     use_fts=True — текстовые фильтры уходят в FTS5 (MATCH по индексу),
@@ -1249,6 +1250,9 @@ def _build_where(server_name, player_name, action_type, search_text,
     пока фоновый бэкфилл не достроил индекс или если FTS5 недоступен.
     Возвращает (from_sql, where, params).
     """
+    if player_scope not in {"actor", "related"}:
+        raise ValueError("player_scope must be 'actor' or 'related'")
+
     clauses, params = [], []
     if server_name:
         clauses.append("server = ?"); params.append(server_name)
@@ -1265,26 +1269,37 @@ def _build_where(server_name, player_name, action_type, search_text,
         ph = ",".join("?" * len(PLAYER_ACTIONS))
         clauses.append(f"action NOT IN ({ph})"); params.extend(PLAYER_ACTIONS)
 
-    # Игрок ищется и в структурированной колонке player (кто СОВЕРШИЛ
-    # действие — это единственное, что парсер извлекает как "актора"), и в
-    # тексте details: многие строки лога упоминают ВТОРОГО игрока, к
-    # которому лог тоже относится, но который парсером не извлекается
-    # отдельно (например, "X placed Y in the inventory of ИМЯ" — получатель
-    # предмета есть только в details). Раньше поиск по игроку смотрел
-    # только в player и пропускал ровно такие случаи — отсюда жалоба
-    # "не очень хорошо работает поиск по игроку, с которым связан лог".
-    from_sql = "log_events"
+    # Обычный режим фильтра игрока — точное совпадение по структурированной
+    # колонке player (кто СОВЕРШИЛ действие). Оно обслуживается существующим
+    # B-tree индексом ix_log_player и не сканирует миллионы строк details.
+    # Поиск упоминаний в details оставлен отдельным, осознанно более тяжёлым
+    # режимом related.
+    exact_player_filter = player_scope == "actor" and bool(names_list or player_name)
+    if exact_player_filter:
+        if names_list:
+            unique_names = list(dict.fromkeys(names_list))
+            placeholders = ",".join("?" * len(unique_names))
+            clauses.append(f"log_events.player IN ({placeholders})")
+            params.extend(unique_names)
+        else:
+            clauses.append("log_events.player = ?")
+            params.append(player_name)
+
+    # INDEXED BY не даёт планировщику выбрать широкий индекс action для
+    # запроса вида «редкий игрок + частое действие». На проде именно такой
+    # план превращал фильтр player + wire в 30-секундный скан и 503.
+    from_sql = "log_events INDEXED BY ix_log_player" if exact_player_filter and not use_fts else "log_events"
     if use_fts:
         # Все текстовые условия объединяются в ОДНО выражение MATCH — FTS5
         # допускает лишь один MATCH на таблицу, но его синтаксис сам
         # поддерживает AND/OR и фильтр по колонке.
         fts_terms = []
-        if names_list:
+        if player_scope == "related" and names_list:
             ors = " OR ".join(
                 f"(player:{_fts_query(n)} OR details:{_fts_query(n)})" for n in names_list
             )
             fts_terms.append(f"({ors})")
-        elif player_name:
+        elif player_scope == "related" and player_name:
             fts_terms.append(f"(player:{_fts_query(player_name)} OR details:{_fts_query(player_name)})")
         if search_text:
             fts_terms.append(f"details:{_fts_query(search_text)}")
@@ -1293,12 +1308,12 @@ def _build_where(server_name, player_name, action_type, search_text,
             clauses.append("log_fts MATCH ?")
             params.append(" AND ".join(fts_terms))
     else:
-        if names_list:
+        if player_scope == "related" and names_list:
             ors = " OR ".join("(player LIKE ? OR details LIKE ?)" for _ in names_list)
             clauses.append(f"({ors})")
             for n in names_list:
                 params.extend([f"%{n}%", f"%{n}%"])
-        elif player_name:
+        elif player_scope == "related" and player_name:
             clauses.append("(player LIKE ? OR details LIKE ?)")
             params.extend([f"%{player_name}%", f"%{player_name}%"])
         if search_text:
@@ -1343,8 +1358,8 @@ _COUNT_TIME_BUDGET_SEC = 2.0
 # прокси 180 с, после него пользователь видел ошибку и жал «обновить», а
 # ПРЕЖНИЙ скан продолжал жечь ядро в threadpool ещё почти час, и такие
 # сканы копились друг на друга. Ограничение делает тяжёлый запрос честно
-# падающим за 30 с вместо того, чтобы уносить сервер.
-_ROW_TIME_BUDGET_SEC = 30.0
+# падающим за 10 с вместо того, чтобы уносить сервер.
+_ROW_TIME_BUDGET_SEC = 10.0
 
 # Через сколько «виртуальных инструкций» SQLite дёргает progress-handler.
 # Это ПИТОНОВСКИЙ колбэк, и каждый его вызов забирает GIL. При прежних
@@ -1422,6 +1437,7 @@ def search_logs(
     limit: int = 500,
     offset: int = 0,
     names_list: Optional[List[str]] = None,
+    player_scope: str = "related",
 ) -> LogSearchResult:
     """Search log events via indexed SQL.
 
@@ -1441,15 +1457,25 @@ def search_logs(
         # логов пятисоткой вместо пустой таблицы.
         return LogSearchResult([], 0, False, False)
 
+    search_started = time.monotonic()
+
     # Текстовые фильтры идут через FTS5, как только индекс достроен; пока
     # фоновый бэкфилл не закончил (или если FTS5 нет в сборке SQLite) —
     # прежний LIKE-путь, чтобы поиск оставался корректным, пусть и медленным.
-    has_text_filter = bool(player_name or search_text or names_list)
+    has_related_player_filter = player_scope == "related" and bool(player_name or names_list)
+    has_text_filter = bool(search_text or has_related_player_filter)
     use_fts = has_text_filter and fts_is_ready(conn)
 
     from_sql, where, params = _build_where(server_name, player_name, action_type,
                                            search_text, time_from, time_to, category,
-                                           names_list, use_fts=use_fts)
+                                           names_list, use_fts=use_fts,
+                                           player_scope=player_scope)
+    strategy = (
+        "fts" if use_fts
+        else "actor_index" if player_scope == "actor" and bool(player_name or names_list)
+        else "like" if has_text_filter
+        else "indexed"
+    )
 
     # Строки берутся ПЕРВЫМИ и с запасом в одну: наличие (limit+1)-й строки и
     # есть ответ на вопрос «есть ли следующая страница», без всякого COUNT.
@@ -1473,7 +1499,7 @@ def search_logs(
         if budget.expired:
             logger.warning(
                 f"search_logs: прерван по бюджету {_ROW_TIME_BUDGET_SEC}s "
-                f"(fts={use_fts}, offset={offset}, category={category!r}, "
+                f"(strategy={strategy}, offset={offset}, category={category!r}, "
                 f"text={bool(search_text)}, names={bool(names_list or player_name)})"
             )
             raise LogSearchTooSlow() from e
@@ -1512,6 +1538,20 @@ def search_logs(
         )
         for r in rows
     ]
+    elapsed_ms = int((time.monotonic() - search_started) * 1000)
+    logger.info(
+        "logs.search.complete elapsed_ms=%d strategy=%s rows=%d offset=%d "
+        "server=%s action=%s category=%s text=%s players=%d",
+        elapsed_ms,
+        strategy,
+        len(events),
+        offset,
+        server_name or "all",
+        action_type or "all",
+        category or "all",
+        bool(search_text),
+        len(names_list) if names_list else int(bool(player_name)),
+    )
     return LogSearchResult(events, total, total_is_capped, has_more)
 
 

@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Resp
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
 import secrets
 import logging
@@ -80,6 +80,10 @@ async def api_logs_events(
     server: Optional[str] = Query(None),
     player: Optional[str] = Query(None),
     player_names: Optional[str] = Query(None, description="Comma-separated list of player names to search"),
+    player_scope: Literal["actor", "related"] = Query(
+        "related",
+        description="actor = exact player column; related = player and mentions in event text",
+    ),
     action_type: Optional[str] = Query(None),
     category: Optional[str] = Query(None, description="player or technical"),
     search: Optional[str] = Query(None),
@@ -135,6 +139,7 @@ async def api_logs_events(
             limit=page_size,
             offset=offset,
             names_list=names_list,
+            player_scope=player_scope,
         )
     except LogSearchTooSlow:
         # Осознанный отказ вместо пустой таблицы: такая комбинация фильтров
@@ -142,8 +147,12 @@ async def api_logs_events(
         # десятками минут уже после того, как клиент отвалился по таймауту.
         raise HTTPException(
             status_code=503,
-            detail="Слишком тяжёлый запрос к логам. Сузьте период или уточните фильтры "
-                   "(конкретный сервер, тип события), либо дождитесь достройки поискового индекса.",
+            detail=(
+                "Поиск по упоминаниям не уложился в лимит времени. Сузьте период, "
+                "укажите сервер и тип события или выберите режим «Действия игрока»."
+                if player_scope == "related"
+                else "Поиск не уложился в лимит времени. Сузьте период или уточните фильтры."
+            ),
         )
 
     # Resolve player_id for the "Игрок" column so it can link to the profile
