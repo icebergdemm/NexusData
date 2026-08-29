@@ -53,13 +53,23 @@ def _get_or_create(db: Session, server: str) -> MonsterSpawnControl:
     return row
 
 
+def _normalize_config(value: Any) -> Dict[str, Any]:
+    """Keep old plugin snapshots compatible with the admin UI contract."""
+    config = dict(value) if isinstance(value, dict) else {}
+    if not isinstance(config.get("global"), dict):
+        config["global"] = {}
+    if not isinstance(config.get("waves"), list):
+        config["waves"] = []
+    return config
+
+
 def _serialize(row: MonsterSpawnControl) -> dict:
     return {
         "server": row.server,
-        "config": row.config or {},
-        "memory": row.memory or {},
-        "plans": row.plans or [],
-        "telemetry": row.telemetry or {},
+        "config": _normalize_config(row.config),
+        "memory": row.memory if isinstance(row.memory, dict) else {},
+        "plans": row.plans if isinstance(row.plans, list) else [],
+        "telemetry": row.telemetry if isinstance(row.telemetry, dict) else {},
         "desired_revision": row.desired_revision or 0,
         "applied_revision": row.applied_revision or 0,
         "pending": (row.desired_revision or 0) != (row.applied_revision or 0),
