@@ -32,6 +32,7 @@ export const ACTION_COLOR: Record<string, string> = {
 }
 
 export interface LogEvent {
+  event_id?: number
   timestamp: string
   player_name: string | null
   /** Резолвится бэкендом по логам-сохранённой связке имя→SteamID → PlayerData

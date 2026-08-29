@@ -21,7 +21,7 @@ from models import AdminUser, AdminSession, PlayerData
 from services_logs import (
     search_logs, get_unique_players, get_log_stats, get_fts_status,
     force_refresh_logs, LogEvent, get_player_map, get_steamids_for_names,
-    LogSearchTooSlow,
+    InvalidLogCursor, LogSearchTooSlow,
 )
 from services_sftp_filemanager import SFTPFileManager
 
@@ -89,6 +89,11 @@ async def api_logs_events(
     search: Optional[str] = Query(None),
     time_from: Optional[str] = Query(None),
     time_to: Optional[str] = Query(None),
+    pagination: Literal["offset", "cursor"] = Query(
+        "offset",
+        description="cursor uses keyset pagination and skips the expensive total count",
+    ),
+    cursor: Optional[str] = Query(None, min_length=4, max_length=128),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
     db: Session = Depends(get_db),
@@ -124,10 +129,11 @@ async def api_logs_events(
     if player_names:
         names_list = [n.strip() for n in player_names.split(',') if n.strip()]
 
-    offset = (page - 1) * page_size
+    cursor_mode = pagination == "cursor" or cursor is not None
+    offset = 0 if cursor_mode else (page - 1) * page_size
 
     try:
-        events, total, total_is_capped, has_more = await run_in_threadpool(
+        events, total, total_is_capped, has_more, next_cursor = await run_in_threadpool(
             search_logs,
             server_name=server if server else None,
             player_name=effective_player if effective_player else None,
@@ -140,7 +146,11 @@ async def api_logs_events(
             offset=offset,
             names_list=names_list,
             player_scope=player_scope,
+            cursor=cursor,
+            count_total=not cursor_mode,
         )
+    except InvalidLogCursor as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LogSearchTooSlow:
         # Осознанный отказ вместо пустой таблицы: такая комбинация фильтров
         # заставляет SQLite сканировать всю историю, и раньше запрос молотил
@@ -181,6 +191,7 @@ async def api_logs_events(
     return JSONResponse({
         "events": [
             {
+                "event_id": e.row_id,
                 "timestamp": e.timestamp.isoformat(),
                 "player_name": e.player_name,
                 "player_id": _player_id_for(e.player_name) if e.player_name else None,
@@ -201,9 +212,15 @@ async def api_logs_events(
         # precise number rather than paying for a full-table COUNT(*).
         "total_is_capped": total_is_capped,
         "has_more": has_more,
-        "page": page,
+        "next_cursor": next_cursor,
+        "pagination": "cursor" if cursor_mode else "offset",
+        "page": 1 if cursor_mode else page,
         "page_size": page_size,
-        "total_pages": ((total + page_size - 1) // page_size if total > 0 else 1) if total is not None else None,
+        "total_pages": (
+            ((total + page_size - 1) // page_size if total > 0 else 1)
+            if total is not None and not cursor_mode
+            else None
+        ),
     })
 
 

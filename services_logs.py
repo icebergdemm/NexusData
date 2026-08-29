@@ -3,6 +3,8 @@ Server Logs Service: SFTP download, parsing, and search for Barotrauma server lo
 Logs are downloaded in a background worker thread and parsed into structured events.
 """
 
+import base64
+import binascii
 import os
 import re
 import logging
@@ -33,6 +35,7 @@ class LogEvent:
     raw_line: str
     server_name: str = ""
     source_file: str = ""
+    row_id: int = 0
 
 
 # RoundManager login/logout patterns for extracting name→steamid
@@ -1335,11 +1338,43 @@ class LogSearchResult(NamedTuple):
     has_more       — есть ли ещё строки ПОСЛЕ текущей страницы. Считается
                      отдельно от total (запросом limit+1) именно для того,
                      чтобы перелистывание работало даже когда total неизвестен.
+    next_cursor    — непрозрачная позиция последней строки страницы для
+                     следующего keyset-запроса без медленного OFFSET.
     """
     events: List[LogEvent]
     total: Optional[int]
     total_is_capped: bool
     has_more: bool
+    next_cursor: Optional[str]
+
+
+class InvalidLogCursor(ValueError):
+    """Курсор логов повреждён или имеет неизвестный формат."""
+
+
+_LOG_CURSOR_VERSION = "1"
+_LOG_CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]{4,128}$")
+
+
+def _encode_log_cursor(timestamp_ms: int, row_id: int) -> str:
+    payload = f"{_LOG_CURSOR_VERSION}:{timestamp_ms}:{row_id}".encode("ascii")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_log_cursor(cursor: str) -> tuple[int, int]:
+    if not _LOG_CURSOR_RE.fullmatch(cursor):
+        raise InvalidLogCursor("Некорректный курсор страницы логов.")
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("ascii")
+        version, timestamp_raw, row_id_raw = decoded.split(":", 2)
+        timestamp_ms = int(timestamp_raw)
+        row_id = int(row_id_raw)
+    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        raise InvalidLogCursor("Некорректный курсор страницы логов.") from exc
+    if version != _LOG_CURSOR_VERSION or timestamp_ms < 0 or row_id <= 0:
+        raise InvalidLogCursor("Некорректный курсор страницы логов.")
+    return timestamp_ms, row_id
 
 
 # Сколько секунд максимум разрешено считать общее число совпадений. Счёт —
@@ -1438,6 +1473,8 @@ def search_logs(
     offset: int = 0,
     names_list: Optional[List[str]] = None,
     player_scope: str = "related",
+    cursor: Optional[str] = None,
+    count_total: bool = True,
 ) -> LogSearchResult:
     """Search log events via indexed SQL.
 
@@ -1455,7 +1492,7 @@ def search_logs(
         # Именно кортеж нужной формы: вызывающие распаковывают результат, и
         # короткий кортеж на этом пути раньше валил весь запрос страницы
         # логов пятисоткой вместо пустой таблицы.
-        return LogSearchResult([], 0, False, False)
+        return LogSearchResult([], 0, False, False, None)
 
     search_started = time.monotonic()
 
@@ -1466,10 +1503,31 @@ def search_logs(
     has_text_filter = bool(search_text or has_related_player_filter)
     use_fts = has_text_filter and fts_is_ready(conn)
 
-    from_sql, where, params = _build_where(server_name, player_name, action_type,
-                                           search_text, time_from, time_to, category,
-                                           names_list, use_fts=use_fts,
-                                           player_scope=player_scope)
+    from_sql, base_where, base_params = _build_where(
+        server_name,
+        player_name,
+        action_type,
+        search_text,
+        time_from,
+        time_to,
+        category,
+        names_list,
+        use_fts=use_fts,
+        player_scope=player_scope,
+    )
+    row_where = base_where
+    row_params = list(base_params)
+    effective_offset = offset
+    if cursor:
+        cursor_ts, cursor_id = _decode_log_cursor(cursor)
+        # Row-value comparison exactly matches ORDER BY ts DESC, id DESC and,
+        # unlike the logically equivalent OR, lets SQLite SEEK into ix_log_ts
+        # (and composite action/server indexes) instead of scanning from the
+        # newest row to the cursor on every deep page.
+        cursor_clause = "(log_events.ts, log_events.id) < (?, ?)"
+        row_where += (" AND " if row_where else " WHERE ") + cursor_clause
+        row_params.extend([cursor_ts, cursor_id])
+        effective_offset = 0
     strategy = (
         "fts" if use_fts
         else "actor_index" if player_scope == "actor" and bool(player_name or names_list)
@@ -1490,21 +1548,21 @@ def search_logs(
     try:
         with _apply_budget(conn, budget):
             rows = conn.execute(
-                f"SELECT log_events.ts, log_events.player, log_events.action, log_events.details, "
-                f"log_events.server, log_events.source_file FROM {from_sql}{where} "
+                f"SELECT log_events.ts, log_events.id, log_events.player, log_events.action, log_events.details, "
+                f"log_events.server, log_events.source_file FROM {from_sql}{row_where} "
                 f"ORDER BY log_events.ts DESC, log_events.id DESC LIMIT ? OFFSET ?",
-                params + [limit + 1, offset]
+                row_params + [limit + 1, effective_offset]
             ).fetchall()
     except sqlite3.Error as e:
         if budget.expired:
             logger.warning(
                 f"search_logs: прерван по бюджету {_ROW_TIME_BUDGET_SEC}s "
-                f"(strategy={strategy}, offset={offset}, category={category!r}, "
+                f"(strategy={strategy}, offset={effective_offset}, cursor={bool(cursor)}, category={category!r}, "
                 f"text={bool(search_text)}, names={bool(names_list or player_name)})"
             )
             raise LogSearchTooSlow() from e
         logger.error(f"search_logs: query failed: {e}")
-        return LogSearchResult([], 0, False, False)
+        return LogSearchResult([], 0, False, False, None)
 
     has_more = len(rows) > limit
     rows = rows[:limit]
@@ -1516,10 +1574,13 @@ def search_logs(
     # итог того не стоит: вызывающий получает флаг и показывает "5000+".
     capped = _bounded_count(
         conn,
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_sql}{where} LIMIT {COUNT_CAP + 1})",
-        params,
-    )
-    if capped is None:
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_sql}{base_where} LIMIT {COUNT_CAP + 1})",
+        base_params,
+    ) if count_total else None
+    if not count_total:
+        total = None
+        total_is_capped = False
+    elif capped is None:
         total: Optional[int] = None
         total_is_capped = True
     else:
@@ -1529,30 +1590,34 @@ def search_logs(
     events = [
         LogEvent(
             timestamp=_ms_to_dt(r[0]),
-            player_name=r[1] or "",
-            action_type=r[2],
-            details=r[3] or "",
-            raw_line=r[3] or "",
-            server_name=r[4] or "",
-            source_file=r[5] or "",
+            row_id=r[1],
+            player_name=r[2] or "",
+            action_type=r[3],
+            details=r[4] or "",
+            raw_line=r[4] or "",
+            server_name=r[5] or "",
+            source_file=r[6] or "",
         )
         for r in rows
     ]
+    next_cursor = _encode_log_cursor(rows[-1][0], rows[-1][1]) if has_more and rows else None
     elapsed_ms = int((time.monotonic() - search_started) * 1000)
     logger.info(
-        "logs.search.complete elapsed_ms=%d strategy=%s rows=%d offset=%d "
-        "server=%s action=%s category=%s text=%s players=%d",
+        "logs.search.complete elapsed_ms=%d strategy=%s rows=%d offset=%d cursor=%s "
+        "counted=%s server=%s action=%s category=%s text=%s players=%d",
         elapsed_ms,
         strategy,
         len(events),
-        offset,
+        effective_offset,
+        bool(cursor),
+        count_total,
         server_name or "all",
         action_type or "all",
         category or "all",
         bool(search_text),
         len(names_list) if names_list else int(bool(player_name)),
     )
-    return LogSearchResult(events, total, total_is_capped, has_more)
+    return LogSearchResult(events, total, total_is_capped, has_more, next_cursor)
 
 
 def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:

@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import services_logs
 
@@ -114,6 +115,59 @@ class LogSearchTests(unittest.TestCase):
             {event.player_name for event in result.events},
             {"Игрок Один", "Игрок Два"},
         )
+
+    def test_cursor_pagination_has_no_gaps_or_duplicates(self):
+        same_time = services_logs._ts_to_ms(datetime(2026, 8, 29, 13, 0))
+        self.conn.executemany(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) VALUES (?,?,?,?,?,?)",
+            [
+                (same_time, "ASPER1", "Первый", "wire", "same timestamp A", "server.log"),
+                (same_time, "ASPER1", "Второй", "wire", "same timestamp B", "server.log"),
+            ],
+        )
+        self.conn.commit()
+
+        first = services_logs.search_logs(limit=3, count_total=False)
+        second = services_logs.search_logs(
+            limit=3,
+            cursor=first.next_cursor,
+            count_total=False,
+        )
+
+        first_ids = [event.row_id for event in first.events]
+        second_ids = [event.row_id for event in second.events]
+        self.assertEqual(len(first_ids), 3)
+        self.assertEqual(len(second_ids), 3)
+        self.assertTrue(first.has_more)
+        self.assertIsNotNone(first.next_cursor)
+        self.assertTrue(set(first_ids).isdisjoint(second_ids))
+        self.assertEqual(first_ids + second_ids, sorted(first_ids + second_ids, reverse=True))
+        self.assertIsNone(first.total)
+        self.assertFalse(first.total_is_capped)
+
+    def test_invalid_cursor_is_rejected(self):
+        with self.assertRaises(services_logs.InvalidLogCursor):
+            services_logs.search_logs(cursor="not-a-valid-cursor", count_total=False)
+
+    def test_cursor_query_seeks_into_timestamp_index(self):
+        plan = self.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM log_events "
+            "WHERE (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT 101",
+            (services_logs._ts_to_ms(datetime(2026, 8, 29, 13, 0)), 100),
+        ).fetchall()
+
+        self.assertTrue(any("SEARCH" in row[-1] and "ix_log_ts" in row[-1] for row in plan), plan)
+
+    def test_cursor_mode_does_not_count_the_full_result_set(self):
+        with patch.object(
+            services_logs,
+            "_bounded_count",
+            side_effect=AssertionError("cursor mode must not count rows"),
+        ):
+            result = services_logs.search_logs(limit=2, count_total=False)
+
+        self.assertEqual(len(result.events), 2)
+        self.assertIsNone(result.total)
 
 
 if __name__ == "__main__":

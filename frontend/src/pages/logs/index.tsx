@@ -2,6 +2,7 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
+  CalendarClock,
   Filter,
   LoaderCircle,
   RefreshCw,
@@ -41,6 +42,8 @@ interface LogsResponse {
   total: number | null
   total_is_capped: boolean
   has_more: boolean
+  next_cursor: string | null
+  pagination: "offset" | "cursor"
   page: number
   page_size: number
   total_pages: number | null
@@ -80,6 +83,18 @@ const makeDefaultFilters = (): LogFilters => ({
   timeTo: "",
 })
 
+const TIME_PRESETS = [
+  { label: "1 час", hours: 1 },
+  { label: "6 часов", hours: 6 },
+  { label: "24 часа", hours: 24 },
+  { label: "7 дней", hours: 24 * 7 },
+] as const
+
+function toLocalDateTimeValue(date: Date) {
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return localDate.toISOString().slice(0, 16)
+}
+
 function filterSignature(filters: LogFilters) {
   return [
     filters.server,
@@ -107,7 +122,10 @@ export function LogsPage() {
   const { data: admin } = useCurrentAdmin()
   const [draftFilters, setDraftFilters] = useState<LogFilters>(makeDefaultFilters)
   const [appliedFilters, setAppliedFilters] = useState<LogFilters>(makeDefaultFilters)
-  const [page, setPage] = useState(1)
+  // Первый элемент означает начало выборки. Каждый следующий — непрозрачная
+  // позиция последней строки предыдущей страницы; поэтому «Назад» не требует
+  // OFFSET и просто снимает один курсор со стека.
+  const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const queryClient = useQueryClient()
 
@@ -115,6 +133,8 @@ export function LogsPage() {
   const draftActionType = draftFilters.consoleOnly ? "console" : draftFilters.actionType
   const hasPendingChanges = filterSignature(draftFilters) !== filterSignature(appliedFilters)
   const appliedCount = activeFilterCount(appliedFilters)
+  const currentCursor = cursorStack[cursorStack.length - 1]
+  const pageNumber = cursorStack.length
 
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: [
@@ -127,10 +147,11 @@ export function LogsPage() {
       appliedFilters.search,
       appliedFilters.timeFrom,
       appliedFilters.timeTo,
-      page,
+      currentCursor,
     ],
     queryFn: () => {
-      const params = new URLSearchParams({ page: String(page), page_size: "100" })
+      const params = new URLSearchParams({ pagination: "cursor", page_size: "100" })
+      if (currentCursor) params.set("cursor", currentCursor)
       if (appliedFilters.server !== "all") params.set("server", appliedFilters.server)
       if (appliedFilters.category !== "all") params.set("category", appliedFilters.category)
       if (appliedActionType !== "all") params.set("action_type", appliedActionType)
@@ -186,18 +207,44 @@ export function LogsPage() {
       playerNames: [...draftFilters.playerNames],
     })
     setDraftFilters((current) => ({ ...current, search: trimmedSearch }))
-    setPage(1)
+    setCursorStack([null])
   }
 
   const resetFilters = () => {
     setDraftFilters(makeDefaultFilters())
     setAppliedFilters(makeDefaultFilters())
-    setPage(1)
+    setCursorStack([null])
+  }
+
+  const applyTimePreset = (hours: number | null) => {
+    const now = new Date()
+    const period = hours == null
+      ? { timeFrom: "", timeTo: "" }
+      : {
+          timeFrom: toLocalDateTimeValue(new Date(now.getTime() - hours * 60 * 60 * 1000)),
+          timeTo: toLocalDateTimeValue(now),
+        }
+    // Быстрый период — самостоятельный однозначный фильтр, поэтому
+    // применяется сразу. Остальные ещё не применённые поля не затрагиваются.
+    setDraftFilters((current) => ({ ...current, ...period }))
+    setAppliedFilters((current) => ({ ...current, ...period }))
+    setCursorStack([null])
+  }
+
+  const goToNextPage = () => {
+    if (!data?.next_cursor) return
+    setCursorStack((current) => [...current, data.next_cursor])
+  }
+
+  const goToPreviousPage = () => {
+    setCursorStack((current) => current.length > 1 ? current.slice(0, -1) : current)
   }
 
   const resultLabel = data?.total != null
     ? `${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""} событий`
-    : data ? "много событий" : ""
+    : data
+      ? `${data.events.length} на странице${data.has_more ? " · есть ещё" : ""}`
+      : ""
 
   return (
     <div>
@@ -363,6 +410,40 @@ export function LogsPage() {
               </div>
             </div>
 
+            <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-dashed px-3 py-2">
+              <CalendarClock className="size-4 text-muted-foreground" />
+              <span className="mr-1 text-xs font-medium">Быстрый период:</span>
+              {TIME_PRESETS.map((preset) => (
+                <Button
+                  key={preset.hours}
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  disabled={isFetching}
+                  onClick={() => applyTimePreset(preset.hours)}
+                >
+                  {preset.label}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={isFetching || (
+                  !draftFilters.timeFrom
+                  && !draftFilters.timeTo
+                  && !appliedFilters.timeFrom
+                  && !appliedFilters.timeTo
+                )}
+                onClick={() => applyTimePreset(null)}
+              >
+                Всё время
+              </Button>
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                Период применяется сразу
+              </span>
+            </div>
+
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
               <p className="text-xs text-muted-foreground">
                 {draftFilters.playerScope === "actor"
@@ -429,7 +510,7 @@ export function LogsPage() {
                 </TableHeader>
                 <TableBody className={isFetching ? "opacity-60" : undefined}>
                   {data?.events.map((logEvent, index) => (
-                    <TableRow key={`${logEvent.timestamp}-${logEvent.server_name}-${logEvent.player_name}-${index}`}>
+                    <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
                       <TableCell className="pl-4 text-xs whitespace-nowrap text-muted-foreground">
                         {new Date(logEvent.timestamp).toLocaleString("ru-RU")}
                       </TableCell>
@@ -467,26 +548,24 @@ export function LogsPage() {
                 </TableBody>
               </Table>
 
-              {data && (data.has_more || page > 1) && (
+              {data && (data.has_more || pageNumber > 1) && (
                 <div className="flex items-center justify-center gap-2 border-t p-3">
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={page <= 1 || isFetching}
-                    onClick={() => setPage((current) => current - 1)}
+                    disabled={pageNumber <= 1 || isFetching}
+                    onClick={goToPreviousPage}
                   >
                     Назад
                   </Button>
                   <span className="text-sm text-muted-foreground">
-                    Страница {page}
-                    {data.total_pages != null && ` из ${data.total_pages}`}
-                    {data.total != null && ` (${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""})`}
+                    Страница {pageNumber} · по {data.page_size} записей
                   </span>
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!data.has_more || isFetching}
-                    onClick={() => setPage((current) => current + 1)}
+                    disabled={!data.next_cursor || isFetching}
+                    onClick={goToNextPage}
                   >
                     Вперёд
                   </Button>
