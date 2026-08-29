@@ -200,7 +200,25 @@ class InjectionGuardMiddleware(BaseHTTPMiddleware):
         ip = client_ip(request)
         now = time()
 
-        if self._is_blocked(ip, now):
+        # Service integrations may share the Nexus host/NAT address with an
+        # unrelated scanner.  A prior malicious anonymous request from that
+        # address must not lock out authenticated game ingest or the AI's
+        # read-only world client for 30 minutes.  A valid key only bypasses an
+        # existing IP block; the current URL is still checked against the
+        # injection signatures below.
+        import secrets as _secrets
+        provided_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        authenticated_service = bool(
+            provided_key
+            and (
+                settings.api_key
+                and _secrets.compare_digest(str(provided_key), str(settings.api_key))
+                or settings.client_api_key
+                and _secrets.compare_digest(str(provided_key), str(settings.client_api_key))
+            )
+        )
+
+        if self._is_blocked(ip, now) and not authenticated_service:
             return PlainTextResponse("Forbidden", status_code=403)
 
         # path уже url-decoded Starlette'ом; query_string — сырой, декодируем

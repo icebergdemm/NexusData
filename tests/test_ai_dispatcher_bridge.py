@@ -409,7 +409,7 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             engine.dispose()
 
     @patch("routes.dispatch._enqueue_ai_dispatch_job")
-    def test_world_telemetry_does_not_duplicate_recent_lifecycle_briefing(
+    def test_world_telemetry_completes_waiting_lifecycle_briefing(
         self,
         enqueue_job,
     ):
@@ -424,12 +424,20 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             world_round = WorldRound(
                 round_id="world-round-43",
                 server_name="ASPER1",
+                sub_name="Сигнатура",
+                level_name="Европейский кряж",
+                submarines=[{"id": 10, "name": "Сигнатура"}],
+                last_subs=[{"id": 10, "x": 100, "y": 200}],
+                last_seq=1,
                 created_at=now,
                 last_update_at=now,
             )
             event = RoundEvent(
                 event_type="start",
                 server_name="ASPER1",
+                submarine_name="Сигнатура",
+                mission="Доставка",
+                location="Европейский кряж",
                 created_at=now,
             )
             db.add_all([world_round, event])
@@ -450,8 +458,100 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             ):
                 _queue_ai_world_briefing(world_round, db)
 
-            enqueue_job.assert_not_called()
+            enqueue_job.assert_called_once()
+            job = enqueue_job.call_args.args[0]
+            self.assertEqual(job.payload["event_id"], f"nexus-round-briefing-{event.id}")
+            self.assertEqual(
+                job.payload["briefing_context"],
+                {
+                    "submarine_name": "Сигнатура",
+                    "mission": "Доставка",
+                    "location": "Европейский кряж",
+                },
+            )
             self.assertIsNotNone(world_round.ai_briefing_queued_at)
+        finally:
+            db.close()
+            engine.dispose()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_lifecycle_briefing_waits_without_world_telemetry(self, enqueue_job):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[RoundEvent.__table__, WorldRound.__table__, AppSetting.__table__],
+        )
+        db = Session(engine)
+        try:
+            event = RoundEvent(
+                event_type="start",
+                server_name="ASPER1",
+                submarine_name="Сигнатура",
+                created_at=datetime.utcnow(),
+            )
+            db.add(event)
+            db.commit()
+            db.refresh(event)
+
+            with (
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_url",
+                    "http://dispatcher/api/v1/dispatcher/messages",
+                ),
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_api_key",
+                    "dispatcher-secret",
+                ),
+            ):
+                _queue_ai_round_briefing(event, db)
+
+            enqueue_job.assert_not_called()
+        finally:
+            db.close()
+            engine.dispose()
+
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_non_telemetry_target_keeps_lifecycle_briefing(self, enqueue_job):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[RoundEvent.__table__, WorldRound.__table__, AppSetting.__table__],
+        )
+        db = Session(engine)
+        try:
+            event = RoundEvent(
+                event_type="start",
+                server_name="ASPER2",
+                submarine_name="Щука",
+                created_at=datetime.utcnow(),
+            )
+            db.add(event)
+            db.commit()
+            db.refresh(event)
+
+            with (
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_url",
+                    "http://dispatcher/api/v1/dispatcher/messages",
+                ),
+                patch.object(
+                    dispatch_routes.settings,
+                    "ai_dispatcher_api_key",
+                    "dispatcher-secret",
+                ),
+                patch.object(
+                    dispatch_routes.settings,
+                    "world_default_server_name",
+                    "ASPER1",
+                ),
+            ):
+                _queue_ai_round_briefing(event, db)
+
+            enqueue_job.assert_called_once()
+            self.assertEqual(enqueue_job.call_args.args[0].server_name, "ASPER2")
         finally:
             db.close()
             engine.dispose()

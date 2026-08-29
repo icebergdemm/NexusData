@@ -806,7 +806,15 @@ def _queue_ai_round_briefing(
     event: RoundEvent,
     db: Optional[Session] = None,
 ) -> None:
-    """Поставить первичный доклад после начала выхода в ту же FIFO, что и ответы."""
+    """Queue the lifecycle briefing once usable world telemetry is present.
+
+    ``/round/start`` normally arrives before ``/world/init`` and the first
+    dynamic snapshot.  Sending immediately makes the model query an empty
+    world endpoint and, worse, lets the later telemetry path mark the round as
+    already covered.  Keep the lifecycle event as the trigger/context, but let
+    subsequent init/snapshot calls retry this function until the escorted
+    vessel can actually be anchored on the map.
+    """
 
     if db is not None and not _ai_dispatcher_enabled(db):
         logger.info(
@@ -836,19 +844,44 @@ def _queue_ai_round_briefing(
 
     if db is not None:
         world_round = _latest_world_round(db, server_name)
-        if world_round is not None and _world_round_matches_lifecycle_event(
+        if world_round is None or not _world_round_matches_lifecycle_event(
             world_round,
             event,
         ):
-            if not _claim_world_briefing(db, world_round):
+            # WORLD_DEFAULT_SERVER_NAME is the source assigned to telemetry
+            # payloads which omit server_name.  Other dispatch targets (for
+            # example an ASPER2 terminal intentionally reading ASPER1 world
+            # data) must retain the lifecycle-only path; no matching row will
+            # ever appear for them on this Nexus instance.
+            telemetry_source = settings.world_default_server_name.strip().upper()
+            if server_name == telemetry_source:
                 logger.info(
-                    "AI round briefing already covered by world telemetry: "
-                    "round_event_id=%s world_round_id=%s server=%s",
+                    "AI round briefing waiting for matching world telemetry: "
+                    "round_event_id=%s server=%s",
                     event.id,
-                    world_round.round_id,
                     server_name,
                 )
                 return
+            world_round = None
+        if world_round is not None and not _world_round_navigation_ready(world_round):
+            logger.info(
+                "AI round briefing waiting for navigation telemetry: "
+                "round_event_id=%s world_round_id=%s server=%s seq=%s",
+                event.id,
+                world_round.round_id,
+                server_name,
+                world_round.last_seq,
+            )
+            return
+        if world_round is not None and not _claim_world_briefing(db, world_round):
+            logger.info(
+                "AI round briefing already queued: round_event_id=%s "
+                "world_round_id=%s server=%s",
+                event.id,
+                world_round.round_id,
+                server_name,
+            )
+            return
 
     round_id = f"dispatch-{server_name}-round-{event.id}"
     _enqueue_ai_dispatch_job(
@@ -921,9 +954,10 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
         and latest_event.event_type == "start"
         and _world_round_matches_lifecycle_event(world_round, latest_event)
     ):
-        # The lifecycle path has already queued its job.  Persist the claim so
-        # every later snapshot and every other worker remains silent.
-        _claim_world_briefing(db, world_round)
+        # /round/start intentionally waits for this world round to become
+        # navigable.  Preserve its richer mission context and let the common
+        # atomic claim in that path guarantee exactly-once queueing.
+        _queue_ai_round_briefing(latest_event, db)
         return
 
     if not _world_round_navigation_ready(world_round):

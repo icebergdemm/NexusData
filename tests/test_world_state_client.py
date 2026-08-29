@@ -2,7 +2,7 @@ import asyncio
 import gzip
 import json
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -66,6 +66,31 @@ class WorldStateClientTests(unittest.TestCase):
         payload = json.loads(gzip.decompress(response.body))
 
         self.assertEqual(payload["rounds"][0]["server_name"], "ASPER1")
+
+    def test_one_missed_production_snapshot_keeps_round_active(self):
+        self.db.query(WorldRound).delete()
+        self.db.add(
+            WorldRound(
+                round_id="round-delayed-snapshot",
+                server_name="ASPER1",
+                last_update_at=datetime.utcnow() - timedelta(seconds=20),
+            )
+        )
+        self.db.commit()
+
+        response = asyncio.run(
+            api_client_world_state(
+                round_id=None,
+                server_name=None,
+                db=self.db,
+            )
+        )
+        payload = json.loads(gzip.decompress(response.body))
+
+        self.assertEqual(
+            [round_["round_id"] for round_ in payload["rounds"]],
+            ["round-delayed-snapshot"],
+        )
 
 
 class WorldStateIngestServerNameTests(unittest.TestCase):

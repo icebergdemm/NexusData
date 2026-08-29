@@ -46,8 +46,10 @@ logger = logging.getLogger(__name__)
 
 # A round with no new snapshot in this long is considered over — the wire
 # protocol has no explicit "round ended" signal (see guide §7.7), so this is
-# purely a server-side staleness heuristic (~5 missed 3s intervals).
-ACTIVE_THRESHOLD_SECONDS = 15
+# purely a server-side staleness heuristic. Production snapshots currently
+# arrive about every 8 seconds, making the old 15-second window disappear
+# after one missed delivery. Keep roughly five observed intervals instead.
+ACTIVE_THRESHOLD_SECONDS = 45
 AI_CREATURE_ALERT_LEASE_SECONDS = 300
 
 router = APIRouter(
