@@ -164,6 +164,26 @@ async def api_logs_events(
                 else "Поиск не уложился в лимит времени. Сузьте период или уточните фильтры."
             ),
         )
+    except Exception as exc:
+        # Не оставляем неожиданный production-сбой без контекста. Глобальный
+        # обработчик тоже вернёт 500, но здесь известны именно параметры
+        # поиска, поэтому по одной строке Pterodactyl-лога можно отличить
+        # ошибку SQLite/курсора от проблем остального приложения.
+        logger.exception(
+            "logs.search.failed server=%s action=%s category=%s player_scope=%s "
+            "players=%d text=%s cursor=%s",
+            server or "all",
+            action_type or "all",
+            category or "all",
+            player_scope,
+            len(names_list) if names_list else int(bool(effective_player)),
+            bool(search),
+            bool(cursor),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Поиск по логам завершился ошибкой. Подробности записаны в консоль сервера.",
+        ) from exc
 
     # Resolve player_id for the "Игрок" column so it can link to the profile
     # (see PlayerSummaryDialog on the frontend) — only for the handful of
@@ -179,10 +199,27 @@ async def api_logs_events(
     steamid_to_player_id: dict = {}
     steamids = {sid for sid in name_to_steamid.values() if sid}
     if steamids:
-        for pid, sid in db.query(PlayerData.player_id, PlayerData.player_steamid).filter(
-            PlayerData.player_steamid.in_(steamids)
-        ).all():
-            steamid_to_player_id[sid] = pid
+        try:
+            for pid, sid in db.query(PlayerData.player_id, PlayerData.player_steamid).filter(
+                PlayerData.player_steamid.in_(steamids)
+            ).all():
+                steamid_to_player_id[sid] = pid
+        except Exception:
+            # Ссылки из имени в профиль — необязательное украшение ответа.
+            # Логи живут в отдельной SQLite и уже успешно найдены; временная
+            # ошибка основной MySQL/пула не должна превращать этот готовый
+            # результат в 500 и оставлять пользователю старые строки.
+            logger.exception(
+                "logs.player_links.unavailable rows=%d names=%d steamids=%d",
+                len(events),
+                len(distinct_names),
+                len(steamids),
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            steamid_to_player_id.clear()
 
     def _player_id_for(name: str) -> Optional[int]:
         sid = name_to_steamid.get(name)

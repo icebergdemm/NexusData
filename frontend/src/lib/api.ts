@@ -58,7 +58,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    const message = (body && (body.error || body.detail)) || res.statusText
+    const responseMessage = body && (body.error || body.detail)
+    const message = typeof responseMessage === "string" && responseMessage.trim()
+      ? responseMessage
+      : res.statusText.trim() || `Ошибка HTTP ${res.status}`
     throw new ApiError(res.status, message, body)
   }
 

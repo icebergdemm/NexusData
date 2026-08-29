@@ -31,7 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
-import { api } from "@/lib/api"
+import { api, ApiError } from "@/lib/api"
 import { ACTION_COLOR, ACTION_TYPES, type LogEvent } from "./constants"
 import { PlayerNamesFilter } from "./player-filter"
 import { useCurrentAdmin } from "@/lib/auth"
@@ -116,6 +116,16 @@ function activeFilterCount(filters: LogFilters) {
     + Number(filters.playerNames.length > 0)
     + Number(Boolean(filters.search))
     + Number(Boolean(filters.timeFrom || filters.timeTo))
+}
+
+function logSearchErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    return `HTTP ${error.status}: ${error.message || "ошибка запроса"}`
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return "Не удалось получить ответ от сервера"
 }
 
 export function LogsPage() {
@@ -471,7 +481,7 @@ export function LogsPage() {
             <div>
               <p className="font-medium text-destructive">Не удалось выполнить поиск</p>
               <p className="mt-1 text-muted-foreground">
-                {(error as Error)?.message || "Ошибка запроса"}. Показанные ниже строки относятся к предыдущему запросу.
+                {logSearchErrorMessage(error)}. Показанные ниже строки относятся к предыдущему запросу.
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={() => refetch()}>Повторить</Button>
