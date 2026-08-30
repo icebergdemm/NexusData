@@ -47,6 +47,7 @@ interface HoldSession {
   startY: number
   maxMovementPx: number
   anchorMs: number
+  activated: boolean
   timer: ReturnType<typeof setTimeout>
   dispose: () => void
 }
@@ -103,9 +104,9 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
 
   const openPrecision = useCallback((requestedCenterMs?: number) => {
     const bridge = replayBridge()
-    if (!bridge) return
+    if (!bridge) return false
     const duration = bridge.getDurationMs()
-    if (duration <= 0) return
+    if (duration <= 0) return false
     const center = clamp(requestedCenterMs ?? bridge.getTimeMs(), 0, duration)
     const bounds = precisionScrubWindow({ centerMs: center, durationMs: duration, windowMs: 30_000 })
     const next = { ...bounds, anchorMs: center }
@@ -115,6 +116,7 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
     precisionRef.current = next
     setPrecision(next)
     setPlaying(false)
+    return true
   }, [])
 
   useEffect(() => {
@@ -208,6 +210,7 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
     }
     const onMove = (pointerEvent: globalThis.PointerEvent) => {
       if (pointerEvent.pointerId !== session.pointerId) return
+      if (session.activated) return
       const movement = Math.hypot(pointerEvent.clientX - session.startX, pointerEvent.clientY - session.startY)
       session.maxMovementPx = Math.max(session.maxMovementPx, movement)
       const tolerance = session.pointerType === "touch" ? 10 : 6
@@ -215,13 +218,15 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
     }
     const onRelease = (pointerEvent?: globalThis.PointerEvent | Event) => {
       if (pointerEvent && "pointerId" in pointerEvent && pointerEvent.pointerId !== session.pointerId) return
+      const shouldClosePrecision = session.activated
       dispose()
+      if (shouldClosePrecision) closePrecision(false)
     }
     const onSecondPointer = (pointerEvent: globalThis.PointerEvent) => {
-      if (pointerEvent.pointerId !== session.pointerId) dispose()
+      if (pointerEvent.pointerId !== session.pointerId) onRelease()
     }
     const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") dispose()
+      if (document.visibilityState !== "visible") onRelease()
     }
 
     session.pointerId = event.pointerId
@@ -231,6 +236,7 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
     session.startY = event.clientY
     session.maxMovementPx = 0
     session.anchorMs = anchorMs
+    session.activated = false
     session.dispose = dispose
     session.timer = setTimeout(() => {
       const tolerance = session.pointerType === "touch" ? 10 : 6
@@ -241,8 +247,13 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
         maxMovementPx: session.maxMovementPx,
         movementTolerancePx: tolerance,
       })
-      dispose()
-      if (activate) openPrecision(session.anchorMs)
+      if (!activate) {
+        dispose()
+        return
+      }
+      session.activated = openPrecision(session.anchorMs)
+      setHolding(false)
+      if (!session.activated) dispose()
     }, PRECISION_HOLD_DELAY_MS)
 
     holdRef.current = session
