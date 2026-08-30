@@ -26,6 +26,7 @@ import {
   AlertDialogFooter, AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api, ApiError } from "@/lib/api"
 import { useCurrentAdmin, usePermissionRegistry } from "@/lib/auth"
 import { PermissionMatrixEditor, type PermissionValue } from "@/pages/users/PermissionMatrixEditor"
@@ -96,8 +97,8 @@ function EditDepartmentDialog({ open, onOpenChange, department, isSuperuser }: {
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="mb-1.5 block">Иконка (эмодзи)</Label>
-              <Input value={form.icon} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} maxLength={8} />
+              <Label className="mb-1.5 block">Иконка</Label>
+              <PlatformIconField value={form.icon} onChange={(icon) => setForm((f) => ({ ...f, icon }))} />
             </div>
             <div>
               <Label className="mb-1.5 block">Цвет</Label>
@@ -892,7 +893,7 @@ export function DepartmentDetailPage() {
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => navigate("/departments")}><ArrowLeft className="size-4" /></Button>
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-xl">
-            {data.icon || <Building2 className="size-5 text-primary" />}
+            <PlatformIcon value={data.icon} fallback={Building2} className="size-5 text-primary" />
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">{data.name}</h1>

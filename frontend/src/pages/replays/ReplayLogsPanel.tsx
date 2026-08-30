@@ -13,7 +13,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Search, Crosshair, ListFilter } from "lucide-react"
+import { Search, Crosshair, ListFilter, ScrollText } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -22,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { api } from "@/lib/api"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { ACTION_COLOR, ACTION_TYPES } from "@/pages/logs/constants"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 
 interface TimedLogEvent {
   timestamp: string
@@ -115,7 +116,7 @@ export function ReplayLogsPanel({ replayId }: { replayId: string }) {
   return (
     <div className="rpv-panel">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 style={{ margin: 0 }}>📜 Логи раунда</h3>
+        <h3 className="flex items-center gap-1.5" style={{ margin: 0 }}><AdaptiveIcon emoji="📜" icon={ScrollText} />Логи раунда</h3>
         <Button
           variant={follow ? "default" : "outline"}
           size="sm"

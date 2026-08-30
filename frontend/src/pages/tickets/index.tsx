@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import type { TicketsListResponse } from "./types"
 
@@ -44,7 +45,7 @@ export function TicketsListPage() {
             return (
               <Card key={t.id} className="cursor-pointer overflow-hidden py-0 transition-all hover:border-primary/50" onClick={() => navigate(`/tickets/${t.id}`)}>
                 <CardContent className="flex items-center gap-3 py-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-xl">{meta?.emoji ?? "🎫"}</div>
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-xl"><PlatformIcon value={meta?.emoji ?? "🎫"} fallback={Ticket} className="size-5" /></div>
                   <div className="flex-1">
                     <div className="font-medium">{t.title}</div>
                     <div className="text-xs text-muted-foreground">

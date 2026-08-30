@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Star, Gift, RotateCw, Camera } from "lucide-react"
+import { Star, Gift, RotateCw, Camera, Medal } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -14,6 +14,7 @@ import { Link } from "react-router-dom"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { RatingConfigSection } from "./config-section"
 
@@ -128,7 +129,7 @@ export function RatingsPage() {
               <TableBody>
                 {data?.leaderboard.map((e) => (
                   <TableRow key={e.steam_id} className={e.rank <= 3 ? "bg-warning/5" : ""}>
-                    <TableCell className="text-base">{e.rank <= 3 ? ["🥇", "🥈", "🥉"][e.rank - 1] : <span className="text-muted-foreground">{e.rank}</span>}</TableCell>
+                    <TableCell className="text-base">{e.rank <= 3 ? <PlatformIcon value={["🥇", "🥈", "🥉"][e.rank - 1]} fallback={Medal} /> : <span className="text-muted-foreground">{e.rank}</span>}</TableCell>
                     <TableCell className="font-medium">{e.player_name}</TableCell>
                     <TableCell className="font-semibold text-primary">{e.rating}</TableCell>
                     <TableCell className="text-muted-foreground">{e.cumulative_points}</TableCell>

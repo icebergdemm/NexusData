@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import type { PlayerDetailResponse } from "@/pages/players/detail-types"
 
 function fmtDate(iso: string | null): string {
@@ -88,8 +89,8 @@ export function PlayerSummaryDialog({ playerId, open, onOpenChange }: {
             {data.label_pairs.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {data.label_pairs.map((lp) => (
-                  <Badge key={lp.id} style={{ backgroundColor: lp.category.color }} className="text-white">
-                    {lp.category.icon} {lp.category.name}
+                  <Badge key={lp.id} style={{ backgroundColor: lp.category.color }} className="gap-1.5 text-white">
+                    <PlatformIcon value={lp.category.icon} />{lp.category.name}
                   </Badge>
                 ))}
               </div>

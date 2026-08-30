@@ -21,6 +21,7 @@ import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
 import {
@@ -275,7 +276,7 @@ function BoardSettingsDialog({ open, onOpenChange, boardId, initial, candidates 
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="mb-1.5 block">Иконка</Label>
-              <Input value={form.icon} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} maxLength={8} />
+              <PlatformIconField value={form.icon} onChange={(icon) => setForm((f) => ({ ...f, icon }))} />
             </div>
             <div>
               <Label className="mb-1.5 block">Цвет</Label>
@@ -295,7 +296,11 @@ function BoardSettingsDialog({ open, onOpenChange, boardId, initial, candidates 
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Без привязки к отделу</SelectItem>
-                {candidates?.departments.map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.icon} {d.name}</SelectItem>)}
+                {candidates?.departments.map((d) => (
+                  <SelectItem key={d.id} value={String(d.id)}>
+                    <span className="flex items-center gap-2"><PlatformIcon value={d.icon} />{d.name}</span>
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -451,7 +456,11 @@ function TaskDetailSheet({ taskId, task, onClose, candidates, canEditAll, canDel
               <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Не назначен</SelectItem>
-                {candidates?.departments.map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.icon} {d.name}</SelectItem>)}
+                {candidates?.departments.map((d) => (
+                  <SelectItem key={d.id} value={String(d.id)}>
+                    <span className="flex items-center gap-2"><PlatformIcon value={d.icon} />{d.name}</span>
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
 
@@ -617,7 +626,7 @@ export function TaskBoardPage() {
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => navigate("/tasks")}><ArrowLeft className="size-4" /></Button>
           <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-xl">
-            {data.board.icon || <KanbanSquare className="size-5 text-primary" />}
+            <PlatformIcon value={data.board.icon} fallback={KanbanSquare} className="size-5 text-primary" />
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">{data.board.name}</h1>

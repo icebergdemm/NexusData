@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { documentsApi, type DocTemplate } from "@/pages/documents/api"
 import { ImportDocumentDialog } from "@/pages/documents/ImportDocumentDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import type { DepartmentDetail } from "./api"
 
 export function OrdersTab({ department, canEdit }: { department: DepartmentDetail; canEdit: boolean }) {
@@ -58,7 +59,7 @@ export function OrdersTab({ department, canEdit }: { department: DepartmentDetai
               <DropdownMenuItem onClick={() => createMutation.mutate(undefined)}>Пустой документ</DropdownMenuItem>
               {orderTemplates.map((t) => (
                 <DropdownMenuItem key={t.id} onClick={() => createMutation.mutate(t)}>
-                  {t.icon} {t.name}
+                  <PlatformIcon value={t.icon} fallback={Scroll} /> {t.name}
                 </DropdownMenuItem>
               ))}
               <DropdownMenuSeparator />
@@ -86,7 +87,7 @@ export function OrdersTab({ department, canEdit }: { department: DepartmentDetai
             >
               <CardContent className="flex items-center gap-3 p-3">
                 <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-lg">
-                  {d.icon || <Scroll className="size-4 text-primary" />}
+                  <PlatformIcon value={d.icon} fallback={Scroll} className="size-4 text-primary" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium">{d.title}</div>

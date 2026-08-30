@@ -18,6 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayersListResponse } from "./types"
@@ -200,7 +201,7 @@ export function PlayersListPage() {
           <SelectContent>
             <SelectItem value="all">Все метки</SelectItem>
             {data?.label_categories.map((c) => (
-              <SelectItem key={c.id} value={String(c.id)}>{c.icon} {c.name}</SelectItem>
+              <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><PlatformIcon value={c.icon} />{c.name}</span></SelectItem>
             ))}
           </SelectContent>
         </Select>

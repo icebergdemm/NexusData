@@ -13,13 +13,14 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Terminal, Send, RefreshCw } from "lucide-react"
+import { Terminal, Send, RefreshCw, Circle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, ApiError } from "@/lib/api"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 
 interface ConsolePermissions { servers: { server: string; enabled: boolean }[]; can_manage_settings: boolean }
 interface ConsoleSettings { panel_url: string; api_key: string; server1_uuid: string; server2_uuid: string }
@@ -37,8 +38,11 @@ function fmtBytes(n: number | null): string {
   return `${(n / 1024 / 1024).toFixed(0)} МБ`
 }
 
-const STATE_LABEL: Record<string, string> = {
-  running: "🟢 Запущен", starting: "🟡 Запускается", stopping: "🟡 Останавливается", offline: "⚪ Остановлен",
+const STATE_LABEL: Record<string, { emoji: string; label: string }> = {
+  running: { emoji: "🟢", label: "Запущен" },
+  starting: { emoji: "🟡", label: "Запускается" },
+  stopping: { emoji: "🟡", label: "Останавливается" },
+  offline: { emoji: "⚪", label: "Остановлен" },
 }
 
 export function ConsoleTab() {
@@ -132,7 +136,11 @@ export function ConsoleTab() {
           <CardTitle className="flex items-center gap-1.5 text-sm"><Terminal className="size-4" /> Консоль {activeServer}</CardTitle>
           {status?.state && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="outline">{STATE_LABEL[status.state] ?? status.state}</Badge>
+              <Badge variant="outline" className="gap-1.5">
+                {STATE_LABEL[status.state]
+                  ? <><AdaptiveIcon emoji={STATE_LABEL[status.state].emoji} icon={Circle} className={status.state === "running" ? "fill-current" : ""} />{STATE_LABEL[status.state].label}</>
+                  : status.state}
+              </Badge>
               {status.cpu_percent != null && <span>CPU: {status.cpu_percent.toFixed(0)}%</span>}
               {status.memory_bytes != null && <span>RAM: {fmtBytes(status.memory_bytes)} / {fmtBytes(status.memory_limit_bytes)}</span>}
             </div>

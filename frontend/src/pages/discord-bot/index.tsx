@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Bot, MessageSquare, Plus, RefreshCw, Save, Send, Settings, Ticket as TicketIcon, Trash2 } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { DiscordViewerTab } from "./viewer"
 
@@ -211,11 +212,12 @@ function TicketTypeEditor({ typeKey, type, onChange, onRename, onRemove, disable
           onChange={(e) => setKeyDraft(e.target.value)}
           onBlur={() => { if (keyDraft.trim() && keyDraft !== typeKey) onRename(typeKey, keyDraft.trim()) }}
         />
-        <Input
+        <PlatformIconField
           className="h-8 max-w-[80px]"
+          v2ClassName="h-8 max-w-[170px]"
           value={type.emoji}
           disabled={disabled}
-          onChange={(e) => onChange(typeKey, { ...type, emoji: e.target.value })}
+          onChange={(emoji) => onChange(typeKey, { ...type, emoji })}
           placeholder="🎫"
         />
         <Input

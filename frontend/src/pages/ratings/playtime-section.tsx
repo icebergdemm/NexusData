@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { ChartNoAxesColumn, Gift, Pencil, RefreshCw, Save, Timer, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
 import type { PlaytimeCondition, PlaytimePeriod, PlaytimeStats, RewardGroup } from "./rewards-types"
 import { PERIOD_LABELS } from "./rewards-types"
@@ -83,27 +85,27 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
         <Card><CardContent className="text-center"><div className="text-sm font-bold">{stats?.generated_at ? new Date(stats.generated_at).toLocaleString("ru-RU") : "никогда"}</div><div className="text-xs text-muted-foreground">Последний расчёт</div></CardContent></Card>
         {canEdit && (
           <Card><CardContent className="flex flex-col justify-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => generatePlaytime.mutate()}>🔄 Пересчитать сейчас</Button>
-            <Button size="sm" onClick={() => applyNow.mutate()}>🎁 Выдать награды</Button>
+            <Button size="sm" variant="outline" onClick={() => generatePlaytime.mutate()}><AdaptiveIcon emoji="🔄" icon={RefreshCw} /> Пересчитать сейчас</Button>
+            <Button size="sm" onClick={() => applyNow.mutate()}><AdaptiveIcon emoji="🎁" icon={Gift} /> Выдать награды</Button>
           </CardContent></Card>
         )}
       </div>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-sm">⏱ Награды за наигранное время</CardTitle>
+          <CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="⏱" icon={Timer} />Награды за наигранное время</CardTitle>
           {canEdit && <Button size="sm" onClick={openCreate}>+ Добавить условие</Button>}
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-xs text-muted-foreground">Выдавать группу наград игрокам, наигравшим заданное время за период (день/неделя/месяц).</p>
           {conditions.map((c, i) => (
             <div key={i} className="flex flex-wrap items-center gap-3 rounded-md border bg-card p-3 text-sm">
-              <span>⏱ <strong>{(c.min_seconds / 3600).toFixed(1)} ч</strong> за <strong>{PERIOD_LABELS[c.period] ?? c.period}</strong></span>
+              <span className="flex items-center gap-1.5"><AdaptiveIcon emoji="⏱" icon={Timer} /><span><strong>{(c.min_seconds / 3600).toFixed(1)} ч</strong> за <strong>{PERIOD_LABELS[c.period] ?? c.period}</strong></span></span>
               <span className="flex-1 text-muted-foreground">→ {groupName(c.reward_group_id)}</span>
               {canEdit && (
                 <div className="flex gap-1.5">
-                  <Button size="sm" variant="outline" onClick={() => openEdit(i)}>✏️</Button>
-                  <Button size="sm" variant="destructive" onClick={() => setRemoveIdx(i)}>🗑</Button>
+                  <Button size="sm" variant="outline" onClick={() => openEdit(i)} aria-label="Изменить"><AdaptiveIcon emoji="✏️" icon={Pencil} /></Button>
+                  <Button size="sm" variant="destructive" onClick={() => setRemoveIdx(i)} aria-label="Удалить"><AdaptiveIcon emoji="🗑" icon={Trash2} /></Button>
                 </div>
               )}
             </div>
@@ -113,7 +115,7 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-sm">📊 Топ игроков по времени (за неделю)</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="📊" icon={ChartNoAxesColumn} />Топ игроков по времени (за неделю)</CardTitle></CardHeader>
         <CardContent>
           <Table>
             <TableHeader><TableRow><TableHead>#</TableHead><TableHead>Игрок</TableHead><TableHead>За день</TableHead><TableHead>За неделю</TableHead><TableHead>За месяц</TableHead></TableRow></TableHeader>
@@ -160,7 +162,7 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
               </Select>
             </div>
           </div>
-          <DialogFooter><Button onClick={save}>💾 Сохранить</Button></DialogFooter>
+          <DialogFooter><Button onClick={save}><AdaptiveIcon emoji="💾" icon={Save} /> Сохранить</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

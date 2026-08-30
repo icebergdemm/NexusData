@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import type { TicketDetailResponse } from "./types"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
+import { Ticket } from "lucide-react"
 
 function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
@@ -56,7 +58,7 @@ export function TicketDetailPage() {
         <CardContent className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2 font-semibold">
-              <span>{meta?.emoji ?? "🎫"}</span> {ticket.title}
+              <PlatformIcon value={meta?.emoji ?? "🎫"} fallback={Ticket} /> {ticket.title}
               <Badge variant={isClosed ? "secondary" : "default"}>{ticket.status}</Badge>
             </div>
             <div className="mt-1 text-xs text-muted-foreground">

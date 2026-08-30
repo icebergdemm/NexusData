@@ -3,6 +3,8 @@ import { useParams, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { ReplayLogsPanel } from "./ReplayLogsPanel"
+import { Camera, Clapperboard, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 
 interface ReplayDetail {
   replay: {
@@ -89,7 +91,7 @@ export function ReplayPlayerPage() {
     <div>
       <style>{`
         .rpv-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;}
-        .rpv-top h2{font-size:18px;font-weight:700;color:var(--foreground);margin:0;}
+        .rpv-top h2{display:flex;align-items:center;gap:6px;font-size:18px;font-weight:700;color:var(--foreground);margin:0;}
         .rpv-back{color:var(--muted-foreground);text-decoration:none;font-size:13px;}
         .rpv-back:hover{color:var(--foreground);}
         .rpv-layout{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start;}
@@ -112,7 +114,9 @@ export function ReplayPlayerPage() {
         .rpv-loading-stages li.active::before{content:"◐";animation:rpvspin 0.9s linear infinite;display:inline-block;}
         @keyframes rpvspin{to{transform:rotate(360deg);}}
         .rpv-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px;margin-top:10px;}
-        .rpv-btn{background:var(--background);border:1px solid var(--border);color:var(--foreground);border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;font-weight:600;}
+        .rpv-btn{display:inline-flex;align-items:center;gap:6px;background:var(--background);border:1px solid var(--border);color:var(--foreground);border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;font-weight:600;}
+        #rpvPlay [data-pause]{display:none;}#rpvPlay[data-playing="true"] [data-play]{display:none;}#rpvPlay[data-playing="true"] [data-pause]{display:block;}
+        #rpvMuteAll [data-unmute]{display:none;}#rpvMuteAll[data-muted-all="true"] [data-mute]{display:none;}#rpvMuteAll[data-muted-all="true"] [data-unmute]{display:block;}
         .rpv-btn:hover{border-color:var(--primary);}
         .rpv-btn.active{background:var(--primary);border-color:var(--primary);}
         .rpv-seek{flex:1;min-width:160px;}
@@ -143,7 +147,7 @@ export function ReplayPlayerPage() {
       <Link to="/replays" className="rpv-back">← Назад к списку</Link>
       <div className="rpv-top">
         <h2>
-          🎬 {data?.replay.submarine_name ?? "Раунд"} #{replayId}
+          <AdaptiveIcon emoji="🎬" icon={Clapperboard} /> {data?.replay.submarine_name ?? "Раунд"} #{replayId}
           {data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
         </h2>
         <span className="rpv-time">{data?.replay.recorded_at ? new Date(data.replay.recorded_at).toLocaleString("ru-RU") : ""}</span>
@@ -167,7 +171,7 @@ export function ReplayPlayerPage() {
           </div>
 
           <div className="rpv-controls">
-            <button className="rpv-btn" id="rpvPlay">▶</button>
+            <button className="rpv-btn" id="rpvPlay" aria-label="Воспроизвести"><span data-play><AdaptiveIcon emoji="▶" icon={Play} className="size-3.5" /></span><Pause data-pause className="size-3.5" /></button>
             <span className="rpv-time" id="rpvTimeLabel">00:00 / 00:00</span>
             <span className="rpv-time" id="rpvClockLabel" title="Время по МСК в этот момент записи"></span>
             <input type="range" className="rpv-seek" id="rpvSeek" min={0} max={1000} defaultValue={0} />
@@ -177,13 +181,13 @@ export function ReplayPlayerPage() {
               <button className="rpv-btn rpv-speed" data-speed="2">2×</button>
               <button className="rpv-btn rpv-speed" data-speed="4">4×</button>
             </div>
-            <button className="rpv-btn" id="rpvFollow">📷 Следить за лодкой</button>
+            <button className="rpv-btn" id="rpvFollow"><AdaptiveIcon emoji="📷" icon={Camera} /> Следить за лодкой</button>
           </div>
         </div>
 
         <div className="rpv-side">
           <div className="rpv-panel">
-            <h3>🔊 Звук</h3>
+            <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="🔊" icon={Volume2} />Звук</h3>
             <div className="rpv-row"><label><input type="checkbox" id="rpvVoiceEnable" /> Включить голос</label></div>
             <div className="rpv-row"><span>Общая громкость</span><input type="range" className="rpv-slider" id="rpvMasterVol" min={0} max={100} defaultValue={100} /></div>
             <div className="rpv-row"><label><input type="checkbox" id="rpvSpatial" defaultChecked /> Затухание по расстоянию</label></div>
@@ -191,13 +195,13 @@ export function ReplayPlayerPage() {
           </div>
           <div className="rpv-panel">
             <h3 className="rpv-panel-head">
-              👥 Игроки
-              <button className="rpv-btn rpv-mute-all" id="rpvMuteAll">🔇 Заглушить всех</button>
+              <span className="flex items-center gap-1.5"><AdaptiveIcon emoji="👥" icon={Users} />Игроки</span>
+              <button className="rpv-btn rpv-mute-all" id="rpvMuteAll"><span data-mute><AdaptiveIcon emoji="🔇" icon={VolumeX} /></span><Volume2 data-unmute className="size-3.5" /><span data-mute-label>Заглушить всех</span></button>
             </h3>
             <div className="rpv-players" id="rpvPlayers" />
           </div>
           <div className="rpv-panel">
-            <h3>💬 Чат</h3>
+            <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="💬" icon={MessageSquare} />Чат</h3>
             <div className="rpv-chat" id="rpvChat" />
           </div>
           {replayId && <ReplayLogsPanel replayId={replayId} />}

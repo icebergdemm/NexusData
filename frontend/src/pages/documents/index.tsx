@@ -32,6 +32,7 @@ import { documentsApi, type DocScope, type DocumentRow, type DocFolder } from "@
 import { TemplatePickerDialog } from "@/pages/documents/TemplatePickerDialog"
 import { departmentsApi, type DeptDocumentFolder } from "@/pages/departments/api"
 import { FolderAccessFields } from "@/pages/departments/FolderAccessFields"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 
 const SCOPES: { key: DocScope; label: string; icon: typeof NotebookText }[] = [
   { key: "mine", label: "Мои документы", icon: FileText },
@@ -125,7 +126,7 @@ function DeptDirectoryNode({ dept, expanded, activeFolderId, folders, canManage,
         style={{ borderLeft: `2px solid ${dept.color || "transparent"}` }}
       >
         {expanded ? <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />}
-        <span className="shrink-0 leading-none">{dept.icon || "🏢"}</span>
+        <span className="shrink-0 leading-none"><PlatformIcon value={dept.icon || "🏢"} fallback={Building2} /></span>
         <span className="truncate">{dept.name}</span>
       </button>
       {expanded && (
@@ -543,7 +544,7 @@ export function DocumentsPage() {
                 >
                   <Link to={`/documents/${doc.id}`} className="flex min-w-0 flex-1 items-center gap-3">
                     <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-sm">
-                      {doc.icon || <FileText className="size-3.5 text-primary" />}
+                      <PlatformIcon value={doc.icon} fallback={FileText} className="size-3.5 text-primary" />
                     </div>
                     <span className="min-w-0 flex-1 truncate text-sm font-medium">{doc.title}</span>
                     {doc.department_id && !inDeptView && (
@@ -587,7 +588,7 @@ export function DocumentsPage() {
                     <CardContent className="p-4">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-lg">
-                          {doc.icon || <FileText className="size-4 text-primary" />}
+                          <PlatformIcon value={doc.icon} fallback={FileText} className="size-4 text-primary" />
                         </div>
                         {doc.access_level && doc.access_level !== "owner" && (
                           <Badge variant="secondary" className="text-[10px]">{doc.access_level === "edit" ? "редактор" : doc.access_level === "comment" ? "комментатор" : "просмотр"}</Badge>

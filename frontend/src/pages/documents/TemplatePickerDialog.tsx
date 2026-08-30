@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { documentsApi } from "@/pages/documents/api"
 import { ImportDocumentDialog } from "./ImportDocumentDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 
 export function TemplatePickerDialog({ open, onOpenChange, onPick, onImported, canManage, folderId, departmentId, departmentFolderId, initialFile }: {
   open: boolean
@@ -68,7 +69,7 @@ export function TemplatePickerDialog({ open, onOpenChange, onPick, onImported, c
             <div key={t.id} className="group relative flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-colors hover:border-primary/50 hover:bg-accent">
               <button onClick={() => onPick(t.id)} className="flex flex-col items-center gap-2">
                 <div className="flex size-12 items-center justify-center rounded-lg bg-primary/10 text-xl">
-                  {t.icon || <FileText className="size-6 text-primary" />}
+                  <PlatformIcon value={t.icon} fallback={FileText} className="size-6 text-primary" />
                 </div>
                 <div>
                   <div className="text-sm font-medium">{t.name}</div>

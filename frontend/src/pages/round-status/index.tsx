@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { PlayCircle, MapPin, Ship, Target, Users2, HeartPulse, Truck } from "lucide-react"
+import { PlayCircle, MapPin, Ship, Target, Users2, HeartPulse, Truck, Circle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 
 interface ServerRoundStatus {
@@ -43,7 +44,8 @@ function ServerStatusCard({ serverName, status, now }: { serverName: string; sta
       <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b bg-muted/30 py-3">
         <CardTitle className="text-base font-semibold">{serverName}</CardTitle>
         <Badge variant={status.active ? "default" : "secondary"} className={status.active ? "bg-success text-white" : ""}>
-          {status.active ? "🟢 Идёт раунд" : "⚪ Раунд не идёт"}
+          <AdaptiveIcon emoji={status.active ? "🟢" : "⚪"} icon={Circle} className={status.active ? "fill-current" : ""} />
+          {status.active ? "Идёт раунд" : "Раунд не идёт"}
         </Badge>
       </CardHeader>
       <CardContent className="grid grid-cols-2 gap-4 pt-4 text-sm">

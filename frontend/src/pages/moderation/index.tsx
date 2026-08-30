@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Link2, Terminal } from "lucide-react"
+import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Link2, Terminal, Circle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,6 +20,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
@@ -159,7 +160,8 @@ export function ModerationPage() {
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b bg-muted/30 py-3">
                   <CardTitle className="text-sm font-semibold">{sn}</CardTitle>
                   <Badge className={rs.active ? "bg-success text-white" : ""} variant={rs.active ? "default" : "secondary"}>
-                    {rs.active ? "🟢 Раунд идёт" : "⚪ Раунд не идёт"}
+                    <AdaptiveIcon emoji={rs.active ? "🟢" : "⚪"} icon={Circle} className={rs.active ? "fill-current" : ""} />
+                    {rs.active ? "Раунд идёт" : "Раунд не идёт"}
                   </Badge>
                 </CardHeader>
                 <CardContent className="py-4 text-sm">

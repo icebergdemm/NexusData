@@ -20,6 +20,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { AchievementEditor } from "./AchievementEditor"
 import { TriggerSummary } from "./trigger-builder"
@@ -71,7 +72,7 @@ function AchievementCard({ row, canEdit, reference, onEdit, onChanged }: {
     <Card className={row.enabled ? "" : "opacity-70"}>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-2">
         <div className="flex min-w-0 items-start gap-2">
-          <span className="text-2xl leading-none">{row.icon || "🏆"}</span>
+          <span className="flex size-7 items-center justify-center text-2xl leading-none"><PlatformIcon value={row.icon || "🏆"} fallback={Trophy} className="size-5" /></span>
           <div className="min-w-0">
             <div className="truncate font-semibold">{row.title}</div>
             <div className="truncate font-mono text-xs text-muted-foreground">{row.key}</div>
@@ -215,7 +216,7 @@ function PlayerProgressTab({ achievements, canGrant }: {
             <Card key={p.achievement_key}>
               <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-2">
                 <div className="flex min-w-0 items-start gap-2">
-                  <span className="text-xl leading-none">{p.icon || "🏆"}</span>
+                  <span className="flex size-6 items-center justify-center text-xl leading-none"><PlatformIcon value={p.icon || "🏆"} fallback={Trophy} /></span>
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{p.title}</div>
                     <div className="truncate font-mono text-xs text-muted-foreground">{p.achievement_key}</div>

@@ -15,6 +15,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import {
   CheckCircle2, ClipboardCheck, Download, Loader2, RotateCw, Undo2, UserCog, X, XCircle,
 } from "lucide-react"
@@ -209,7 +210,7 @@ export function SubProjectDetailPage() {
             <div className="flex flex-wrap items-center gap-1.5">
               {data.categories.map((c) => (
                 <Badge key={c.id} variant="secondary" className="gap-1" style={{ borderColor: c.color }}>
-                  {c.icon} {c.name}
+                  <PlatformIcon value={c.icon} /> {c.name}
                   {data.can_edit_categories && (
                     <button onClick={() => removeCategory.mutate(c.id)} className="ml-0.5 hover:text-destructive">
                       <X className="size-3" />
@@ -225,7 +226,7 @@ export function SubProjectDetailPage() {
                     {data.all_categories
                       .filter((c) => !data.categories.some((assigned) => assigned.id === c.id))
                       .map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}>{c.icon} {c.name}</SelectItem>
+                        <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><PlatformIcon value={c.icon} />{c.name}</span></SelectItem>
                       ))}
                   </SelectContent>
                 </Select>

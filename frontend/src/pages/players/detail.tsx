@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2,
-  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2,
+  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -33,6 +33,7 @@ import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
+import { AdaptiveIcon, PlatformIcon } from "@/components/layout/PlatformIcon"
 
 interface AdminOption { id: number; discord_username: string | null }
 
@@ -231,7 +232,7 @@ export function PlayerDetailPage() {
     return (
       <Card>
         <CardContent className="text-center text-muted-foreground">
-          🔒 Профиль засекречен. Нужен допуск (право «Игроки → Доступ к засекреченным профилям») или права суперпользователя.
+          <AdaptiveIcon emoji="🔒" icon={LockKeyhole} /> Профиль засекречен. Нужен допуск (право «Игроки → Доступ к засекреченным профилям») или права суперпользователя.
         </CardContent>
       </Card>
     )
@@ -252,7 +253,7 @@ export function PlayerDetailPage() {
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold">{player.forced_display_name || player.player_last_time_name}</h1>
                 {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
-                {player.is_secret && <Badge variant="outline" className="border-warning/40 text-warning">🔒 Секретно</Badge>}
+                {player.is_secret && <Badge variant="outline" className="gap-1 border-warning/40 text-warning"><AdaptiveIcon emoji="🔒" icon={LockKeyhole} />Секретно</Badge>}
                 {player.forced_display_name && (
                   <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${player.player_last_time_name}`}>
                     <Link2 className="mr-1 size-3" /> {player.linked_admin_name ?? "принудительное имя"}
@@ -499,7 +500,7 @@ export function PlayerDetailPage() {
                     <SelectTrigger className="w-64"><SelectValue placeholder="Выбрать метку" /></SelectTrigger>
                     <SelectContent>
                       {data.label_categories.map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}>{c.icon} {c.name}</SelectItem>
+                        <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><PlatformIcon value={c.icon} />{c.name}</span></SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -514,7 +515,7 @@ export function PlayerDetailPage() {
               <div className="flex flex-wrap gap-2">
                 {data.label_pairs.map((lp) => (
                   <Badge key={lp.id} style={{ backgroundColor: lp.category.color }} className="gap-1.5 text-white">
-                    {lp.category.icon} {lp.category.name}
+                    <PlatformIcon value={lp.category.icon} />{lp.category.name}
                     {data.has_edit && (
                       <button onClick={() => removeLabelMutation.mutate(lp.id)} className="ml-1">✕</button>
                     )}

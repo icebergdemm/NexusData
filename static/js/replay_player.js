@@ -636,7 +636,12 @@
     }
     broadcastTime();
   }
-  function setPlaying(p){playing=p;const btn=document.getElementById("rpvPlay");if(btn)btn.textContent=p?"⏸":"▶";if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();}
+  function setPlaying(p){
+    playing=p;
+    const btn=document.getElementById("rpvPlay");
+    if(btn){btn.dataset.playing=String(p);btn.setAttribute("aria-label",p?"Пауза":"Воспроизвести");}
+    if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();
+  }
 
   // ── Voice playback (per-speaker Opus decoders, positional) ───────────────
   async function initAudio(){
@@ -818,10 +823,10 @@
       row.innerHTML=`<span class="rpv-pdot" style="background:${color}"></span>`+
         `<span class="rpv-pname" title="${esc(name)}">${esc(name)}</span>`+
         `<input type="range" class="rpv-pvol" min="0" max="100" value="100" title="Громкость">`+
-        `<button class="rpv-pmute" title="Заглушить">🔊</button>`;
+        `<button class="rpv-pmute" title="Заглушить">${speakerSoundIcon(false)}</button>`;
       const vol=row.querySelector(".rpv-pvol"),mute=row.querySelector(".rpv-pmute");
       vol.addEventListener("input",()=>{st.vol=vol.value/100;applyGain(id);});
-      mute.addEventListener("click",()=>{st.mute=!st.mute;mute.textContent=st.mute?"🔇":"🔊";applyGain(id);syncMuteAllBtn();});
+      mute.addEventListener("click",()=>{st.mute=!st.mute;mute.innerHTML=speakerSoundIcon(st.mute);applyGain(id);syncMuteAllBtn();});
       box.appendChild(row);
     }
     syncMuteAllBtn();
@@ -830,16 +835,24 @@
   // Кнопка работает как переключатель: пока заглушены не все — глушит всех,
   // когда заглушены все — возвращает звук. Ярлык пересчитывается и после
   // одиночных mute, иначе он врал бы о текущем состоянии панели.
+  function speakerSoundIcon(muted){
+    if(document.documentElement.dataset.uiVersion!=="v2")return muted?"🔇":"🔊";
+    return muted
+      ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="22" y1="9" x2="16" y2="15"></line><line x1="16" y1="9" x2="22" y2="15"></line></svg>'
+      : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>';
+  }
   function setAllMuted(m){
     for(const[id,st]of speakerState){st.mute=m;applyGain(id);}
-    document.querySelectorAll(".rpv-player .rpv-pmute").forEach(b=>{b.textContent=m?"🔇":"🔊";});
+    document.querySelectorAll(".rpv-player .rpv-pmute").forEach(b=>{b.innerHTML=speakerSoundIcon(m);});
     syncMuteAllBtn();
   }
   function syncMuteAllBtn(){
     const btn=document.getElementById("rpvMuteAll");
     if(!btn)return;
     const all=speakerState.size>0&&[...speakerState.values()].every(st=>st.mute);
-    btn.textContent=all?"🔈 Вернуть звук":"🔇 Заглушить всех";
+    btn.dataset.mutedAll=String(all);
+    const label=btn.querySelector("[data-mute-label]");
+    if(label)label.textContent=all?"Вернуть звук":"Заглушить всех";
     btn.classList.toggle("active",all);
     btn.disabled=speakerState.size===0;
   }

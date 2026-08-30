@@ -20,6 +20,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
 import { api } from "@/lib/api"
+import { PlatformIconField } from "@/components/layout/PlatformIcon"
+import { IS_V2 } from "@/lib/ui-version"
 import { ChipsField, type Option } from "./pickers"
 import { TriggerBuilder } from "./trigger-builder"
 import { RewardsBuilder } from "./rewards-builder"
@@ -158,24 +160,21 @@ export function AchievementEditor({ open, onOpenChange, editing, reference, allK
               <div>
                 <Label className="mb-1 block text-xs">Иконка</Label>
                 <div className="flex items-center gap-1.5">
-                  <Input
-                    value={form.icon}
-                    onChange={(e) => set({ icon: e.target.value })}
-                    placeholder="🏆"
-                    className="h-9 w-16 text-center text-lg"
-                  />
-                  <div className="flex flex-wrap gap-0.5">
-                    {ICON_PRESETS.map((i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => set({ icon: i })}
-                        className={`rounded px-1 text-lg transition hover:bg-accent ${form.icon === i ? "bg-primary/10" : ""}`}
-                      >
-                        {i}
-                      </button>
-                    ))}
-                  </div>
+                  <PlatformIconField value={form.icon} onChange={(icon) => set({ icon })} className={IS_V2 ? "w-full" : "h-9 w-16 text-center text-lg"} placeholder="🏆" />
+                  {!IS_V2 && (
+                    <div className="flex flex-wrap gap-0.5">
+                      {ICON_PRESETS.map((i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => set({ icon: i })}
+                          className={`rounded px-1 text-lg transition hover:bg-accent ${form.icon === i ? "bg-primary/10" : ""}`}
+                        >
+                          {i}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               <div>

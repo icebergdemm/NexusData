@@ -12,6 +12,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { BriefcaseBusiness, ChartNoAxesColumn, Package, Pencil, Save, Sparkles, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
 import { KvRowEditor, type KvRow } from "./kv-rows"
 import type { JobItemsVariation, JobReferenceJob, RewardGroup } from "./rewards-types"
@@ -112,7 +114,7 @@ function JobItemsEditor({ blocks, onChange, jobs }: {
       {blocks.map((b, i) => (
         <div key={b.jobId} className="space-y-2 rounded-md border p-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-semibold">🎭 {jobName(b.jobId)}</span>
+            <span className="flex items-center gap-1.5 font-semibold"><AdaptiveIcon emoji="🎭" icon={BriefcaseBusiness} />{jobName(b.jobId)}</span>
             <Button type="button" size="sm" variant="ghost" className="text-destructive" onClick={() => remove(i)}>✕ Убрать роль</Button>
           </div>
           <Tabs defaultValue="1">
@@ -220,7 +222,7 @@ export function RewardGroupsSection({ groups, canEdit }: { groups: RewardGroup[]
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-sm">📦 Группы наград</CardTitle>
+        <CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="📦" icon={Package} />Группы наград</CardTitle>
         {canEdit && <Button size="sm" onClick={openCreate}>+ Создать группу</Button>}
       </CardHeader>
       <CardContent>
@@ -259,7 +261,7 @@ export function RewardGroupsSection({ groups, canEdit }: { groups: RewardGroup[]
                       const extra = [cfg.variation_2_items && "в2", cfg.variation_3_items && "в3"].filter(Boolean).join("+")
                       return (
                         <Badge key={jid} variant="outline" className="border-primary/40 text-primary">
-                          🎭 {jobName(jid)}: {Object.keys(cfg.items || {}).length} предм.{extra ? ` (${extra})` : ""}
+                          <AdaptiveIcon emoji="🎭" icon={BriefcaseBusiness} /> {jobName(jid)}: {Object.keys(cfg.items || {}).length} предм.{extra ? ` (${extra})` : ""}
                         </Badge>
                       )
                     })}
@@ -268,8 +270,8 @@ export function RewardGroupsSection({ groups, canEdit }: { groups: RewardGroup[]
                 {empty && <div className="text-xs text-muted-foreground">Пустая группа</div>}
                 {canEdit && (
                   <div className="mt-auto flex gap-1.5 pt-1">
-                    <Button size="sm" variant="outline" onClick={() => openEdit(g)}>✏️ Изменить</Button>
-                    <Button size="sm" variant="destructive" onClick={() => setRemoveTarget(g)}>🗑</Button>
+                    <Button size="sm" variant="outline" onClick={() => openEdit(g)}><AdaptiveIcon emoji="✏️" icon={Pencil} /> Изменить</Button>
+                    <Button size="sm" variant="destructive" onClick={() => setRemoveTarget(g)}><AdaptiveIcon emoji="🗑" icon={Trash2} /></Button>
                   </div>
                 )}
               </div>
@@ -290,20 +292,20 @@ export function RewardGroupsSection({ groups, canEdit }: { groups: RewardGroup[]
             <div><Label className="mb-1.5 block">Буквенный ID *</Label><Input value={id} onChange={(e) => setId(e.target.value)} placeholder="top1_reward" disabled={!!editingId} /></div>
 
             <div>
-              <Label className="mb-1.5 block">📦 Предметы (item_id → количество)</Label>
+              <Label className="mb-1.5 flex items-center gap-1.5"><AdaptiveIcon emoji="📦" icon={Package} />Предметы (item_id → количество)</Label>
               <p className="mb-1 text-[11px] text-muted-foreground">Выдаются независимо от того, на какой профессии игрок зашёл.</p>
               <KvRowEditor rows={itemRows} onChange={setItemRows} keyPlaceholder="item_id" valuePlaceholder="кол-во" addLabel="+ Добавить предмет" />
             </div>
             <div>
-              <Label className="mb-1.5 block">📊 Статы (ключ → значение)</Label>
+              <Label className="mb-1.5 flex items-center gap-1.5"><AdaptiveIcon emoji="📊" icon={ChartNoAxesColumn} />Статы (ключ → значение)</Label>
               <KvRowEditor rows={statRows} onChange={setStatRows} keyPlaceholder="ключ (all/job)" valuePlaceholder="значение" addLabel="+ Добавить стат" />
             </div>
             <div>
-              <Label className="mb-1.5 block">✨ Таланты (профессия → talent1,talent2)</Label>
+              <Label className="mb-1.5 flex items-center gap-1.5"><AdaptiveIcon emoji="✨" icon={Sparkles} />Таланты (профессия → talent1,talent2)</Label>
               <KvRowEditor rows={talentRows} onChange={setTalentRows} keyPlaceholder="профессия" valuePlaceholder="talent1,talent2" addLabel="+ Добавить талант" />
             </div>
             <div>
-              <Label className="mb-1.5 block">🎭 Предметы по ролям</Label>
+              <Label className="mb-1.5 flex items-center gap-1.5"><AdaptiveIcon emoji="🎭" icon={BriefcaseBusiness} />Предметы по ролям</Label>
               <p className="mb-1 text-[11px] text-muted-foreground">
                 Выдаются, только если игрок зашёл на выбранную роль — под конкретную вариацию его снаряжения
                 (см. подсказки в каждой вкладке ниже про фолбэк вариаций).
@@ -311,7 +313,7 @@ export function RewardGroupsSection({ groups, canEdit }: { groups: RewardGroup[]
               <JobItemsEditor blocks={jobItemBlocks} onChange={setJobItemBlocks} jobs={jobs} />
             </div>
           </div>
-          <DialogFooter><Button onClick={save}>💾 Сохранить</Button></DialogFooter>
+          <DialogFooter><Button onClick={save}><AdaptiveIcon emoji="💾" icon={Save} /> Сохранить</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

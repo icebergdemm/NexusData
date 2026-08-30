@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Search } from "lucide-react"
+import { ChartNoAxesColumn, GraduationCap, Package, Search, Sparkles } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import { ItemIcon } from "@/components/layout/ItemIcon"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { useItemCatalog, itemDisplayName } from "@/lib/items"
 import { api } from "@/lib/api"
 import type { AvailableKvalKit, RewardReference } from "./detail-types"
@@ -107,7 +108,7 @@ function KvalKitsCard({ playerId, canEdit, kvalKits, available, reference, onDon
 
   return (
     <Card>
-      <CardHeader><CardTitle className="text-sm">🎓 Квалификационные киты</CardTitle></CardHeader>
+      <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="🎓" icon={GraduationCap} />Квалификационные киты</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap gap-2">
           {Object.entries(kvalKits).map(([job, level]) => (
@@ -196,7 +197,7 @@ function ItemsCard({ playerId, canEdit, items, jobItems, reference, onDone }: {
 
   return (
     <Card>
-      <CardHeader><CardTitle className="text-sm">📦 Дополнительные предметы</CardTitle></CardHeader>
+      <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="📦" icon={Package} />Дополнительные предметы</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <div className="space-y-2">
           {groups.map((group) => (
@@ -331,7 +332,7 @@ function StatsCard({ playerId, canEdit, stats, reference, onDone }: {
 
   return (
     <Card>
-      <CardHeader><CardTitle className="text-sm">📊 Бонусы к навыкам</CardTitle></CardHeader>
+      <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="📊" icon={ChartNoAxesColumn} />Бонусы к навыкам</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap gap-2">
           {rows.map((r) => (
@@ -410,7 +411,7 @@ function TalentsCard({ playerId, canEdit, talents, reference, onDone }: {
 
   return (
     <Card>
-      <CardHeader><CardTitle className="text-sm">✨ Таланты</CardTitle></CardHeader>
+      <CardHeader><CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="✨" icon={Sparkles} />Таланты</CardTitle></CardHeader>
       <CardContent className="space-y-3">
         <div className="space-y-2">
           {Object.entries(talents).map(([job, ids]) => (

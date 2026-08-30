@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
+import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 
 interface LabelCategory { id: number; name: string; color: string; icon: string }
 
@@ -53,7 +54,7 @@ export function LabelCategoriesPage() {
         <CardHeader><CardTitle>Новая метка</CardTitle></CardHeader>
         <CardContent className="flex flex-wrap items-end gap-2">
           <div><label className="mb-1 block text-xs text-muted-foreground">Название</label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
-          <div><label className="mb-1 block text-xs text-muted-foreground">Иконка</label><Input value={form.icon} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} className="w-16" /></div>
+          <div><label className="mb-1 block text-xs text-muted-foreground">Иконка</label><PlatformIconField value={form.icon} onChange={(icon) => setForm((f) => ({ ...f, icon }))} className="w-16" v2ClassName="w-44" /></div>
           <div><label className="mb-1 block text-xs text-muted-foreground">Цвет</label><Input type="color" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} className="w-16 p-1" /></div>
           <Button disabled={!form.name.trim()} onClick={() => create.mutate()}>Создать</Button>
         </CardContent>
@@ -71,11 +72,7 @@ export function LabelCategoriesPage() {
                     <>
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-2">
-                          <Input
-                            value={editDraft.icon}
-                            onChange={(e) => setEditDraft((d) => ({ ...d, icon: e.target.value }))}
-                            className="w-16"
-                          />
+                          <PlatformIconField value={editDraft.icon} onChange={(icon) => setEditDraft((d) => ({ ...d, icon }))} className="w-16" v2ClassName="w-44" />
                           <Input
                             value={editDraft.name}
                             onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))}
@@ -106,7 +103,7 @@ export function LabelCategoriesPage() {
                     </>
                   ) : (
                     <>
-                      <TableCell><Badge style={{ backgroundColor: c.color }} className="text-white">{c.icon} {c.name}</Badge></TableCell>
+                      <TableCell><Badge style={{ backgroundColor: c.color }} className="gap-1.5 text-white"><PlatformIcon value={c.icon} />{c.name}</Badge></TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1.5">
                           <Button size="sm" variant="outline" onClick={() => startEdit(c)}>

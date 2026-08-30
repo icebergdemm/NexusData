@@ -1,6 +1,8 @@
 import { useState } from "react"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { Wrench } from "lucide-react"
 
 /** JSON textarea with live validation feedback + a format button — mirrors the
  * original kits.html's validateJson()/formatJson() vanilla-JS behavior.
@@ -42,7 +44,7 @@ export function JsonField({ value, onChange, rows = 4, allowEmpty = false }: { v
         <span className={`text-[11px] font-semibold ${isEmpty ? "text-muted-foreground" : error ? "text-destructive" : "text-success"}`}>
           {isEmpty ? "— не задано (используется вариация 1)" : error ? `✗ Ошибка: ${error}` : "✓ JSON корректен"}
         </span>
-        <Button type="button" size="sm" variant="ghost" className="h-6 text-xs" onClick={format}>🔧 Форматировать</Button>
+        <Button type="button" size="sm" variant="ghost" className="h-6 text-xs" onClick={format}><AdaptiveIcon emoji="🔧" icon={Wrench} /> Форматировать</Button>
       </div>
     </div>
   )

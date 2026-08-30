@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { documentsApi } from "@/pages/documents/api"
 import { ImportDocumentDialog } from "@/pages/documents/ImportDocumentDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import type { DepartmentDetail } from "./api"
 
 export function NewsTab({ department, canEdit }: { department: DepartmentDetail; canEdit: boolean }) {
@@ -76,7 +77,7 @@ export function NewsTab({ department, canEdit }: { department: DepartmentDetail;
             >
               <CardContent className="flex items-center gap-3 p-3">
                 <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-lg">
-                  {d.icon || <Megaphone className="size-4 text-primary" />}
+                  <PlatformIcon value={d.icon} fallback={Megaphone} className="size-4 text-primary" />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium">{d.title}</div>

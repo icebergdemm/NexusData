@@ -13,6 +13,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { Award, Medal, Pencil, Save, Trash2, Trophy, Zap } from "lucide-react"
 import { api } from "@/lib/api"
 import type { RatingRewardCondition, RatingRewardHolder, RewardGroup } from "./rewards-types"
 import { ROLES, ROLE_LABELS, WEEKDAY_LABELS } from "./rewards-types"
@@ -98,11 +100,11 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-sm">🏆 Награды по местам в рейтинге</CardTitle>
+        <CardTitle className="flex items-center gap-1.5 text-sm"><AdaptiveIcon emoji="🏆" icon={Trophy} />Награды по местам в рейтинге</CardTitle>
         <div className="flex gap-1.5">
           {canEdit && (
             <Button size="sm" variant="outline" disabled={applyNow.isPending} onClick={() => applyNow.mutate()}>
-              ⚡ Проверить сейчас
+              <AdaptiveIcon emoji="⚡" icon={Zap} /> Проверить сейчас
             </Button>
           )}
           {canEdit && <Button size="sm" onClick={openCreate}>+ Добавить условие</Button>}
@@ -121,15 +123,15 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
           return (
             <div key={i} className="space-y-1.5 rounded-md border bg-card p-3 text-sm">
               <div className="flex flex-wrap items-center gap-3">
-                <span>🎖 <strong>{ROLE_LABELS[c.role] ?? c.role}</strong></span>
+                <span className="flex items-center gap-1.5"><AdaptiveIcon emoji="🎖" icon={Award} /><strong>{ROLE_LABELS[c.role] ?? c.role}</strong></span>
                 <span>{WEEKDAY_LABELS[c.schedule?.weekday ?? 0]}, <strong>{c.schedule?.time_msk ?? "-"}</strong> МСК</span>
                 <span className="flex-1 text-muted-foreground">
                   {(c.places || []).map((p) => `${p.place} место → ${groupName(p.reward_group_id)}`).join("; ") || "-"}
                 </span>
                 {canEdit && (
                   <div className="flex gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => openEdit(i)}>✏️</Button>
-                    <Button size="sm" variant="destructive" onClick={() => setRemoveIdx(i)}>🗑</Button>
+                    <Button size="sm" variant="outline" onClick={() => openEdit(i)} aria-label="Изменить"><AdaptiveIcon emoji="✏️" icon={Pencil} /></Button>
+                    <Button size="sm" variant="destructive" onClick={() => setRemoveIdx(i)} aria-label="Удалить"><AdaptiveIcon emoji="🗑" icon={Trash2} /></Button>
                   </div>
                 )}
               </div>
@@ -176,7 +178,7 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
               </div>
             </div>
             <div>
-              <Label className="mb-1.5 block">🏅 Награды по местам</Label>
+              <Label className="mb-1.5 flex items-center gap-1.5"><AdaptiveIcon emoji="🏅" icon={Medal} />Награды по местам</Label>
               <div className="space-y-1.5">
                 {places.map((p, i) => (
                   <div key={i} className="flex items-center gap-1.5">
@@ -192,7 +194,7 @@ export function RatingRewardsSection({ conditions, groups, canEdit }: { conditio
               </div>
             </div>
           </div>
-          <DialogFooter><Button onClick={save}>💾 Сохранить</Button></DialogFooter>
+          <DialogFooter><Button onClick={save}><AdaptiveIcon emoji="💾" icon={Save} /> Сохранить</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -7,6 +7,8 @@ import { RewardGroupsSection } from "./reward-groups-section"
 import { RatingRewardsSection } from "./rating-rewards-section"
 import { PlaytimeSection } from "./playtime-section"
 import type { PlaytimeCondition, RatingRewardCondition, RewardGroup } from "./rewards-types"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { Package, Timer, Trophy } from "lucide-react"
 
 export function RewardsConfigPage() {
   const { data: admin } = useCurrentAdmin()
@@ -36,9 +38,9 @@ export function RewardsConfigPage() {
   return (
     <Tabs defaultValue="groups" className="space-y-4">
       <TabsList>
-        <TabsTrigger value="groups">📦 Группы наград</TabsTrigger>
-        <TabsTrigger value="rating">🏆 По рейтингу</TabsTrigger>
-        <TabsTrigger value="playtime">⏱ По времени</TabsTrigger>
+        <TabsTrigger value="groups"><AdaptiveIcon emoji="📦" icon={Package} /> Группы наград</TabsTrigger>
+        <TabsTrigger value="rating"><AdaptiveIcon emoji="🏆" icon={Trophy} /> По рейтингу</TabsTrigger>
+        <TabsTrigger value="playtime"><AdaptiveIcon emoji="⏱" icon={Timer} /> По времени</TabsTrigger>
       </TabsList>
 
       <TabsContent value="groups">

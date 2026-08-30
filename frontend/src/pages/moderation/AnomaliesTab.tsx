@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/select"
 import { api } from "@/lib/api"
 import { Checkbox } from "@/components/ui/checkbox"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 
 interface AnomalyPlayer {
   player_id: number
@@ -73,7 +74,7 @@ function EvidenceDetails({ a }: { a: Anomaly }) {
   const incidents = (a.evidence.incidents as { label: string; icon: string }[] | undefined) ?? []
   return (
     <div className="flex flex-wrap gap-1.5 text-xs">
-      {incidents.map((inc, i) => <span key={i}>{inc.icon} {inc.label}</span>)}
+      {incidents.map((inc, i) => <span key={i} className="flex items-center gap-1"><PlatformIcon value={inc.icon} />{inc.label}</span>)}
     </div>
   )
 }

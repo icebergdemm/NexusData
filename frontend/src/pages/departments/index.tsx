@@ -15,6 +15,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { useCurrentAdmin, canDo } from "@/lib/auth"
 import { departmentsApi, OPTIONAL_MODULE_KEYS, MODULE_LABELS, type CreateDepartmentBody, type DepartmentModule } from "./api"
 
@@ -57,8 +58,8 @@ function CreateDepartmentDialog({ open, onOpenChange }: { open: boolean; onOpenC
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="mb-1.5 block">Иконка (эмодзи)</Label>
-              <Input value={form.icon ?? ""} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} placeholder="🩺" maxLength={8} />
+              <Label className="mb-1.5 block">Иконка</Label>
+              <PlatformIconField value={form.icon ?? ""} onChange={(icon) => setForm((f) => ({ ...f, icon }))} placeholder="🩺" />
             </div>
             <div>
               <Label className="mb-1.5 block">Цвет</Label>
@@ -154,7 +155,7 @@ export function DepartmentsPage() {
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-start gap-3">
                   <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xl">
-                    {d.icon || <Building2 className="size-5 text-primary" />}
+                    <PlatformIcon value={d.icon} fallback={Building2} className="size-5 text-primary" />
                   </div>
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{d.name}</div>

@@ -11,9 +11,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { Wrench, RefreshCw, LayoutGrid, Braces } from "lucide-react"
+import { Wrench, RefreshCw, LayoutGrid, Braces, Pencil, Save, Trash2 } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { JsonField } from "./json-field"
 import { KitItemsEditor } from "./items-editor"
@@ -292,8 +293,8 @@ export function KitsPage() {
                     <div className="text-xs text-muted-foreground">{data.kits_mapping[String(k.kit_level)] ?? `Уровень ${k.kit_level}`}</div>
                   </div>
                   <div className="flex gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => (isEditing ? setEditingBaseId(null) : startEditBase(k))}>{isEditing ? "Отмена" : "✏️"}</Button>
-                    <Button size="sm" variant="destructive" onClick={() => setDeleteBaseTarget(k)}>🗑</Button>
+                    <Button size="sm" variant="outline" onClick={() => (isEditing ? setEditingBaseId(null) : startEditBase(k))}>{isEditing ? "Отмена" : <AdaptiveIcon emoji="✏️" icon={Pencil} />}</Button>
+                    <Button size="sm" variant="destructive" onClick={() => setDeleteBaseTarget(k)} aria-label="Удалить"><AdaptiveIcon emoji="🗑" icon={Trash2} /></Button>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -313,7 +314,7 @@ export function KitsPage() {
                         items={editDraft.items} onItemsChange={(v) => setEditDraft((d) => ({ ...d, items: v }))} itemsRows={4}
                         form={editVariations} onFormChange={setEditVariations}
                       />
-                      <Button size="sm" onClick={() => updateKit.mutate(k.id)}>💾 Сохранить</Button>
+                      <Button size="sm" onClick={() => updateKit.mutate(k.id)}><AdaptiveIcon emoji="💾" icon={Save} /> Сохранить</Button>
                     </div>
                   ) : itemsList.length ? (
                     <>
@@ -360,7 +361,7 @@ export function KitsPage() {
                 <code>talents</code>: массив ID талантов. <code>stats</code>: объект бонусов (ключ = профессия или &quot;all&quot;).
               </p>
             </div>
-            <Button disabled={!newQual.base_job.trim()} onClick={() => addQual.mutate()}>💾 Создать</Button>
+            <Button disabled={!newQual.base_job.trim()} onClick={() => addQual.mutate()}><AdaptiveIcon emoji="💾" icon={Save} /> Создать</Button>
           </CardContent>
         </Card>
 
@@ -377,8 +378,8 @@ export function KitsPage() {
                     <div className="font-mono text-xs text-muted-foreground">{QUAL_LEVEL_NAMES[k.kit_level] ?? k.kit_level} уровень · {k.job_id}</div>
                   </div>
                   <div className="flex gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => (isEditing ? setEditingQualId(null) : startEditQual(k))}>{isEditing ? "Отмена" : "✏️"}</Button>
-                    <Button size="sm" variant="destructive" onClick={() => setDeleteQualTarget(k)}>🗑</Button>
+                    <Button size="sm" variant="outline" onClick={() => (isEditing ? setEditingQualId(null) : startEditQual(k))}>{isEditing ? "Отмена" : <AdaptiveIcon emoji="✏️" icon={Pencil} />}</Button>
+                    <Button size="sm" variant="destructive" onClick={() => setDeleteQualTarget(k)} aria-label="Удалить"><AdaptiveIcon emoji="🗑" icon={Trash2} /></Button>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -392,13 +393,13 @@ export function KitsPage() {
                         items={editDraft.items} onItemsChange={(v) => setEditDraft((d) => ({ ...d, items: v }))} itemsRows={6}
                         form={editVariations} onFormChange={setEditVariations}
                       />
-                      <Button size="sm" onClick={() => updateQual.mutate(k.id)}>💾 Сохранить</Button>
+                      <Button size="sm" onClick={() => updateQual.mutate(k.id)}><AdaptiveIcon emoji="💾" icon={Save} /> Сохранить</Button>
                     </div>
                   ) : chips.length ? (
                     <>
                       <div className="flex flex-wrap gap-1">
                         {chips.map((c) => (
-                          <Badge key={c.key} variant="outline" className={c.isDelete ? "border-destructive/40 text-destructive" : "font-mono"}>{c.label}</Badge>
+                          <Badge key={c.key} variant="outline" className={c.isDelete ? "gap-1 border-destructive/40 text-destructive" : "font-mono"}>{c.isDelete && <AdaptiveIcon emoji="🗑" icon={Trash2} />}{c.label}</Badge>
                         ))}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">

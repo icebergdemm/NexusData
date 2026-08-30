@@ -31,7 +31,7 @@ export function qualKitChips(items: unknown): { chips: QualItemChip[]; normCount
         const entries = Array.isArray(v) ? v.map((x) => [x, 1] as const) : Object.entries(v as Record<string, unknown>)
         for (const [dk, dv] of entries) {
           delCount++
-          chips.push({ key: `del-${dk}`, label: `🗑 ${dk}${dv !== 1 ? ` x${dv}` : ""}`, isDelete: true })
+          chips.push({ key: `del-${dk}`, label: `${dk}${dv !== 1 ? ` x${dv}` : ""}`, isDelete: true })
         }
       }
     } else {

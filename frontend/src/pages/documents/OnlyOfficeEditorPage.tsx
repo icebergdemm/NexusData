@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Share2, History as HistoryIcon, Star, MoreHorizontal,
-  Copy, Trash2, Send, Bookmark, Smile, Maximize2, Minimize2, Plus, X,
+  Copy, Trash2, Send, Bookmark, Smile, Maximize2, Minimize2, Plus, X, FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,6 +23,7 @@ import { ApiError } from "@/lib/api"
 import { ShareDialog } from "@/pages/documents/ShareDialog"
 import { VersionHistoryDialog } from "@/pages/documents/VersionHistoryDialog"
 import { SetupPermissionsDialog } from "@/pages/documents/SetupPermissionsDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 
 interface ReturnTarget { pathname: string; state?: Record<string, unknown> }
 
@@ -279,13 +280,15 @@ function DocumentEditorInner({ documentId }: { documentId: number }) {
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="ghost" size="icon-sm" disabled={!editable} title="Иконка документа">
-              {icon ? <span className="text-lg leading-none">{icon}</span> : <Smile className="size-4 text-muted-foreground" />}
+              {icon ? <PlatformIcon value={icon} fallback={FileText} /> : <Smile className="size-4 text-muted-foreground" />}
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-2">
             <div className="grid grid-cols-5 gap-1">
               {EMOJI_CHOICES.map((e) => (
-                <button key={e} className="rounded-md p-1.5 text-lg hover:bg-accent" onClick={() => handleIconChange(e)}>{e}</button>
+                <button key={e} className="flex size-8 items-center justify-center rounded-md text-lg hover:bg-accent" onClick={() => handleIconChange(e)} title="Выбрать иконку">
+                  <PlatformIcon value={e} fallback={FileText} />
+                </button>
               ))}
             </div>
           </PopoverContent>

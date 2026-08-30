@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Star } from "lucide-react"
 import { api } from "@/lib/api"
 import type { SubProjectCategory } from "./types"
+import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 
 export function SubProjectCategoriesPage() {
   const [form, setForm] = useState({ name: "", icon: "🚢", color: "#1a68de" })
@@ -47,7 +48,7 @@ export function SubProjectCategoriesPage() {
         <CardHeader><CardTitle>Новая категория</CardTitle></CardHeader>
         <CardContent className="flex flex-wrap items-end gap-2">
           <div><label className="mb-1 block text-xs text-muted-foreground">Название</label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
-          <div><label className="mb-1 block text-xs text-muted-foreground">Иконка</label><Input value={form.icon} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} className="w-16" /></div>
+          <div><label className="mb-1 block text-xs text-muted-foreground">Иконка</label><PlatformIconField value={form.icon} onChange={(icon) => setForm((f) => ({ ...f, icon }))} className="w-16" v2ClassName="w-44" /></div>
           <div><label className="mb-1 block text-xs text-muted-foreground">Цвет</label><Input type="color" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} className="w-16 p-1" /></div>
           <Button disabled={!form.name.trim()} onClick={() => create.mutate()}>Создать</Button>
         </CardContent>
@@ -62,7 +63,7 @@ export function SubProjectCategoriesPage() {
             <TableBody>
               {data?.categories.map((c) => (
                 <TableRow key={c.id}>
-                  <TableCell><Badge style={{ backgroundColor: c.color }} className="text-white">{c.icon} {c.name}</Badge></TableCell>
+                  <TableCell><Badge style={{ backgroundColor: c.color }} className="gap-1.5 text-white"><PlatformIcon value={c.icon} />{c.name}</Badge></TableCell>
                   <TableCell className="text-sm text-muted-foreground">{c.slug}</TableCell>
                   <TableCell>
                     <Button size="sm" variant={c.is_default ? "default" : "outline"} onClick={() => setDefault.mutate(c)}>

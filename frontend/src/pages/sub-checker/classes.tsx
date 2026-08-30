@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { toast } from "sonner"
-import { ChevronDown, ChevronRight, Plus, RotateCcw, Save, Search, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, Plus, RotateCcw, Save, Search, Trash2, TriangleAlert } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { SubFileDropZone } from "./DropZone"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import type { ClassGroupSpec, ClassItemSpec, ShipClassSpec } from "./types"
 
 const REQUIREMENT_LABELS: Record<string, string> = {
@@ -69,7 +70,7 @@ function ItemsEditor({ items, onChange, disabled, suggestions }: {
               <Input className="h-8 w-16" type="number" value={item.max ?? ""} disabled={disabled}
                 onChange={(e) => patch(index, { max: e.target.value === "" ? null : Number(e.target.value) })} />
             </div>
-            {item.note && <span className="text-[11px] text-warning" title={item.note}>⚠</span>}
+            {item.note && <span className="text-[11px] text-warning" title={item.note}><AdaptiveIcon emoji="⚠" icon={TriangleAlert} className="size-3.5" /></span>}
             <Button size="icon" variant="ghost" className="size-8" disabled={disabled}
               onClick={() => onChange(items.filter((_, i) => i !== index))}>
               <Trash2 className="size-4" />

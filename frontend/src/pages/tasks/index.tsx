@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { tasksApi } from "./api"
 
 function CreateBoardDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -54,8 +55,8 @@ function CreateBoardDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="mb-1.5 block">Иконка (эмодзи)</Label>
-              <Input value={form.icon} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} placeholder="📋" maxLength={8} />
+              <Label className="mb-1.5 block">Иконка</Label>
+              <PlatformIconField value={form.icon} onChange={(icon) => setForm((f) => ({ ...f, icon }))} placeholder="📋" />
             </div>
             <div>
               <Label className="mb-1.5 block">Цвет</Label>
@@ -75,7 +76,11 @@ function CreateBoardDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Без привязки к отделу</SelectItem>
-                {candidates?.departments.map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.icon} {d.name}</SelectItem>)}
+                {candidates?.departments.map((d) => (
+                  <SelectItem key={d.id} value={String(d.id)}>
+                    <span className="flex items-center gap-2"><PlatformIcon value={d.icon} fallback={Building2} />{d.name}</span>
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -132,7 +137,7 @@ export function TasksListPage() {
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-start gap-3">
                   <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-xl">
-                    {b.icon || <KanbanSquare className="size-5 text-primary" />}
+                    <PlatformIcon value={b.icon} fallback={KanbanSquare} className="size-5 text-primary" />
                   </div>
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{b.name}</div>

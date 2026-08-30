@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import type { SubProjectsListResponse } from "./types"
 import { SubProjectsTestServerPanel } from "./TestServerPanel"
@@ -120,7 +121,11 @@ export function SubProjectsListPage() {
           <SelectTrigger className="w-56"><SelectValue placeholder="Все категории" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Все категории</SelectItem>
-            {data?.all_categories.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.icon} {c.name}</SelectItem>)}
+            {data?.all_categories.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)}>
+                <span className="flex items-center gap-2"><PlatformIcon value={c.icon} />{c.name}</span>
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -162,7 +167,7 @@ export function SubProjectsListPage() {
                   <div className="font-semibold">{project.name}</div>
                   <div className="text-xs text-muted-foreground">Автор: {project.author} · {project.project_type ?? "-"}</div>
                   <div className="flex flex-wrap gap-1">
-                    {categories.map((c) => <Badge key={c.id} style={{ backgroundColor: c.color }} className="text-white">{c.icon} {c.name}</Badge>)}
+                    {categories.map((c) => <Badge key={c.id} style={{ backgroundColor: c.color }} className="gap-1.5 text-white"><PlatformIcon value={c.icon} />{c.name}</Badge>)}
                   </div>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     <span>{version_count} версий</span>

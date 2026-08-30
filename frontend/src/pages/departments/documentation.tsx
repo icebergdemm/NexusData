@@ -13,6 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { documentsApi } from "@/pages/documents/api"
 import { ImportDocumentDialog } from "@/pages/documents/ImportDocumentDialog"
 import { departmentsApi, type DeptDocumentFolder, type DepartmentDetail } from "./api"
@@ -345,7 +346,7 @@ export function DocumentationTab({ department, canEdit, isSuperuser }: { departm
               >
                 <CardContent className="flex items-center gap-3 p-3">
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-lg">
-                    {d.icon || <FileText className="size-4 text-primary" />}
+                    <PlatformIcon value={d.icon} fallback={FileText} className="size-4 text-primary" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium">{d.title}</div>

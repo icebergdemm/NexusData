@@ -15,11 +15,12 @@ import {
 } from "@/components/ui/select"
 import {
   History, PlayCircle, MapPin, Ship, Target, Users2, CheckCircle2, XCircle, Video, Crown, LogOut,
-  Filter, X,
+  Filter, X, Volume2,
 } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/lib/api"
 
@@ -383,7 +384,7 @@ function DemosTab() {
                   <TableCell className="font-medium">{r.submarine_name ?? "Раунд"} #{r.id}{r.level_name && <span className="text-xs text-muted-foreground"> · {r.level_name}</span>}</TableCell>
                   <TableCell><Badge variant="secondary">{r.server_name ?? "-"}</Badge></TableCell>
                   <TableCell>{fmtSize(r.file_size)}</TableCell>
-                  <TableCell>{r.has_voice ? "🔊" : "-"}</TableCell>
+                  <TableCell>{r.has_voice ? <AdaptiveIcon emoji="🔊" icon={Volume2} /> : "-"}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{fmtDate(r.uploaded_at)}</TableCell>
                   {data?.can_delete && (
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
