@@ -159,10 +159,17 @@ class LogSearchTests(unittest.TestCase):
         )
         self.conn.commit()
 
-        with patch.object(
-            services_logs,
-            "fts_is_ready",
-            side_effect=AssertionError("round search must not inspect FTS"),
+        with (
+            patch.object(
+                services_logs,
+                "fts_is_ready",
+                side_effect=AssertionError("round search must not inspect FTS"),
+            ),
+            patch.object(
+                services_logs,
+                "_get_conn",
+                side_effect=AssertionError("round search must use a read-only connection"),
+            ),
         ):
             result = services_logs.search_logs_in_round(
                 server_name="ASPER1",
@@ -178,6 +185,18 @@ class LogSearchTests(unittest.TestCase):
         self.assertIn("Физраствор", result.events[0].details)
         self.assertFalse(result.has_more)
         self.assertEqual(result.total, 1)
+
+        plan = self.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT ts,id FROM log_events INDEXED BY ix_log_server "
+            "WHERE server=? AND ts>=? AND ts<=? ORDER BY ts DESC",
+            (
+                "ASPER1",
+                services_logs._ts_to_ms(timestamp - timedelta(minutes=1)),
+                services_logs._ts_to_ms(timestamp + timedelta(minutes=1)),
+            ),
+        ).fetchall()
+        self.assertTrue(any("ix_log_server" in row[-1] for row in plan), plan)
+        self.assertFalse(any("TEMP B-TREE" in row[-1] for row in plan), plan)
 
     def test_dedicated_round_search_applies_action_filter(self):
         timestamp = datetime(2026, 8, 29, 12, 6)

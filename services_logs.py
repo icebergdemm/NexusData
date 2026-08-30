@@ -11,6 +11,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Optional, Dict, Tuple, NamedTuple
 from dataclasses import dataclass, field
 from contextlib import contextmanager
@@ -1865,13 +1866,23 @@ def search_logs_in_round(
     if limit <= 0:
         raise ValueError("limit должен быть положительным")
 
+    connection_started = time.monotonic()
     try:
-        conn = _get_conn()
+        # HTTP-поиск не должен открывать обычное thread-local соединение:
+        # его первый вызов инициализирует схему, FTS и одноразовые ремонты,
+        # которые могут ждать write-lock фонового импортёра до 30 секунд.
+        # Для готового индекса достаточно короткоживущего read-only snapshot.
+        db_uri = f"{Path(LOG_DB_PATH).resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=3, check_same_thread=False)
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute("PRAGMA cache_size=-2000")
     except Exception as exc:
         logger.error("search_logs_in_round: DB unavailable: %s", exc)
         if raise_on_unavailable:
             raise LogDataUnavailable("Хранилище серверных логов недоступно.") from exc
         return LogSearchResult([], 0, False, False, None)
+    connection_ms = int((time.monotonic() - connection_started) * 1_000)
 
     clauses = ["server = ?", "ts >= ?", "ts <= ?"]
     params: list = [server_name, _ts_to_ms(time_from), _ts_to_ms(time_to)]
@@ -1900,7 +1911,11 @@ def search_logs_in_round(
     sql = (
         "SELECT ts, id, player, action, details, server, source_file "
         f"FROM {from_sql} WHERE {' AND '.join(clauses)} "
-        "ORDER BY ts DESC, id DESC"
+        # Для одного последовательного прохода доупорядочивание по id не
+        # нужно. ORDER BY ts полностью совпадает с ix_log_server[_action_ts]
+        # и начинает отдавать строки сразу; добавление id заставляло SQLite
+        # строить временное B-tree перед ответом.
+        "ORDER BY ts DESC"
     )
     started = time.monotonic()
     budget = _Budget(_ROUND_SEARCH_TIME_BUDGET_SEC)
@@ -1944,6 +1959,8 @@ def search_logs_in_round(
         if raise_on_unavailable:
             raise LogDataUnavailable("Индекс серверных логов недоступен.") from exc
         return LogSearchResult([], 0, False, False, None)
+    finally:
+        conn.close()
 
     if manually_expired:
         logger.warning(
@@ -1971,9 +1988,10 @@ def search_logs_in_round(
     ]
     elapsed_ms = int((time.monotonic() - started) * 1_000)
     logger.info(
-        "logs.round_search.complete elapsed_ms=%d scanned=%d matches=%d capped=%s "
+        "logs.round_search.complete elapsed_ms=%d connection_ms=%d scanned=%d matches=%d capped=%s "
         "server=%s action=%s category=%s text_chars=%d",
         elapsed_ms,
+        connection_ms,
         scanned,
         len(events),
         has_more,

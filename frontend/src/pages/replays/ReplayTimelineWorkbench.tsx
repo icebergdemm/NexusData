@@ -847,7 +847,7 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
       {isLoading && (globalSearch ? (
         <div className="rpv-editor-search-loading" role="status">
           <Search aria-hidden="true" />
-          <div><b>Ищу по всему раунду…</b><span>Запрос будет остановлен через 15 секунд, если индекс не ответит.</span></div>
+          <div><b>Ищу по всему раунду…</b><span>Запрос будет остановлен через 20 секунд, если индекс не ответит.</span></div>
         </div>
       ) : (
         <div className="space-y-1 p-3">{Array.from({ length: 7 }).map((_, index) => <Skeleton key={index} className="h-9" />)}</div>
@@ -1127,7 +1127,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
       })
       if (actionFilter !== "all") params.set("action_type", actionFilter)
       const requestSignal = typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function"
-        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+        ? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
         : signal
       return api.get<TimelineResponse>(
         `/api/v1/admin/replays/${replayId}/logs?${params.toString()}`,
