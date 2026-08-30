@@ -51,6 +51,7 @@ import {
   isInvestigationTimelineEvent,
   nearestTickInterval,
   parseTimecode,
+  shouldLoadExactTimeline,
   zoomWindowAroundPoint,
 } from "./replay-timeline-utils"
 import "./replay-timeline.css"
@@ -167,7 +168,6 @@ const LANES: Array<{ id: TimelineLane; label: string }> = [
 ]
 const LANE_INDEX = new Map<TimelineLane, number>(LANES.map((lane, index) => [lane.id, index]))
 
-const DETAIL_WINDOW_MAX_MS = 20 * 60 * 1_000
 const DETAIL_WINDOW_PADDING_MS = 1_000
 const UNAVAILABLE_RETRY_MS = 15_000
 
@@ -812,7 +812,7 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
         </div>
       )}
       {!detailMode && (
-        <div className="rpv-editor-cap">Серверные маркеры сгруппированы. Увеличьте масштаб до участка короче 20 минут, чтобы загрузить точные строки.</div>
+        <div className="rpv-editor-cap">Серверные маркеры сгруппированы из-за плотности журнала. Увеличьте масштаб до участка короче 20 минут, чтобы загрузить предметы, цели и точные значения.</div>
       )}
       {filteredRowCount > listWindow.length && (
         <div className="rpv-editor-cap">Показаны ближайшие {listWindow.length} из {filteredRowCount} строк. Увеличьте масштаб для точного разбора.</div>
@@ -934,23 +934,6 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   }, [initialDurationMs, replayId])
 
   const visibleEndMs = Math.min(durationMs, viewStartMs + windowMs)
-  const detailMode = durationMs > 0 && windowMs <= DETAIL_WINDOW_MAX_MS
-  const requestedFromMs = Math.max(
-    0,
-    Math.floor((viewStartMs - DETAIL_WINDOW_PADDING_MS) / 1_000) * 1_000,
-  )
-  const requestedToMs = Math.min(
-    durationMs,
-    Math.ceil((visibleEndMs + DETAIL_WINDOW_PADDING_MS) / 1_000) * 1_000,
-  )
-  const debouncedRange = useDebouncedValue(
-    detailMode ? `${requestedFromMs}:${requestedToMs}` : "overview",
-    180,
-  )
-  const [detailFromMs, detailToMs] = debouncedRange === "overview"
-    ? [0, 0]
-    : debouncedRange.split(":").map(Number)
-
   const overviewQuery = useQuery({
     queryKey: ["replay-timeline-overview", replayId, Math.round(durationMs)],
     enabled: durationMs > 0,
@@ -978,6 +961,28 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     gcTime: 5 * 60 * 1_000,
     retry: 1,
   })
+  const overviewData = overviewQuery.data
+  const detailMode = shouldLoadExactTimeline({
+    durationMs,
+    windowMs,
+    overviewStatus: overviewData?.status,
+    overviewTotal: overviewData?.total,
+  })
+  const requestedFromMs = Math.max(
+    0,
+    Math.floor((viewStartMs - DETAIL_WINDOW_PADDING_MS) / 1_000) * 1_000,
+  )
+  const requestedToMs = Math.min(
+    durationMs,
+    Math.ceil((visibleEndMs + DETAIL_WINDOW_PADDING_MS) / 1_000) * 1_000,
+  )
+  const debouncedRange = useDebouncedValue(
+    detailMode ? `${requestedFromMs}:${requestedToMs}` : "overview",
+    180,
+  )
+  const [detailFromMs, detailToMs] = debouncedRange === "overview"
+    ? [0, 0]
+    : debouncedRange.split(":").map(Number)
 
   const playerOverviewQuery = useQuery({
     queryKey: ["replay-timeline-player-overview", replayId, Math.round(durationMs), selectedPlayer],
@@ -1008,7 +1013,6 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   })
 
   const data = detailMode ? detailQuery.data : undefined
-  const overviewData = overviewQuery.data
   const isLoading = detailMode ? detailQuery.isLoading : overviewQuery.isLoading
   const isError = detailMode ? detailQuery.isError : overviewQuery.isError
   const refetchOverview = overviewQuery.refetch

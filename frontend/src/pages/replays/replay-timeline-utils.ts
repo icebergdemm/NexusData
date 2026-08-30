@@ -3,6 +3,8 @@
 // into an unreadable sub-frame view.
 export const MIN_TIMELINE_WINDOW_MS = 500
 export const PRECISION_HOLD_DELAY_MS = 1_500
+export const EXACT_TIMELINE_WINDOW_MS = 20 * 60 * 1_000
+export const EXACT_TIMELINE_EVENT_LIMIT = 10_000
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -20,6 +22,21 @@ export function isInvestigationTimelineEvent(event: {
 }): boolean {
   if (event.source !== "demo_event") return true
   return event.action_type !== "damage" && event.action_type !== "shot"
+}
+
+/** Load original log rows whenever their volume is safe for the browser. */
+export function shouldLoadExactTimeline(args: {
+  durationMs: number
+  windowMs: number
+  overviewStatus?: string | null
+  overviewTotal?: number | null
+}): boolean {
+  if (args.durationMs <= 0 || args.windowMs <= 0) return false
+  if (args.windowMs <= EXACT_TIMELINE_WINDOW_MS) return true
+  return args.overviewStatus === "ok"
+    && Number.isFinite(args.overviewTotal)
+    && (args.overviewTotal ?? 0) > 0
+    && (args.overviewTotal ?? 0) <= EXACT_TIMELINE_EVENT_LIMIT
 }
 
 export function seekByMilliseconds(args: {

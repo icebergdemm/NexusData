@@ -9,11 +9,44 @@ import {
   precisionScrubWindow,
   precisionTimeAtRatio,
   seekByMilliseconds,
+  shouldLoadExactTimeline,
   shouldActivatePrecisionScrub,
   formatTimecode,
   isInvestigationTimelineEvent,
   zoomWindowAroundPoint,
 } from "../frontend/src/pages/replays/replay-timeline-utils.ts"
+
+
+test("manageable rounds load exact server-log details across the full replay", () => {
+  assert.equal(shouldLoadExactTimeline({
+    durationMs: 26 * 60_000,
+    windowMs: 26 * 60_000,
+    overviewStatus: "ok",
+    overviewTotal: 4_388,
+  }), true)
+  assert.equal(shouldLoadExactTimeline({
+    durationMs: 26 * 60_000,
+    windowMs: 26 * 60_000,
+    overviewStatus: "ok",
+    overviewTotal: 10_001,
+  }), false)
+})
+
+
+test("short windows remain exact while unavailable overviews stay aggregated", () => {
+  assert.equal(shouldLoadExactTimeline({
+    durationMs: 60 * 60_000,
+    windowMs: 10 * 60_000,
+    overviewStatus: "unavailable",
+    overviewTotal: 0,
+  }), true)
+  assert.equal(shouldLoadExactTimeline({
+    durationMs: 60 * 60_000,
+    windowMs: 60 * 60_000,
+    overviewStatus: "unavailable",
+    overviewTotal: 0,
+  }), false)
+})
 
 
 test("investigation timeline rejects high-frequency renderer telemetry", () => {
