@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useInfiniteQuery } from "@tanstack/react-query"
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { ScrollText, Plus, Pencil, Trash2, LogIn, Activity } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -67,23 +68,27 @@ function initials(name: string | null, id: number): string {
 }
 
 export function AuditPage() {
-  const [page, setPage] = useState(1)
   const [search, setSearch] = useState("")
   const [source, setSource] = useState<"" | "discord">("")
-  const { data, isLoading } = useQuery({
-    queryKey: ["audit-logs", page, source],
-    queryFn: () => api.get<AuditResponse>(`/api/v1/admin/audit/logs?page=${page}&page_size=50&source=${source}`),
+  const { data: infiniteData, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ["audit-logs", source],
+    queryFn: ({ pageParam = 1 }) => api.get<AuditResponse>(`/api/v1/admin/audit/logs?page=${pageParam as number}&page_size=50&source=${source}`),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.total_pages ? last.page + 1 : undefined),
   })
+  const allLogs = infiniteData?.pages.flatMap((p) => p.logs) ?? []
+  const total = infiniteData?.pages[0]?.total ?? 0
+  const sentinelRef = useInfiniteScroll(() => { if (hasNextPage) fetchNextPage() }, !!hasNextPage, isFetchingNextPage)
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return data?.logs ?? []
+    if (!search.trim()) return allLogs
     const q = search.trim().toLowerCase()
-    return (data?.logs ?? []).filter((l) =>
+    return allLogs.filter((l) =>
       l.action.toLowerCase().includes(q) ||
       (l.admin_name ?? "").toLowerCase().includes(q) ||
       describeDetails(l.details).toLowerCase().includes(q)
     )
-  }, [data, search])
+  }, [allLogs, search])
 
   return (
     <div>
@@ -91,13 +96,13 @@ export function AuditPage() {
         title="Аудит"
         description="Журнал всех действий администраторов в панели"
         icon={ScrollText}
-        actions={data && <Badge variant="secondary" className="text-sm font-normal">{data.total} записей всего</Badge>}
+        actions={<Badge variant="secondary" className="text-sm font-normal">{total} записей всего</Badge>}
       />
 
       <div className="mb-4">
         <div className="mb-2 flex gap-2">
-          <Button size="sm" variant={!source ? "default" : "outline"} onClick={() => { setSource(""); setPage(1) }}>Действия панели</Button>
-          <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => { setSource("discord"); setPage(1) }}>Discord-логи</Button>
+          <Button size="sm" variant={!source ? "default" : "outline"} onClick={() => setSource("")}>Действия панели</Button>
+          <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => setSource("discord")}>Discord-логи</Button>
         </div>
         <SearchInput
           value={search}
@@ -152,12 +157,14 @@ export function AuditPage() {
                   {!filtered.length && <TableRow><TableCell colSpan={4} className="py-10 text-center text-muted-foreground">Записей не найдено</TableCell></TableRow>}
                 </TableBody>
               </Table>
-              {data && data.total_pages > 1 && (
-                <div className="flex items-center justify-center gap-2 border-t p-3">
-                  <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Назад</Button>
-                  <span className="text-sm text-muted-foreground">Страница {data.page} из {data.total_pages}</span>
-                  <Button variant="outline" size="sm" disabled={page >= data.total_pages} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
+              <div ref={sentinelRef as never} className="h-1" />
+              {isFetchingNextPage && (
+                <div className="flex justify-center gap-2 p-3 text-sm text-muted-foreground">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" /> Загрузка…
                 </div>
+              )}
+              {!hasNextPage && allLogs.length > 0 && (
+                <div className="border-t p-3 text-center text-xs text-muted-foreground">Загружено {allLogs.length} из {total} · конец списка</div>
               )}
             </>
           )}

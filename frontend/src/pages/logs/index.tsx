@@ -1,10 +1,9 @@
 import { useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
 import {
   CalendarClock,
-  ChevronLeft,
-  ChevronRight,
   Filter,
   LoaderCircle,
   PanelLeftClose,
@@ -143,10 +142,6 @@ export function LogsPage() {
   const { data: admin } = useCurrentAdmin()
   const [draftFilters, setDraftFilters] = useState<LogFilters>(makeDefaultFilters)
   const [appliedFilters, setAppliedFilters] = useState<LogFilters>(makeDefaultFilters)
-  // Первый элемент означает начало выборки. Каждый следующий — непрозрачная
-  // позиция последней строки предыдущей страницы; поэтому «Назад» не требует
-  // OFFSET и просто снимает один курсор со стека.
-  const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
   const [pageSize, setPageSize] = useState(100)
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const [v2FiltersOpen, setV2FiltersOpen] = useState(false)
@@ -156,10 +151,8 @@ export function LogsPage() {
   const draftActionType = draftFilters.consoleOnly ? "console" : draftFilters.actionType
   const hasPendingChanges = filterSignature(draftFilters) !== filterSignature(appliedFilters)
   const appliedCount = activeFilterCount(appliedFilters)
-  const currentCursor = cursorStack[cursorStack.length - 1]
-  const pageNumber = cursorStack.length
 
-  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
+  const { data: infiniteData, isLoading, isFetching, isFetchingNextPage, hasNextPage, fetchNextPage, isError, error, refetch } = useInfiniteQuery({
     queryKey: [
       "logs-events",
       appliedFilters.server,
@@ -171,11 +164,10 @@ export function LogsPage() {
       appliedFilters.timeFrom,
       appliedFilters.timeTo,
       pageSize,
-      currentCursor,
     ],
-    queryFn: () => {
+    queryFn: ({ pageParam = null as string | null }) => {
       const params = new URLSearchParams({ pagination: "cursor", page_size: String(pageSize) })
-      if (currentCursor) params.set("cursor", currentCursor)
+      if (pageParam) params.set("cursor", pageParam as string)
       if (appliedFilters.server !== "all") params.set("server", appliedFilters.server)
       if (appliedFilters.category !== "all") params.set("category", appliedFilters.category)
       if (appliedActionType !== "all") params.set("action_type", appliedActionType)
@@ -188,12 +180,13 @@ export function LogsPage() {
       if (appliedFilters.timeTo) params.set("time_to", appliedFilters.timeTo)
       return api.get<LogsResponse>(`/api/v1/admin/logs/events?${params}`)
     },
-    // Тяжёлый запрос, который уже вернул 503, не должен автоматически
-    // запускаться второй раз и занимать ещё один поток SQLite.
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
     retry: false,
-    placeholderData: (previous) => previous,
   })
-
+  const data = infiniteData?.pages[infiniteData.pages.length - 1]
+  const allEvents = infiniteData?.pages.flatMap((p) => p.events) ?? []
+  const sentinelRef = useInfiniteScroll(() => { if (hasNextPage) fetchNextPage() }, !!hasNextPage, isFetchingNextPage || isFetching)
   const { data: stats } = useQuery({
     queryKey: ["logs-stats"],
     queryFn: () => api.get<Record<string, LogStatEntry>>("/api/v1/admin/logs/stats"),
@@ -231,14 +224,12 @@ export function LogsPage() {
       playerNames: [...draftFilters.playerNames],
     })
     setDraftFilters((current) => ({ ...current, search: trimmedSearch }))
-    setCursorStack([null])
     setV2FiltersOpen(false)
   }
 
   const resetFilters = () => {
     setDraftFilters(makeDefaultFilters())
     setAppliedFilters(makeDefaultFilters())
-    setCursorStack([null])
   }
 
   const applyTimePreset = (hours: number | null) => {
@@ -253,13 +244,11 @@ export function LogsPage() {
     // применяется сразу. Остальные ещё не применённые поля не затрагиваются.
     setDraftFilters((current) => ({ ...current, ...period }))
     setAppliedFilters((current) => ({ ...current, ...period }))
-    setCursorStack([null])
   }
 
   const applyFiltersImmediately = (patch: Partial<LogFilters>) => {
     setDraftFilters((current) => ({ ...current, ...patch }))
     setAppliedFilters((current) => ({ ...current, ...patch }))
-    setCursorStack([null])
   }
 
   const removeAppliedPlayer = (name: string) => {
@@ -267,24 +256,14 @@ export function LogsPage() {
     applyFiltersImmediately({ playerNames })
   }
 
-  const goToNextPage = () => {
-    if (!data?.next_cursor) return
-    setCursorStack((current) => [...current, data.next_cursor])
-  }
-
-  const goToPreviousPage = () => {
-    setCursorStack((current) => current.length > 1 ? current.slice(0, -1) : current)
-  }
-
   const changePageSize = (value: string) => {
     setPageSize(Number(value))
-    setCursorStack([null])
   }
 
   const resultLabel = data?.total != null
-    ? `${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""} событий`
-    : data
-      ? `${data.events.length} на странице${data.has_more ? " · есть ещё" : ""}`
+    ? `${data.total.toLocaleString("ru-RU")}${data.total_is_capped ? "+" : ""} событий · загружено ${allEvents.length}`
+    : allEvents.length
+      ? `${allEvents.length} загружено${hasNextPage ? " · есть ещё" : ""}`
       : ""
 
   if (IS_V2) {
@@ -645,49 +624,60 @@ export function LogsPage() {
                   {Array.from({ length: 12 }).map((_, index) => <Skeleton key={index} className="h-9" />)}
                 </div>
               ) : (
-                <Table className="min-w-[980px]">
-                  <TableHeader className="sticky top-0 z-10 bg-background">
-                    <TableRow>
-                      <TableHead className="w-44 border-r pl-4">Время</TableHead>
-                      <TableHead className="w-24 border-r">Сервер</TableHead>
-                      <TableHead className="w-60 border-r">Игрок</TableHead>
-                      <TableHead className="w-40 border-r">Действие</TableHead>
-                      <TableHead className="pr-4">Детали</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody className={isFetching ? "opacity-60" : undefined}>
-                    {data?.events.map((logEvent, index) => (
-                      <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
-                        <TableCell className="border-r pl-4 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
-                          {formatBrowserDate(logEvent.timestamp)}
-                        </TableCell>
-                        <TableCell className="border-r"><Badge variant="outline">{logEvent.server_name ?? "-"}</Badge></TableCell>
-                        <TableCell className="max-w-60 truncate border-r text-xs font-medium" title={logEvent.player_name ?? undefined}>
-                          {logEvent.player_name ? (
-                            logEvent.player_id ? (
-                              <PlayerHoverLink playerId={logEvent.player_id}>{logEvent.player_name}</PlayerHoverLink>
-                            ) : logEvent.player_name
-                          ) : "-"}
-                        </TableCell>
-                        <TableCell className="border-r">
-                          <span className={cn("font-mono text-[11px]", ACTION_COLOR[logEvent.action_type] ?? "text-foreground")}>
-                            {logEvent.action_type}
-                          </span>
-                        </TableCell>
-                        <TableCell className="min-w-[420px] whitespace-normal break-words pr-4 text-xs leading-5 text-muted-foreground">
-                          {logEvent.details ?? "-"}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {!data?.events.length && (
+                <>
+                  <Table className="min-w-[980px]">
+                    <TableHeader className="sticky top-0 z-10 bg-background">
                       <TableRow>
-                        <TableCell colSpan={5} className="py-16 text-center text-muted-foreground">
-                          Событий по выбранным условиям не найдено
-                        </TableCell>
+                        <TableHead className="w-44 border-r pl-4">Время</TableHead>
+                        <TableHead className="w-24 border-r">Сервер</TableHead>
+                        <TableHead className="w-60 border-r">Игрок</TableHead>
+                        <TableHead className="w-40 border-r">Действие</TableHead>
+                        <TableHead className="pr-4">Детали</TableHead>
                       </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody className={isFetching ? "opacity-60" : undefined}>
+                      {allEvents.map((logEvent, index) => (
+                        <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
+                          <TableCell className="border-r pl-4 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
+                            {formatBrowserDate(logEvent.timestamp)}
+                          </TableCell>
+                          <TableCell className="border-r"><Badge variant="outline">{logEvent.server_name ?? "-"}</Badge></TableCell>
+                          <TableCell className="max-w-60 truncate border-r text-xs font-medium" title={logEvent.player_name ?? undefined}>
+                            {logEvent.player_name ? (
+                              logEvent.player_id ? (
+                                <PlayerHoverLink playerId={logEvent.player_id}>{logEvent.player_name}</PlayerHoverLink>
+                              ) : logEvent.player_name
+                            ) : "-"}
+                          </TableCell>
+                          <TableCell className="border-r">
+                            <span className={cn("font-mono text-[11px]", ACTION_COLOR[logEvent.action_type] ?? "text-foreground")}>
+                              {logEvent.action_type}
+                            </span>
+                          </TableCell>
+                          <TableCell className="min-w-[420px] whitespace-normal break-words pr-4 text-xs leading-5 text-muted-foreground">
+                            {logEvent.details ?? "-"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {!allEvents.length && !isLoading && (
+                        <TableRow>
+                          <TableCell colSpan={5} className="py-16 text-center text-muted-foreground">
+                            Событий по выбранным условиям не найдено
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                  <div ref={sentinelRef as never} className="h-1" />
+                  {isFetchingNextPage && (
+                    <div className="flex justify-center gap-2 p-3 text-sm text-muted-foreground">
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" /> Загрузка…
+                    </div>
+                  )}
+                  {!hasNextPage && allEvents.length > 0 && (
+                    <div className="p-3 text-center text-xs text-muted-foreground">Загружено {allEvents.length} событий · конец списка</div>
+                  )}
+                </>
               )}
             </div>
 
@@ -706,28 +696,19 @@ export function LogsPage() {
                 </Select>
               </div>
               <div className="flex items-center gap-2">
+                <span className="min-w-24 text-center font-mono text-xs">Загружено {allEvents.length}{hasNextPage ? " · есть ещё" : " · конец"}</span>
                 <Button
                   variant="outline"
-                  size="icon-sm"
-                  disabled={pageNumber <= 1 || isFetching}
-                  onClick={goToPreviousPage}
-                  aria-label="Предыдущая страница"
+                  size="sm"
+                  disabled={!hasNextPage || isFetching}
+                  onClick={() => hasNextPage && fetchNextPage()}
+                  aria-label="Загрузить ещё"
                 >
-                  <ChevronLeft className="size-4" />
-                </Button>
-                <span className="min-w-24 text-center font-mono text-xs">Страница {pageNumber}</span>
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  disabled={!data?.next_cursor || isFetching}
-                  onClick={goToNextPage}
-                  aria-label="Следующая страница"
-                >
-                  <ChevronRight className="size-4" />
+                  Загрузить ещё
                 </Button>
               </div>
               <span className="text-xs text-muted-foreground">
-                {data?.has_more ? "Есть следующая страница" : "Конец выборки"}
+                {hasNextPage ? "Есть следующая страница" : "Конец выборки"}
               </span>
             </div>
           </section>
@@ -1005,7 +986,7 @@ export function LogsPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody className={isFetching ? "opacity-60" : undefined}>
-                  {data?.events.map((logEvent, index) => (
+                  {allEvents.map((logEvent, index) => (
                     <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
                       <TableCell className="pl-4 text-xs whitespace-nowrap text-muted-foreground">
                         {formatBrowserDate(logEvent.timestamp)}
@@ -1028,7 +1009,7 @@ export function LogsPage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {!data?.events.length && (
+                  {!allEvents.length && !isLoading && (
                     <TableRow>
                       <TableCell colSpan={5} className="py-14 text-center text-muted-foreground">
                         Событий по выбранным условиям не найдено
@@ -1037,29 +1018,14 @@ export function LogsPage() {
                   )}
                 </TableBody>
               </Table>
-
-              {data && (data.has_more || pageNumber > 1) && (
-                <div className="flex items-center justify-center gap-2 border-t p-3">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={pageNumber <= 1 || isFetching}
-                    onClick={goToPreviousPage}
-                  >
-                    Назад
-                  </Button>
-                  <span className="text-sm text-muted-foreground">
-                    Страница {pageNumber} · по {data.page_size} записей
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={!data.next_cursor || isFetching}
-                    onClick={goToNextPage}
-                  >
-                    Вперёд
-                  </Button>
+              <div ref={sentinelRef as never} className="h-1" />
+              {isFetchingNextPage && (
+                <div className="flex justify-center gap-2 p-3 text-sm text-muted-foreground">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" /> Загрузка…
                 </div>
+              )}
+              {!hasNextPage && allEvents.length > 0 && (
+                <div className="border-t p-3 text-center text-xs text-muted-foreground">Загружено {allEvents.length} событий · конец списка</div>
               )}
             </>
           )}

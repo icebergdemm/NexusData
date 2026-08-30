@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
 import { Users, ChevronRight, ExternalLink, Copy, IdCard, Link2, Palette, RefreshCw } from "lucide-react"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
@@ -103,7 +104,6 @@ export function PlayersListPage() {
   const navigate = useNavigate()
   const { data: admin } = useCurrentAdmin()
   const queryClient = useQueryClient()
-  const [page, setPage] = useState(1)
   const [searchInput, setSearchInput] = useState("")
   const [search, setSearch] = useState<string | undefined>(undefined)
   const [labelId, setLabelId] = useState<string>("all")
@@ -113,17 +113,28 @@ export function PlayersListPage() {
   const [suggestOpen, setSuggestOpen] = useState(false)
   const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["players", page, search, labelId, rankId, sort],
-    queryFn: () => {
-      const params = new URLSearchParams({ page: String(page), page_size: "50" })
+  const {
+    data: infiniteData,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["players", search, labelId, rankId, sort],
+    queryFn: ({ pageParam = 1 }) => {
+      const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
       if (search) params.set("search", search)
       if (labelId !== "all") params.set("label_id", labelId)
       if (rankId !== "all") params.set("rank_id", rankId)
       if (sort !== "none") params.set("sort", sort)
       return api.get<PlayersListResponse>(`/api/v1/admin/players?${params.toString()}`)
     },
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => (lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined),
   })
+  const data = infiniteData?.pages[0]
+  const allPlayers = infiniteData?.pages.flatMap((p) => p.players) ?? []
+  const sentinelRef = useInfiniteScroll(() => { if (hasNextPage) fetchNextPage() }, !!hasNextPage, isFetchingNextPage)
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedInput(searchInput.trim()), 300)
@@ -140,7 +151,6 @@ export function PlayersListPage() {
   const submitSearch = () => {
     const trimmed = searchInput.trim()
     setSearch(trimmed.length >= 2 ? trimmed : undefined)
-    setPage(1)
     setSuggestOpen(false)
   }
 
@@ -194,7 +204,7 @@ export function PlayersListPage() {
             </div>
           )}
         </div>
-        <Select value={labelId} onValueChange={(v) => { setLabelId(v); setPage(1) }}>
+        <Select value={labelId} onValueChange={(v) => setLabelId(v)}>
           <SelectTrigger className="w-56">
             <SelectValue placeholder="Все метки" />
           </SelectTrigger>
@@ -205,7 +215,7 @@ export function PlayersListPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={rankId} onValueChange={(v) => { setRankId(v); setPage(1) }}>
+        <Select value={rankId} onValueChange={(v) => setRankId(v)}>
           <SelectTrigger className="w-44">
             <SelectValue placeholder="Все звания" />
           </SelectTrigger>
@@ -216,7 +226,7 @@ export function PlayersListPage() {
             ))}
           </SelectContent>
         </Select>
-        <Select value={sort} onValueChange={(v) => { setSort(v); setPage(1) }}>
+        <Select value={sort} onValueChange={(v) => setSort(v)}>
           <SelectTrigger className="w-56">
             <SelectValue placeholder="Сортировка" />
           </SelectTrigger>
@@ -268,8 +278,8 @@ export function PlayersListPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data?.players.map((p) => {
-                  const rankColor = data.rank_colors[String(p.rank_id)]
+                {allPlayers.map((p) => {
+                  const rankColor = data?.rank_colors[String(p.rank_id)]
                   return (
                   <AppContextMenu
                     key={p.player_id}
@@ -318,7 +328,7 @@ export function PlayersListPage() {
                   </AppContextMenu>
                   )
                 })}
-                {!data?.players.length && (
+                {!allPlayers.length && !isLoading && (
                   <TableRow>
                     <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                       Ничего не найдено
@@ -327,22 +337,19 @@ export function PlayersListPage() {
                 )}
               </TableBody>
             </Table>
+            {/* динамическая подгрузка при скролле */}
+            <div ref={sentinelRef as never} className="h-1" />
+            {isFetchingNextPage && (
+              <div className="flex justify-center gap-2 p-3 text-sm text-muted-foreground">
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" /> Загрузка…
+              </div>
+            )}
+            {!hasNextPage && allPlayers.length > 0 && (
+              <div className="border-t p-3 text-center text-xs text-muted-foreground">Загружено {allPlayers.length} из {data?.total ?? "?"} · конец списка</div>
+            )}
             </div>
           )}
 
-          {data && data.total_pages > 1 && (
-            <div className="flex items-center justify-center gap-2 border-t p-3">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                Назад
-              </Button>
-              <span className="text-sm text-muted-foreground">
-                Страница {data.page} из {data.total_pages}
-              </span>
-              <Button variant="outline" size="sm" disabled={page >= data.total_pages} onClick={() => setPage((p) => p + 1)}>
-                Вперёд
-              </Button>
-            </div>
-          )}
         </CardContent>
       </Card>
     </div>

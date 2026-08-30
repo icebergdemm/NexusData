@@ -1,5 +1,6 @@
 import { useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
 import { Gavel, Plus, Star, StickyNote, Pencil } from "lucide-react"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
@@ -67,7 +68,6 @@ function fmtDate(iso: string | null): string {
 
 export function PunishmentsPage() {
   const [tab, setTab] = useState("warning")
-  const [page, setPage] = useState(1)
   const [search, setSearch] = useState("")
   const [status, setStatus] = useState("all")
   const [superuserOnly, setSuperuserOnly] = useState(false)
@@ -78,20 +78,25 @@ export function PunishmentsPage() {
   const queryClient = useQueryClient()
   const debouncedSearch = useDebouncedValue(search.trim())
 
-  const queryKey = ["punishments", tab, page, debouncedSearch, status, superuserOnly]
-  const { data, isFetching } = useQuery({
-    queryKey,
-    queryFn: () => api.get<PunishmentsResponse>(`/api/v1/admin/punishments?${new URLSearchParams({
-      tab, page: String(page), search: debouncedSearch,
+  const { data: infiniteData, isFetching, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ["punishments", tab, debouncedSearch, status, superuserOnly],
+    queryFn: ({ pageParam = 1 }) => api.get<PunishmentsResponse>(`/api/v1/admin/punishments?${new URLSearchParams({
+      tab, page: String(pageParam as number), search: debouncedSearch,
       ...(status !== "all" ? { status } : {}),
       ...(superuserOnly ? { superuser_only: "true" } : {}),
     })}`),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.pages ? last.page + 1 : undefined),
   })
+  const data = infiniteData?.pages[0]
+  const allRows = infiniteData?.pages.flatMap((p) => p.rows) ?? []
+  const total = data?.total ?? 0
+  const sentinelRef = useInfiniteScroll(() => { if (hasNextPage) fetchNextPage() }, !!hasNextPage, isFetchingNextPage)
 
-  const changeTab = (v: string) => { setTab(v); setPage(1) }
-  const changeSearch = (v: string) => { setSearch(v); setPage(1) }
-  const changeStatus = (v: string) => { setStatus(v); setPage(1) }
-  const changeSuperuserOnly = (v: boolean) => { setSuperuserOnly(v); setPage(1) }
+  const changeTab = (v: string) => setTab(v)
+  const changeSearch = (v: string) => setSearch(v)
+  const changeStatus = (v: string) => setStatus(v)
+  const changeSuperuserOnly = (v: boolean) => setSuperuserOnly(v)
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["punishments"] })
 
@@ -239,7 +244,7 @@ export function PunishmentsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data?.rows.map((r) => (
+              {allRows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell>
                     <div className="font-medium">{r.player_name || "-"}</div>
@@ -260,7 +265,7 @@ export function PunishmentsPage() {
                   <TableCell className="text-sm text-muted-foreground">{fmtDate(r.issued_at)}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{r.expires_at ? fmtDate(r.expires_at) : "Навсегда"}</TableCell>
                   <TableCell><Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge></TableCell>
-                  {data.can_edit && (
+                  {data?.can_edit && (
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1.5 whitespace-nowrap">
                         {r.status === "active" && r.type === "ban" && (
@@ -270,7 +275,7 @@ export function PunishmentsPage() {
                           <Button size="sm" variant="outline" onClick={() => voidMutation.mutate(r.id)}>Отменить</Button>
                         )}
                         <Button size="sm" variant="outline" onClick={() => openEdit(r)}><Pencil className="size-3.5" /> Изменить</Button>
-                        {data.can_delete && (
+                        {data?.can_delete && (
                           <Button size="sm" variant="destructive" onClick={() => deleteMutation.mutate(r.id)}>Удалить</Button>
                         )}
                       </div>
@@ -278,7 +283,7 @@ export function PunishmentsPage() {
                   )}
                 </TableRow>
               ))}
-              {!data?.rows.length && (
+              {!allRows.length && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                     {isFetching ? "Загрузка…" : (search || status !== "all" || superuserOnly) ? "Ничего не найдено по этим фильтрам" : "Наказаний нет"}
@@ -287,13 +292,14 @@ export function PunishmentsPage() {
               )}
             </TableBody>
           </Table>
-
-          {data && data.pages > 1 && (
-            <div className="flex items-center justify-center gap-2 border-t p-3">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Назад</Button>
-              <span className="text-sm text-muted-foreground">Страница {data.page} из {data.pages}</span>
-              <Button variant="outline" size="sm" disabled={page >= data.pages} onClick={() => setPage((p) => p + 1)}>Вперёд</Button>
+          <div ref={sentinelRef as never} className="h-1" />
+          {isFetchingNextPage && (
+            <div className="flex justify-center gap-2 p-3 text-sm text-muted-foreground">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" /> Загрузка…
             </div>
+          )}
+          {!hasNextPage && allRows.length > 0 && (
+            <div className="border-t p-3 text-center text-xs text-muted-foreground">Загружено {allRows.length} из {total} · конец списка</div>
           )}
         </CardContent>
       </Card>
