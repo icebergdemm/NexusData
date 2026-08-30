@@ -8,6 +8,7 @@ import {
   parseTimecode,
   precisionScrubWindow,
   precisionTimeAtRatio,
+  selectDamageItemEvidence,
   seekByMilliseconds,
   shouldLoadExactTimeline,
   shouldActivatePrecisionScrub,
@@ -15,6 +16,51 @@ import {
   isInvestigationTimelineEvent,
   zoomWindowAroundPoint,
 } from "../frontend/src/pages/replays/replay-timeline-utils.ts"
+
+
+test("damage item evidence accepts one nearby weapon from the server log", () => {
+  const weapon = { identifier: "revolver", name: "Револьвер" }
+  const result = selectDamageItemEvidence({
+    damageTimeMs: 10_000,
+    targetName: "Матрос Жертва",
+    candidates: [
+      { offsetMs: 9_000, actionType: "attack", details: "Матрос launched Револьвер", item: weapon },
+      { offsetMs: 9_500, actionType: "attack", details: "Матрос launched Револьвер", item: weapon },
+    ],
+    itemKey: (item) => item.identifier,
+  })
+
+  assert.equal(result?.offsetMs, 9_500)
+  assert.equal(result?.item, weapon)
+})
+
+
+test("damage item evidence rejects ambiguous weapons and unrelated medical targets", () => {
+  const args = {
+    damageTimeMs: 10_000,
+    targetName: "Матрос Жертва",
+    itemKey: (item) => item.identifier,
+  }
+  assert.equal(selectDamageItemEvidence({
+    ...args,
+    candidates: [
+      { offsetMs: 9_500, actionType: "attack", details: "launched Револьвер", item: { identifier: "revolver" } },
+      { offsetMs: 9_700, actionType: "attack", details: "launched Дробовик", item: { identifier: "shotgun" } },
+    ],
+  }), null)
+  assert.equal(selectDamageItemEvidence({
+    ...args,
+    candidates: [
+      {
+        offsetMs: 9_900,
+        actionType: "used",
+        details: "used Морфин on Другой матрос",
+        targetName: "Другой матрос",
+        item: { identifier: "morphine" },
+      },
+    ],
+  }), null)
+})
 
 
 test("manageable rounds load exact server-log details across the full replay", () => {

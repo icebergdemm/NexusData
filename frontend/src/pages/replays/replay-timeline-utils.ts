@@ -24,6 +24,47 @@ export function isInvestigationTimelineEvent(event: {
   return event.action_type !== "damage" && event.action_type !== "shot"
 }
 
+export interface DamageItemEvidenceCandidate<TItem> {
+  offsetMs: number
+  actionType: string
+  details: string
+  targetName?: string | null
+  item: TItem
+}
+
+/**
+ * Correlate demo-only PvP damage with a structured item from the text log.
+ * The v4 demo frame has no weapon field, so this intentionally accepts only
+ * one unambiguous nearby item for the same actor.  Multiple different items
+ * are safer to report as unknown than to attribute the hit incorrectly.
+ */
+export function selectDamageItemEvidence<TItem>(args: {
+  damageTimeMs: number
+  targetName?: string | null
+  candidates: DamageItemEvidenceCandidate<TItem>[]
+  itemKey: (item: TItem) => string
+}): DamageItemEvidenceCandidate<TItem> | null {
+  const normalise = (value?: string | null) => (value ?? "").trim().toLocaleLowerCase("ru")
+  const target = normalise(args.targetName)
+  const matches = args.candidates.filter((candidate) => {
+    const delta = candidate.offsetMs - args.damageTimeMs
+    if (delta < -3_000 || delta > 1_000) return false
+    if (candidate.actionType !== "attack" && candidate.actionType !== "used") return false
+    if (candidate.actionType !== "used" || !target) return true
+    const candidateTarget = normalise(candidate.targetName)
+    return candidateTarget === target || (!candidateTarget && normalise(candidate.details).includes(target))
+  })
+  if (!matches.length) return null
+
+  const itemKeys = new Set(matches.map((candidate) => normalise(args.itemKey(candidate.item))).filter(Boolean))
+  if (itemKeys.size !== 1) return null
+  return matches.reduce((nearest, candidate) => (
+    Math.abs(candidate.offsetMs - args.damageTimeMs) < Math.abs(nearest.offsetMs - args.damageTimeMs)
+      ? candidate
+      : nearest
+  ))
+}
+
 /** Load original log rows whenever their volume is safe for the browser. */
 export function shouldLoadExactTimeline(args: {
   durationMs: number

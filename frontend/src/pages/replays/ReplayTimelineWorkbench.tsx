@@ -51,6 +51,7 @@ import {
   isInvestigationTimelineEvent,
   nearestTickInterval,
   parseTimecode,
+  selectDamageItemEvidence,
   shouldLoadExactTimeline,
   zoomWindowAroundPoint,
 } from "./replay-timeline-utils"
@@ -92,6 +93,8 @@ export interface TimelineEvent {
   spawn_source_name?: string | null
   spawn_source_action?: string | null
   spawn_source_details?: string | null
+  damage_item_evidence?: "server_attack" | "server_use" | null
+  damage_item_source_details?: string | null
   target_name?: string | null
 }
 
@@ -300,7 +303,39 @@ function mergeServerAndDemoEvents(
       spawn_source_details: evidence.details,
     }
   })
-  return [...serverEvents, ...enrichedDemo]
+  const itemEventsByActor = new Map<string, TimelineEvent[]>()
+  for (const event of serverEvents) {
+    if (!event.player_name || !event.item || (event.action_type !== "attack" && event.action_type !== "used")) continue
+    const actor = event.player_name.trim().toLocaleLowerCase("ru")
+    const events = itemEventsByActor.get(actor) ?? []
+    events.push(event)
+    itemEventsByActor.set(actor, events)
+  }
+  const damageEnrichedDemo = enrichedDemo.map((event) => {
+    if (event.source !== "demo_pvp" || event.action_type !== "damage" || event.item || !event.player_name) return event
+    const actor = event.player_name.trim().toLocaleLowerCase("ru")
+    const evidence = selectDamageItemEvidence({
+      damageTimeMs: event.offset_ms,
+      targetName: event.target_name,
+      candidates: (itemEventsByActor.get(actor) ?? []).map((candidate) => ({
+        offsetMs: candidate.offset_ms,
+        actionType: candidate.action_type,
+        details: candidate.details,
+        targetName: candidate.target_name,
+        item: candidate.item as TimelineItem,
+      })),
+      itemKey: (item) => item.identifier || item.name,
+    })
+    if (!evidence) return event
+    return {
+      ...event,
+      item: evidence.item,
+      details: `${event.details} · предмет по журналу: ${evidence.item.name}`,
+      damage_item_evidence: evidence.actionType === "used" ? "server_use" as const : "server_attack" as const,
+      damage_item_source_details: evidence.details,
+    }
+  })
+  return [...serverEvents, ...damageEnrichedDemo]
     .filter((event) => event.offset_ms >= 0 && event.offset_ms <= durationMs)
     .sort((left, right) => left.offset_ms - right.offset_ms || left.id.localeCompare(right.id))
 }
@@ -1498,6 +1533,16 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
                 <div><dt>Дорожка</dt><dd>{LANES.find((lane) => lane.id === selectedEvent.lane)?.label}</dd></div>
                 {selectedEvent.item?.identifier && <div><dt>Identifier</dt><dd>{selectedEvent.item.identifier}</dd></div>}
                 {selectedEvent.target_name && <div><dt>Цель / контейнер</dt><dd>{selectedEvent.target_name}</dd></div>}
+                {selectedEvent.source === "demo_pvp" && (
+                  selectedEvent.item ? (
+                    <>
+                      <div><dt>Предмет</dt><dd>{selectedEvent.item.name}</dd></div>
+                      <div><dt>Основание</dt><dd>{selectedEvent.damage_item_evidence === "server_use" ? "Использование предмета в серверном журнале" : "Запуск оружия в серверном журнале"}</dd></div>
+                    </>
+                  ) : (
+                    <div><dt>Предмет</dt><dd>Не записан кадром урона .barodemo v4</dd></div>
+                  )
+                )}
                 {selectedEvent.entity_species && <div><dt>Вид сущности</dt><dd>{selectedEvent.entity_species}</dd></div>}
                 {selectedEvent.entity_id != null && <div><dt>ID сущности</dt><dd>{selectedEvent.entity_id}</dd></div>}
                 {selectedEvent.entity_team_id != null && <div><dt>Команда</dt><dd>{selectedEvent.entity_team_id}</dd></div>}
