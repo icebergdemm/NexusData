@@ -1,11 +1,13 @@
+import { useCallback, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
-import { ArrowLeft, LogOut, PanelsTopLeft } from "lucide-react"
+import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, PanelsTopLeft } from "lucide-react"
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton,
-  SidebarMenuItem, SidebarProvider, SidebarTrigger,
+  SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
 } from "@/components/ui/sidebar"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { NAV_GROUPS } from "@/components/layout/nav-config"
 import { canView, useCurrentAdmin } from "@/lib/auth"
@@ -14,16 +16,79 @@ import { V2ThemeToggle } from "@/components/layout/V2ThemeToggle"
 import { IS_V2, buildUiVersionHref } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
 
+const V2_SIDEBAR_STORAGE_KEY = "nexusdata-v2-sidebar-open"
+
+function readV2SidebarState() {
+  if (!IS_V2) return true
+  try {
+    return window.localStorage.getItem(V2_SIDEBAR_STORAGE_KEY) !== "false"
+  } catch {
+    return true
+  }
+}
+
+function V2SidebarTrigger() {
+  const { isMobile, openMobile, state, toggleSidebar } = useSidebar()
+  const isExpanded = isMobile ? openMobile : state === "expanded"
+  const action = isExpanded ? "Свернуть боковую панель" : "Развернуть боковую панель"
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      data-slot="v2-sidebar-trigger"
+      aria-label={action}
+      aria-expanded={isExpanded}
+      title={`${action} (Ctrl/⌘ + B)`}
+      className="group/sidebar-toggle relative size-8 overflow-hidden"
+      onClick={toggleSidebar}
+    >
+      <PanelLeftClose
+        aria-hidden="true"
+        className={cn(
+          "absolute size-4 transition-[opacity,transform] duration-200 ease-out",
+          isExpanded
+            ? "translate-x-0 opacity-100"
+            : "-translate-x-2 opacity-0",
+        )}
+      />
+      <PanelLeftOpen
+        aria-hidden="true"
+        className={cn(
+          "absolute size-4 transition-[opacity,transform] duration-200 ease-out",
+          isExpanded
+            ? "translate-x-2 opacity-0"
+            : "translate-x-0 opacity-100",
+        )}
+      />
+      <span className="sr-only">{action}</span>
+    </Button>
+  )
+}
+
 export function AppShell() {
   const { data: admin } = useCurrentAdmin()
   const location = useLocation()
   const versionHref = buildUiVersionHref(IS_V2 ? "classic" : "v2", location)
+  const [v2SidebarOpen, setV2SidebarOpen] = useState(readV2SidebarState)
+  const handleV2SidebarOpenChange = useCallback((open: boolean) => {
+    setV2SidebarOpen(open)
+    try {
+      window.localStorage.setItem(V2_SIDEBAR_STORAGE_KEY, String(open))
+    } catch {
+      // The interface still works when browser storage is unavailable.
+    }
+  }, [])
 
   return (
-    <SidebarProvider>
+    <SidebarProvider
+      open={IS_V2 ? v2SidebarOpen : undefined}
+      onOpenChange={IS_V2 ? handleV2SidebarOpenChange : undefined}
+    >
       <Sidebar collapsible="icon">
         <SidebarHeader>
-          <div className="flex items-center gap-2 px-2 py-1.5">
+          <div data-slot={IS_V2 ? "v2-sidebar-brand" : undefined} className="flex items-center gap-2 px-2 py-1.5">
             <div
               className={cn(
                 "flex h-7 w-7 items-center justify-center text-xs font-bold",
@@ -34,7 +99,10 @@ export function AppShell() {
             >
               {IS_V2 ? "V2" : "ND"}
             </div>
-            <span className="font-semibold text-sm group-data-[collapsible=icon]:hidden">
+            <span
+              data-v2-sidebar-label={IS_V2 ? "brand" : undefined}
+              className="font-semibold text-sm group-data-[collapsible=icon]:hidden"
+            >
               NexusData{IS_V2 && <span className="ml-1 text-sidebar-foreground/60">/ V2</span>}
             </span>
           </div>
@@ -57,7 +125,7 @@ export function AppShell() {
                         <SidebarMenuButton asChild isActive={location.pathname === item.to} tooltip={item.label}>
                           <Link to={item.to}>
                             <item.icon />
-                            <span>{item.label}</span>
+                            <span data-v2-sidebar-label={IS_V2 ? "item" : undefined}>{item.label}</span>
                           </Link>
                         </SidebarMenuButton>
                       </SidebarMenuItem>
@@ -79,7 +147,9 @@ export function AppShell() {
               >
                 <a href={versionHref}>
                   {IS_V2 ? <ArrowLeft /> : <PanelsTopLeft />}
-                  <span>{IS_V2 ? "Старый интерфейс" : "Интерфейс V2"}</span>
+                  <span data-v2-sidebar-label={IS_V2 ? "item" : undefined}>
+                    {IS_V2 ? "Старый интерфейс" : "Интерфейс V2"}
+                  </span>
                 </a>
               </SidebarMenuButton>
             </SidebarMenuItem>
@@ -89,7 +159,7 @@ export function AppShell() {
                 <SidebarMenuButton asChild>
                   <button type="submit" className="w-full">
                     <LogOut />
-                    <span>Выйти</span>
+                    <span data-v2-sidebar-label={IS_V2 ? "item" : undefined}>Выйти</span>
                   </button>
                 </SidebarMenuButton>
               </form>
@@ -100,7 +170,7 @@ export function AppShell() {
 
       <SidebarInset>
         <header data-slot="app-header" className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger />
+          {IS_V2 ? <V2SidebarTrigger /> : <SidebarTrigger />}
           <Separator orientation="vertical" className="h-5" />
           {IS_V2 && (
             <div className="hidden items-center gap-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground sm:flex">
