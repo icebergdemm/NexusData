@@ -17,6 +17,12 @@
   const replayInstanceId = document.currentScript?.dataset?.replayInstanceId || null;
   if (replayInstanceId && window.__BARO_REPLAY_ACTIVE_INSTANCE__ !== replayInstanceId) return;
 
+  // Shared by the parser and the sibling playback/UI IIFE below. Keeping this
+  // in the outer player-instance scope is important: a declaration inside
+  // parseDemo() or the parser IIFE leaves broadcastTime()/buildPlayersPanel()
+  // with an unresolved identifier and crashes only after a real replay parses.
+  const collectTimeline = document.documentElement.dataset.uiVersion === "v2";
+
 (function () {
   "use strict";
 
@@ -171,7 +177,6 @@
     const geometry = { hulls: [], walls: [], doors: [] };
     const world = { w: 0, h: 0, polys: [] };
     const chat = [], events = [], spawnEvents = [];
-    const collectTimeline = document.documentElement.dataset.uiVersion === "v2";
     const spawns = new Map();
     let origin = { x: 0, y: 0 }, durationMs = 0;
     // Lazy snapshot index: parallel arrays (time, byte-offset, origin at that point)
@@ -891,7 +896,7 @@
   // когда заглушены все — возвращает звук. Ярлык пересчитывается и после
   // одиночных mute, иначе он врал бы о текущем состоянии панели.
   function speakerSoundIcon(muted){
-    if(document.documentElement.dataset.uiVersion!=="v2")return muted?"🔇":"🔊";
+    if(!collectTimeline)return muted?"🔇":"🔊";
     return muted
       ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="22" y1="9" x2="16" y2="15"></line><line x1="16" y1="9" x2="22" y2="15"></line></svg>'
       : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>';
@@ -1024,7 +1029,7 @@
   }
 
   function broadcastReady(){
-    if(!demo||document.documentElement.dataset.uiVersion!=="v2")return;
+    if(!demo||!collectTimeline)return;
     window.dispatchEvent(new CustomEvent("baroreplay:ready",{detail:timelineBridgeData()}));
   }
 

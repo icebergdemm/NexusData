@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "build": "npm run lint:replay && tsc -b && vite build",
+    "lint": "oxlint && npm run lint:replay",
+    "lint:replay": "cd .. && frontend/node_modules/.bin/oxlint -c frontend/oxlint-replay.json -D no-undef static/js/replay_player.js",
     "preview": "vite preview"
   },
   "dependencies": {
