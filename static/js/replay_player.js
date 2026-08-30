@@ -455,6 +455,7 @@
   let demo = null;
   let cam = { x: 0, y: 0, zoom: 0.05 };
   let currentTimeMs = 0, playing = false, speed = 1, lastFrame = 0;
+  let seekWindow = null;
   let followSub = false, followSubId = null;
   // Локальные габариты каждой структуры (подлодка, станция, обломки), считаются
   // один раз по геометрии. В геометрии координаты относительные — мировые
@@ -629,6 +630,11 @@
   }
   function esc(t){const d=document.createElement("span");d.textContent=t;return d.innerHTML;}
   function fmtTime(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return String(m).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
+  function fmtExactTime(ms){
+    const safe=Math.max(0,Math.round(ms));
+    const h=Math.floor(safe/3600000),m=Math.floor((safe%3600000)/60000),s=Math.floor((safe%60000)/1000),fraction=safe%1000;
+    return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0")+"."+String(fraction).padStart(3,"0");
+  }
   // V2 needs a smooth editor playhead. The classic logs panel can contain
   // thousands of React rows, so keep its historical 4 Hz cadence unchanged.
   // State transitions use a forced broadcast below in both interfaces.
@@ -655,18 +661,66 @@
     const p2=(n)=>String(n).padStart(2,"0");
     return p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds())+" МСК";
   }
-  function updateTimeUI(){
+  function updateTimeUI(forceBroadcast=false){
     if(!demo)return;
     const label=document.getElementById("rpvTimeLabel");if(!label)return; // страница уже ушла со плеера
     label.textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
-    const seek=document.getElementById("rpvSeek");if(seek&&!seek.__dragging)seek.value=String(Math.round(currentTimeMs/demo.durationMs*1000)||0);
+    const seek=document.getElementById("rpvSeek");
+    if(seek){
+      if(collectTimeline){
+        const bounds=seekWindow||{startMs:0,endMs:demo.durationMs};
+        seek.min=String(Math.round(bounds.startMs));
+        seek.max=String(Math.round(bounds.endMs));
+        seek.step="1";
+        seek.setAttribute("aria-valuetext",fmtExactTime(currentTimeMs)+" из "+fmtExactTime(demo.durationMs));
+        if(!seek.__dragging)seek.value=String(Math.round(currentTimeMs));
+      }else if(!seek.__dragging){
+        seek.value=String(Math.round(currentTimeMs/demo.durationMs*1000)||0);
+      }
+    }
     const clock=document.getElementById("rpvClockLabel");
     if(clock){
       clock.textContent=(typeof window.REPLAY_RECORDED_AT_MS==="number")
         ? fmtClockMsk(window.REPLAY_RECORDED_AT_MS+currentTimeMs)
         : "";
     }
-    broadcastTime();
+    broadcastTime(forceBroadcast);
+  }
+  function resyncVoiceAfterSeek(){
+    if(!demo||!demo.voice||!demo.voice.count)return;
+    resetDecoders();
+    voicePtr=voiceIndexAtTime(currentTimeMs);
+    while(voicePtr<demo.voice.count&&demo.voice.t[voicePtr]<currentTimeMs)voicePtr++;
+    speakingNow.clear();
+    updateSpeakingIndicators();
+  }
+  function applySeek(ms,syncVoice=true){
+    if(!demo)return;
+    currentTimeMs=Math.max(0,Math.min(demo.durationMs,Number(ms)||0));
+    if(syncVoice)resyncVoiceAfterSeek();
+    lastChatLen=-1;
+    updateChat();
+    updateTimeUI(true);
+  }
+  function applySeekPreview(ms){
+    if(!demo)return;
+    currentTimeMs=Math.max(0,Math.min(demo.durationMs,Number(ms)||0));
+    // Scrubbing can produce hundreds of pointer events per second. Keep this
+    // path intentionally cheap: the final commit performs chat and voice
+    // resynchronisation once, while UI events retain their normal cadence.
+    updateTimeUI(false);
+  }
+  function setSeekWindow(startMs,endMs){
+    if(!collectTimeline||!demo)return;
+    const start=Math.max(0,Math.min(demo.durationMs,Math.round(startMs)));
+    const end=Math.max(start+1,Math.min(demo.durationMs,Math.round(endMs)));
+    seekWindow={startMs:start,endMs:end};
+    if(currentTimeMs<start||currentTimeMs>end)applySeek(Math.max(start,Math.min(end,currentTimeMs)));
+    else updateTimeUI(true);
+  }
+  function clearSeekWindow(){
+    seekWindow=null;
+    updateTimeUI(true);
   }
   function setPlaying(p){
     playing=p;
@@ -924,8 +978,23 @@
       onGlobal(btn,"click",()=>{speed=parseFloat(btn.dataset.speed);document.querySelectorAll(".rpv-speed").forEach(b=>b.classList.remove("active"));btn.classList.add("active");});
     });
     const seek=document.getElementById("rpvSeek");
-    onGlobal(seek,"input",()=>{seek.__dragging=true;if(demo)currentTimeMs=seek.value/1000*demo.durationMs;});
-    onGlobal(seek,"change",()=>{seek.__dragging=false;});
+    if(seek){
+      onGlobal(seek,"input",()=>{
+        seek.__dragging=true;
+        if(!demo)return;
+        const requested=collectTimeline?Number(seek.value):Number(seek.value)/1000*demo.durationMs;
+        applySeekPreview(requested);
+      });
+      const finishSeek=()=>{
+        if(!seek.__dragging)return;
+        seek.__dragging=false;
+        applySeek(currentTimeMs,true);
+      };
+      onGlobal(seek,"change",finishSeek);
+      onGlobal(seek,"pointerup",finishSeek);
+      onGlobal(seek,"pointercancel",finishSeek);
+      onGlobal(seek,"lostpointercapture",finishSeek);
+    }
     onGlobal(document.getElementById("rpvFollow"),"click",(e)=>{
       followSub=!followSub;
       // Цель фиксируется в момент включения — по тому, что сейчас в центре кадра.
@@ -1044,17 +1113,22 @@
   const replayBridge = {
     instanceId: replayInstanceId,
     seekTo(ms){
-      if(!demo)return;
-      currentTimeMs=Math.max(0,Math.min(demo.durationMs,ms));
-      updateTimeUI();
+      applySeek(ms,true);
+    },
+    previewSeek(ms){
+      applySeekPreview(ms);
+    },
+    commitSeek(){
+      applySeek(currentTimeMs,true);
     },
     stepBy(ms){
-      if(!demo)return;
-      currentTimeMs=Math.max(0,Math.min(demo.durationMs,currentTimeMs+ms));
-      updateTimeUI();
+      applySeek(currentTimeMs+ms,true);
     },
     getTimeMs(){return currentTimeMs;},
     getDurationMs(){return demo?demo.durationMs:0;},
+    isPlaying(){return playing;},
+    setSeekWindow(startMs,endMs){setSeekWindow(startMs,endMs);},
+    clearSeekWindow(){clearSeekWindow();},
     getTimelineData(){return timelineBridgeData();},
     setPlaying(p){setPlaying(!!p);},
     selectPlayer(name){applyPlayerSelection(name||null,false);},

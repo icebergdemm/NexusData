@@ -7,6 +7,7 @@ import { ReplayTimelineWorkbench } from "./ReplayTimelineWorkbench"
 import { Camera, Clapperboard, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { IS_V2 } from "@/lib/ui-version"
+import { V2ReplayTransport } from "./V2ReplayTransport"
 
 let replayScriptGeneration = 0
 
@@ -177,6 +178,36 @@ export function ReplayPlayerPage() {
         html[data-ui-version="v2"] .rpv-panel,
         html[data-ui-version="v2"] .rpv-btn,
         html[data-ui-version="v2"] .rpv-player{border-radius:0;}
+        html[data-ui-version="v2"] .rpv-controls{gap:8px;overflow:visible;}
+        html[data-ui-version="v2"] .rpv-v2-transport{display:contents;}
+        html[data-ui-version="v2"] .rpv-step{min-width:52px;justify-content:center;padding-inline:9px;font-variant-numeric:tabular-nums;}
+        html[data-ui-version="v2"] .rpv-seek-shell{--rpv-hold-origin:50%;position:relative;flex:1 1 300px;min-width:220px;display:grid;grid-template-rows:20px 0fr;align-items:center;transition:grid-template-rows 220ms cubic-bezier(.2,.8,.2,1),padding 220ms cubic-bezier(.2,.8,.2,1);}
+        html[data-ui-version="v2"] .rpv-seek-shell[data-precision="true"]{grid-template-rows:28px 54px;padding-top:2px;}
+        html[data-ui-version="v2"] .rpv-seek-shell .rpv-seek{grid-row:1;width:100%;min-width:0;margin:0;accent-color:var(--foreground);height:18px;cursor:ew-resize;transition:height 220ms cubic-bezier(.2,.8,.2,1);}
+        html[data-ui-version="v2"] .rpv-seek-shell[data-precision="true"] .rpv-seek{height:28px;}
+        html[data-ui-version="v2"] .rpv-seek-shell .rpv-seek:focus-visible{outline:2px solid var(--ring);outline-offset:3px;}
+        html[data-ui-version="v2"] .rpv-hold-progress{position:absolute;z-index:2;left:0;right:0;top:9px;height:2px;pointer-events:none;background:var(--foreground);opacity:0;transform:scaleX(0);transform-origin:var(--rpv-hold-origin) center;}
+        html[data-ui-version="v2"] .rpv-seek-shell[data-holding="true"] .rpv-hold-progress{animation:rpv-hold-progress 2.65s linear .35s forwards;}
+        @keyframes rpv-hold-progress{0%{opacity:0;transform:scaleX(0)}5%{opacity:.72}100%{opacity:.9;transform:scaleX(1)}}
+        html[data-ui-version="v2"] .rpv-precision-panel{grid-row:2;min-height:0;overflow:hidden;display:grid;grid-template-columns:auto minmax(90px,1fr) auto;align-items:center;gap:12px;border-top:1px solid transparent;opacity:0;transform:translateY(-5px);pointer-events:none;visibility:hidden;transition:opacity 180ms ease,transform 220ms cubic-bezier(.2,.8,.2,1),border-color 220ms ease,visibility 0s linear 220ms;}
+        html[data-ui-version="v2"] .rpv-seek-shell[data-precision="true"] .rpv-precision-panel{opacity:1;transform:translateY(0);border-color:var(--border);pointer-events:auto;visibility:visible;transition-delay:0s;}
+        html[data-ui-version="v2"] .rpv-precision-copy{display:flex;flex-direction:column;gap:2px;white-space:nowrap;font-family:var(--font-mono,monospace);font-size:10px;color:var(--muted-foreground);text-transform:uppercase;letter-spacing:.06em;}
+        html[data-ui-version="v2"] .rpv-precision-copy span:first-child{display:flex;align-items:center;gap:5px;color:var(--foreground);font-weight:700;}
+        html[data-ui-version="v2"] .rpv-precision-copy svg{width:12px;height:12px;}
+        html[data-ui-version="v2"] .rpv-precision-ruler{height:20px;border-inline:1px solid var(--border);background:repeating-linear-gradient(90deg,var(--muted-foreground) 0 1px,transparent 1px 10%),repeating-linear-gradient(90deg,var(--border) 0 1px,transparent 1px 2%);background-size:100% 12px,100% 6px;background-position:center bottom;background-repeat:no-repeat;opacity:.72;}
+        html[data-ui-version="v2"] .rpv-precision-close{width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--border);background:var(--background);color:var(--muted-foreground);cursor:pointer;}
+        html[data-ui-version="v2"] .rpv-precision-close:hover{color:var(--foreground);border-color:var(--foreground);}
+        html[data-ui-version="v2"] .rpv-precision-close svg{width:13px;height:13px;}
+        html[data-ui-version="v2"] .rpv-direct-time{position:relative;display:flex;align-items:center;gap:6px;font-family:var(--font-mono,monospace);font-size:11px;color:var(--muted-foreground);white-space:nowrap;}
+        html[data-ui-version="v2"] .rpv-direct-time>label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+        html[data-ui-version="v2"] .rpv-direct-time input{width:112px;height:30px;border:1px solid var(--border);background:var(--background);color:var(--foreground);padding:0 8px;font:inherit;font-size:12px;font-variant-numeric:tabular-nums;outline:none;}
+        html[data-ui-version="v2"] .rpv-direct-time input:focus{border-color:var(--foreground);box-shadow:0 0 0 1px var(--foreground);}
+        html[data-ui-version="v2"] .rpv-direct-time input[aria-invalid="true"]{border-color:var(--destructive);}
+        html[data-ui-version="v2"] #rpvDirectTimeError{position:absolute;z-index:4;top:calc(100% + 5px);left:0;padding:4px 6px;border:1px solid var(--destructive);background:var(--background);color:var(--destructive);font-size:10px;}
+        html[data-ui-version="v2"] .rpv-precision-toggle{padding-inline:9px;}
+        html[data-ui-version="v2"] .rpv-precision-toggle svg{width:13px;height:13px;}
+        html[data-ui-version="v2"] .rpv-precision-toggle[aria-pressed="true"]{background:var(--foreground);color:var(--background);border-color:var(--foreground);}
+        @media(prefers-reduced-motion:reduce){html[data-ui-version="v2"] .rpv-seek-shell,html[data-ui-version="v2"] .rpv-seek-shell .rpv-seek,html[data-ui-version="v2"] .rpv-precision-panel{transition-duration:1ms;}html[data-ui-version="v2"] .rpv-seek-shell[data-holding="true"] .rpv-hold-progress{animation-timing-function:steps(1,end);}}
         @media(max-width:1000px){html[data-ui-version="v2"] .rpv-layout{grid-template-columns:1fr;}html[data-ui-version="v2"] .rpv-side{max-height:none;}}
       `}</style>
 
@@ -208,9 +239,11 @@ export function ReplayPlayerPage() {
 
           <div className="rpv-controls">
             <button className="rpv-btn" id="rpvPlay" aria-label="Воспроизвести"><span data-play><AdaptiveIcon emoji="▶" icon={Play} className="size-3.5" /></span><Pause data-pause className="size-3.5" /></button>
-            <span className="rpv-time" id="rpvTimeLabel">00:00 / 00:00</span>
+            <span className={IS_V2 ? "sr-only" : "rpv-time"} id="rpvTimeLabel">00:00 / 00:00</span>
             <span className="rpv-time" id="rpvClockLabel" title="Время по МСК в этот момент записи"></span>
-            <input type="range" className="rpv-seek" id="rpvSeek" min={0} max={1000} defaultValue={0} />
+            {IS_V2
+              ? <V2ReplayTransport key={replayId} initialDurationMs={data?.replay.duration_ms} />
+              : <input type="range" className="rpv-seek" id="rpvSeek" min={0} max={1000} defaultValue={0} />}
             <div style={{ display: "flex", gap: 4 }}>
               <button className="rpv-btn rpv-speed" data-speed="0.5">0.5×</button>
               <button className="rpv-btn rpv-speed active" data-speed="1">1×</button>

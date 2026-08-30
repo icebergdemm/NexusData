@@ -113,6 +113,8 @@ interface ReplayReadyDetail {
 
 interface ReplayBridge {
   seekTo: (ms: number) => void
+  previewSeek?: (ms: number) => void
+  commitSeek?: () => void
   getTimeMs: () => number
   getDurationMs: () => number
   setPlaying: (playing: boolean) => void
@@ -325,6 +327,8 @@ function TimelineCanvas({
   selectedPlayer,
   selectedEvent,
   onSeek,
+  onPreviewSeek,
+  onCommitSeek,
   onSelectEvent,
   onViewChange,
   onTogglePlaying,
@@ -337,6 +341,8 @@ function TimelineCanvas({
   selectedPlayer: string | null
   selectedEvent: TimelineEvent | null
   onSeek: (ms: number) => void
+  onPreviewSeek: (ms: number) => void
+  onCommitSeek: () => void
   onSelectEvent: (event: TimelineEvent) => void
   onViewChange: (next: { viewStartMs: number; windowMs: number }) => void
   onTogglePlaying: () => void
@@ -612,11 +618,11 @@ function TimelineCanvas({
             return
           }
           dragRef.current = true
-          onSeek(pointerTime(event))
+          onPreviewSeek(pointerTime(event))
         }}
         onPointerMove={(event) => {
           if (dragRef.current) {
-            onSeek(pointerTime(event))
+            onPreviewSeek(pointerTime(event))
             return
           }
           const hit = hitAt(event)
@@ -631,9 +637,19 @@ function TimelineCanvas({
               : `${first.player_name ?? "Система"} · ${actionLabel(first.action_type)}`,
           })
         }}
-        onPointerUp={() => { dragRef.current = false }}
-        onPointerCancel={() => { dragRef.current = false }}
-        onPointerLeave={() => { dragRef.current = false; setHover(null) }}
+        onPointerUp={() => {
+          if (dragRef.current) onCommitSeek()
+          dragRef.current = false
+        }}
+        onPointerCancel={() => {
+          if (dragRef.current) onCommitSeek()
+          dragRef.current = false
+        }}
+        onLostPointerCapture={() => {
+          if (dragRef.current) onCommitSeek()
+          dragRef.current = false
+        }}
+        onPointerLeave={() => { setHover(null) }}
       />
       {hover && (
         <div className="rpv-editor-tooltip" style={{ left: hover.x, top: hover.y }}>
@@ -820,6 +836,20 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     getReplayBridge()?.seekTo(next)
     setTimeMs(next)
   }, [durationMs])
+
+  const previewSeekTo = useCallback((value: number) => {
+    const next = clamp(Math.round(value), 0, durationMs || Number.MAX_SAFE_INTEGER)
+    const bridge = getReplayBridge()
+    if (bridge?.previewSeek) bridge.previewSeek(next)
+    else bridge?.seekTo(next)
+    setTimeMs(next)
+  }, [durationMs])
+
+  const commitPreviewSeek = useCallback(() => {
+    const bridge = getReplayBridge()
+    if (bridge?.commitSeek) bridge.commitSeek()
+    else bridge?.seekTo(timeMs)
+  }, [timeMs])
 
   const setPlayer = useCallback((name: string | null) => {
     setSelectedPlayer(name)
@@ -1178,6 +1208,8 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
           selectedPlayer={selectedPlayer}
           selectedEvent={selectedEvent}
           onSeek={seekTo}
+          onPreviewSeek={previewSeekTo}
+          onCommitSeek={commitPreviewSeek}
           onSelectEvent={setSelectedEvent}
           onViewChange={changeView}
           onTogglePlaying={togglePlaying}

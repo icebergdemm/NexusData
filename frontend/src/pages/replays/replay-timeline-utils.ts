@@ -2,9 +2,51 @@
 // offsets.  A half-second floor keeps both useful without turning the ruler
 // into an unreadable sub-frame view.
 export const MIN_TIMELINE_WINDOW_MS = 500
+export const PRECISION_HOLD_DELAY_MS = 3_000
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+export function seekByMilliseconds(args: {
+  currentMs: number
+  deltaMs: number
+  durationMs: number
+}): number {
+  return Math.round(clamp(args.currentMs + args.deltaMs, 0, Math.max(0, args.durationMs)))
+}
+
+export function shouldActivatePrecisionScrub(args: {
+  elapsedMs: number
+  pointerDown: boolean
+  cancelled: boolean
+  maxMovementPx: number
+  movementTolerancePx?: number
+}): boolean {
+  return args.pointerDown && !args.cancelled && args.elapsedMs >= PRECISION_HOLD_DELAY_MS && args.maxMovementPx <= (args.movementTolerancePx ?? 6)
+}
+
+export function precisionScrubWindow(args: {
+  centerMs: number
+  durationMs: number
+  windowMs: number
+}): { startMs: number; endMs: number } {
+  const durationMs = Math.max(0, Math.round(args.durationMs))
+  const windowMs = clamp(Math.round(args.windowMs), 1, Math.max(1, durationMs))
+  const centerMs = clamp(Math.round(args.centerMs), 0, durationMs)
+  const startMs = clamp(centerMs - windowMs / 2, 0, Math.max(0, durationMs - windowMs))
+  return { startMs: Math.round(startMs), endMs: Math.round(Math.min(durationMs, startMs + windowMs)) }
+}
+
+export function precisionTimeAtRatio(args: {
+  ratio: number
+  startMs: number
+  endMs: number
+  durationMs: number
+}): number {
+  const ratio = clamp(args.ratio, 0, 1)
+  const value = args.startMs + (args.endMs - args.startMs) * ratio
+  return Math.round(clamp(value, 0, Math.max(0, args.durationMs)))
 }
 /** Editor-style timecode with millisecond precision. */
 export function formatTimecode(milliseconds: number): string {
