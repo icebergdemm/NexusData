@@ -613,6 +613,16 @@ def _get_conn() -> sqlite3.Connection:
         return conn
     _ensure_storage_dir()
     conn = sqlite3.connect(LOG_DB_PATH, timeout=30, check_same_thread=False)
+    # SQLite's built-in LOWER/LIKE only folds ASCII. Register Unicode
+    # casefolding for the correctness fallback used while the FTS backfill is
+    # still running: a Russian query such as ``физ`` must match
+    # ``Физраствор`` exactly as it does in the browser.
+    conn.create_function(
+        "nd_casefold",
+        1,
+        lambda value: str(value or "").casefold(),
+        deterministic=True,
+    )
     conn.execute("PRAGMA journal_mode=WAL")       # concurrent reads while writing
     conn.execute("PRAGMA synchronous=NORMAL")     # fast, still crash-safe with WAL
     # ВРЕМЕННЫЕ структуры — НА ДИСК, не в RAM. Раньше здесь стояло
@@ -1441,7 +1451,18 @@ def _build_where(server_name, player_name, action_type, search_text,
     # INDEXED BY не даёт планировщику выбрать широкий индекс action для
     # запроса вида «редкий игрок + частое действие». На проде именно такой
     # план превращал фильтр player + wire в 30-секундный скан и 503.
-    from_sql = "log_events INDEXED BY ix_log_player" if exact_player_filter and not use_fts else "log_events"
+    if exact_player_filter and not use_fts:
+        from_sql = "log_events INDEXED BY ix_log_player"
+    elif not use_fts and server_name:
+        # LIKE cannot use a text B-tree, but a replay search always knows its
+        # server and time range. Force SQLite to scan only that round instead
+        # of choosing a broad action/details plan over the entire log index.
+        if action_type and action_type != "all":
+            from_sql = "log_events INDEXED BY ix_log_server_action_ts"
+        else:
+            from_sql = "log_events INDEXED BY ix_log_server"
+    else:
+        from_sql = "log_events"
     if use_fts:
         # Все текстовые условия объединяются в ОДНО выражение MATCH — FTS5
         # допускает лишь один MATCH на таблицу, но его синтаксис сам
@@ -1462,15 +1483,17 @@ def _build_where(server_name, player_name, action_type, search_text,
             params.append(" AND ".join(fts_terms))
     else:
         if player_scope == "related" and names_list:
-            ors = " OR ".join("(player LIKE ? OR details LIKE ?)" for _ in names_list)
+            ors = " OR ".join("(nd_casefold(player) LIKE ? OR nd_casefold(details) LIKE ?)" for _ in names_list)
             clauses.append(f"({ors})")
             for n in names_list:
-                params.extend([f"%{n}%", f"%{n}%"])
+                folded = n.casefold()
+                params.extend([f"%{folded}%", f"%{folded}%"])
         elif player_scope == "related" and player_name:
-            clauses.append("(player LIKE ? OR details LIKE ?)")
-            params.extend([f"%{player_name}%", f"%{player_name}%"])
+            clauses.append("(nd_casefold(player) LIKE ? OR nd_casefold(details) LIKE ?)")
+            folded = player_name.casefold()
+            params.extend([f"%{folded}%", f"%{folded}%"])
         if search_text:
-            clauses.append("details LIKE ?"); params.append(f"%{search_text}%")
+            clauses.append("nd_casefold(details) LIKE ?"); params.append(f"%{search_text.casefold()}%")
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     return from_sql, where, params

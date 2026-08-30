@@ -80,6 +80,52 @@ class LogSearchTests(unittest.TestCase):
             {"Игрок Один", "Инженер"},
         )
 
+    def test_round_range_fallback_is_unicode_case_insensitive_and_indexed(self):
+        timestamp = datetime(2026, 8, 29, 12, 5)
+        self.conn.execute(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) VALUES (?,?,?,?,?,?)",
+            (
+                services_logs._ts_to_ms(timestamp),
+                "ASPER1",
+                "Ст. Матрос Тест",
+                "picked_up",
+                "Ст. Матрос Тест picked up x8 Физраствор",
+                "items.log",
+            ),
+        )
+        self.conn.commit()
+
+        with patch.object(services_logs, "fts_is_ready", return_value=False):
+            result = services_logs.search_logs(
+                server_name="ASPER1",
+                search_text="физ",
+                time_from=timestamp - timedelta(minutes=1),
+                time_to=timestamp + timedelta(minutes=1),
+                count_total=False,
+                limit=100,
+            )
+
+        self.assertEqual(len(result.events), 1)
+        self.assertIn("Физраствор", result.events[0].details)
+
+        from_sql, where, params = services_logs._build_where(
+            "ASPER1",
+            None,
+            None,
+            "физ",
+            timestamp - timedelta(minutes=1),
+            timestamp + timedelta(minutes=1),
+            None,
+            use_fts=False,
+        )
+        self.assertEqual(from_sql, "log_events INDEXED BY ix_log_server")
+        plan = self.conn.execute(
+            f"EXPLAIN QUERY PLAN SELECT log_events.id FROM {from_sql}{where} "
+            "ORDER BY log_events.ts DESC, log_events.id DESC LIMIT 101",
+            params,
+        ).fetchall()
+        self.assertTrue(any("ix_log_server" in row[-1] for row in plan), plan)
+
     def test_actor_and_action_query_is_forced_through_player_index(self):
         from_sql, where, params = services_logs._build_where(
             "ASPER1",

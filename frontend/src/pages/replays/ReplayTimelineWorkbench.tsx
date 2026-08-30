@@ -854,13 +854,13 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
       ))}
       {isError && (
         <div className="rpv-editor-error">
-          {globalSearch
+          {unavailableReason || (globalSearch
             ? "Поиск по всему раунду не завершился. Уточните запрос или повторите попытку."
-            : "Не удалось получить серверные события. Данные самой демозаписи остаются доступны."}
+            : "Не удалось получить серверные события. Данные самой демозаписи остаются доступны.")}
           <Button variant="outline" size="sm" onClick={onRetry}>Повторить</Button>
         </div>
       )}
-      {!isLoading && (
+      {!isLoading && !isError && (
         <div className="rpv-editor-event-list">
           {listWindow.map((event) => {
             const Icon = laneIcon(event.lane)
@@ -911,7 +911,7 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
             : `В участке больше ${loadedCount.toLocaleString("ru-RU")} точных строк. Увеличьте масштаб, чтобы дозагрузить остальные.`}
         </div>
       )}
-      {unavailableReason && (
+      {unavailableReason && !isError && (
         <div className="rpv-editor-warning">
           <span>{unavailableReason}</span>
           <Button variant="outline" size="sm" onClick={onRetry}>Повторить</Button>
@@ -1144,7 +1144,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     ? (!globalSearchReady || (globalSearchQuery.isLoading && !globalSearchQuery.data))
     : detailMode ? detailQuery.isLoading : overviewQuery.isLoading
   const isError = globalSearchActive
-    ? globalSearchQuery.isError
+    ? globalSearchQuery.isError || globalSearchQuery.data?.status === "unavailable"
     : detailMode ? detailQuery.isError : overviewQuery.isError
   const refetchOverview = overviewQuery.refetch
   const refetchPlayerOverview = playerOverviewQuery.refetch
@@ -1441,6 +1441,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
           selectedEventId={selectedEvent?.id}
           selectedPlayer={selectedPlayer}
           totalIsCapped={displayedTotalIsCapped}
+          unavailableReason={unavailableReason}
         />
 
         <aside className="rpv-editor-inspector">
