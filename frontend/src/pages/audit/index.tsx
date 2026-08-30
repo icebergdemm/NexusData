@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 
 interface AuditLog {
   id: number; admin_id: number; admin_name: string | null; action: string
@@ -143,7 +144,7 @@ export function AuditPage() {
                           {describeDetails(l.details) || "-"}
                         </TableCell>
                         <TableCell className="text-right text-sm whitespace-nowrap text-muted-foreground">
-                          {l.created_at ? new Date(l.created_at).toLocaleString("ru-RU") : "-"}
+                          {formatBrowserDate(l.created_at)}
                         </TableCell>
                       </TableRow>
                     )

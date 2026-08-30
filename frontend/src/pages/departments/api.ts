@@ -190,7 +190,7 @@ export const departmentsApi = {
   accessLevels: {
     create: (departmentId: number, body: { name: string; kind?: "qualification" | "head" | "deputy_head"; discord_role_id?: string; permissions?: unknown }) =>
       api.post<{ status: string; access_level: DepartmentAccessLevel }>(`/api/v1/admin/departments/${departmentId}/access-levels`, body),
-    update: (departmentId: number, levelId: number, body: { name?: string; discord_role_id?: string; permissions?: unknown; site_permissions?: unknown; kit_binding?: { job_id: string; kit_level: number } | null; server_privilege_group_id?: number | null }) =>
+    update: (departmentId: number, levelId: number, body: { name?: string; discord_role_id?: string; kind?: "qualification" | "head" | "deputy_head" | "base"; permissions?: unknown; site_permissions?: unknown; kit_binding?: { job_id: string; kit_level: number } | null; server_privilege_group_id?: number | null }) =>
       api.patch<{ status: string; access_level: DepartmentAccessLevel }>(`/api/v1/admin/departments/${departmentId}/access-levels/${levelId}`, body),
     delete: (departmentId: number, levelId: number) =>
       api.delete<{ status: string }>(`/api/v1/admin/departments/${departmentId}/access-levels/${levelId}`),

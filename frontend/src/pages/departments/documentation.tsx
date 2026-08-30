@@ -1,3 +1,4 @@
+// @ts-nocheck - документы выведены из эксплуатации
 import { useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -149,6 +150,14 @@ function TagManagerDialog({ open, onOpenChange, department }: {
 }
 
 export function DocumentationTab({ department, canEdit, isSuperuser }: { department: DepartmentDetail; canEdit: boolean; isSuperuser: boolean }) {
+  return (
+    <Card>
+      <CardContent className="py-16 text-center">
+        <p className="text-lg font-semibold">Упс... Похоже администратор выключил этот кусок кода</p>
+        <p className="mt-2 text-sm text-muted-foreground">Документы временно выведены из эксплуатации.</p>
+      </CardContent>
+    </Card>
+  )
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)

@@ -36,12 +36,14 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
+import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api, ApiError } from "@/lib/api"
 import { ACTION_COLOR, ACTION_TYPES, type LogEvent } from "./constants"
 import { PlayerNamesFilter } from "./player-filter"
 import { useCurrentAdmin } from "@/lib/auth"
 import { IS_V2 } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
+import { formatBrowserDate } from "@/lib/format-date"
 
 interface LogsResponse {
   events: LogEvent[]
@@ -383,7 +385,7 @@ export function LogsPage() {
                 <span className="font-semibold">{serverName}</span>
                 <span className="font-mono text-muted-foreground">{stat.event_count.toLocaleString("ru-RU")} событий</span>
                 <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
-                  {stat.last_refresh ? new Date(stat.last_refresh).toLocaleString("ru-RU") : "Не обновлялось"}
+                  {stat.last_refresh ? formatBrowserDate(stat.last_refresh) : "Не обновлялось"}
                 </span>
               </div>
             ))}
@@ -475,7 +477,7 @@ export function LogsPage() {
                       <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Все действия</SelectItem>
-                        {ACTION_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
+                        {[...ACTION_TYPES].sort((a, b) => a.localeCompare(b)).map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -657,19 +659,13 @@ export function LogsPage() {
                     {data?.events.map((logEvent, index) => (
                       <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
                         <TableCell className="border-r pl-4 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
-                          {new Date(logEvent.timestamp).toLocaleString("ru-RU")}
+                          {formatBrowserDate(logEvent.timestamp)}
                         </TableCell>
                         <TableCell className="border-r"><Badge variant="outline">{logEvent.server_name ?? "-"}</Badge></TableCell>
                         <TableCell className="max-w-60 truncate border-r text-xs font-medium" title={logEvent.player_name ?? undefined}>
                           {logEvent.player_name ? (
                             logEvent.player_id ? (
-                              <button
-                                type="button"
-                                className="text-left underline-offset-2 hover:underline"
-                                onClick={() => setSummaryPlayerId(logEvent.player_id!)}
-                              >
-                                {logEvent.player_name}
-                              </button>
+                              <PlayerHoverLink playerId={logEvent.player_id}>{logEvent.player_name}</PlayerHoverLink>
                             ) : logEvent.player_name
                           ) : "-"}
                         </TableCell>
@@ -768,7 +764,7 @@ export function LogsPage() {
                 <div>
                   <div className="font-semibold">{serverName}</div>
                   <div className="text-xs text-muted-foreground">
-                    Обновлено: {stat.last_refresh ? new Date(stat.last_refresh).toLocaleString("ru-RU") : "-"}
+                    Обновлено: {stat.last_refresh ? formatBrowserDate(stat.last_refresh) : "-"}
                   </div>
                 </div>
                 <Badge variant="secondary">{stat.event_count.toLocaleString("ru-RU")} событий</Badge>
@@ -862,7 +858,7 @@ export function LogsPage() {
                   <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">Все типы действий</SelectItem>
-                    {ACTION_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
+                    {[...ACTION_TYPES].sort((a, b) => a.localeCompare(b)).map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -1012,19 +1008,13 @@ export function LogsPage() {
                   {data?.events.map((logEvent, index) => (
                     <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
                       <TableCell className="pl-4 text-xs whitespace-nowrap text-muted-foreground">
-                        {new Date(logEvent.timestamp).toLocaleString("ru-RU")}
+                        {formatBrowserDate(logEvent.timestamp)}
                       </TableCell>
                       <TableCell><Badge variant="outline">{logEvent.server_name ?? "-"}</Badge></TableCell>
                       <TableCell className="max-w-52 truncate font-medium" title={logEvent.player_name ?? undefined}>
                         {logEvent.player_name ? (
                           logEvent.player_id ? (
-                            <button
-                              type="button"
-                              className="text-left text-primary underline-offset-2 hover:underline"
-                              onClick={() => setSummaryPlayerId(logEvent.player_id!)}
-                            >
-                              {logEvent.player_name}
-                            </button>
+                            <PlayerHoverLink playerId={logEvent.player_id}>{logEvent.player_name}</PlayerHoverLink>
                           ) : logEvent.player_name
                         ) : "-"}
                       </TableCell>

@@ -36,7 +36,10 @@ interface LoginKey {
 }
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
+  if (!iso) return "-"
+  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
+  const normalized = hasTz ? iso : iso + "Z"
+  return new Date(normalized).toLocaleString("ru-RU")
 }
 
 export function LoginKeysDialog({ adminId, adminName, open, onOpenChange }: {

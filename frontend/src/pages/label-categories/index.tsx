@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
+import { canDo, useCurrentAdmin } from "@/lib/auth"
 
 interface LabelCategory { id: number; name: string; color: string; icon: string }
 
@@ -16,6 +17,10 @@ export function LabelCategoriesPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState({ name: "", color: "#888888", icon: "🏷" })
   const queryClient = useQueryClient()
+  const { data: admin } = useCurrentAdmin()
+  const canCreate = !!admin && (canDo(admin, "players", "create_label_category") || canDo(admin, "players", "manage_label_categories"))
+  const canEdit = !!admin && (canDo(admin, "players", "edit_label_category") || canDo(admin, "players", "manage_label_categories"))
+  const canDelete = !!admin && (canDo(admin, "players", "delete_label_category") || canDo(admin, "players", "manage_label_categories"))
 
   const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ["label-categories"],
@@ -50,25 +55,27 @@ export function LabelCategoriesPage() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader><CardTitle>Новая метка</CardTitle></CardHeader>
-        <CardContent className="flex flex-wrap items-end gap-2">
-          <div><label className="mb-1 block text-xs text-muted-foreground">Название</label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Эмодзи</label>
-            <Input
-              value={form.icon}
-              onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))}
-              className="w-20 text-center text-lg"
-              placeholder="🏷"
-              maxLength={8}
-              aria-label="Эмодзи метки"
-            />
-          </div>
-          <div><label className="mb-1 block text-xs text-muted-foreground">Цвет</label><Input type="color" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} className="w-16 p-1" /></div>
-          <Button disabled={!form.name.trim() || create.isPending} onClick={() => create.mutate()}>Создать</Button>
-        </CardContent>
-      </Card>
+      {canCreate && (
+        <Card>
+          <CardHeader><CardTitle>Новая метка</CardTitle></CardHeader>
+          <CardContent className="flex flex-wrap items-end gap-2">
+            <div><label className="mb-1 block text-xs text-muted-foreground">Название</label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Эмодзи</label>
+              <Input
+                value={form.icon}
+                onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))}
+                className="w-20 text-center text-lg"
+                placeholder="🏷"
+                maxLength={8}
+                aria-label="Эмодзи метки"
+              />
+            </div>
+            <div><label className="mb-1 block text-xs text-muted-foreground">Цвет</label><Input type="color" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} className="w-16 p-1" /></div>
+            <Button disabled={!form.name.trim() || create.isPending} onClick={() => create.mutate()}>Создать</Button>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader><CardTitle>Метки игроков</CardTitle></CardHeader>
@@ -123,10 +130,14 @@ export function LabelCategoriesPage() {
                       <TableCell><Badge style={{ backgroundColor: c.color }} className="gap-1.5 text-white"><span aria-hidden="true">{c.icon || "🏷"}</span>{c.name}</Badge></TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1.5">
-                          <Button size="sm" variant="outline" onClick={() => startEdit(c)}>
-                            <Pencil className="size-3.5" /> Изменить
-                          </Button>
-                          <Button size="sm" variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate(c.id)}>Удалить</Button>
+                          {canEdit && (
+                            <Button size="sm" variant="outline" onClick={() => startEdit(c)}>
+                              <Pencil className="size-3.5" /> Изменить
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button size="sm" variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate(c.id)}>Удалить</Button>
+                          )}
                         </div>
                       </TableCell>
                     </>

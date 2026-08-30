@@ -45,7 +45,10 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
         {"key": "edit_discord_id", "label": "Привязка/подтверждение Discord ID"},
         {"key": "manage_notes", "label": "Заметки в личном деле"},
         {"key": "manage_labels", "label": "Назначение меток игрокам"},
-        {"key": "manage_label_categories", "label": "Управление категориями меток"},
+        {"key": "manage_label_categories", "label": "Управление категориями меток (совместимость / все операции)"},
+        {"key": "create_label_category", "label": "Создание категорий меток"},
+        {"key": "edit_label_category", "label": "Изменение категорий меток"},
+        {"key": "delete_label_category", "label": "Удаление категорий меток"},
         {"key": "manage_traps", "label": "Ловушки (уведомление о входе игрока)"},
         {"key": "manage_achievements", "label": "Достижения"},
         {"key": "manage_rewards", "label": "Награды (наборы, предметы, статы, таланты)"},
@@ -267,7 +270,9 @@ PERMISSION_ACTION_SPLITS: dict[str, dict[str, list[str]]] = {
     "players": {
         "edit": ["sync", "edit_rank_kit", "edit_discord_id", "manage_notes",
                  "manage_labels", "manage_label_categories", "manage_traps",
-                 "manage_achievements", "manage_rewards"],
+                 "manage_achievements", "manage_rewards",
+                 "create_label_category", "edit_label_category", "delete_label_category"],
+        "manage_label_categories": ["create_label_category", "edit_label_category", "delete_label_category"],
     },
     # Inverted case from the others above: "departments":"view" ITSELF just
     # became baseline-True for everyone (own memberships only — see

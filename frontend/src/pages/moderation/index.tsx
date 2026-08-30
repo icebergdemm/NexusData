@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
+import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
@@ -31,10 +32,14 @@ function copyToClipboard(text: string, label: string) {
 }
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
+  if (!iso) return "-"
+  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
+  const normalized = hasTz ? iso : iso + "Z"
+  return new Date(normalized).toLocaleString("ru-RU")
 }
 
-function fmtPlayTime(hours: number): string {
+function fmtPlayTime(hours: number | null | undefined): string {
+  if (hours == null) return "-"
   const h = Math.floor(hours)
   const m = Math.round((hours - h) * 60)
   return `${h}ч ${m}м`
@@ -193,6 +198,7 @@ export function ModerationPage() {
                     <TableHead>Роль</TableHead>
                     <TableHead>Пинг</TableHead>
                     <TableHead>Дата входа</TableHead>
+                    <TableHead>Наиграно</TableHead>
                     {(data.can_edit || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
@@ -219,9 +225,7 @@ export function ModerationPage() {
                       <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
                         <TableCell className="font-medium">
                           {p.player_id ? (
-                            <button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
-                              {name}
-                            </button>
+                            <PlayerHoverLink playerId={p.player_id}>{name}</PlayerHoverLink>
                           ) : name}
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           {p.forced_display_name && <ForcedNameBadge realName={p.player_name} />}
@@ -230,6 +234,7 @@ export function ModerationPage() {
                         <TableCell>{p.job_id ?? "-"}</TableCell>
                         <TableCell>{p.ping ?? "-"}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.join_time)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtPlayTime(p.total_play_time)}</TableCell>
                         {(data.can_edit || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
@@ -249,7 +254,7 @@ export function ModerationPage() {
                     )
                   })}
                   {!data.online_players.length && (
-                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Никого нет онлайн</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">Никого нет онлайн</TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>
@@ -302,9 +307,7 @@ export function ModerationPage() {
                     >
                       <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
                         <TableCell>
-                          <button className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(p.player_id)}>
-                            {name}
-                          </button>
+                          <PlayerHoverLink playerId={p.player_id} className="font-medium text-primary underline-offset-2 hover:underline">{name}</PlayerHoverLink>
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           {p.forced_display_name && <ForcedNameBadge realName={p.player_last_time_name} />}
                           <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
@@ -357,9 +360,7 @@ export function ModerationPage() {
                     <TableRow key={ev.id}>
                       <TableCell className="font-medium">
                         {ev.player_id ? (
-                          <button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => setSummaryPlayerId(ev.player_id)}>
-                            {ev.player_name || ev.player_steamid}
-                          </button>
+                          <PlayerHoverLink playerId={ev.player_id}>{ev.player_name || ev.player_steamid}</PlayerHoverLink>
                         ) : (ev.player_name || ev.player_steamid)}
                       </TableCell>
                       <TableCell><span className="font-mono text-xs">{ev.event_type}</span></TableCell>

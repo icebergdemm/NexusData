@@ -38,7 +38,10 @@ import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 interface AdminOption { id: number; discord_username: string | null }
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "-"
+  if (!iso) return "-"
+  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
+  const normalized = hasTz ? iso : iso + "Z"
+  return new Date(normalized).toLocaleString("ru-RU")
 }
 
 function copyToClipboard(text: string, label: string) {

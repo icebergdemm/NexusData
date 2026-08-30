@@ -1,3 +1,4 @@
+// @ts-nocheck - документы выведены из эксплуатации
 import { useEffect, useRef, useState } from "react"
 import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -454,5 +455,10 @@ export function OnlyOfficeEditorPage() {
   const { documentId } = useParams()
   const id = Number(documentId)
   if (!documentId || Number.isNaN(id)) return <Navigate to="/documents" replace />
-  return <DocumentEditorInner key={id} documentId={id} />
+  return (
+    <div className="flex h-[60vh] flex-col items-center justify-center gap-2 text-center">
+      <p className="text-lg font-semibold">Упс... Похоже администратор выключил этот кусок кода</p>
+      <p className="text-sm text-muted-foreground">Документы временно выведены из эксплуатации.</p>
+    </div>
+  )
 }

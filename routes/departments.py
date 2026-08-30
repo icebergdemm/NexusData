@@ -641,11 +641,26 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
         if isinstance(pages, dict) and isinstance(pages.get("news"), dict):
             pages["news"] = {**pages["news"], "edit": False}
         level.permissions = raw_perms
+    # Rename – allowed for head/deputy/superuser
+    if "name" in body:
+        new_name = (body.get("name") or "").strip() if isinstance(body.get("name"), str) else ""
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Название обязательно")
+        level.name = new_name
+    # Discord role ID – allowed for head/deputy/superuser
+    if "discord_role_id" in body:
+        level.discord_role_id = (body.get("discord_role_id") or "").strip() or None
     if current_admin.is_superuser:
-        if body.get("name", "").strip() if isinstance(body.get("name"), str) else False:
-            level.name = body["name"].strip()
-        if "discord_role_id" in body:
-            level.discord_role_id = (body.get("discord_role_id") or "").strip() or None
+        # Kind change – superuser only, base level protected
+        if "kind" in body:
+            new_kind = body.get("kind")
+            if new_kind not in ("qualification", "head", "deputy_head", "base"):
+                raise HTTPException(status_code=400, detail="Недопустимый тип уровня доступа")
+            if level.kind == "base" and new_kind != "base":
+                raise HTTPException(status_code=400, detail="Тип базового уровня нельзя изменить")
+            if new_kind == "base" and level.kind != "base":
+                raise HTTPException(status_code=400, detail="Нельзя создать второй базовый уровень через изменение типа")
+            level.kind = new_kind
         if "site_permissions" in body:
             from permissions_registry import PERMISSION_REGISTRY
             raw = body.get("site_permissions") or {}

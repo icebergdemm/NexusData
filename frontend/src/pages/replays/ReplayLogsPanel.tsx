@@ -147,7 +147,7 @@ export function ReplayLogsPanel({ replayId }: { replayId: string }) {
                 <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent className="max-h-72">
                   <SelectItem value="all">Все действия</SelectItem>
-                  {ACTION_TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  {[...ACTION_TYPES].sort((a, b) => a.localeCompare(b)).map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

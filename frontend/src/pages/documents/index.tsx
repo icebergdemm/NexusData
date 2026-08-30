@@ -1,3 +1,4 @@
+// @ts-nocheck - документы выведены из эксплуатации, оригинальный код оставлен как мёртвый для быстрого возврата
 import { useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -162,8 +163,27 @@ function initials(name: string | null | undefined) {
   return (name ?? "?").slice(0, 2).toUpperCase()
 }
 
+function DocsDisabledCard() {
+  return (
+    <Card className="py-0">
+      <CardContent className="py-16 text-center">
+        <p className="text-lg font-semibold">Упс... Похоже администратор выключил этот кусок кода</p>
+        <p className="mt-2 text-sm text-muted-foreground">Документы временно выведены из эксплуатации.</p>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function DocumentsPage() {
-  const navigate = useNavigate()
+  // Документы выведены из эксплуатации — показываем заглушку вместо всего функционала
+  return (
+    <div>
+      <PageHeader title="Документы" description="Общая база документов с совместным доступом и историей версий" icon={NotebookText} />
+      <DocsDisabledCard />
+    </div>
+  )
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: admin } = useCurrentAdmin()
 

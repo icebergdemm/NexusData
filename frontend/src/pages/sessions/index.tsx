@@ -16,7 +16,10 @@ interface SessionRow {
 interface SessionsResponse { sessions: SessionRow[]; can_edit: boolean }
 
 function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString("ru-RU") : "Бессрочно"
+  if (!iso) return "Бессрочно"
+  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
+  const normalized = hasTz ? iso : iso + "Z"
+  return new Date(normalized).toLocaleString("ru-RU")
 }
 
 export function SessionsPage() {

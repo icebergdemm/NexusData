@@ -4873,13 +4873,30 @@ async def remove_label(
     return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
 
+def _has_label_category_perm(admin: AdminUser, action: str) -> bool:
+    """Granular label-category permission with fallback to legacy manage_label_categories."""
+    if check_permission(admin, "players", action):
+        return True
+    # Legacy single key grants all three granular actions
+    return check_permission(admin, "players", "manage_label_categories")
+
+
+def _require_label_category_perm(admin: AdminUser, action: str):
+    if not _has_label_category_perm(admin, action):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+
 @router.get("/adminold/label-categories")
 async def label_categories_page(
     request: Request,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
+    # Viewing list allowed if admin has any of the granular perms or legacy
+    if not any(
+        _has_label_category_perm(current_admin, a)
+        for a in ("create_label_category", "edit_label_category", "delete_label_category")
+    ):
         raise HTTPException(status_code=403)
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
@@ -4899,8 +4916,7 @@ async def create_label_category(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
-        raise HTTPException(status_code=403)
+    _require_label_category_perm(current_admin, "create_label_category")
     await ensure_csrf_or_valid_admin_session(request, db)
     LabelCategoryService(db).create(name.strip(), color, icon, current_admin.id)
     push_flash(request, "success", f"Категория «{name}» создана")
@@ -4914,8 +4930,7 @@ async def delete_label_category(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
-        raise HTTPException(status_code=403)
+    _require_label_category_perm(current_admin, "delete_label_category")
     await ensure_csrf_or_valid_admin_session(request, db)
     ok = LabelCategoryService(db).delete(cat_id)
     push_flash(request, "success" if ok else "error",
@@ -4925,7 +4940,10 @@ async def delete_label_category(
 
 @router.get("/api/v1/admin/label-categories")
 async def api_label_categories_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
+    if not any(
+        _has_label_category_perm(current_admin, a)
+        for a in ("create_label_category", "edit_label_category", "delete_label_category")
+    ) and not check_permission(current_admin, "players", "manage_labels") and not check_permission(current_admin, "players", "view"):
         raise HTTPException(status_code=403)
     cats = LabelCategoryService(db).get_all()
     return {"categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in cats]}
@@ -4933,8 +4951,7 @@ async def api_label_categories_list(db: Session = Depends(get_db), current_admin
 
 @router.post("/api/v1/admin/label-categories")
 async def api_create_label_category(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
-        raise HTTPException(status_code=403)
+    _require_label_category_perm(current_admin, "create_label_category")
     body = await request.json()
     name = (body.get("name") or "").strip()
     if not name:
@@ -4945,8 +4962,7 @@ async def api_create_label_category(request: Request, db: Session = Depends(get_
 
 @router.post("/api/v1/admin/label-categories/{cat_id}")
 async def api_update_label_category(cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
-        raise HTTPException(status_code=403)
+    _require_label_category_perm(current_admin, "edit_label_category")
     body = await request.json()
     cat = LabelCategoryService(db).update(cat_id, body.get("name"), body.get("color"), body.get("icon"))
     if not cat:
@@ -4956,8 +4972,7 @@ async def api_update_label_category(cat_id: int, request: Request, db: Session =
 
 @router.delete("/api/v1/admin/label-categories/{cat_id}")
 async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not check_permission(current_admin, "players", "manage_label_categories"):
-        raise HTTPException(status_code=403)
+    _require_label_category_perm(current_admin, "delete_label_category")
     ok = LabelCategoryService(db).delete(cat_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Категория не найдена")

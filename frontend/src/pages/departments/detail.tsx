@@ -636,6 +636,92 @@ function CreateAccessLevelDialog({ open, onOpenChange, department, isSuperuser }
   )
 }
 
+function EditAccessLevelDialog({ open, onOpenChange, department, level, isSuperuser }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  department: DepartmentDetail
+  level: DepartmentAccessLevel
+  isSuperuser: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [name, setName] = useState(level.name)
+  const [roleId, setRoleId] = useState(level.discord_role_id ?? "")
+  const [kind, setKind] = useState<DepartmentAccessLevel["kind"]>(level.kind)
+
+  useEffect(() => {
+    if (open) {
+      setName(level.name)
+      setRoleId(level.discord_role_id ?? "")
+      setKind(level.kind)
+    }
+  }, [open, level])
+
+  const updateMutation = useMutation({
+    mutationFn: () => {
+      const body: Record<string, unknown> = {}
+      if (name.trim() !== level.name) body.name = name.trim()
+      const normalizedRole = roleId.trim() || ""
+      const currentRole = level.discord_role_id ?? ""
+      if (normalizedRole !== currentRole) body.discord_role_id = normalizedRole || null
+      if (isSuperuser && kind !== level.kind) body.kind = kind
+      if (Object.keys(body).length === 0) return Promise.resolve({ status: "ok" } as unknown as { status: string; access_level: DepartmentAccessLevel })
+      return departmentsApi.accessLevels.update(department.id, level.id, body as never)
+    },
+    onSuccess: () => {
+      toast.success("Уровень доступа обновлён")
+      queryClient.invalidateQueries({ queryKey: ["department", department.id] })
+      onOpenChange(false)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const isBase = level.kind === "base"
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Редактировать уровень «{level.name}»</DialogTitle>
+          <DialogDescription>Можно изменить название, Discord-роль и тип уровня доступа.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="mb-1.5 block">Название</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Название уровня" />
+          </div>
+          <div>
+            <Label className="mb-1.5 block">ID роли Discord</Label>
+            <Input value={roleId} onChange={(e) => setRoleId(e.target.value)} placeholder="123456789012345678" />
+            <p className="mt-1 text-[11px] text-muted-foreground">Оставьте пустым, чтобы отвязать роль Discord от уровня.</p>
+          </div>
+          {isSuperuser && (
+            <div>
+              <Label className="mb-1.5 block">Тип</Label>
+              {isBase ? (
+                <p className="rounded-md border bg-muted px-3 py-2 text-sm text-muted-foreground">Базовый уровень — тип изменить нельзя</p>
+              ) : (
+                <Select value={kind} onValueChange={(v) => setKind(v as DepartmentAccessLevel["kind"])}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="qualification">Квалификация</SelectItem>
+                    <SelectItem value="head">Глава отдела</SelectItem>
+                    <SelectItem value="deputy_head">Заместитель главы отдела</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          )}
+          {!isSuperuser && <p className="text-xs text-muted-foreground">Тип уровня может изменить только суперпользователь.</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>Отмена</Button>
+          <Button disabled={!name.trim() || updateMutation.isPending} onClick={() => updateMutation.mutate()}>Сохранить</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function AddReprimandDialog({ open, onOpenChange, department, member }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -837,6 +923,7 @@ export function DepartmentDetailPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [createLevelOpen, setCreateLevelOpen] = useState(false)
   const [permsTarget, setPermsTarget] = useState<DepartmentAccessLevel | null>(null)
+  const [editLevelTarget, setEditLevelTarget] = useState<DepartmentAccessLevel | null>(null)
   const [deleteLevelTarget, setDeleteLevelTarget] = useState<DepartmentAccessLevel | null>(null)
   // Restores whichever tab a document/link sent us back to (see
   // OnlyOfficeEditorPage's "returnTo" navigation state) instead of always
@@ -974,6 +1061,9 @@ export function DepartmentDetailPage() {
                       </span>
                       {canManage && (
                         <div className="flex items-center gap-1">
+                          <Button size="icon-xs" variant="ghost" onClick={() => setEditLevelTarget(l)} title="Переименовать / сменить роль и тип">
+                            <Pencil className="size-3.5" />
+                          </Button>
                           <Button size="icon-xs" variant="ghost" onClick={() => setPermsTarget(l)} title="Настроить права">
                             <Settings2 className="size-3.5" />
                           </Button>
@@ -1046,6 +1136,15 @@ export function DepartmentDetailPage() {
 
       {canManage && <EditDepartmentDialog open={editOpen} onOpenChange={setEditOpen} department={data} isSuperuser={isSuperuser} />}
       {canManage && <CreateAccessLevelDialog open={createLevelOpen} onOpenChange={setCreateLevelOpen} department={data} isSuperuser={isSuperuser} />}
+      {editLevelTarget && (
+        <EditAccessLevelDialog
+          open={!!editLevelTarget}
+          onOpenChange={(o) => !o && setEditLevelTarget(null)}
+          department={data}
+          level={editLevelTarget}
+          isSuperuser={isSuperuser}
+        />
+      )}
       {permsTarget && (
         <AccessLevelPermissionsDialog
           open={!!permsTarget}
