@@ -184,7 +184,6 @@ export function AuditPage() {
                 <Input type="datetime-local" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-44" />
               </div>
             </div>
-            <span className="ml-auto text-[11px] text-muted-foreground">Мощный поиск: ищет по action, имени админа и JSON-деталям (CAST → TEXT) на сервере, а не только на загруженной странице</span>
           </div>
         </CardContent>
       </Card>
