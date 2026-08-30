@@ -1068,6 +1068,12 @@
     players.sort((a,b)=>a.name.localeCompare(b.name,"ru"));
 
     const timelineEvents=[];
+    // Damage frames also carry afflictions, status ticks and environmental
+    // harm, which previously flooded the investigation timeline. Preserve
+    // only unambiguous PvP: two different live human entities. One physical
+    // hit can contain several damage components, so merge them inside a
+    // short bucket while keeping the exact attacker and victim.
+    const pvpDamageBuckets=new Map();
     demo.chat.forEach((chat,index)=>timelineEvents.push({
       id:"chat:"+index,offset_ms:chat.timeMs,player_name:chat.author||nameOf(chat.senderId,chat.timeMs),
       action_type:"chat",details:chat.text||"",source:"demo_chat",lane:"communication",item:null,
@@ -1077,10 +1083,20 @@
       let action=null,playerName=subject,details=event.text||"",lane="system";
       // Kinds 10/11 are renderer telemetry: the recorder can emit dozens of
       // damage/shot frames per second for afflictions, projectiles and status
-      // effects. They remain available to the visual replay renderer above,
-      // but are not discrete audit-log actions and must not flood the V2
-      // investigation timeline. Authoritative combat rows come from the
-      // indexed server text logs.
+      // effects. Kind 10 is admitted above only for grouped human-to-human
+      // damage; everything else remains visual-only. Authoritative named
+      // combat rows still come from the indexed server text logs.
+      if(event.kind===10){
+        const sourceSpawn=spawnAt(event.subjectId,event.timeMs),targetSpawn=spawnAt(event.targetId,event.timeMs);
+        const amount=Number.isFinite(event.amount)?Math.max(0,event.amount):0;
+        if(event.subjectId!==event.targetId&&amount>0&&sourceSpawn?.species==="human"&&targetSpawn?.species==="human"&&sourceSpawn.name&&targetSpawn.name){
+          const bucket=Math.floor(event.timeMs/250),key=event.subjectId+":"+event.targetId+":"+bucket;
+          const existing=pvpDamageBuckets.get(key);
+          if(existing){existing.amount+=amount;existing.components++;}
+          else pvpDamageBuckets.set(key,{timeMs:event.timeMs,attacker:sourceSpawn.name,target:targetSpawn.name,amount,components:1});
+        }
+        return;
+      }
       if(event.kind===1){action="death";playerName=target||subject;lane="combat";if(!details)details=subject?"Погиб · источник: "+subject:"Погиб";}
       else if(event.kind===2){action="attack";lane="combat";if(!details)details=target?"Убийство · цель: "+target:"Убийство";}
       else if(event.kind===3){action="used";lane="inventory";if(!details)details="Использование предмета";}
@@ -1093,6 +1109,15 @@
         details,source:"demo_event",lane,item:null,
       });
     });
+    let pvpIndex=0;
+    for(const event of pvpDamageBuckets.values()){
+      const rounded=Math.round(event.amount*10)/10;
+      timelineEvents.push({
+        id:"demo-pvp:"+(pvpIndex++),offset_ms:event.timeMs,player_name:event.attacker,
+        action_type:"damage",details:"Нанёс "+rounded.toLocaleString("ru-RU")+" урона · цель: "+event.target,
+        source:"demo_pvp",lane:"combat",item:null,target_name:event.target,
+      });
+    }
     demo.spawnEvents.forEach((event,index)=>{
       // Creature/NPC lifecycle is useful on the map but overwhelms a player
       // investigation timeline. Human lifecycles remain as navigation anchors.

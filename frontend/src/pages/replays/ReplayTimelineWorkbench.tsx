@@ -73,7 +73,7 @@ export interface TimelineEvent {
   action_type: string
   details: string
   source_file?: string | null
-  source: "server_log" | "demo_chat" | "demo_event" | "demo_spawn"
+  source: "server_log" | "demo_chat" | "demo_event" | "demo_pvp" | "demo_spawn"
   lane: TimelineLane
   item?: TimelineItem | null
   aggregate_count?: number

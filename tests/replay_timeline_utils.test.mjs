@@ -52,6 +52,7 @@ test("short windows remain exact while unavailable overviews stay aggregated", (
 test("investigation timeline rejects high-frequency renderer telemetry", () => {
   assert.equal(isInvestigationTimelineEvent({ source: "demo_event", action_type: "damage" }), false)
   assert.equal(isInvestigationTimelineEvent({ source: "demo_event", action_type: "shot" }), false)
+  assert.equal(isInvestigationTimelineEvent({ source: "demo_pvp", action_type: "damage" }), true)
   assert.equal(isInvestigationTimelineEvent({ source: "demo_event", action_type: "picked_up" }), true)
   assert.equal(isInvestigationTimelineEvent({ source: "demo_chat", action_type: "chat" }), true)
   assert.equal(isInvestigationTimelineEvent({ source: "server_log", action_type: "damage" }), true)
