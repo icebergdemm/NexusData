@@ -114,6 +114,13 @@ ACTION_PATTERNS = [
     (re.compile(r'^(.+?) is (?:not )?ready to start the game\.$'), 'ready'),
     (re.compile(r'^Игрок (.+?) сменил имя на (.+)\.$'), 'name_change'),
     (re.compile(r'^Пользователь (.+?) ранее использовал имя "(.+?)" на сервере\.$'), 'name_history'),
+    # Client-side Lua/.NET errors are reported as a sentence beginning with
+    # the player name.  Without an explicit pattern the final ``Name: text``
+    # fallback can treat everything before the first colon as a nickname,
+    # which polluted autocomplete with values such as
+    # ``Player has reported an error``.  Keep the event searchable under the
+    # real actor while retaining the complete diagnostic text in details.
+    (re.compile(r'^(.+?) has reported an error(?:[:.]?\s*(.*))?$'), 'client_error'),
     # Terminal/computer text entry — functionally chat, just through a
     # device instead of the chat box; kept as its own type so it's still
     # distinguishable, but counted as a player action (see PLAYER_ACTIONS).
@@ -569,6 +576,7 @@ _log_refresh_interval = 60  # 1 minute
 # длинных вариантов с текстом ``was kicked because ...``.
 _AUTO_KICK_PLAYER_SEPARATOR = " was kicked because "
 _AUTO_KICK_PLAYER_REPAIR_KEY = "repair_auto_kick_player_v1"
+_CLIENT_ERROR_PLAYER_SEPARATOR = " has reported an error"
 
 # Upper bound for search result counts (see search_logs). Text filters use a
 # leading-wildcard LIKE that no index can serve, so an exact COUNT(*) means a
@@ -683,7 +691,7 @@ def _init_schema(conn: sqlite3.Connection):
 
 
 def _normalise_stored_player_name(name: str) -> str:
-    """Возвращает настоящее имя из известного legacy-значения автокика.
+    """Возвращает настоящее имя из известных legacy-значений парсера.
 
     Это дешёвая защита для autocomplete на случай, если одноразовый ремонт
     БД временно не смог взять write-lock. Новые строки парсер уже сохраняет
@@ -691,6 +699,8 @@ def _normalise_stored_player_name(name: str) -> str:
     """
     if _AUTO_KICK_PLAYER_SEPARATOR in name:
         return name.split(_AUTO_KICK_PLAYER_SEPARATOR, 1)[0].strip()
+    if _CLIENT_ERROR_PLAYER_SEPARATOR in name:
+        return name.split(_CLIENT_ERROR_PLAYER_SEPARATOR, 1)[0].strip()
     return name.strip()
 
 

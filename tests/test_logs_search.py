@@ -183,6 +183,50 @@ class LogSearchTests(unittest.TestCase):
         self.assertEqual(events[0].player_name, "Ст. Матрос Энджел Шарнхорст")
         self.assertEqual(events[0].action_type, "kick")
 
+    def test_client_error_parser_keeps_only_the_player_name(self):
+        player = "Старшина 2-ст Александр Гром"
+        content = (
+            "[8/30/2026 3:18:08 AM] "
+            f"{player} has reported an error: System.InvalidOperationException"
+        )
+
+        events, _player_map = services_logs.parse_log_content(
+            content,
+            server_name="ASPER1",
+            source_file="client-error.log",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].player_name, player)
+        self.assertEqual(events[0].action_type, "client_error")
+        self.assertIn("System.InvalidOperationException", events[0].details)
+
+    def test_player_autocomplete_normalises_legacy_client_error_name(self):
+        player = "Старшина 2-ст Александр Гром"
+        self.conn.executemany(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) "
+            "VALUES (?,?,?,?,?,?)",
+            [
+                (1, "ASPER1", player, "radio", "обычное событие", "legacy-error.log"),
+                (
+                    2,
+                    "ASPER1",
+                    f"{player} has reported an error",
+                    "chat",
+                    "legacy client error",
+                    "legacy-error.log",
+                ),
+            ],
+        )
+        self.conn.commit()
+        services_logs._players_cache.clear()
+        services_logs._players_cache_ts.clear()
+
+        players = services_logs.get_unique_players("ASPER1")
+
+        self.assertEqual(players.count(player), 1)
+        self.assertFalse(any("has reported an error" in name for name in players))
+
     def test_legacy_network_autokicks_are_repaired_and_deduplicated(self):
         separator = services_logs._AUTO_KICK_PLAYER_SEPARATOR
         player = "Ст. Матрос Энджел Шарнхорст"

@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { IS_V2 } from "@/lib/ui-version"
 
 export function PlayerNamesFilter({ names, onChange, server, scope, className }: {
   names: string[]
@@ -51,13 +52,14 @@ export function PlayerNamesFilter({ names, onChange, server, scope, className }:
           type="button"
           className={cn(
             "flex min-h-9 min-w-44 max-w-72 flex-wrap items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-left text-sm shadow-xs focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+            IS_V2 && "min-w-0 max-w-full",
             className,
           )}
           onClick={() => setOpen(true)}
         >
           {names.map((n) => (
-            <Badge key={n} variant="secondary" className="gap-1">
-              {n}
+            <Badge key={n} variant="secondary" className={cn("gap-1", IS_V2 && "max-w-full min-w-0")}>
+              <span className={cn(IS_V2 && "min-w-0 truncate")} title={n}>{n}</span>
               <span
                 role="button"
                 tabIndex={-1}
@@ -71,7 +73,10 @@ export function PlayerNamesFilter({ names, onChange, server, scope, className }:
           {!names.length && <span className="text-muted-foreground">Выберите игрока…</span>}
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 p-0" align="start">
+      <PopoverContent
+        className={cn("w-64 p-0", IS_V2 && "w-[var(--radix-popover-trigger-width)] min-w-72")}
+        align="start"
+      >
         <div className="border-b p-1.5">
           <input
             autoFocus

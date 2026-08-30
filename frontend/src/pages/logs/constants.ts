@@ -20,10 +20,12 @@ export const ACTION_TYPES = [
   "structure", "kick", "name_change", "connection", "radio", "other",
   "threw", "repair_failed", "attached", "command_denied", "terminal", "joined", "ready",
   "respawn", "name_history", "talent_gained", "looted_body", "ban",
+  "client_error",
 ]
 
 export const ACTION_COLOR: Record<string, string> = {
   death: "text-destructive", kick: "text-destructive", attack: "text-destructive", ban: "text-destructive",
+  client_error: "text-destructive",
   login: "text-success", connection: "text-success", joined: "text-success", ready: "text-success",
   logout: "text-muted-foreground",
   chat: "text-info", radio: "text-info", terminal: "text-info",

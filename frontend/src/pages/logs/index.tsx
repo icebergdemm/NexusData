@@ -3,12 +3,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   CalendarClock,
+  ChevronLeft,
+  ChevronRight,
   Filter,
   LoaderCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   RotateCcw,
   ScrollText,
   Search,
+  X,
 } from "lucide-react"
 import {
   Card,
@@ -35,6 +40,8 @@ import { api, ApiError } from "@/lib/api"
 import { ACTION_COLOR, ACTION_TYPES, type LogEvent } from "./constants"
 import { PlayerNamesFilter } from "./player-filter"
 import { useCurrentAdmin } from "@/lib/auth"
+import { IS_V2 } from "@/lib/ui-version"
+import { cn } from "@/lib/utils"
 
 interface LogsResponse {
   events: LogEvent[]
@@ -137,6 +144,7 @@ export function LogsPage() {
   // OFFSET и просто снимает один курсор со стека.
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
+  const [v2FiltersOpen, setV2FiltersOpen] = useState(false)
   const queryClient = useQueryClient()
 
   const appliedActionType = appliedFilters.consoleOnly ? "console" : appliedFilters.actionType
@@ -218,6 +226,7 @@ export function LogsPage() {
     })
     setDraftFilters((current) => ({ ...current, search: trimmedSearch }))
     setCursorStack([null])
+    setV2FiltersOpen(false)
   }
 
   const resetFilters = () => {
@@ -241,6 +250,17 @@ export function LogsPage() {
     setCursorStack([null])
   }
 
+  const applyFiltersImmediately = (patch: Partial<LogFilters>) => {
+    setDraftFilters((current) => ({ ...current, ...patch }))
+    setAppliedFilters((current) => ({ ...current, ...patch }))
+    setCursorStack([null])
+  }
+
+  const removeAppliedPlayer = (name: string) => {
+    const playerNames = appliedFilters.playerNames.filter((current) => current !== name)
+    applyFiltersImmediately({ playerNames })
+  }
+
   const goToNextPage = () => {
     if (!data?.next_cursor) return
     setCursorStack((current) => [...current, data.next_cursor])
@@ -255,6 +275,455 @@ export function LogsPage() {
     : data
       ? `${data.events.length} на странице${data.has_more ? " · есть ещё" : ""}`
       : ""
+
+  if (IS_V2) {
+    const categoryLabel = appliedFilters.category === "player"
+      ? "Игровые"
+      : appliedFilters.category === "technical"
+        ? "Технические"
+        : ""
+    const actionLabel = appliedFilters.consoleOnly
+      ? "Только консоль"
+      : appliedFilters.actionType !== "all"
+        ? appliedFilters.actionType
+        : ""
+    const activeChips: Array<{ key: string; label: string; onRemove: () => void }> = []
+
+    if (appliedFilters.server !== "all") {
+      activeChips.push({
+        key: "server",
+        label: `Сервер: ${appliedFilters.server}`,
+        onRemove: () => applyFiltersImmediately({ server: "all" }),
+      })
+    }
+    if (actionLabel) {
+      activeChips.push({
+        key: "action",
+        label: `Действие: ${actionLabel}`,
+        onRemove: () => applyFiltersImmediately({ actionType: "all", consoleOnly: false }),
+      })
+    }
+    if (categoryLabel) {
+      activeChips.push({
+        key: "category",
+        label: `Категория: ${categoryLabel}`,
+        onRemove: () => applyFiltersImmediately({ category: "all" }),
+      })
+    }
+    if (appliedFilters.search) {
+      activeChips.push({
+        key: "search",
+        label: `Текст: ${appliedFilters.search}`,
+        onRemove: () => applyFiltersImmediately({ search: "" }),
+      })
+    }
+    appliedFilters.playerNames.forEach((name) => {
+      activeChips.push({
+        key: `player:${name}`,
+        label: `Игрок: ${name}`,
+        onRemove: () => removeAppliedPlayer(name),
+      })
+    })
+    if (appliedFilters.timeFrom || appliedFilters.timeTo) {
+      activeChips.push({
+        key: "period",
+        label: `Период: ${appliedFilters.timeFrom ? new Date(appliedFilters.timeFrom).toLocaleString("ru-RU") : "…"} — ${appliedFilters.timeTo ? new Date(appliedFilters.timeTo).toLocaleString("ru-RU") : "…"}`,
+        onRemove: () => applyFiltersImmediately({ timeFrom: "", timeTo: "" }),
+      })
+    }
+
+    return (
+      <div className="-m-4 flex min-h-[calc(100dvh-3.5rem)] flex-col bg-background sm:-m-5 lg:h-[calc(100dvh-3.5rem)] lg:overflow-hidden">
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center border border-border">
+              <ScrollText className="size-4" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-semibold uppercase tracking-[0.08em]">Логи сервера</h1>
+              <p className="truncate text-xs text-muted-foreground">
+                Поиск действий игроков, игровых событий и технических записей
+              </p>
+            </div>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="lg:hidden"
+              onClick={() => setV2FiltersOpen((current) => !current)}
+              aria-expanded={v2FiltersOpen}
+            >
+              {v2FiltersOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
+              Фильтры{appliedCount > 0 ? ` (${appliedCount})` : ""}
+            </Button>
+            {admin?.is_superuser && (
+              <Button variant="outline" size="sm" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+                <RefreshCw className={cn("size-4", refresh.isPending && "animate-spin")} />
+                <span className="hidden sm:inline">Обновить из SFTP</span>
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {stats && Object.keys(stats).length > 0 && (
+          <div className="flex shrink-0 overflow-x-auto border-b">
+            {Object.entries(stats).map(([serverName, stat]) => (
+              <div key={serverName} className="flex min-w-72 items-center gap-4 border-r px-4 py-2.5 text-xs">
+                <span className="font-semibold">{serverName}</span>
+                <span className="font-mono text-muted-foreground">{stat.event_count.toLocaleString("ru-RU")} событий</span>
+                <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+                  {stat.last_refresh ? new Date(stat.last_refresh).toLocaleString("ru-RU") : "Не обновлялось"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid min-h-0 flex-1 lg:grid-cols-[21rem_minmax(0,1fr)]">
+          <aside
+            className={cn(
+              "border-b bg-background lg:block lg:min-h-0 lg:border-r lg:border-b-0",
+              v2FiltersOpen ? "block" : "hidden",
+            )}
+          >
+            <form onSubmit={applyFilters} className="flex h-full min-h-0 flex-col">
+              <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Filter className="size-4" />
+                  <span className="text-xs font-semibold uppercase tracking-[0.12em]">Фильтры</span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  {hasPendingChanges && <span>Есть изменения</span>}
+                  {appliedCount > 0 && <Badge variant="outline">{appliedCount}</Badge>}
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+                {searchIndex?.available && !searchIndex.ready && (
+                  <div className="border border-warning/40 px-3 py-2 text-xs text-muted-foreground">
+                    Поисковый индекс готов на {searchIndex.progress_pct}%. Текстовый поиск может отвечать медленнее.
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="logs-search-v2">Текст события</Label>
+                  <SearchInput
+                    id="logs-search-v2"
+                    value={draftFilters.search}
+                    onChange={(event) => updateDraft("search", event.target.value)}
+                    placeholder="wire, название предмета…"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label>Игроки</Label>
+                  <PlayerNamesFilter
+                    names={draftFilters.playerNames}
+                    onChange={(names) => updateDraft("playerNames", names)}
+                    server={draftFilters.server}
+                    scope={draftFilters.playerScope}
+                    className="w-full max-w-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Режим игрока</Label>
+                    <Select
+                      value={draftFilters.playerScope}
+                      onValueChange={(value: PlayerScope) => updateDraft("playerScope", value)}
+                    >
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="actor">Действия игрока</SelectItem>
+                        <SelectItem value="related">С упоминаниями</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Сервер</Label>
+                    <Select value={draftFilters.server} onValueChange={(value) => updateDraft("server", value)}>
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Все серверы</SelectItem>
+                        <SelectItem value="ASPER1">ASPER1</SelectItem>
+                        <SelectItem value="ASPER2">ASPER2</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Тип действия</Label>
+                    <Select
+                      value={draftFilters.actionType}
+                      onValueChange={(value) => updateDraft("actionType", value)}
+                      disabled={draftFilters.consoleOnly}
+                    >
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Все действия</SelectItem>
+                        {ACTION_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Категория</Label>
+                    <Select value={draftFilters.category} onValueChange={(value) => updateDraft("category", value)}>
+                      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Все категории</SelectItem>
+                        <SelectItem value="player">Игровые</SelectItem>
+                        <SelectItem value="technical">Технические</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="logs-time-from-v2">С даты</Label>
+                    <Input
+                      id="logs-time-from-v2"
+                      type="datetime-local"
+                      value={draftFilters.timeFrom}
+                      onChange={(event) => updateDraft("timeFrom", event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="logs-time-to-v2">По дату</Label>
+                    <Input
+                      id="logs-time-to-v2"
+                      type="datetime-local"
+                      value={draftFilters.timeTo}
+                      onChange={(event) => updateDraft("timeTo", event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <label className="flex min-h-9 items-center gap-2 border border-input px-3 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={draftFilters.consoleOnly}
+                    onCheckedChange={(checked) => updateDraft("consoleOnly", checked === true)}
+                  />
+                  Только консольные команды
+                </label>
+
+                <div className="space-y-2 border-t pt-4">
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <CalendarClock className="size-4" /> Быстрый период
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {TIME_PRESETS.map((preset) => (
+                      <Button
+                        key={preset.hours}
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        disabled={isFetching}
+                        onClick={() => applyTimePreset(preset.hours)}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="w-full"
+                    disabled={isFetching || (
+                      !draftFilters.timeFrom
+                      && !draftFilters.timeTo
+                      && !appliedFilters.timeFrom
+                      && !appliedFilters.timeTo
+                    )}
+                    onClick={() => applyTimePreset(null)}
+                  >
+                    Всё время
+                  </Button>
+                </div>
+
+                <p className="border-t pt-3 text-[11px] leading-4 text-muted-foreground">
+                  {draftFilters.playerScope === "actor"
+                    ? "Точное имя ищется по быстрому индексу."
+                    : "Упоминания также ищутся внутри текста и могут потребовать ограничить период."}
+                  {draftFilters.consoleOnly && ` Выбран тип: ${draftActionType}.`}
+                </p>
+              </div>
+
+              <div className="grid shrink-0 grid-cols-2 gap-2 border-t bg-background p-3">
+                <Button type="button" variant="outline" onClick={resetFilters} disabled={isFetching}>
+                  <RotateCcw className="size-4" /> Сбросить
+                </Button>
+                <Button type="submit" disabled={isFetching || !hasPendingChanges}>
+                  {isFetching ? <LoaderCircle className="size-4 animate-spin" /> : <Search className="size-4" />}
+                  Применить
+                </Button>
+              </div>
+            </form>
+          </aside>
+
+          <section className="flex min-h-0 min-w-0 flex-col">
+            <div className="shrink-0 border-b px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-1 text-xs font-semibold uppercase tracking-[0.12em]">Результаты</span>
+                {resultLabel && <Badge variant="secondary">{resultLabel}</Badge>}
+                {isFetching && (
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <LoaderCircle className="size-3.5 animate-spin" /> Выполняется запрос
+                  </span>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="ml-auto"
+                  onClick={() => refetch()}
+                  disabled={isFetching}
+                  aria-label="Обновить результаты"
+                >
+                  <RefreshCw className={cn("size-4", isFetching && "animate-spin")} />
+                </Button>
+              </div>
+              <div className="mt-2 flex min-h-7 flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[11px] text-muted-foreground">Активные фильтры</span>
+                {activeChips.map((chip) => (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    className="flex max-w-72 items-center gap-1.5 border border-border bg-muted/35 px-2 py-1 text-[11px] hover:bg-accent"
+                    onClick={chip.onRemove}
+                    title={`Убрать фильтр «${chip.label}»`}
+                  >
+                    <span className="truncate">{chip.label}</span>
+                    <X className="size-3 shrink-0" />
+                  </button>
+                ))}
+                {!activeChips.length && <span className="text-[11px] text-muted-foreground">Нет</span>}
+                {activeChips.length > 1 && (
+                  <button
+                    type="button"
+                    className="ml-1 text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                    onClick={resetFilters}
+                  >
+                    Сбросить все
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isError && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-destructive/50 px-4 py-3 text-sm">
+                <div>
+                  <p className="font-medium text-destructive">Не удалось выполнить поиск</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {logSearchErrorMessage(error)}. Ниже оставлены строки предыдущего запроса.
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => refetch()}>Повторить</Button>
+              </div>
+            )}
+
+            <div className="min-h-0 flex-1 overflow-auto">
+              {isLoading ? (
+                <div className="space-y-2 p-4">
+                  {Array.from({ length: 12 }).map((_, index) => <Skeleton key={index} className="h-9" />)}
+                </div>
+              ) : (
+                <Table className="min-w-[980px]">
+                  <TableHeader className="sticky top-0 z-10 bg-background">
+                    <TableRow>
+                      <TableHead className="w-44 border-r pl-4">Время</TableHead>
+                      <TableHead className="w-24 border-r">Сервер</TableHead>
+                      <TableHead className="w-60 border-r">Игрок</TableHead>
+                      <TableHead className="w-40 border-r">Действие</TableHead>
+                      <TableHead className="pr-4">Детали</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody className={isFetching ? "opacity-60" : undefined}>
+                    {data?.events.map((logEvent, index) => (
+                      <TableRow key={logEvent.event_id ?? `${logEvent.timestamp}-${logEvent.server_name}-${index}`}>
+                        <TableCell className="border-r pl-4 font-mono text-[11px] whitespace-nowrap text-muted-foreground">
+                          {new Date(logEvent.timestamp).toLocaleString("ru-RU")}
+                        </TableCell>
+                        <TableCell className="border-r"><Badge variant="outline">{logEvent.server_name ?? "-"}</Badge></TableCell>
+                        <TableCell className="max-w-60 truncate border-r text-xs font-medium" title={logEvent.player_name ?? undefined}>
+                          {logEvent.player_name ? (
+                            logEvent.player_id ? (
+                              <button
+                                type="button"
+                                className="text-left underline-offset-2 hover:underline"
+                                onClick={() => setSummaryPlayerId(logEvent.player_id!)}
+                              >
+                                {logEvent.player_name}
+                              </button>
+                            ) : logEvent.player_name
+                          ) : "-"}
+                        </TableCell>
+                        <TableCell className="border-r">
+                          <span className={cn("font-mono text-[11px]", ACTION_COLOR[logEvent.action_type] ?? "text-foreground")}>
+                            {logEvent.action_type}
+                          </span>
+                        </TableCell>
+                        <TableCell className="min-w-[420px] whitespace-normal break-words pr-4 text-xs leading-5 text-muted-foreground">
+                          {logEvent.details ?? "-"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!data?.events.length && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="py-16 text-center text-muted-foreground">
+                          Событий по выбранным условиям не найдено
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+
+            <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-t px-4 py-2">
+              <span className="text-xs text-muted-foreground">По 100 записей на странице</span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  disabled={pageNumber <= 1 || isFetching}
+                  onClick={goToPreviousPage}
+                  aria-label="Предыдущая страница"
+                >
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <span className="min-w-24 text-center font-mono text-xs">Страница {pageNumber}</span>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  disabled={!data?.next_cursor || isFetching}
+                  onClick={goToNextPage}
+                  aria-label="Следующая страница"
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {data?.has_more ? "Есть следующая страница" : "Конец выборки"}
+              </span>
+            </div>
+          </section>
+        </div>
+
+        <PlayerSummaryDialog
+          playerId={summaryPlayerId}
+          open={summaryPlayerId != null}
+          onOpenChange={(open) => !open && setSummaryPlayerId(null)}
+        />
+      </div>
+    )
+  }
 
   return (
     <div>
