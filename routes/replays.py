@@ -10,8 +10,10 @@ which unpacks and parses it client-side (minimal server load).
 import os
 import secrets
 import logging
-from datetime import datetime, timedelta
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import (
     APIRouter, Depends, HTTPException, Request, Query, Form, UploadFile, File,
@@ -28,6 +30,7 @@ from config import get_settings
 from models import AdminUser, AdminSession, RoundEvent, RoundReplay
 import services_replays
 from services_replays import ReplayService
+from services_replays import classify_replay_timeline_lane, extract_replay_timeline_item
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -53,6 +56,64 @@ def _fmt_size(n: Optional[int]) -> str:
             return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
         n /= 1024
     return f"{n:.1f} TB"
+
+
+def _normalise_server_name(value: Optional[str]) -> str:
+    return (value or "").strip().casefold()
+
+
+def _replay_log_timezone_name(server_name: Optional[str], config=None) -> str:
+    """Return the IANA timezone used by one server's text log clock.
+
+    The helper accepts an explicit config object to stay deterministic and
+    straightforward to unit-test. Empty per-server overrides intentionally
+    inherit the project-wide default.
+    """
+    config = config or settings
+    default_name = (getattr(config, "logs_default_timezone", "") or "UTC").strip()
+    requested_server = _normalise_server_name(server_name)
+    for index in (1, 2):
+        configured_server = _normalise_server_name(
+            getattr(config, f"sftp_server_{index}_name", "")
+        )
+        override = (
+            getattr(config, f"sftp_server_{index}_logs_timezone", "") or ""
+        ).strip()
+        if requested_server and requested_server == configured_server and override:
+            return override
+    return default_name or "UTC"
+
+
+def _utc_anchor_to_log_clock(
+    value: datetime,
+    server_name: Optional[str],
+    config=None,
+) -> tuple[datetime, str]:
+    """Convert a UTC replay anchor to the naive wall clock used in text logs.
+
+    Database replay timestamps are historically naive UTC. Aware timestamps
+    are accepted as well and normalised to UTC first. The returned datetime is
+    deliberately naive because imported Barotrauma log timestamps are stored
+    in that legacy form.
+    """
+    timezone_name = _replay_log_timezone_name(server_name, config)
+    try:
+        log_timezone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning(
+            "replay.logs.invalid_timezone server=%r timezone=%r fallback=UTC",
+            server_name,
+            timezone_name,
+        )
+        timezone_name = "UTC"
+        log_timezone = ZoneInfo("UTC")
+
+    utc_value = (
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None
+        else value.astimezone(timezone.utc)
+    )
+    return utc_value.astimezone(log_timezone).replace(tzinfo=None), timezone_name
 
 
 templates.env.globals.update(fmt_size=_fmt_size)
@@ -818,6 +879,49 @@ def _round_for_replay(db: Session, replay) -> Optional[RoundEvent]:
     return None
 
 
+def _timeline_unavailable_payload(
+    reason: str,
+    *,
+    round_id: Optional[int] = None,
+    server_name: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    ended_at: Optional[datetime] = None,
+    duration_ms: Optional[int] = None,
+    duration_source: Optional[str] = None,
+    anchor_source: Optional[str] = None,
+    log_timezone: Optional[str] = None,
+    window_from_ms: int = 0,
+    window_to_ms: Optional[int] = None,
+) -> dict:
+    """Return one stable contract when replay logs cannot be queried.
+
+    The demo remains playable, but clients can distinguish an unavailable
+    index from a valid timeline containing zero events.
+    """
+    return {
+        "status": "unavailable",
+        "events": [],
+        "overview": [],
+        "total": 0,
+        "total_is_capped": False,
+        "has_more": False,
+        "loaded": 0,
+        "round_id": round_id,
+        "server_name": server_name,
+        "started_at": started_at.isoformat() if started_at else None,
+        "ended_at": ended_at.isoformat() if ended_at else None,
+        "duration_ms": duration_ms,
+        "duration_source": duration_source,
+        "anchor_source": anchor_source,
+        "log_timezone": log_timezone,
+        "window_from_ms": window_from_ms,
+        "window_to_ms": duration_ms if window_to_ms is None else window_to_ms,
+        "players": [],
+        "action_types": [],
+        "unavailable_reason": reason,
+    }
+
+
 @panel_router.get("/api/v1/admin/replays/{replay_id}/logs")
 async def api_replay_logs(
     request: Request,
@@ -826,7 +930,26 @@ async def api_replay_logs(
     action_type: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    limit: int = Query(2000, ge=100, le=5000),
+    # Preserve the classic panel's historical default; V2 requests its own
+    # explicit window limits (100 overview / 10,000 exact rows).
+    limit: int = Query(2000, ge=100, le=25000),
+    from_ms: int = Query(0, ge=0, le=12 * 60 * 60 * 1000),
+    to_ms: Optional[int] = Query(None, ge=1, le=12 * 60 * 60 * 1000),
+    overview_only: bool = Query(
+        False,
+        description="Вернуть агрегированные маркеры всего раунда без строк логов.",
+    ),
+    duration_ms: Optional[int] = Query(
+        None,
+        ge=1,
+        le=12 * 60 * 60 * 1000,
+        description="Точная длительность, полученная браузером после разбора демо.",
+    ),
+    player_scope: str = Query(
+        "related",
+        pattern="^(actor|related)$",
+        description="actor — только действия игрока; related — также упоминания в тексте.",
+    ),
     db: Session = Depends(get_db),
 ):
     """Логи сервера за время раунда этой демозаписи, с привязкой к таймингу.
@@ -850,77 +973,277 @@ async def api_replay_logs(
     replay = ReplayService(db).get_by_id(replay_id)
     if not replay:
         raise HTTPException(status_code=404, detail="Реплей не найден")
+    if not replay.server_name:
+        resolved_duration = duration_ms or replay.duration_ms
+        return JSONResponse(_timeline_unavailable_payload(
+            "У записи не указан сервер — серверные логи нельзя привязать безопасно.",
+            duration_ms=resolved_duration,
+            duration_source="request" if duration_ms else ("replay" if replay.duration_ms else None),
+            window_to_ms=resolved_duration,
+        ))
 
     end_event = _round_for_replay(db, replay)
     start_event = end_event.paired_start if end_event else None
 
-    # ВАЖНО: якорем берём именно replay.recorded_at (время из заголовка самого
-    # демо-файла — см. services_replays.py), а не start_event.created_at (когда
-    # ND-сервер ПОЛУЧИЛ событие о старте раунда). Строки лога тоже парсятся из
-    # временных меток самого игрового сервера (services_logs.py: TIMESTAMP_RE),
-    # т.е. recorded_at и timestamp лога — одни и те же часы. created_at
-    # RoundEvent — часы ND-сервера, которые расходятся с игровым на секунды-
-    # минуты (сетевая задержка, отличие в системном времени) — раньше именно
-    # это расхождение и сдвигало подсветку лога относительно видео.
-    # start_event.created_at остаётся страховкой на случай отсутствующего
-    # recorded_at (не распарсился заголовок демки — редко, но бывает).
-    started_at = replay.recorded_at or (start_event.created_at if start_event else None)
-    if started_at and replay.duration_ms:
-        # Длительность — это то же самое "прошло N миллисекунд с начала",
-        # независимо от того, чьи это часы, поэтому безопасно складывать с
-        # recorded_at даже если абсолютное время последнего сбито.
-        ended_at = started_at + timedelta(milliseconds=replay.duration_ms) + timedelta(minutes=2)
-    elif started_at:
-        ended_at = started_at + timedelta(minutes=5)
+    # The demo header is the most precise anchor when the game server wrote a
+    # sane Unix timestamp. Some historic files encoded a local/server clock as
+    # if it were UTC and landed hours away from the matching ND lifecycle
+    # event. In that case prefer the paired round start: a few seconds of
+    # webhook latency are vastly safer than an empty, hours-shifted timeline.
+    recorded_anchor = replay.recorded_at
+    lifecycle_anchor = start_event.created_at if start_event else None
+    anchor_source = "recording" if recorded_anchor else ("round" if lifecycle_anchor else None)
+    if recorded_anchor and lifecycle_anchor:
+        anchor_skew = abs((recorded_anchor - lifecycle_anchor).total_seconds())
+        if anchor_skew > 10 * 60:
+            utc_anchor = lifecycle_anchor
+            anchor_source = "round_clock_fallback"
+        else:
+            utc_anchor = recorded_anchor
     else:
-        ended_at = None
+        utc_anchor = recorded_anchor or lifecycle_anchor
+
+    # RoundReplay/RoundEvent timestamps are stored as naive UTC, while the
+    # imported Barotrauma text logs are naive server-local wall-clock values.
+    # Resolve that clock from configuration instead of the NexusData process
+    # timezone: the container and game server do not have to share a TZ.
+    started_at = None
+    log_timezone = _replay_log_timezone_name(replay.server_name)
+    if utc_anchor:
+        started_at, log_timezone = _utc_anchor_to_log_clock(
+            utc_anchor,
+            replay.server_name,
+        )
+
+    # duration_ms historically stayed NULL because the upload service parses
+    # only the header.  Falling back to five minutes silently chopped almost
+    # every round.  The V2 player sends the exact parsed duration; old clients
+    # still get a sensible value from the paired round or upload timestamp.
+    effective_duration_ms: Optional[int] = duration_ms or replay.duration_ms
+    duration_source = "request" if duration_ms else ("replay" if replay.duration_ms else None)
+    if effective_duration_ms is None and start_event and end_event:
+        estimated = int((end_event.created_at - start_event.created_at).total_seconds() * 1000)
+        if 1_000 <= estimated <= 12 * 60 * 60 * 1000:
+            effective_duration_ms = estimated
+            duration_source = "round"
+    if effective_duration_ms is None and utc_anchor and replay.uploaded_at:
+        estimated = int((replay.uploaded_at - utc_anchor).total_seconds() * 1000)
+        if 1_000 <= estimated <= 12 * 60 * 60 * 1000:
+            effective_duration_ms = estimated
+            duration_source = "upload"
+    if effective_duration_ms is None:
+        return JSONResponse(_timeline_unavailable_payload(
+            "Не удалось определить длительность этой записи.",
+            round_id=end_event.id if end_event else None,
+            server_name=replay.server_name,
+            started_at=started_at,
+            duration_source=duration_source,
+            anchor_source=anchor_source,
+            log_timezone=log_timezone,
+        ))
+    ended_at = started_at + timedelta(milliseconds=effective_duration_ms) if started_at else None
 
     if not started_at or not ended_at:
-        return JSONResponse({
-            "events": [], "round_id": None, "started_at": None, "ended_at": None,
-            "unavailable_reason": "Не удалось определить раунд этой записи — привяжите её к раунду вручную.",
-        })
+        return JSONResponse(_timeline_unavailable_payload(
+            "Не удалось определить раунд этой записи — привяжите её к раунду вручную.",
+            round_id=end_event.id if end_event else None,
+            server_name=replay.server_name,
+            duration_ms=effective_duration_ms,
+            duration_source=duration_source,
+            anchor_source=anchor_source,
+            log_timezone=log_timezone,
+        ))
 
-    from services_logs import search_logs, LogSearchTooSlow
+    range_start_ms = min(from_ms, effective_duration_ms)
+    range_end_ms = min(to_ms if to_ms is not None else effective_duration_ms, effective_duration_ms)
+    if range_end_ms <= range_start_ms and not overview_only:
+        raise HTTPException(status_code=422, detail="to_ms должен быть больше from_ms")
+    # Text server logs store whole seconds. Pad the SQL bounds by one second
+    # and mark the result precision explicitly instead of presenting `.000`
+    # as millisecond-accurate data.
+    query_started_at = started_at + timedelta(milliseconds=range_start_ms - 1_000)
+    query_ended_at = started_at + timedelta(milliseconds=range_end_ms + 1_000)
 
-    try:
-        events, total, total_is_capped, _has_more = await run_in_threadpool(
-            search_logs,
-            server_name=replay.server_name or None,
-            player_name=player or None,
-            action_type=action_type or None,
-            search_text=search or None,
+    from services_logs import (
+        LogDataUnavailable,
+        LogSearchTooSlow,
+        get_log_timeline_overview,
+        search_logs,
+    )
+
+    def load_pages():
+        """Read and enrich one exact visible window in the worker thread."""
+        loaded = []
+        cursor = None
+        first_total = None
+        first_total_is_capped = False
+        has_more = False
+        while len(loaded) < limit:
+            page_size = min(5000, limit - len(loaded))
+            result = search_logs(
+                server_name=replay.server_name or None,
+                player_name=player or None,
+                action_type=action_type or None,
+                search_text=search or None,
+                time_from=query_started_at,
+                time_to=query_ended_at,
+                category=category or None,
+                limit=page_size,
+                offset=0,
+                cursor=cursor,
+                # The timeline only needs the loaded rows and has_more. A
+                # full COUNT over a dense round can be slower than all keyset
+                # pages combined and used to surface as a 503 in production.
+                count_total=False,
+                player_scope=player_scope,
+                raise_on_unavailable=True,
+            )
+            if cursor is None:
+                first_total = result.total
+                first_total_is_capped = result.total_is_capped
+            loaded.extend(result.events)
+            has_more = result.has_more
+            cursor = result.next_cursor
+            if not has_more or not cursor or not result.events:
+                break
+        rows = []
+        player_counts: Counter[str] = Counter()
+        action_counts: Counter[str] = Counter()
+        allowed_start_ms = max(0, range_start_ms - 1_000)
+        allowed_end_ms = min(effective_duration_ms, range_end_ms + 1_000)
+        for event in sorted(loaded, key=lambda value: (value.timestamp, value.row_id)):
+            raw_offset_ms = int((event.timestamp - started_at).total_seconds() * 1000)
+            if raw_offset_ms < allowed_start_ms or raw_offset_ms > allowed_end_ms:
+                continue
+            if event.player_name:
+                player_counts[event.player_name] += 1
+            action_counts[event.action_type] += 1
+            rows.append({
+                "event_id": event.row_id,
+                "timestamp": event.timestamp.isoformat(),
+                "offset_ms": max(0, min(effective_duration_ms, raw_offset_ms)),
+                "player_name": event.player_name,
+                "action_type": event.action_type,
+                "details": event.details,
+                "source_file": event.source_file,
+                "lane": classify_replay_timeline_lane(event.action_type),
+                "item": extract_replay_timeline_item(event.action_type, event.details),
+                "precision_ms": 1_000,
+            })
+        return rows, first_total, first_total_is_capped, has_more, player_counts, action_counts
+
+    def load_overview():
+        # About 600 columns is enough to preserve the shape of a full round
+        # while remaining much smaller than its exact event stream.
+        bucket_ms = max(1_000, (effective_duration_ms + 599) // 600)
+        raw = get_log_timeline_overview(
+            server_name=replay.server_name or "",
             time_from=started_at,
             time_to=ended_at,
-            category=category or None,
-            limit=limit,
-            offset=0,
+            bucket_ms=bucket_ms,
+            player_name=player if player_scope == "actor" else None,
         )
-    except LogSearchTooSlow:
-        return JSONResponse({
-            "events": [], "round_id": None, "started_at": None, "ended_at": None,
-            "unavailable_reason": "Слишком тяжёлый запрос к логам — уточните фильтры.",
-        })
+        groups: dict[tuple[int, str], dict] = {}
+        action_counts: Counter[str] = Counter()
+        for bucket in raw.buckets:
+            action_name = bucket["action_type"]
+            amount = bucket["count"]
+            action_counts[action_name] += amount
+            lane = classify_replay_timeline_lane(action_name)
+            offset = min(effective_duration_ms, bucket["offset_ms"])
+            key = (offset, lane)
+            group = groups.setdefault(key, {
+                "offset_ms": offset,
+                "lane": lane,
+                "aggregate_count": 0,
+                "actions": Counter(),
+            })
+            group["aggregate_count"] += amount
+            group["actions"][action_name] += amount
 
-    # Логи приходят от новых к старым, а проигрывание идёт вперёд — разворачиваем.
-    rows = []
-    for e in sorted(events, key=lambda x: x.timestamp):
-        rows.append({
-            "timestamp": e.timestamp.isoformat(),
-            "offset_ms": int((e.timestamp - started_at).total_seconds() * 1000),
-            "player_name": e.player_name,
-            "action_type": e.action_type,
-            "details": e.details,
-        })
+        overview_rows = []
+        for (offset, lane), group in sorted(groups.items()):
+            dominant = group["actions"].most_common(1)[0][0]
+            amount = group["aggregate_count"]
+            overview_rows.append({
+                "event_id": f"overview:{offset}:{lane}",
+                "offset_ms": offset,
+                "player_name": None,
+                "action_type": dominant,
+                "details": f"{amount} событий в этом участке",
+                "lane": lane,
+                "item": None,
+                "aggregate_count": amount,
+                "precision_ms": bucket_ms,
+            })
+        return overview_rows, raw.players, action_counts
+
+    try:
+        if overview_only:
+            overview_rows, overview_players, action_counts = await run_in_threadpool(load_overview)
+            rows = []
+            total = sum(item["aggregate_count"] for item in overview_rows)
+            total_is_capped = False
+            has_more = False
+            player_counts = Counter({item["name"]: item["event_count"] for item in overview_players})
+        else:
+            rows, total, total_is_capped, has_more, player_counts, action_counts = await run_in_threadpool(load_pages)
+            overview_rows = []
+    except LogSearchTooSlow:
+        unavailable_reason = "Слишком тяжёлый запрос к логам — уточните фильтры."
+    except LogDataUnavailable:
+        logger.exception(
+            "Replay timeline log index is unavailable (replay_id=%s, server=%s)",
+            replay.id,
+            replay.server_name,
+        )
+        unavailable_reason = "Серверные логи временно недоступны. Демозапись можно просматривать без них."
+    else:
+        unavailable_reason = None
+
+    if unavailable_reason:
+        return JSONResponse(_timeline_unavailable_payload(
+            unavailable_reason,
+            round_id=end_event.id if end_event else None,
+            server_name=replay.server_name,
+            started_at=started_at,
+            ended_at=ended_at,
+            duration_ms=effective_duration_ms,
+            duration_source=duration_source,
+            anchor_source=anchor_source,
+            log_timezone=log_timezone,
+            window_from_ms=range_start_ms,
+            window_to_ms=range_end_ms,
+        ))
 
     return JSONResponse({
+        "status": "ok",
         "events": rows,
-        "total": total,
-        "total_is_capped": total_is_capped,
+        "overview": overview_rows,
+        # services_logs intentionally caps an expensive COUNT. Never report a
+        # total smaller than the keyset pages we have actually loaded.
+        "total": max(total or 0, len(rows)),
+        "total_is_capped": bool(total_is_capped or has_more),
+        "has_more": has_more,
+        "loaded": len(rows),
         "round_id": end_event.id if end_event else None,
         "server_name": replay.server_name,
         "started_at": started_at.isoformat(),
         "ended_at": ended_at.isoformat(),
+        "duration_ms": effective_duration_ms,
+        "duration_source": duration_source,
+        "anchor_source": anchor_source,
+        "log_timezone": log_timezone,
+        "window_from_ms": range_start_ms,
+        "window_to_ms": range_end_ms,
+        "players": [
+            {"name": name, "event_count": count}
+            for name, count in sorted(player_counts.items(), key=lambda pair: (-pair[1], pair[0].casefold()))
+        ],
+        "action_types": [
+            {"name": name, "event_count": count}
+            for name, count in sorted(action_counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        ],
         "unavailable_reason": None,
     })
 

@@ -1434,6 +1434,17 @@ class LogSearchResult(NamedTuple):
     next_cursor: Optional[str]
 
 
+class LogTimelineOverview(NamedTuple):
+    """Compact, truthful overview for an editor timeline.
+
+    ``buckets`` groups by time/action and never materialises the underlying
+    log rows. ``players`` is separately capped because a server can accumulate
+    hundreds of one-off character names during a long round.
+    """
+    buckets: List[dict]
+    players: List[dict]
+
+
 class InvalidLogCursor(ValueError):
     """Курсор логов повреждён или имеет неизвестный формат."""
 
@@ -1501,6 +1512,17 @@ class LogSearchTooSlow(Exception):
     сказать «уточните фильтры»."""
 
 
+class LogDataUnavailable(RuntimeError):
+    """Хранилище или индекс логов недоступны для достоверной выборки.
+
+    Это не означает, что совпадений нет.  Обычные страницы логов исторически
+    показывают пустой результат при сбое SQLite, поэтому ``search_logs``
+    поднимает исключение только по явному запросу вызывающего. Timeline
+    реплея включает строгий режим: иначе поломанный индекс выглядел бы как
+    спокойный раунд без единого события.
+    """
+
+
 class _Budget:
     """Progress-handler SQLite: ненулевой ответ прерывает идущий запрос.
 
@@ -1561,6 +1583,7 @@ def search_logs(
     player_scope: str = "related",
     cursor: Optional[str] = None,
     count_total: bool = True,
+    raise_on_unavailable: bool = False,
 ) -> LogSearchResult:
     """Search log events via indexed SQL.
 
@@ -1575,6 +1598,8 @@ def search_logs(
         conn = _get_conn()
     except Exception as e:
         logger.error(f"search_logs: DB unavailable: {e}")
+        if raise_on_unavailable:
+            raise LogDataUnavailable("Хранилище серверных логов недоступно.") from e
         # Именно кортеж нужной формы: вызывающие распаковывают результат, и
         # короткий кортеж на этом пути раньше валил весь запрос страницы
         # логов пятисоткой вместо пустой таблицы.
@@ -1648,6 +1673,8 @@ def search_logs(
             )
             raise LogSearchTooSlow() from e
         logger.error(f"search_logs: query failed: {e}")
+        if raise_on_unavailable:
+            raise LogDataUnavailable("Индекс серверных логов недоступен.") from e
         return LogSearchResult([], 0, False, False, None)
 
     has_more = len(rows) > limit
@@ -1704,6 +1731,72 @@ def search_logs(
         len(names_list) if names_list else int(bool(player_name)),
     )
     return LogSearchResult(events, total, total_is_capped, has_more, next_cursor)
+
+
+def get_log_timeline_overview(
+    *,
+    server_name: str,
+    time_from: datetime,
+    time_to: datetime,
+    bucket_ms: int,
+    player_limit: int = 300,
+    player_name: Optional[str] = None,
+) -> LogTimelineOverview:
+    """Aggregate one replay range without loading thousands of log rows.
+
+    The compound ``(server, ts)`` index constrains both queries to the round.
+    This is the overview used while the browser shows the whole replay; exact
+    rows are fetched only for the zoomed visible window.
+    """
+    start_ms = _ts_to_ms(time_from)
+    end_ms = _ts_to_ms(time_to)
+    bucket_ms = max(250, int(bucket_ms))
+    try:
+        conn = _get_conn()
+    except Exception as exc:
+        logger.error("timeline overview DB unavailable: %s", exc)
+        raise LogDataUnavailable("Хранилище серверных логов недоступно.") from exc
+
+    budget = _Budget(_ROW_TIME_BUDGET_SEC)
+    actor_clause = " AND player=?" if player_name else ""
+    actor_params: List[object] = [player_name] if player_name else []
+    try:
+        with _apply_budget(conn, budget):
+            bucket_rows = conn.execute(
+                "SELECT CAST((ts - ?) / ? AS INTEGER) AS bucket, action, COUNT(*) "
+                "FROM log_events INDEXED BY ix_log_server "
+                f"WHERE server=? AND ts>=? AND ts<=?{actor_clause} "
+                "GROUP BY bucket, action ORDER BY bucket ASC, action ASC",
+                (start_ms, bucket_ms, server_name, start_ms, end_ms, *actor_params),
+            ).fetchall()
+            player_rows = conn.execute(
+                "SELECT player, COUNT(*) AS amount "
+                "FROM log_events INDEXED BY ix_log_server "
+                f"WHERE server=? AND ts>=? AND ts<=? AND player IS NOT NULL AND player<>''{actor_clause} "
+                "GROUP BY player ORDER BY amount DESC, player ASC LIMIT ?",
+                (server_name, start_ms, end_ms, *actor_params, max(1, min(int(player_limit), 1000))),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        if budget.expired:
+            raise LogSearchTooSlow() from exc
+        logger.error("timeline overview query failed: %s", exc)
+        raise LogDataUnavailable("Индекс серверных логов недоступен.") from exc
+
+    return LogTimelineOverview(
+        [
+            {
+                "offset_ms": max(0, int(row[0]) * bucket_ms + bucket_ms // 2),
+                "action_type": row[1] or "other",
+                "count": int(row[2]),
+            }
+            for row in bucket_rows
+        ],
+        [
+            {"name": row[0], "event_count": int(row[1])}
+            for row in player_rows
+            if row[0]
+        ],
+    )
 
 
 def get_cached_logs(server_name: Optional[str] = None) -> List[LogEvent]:

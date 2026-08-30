@@ -34,6 +34,7 @@ interface TimedLogEvent {
 }
 
 interface ReplayLogsResponse {
+  status?: "ok" | "unavailable"
   events: TimedLogEvent[]
   total: number
   total_is_capped: boolean

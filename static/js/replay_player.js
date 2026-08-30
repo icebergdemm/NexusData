@@ -6,6 +6,17 @@
  * 4. File is never held as ONE giant ArrayBuffer — see PagedBuffer below
  * 5. Download + decompression are fully streamed, chunk by chunk
  */
+(function replayScriptGenerationGuard() {
+  "use strict";
+
+  // React attaches an instance id to dynamically injected player scripts.
+  // A detached <script> can still execute after navigation, so it must prove
+  // that its owning effect is current before reading #rpvCanvas or starting a
+  // second download/animation loop. The classic server-rendered page has no
+  // id and intentionally follows the historical path.
+  const replayInstanceId = document.currentScript?.dataset?.replayInstanceId || null;
+  if (replayInstanceId && window.__BARO_REPLAY_ACTIVE_INSTANCE__ !== replayInstanceId) return;
+
 (function () {
   "use strict";
 
@@ -159,7 +170,8 @@
     }
     const geometry = { hulls: [], walls: [], doors: [] };
     const world = { w: 0, h: 0, polys: [] };
-    const chat = [], events = [];
+    const chat = [], events = [], spawnEvents = [];
+    const collectTimeline = document.documentElement.dataset.uiVersion === "v2";
     const spawns = new Map();
     let origin = { x: 0, y: 0 }, durationMs = 0;
     // Lazy snapshot index: parallel arrays (time, byte-offset, origin at that point)
@@ -184,8 +196,17 @@
           world.polys.push(flat);
         }
       } else if (type === 0x02) { origin={x:r.i32(),y:r.i32()}; }
-      else if (type === 0x03) { const t=r.u32(),id=r.u16();spawns.set(id,{id,species:r.str(),name:r.str(),teamId:r.i8()}); }
-      else if (type === 0x04) { r.skip(6); } // DESPAWN: u32+u16
+      else if (type === 0x03) {
+        const t=r.u32(),id=r.u16(),species=r.str(),name=r.str(),teamId=r.i8();
+        const spawn={id,species,name,teamId};spawns.set(id,spawn);
+        if(collectTimeline)spawnEvents.push({timeMs:t,kind:"spawn",...spawn});
+        if(t>durationMs)durationMs=t;
+      }
+      else if (type === 0x04) {
+        const t=r.u32(),id=r.u16(),known=collectTimeline?spawns.get(id):null;
+        if(collectTimeline)spawnEvents.push({timeMs:t,kind:"despawn",id,species:known?.species||"",name:known?.name||"",teamId:known?.teamId??0});
+        if(t>durationMs)durationMs=t;
+      }
       else if (type === 0x01) { // SNAPSHOT — INDEX ONLY (lazy decode at render)
         const snapStart = r.o - 1; // include the frame-type byte
         const timeMs=r.u32(); const ec=r.u16();
@@ -237,7 +258,7 @@
       oy: Int32Array.from(snapOy),
       store: pagedBuffer,
     };
-    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,durationMs,voice};
+    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,durationMs,voice};
   }
 
   function indexAtTime(snaps, t) {
@@ -293,9 +314,10 @@
    * ЭТОТ буфер утыкался в потолок размера одного ArrayBuffer в движке —
    * независимо от того, сколько реальной оперативной памяти свободно.
    */
-  async function loadDemoBytes(url, onProgress) {
+  async function loadDemoBytes(url, onProgress, signal) {
+    if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
     onProgress && onProgress({ stage: "download", percent: 0 });
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const total = parseInt(resp.headers.get("content-length") || "0");
     const reader = resp.body.getReader();
@@ -361,6 +383,7 @@
     }
 
     while (true) {
+      if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
       const { done, value } = await reader.read();
       if (done) break;
       received += value.length;
@@ -368,6 +391,7 @@
       decide(value, false);
       if (streamError) throw streamError;
     }
+    if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
     // Этап "распаковка" объявляется ЗДЕСЬ, а не в момент распознавания
     // сигнатуры. Распаковка технически идёт параллельно скачиванию (каждый
     // кусок сразу уходит в распаковщик), но сигнатура распознаётся уже по
@@ -416,6 +440,7 @@
   // цикл продолжал бы дёргать document.getElementById для узлов, которых
   // больше нет в DOM, и падал на "Cannot set properties of null" в loop().
   let destroyed = false;
+  const loadController = new AbortController();
   const globalListeners = []; // [target, type, handler] — снимаются в destroy()
   function onGlobal(target, type, handler, opts) {
     target.addEventListener(type, handler, opts);
@@ -599,13 +624,15 @@
   }
   function esc(t){const d=document.createElement("span");d.textContent=t;return d.innerHTML;}
   function fmtTime(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return String(m).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
-  // Наружу отдаём время не чаще ~4 раз в секунду: панель логов синхронизируется
-  // по нему, а перерисовывать её на каждый кадр незачем.
+  // V2 needs a smooth editor playhead. The classic logs panel can contain
+  // thousands of React rows, so keep its historical 4 Hz cadence unchanged.
+  // State transitions use a forced broadcast below in both interfaces.
   let lastTimeBroadcast = -1;
-  function broadcastTime(){
+  function broadcastTime(force=false){
     if(!demo)return;
-    const bucket=Math.floor(currentTimeMs/250);
-    if(bucket===lastTimeBroadcast)return;
+    const interval=collectTimeline?67:250;
+    const bucket=Math.floor(currentTimeMs/interval);
+    if(!force&&bucket===lastTimeBroadcast)return;
     lastTimeBroadcast=bucket;
     window.dispatchEvent(new CustomEvent("baroreplay:time",{detail:{
       timeMs:currentTimeMs,durationMs:demo.durationMs,playing:playing,
@@ -641,6 +668,7 @@
     const btn=document.getElementById("rpvPlay");
     if(btn){btn.dataset.playing=String(p);btn.setAttribute("aria-label",p?"Пауза":"Воспроизвести");}
     if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();
+    broadcastTime(true);
   }
 
   // ── Voice playback (per-speaker Opus decoders, positional) ───────────────
@@ -783,6 +811,22 @@
   }
 
   // ── Players panel (with per-speaker mute + volume) ────────────────────────
+  let selectedPlayerName=null;
+  function applyPlayerSelection(name,notify=false){
+    selectedPlayerName=name||null;
+    document.querySelectorAll(".rpv-player").forEach(row=>{
+      const rowName=row.dataset.playerName||"";
+      const selected=!!selectedPlayerName&&rowName===selectedPlayerName;
+      const dimmed=!!selectedPlayerName&&!selected;
+      row.dataset.filterSelected=String(selected);
+      row.dataset.filterDimmed=String(dimmed);
+      row.setAttribute("aria-pressed",String(selected));
+    });
+    if(notify){
+      window.dispatchEvent(new CustomEvent("baroreplay:player-picked",{detail:{name:selectedPlayerName}}));
+    }
+  }
+
   function buildPlayersPanel(){
     const box=document.getElementById("rpvPlayers");
     if(!box)return;
@@ -820,6 +864,11 @@
       const st={mute:false,vol:1};speakerState.set(id,st);
       const row=document.createElement("div");
       row.className="rpv-player";row.dataset.sid=id;
+      if(collectTimeline){
+        row.dataset.playerName=name;
+        row.setAttribute("role","button");row.setAttribute("tabindex","0");
+        row.setAttribute("aria-label","Выделить события игрока "+name);
+      }
       row.innerHTML=`<span class="rpv-pdot" style="background:${color}"></span>`+
         `<span class="rpv-pname" title="${esc(name)}">${esc(name)}</span>`+
         `<input type="range" class="rpv-pvol" min="0" max="100" value="100" title="Громкость">`+
@@ -827,8 +876,14 @@
       const vol=row.querySelector(".rpv-pvol"),mute=row.querySelector(".rpv-pmute");
       vol.addEventListener("input",()=>{st.vol=vol.value/100;applyGain(id);});
       mute.addEventListener("click",()=>{st.mute=!st.mute;mute.innerHTML=speakerSoundIcon(st.mute);applyGain(id);syncMuteAllBtn();});
+      if(collectTimeline){
+        const pick=()=>applyPlayerSelection(selectedPlayerName===name?null:name,true);
+        row.addEventListener("click",(event)=>{if(event.target.closest("input,button"))return;pick();});
+        row.addEventListener("keydown",(event)=>{if(event.target!==row)return;if(event.key==="Enter"||event.key===" "){event.preventDefault();pick();}});
+      }
       box.appendChild(row);
     }
+    if(collectTimeline)applyPlayerSelection(selectedPlayerName,false);
     syncMuteAllBtn();
   }
 
@@ -859,29 +914,29 @@
 
   // ── UI wiring ────────────────────────────────────────────────────────────
   function wireUI(){
-    document.getElementById("rpvPlay").addEventListener("click",()=>setPlaying(!playing));
+    onGlobal(document.getElementById("rpvPlay"),"click",()=>setPlaying(!playing));
     document.querySelectorAll(".rpv-speed").forEach(btn=>{
-      btn.addEventListener("click",()=>{speed=parseFloat(btn.dataset.speed);document.querySelectorAll(".rpv-speed").forEach(b=>b.classList.remove("active"));btn.classList.add("active");});
+      onGlobal(btn,"click",()=>{speed=parseFloat(btn.dataset.speed);document.querySelectorAll(".rpv-speed").forEach(b=>b.classList.remove("active"));btn.classList.add("active");});
     });
     const seek=document.getElementById("rpvSeek");
-    seek.addEventListener("input",()=>{seek.__dragging=true;if(demo)currentTimeMs=seek.value/1000*demo.durationMs;});
-    seek.addEventListener("change",()=>{seek.__dragging=false;});
-    document.getElementById("rpvFollow").addEventListener("click",(e)=>{
+    onGlobal(seek,"input",()=>{seek.__dragging=true;if(demo)currentTimeMs=seek.value/1000*demo.durationMs;});
+    onGlobal(seek,"change",()=>{seek.__dragging=false;});
+    onGlobal(document.getElementById("rpvFollow"),"click",(e)=>{
       followSub=!followSub;
       // Цель фиксируется в момент включения — по тому, что сейчас в центре кадра.
       if(followSub)followSubId=pickFollowTarget();
       e.target.classList.toggle("active",followSub);
     });
     // Camera
-    canvas.addEventListener("wheel",(e)=>{e.preventDefault();cam.zoom=Math.max(0.005,Math.min(2,cam.zoom*(e.deltaY<0?1.1:0.9)));},{passive:false});
+    onGlobal(canvas,"wheel",(e)=>{e.preventDefault();cam.zoom=Math.max(0.005,Math.min(2,cam.zoom*(e.deltaY<0?1.1:0.9)));},{passive:false});
     let dragging=false,lastX=0,lastY=0;
-    canvas.addEventListener("mousedown",(e)=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
+    onGlobal(canvas,"mousedown",(e)=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
     onGlobal(window,"mouseup",()=>{dragging=false;});
     onGlobal(window,"mousemove",(e)=>{if(!dragging)return;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;followSub=false;document.getElementById("rpvFollow").classList.remove("active");});
 
     // Voice controls
     const ve=document.getElementById("rpvVoiceEnable");
-    if(ve)ve.addEventListener("change",async(e)=>{
+    if(ve)onGlobal(ve,"change",async(e)=>{
       voiceEnabled=e.target.checked;
       if(voiceEnabled){
         await initAudio();
@@ -893,47 +948,127 @@
       }
     });
     const ma=document.getElementById("rpvMuteAll");
-    if(ma)ma.addEventListener("click",()=>{
+    if(ma)onGlobal(ma,"click",()=>{
       const all=speakerState.size>0&&[...speakerState.values()].every(st=>st.mute);
       setAllMuted(!all);
     });
     const mv=document.getElementById("rpvMasterVol");
-    if(mv)mv.addEventListener("input",(e)=>{masterVol=e.target.value/100;});
+    if(mv)onGlobal(mv,"input",(e)=>{masterVol=e.target.value/100;});
     const sp=document.getElementById("rpvSpatial");
-    if(sp)sp.addEventListener("change",(e)=>{spatial=e.target.checked;});
+    if(sp)onGlobal(sp,"change",(e)=>{spatial=e.target.checked;});
     const fo=document.getElementById("rpvFalloff");
-    if(fo)fo.addEventListener("input",(e)=>{falloffDist=parseInt(e.target.value);});
+    if(fo)onGlobal(fo,"input",(e)=>{falloffDist=parseInt(e.target.value);});
   }
 
-  // Мост для внешнего интерфейса (панель логов в React-обёртке страницы):
-  // перемотка к моменту события и чтение текущего времени. Намеренно
-  // минимальный — вся отрисовка и разбор демо остаются здесь.
+  function timelineBridgeData(){
+    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[]};
+    // Entity ids may be reused after a despawn. Resolve the actor at the
+    // event's own timestamp instead of consulting only the final spawn map,
+    // otherwise an early action can be attributed to a later character.
+    const lifecycleById=new Map();
+    for(const event of demo.spawnEvents){
+      if(!lifecycleById.has(event.id))lifecycleById.set(event.id,[]);
+      lifecycleById.get(event.id).push(event);
+    }
+    const spawnAt=(id,timeMs)=>{
+      const lifecycle=lifecycleById.get(id)||[];
+      let active=null;
+      for(const event of lifecycle){
+        if(event.timeMs>timeMs)break;
+        active=event.kind==="spawn"?event:null;
+      }
+      return lifecycle.length?active:(demo.spawns.get(id)||null);
+    };
+    const nameOf=(id,timeMs)=>{const sp=spawnAt(id,timeMs);return(sp&&sp.name)?sp.name:(sp&&sp.species?sp.species:null);};
+    const players=[];
+    const seenNames=new Set();
+    for(const sp of demo.spawnEvents){
+      if(sp.kind!=="spawn")continue;
+      if(sp.species!=="human"||!sp.name||seenNames.has(sp.name))continue;
+      seenNames.add(sp.name);players.push({id:sp.id,name:sp.name,species:sp.species,teamId:sp.teamId});
+    }
+    for(const chat of demo.chat){
+      if(!chat.author||seenNames.has(chat.author))continue;
+      seenNames.add(chat.author);players.push({id:chat.senderId||0,name:chat.author,species:"human",teamId:0});
+    }
+    players.sort((a,b)=>a.name.localeCompare(b.name,"ru"));
+
+    const timelineEvents=[];
+    demo.chat.forEach((chat,index)=>timelineEvents.push({
+      id:"chat:"+index,offset_ms:chat.timeMs,player_name:chat.author||nameOf(chat.senderId,chat.timeMs),
+      action_type:"chat",details:chat.text||"",source:"demo_chat",lane:"communication",item:null,
+    }));
+    demo.events.forEach((event,index)=>{
+      const action=event.kind===10?"damage":event.kind===11?"shot":"demo_event";
+      const subject=nameOf(event.subjectId,event.timeMs),target=nameOf(event.targetId,event.timeMs);
+      let details=event.text||"";
+      if(!details&&action==="damage")details="Урон "+(Number.isFinite(event.amount)?Math.round(event.amount*10)/10:"—")+(target?" · цель: "+target:"");
+      if(!details&&action==="shot")details="Выстрел"+(target?" · цель: "+target:"");
+      timelineEvents.push({
+        id:"demo:"+index,offset_ms:event.timeMs,player_name:subject,action_type:action,
+        details,source:"demo_event",lane:"combat",item:null,
+      });
+    });
+    demo.spawnEvents.forEach((event,index)=>{
+      // Creature/NPC lifecycle is useful on the map but overwhelms a player
+      // investigation timeline. Human lifecycles remain as navigation anchors.
+      if(event.species!=="human")return;
+      timelineEvents.push({
+        id:"spawn:"+index,offset_ms:event.timeMs,player_name:event.name||null,
+        action_type:event.kind,details:event.kind==="spawn"?"Персонаж появился в раунде":"Персонаж покинул сцену",
+        source:"demo_spawn",lane:"system",item:null,
+      });
+    });
+    timelineEvents.sort((a,b)=>a.offset_ms-b.offset_ms||a.id.localeCompare(b.id));
+    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents};
+  }
+
+  function broadcastReady(){
+    if(!demo||document.documentElement.dataset.uiVersion!=="v2")return;
+    window.dispatchEvent(new CustomEvent("baroreplay:ready",{detail:timelineBridgeData()}));
+  }
+
+  // Мост для внешнего интерфейса (панель логов и монтажная шкала React):
+  // перемотка, чтение времени, выбор игрока и безопасный индекс событий.
+  // Вся тяжёлая отрисовка и разбор бинарного демо остаются здесь.
   //
   // destroy() вызывается из cleanup-функции React-эффекта (player.tsx) ПЕРЕД
   // тем, как удалить <script>-теги этого инстанса и/или смонтировать новый —
   // без него старый requestAnimationFrame-цикл продолжал бы жить и падать,
   // как только пользователь уходит со страницы плеера совсем (см. loop()).
-  window.__BaroReplayUI = {
+  const replayBridge = {
+    instanceId: replayInstanceId,
     seekTo(ms){
       if(!demo)return;
       currentTimeMs=Math.max(0,Math.min(demo.durationMs,ms));
       updateTimeUI();
     },
+    stepBy(ms){
+      if(!demo)return;
+      currentTimeMs=Math.max(0,Math.min(demo.durationMs,currentTimeMs+ms));
+      updateTimeUI();
+    },
     getTimeMs(){return currentTimeMs;},
     getDurationMs(){return demo?demo.durationMs:0;},
+    getTimelineData(){return timelineBridgeData();},
     setPlaying(p){setPlaying(!!p);},
+    selectPlayer(name){applyPlayerSelection(name||null,false);},
+    getSelectedPlayer(){return selectedPlayerName;},
     destroy(){
       if(destroyed)return;
       destroyed=true;
       playing=false;
+      loadController.abort();
       resetDecoders();
       if(audioCtx){try{audioCtx.close();}catch(e){/*ignore*/}audioCtx=null;}
       for(const [target,type,handler,opts] of globalListeners){
         try{target.removeEventListener(type,handler,opts);}catch(e){/*ignore*/}
       }
       globalListeners.length=0;
+      if(window.__BaroReplayUI===replayBridge)delete window.__BaroReplayUI;
     },
   };
+  window.__BaroReplayUI = replayBridge;
 
   // ── Загрузка: этапы и прогресс ──────────────────────────────────────────
   // Каждый этап отмечается в списке #rpvLoadingStages (если он есть в
@@ -995,7 +1130,7 @@
   async function boot(){
     resizeCanvas();wireUI();
     try{
-      const store=await API.loadDemoBytes(window.REPLAY_URL, onLoadProgress);
+      const store=await API.loadDemoBytes(window.REPLAY_URL, onLoadProgress, loadController.signal);
       if(destroyed)return; // ушли со страницы, пока файл качался/распаковывался
 
       setStage("parse", STAGE_LABEL.parse+"…");
@@ -1014,9 +1149,11 @@
       if(destroyed)return;
 
       loadingEl.style.display="none";
+      broadcastReady();
+      updateTimeUI();
       requestAnimationFrame(loop);
     }catch(e){
-      if(destroyed)return; // страница уже ушла — некому показывать ошибку
+      if(destroyed||e?.name==="AbortError")return; // страница уже ушла — некому показывать ошибку
       console.error(e);
       const friendly = e instanceof API.OutOfMemoryError
         ? e.message+". Файл слишком велик, чтобы браузер поместил его в память целиком. "
@@ -1031,8 +1168,9 @@
   // the time this script runs, so DOMContentLoaded already fired and would
   // never fire again — boot immediately in that case instead.
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
+    onGlobal(document,"DOMContentLoaded",boot);
   } else {
     boot();
   }
+})();
 })();

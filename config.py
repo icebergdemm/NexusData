@@ -254,6 +254,13 @@ class Settings(BaseSettings):
     # SFTP Logs directories (for server log download)
     sftp_server_1_logs_dir: str = ""
     sftp_server_2_logs_dir: str = ""
+    # Barotrauma text logs contain server-local wall-clock timestamps without
+    # an offset. Replay and round timestamps, on the other hand, are stored as
+    # naive UTC. Keep this conversion explicit so replay markers do not move
+    # when NexusData is deployed in a container with a different process TZ.
+    logs_default_timezone: str = "Europe/Moscow"
+    sftp_server_1_logs_timezone: str = ""
+    sftp_server_2_logs_timezone: str = ""
 
     # Discord Bot channel for sub-projects publishing
     sub_projects_discord_channel_id: str = ""

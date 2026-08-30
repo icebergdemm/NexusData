@@ -3,13 +3,17 @@ import { useParams, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { ReplayLogsPanel } from "./ReplayLogsPanel"
+import { ReplayTimelineWorkbench } from "./ReplayTimelineWorkbench"
 import { Camera, Clapperboard, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { IS_V2 } from "@/lib/ui-version"
+
+let replayScriptGeneration = 0
 
 interface ReplayDetail {
   replay: {
     id: number; submarine_name: string | null; level_name: string | null
-    recorded_at: string | null; has_voice: boolean
+    recorded_at: string | null; has_voice: boolean; duration_ms: number | null
   }
 }
 
@@ -33,22 +37,33 @@ export function ReplayPlayerPage() {
     // Wait until the replay metadata (has_voice) is known so the scripts are
     // only ever injected once per replay, with the correct globals already set.
     if (!replayId || !data) return
-    ;(window as unknown as { REPLAY_URL: string }).REPLAY_URL = `/api/v1/admin/replays/${replayId}/download`
-    ;(window as unknown as { HAS_VOICE: boolean }).HAS_VOICE = data.replay.has_voice
+    setScriptsReady(false)
+    const runtime = window as unknown as {
+      REPLAY_URL: string
+      HAS_VOICE: boolean
+      REPLAY_RECORDED_AT_MS: number | null
+      __BARO_REPLAY_ACTIVE_INSTANCE__?: string
+      __BaroReplayUI?: { destroy?: () => void }
+    }
+    const instanceId = `replay-${replayId}-${++replayScriptGeneration}`
+    runtime.__BARO_REPLAY_ACTIVE_INSTANCE__ = instanceId
+    runtime.REPLAY_URL = `/api/v1/admin/replays/${replayId}/download`
+    runtime.HAS_VOICE = data.replay.has_voice
     // recorded_at приходит без указания зоны (naive UTC, см. services_replays.py) —
     // без явного "Z" Date.parse трактовал бы строку как локальное время браузера
     // администратора, а не как UTC. Плеер сам переводит это в МСК (см. rpvClockLabel).
     const recordedAtIso = data.replay.recorded_at
-    ;(window as unknown as { REPLAY_RECORDED_AT_MS: number | null }).REPLAY_RECORDED_AT_MS =
+    runtime.REPLAY_RECORDED_AT_MS =
       recordedAtIso ? Date.parse(recordedAtIso.endsWith("Z") ? recordedAtIso : recordedAtIso + "Z") : null
 
     const scripts: HTMLScriptElement[] = []
     let cancelled = false
 
-    function loadScript(src: string): Promise<void> {
+    function loadScript(src: string, guardedInstanceId?: string): Promise<void> {
       return new Promise((resolve, reject) => {
         const s = document.createElement("script")
         s.src = src
+        if (guardedInstanceId) s.dataset.replayInstanceId = guardedInstanceId
         s.onload = () => resolve()
         s.onerror = () => reject(new Error(`failed to load ${src}`))
         document.body.appendChild(s)
@@ -67,8 +82,13 @@ export function ReplayPlayerPage() {
     // отменяет УЖЕ закэшированную копию: только смена URL заставляет
     // браузер сходить за файлом заново.
     loadScript("https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js")
-      .then(() => loadScript(`/static/js/replay_player.js?v=${__BUILD_ID__}`))
-      .then(() => { if (!cancelled) setScriptsReady(true) })
+      .then(() => {
+        if (cancelled || runtime.__BARO_REPLAY_ACTIVE_INSTANCE__ !== instanceId) return
+        return loadScript(`/static/js/replay_player.js?v=${__BUILD_ID__}`, instanceId)
+      })
+      .then(() => {
+        if (!cancelled && runtime.__BARO_REPLAY_ACTIVE_INSTANCE__ === instanceId) setScriptsReady(true)
+      })
       .catch((e) => console.error(e))
 
     return () => {
@@ -80,7 +100,14 @@ export function ReplayPlayerPage() {
       // здесь больше нет, как только эта страница размонтируется целиком
       // (не просто сменился replayId — тогда #rpvCanvas переиспользуется тем
       // же деревом, а вот уход со страницы плеера убирает его насовсем).
-      ;(window as unknown as { __BaroReplayUI?: { destroy?: () => void } }).__BaroReplayUI?.destroy?.()
+      // Removing an in-flight dynamic <script> does not prevent browsers from
+      // executing it after the response arrives. Invalidate this generation
+      // first: replay_player.js reads the id from document.currentScript and
+      // exits before touching the DOM if this effect is no longer current.
+      if (runtime.__BARO_REPLAY_ACTIVE_INSTANCE__ === instanceId) {
+        runtime.__BaroReplayUI?.destroy?.()
+        delete runtime.__BARO_REPLAY_ACTIVE_INSTANCE__
+      }
       for (const s of scripts) s.remove()
     }
     // Re-run whenever the replay id changes (navigating from one replay to another)
@@ -142,6 +169,15 @@ export function ReplayPlayerPage() {
         .rpv-chat-line{color:var(--muted-foreground);}
         .rpv-chat-line b{color:var(--info);}
         .rpv-err{color:var(--destructive);padding:20px;font-size:13px;}
+        html[data-ui-version="v2"] .rpv-layout{grid-template-columns:minmax(0,1fr) 320px;}
+        html[data-ui-version="v2"] #rpvCanvas{height:58vh;min-height:430px;}
+        html[data-ui-version="v2"] .rpv-side{max-height:calc(58vh + 62px);}
+        html[data-ui-version="v2"] .rpv-canvas-wrap,
+        html[data-ui-version="v2"] .rpv-controls,
+        html[data-ui-version="v2"] .rpv-panel,
+        html[data-ui-version="v2"] .rpv-btn,
+        html[data-ui-version="v2"] .rpv-player{border-radius:0;}
+        @media(max-width:1000px){html[data-ui-version="v2"] .rpv-layout{grid-template-columns:1fr;}html[data-ui-version="v2"] .rpv-side{max-height:none;}}
       `}</style>
 
       <Link to="/replays" className="rpv-back">← Назад к списку</Link>
@@ -204,9 +240,12 @@ export function ReplayPlayerPage() {
             <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="💬" icon={MessageSquare} />Чат</h3>
             <div className="rpv-chat" id="rpvChat" />
           </div>
-          {replayId && <ReplayLogsPanel replayId={replayId} />}
+          {!IS_V2 && replayId && <ReplayLogsPanel replayId={replayId} />}
         </div>
       </div>
+      {IS_V2 && replayId && (
+        <ReplayTimelineWorkbench replayId={replayId} initialDurationMs={data?.replay.duration_ms} />
+      )}
     </div>
   )
 }

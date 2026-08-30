@@ -24,11 +24,11 @@
     "name": "Аккордеон"
   },
   "acidemitter": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "acidemitter"
   },
   "acidmistemitter": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "acidmistemitter"
   },
   "acoscomponent": {
@@ -328,7 +328,7 @@
     "name": "Инопланетный снаряд"
   },
   "alienturretammoemp": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "alienturretammoemp"
   },
   "alienwire1": {
@@ -484,7 +484,7 @@
     "name": "Мутировавший бич раптора"
   },
   "ballastfloratoxins": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "ballastfloratoxins"
   },
   "ballisticfiber": {
@@ -1320,11 +1320,11 @@
     "name": "Компонент \"Факториал\""
   },
   "fakeexplosion": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "fakeexplosion"
   },
   "fakeexplosionnodamage": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "fakeexplosionnodamage"
   },
   "faradayartifact": {
@@ -1604,7 +1604,7 @@
     "name": "guardianrepairprojectile"
   },
   "guardianrepairtool": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "guardianrepairtool"
   },
   "guardianspear": {
@@ -1788,7 +1788,7 @@
     "name": "Воспламенитовый кристалл"
   },
   "incendiumemitter": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "incendiumemitter"
   },
   "incendiumfueltank": {
@@ -2348,7 +2348,7 @@
     "name": "Компонент \"Не\""
   },
   "nuclearaftereffectemitter": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "nuclearaftereffectemitter"
   },
   "nucleardepthcharge": {
@@ -2812,7 +2812,7 @@
     "name": "Сканер руин"
   },
   "ruintoxins": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "ruintoxins"
   },
   "ruinvent": {
@@ -3296,11 +3296,11 @@
     "name": "Семя табачной лозы"
   },
   "tonguetendon": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "Язык блокиратора"
   },
   "tonguetendoncharacter": {
-    "has_icon": true,
+    "has_icon": false,
     "name": "tonguetendoncharacter"
   },
   "toolbelt": {

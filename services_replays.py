@@ -13,6 +13,8 @@ Design goal: MINIMAL server load.
 
 import os
 import io
+import json
+import re
 import struct
 import logging
 import threading
@@ -35,6 +37,155 @@ SETTING_UPLOAD_DIR = "replays_upload_dir"
 
 _MAGIC_DEMO = b"BDMO"
 _MAGIC_ZIP = b"PK\x03\x04"
+
+
+# Action-specific extraction keeps item resolution deterministic.  Server
+# logs are intentionally stored verbatim, so the replay UI needs a small
+# adapter before it can show an inventory icon next to an event.  We extract
+# only the object position of known Barotrauma log phrases; arbitrary words in
+# chat/diagnostics are never guessed to be items.
+_TIMELINE_ITEM_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "picked_up": (re.compile(r"\bpicked up (.+)$", re.IGNORECASE),),
+    "placed": (re.compile(r"\bplaced (.+?) in the inventory of\b", re.IGNORECASE),),
+    "removed": (re.compile(r"\bremoved (.+?) from the inventory of\b", re.IGNORECASE),),
+    "equipped": (re.compile(r"\bequipped (.+)$", re.IGNORECASE),),
+    "unequipped": (re.compile(r"\bunequipped (.+)$", re.IGNORECASE),),
+    "dropped": (re.compile(r"\bdropped (.+)$", re.IGNORECASE),),
+    "threw": (re.compile(r"\bthrew (.+)$", re.IGNORECASE),),
+    "used": (
+        re.compile(r"\bused (.+?) on\b", re.IGNORECASE),
+        re.compile(r"\bused (.+)$", re.IGNORECASE),
+    ),
+    "opened": (re.compile(r"\bopened (.+)$", re.IGNORECASE),),
+    "closed": (re.compile(r"\bclosed (.+)$", re.IGNORECASE),),
+    "activated": (re.compile(r"\bactivated (.+)$", re.IGNORECASE),),
+    "deactivated": (re.compile(r"\bdeactivated (.+)$", re.IGNORECASE),),
+    "repair": (re.compile(r"\bstarted repairing (.+)$", re.IGNORECASE),),
+    "repair_failed": (re.compile(r"\bfailed to repair (.+)$", re.IGNORECASE),),
+    "fabrication": (re.compile(r"\bstarted fabricating (.+)$", re.IGNORECASE),),
+    "fabrication_cancel": (
+        re.compile(r"\bcancelled the fabrication of (.+)$", re.IGNORECASE),
+    ),
+    "attack": (re.compile(r"\blaunched (.+)$", re.IGNORECASE),),
+}
+_ITEM_ID_SUFFIX_RE = re.compile(r"\s*\(ID:\s*\d+\)\s*$", re.IGNORECASE)
+_ITEM_PROJECTILE_SUFFIX_RE = re.compile(r"\s*\(projectile:.*\)\s*$", re.IGNORECASE)
+_item_catalog_index_lock = threading.Lock()
+_item_catalog_index: tuple[float, dict[str, tuple[str, str, bool]], list[str]] | None = None
+
+
+def _normalise_item_label(value: str) -> str:
+    """Canonical comparison key for localized prefab display names."""
+    value = value.casefold().replace("ё", "е")
+    value = value.replace("«", '"').replace("»", '"')
+    return " ".join(value.split()).strip(" \t\r\n.,:;!?'\"")
+
+
+def _load_timeline_item_index() -> tuple[dict[str, tuple[str, str, bool]], list[str]]:
+    """Return localized-name/identifier lookup for replay log enrichment.
+
+    The catalog is generated from the game content and already powers every
+    other item icon in NexusData.  Keeping the reverse index here avoids a
+    second source of truth and makes modded items work after the catalog is
+    regenerated.
+    """
+    global _item_catalog_index
+    # The catalog is deployment-time data. Avoid a stat + lock for every one
+    # of tens of thousands of timeline rows; a process restart is what makes
+    # a newly deployed catalog authoritative anyway.
+    if _item_catalog_index is not None:
+        return _item_catalog_index[1], _item_catalog_index[2]
+    catalog_path = os.path.join(os.path.dirname(__file__), "static", "item_catalog.json")
+    try:
+        mtime = os.path.getmtime(catalog_path)
+    except OSError:
+        return {}, []
+
+    with _item_catalog_index_lock:
+        if _item_catalog_index is not None and _item_catalog_index[0] == mtime:
+            return _item_catalog_index[1], _item_catalog_index[2]
+        try:
+            with open(catalog_path, "r", encoding="utf-8") as fh:
+                catalog = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to load item catalog for replay timeline")
+            return {}, []
+
+        index: dict[str, tuple[str, str, bool]] = {}
+        for identifier, payload in catalog.items():
+            if not isinstance(payload, dict):
+                continue
+            name = str(payload.get("name") or identifier).strip()
+            has_icon = bool(payload.get("has_icon"))
+            entry = (str(identifier), name, has_icon)
+            for alias in (identifier, name):
+                key = _normalise_item_label(str(alias))
+                if not key:
+                    continue
+                # Prefer the prefab that has actual artwork when localized
+                # names collide (blueprints/variants occasionally do).
+                existing = index.get(key)
+                if existing is None or (has_icon and not existing[2]):
+                    index[key] = entry
+        aliases = sorted(index, key=len, reverse=True)
+        _item_catalog_index = (mtime, index, aliases)
+        return index, aliases
+
+
+def extract_replay_timeline_item(
+    action_type: str,
+    details: str | None,
+) -> Optional[dict[str, object]]:
+    """Best-effort structured item for one server-log event.
+
+    Unknown/modded labels remain useful as ``name`` while ``identifier`` is
+    null, allowing the frontend to render a truthful SVG fallback instead of
+    a blank or unrelated icon.
+    """
+    text = (details or "").strip()
+    if not text:
+        return None
+    candidate = None
+    for pattern in _TIMELINE_ITEM_PATTERNS.get(action_type, ()):
+        match = pattern.search(text)
+        if match:
+            candidate = match.group(1).strip()
+            break
+    if not candidate:
+        return None
+
+    candidate = _ITEM_ID_SUFFIX_RE.sub("", candidate)
+    candidate = _ITEM_PROJECTILE_SUFFIX_RE.sub("", candidate).strip(" \t\r\n.,")
+    if not candidate:
+        return None
+
+    index, _aliases = _load_timeline_item_index()
+    key = _normalise_item_label(candidate)
+    resolved = index.get(key)
+    if resolved is None:
+        return {"identifier": None, "name": candidate}
+    identifier, name, has_icon = resolved
+    return {"identifier": identifier, "name": name, "has_icon": has_icon}
+
+
+def classify_replay_timeline_lane(action_type: str) -> str:
+    """Stable visual lane used by the V2 canvas timeline."""
+    if action_type in {"chat", "radio", "terminal"}:
+        return "communication"
+    if action_type in {"attack", "damage", "shot", "death", "structure"}:
+        return "combat"
+    if action_type in {
+        "picked_up", "placed", "removed", "opened", "closed", "equipped",
+        "unequipped", "dropped", "threw", "used", "fabrication",
+        "fabrication_cancel", "activated", "deactivated", "attached",
+    }:
+        return "inventory"
+    if action_type in {
+        "reactor", "repair", "repair_failed", "wire", "pump",
+        "settings_change",
+    }:
+        return "systems"
+    return "system"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
