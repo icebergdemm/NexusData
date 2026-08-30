@@ -4,7 +4,7 @@ import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, PanelsTopLeft } from 
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton,
-  SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
+  SidebarMenuItem, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar,
 } from "@/components/ui/sidebar"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,11 @@ import { IS_V2, buildUiVersionHref } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
 
 const V2_SIDEBAR_STORAGE_KEY = "nexusdata-v2-sidebar-open"
+
+function isNavItemActive(pathname: string, destination: string) {
+  if (destination === "/") return pathname === destination
+  return pathname === destination || pathname.startsWith(`${destination}/`)
+}
 
 function readV2SidebarState() {
   if (!IS_V2) return true
@@ -120,16 +125,41 @@ export function AppShell() {
                 <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
-                    {visibleItems.map((item) => (
-                      <SidebarMenuItem key={item.to}>
-                        <SidebarMenuButton asChild isActive={location.pathname === item.to} tooltip={item.label}>
-                          <Link to={item.to}>
-                            <item.icon />
-                            <span data-v2-sidebar-label={IS_V2 ? "item" : undefined}>{item.label}</span>
-                          </Link>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
+                    {visibleItems.map((item) => {
+                      const isActive = IS_V2
+                        ? isNavItemActive(location.pathname, item.to)
+                        : location.pathname === item.to
+
+                      return (
+                        <SidebarMenuItem key={item.to}>
+                          <SidebarMenuButton
+                            asChild
+                            isActive={isActive}
+                            tooltip={IS_V2 ? {
+                              sideOffset: 10,
+                              children: (
+                                <span data-slot="v2-sidebar-tooltip" className="grid gap-0.5">
+                                  <span className="font-medium">{item.label}</span>
+                                  <span className="text-[10px] uppercase tracking-[0.12em] opacity-60">
+                                    {group.label}
+                                  </span>
+                                </span>
+                              ),
+                            } : item.label}
+                          >
+                            <Link
+                              to={item.to}
+                              data-v2-nav-item={IS_V2 ? item.to : undefined}
+                              aria-label={IS_V2 ? item.label : undefined}
+                              aria-current={IS_V2 && isActive ? "page" : undefined}
+                            >
+                              <item.icon />
+                              <span data-v2-sidebar-label={IS_V2 ? "item" : undefined}>{item.label}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      )
+                    })}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -156,8 +186,8 @@ export function AppShell() {
             <SidebarMenuItem>
               <form action="/logout" method="post">
                 <input type="hidden" name="csrf_token" value={admin?.csrf_token ?? ""} />
-                <SidebarMenuButton asChild>
-                  <button type="submit" className="w-full">
+                <SidebarMenuButton asChild tooltip={IS_V2 ? "Выйти из NexusData" : undefined}>
+                  <button type="submit" className="w-full" aria-label={IS_V2 ? "Выйти из NexusData" : undefined}>
                     <LogOut />
                     <span data-v2-sidebar-label={IS_V2 ? "item" : undefined}>Выйти</span>
                   </button>
@@ -166,6 +196,13 @@ export function AppShell() {
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarFooter>
+        {IS_V2 && (
+          <SidebarRail
+            aria-label="Свернуть или развернуть боковую панель"
+            title="Свернуть или развернуть боковую панель"
+            tabIndex={0}
+          />
+        )}
       </Sidebar>
 
       <SidebarInset>
