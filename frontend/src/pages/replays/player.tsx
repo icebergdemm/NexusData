@@ -204,9 +204,6 @@ export function ReplayPlayerPage() {
         html[data-ui-version="v2"] .rpv-direct-time input:focus{border-color:var(--foreground);box-shadow:0 0 0 1px var(--foreground);}
         html[data-ui-version="v2"] .rpv-direct-time input[aria-invalid="true"]{border-color:var(--destructive);}
         html[data-ui-version="v2"] #rpvDirectTimeError{position:absolute;z-index:4;top:calc(100% + 5px);left:0;padding:4px 6px;border:1px solid var(--destructive);background:var(--background);color:var(--destructive);font-size:10px;}
-        html[data-ui-version="v2"] .rpv-precision-toggle{padding-inline:9px;}
-        html[data-ui-version="v2"] .rpv-precision-toggle svg{width:13px;height:13px;}
-        html[data-ui-version="v2"] .rpv-precision-toggle[aria-pressed="true"]{background:var(--foreground);color:var(--background);border-color:var(--foreground);}
         @media(prefers-reduced-motion:reduce){html[data-ui-version="v2"] .rpv-seek-shell,html[data-ui-version="v2"] .rpv-seek-shell .rpv-seek,html[data-ui-version="v2"] .rpv-precision-panel{transition-duration:1ms;}html[data-ui-version="v2"] .rpv-seek-shell[data-holding="true"] .rpv-hold-progress{animation-timing-function:steps(1,end);}}
         @media(max-width:1000px){html[data-ui-version="v2"] .rpv-layout{grid-template-columns:1fr;}html[data-ui-version="v2"] .rpv-side{max-height:none;}}
       `}</style>

@@ -374,15 +374,6 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
         {invalid && <span id="rpvDirectTimeError" role="alert">Формат: ЧЧ:ММ:СС.мс</span>}
       </form>
 
-      <button
-        type="button"
-        className="rpv-btn rpv-precision-toggle"
-        disabled={!ready}
-        aria-pressed={Boolean(precision)}
-        onClick={() => precision ? closePrecision(false) : openPrecision()}
-      >
-        <Crosshair aria-hidden="true" /> Точно
-      </button>
       <span id="rpvSeekHelp" className="sr-only">Стрелки меняют время на секунду, Shift со стрелкой на пять секунд, Control со стрелкой на сто миллисекунд. Удерживайте шкалу три секунды для точного режима.</span>
       <span className="sr-only" aria-live="polite">{holding ? "Удерживайте для точного режима" : precision ? "Точный режим включён" : ""}</span>
       <span className="sr-only">{playing ? "Реплей воспроизводится" : "Реплей на паузе"}</span>
