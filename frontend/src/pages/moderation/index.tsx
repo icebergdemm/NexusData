@@ -234,7 +234,7 @@ export function ModerationPage() {
                         <TableCell>{p.job_id ?? "-"}</TableCell>
                         <TableCell>{p.ping ?? "-"}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.join_time)}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground">{fmtPlayTime(p.total_play_time)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{fmtPlayTime(p.total_play_time != null ? p.total_play_time / 3600 : null)}</TableCell>
                         {(data.can_edit || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
