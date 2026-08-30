@@ -88,6 +88,18 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-filters input { width: 220px; height: 31px; padding-left: 28px; font-size: 11px; }
 .rpv-editor-filters [data-slot="select-trigger"] { width: 190px; height: 31px; font-size: 11px; }
 .rpv-editor-search-icon { position: absolute; left: 8px; top: 8px; z-index: 1; width: 14px; height: 14px; color: var(--muted-foreground); pointer-events: none; }
+.rpv-editor-search-scope { display: inline-flex; height: 31px; border: 1px solid var(--border); }
+.rpv-editor-search-scope button { border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 9px; color: var(--muted-foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: .04em; cursor: pointer; }
+.rpv-editor-search-scope button:last-child { border-right: 0; }
+.rpv-editor-search-scope button:hover { color: var(--foreground); }
+.rpv-editor-search-scope button.active { background: var(--foreground); color: var(--background); }
+.rpv-editor-search-scope button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.rpv-editor-search-loading { min-height: 140px; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 20px; color: var(--muted-foreground); }
+.rpv-editor-search-loading > svg { width: 18px; height: 18px; animation: rpv-search-pulse 1.2s ease-in-out infinite; }
+.rpv-editor-search-loading > div { display: flex; flex-direction: column; gap: 3px; }
+.rpv-editor-search-loading b { color: var(--foreground); font-size: 11px; }
+.rpv-editor-search-loading span { font-size: 10px; }
+@keyframes rpv-search-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 .rpv-editor-event-list { max-height: 350px; overflow: auto; scrollbar-width: thin; }
 .rpv-editor-event-list > button { width: 100%; min-height: 44px; display: grid; grid-template-columns: 96px 36px minmax(0, 1fr); align-items: center; gap: 8px; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 5px 10px; color: var(--foreground); text-align: left; cursor: pointer; }
@@ -174,7 +186,9 @@ html[data-ui-version="v2"] .rpv-player[data-filter-dimmed="true"] { opacity: .28
   .rpv-editor-title { grid-column: 1 / -1; }
   .rpv-editor-lower { grid-template-columns: minmax(0, 1fr) 290px; }
   .rpv-editor-events-head { align-items: stretch; flex-direction: column; }
+  .rpv-editor-filters { flex-wrap: wrap; }
   .rpv-editor-filters > * { flex: 1; }
+  .rpv-editor-search-scope button { flex: 1; }
   .rpv-editor-filters input,
   .rpv-editor-filters [data-slot="select-trigger"] { width: 100%; }
 }
@@ -191,4 +205,5 @@ html[data-ui-version="v2"] .rpv-player[data-filter-dimmed="true"] { opacity: .28
 
 @media (prefers-reduced-motion: reduce) {
   .rpv-editor *, .rpv-editor *::before, .rpv-editor *::after { scroll-behavior: auto !important; transition: none !important; }
+  .rpv-editor-search-loading > svg { animation: none; }
 }

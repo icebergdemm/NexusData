@@ -64,6 +64,8 @@ interface TimelineItem {
   has_icon?: boolean
 }
 
+type ReplaySearchScope = "window" | "round"
+
 export interface TimelineEvent {
   id: string
   event_id?: number | string
@@ -747,10 +749,12 @@ interface VisibleEventsPanelProps {
   onActionFilterChange: (value: string) => void
   onRetry: () => void
   onSearchChange: (value: string) => void
+  onSearchScopeChange: (value: ReplaySearchScope) => void
   onSelectEvent: (event: TimelineEvent) => void
   rangeEndMs: number
   rangeStartMs: number
   search: string
+  searchScope: ReplaySearchScope
   selectedEventId?: string
   selectedPlayer: string | null
   showHeading?: boolean
@@ -773,10 +777,12 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
   onActionFilterChange,
   onRetry,
   onSearchChange,
+  onSearchScopeChange,
   onSelectEvent,
   rangeEndMs,
   rangeStartMs,
   search,
+  searchScope,
   selectedEventId,
   selectedPlayer,
   showHeading = true,
@@ -797,13 +803,31 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
           </div>
         )}
         <div className="rpv-editor-filters">
+          <div className="rpv-editor-search-scope" role="group" aria-label="Область поиска">
+            <button
+              type="button"
+              aria-pressed={searchScope === "window"}
+              className={searchScope === "window" ? "active" : ""}
+              onClick={() => onSearchScopeChange("window")}
+            >
+              Участок
+            </button>
+            <button
+              type="button"
+              aria-pressed={searchScope === "round"}
+              className={searchScope === "round" ? "active" : ""}
+              onClick={() => onSearchScopeChange("round")}
+            >
+              Весь раунд
+            </button>
+          </div>
           <div className="relative">
             <Search className="rpv-editor-search-icon" />
             <Input
-              aria-label="Поиск событий по всему раунду"
+              aria-label={searchScope === "round" ? "Поиск событий по всему раунду" : "Поиск событий видимого участка"}
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Поиск по всему раунду"
+              placeholder={searchScope === "round" ? "Поиск по всему раунду" : "Поиск в участке"}
             />
           </div>
           <Select value={actionFilter} onValueChange={onActionFilterChange}>
@@ -820,10 +844,19 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
         </div>
       </div>
 
-      {isLoading && <div className="space-y-1 p-3">{Array.from({ length: 7 }).map((_, index) => <Skeleton key={index} className="h-9" />)}</div>}
+      {isLoading && (globalSearch ? (
+        <div className="rpv-editor-search-loading" role="status">
+          <Search aria-hidden="true" />
+          <div><b>Ищу по всему раунду…</b><span>Запрос будет остановлен через 15 секунд, если индекс не ответит.</span></div>
+        </div>
+      ) : (
+        <div className="space-y-1 p-3">{Array.from({ length: 7 }).map((_, index) => <Skeleton key={index} className="h-9" />)}</div>
+      ))}
       {isError && (
         <div className="rpv-editor-error">
-          Не удалось получить серверные события. Данные самой демозаписи остаются доступны.
+          {globalSearch
+            ? "Поиск по всему раунду не завершился. Уточните запрос или повторите попытку."
+            : "Не удалось получить серверные события. Данные самой демозаписи остаются доступны."}
           <Button variant="outline" size="sm" onClick={onRetry}>Повторить</Button>
         </div>
       )}
@@ -906,11 +939,13 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   const [viewStartMs, setViewStartMs] = useState(0)
   const [windowMs, setWindowMs] = useState(Math.max(1, initialDurationMs || 1))
   const [search, setSearch] = useState("")
+  const [searchScope, setSearchScope] = useState<ReplaySearchScope>("window")
   const [actionFilter, setActionFilter] = useState("all")
   const [eventsSheetOpen, setEventsSheetOpen] = useState(false)
   const trimmedSearch = search.trim()
   const debouncedGlobalSearch = useDebouncedValue(trimmedSearch, 320)
-  const globalSearchActive = trimmedSearch.length > 0
+  const searchActive = trimmedSearch.length > 0
+  const globalSearchActive = searchScope === "round" && searchActive
   const globalSearchReady = globalSearchActive && trimmedSearch === debouncedGlobalSearch
 
   const seekTo = useCallback((value: number) => {
@@ -1080,25 +1115,28 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
       debouncedGlobalSearch,
       actionFilter,
     ],
-    enabled: durationMs > 0 && debouncedGlobalSearch.length > 0,
+    enabled: durationMs > 0 && searchScope === "round" && debouncedGlobalSearch.length > 0,
     queryFn: ({ signal }) => {
       const params = new URLSearchParams({
-        limit: "10000",
+        limit: "5000",
         duration_ms: String(Math.round(durationMs)),
         from_ms: "0",
         to_ms: String(Math.round(durationMs)),
         search: debouncedGlobalSearch,
       })
       if (actionFilter !== "all") params.set("action_type", actionFilter)
+      const requestSignal = typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function"
+        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+        : signal
       return api.get<TimelineResponse>(
         `/api/v1/admin/replays/${replayId}/logs?${params.toString()}`,
-        { signal },
+        { signal: requestSignal },
       )
     },
     staleTime: (query) => query.state.data?.status === "unavailable" ? 0 : 2 * 60 * 1_000,
     refetchInterval: (query) => query.state.data?.status === "unavailable" ? UNAVAILABLE_RETRY_MS : false,
     gcTime: 2 * 60 * 1_000,
-    retry: 1,
+    retry: false,
   })
 
   const data = detailMode ? detailQuery.data : undefined
@@ -1118,7 +1156,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     if (!detailMode && selectedPlayer) void refetchPlayerOverview()
     if (globalSearchActive) void refetchGlobalSearch()
   }, [detailMode, globalSearchActive, refetchDetail, refetchGlobalSearch, refetchOverview, refetchPlayerOverview, selectedPlayer])
-  const unavailableReason = globalSearchQuery.data?.unavailable_reason
+  const unavailableReason = (globalSearchActive ? globalSearchQuery.data?.unavailable_reason : null)
     ?? data?.unavailable_reason
     ?? overviewData?.unavailable_reason
     ?? playerOverviewQuery.data?.unavailable_reason
@@ -1202,12 +1240,15 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   ), [demoEvents, detailMode, durationMs, events, overviewEvents])
   const filteredListEvents = useMemo(() => {
     if (globalSearchActive) return globalSearchReady ? globalSearchEvents : []
+    const term = trimmedSearch.toLocaleLowerCase("ru")
     const inWindow = listEvents.slice(lowerBound(listEvents, viewStartMs), lowerBound(listEvents, visibleEndMs + 1))
     return inWindow.filter((event) => {
       if (actionFilter !== "all" && event.action_type !== actionFilter) return false
-      return true
+      if (!term) return true
+      return `${event.player_name ?? ""} ${event.action_type} ${event.details} ${event.item?.name ?? ""} ${event.item?.identifier ?? ""} ${event.target_name ?? ""} ${event.entity_species ?? ""}`
+        .toLocaleLowerCase("ru").includes(term)
     })
-  }, [actionFilter, globalSearchActive, globalSearchEvents, globalSearchReady, listEvents, viewStartMs, visibleEndMs])
+  }, [actionFilter, globalSearchActive, globalSearchEvents, globalSearchReady, listEvents, trimmedSearch, viewStartMs, visibleEndMs])
   const filteredEventCount = useMemo(
     () => filteredListEvents.reduce((sum, event) => sum + (event.aggregate_count ?? 1), 0),
     [filteredListEvents],
@@ -1315,10 +1356,12 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
                 onActionFilterChange={setActionFilter}
                 onRetry={refetchTimeline}
                 onSearchChange={setSearch}
+                onSearchScopeChange={setSearchScope}
                 onSelectEvent={selectEvent}
                 rangeEndMs={visibleEndMs}
                 rangeStartMs={viewStartMs}
                 search={search}
+                searchScope={searchScope}
                 selectedEventId={selectedEvent?.id}
                 selectedPlayer={selectedPlayer}
                 showHeading={false}
@@ -1389,10 +1432,12 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
           onActionFilterChange={setActionFilter}
           onRetry={refetchTimeline}
           onSearchChange={setSearch}
+          onSearchScopeChange={setSearchScope}
           onSelectEvent={selectEvent}
           rangeEndMs={visibleEndMs}
           rangeStartMs={viewStartMs}
           search={search}
+          searchScope={searchScope}
           selectedEventId={selectedEvent?.id}
           selectedPlayer={selectedPlayer}
           totalIsCapped={displayedTotalIsCapped}
