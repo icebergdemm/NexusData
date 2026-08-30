@@ -201,6 +201,65 @@ class LogSearchTests(unittest.TestCase):
         self.assertEqual(events[0].action_type, "client_error")
         self.assertIn("System.InvalidOperationException", events[0].details)
 
+    def test_pvp_attack_parser_preserves_dotted_ranks(self):
+        victim = "Ст. Матрос Жертва"
+        attacker = "Ст. Матрос Нападающий"
+        line = (
+            f"{victim} attacked by {attacker}. "
+            "Gunshot wound: 12.0 Bleeding: 4.0"
+        )
+
+        events, _player_map = services_logs.parse_log_content(
+            f"[08/31/2026 12:00:00]\n{line}",
+            server_name="ASPER1",
+            source_file="pvp.log",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].action_type, "attack")
+        self.assertEqual(events[0].player_name, attacker)
+        self.assertEqual(events[0].details, line)
+
+    def test_pvp_attack_without_affliction_still_preserves_dotted_rank(self):
+        attacker = "Ст. Матрос Нападающий"
+        events, _player_map = services_logs.parse_log_content(
+            "[08/31/2026 12:00:00]\n"
+            f"Матрос Жертва attacked by {attacker}.",
+            server_name="ASPER1",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].action_type, "attack")
+        self.assertEqual(events[0].player_name, attacker)
+
+    def test_legacy_pvp_attack_actor_is_restored_from_details(self):
+        attacker = "Ст. Матрос Нападающий"
+        details = (
+            f"Матрос Жертва attacked by {attacker}. "
+            "Gunshot wound: 12.0 Bleeding: 4.0"
+        )
+        cursor = self.conn.execute(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) "
+            "VALUES (?,?,?,?,?,?)",
+            (1, "ASPER1", "Ст", "attack", details, "legacy-pvp.log"),
+        )
+        row_id = cursor.lastrowid
+        self.conn.execute(
+            "DELETE FROM fts_meta WHERE key=?",
+            (services_logs._ATTACK_PLAYER_REPAIR_KEY,),
+        )
+        self.conn.commit()
+
+        with patch.object(services_logs, "_fts_available", return_value=False):
+            repaired = services_logs._repair_legacy_attack_players(self.conn)
+
+        row = self.conn.execute(
+            "SELECT player, action, details FROM log_events WHERE id=?",
+            (row_id,),
+        ).fetchone()
+        self.assertEqual(repaired, 1)
+        self.assertEqual(row, (attacker, "attack", details))
+
     def test_player_autocomplete_normalises_legacy_client_error_name(self):
         player = "Старшина 2-ст Александр Гром"
         self.conn.executemany(

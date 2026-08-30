@@ -57,6 +57,10 @@ SHARD_KICK_RE = re.compile(r'^\[ShardLink\] (.+?) кикнут на этом ш�
 TAGGED_PLAYER_RE = re.compile(r'^\[CustomRadioThirdFork\]')
 
 # Action type classification patterns
+ATTACKED_BY_RE = re.compile(
+    r'^(.+?) attacked by (.+?)(?:\.\s+(?=[^:.\n]+:\s*-?\d)(.+))?\.?$'
+)
+
 ACTION_PATTERNS = [
     (re.compile(r'^(.+?) picked up (.+)$'), 'picked_up'),
     (re.compile(r'^(.+?) placed (.+) in the inventory of (.+)$'), 'placed'),
@@ -92,7 +96,14 @@ ACTION_PATTERNS = [
     (re.compile(r'^(.+?) grabbed (.+?)\'s body and received (.+)\.$'), 'looted_body'),
     (re.compile(r'^Respawning (.+?) \(.+?\) as (.+)\.$'), 'respawn'),
     # Combat & death
-    (re.compile(r'^(.+?) attacked by (.+?)\. (.+)$'), 'attack'),
+    # Character names on ASPER often contain an abbreviated rank with a dot
+    # ("Ст. Матрос ...").  The old non-greedy ``(.+?)\.`` stopped at that
+    # rank dot and indexed every such attack under the fake player "Ст".
+    # The optional damage section is recognisable by Barotrauma's
+    # ``Affliction name: numeric strength`` shape, so dots inside names remain
+    # part of the attacker while attacks without a non-zero affliction still
+    # parse correctly.
+    (ATTACKED_BY_RE, 'attack'),
     (re.compile(r'^(.+?) launched (.+)$'), 'attack'),
     (re.compile(r'^(.+) has died \(Cause of death: (.+)\)$'), 'death'),
     (re.compile(r'^(Inner|Outer) wall (breached|repaired) by (.+)$'), 'structure'),
@@ -577,6 +588,7 @@ _log_refresh_interval = 60  # 1 minute
 _AUTO_KICK_PLAYER_SEPARATOR = " was kicked because "
 _AUTO_KICK_PLAYER_REPAIR_KEY = "repair_auto_kick_player_v1"
 _CLIENT_ERROR_PLAYER_SEPARATOR = " has reported an error"
+_ATTACK_PLAYER_REPAIR_KEY = "repair_attack_player_v1"
 
 # Upper bound for search result counts (see search_logs). Text filters use a
 # leading-wildcard LIKE that no index can serve, so an exact COUNT(*) means a
@@ -688,6 +700,7 @@ def _init_schema(conn: sqlite3.Connection):
     # доиндексируется в фоне (см. _init_fts / fts_backfill_step).
     _init_fts(conn)
     _repair_legacy_auto_kick_players(conn)
+    _repair_legacy_attack_players(conn)
 
 
 def _normalise_stored_player_name(name: str) -> str:
@@ -753,6 +766,57 @@ def _repair_legacy_auto_kick_players(conn: sqlite3.Connection) -> int:
     except Exception:
         conn.rollback()
         logger.exception("Логи: не удалось исправить legacy-записи автокика")
+        return 0
+
+
+def _repair_legacy_attack_players(conn: sqlite3.Connection) -> int:
+    """Restore attackers truncated at a dot in already indexed PvP rows.
+
+    Raw server log files are intentionally removed after a durable SQLite
+    import, but the complete original action line remains in ``details``.
+    Reparse only rows behind the indexed ``action='attack'`` predicate and
+    update the actor when the old parser stored a truncated rank/name.
+    """
+    try:
+        if _fts_meta_get(conn, _ATTACK_PLAYER_REPAIR_KEY) == "1":
+            return 0
+        if _fts_available(conn) and _fts_meta_get(conn, "backfill_done") != "1":
+            return 0
+
+        conn.execute("BEGIN IMMEDIATE")
+        if _fts_meta_get(conn, _ATTACK_PLAYER_REPAIR_KEY) == "1":
+            conn.commit()
+            return 0
+        if _fts_available(conn) and _fts_meta_get(conn, "backfill_done") != "1":
+            conn.commit()
+            return 0
+
+        rows = conn.execute(
+            "SELECT id, player, details FROM log_events INDEXED BY ix_log_action "
+            "WHERE action = 'attack' AND instr(details, ' attacked by ') > 0"
+        ).fetchall()
+        updates = []
+        for row_id, stored_player, details in rows:
+            match = ATTACKED_BY_RE.match(details or "")
+            if not match:
+                continue
+            attacker = match.group(2).strip()
+            if attacker and attacker != (stored_player or "").strip():
+                updates.append((attacker, row_id))
+
+        if updates:
+            conn.executemany("UPDATE log_events SET player = ? WHERE id = ?", updates)
+        conn.execute(
+            "INSERT OR REPLACE INTO fts_meta(key, value) VALUES (?, '1')",
+            (_ATTACK_PLAYER_REPAIR_KEY,),
+        )
+        conn.commit()
+        if updates:
+            logger.info("Логи: восстановлены исполнители PvP-атак: %d", len(updates))
+        return len(updates)
+    except Exception:
+        conn.rollback()
+        logger.exception("Логи: не удалось восстановить исполнителей PvP-атак")
         return 0
 
 
