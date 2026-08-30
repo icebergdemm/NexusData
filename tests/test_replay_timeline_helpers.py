@@ -18,6 +18,16 @@ class ReplayTimelineHelperTests(unittest.TestCase):
                 "Цепная пушка",
                 True,
             ),
+            "морфин": (
+                "morphine",
+                "Морфин",
+                True,
+            ),
+            "медицинский шкаф": (
+                "medicalcabinet",
+                "Медицинский шкаф",
+                True,
+            ),
         }
         return index, sorted(index, key=len, reverse=True)
 
@@ -68,6 +78,61 @@ class ReplayTimelineHelperTests(unittest.TestCase):
 
         self.assertEqual(item["identifier"], "divingsuit")
         self.assertEqual(item["name"], "Водолазный скафандр")
+
+    def test_extracts_health_interface_item_without_inventing_recipient(self):
+        with patch.object(
+            services_replays,
+            "_load_timeline_item_index",
+            return_value=self._item_index(),
+        ):
+            item = services_replays.extract_replay_timeline_item(
+                "used",
+                "Ст. Медик used item Морфин",
+            )
+
+        self.assertEqual(item["identifier"], "morphine")
+        self.assertEqual(item["name"], "Морфин")
+        self.assertIsNone(services_replays.extract_replay_timeline_target(
+            "used",
+            "Ст. Медик used item Морфин",
+        ))
+
+    def test_extracts_item_target_for_direct_use_and_inventory_transfer(self):
+        cases = {
+            "used": (
+                "Ст. Медик used Морфин on Матрос Борис",
+                "Матрос Борис",
+            ),
+            "placed": (
+                "Ст. Медик placed Морфин in the inventory of Медицинский шкаф (ID: 42)",
+                "Медицинский шкаф",
+            ),
+            "removed": (
+                "Ст. Медик removed Морфин from the inventory of Медицинский шкаф (ID: 42)",
+                "Медицинский шкаф",
+            ),
+        }
+
+        for action_type, (details, expected) in cases.items():
+            with self.subTest(action_type=action_type):
+                self.assertEqual(
+                    services_replays.extract_replay_timeline_target(action_type, details),
+                    expected,
+                )
+
+    def test_extracts_configured_item_from_settings_change(self):
+        with patch.object(
+            services_replays,
+            "_load_timeline_item_index",
+            return_value=self._item_index(),
+        ):
+            item = services_replays.extract_replay_timeline_item(
+                "settings_change",
+                'Ст. Инженер set the value "GuiFrameOffset" of the item "Медицинский шкаф" to "-24,-2"',
+            )
+
+        self.assertEqual(item["identifier"], "medicalcabinet")
+        self.assertEqual(item["name"], "Медицинский шкаф")
 
     def test_unknown_item_keeps_truthful_name_for_frontend_fallback(self):
         with patch.object(

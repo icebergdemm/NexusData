@@ -245,6 +245,19 @@ class LogSearchTests(unittest.TestCase):
         self.assertEqual(events[0].player_name, "Ст. Матрос Испытатель")
         self.assertEqual(events[0].details, line)
 
+    def test_health_interface_item_use_without_target_remains_searchable(self):
+        line = "Ст. Медик Испытатель used item Морфин"
+        events, _player_map = services_logs.parse_log_content(
+            f"[08/31/2026 12:00:00]\n{line}",
+            server_name="ASPER1",
+            source_file="items.log",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].action_type, "used")
+        self.assertEqual(events[0].player_name, "Ст. Медик Испытатель")
+        self.assertEqual(events[0].details, line)
+
     def test_legacy_pvp_attack_actor_is_restored_from_details(self):
         attacker = "Ст. Матрос Нападающий"
         details = (

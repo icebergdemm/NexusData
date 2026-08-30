@@ -37,6 +37,7 @@ from services_replays import (
     build_replay_timeline_overview_rows,
     classify_replay_timeline_lane,
     extract_replay_timeline_item,
+    extract_replay_timeline_target,
 )
 
 settings = get_settings()
@@ -1197,6 +1198,7 @@ async def api_replay_logs(
                 "source_file": event.source_file,
                 "lane": classify_replay_timeline_lane(event.action_type),
                 "item": extract_replay_timeline_item(event.action_type, event.details),
+                "target_name": extract_replay_timeline_target(event.action_type, event.details),
                 "precision_ms": 1_000,
             })
         return rows, first_total, first_total_is_capped, has_more, player_counts, action_counts

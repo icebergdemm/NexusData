@@ -54,7 +54,8 @@ _TIMELINE_ITEM_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "dropped": (re.compile(r"\bdropped (.+)$", re.IGNORECASE),),
     "threw": (re.compile(r"\bthrew (.+)$", re.IGNORECASE),),
     "used": (
-        re.compile(r"\bused (.+?) on\b", re.IGNORECASE),
+        re.compile(r"\bused (?:item )?(.+?) on\b", re.IGNORECASE),
+        re.compile(r"\bused item (.+)$", re.IGNORECASE),
         re.compile(r"\bused (.+)$", re.IGNORECASE),
     ),
     "opened": (re.compile(r"\bopened (.+)$", re.IGNORECASE),),
@@ -68,6 +69,14 @@ _TIMELINE_ITEM_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(r"\bcancelled the fabrication of (.+)$", re.IGNORECASE),
     ),
     "attack": (re.compile(r"\blaunched (.+)$", re.IGNORECASE),),
+    "settings_change": (
+        re.compile(r'\bof the item ["“](.+?)["”]\s+to\b', re.IGNORECASE),
+    ),
+}
+_TIMELINE_TARGET_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "placed": (re.compile(r"\bin the inventory of (.+)$", re.IGNORECASE),),
+    "removed": (re.compile(r"\bfrom the inventory of (.+)$", re.IGNORECASE),),
+    "used": (re.compile(r"\bused .+? on (.+)$", re.IGNORECASE),),
 }
 _ITEM_ID_SUFFIX_RE = re.compile(r"\s*\(ID:\s*\d+\)\s*$", re.IGNORECASE)
 _ITEM_PROJECTILE_SUFFIX_RE = re.compile(r"\s*\(projectile:.*\)\s*$", re.IGNORECASE)
@@ -167,6 +176,23 @@ def extract_replay_timeline_item(
         return {"identifier": None, "name": candidate}
     identifier, name, has_icon = resolved
     return {"identifier": identifier, "name": name, "has_icon": has_icon}
+
+
+def extract_replay_timeline_target(
+    action_type: str,
+    details: str | None,
+) -> Optional[str]:
+    """Extract the truthful container/recipient from a known log phrase."""
+    text = (details or "").strip()
+    if not text:
+        return None
+    for pattern in _TIMELINE_TARGET_PATTERNS.get(action_type, ()):
+        match = pattern.search(text)
+        if not match:
+            continue
+        target = _ITEM_ID_SUFFIX_RE.sub("", match.group(1)).strip(" \t\r\n.,\"“”")
+        return target or None
+    return None
 
 
 def classify_replay_timeline_lane(action_type: str) -> str:

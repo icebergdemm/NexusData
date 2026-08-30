@@ -82,6 +82,7 @@ export interface TimelineEvent {
   player_overlay?: boolean
   entity_species?: string | null
   entity_team_id?: number | null
+  target_name?: string | null
 }
 
 function playerCountLabel(count: number): string {
@@ -226,6 +227,43 @@ const ACTION_LABELS: Record<string, string> = {
 
 function actionLabel(actionType: string): string {
   return ACTION_LABELS[actionType] ?? actionType.replaceAll("_", " ")
+}
+
+function hydrateServerEvents(
+  rawEvents: TimelineResponse["events"] | undefined,
+  idPrefix: string,
+): TimelineEvent[] {
+  return (rawEvents ?? []).map((event, index) => ({
+    ...event,
+    id: `${idPrefix}:${event.event_id ?? `${event.timestamp ?? event.offset_ms}:${index}`}`,
+    source: "server_log" as const,
+    details: event.details ?? "",
+    lane: event.lane ?? fallbackLane(event.action_type),
+    precision_ms: event.precision_ms ?? 1_000,
+  }))
+}
+
+function mergeServerAndDemoEvents(
+  serverEvents: TimelineEvent[],
+  demoEvents: TimelineEvent[],
+  durationMs: number,
+): TimelineEvent[] {
+  const communicationTimes = new Map<string, number[]>()
+  for (const event of serverEvents) {
+    if (event.lane !== "communication") continue
+    const key = `${event.player_name ?? ""}\u0000${communicationText(event)}`
+    const times = communicationTimes.get(key) ?? []
+    times.push(event.offset_ms)
+    communicationTimes.set(key, times)
+  }
+  const deduplicatedDemo = demoEvents.filter((event) => {
+    if (event.source !== "demo_chat") return true
+    const key = `${event.player_name ?? ""}\u0000${communicationText(event)}`
+    return !(communicationTimes.get(key) ?? []).some((time) => Math.abs(time - event.offset_ms) <= 1_500)
+  })
+  return [...serverEvents, ...deduplicatedDemo]
+    .filter((event) => event.offset_ms >= 0 && event.offset_ms <= durationMs)
+    .sort((left, right) => left.offset_ms - right.offset_ms || left.id.localeCompare(right.id))
 }
 
 function getReplayBridge(): ReplayBridge | undefined {
@@ -701,6 +739,7 @@ interface VisibleEventsPanelProps {
   detailMode: boolean
   filteredEventCount: number
   filteredRowCount: number
+  globalSearch: boolean
   isError: boolean
   isLoading: boolean
   listWindow: TimelineEvent[]
@@ -726,6 +765,7 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
   detailMode,
   filteredEventCount,
   filteredRowCount,
+  globalSearch,
   isError,
   isLoading,
   listWindow,
@@ -749,9 +789,9 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
       <div className={`rpv-editor-events-head ${showHeading ? "" : "filters-only"}`}>
         {showHeading && (
           <div>
-            <strong>СОБЫТИЯ ВИДИМОГО УЧАСТКА</strong>
+            <strong>{globalSearch ? "РЕЗУЛЬТАТЫ ПО ВСЕМУ РАУНДУ" : "СОБЫТИЯ ВИДИМОГО УЧАСТКА"}</strong>
             <span>
-              {formatTimecode(rangeStartMs)} — {formatTimecode(rangeEndMs)}
+              {globalSearch ? "Весь раунд" : `${formatTimecode(rangeStartMs)} — ${formatTimecode(rangeEndMs)}`}
               {` · ${filteredEventCount.toLocaleString("ru-RU")}`}
             </span>
           </div>
@@ -760,10 +800,10 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
           <div className="relative">
             <Search className="rpv-editor-search-icon" />
             <Input
-              aria-label="Поиск событий видимого участка"
+              aria-label="Поиск событий по всему раунду"
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Поиск в участке"
+              placeholder="Поиск по всему раунду"
             />
           </div>
           <Select value={actionFilter} onValueChange={onActionFilterChange}>
@@ -805,23 +845,37 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
                 {event.item ? <ItemPreview item={event.item} /> : <Icon className="rpv-editor-event-icon" />}
                 <span className="rpv-editor-event-copy">
                   <b>{eventActorLabel(event)}</b>
-                  <small>{actionLabel(event.action_type)} · {event.details}</small>
+                  <small>
+                    {actionLabel(event.action_type)}
+                    {event.target_name ? ` → ${event.target_name}` : ""}
+                    {` · ${event.details}`}
+                  </small>
                 </span>
               </button>
             )
           })}
-          {!listWindow.length && <div className="rpv-editor-empty">На видимом участке событий нет</div>}
+          {!listWindow.length && (
+            <div className="rpv-editor-empty">
+              {globalSearch ? "Во всём раунде совпадений нет" : "На видимом участке событий нет"}
+            </div>
+          )}
         </div>
       )}
       {!detailMode && (
         <div className="rpv-editor-cap">Серверные маркеры сгруппированы из-за плотности журнала. Увеличьте масштаб до участка короче 20 минут, чтобы загрузить предметы, цели и точные значения.</div>
       )}
       {filteredRowCount > listWindow.length && (
-        <div className="rpv-editor-cap">Показаны ближайшие {listWindow.length} из {filteredRowCount} строк. Увеличьте масштаб для точного разбора.</div>
+        <div className="rpv-editor-cap">
+          {globalSearch
+            ? `Показаны ближайшие к текущему времени ${listWindow.length} из ${filteredRowCount} совпадений.`
+            : `Показаны ближайшие ${listWindow.length} из ${filteredRowCount} строк. Увеличьте масштаб для точного разбора.`}
+        </div>
       )}
       {totalIsCapped && (
         <div className="rpv-editor-warning">
-          В участке больше {loadedCount.toLocaleString("ru-RU")} точных строк. Увеличьте масштаб, чтобы дозагрузить остальные.
+          {globalSearch
+            ? `Найдено больше ${loadedCount.toLocaleString("ru-RU")} совпадений. Уточните запрос или тип действия.`
+            : `В участке больше ${loadedCount.toLocaleString("ru-RU")} точных строк. Увеличьте масштаб, чтобы дозагрузить остальные.`}
         </div>
       )}
       {unavailableReason && (
@@ -854,6 +908,10 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   const [search, setSearch] = useState("")
   const [actionFilter, setActionFilter] = useState("all")
   const [eventsSheetOpen, setEventsSheetOpen] = useState(false)
+  const trimmedSearch = search.trim()
+  const debouncedGlobalSearch = useDebouncedValue(trimmedSearch, 320)
+  const globalSearchActive = trimmedSearch.length > 0
+  const globalSearchReady = globalSearchActive && trimmedSearch === debouncedGlobalSearch
 
   const seekTo = useCallback((value: number) => {
     const next = clamp(Math.round(value), 0, durationMs || Number.MAX_SAFE_INTEGER)
@@ -1014,47 +1072,76 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     retry: 1,
   })
 
+  const globalSearchQuery = useQuery({
+    queryKey: [
+      "replay-timeline-global-search",
+      replayId,
+      Math.round(durationMs),
+      debouncedGlobalSearch,
+      actionFilter,
+    ],
+    enabled: durationMs > 0 && debouncedGlobalSearch.length > 0,
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams({
+        limit: "10000",
+        duration_ms: String(Math.round(durationMs)),
+        from_ms: "0",
+        to_ms: String(Math.round(durationMs)),
+        search: debouncedGlobalSearch,
+      })
+      if (actionFilter !== "all") params.set("action_type", actionFilter)
+      return api.get<TimelineResponse>(
+        `/api/v1/admin/replays/${replayId}/logs?${params.toString()}`,
+        { signal },
+      )
+    },
+    staleTime: (query) => query.state.data?.status === "unavailable" ? 0 : 2 * 60 * 1_000,
+    refetchInterval: (query) => query.state.data?.status === "unavailable" ? UNAVAILABLE_RETRY_MS : false,
+    gcTime: 2 * 60 * 1_000,
+    retry: 1,
+  })
+
   const data = detailMode ? detailQuery.data : undefined
-  const isLoading = detailMode ? detailQuery.isLoading : overviewQuery.isLoading
-  const isError = detailMode ? detailQuery.isError : overviewQuery.isError
+  const isLoading = globalSearchActive
+    ? (!globalSearchReady || (globalSearchQuery.isLoading && !globalSearchQuery.data))
+    : detailMode ? detailQuery.isLoading : overviewQuery.isLoading
+  const isError = globalSearchActive
+    ? globalSearchQuery.isError
+    : detailMode ? detailQuery.isError : overviewQuery.isError
   const refetchOverview = overviewQuery.refetch
   const refetchPlayerOverview = playerOverviewQuery.refetch
   const refetchDetail = detailQuery.refetch
+  const refetchGlobalSearch = globalSearchQuery.refetch
   const refetchTimeline = useCallback(() => {
     void refetchOverview()
     if (detailMode) void refetchDetail()
     if (!detailMode && selectedPlayer) void refetchPlayerOverview()
-  }, [detailMode, refetchDetail, refetchOverview, refetchPlayerOverview, selectedPlayer])
-  const unavailableReason = data?.unavailable_reason
+    if (globalSearchActive) void refetchGlobalSearch()
+  }, [detailMode, globalSearchActive, refetchDetail, refetchGlobalSearch, refetchOverview, refetchPlayerOverview, selectedPlayer])
+  const unavailableReason = globalSearchQuery.data?.unavailable_reason
+    ?? data?.unavailable_reason
     ?? overviewData?.unavailable_reason
     ?? playerOverviewQuery.data?.unavailable_reason
 
   const events = useMemo<TimelineEvent[]>(() => {
-    const serverEvents = (data?.events ?? []).map((event, index) => ({
-      ...event,
-      id: `server:${event.event_id ?? `${event.timestamp ?? event.offset_ms}:${index}`}`,
-      source: "server_log" as const,
-      details: event.details ?? "",
-      lane: event.lane ?? fallbackLane(event.action_type),
-      precision_ms: event.precision_ms ?? 1_000,
-    }))
-    const communicationTimes = new Map<string, number[]>()
-    for (const event of serverEvents) {
-      if (event.lane !== "communication") continue
-      const key = `${event.player_name ?? ""}\u0000${communicationText(event)}`
-      const times = communicationTimes.get(key) ?? []
-      times.push(event.offset_ms)
-      communicationTimes.set(key, times)
-    }
-    const deduplicatedDemo = demoEvents.filter((event) => {
-      if (event.source !== "demo_chat") return true
-      const key = `${event.player_name ?? ""}\u0000${communicationText(event)}`
-      return !(communicationTimes.get(key) ?? []).some((time) => Math.abs(time - event.offset_ms) <= 1_500)
-    })
-    return [...serverEvents, ...deduplicatedDemo]
-      .filter((event) => event.offset_ms >= 0 && event.offset_ms <= durationMs)
-      .sort((left, right) => left.offset_ms - right.offset_ms || left.id.localeCompare(right.id))
+    const serverEvents = hydrateServerEvents(data?.events, "server")
+    return mergeServerAndDemoEvents(serverEvents, demoEvents, durationMs)
   }, [data?.events, demoEvents, durationMs])
+
+  const globalSearchEvents = useMemo<TimelineEvent[]>(() => {
+    if (!debouncedGlobalSearch) return []
+    const term = debouncedGlobalSearch.toLocaleLowerCase("ru")
+    const matchingDemo = demoEvents.filter((event) => {
+      if (actionFilter !== "all" && event.action_type !== actionFilter) return false
+      return `${event.player_name ?? ""} ${event.action_type} ${event.details} ${event.item?.name ?? ""} ${event.item?.identifier ?? ""} ${event.target_name ?? ""} ${event.entity_species ?? ""}`
+        .toLocaleLowerCase("ru").includes(term)
+    })
+    return mergeServerAndDemoEvents(
+      hydrateServerEvents(globalSearchQuery.data?.events, "global"),
+      matchingDemo,
+      durationMs,
+    )
+  }, [actionFilter, debouncedGlobalSearch, demoEvents, durationMs, globalSearchQuery.data?.events])
 
   const overviewEvents = useMemo<TimelineEvent[]>(() => (
     (overviewData?.overview ?? []).map((event, index) => ({
@@ -1114,15 +1201,13 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
         .sort((left, right) => left.offset_ms - right.offset_ms || left.id.localeCompare(right.id))
   ), [demoEvents, detailMode, durationMs, events, overviewEvents])
   const filteredListEvents = useMemo(() => {
-    const term = search.trim().toLocaleLowerCase("ru")
+    if (globalSearchActive) return globalSearchReady ? globalSearchEvents : []
     const inWindow = listEvents.slice(lowerBound(listEvents, viewStartMs), lowerBound(listEvents, visibleEndMs + 1))
     return inWindow.filter((event) => {
       if (actionFilter !== "all" && event.action_type !== actionFilter) return false
-      if (!term) return true
-      return `${event.player_name ?? ""} ${event.action_type} ${event.details} ${event.item?.name ?? ""}`
-        .toLocaleLowerCase("ru").includes(term)
+      return true
     })
-  }, [actionFilter, listEvents, search, viewStartMs, visibleEndMs])
+  }, [actionFilter, globalSearchActive, globalSearchEvents, globalSearchReady, listEvents, viewStartMs, visibleEndMs])
   const filteredEventCount = useMemo(
     () => filteredListEvents.reduce((sum, event) => sum + (event.aggregate_count ?? 1), 0),
     [filteredListEvents],
@@ -1143,8 +1228,20 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
 
   const selectEvent = useCallback((event: TimelineEvent) => {
     setSelectedEvent(event)
+    if (globalSearchActive) {
+      const targetWindowMs = Math.min(windowMs, 60_000)
+      setWindowMs(targetWindowMs)
+      setViewStartMs(clamp(event.offset_ms - targetWindowMs / 2, 0, Math.max(0, durationMs - targetWindowMs)))
+    }
     seekTo(event.offset_ms)
-  }, [seekTo])
+  }, [durationMs, globalSearchActive, seekTo, windowMs])
+
+  const displayedLoadedCount = globalSearchActive
+    ? (globalSearchQuery.data?.loaded ?? 0)
+    : (data?.loaded ?? 0)
+  const displayedTotalIsCapped = globalSearchActive
+    ? Boolean(globalSearchQuery.data?.total_is_capped)
+    : Boolean(data?.total_is_capped)
 
   const zoom = (factor: number) => changeView(zoomWindowAroundPoint({
     durationMs,
@@ -1190,28 +1287,31 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
           </Button>
           <Sheet open={eventsSheetOpen} onOpenChange={setEventsSheetOpen}>
             <SheetTrigger asChild>
-              <Button variant="outline" size="sm" title="Открыть события текущего участка">
+              <Button variant="outline" size="sm" title={globalSearchActive ? "Открыть результаты по всему раунду" : "Открыть события текущего участка"}>
                 <PanelRightOpen /> События
                 <span className="rpv-editor-events-count">{filteredEventCount.toLocaleString("ru-RU")}</span>
               </Button>
             </SheetTrigger>
             <SheetContent className="rpv-editor-events-sheet w-full gap-0 p-0 sm:max-w-2xl">
               <SheetHeader className="rpv-editor-sheet-head">
-                <SheetTitle>События видимого участка</SheetTitle>
+                <SheetTitle>{globalSearchActive ? "Результаты по всему раунду" : "События видимого участка"}</SheetTitle>
                 <SheetDescription>
-                  {formatTimecode(viewStartMs)} — {formatTimecode(visibleEndMs)} · {filteredEventCount.toLocaleString("ru-RU")} событий
+                  {globalSearchActive
+                    ? `Весь раунд · ${filteredEventCount.toLocaleString("ru-RU")} событий`
+                    : `${formatTimecode(viewStartMs)} — ${formatTimecode(visibleEndMs)} · ${filteredEventCount.toLocaleString("ru-RU")} событий`}
                 </SheetDescription>
               </SheetHeader>
               <VisibleEventsPanel
                 actionFilter={actionFilter}
                 actionTypes={actionTypes}
-                detailMode={detailMode}
+                detailMode={globalSearchActive || detailMode}
                 filteredEventCount={filteredEventCount}
                 filteredRowCount={filteredListEvents.length}
+                globalSearch={globalSearchActive}
                 isError={isError}
                 isLoading={isLoading}
                 listWindow={listWindow}
-                loadedCount={data?.loaded ?? 0}
+                loadedCount={displayedLoadedCount}
                 onActionFilterChange={setActionFilter}
                 onRetry={refetchTimeline}
                 onSearchChange={setSearch}
@@ -1222,7 +1322,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
                 selectedEventId={selectedEvent?.id}
                 selectedPlayer={selectedPlayer}
                 showHeading={false}
-                totalIsCapped={Boolean(data?.total_is_capped)}
+                totalIsCapped={displayedTotalIsCapped}
                 unavailableReason={unavailableReason}
                 variant="sheet"
               />
@@ -1278,13 +1378,14 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
         <VisibleEventsPanel
           actionFilter={actionFilter}
           actionTypes={actionTypes}
-          detailMode={detailMode}
+          detailMode={globalSearchActive || detailMode}
           filteredEventCount={filteredEventCount}
           filteredRowCount={filteredListEvents.length}
+          globalSearch={globalSearchActive}
           isError={isError}
           isLoading={isLoading}
           listWindow={listWindow}
-          loadedCount={data?.loaded ?? 0}
+          loadedCount={displayedLoadedCount}
           onActionFilterChange={setActionFilter}
           onRetry={refetchTimeline}
           onSearchChange={setSearch}
@@ -1294,7 +1395,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
           search={search}
           selectedEventId={selectedEvent?.id}
           selectedPlayer={selectedPlayer}
-          totalIsCapped={Boolean(data?.total_is_capped)}
+          totalIsCapped={displayedTotalIsCapped}
         />
 
         <aside className="rpv-editor-inspector">
@@ -1312,6 +1413,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
               <dl>
                 <div><dt>Дорожка</dt><dd>{LANES.find((lane) => lane.id === selectedEvent.lane)?.label}</dd></div>
                 {selectedEvent.item?.identifier && <div><dt>Identifier</dt><dd>{selectedEvent.item.identifier}</dd></div>}
+                {selectedEvent.target_name && <div><dt>Цель / контейнер</dt><dd>{selectedEvent.target_name}</dd></div>}
                 {selectedEvent.entity_species && <div><dt>Вид сущности</dt><dd>{selectedEvent.entity_species}</dd></div>}
                 {selectedEvent.entity_team_id != null && <div><dt>Команда</dt><dd>{selectedEvent.entity_team_id}</dd></div>}
                 {selectedEvent.timestamp && <div><dt>Время сервера</dt><dd>{formatServerClock(selectedEvent.timestamp)}</dd></div>}
