@@ -4,8 +4,11 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
-export default defineConfig({
-  base: '/admin/',
+export default defineConfig(({ command, isPreview }) => ({
+  // During local development Vite must accept both SPA entry points. Built
+  // assets intentionally stay below /admin/assets so production can serve
+  // one immutable bundle to the classic and opt-in V2 shells.
+  base: command === 'serve' && !isPreview ? '/' : '/admin/',
   plugins: [react(), tailwindcss()],
   define: {
     // Отпечаток сборки. Нужен для cache-busting hand-written скриптов из
@@ -30,4 +33,4 @@ export default defineConfig({
       '/logout': 'http://localhost:8000',
     },
   },
-})
+}))

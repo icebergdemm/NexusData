@@ -139,3 +139,308 @@ body {
     @apply bg-background text-foreground;
   }
 }
+
+/*
+  NexusData V2 is an opt-in visual shell served only below /v2. The original
+  /admin design intentionally keeps the tokens above untouched. Both shells
+  render the same React pages and call the same APIs; only this scoped layer
+  changes presentation.
+*/
+html[data-ui-version="v2"] {
+  color-scheme: dark;
+
+  --radius: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+
+  --background: #050505;
+  --foreground: #f5f5f5;
+  --card: #080808;
+  --card-foreground: #f5f5f5;
+  --popover: #0a0a0a;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5f5f5;
+  --primary-foreground: #050505;
+  --secondary: #111111;
+  --secondary-foreground: #f5f5f5;
+  --muted: #111111;
+  --muted-foreground: #a3a3a3;
+  --accent: #181818;
+  --accent-foreground: #ffffff;
+  --destructive: #f05252;
+  --destructive-foreground: #ffffff;
+  --success: #65c466;
+  --warning: #e8b339;
+  --info: #d4d4d4;
+  --border: #2b2b2b;
+  --input: #343434;
+  --ring: #f5f5f5;
+  --sidebar: #050505;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: #f5f5f5;
+  --sidebar-primary-foreground: #050505;
+  --sidebar-accent: #151515;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #2b2b2b;
+  --sidebar-ring: #f5f5f5;
+  --chart-1: #f4f4f5;
+  --chart-2: #c7c7ca;
+  --chart-3: #96969c;
+  --chart-4: #68686f;
+  --chart-5: #3f3f46;
+
+  background: var(--background);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html[data-ui-version="v2"].light {
+  color-scheme: light;
+
+  --background: #ffffff;
+  --foreground: #080808;
+  --card: #ffffff;
+  --card-foreground: #080808;
+  --popover: #ffffff;
+  --popover-foreground: #080808;
+  --primary: #080808;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f2;
+  --secondary-foreground: #080808;
+  --muted: #f1f1f1;
+  --muted-foreground: #626262;
+  --accent: #e9e9e9;
+  --accent-foreground: #000000;
+  --destructive: #c92d2d;
+  --destructive-foreground: #ffffff;
+  --success: #247a31;
+  --warning: #9a6500;
+  --info: #454545;
+  --border: #cecece;
+  --input: #bdbdbd;
+  --ring: #080808;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #080808;
+  --sidebar-primary: #080808;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e9e9e9;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #cecece;
+  --sidebar-ring: #080808;
+  --chart-1: #111111;
+  --chart-2: #3d3d3d;
+  --chart-3: #686868;
+  --chart-4: #989898;
+  --chart-5: #c7c7c7;
+}
+
+html[data-ui-version="v2"] body {
+  min-height: 100svh;
+  background-color: var(--background);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 24%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 18%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+html[data-ui-version="v2"] *,
+html[data-ui-version="v2"] *::before,
+html[data-ui-version="v2"] *::after {
+  border-radius: 0 !important;
+}
+
+html[data-ui-version="v2"] [class*="shadow"] {
+  box-shadow: none !important;
+}
+
+html[data-ui-version="v2"] [class*="bg-gradient"] {
+  background-image: none !important;
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-wrapper"] {
+  --sidebar-width: 15rem !important;
+  --sidebar-width-icon: 3.25rem !important;
+  background: var(--background);
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-header"] {
+  min-height: 3.5rem;
+  justify-content: center;
+  border-bottom: 1px solid var(--sidebar-border);
+  padding-inline: 0.75rem;
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-content"] {
+  gap: 0;
+  scrollbar-color: var(--border) transparent;
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-group"] {
+  padding: 0.65rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--sidebar-border) 68%, transparent);
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-group-label"] {
+  height: 1.75rem;
+  padding-inline: 0.875rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-menu"] {
+  gap: 0;
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-menu-button"] {
+  min-height: 2.25rem;
+  padding-inline: 0.875rem;
+  border-left: 2px solid transparent;
+  font-size: 0.75rem;
+  letter-spacing: 0.025em;
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-menu-button"][data-active="true"] {
+  border-left-color: var(--sidebar-foreground);
+  background: var(--sidebar-accent);
+}
+
+html[data-ui-version="v2"] [data-slot="sidebar-footer"] {
+  border-top: 1px solid var(--sidebar-border);
+}
+
+html[data-ui-version="v2"] [data-slot="app-header"] {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: 3.5rem;
+  background: color-mix(in srgb, var(--background) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+html[data-ui-version="v2"] [data-slot="app-content"] {
+  padding: 1rem;
+}
+
+html[data-ui-version="v2"] [data-slot="page-header"] {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+html[data-ui-version="v2"] [data-slot="page-header-icon"] {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--foreground);
+}
+
+html[data-ui-version="v2"] [data-slot="page-header-title"] {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+html[data-ui-version="v2"] [data-slot="page-header-description"] {
+  margin-top: 0.2rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+html[data-ui-version="v2"] [data-slot="card"] {
+  gap: 1rem;
+  padding-block: 1rem;
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+}
+
+html[data-ui-version="v2"] [data-slot="card-header"],
+html[data-ui-version="v2"] [data-slot="card-content"],
+html[data-ui-version="v2"] [data-slot="card-footer"] {
+  padding-inline: 1rem;
+}
+
+html[data-ui-version="v2"] [data-slot="card-title"],
+html[data-ui-version="v2"] thead,
+html[data-ui-version="v2"] [role="tablist"] {
+  letter-spacing: 0.045em;
+}
+
+html[data-ui-version="v2"] thead {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+}
+
+html[data-ui-version="v2"] tbody,
+html[data-ui-version="v2"] code,
+html[data-ui-version="v2"] pre,
+html[data-ui-version="v2"] .tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-ui-version="v2"] [data-slot="button"],
+html[data-ui-version="v2"] [data-slot="input"],
+html[data-ui-version="v2"] [data-slot="textarea"],
+html[data-ui-version="v2"] [data-slot="select-trigger"] {
+  box-shadow: none;
+}
+
+html[data-ui-version="v2"] :where(
+  a,
+  button,
+  input,
+  textarea,
+  select,
+  [role="button"],
+  [role="menuitem"],
+  [role="tab"]
+):focus-visible {
+  outline: 2px solid var(--ring) !important;
+  outline-offset: 2px;
+}
+
+html[data-ui-version="v2"] [data-slot="button"] {
+  letter-spacing: 0.025em;
+}
+
+html[data-ui-version="v2"] [data-slot="badge"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.035em;
+}
+
+html[data-ui-version="v2"] [data-v2-chart] canvas {
+  filter: grayscale(1);
+}
+
+html[data-ui-version="v2"].light [data-v2-chart] canvas {
+  filter: grayscale(1) invert(1);
+}
+
+html[data-ui-version="v2"] ::selection {
+  background: var(--foreground);
+  color: var(--background);
+}
+
+@media (min-width: 640px) {
+  html[data-ui-version="v2"] [data-slot="app-content"] {
+    padding: 1.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-ui-version="v2"] *,
+  html[data-ui-version="v2"] *::before,
+  html[data-ui-version="v2"] *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

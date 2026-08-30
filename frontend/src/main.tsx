@@ -9,6 +9,9 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
 import { MaintenanceBanner } from '@/components/layout/MaintenanceBanner'
 import { AppErrorBoundary } from '@/components/layout/AppErrorBoundary'
+import { IS_V2, UI_BASENAME, installUiVersionAttribute } from '@/lib/ui-version'
+
+installUiVersionAttribute()
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -21,9 +24,16 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ThemeProvider attribute="class" defaultTheme="dark" forcedTheme="dark">
+    <ThemeProvider
+      attribute="class"
+      defaultTheme="dark"
+      forcedTheme={IS_V2 ? undefined : "dark"}
+      enableSystem={false}
+      storageKey="nexusdata-v2-theme"
+      disableTransitionOnChange
+    >
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter basename="/admin">
+        <BrowserRouter basename={UI_BASENAME}>
           <TooltipProvider>
             <AppErrorBoundary>
               <App />

@@ -425,6 +425,15 @@ def create_app() -> FastAPI:
     async def spa_catchall(full_path: str):
         return await _spa_index_response()
 
+    @app.get("/v2")
+    async def spa_v2_root():
+        """Optional V2 shell; /admin remains the default and rollback target."""
+        return await _spa_index_response()
+
+    @app.get("/v2/{full_path:path}")
+    async def spa_v2_catchall(full_path: str):
+        return await _spa_index_response()
+
     # Startup event
     @app.on_event("startup")
     async def startup():

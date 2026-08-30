@@ -197,7 +197,7 @@ export function PerfMonitorPage() {
       )}
 
       {samples.length > 1 && (
-        <Card className="mb-4 overflow-hidden py-0">
+        <Card data-v2-chart className="mb-4 overflow-hidden py-0">
           <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">CPU / RAM за последние ~2 часа</CardTitle></CardHeader>
           <CardContent className="pt-4" style={{ height: 220 }}>
             <Line

@@ -237,6 +237,7 @@ function BoardSettingsDialog({ open, onOpenChange, boardId, initial, candidates 
   candidates?: AssigneeCandidates
 }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [form, setForm] = useState(initial)
   useEffect(() => { if (open) setForm(initial) }, [open, initial])
 
@@ -257,7 +258,7 @@ function BoardSettingsDialog({ open, onOpenChange, boardId, initial, candidates 
       toast.success("Доска архивирована")
       queryClient.invalidateQueries({ queryKey: ["task-boards"] })
       onOpenChange(false)
-      window.location.href = "/tasks"
+      navigate("/tasks")
     },
     onError: (e: Error) => toast.error(e.message),
   })

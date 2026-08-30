@@ -38,7 +38,7 @@ function useAnalytics<T>(key: string, path: string, rangeQuery: string) {
 
 function ChartCard({ title, height = 260, children }: { title: string; height?: number; children: React.ReactNode }) {
   return (
-    <Card className="overflow-hidden py-0">
+    <Card data-v2-chart className="overflow-hidden py-0">
       <CardHeader className="border-b bg-muted/30 py-3">
         <CardTitle className="text-sm font-semibold">{title}</CardTitle>
       </CardHeader>
