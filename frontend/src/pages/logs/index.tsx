@@ -97,6 +97,8 @@ const TIME_PRESETS = [
   { label: "7 дней", hours: 24 * 7 },
 ] as const
 
+const PAGE_SIZE_OPTIONS = [5, 10, 25, 50, 75, 100] as const
+
 function toLocalDateTimeValue(date: Date) {
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
   return localDate.toISOString().slice(0, 16)
@@ -143,6 +145,7 @@ export function LogsPage() {
   // позиция последней строки предыдущей страницы; поэтому «Назад» не требует
   // OFFSET и просто снимает один курсор со стека.
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null])
+  const [pageSize, setPageSize] = useState(100)
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const [v2FiltersOpen, setV2FiltersOpen] = useState(false)
   const queryClient = useQueryClient()
@@ -165,10 +168,11 @@ export function LogsPage() {
       appliedFilters.search,
       appliedFilters.timeFrom,
       appliedFilters.timeTo,
+      pageSize,
       currentCursor,
     ],
     queryFn: () => {
-      const params = new URLSearchParams({ pagination: "cursor", page_size: "100" })
+      const params = new URLSearchParams({ pagination: "cursor", page_size: String(pageSize) })
       if (currentCursor) params.set("cursor", currentCursor)
       if (appliedFilters.server !== "all") params.set("server", appliedFilters.server)
       if (appliedFilters.category !== "all") params.set("category", appliedFilters.category)
@@ -268,6 +272,11 @@ export function LogsPage() {
 
   const goToPreviousPage = () => {
     setCursorStack((current) => current.length > 1 ? current.slice(0, -1) : current)
+  }
+
+  const changePageSize = (value: string) => {
+    setPageSize(Number(value))
+    setCursorStack([null])
   }
 
   const resultLabel = data?.total != null
@@ -687,7 +696,19 @@ export function LogsPage() {
             </div>
 
             <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-t px-4 py-2">
-              <span className="text-xs text-muted-foreground">По 100 записей на странице</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Строк на странице</span>
+                <Select value={String(pageSize)} onValueChange={changePageSize} disabled={isFetching}>
+                  <SelectTrigger className="h-8 w-20" aria-label="Количество строк на странице">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {PAGE_SIZE_OPTIONS.map((size) => (
+                      <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"

@@ -95,7 +95,7 @@ async def api_logs_events(
     ),
     cursor: Optional[str] = Query(None, min_length=4, max_length=128),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=10, le=500),
+    page_size: int = Query(100, ge=5, le=500),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):

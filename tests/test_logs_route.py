@@ -24,7 +24,7 @@ async def _run_inline(function, *args, **kwargs):
 
 
 class LogsRouteTests(unittest.TestCase):
-    def _call_route(self, result, db=None):
+    def _call_route(self, result, db=None, page_size=100):
         async def run():
             with (
                 patch("routes.logs.check_permission", return_value=True),
@@ -45,7 +45,7 @@ class LogsRouteTests(unittest.TestCase):
                     pagination="cursor",
                     cursor=None,
                     page=1,
-                    page_size=100,
+                    page_size=page_size,
                     db=db or object(),
                     current_admin=object(),
                 )
@@ -84,6 +84,14 @@ class LogsRouteTests(unittest.TestCase):
         self.assertEqual(body["pagination"], "cursor")
         self.assertIsNone(body["total"])
         self.assertIsNone(body["total_pages"])
+
+    def test_five_rows_page_size_is_returned_to_the_client(self):
+        with patch("routes.logs.get_steamids_for_names", return_value={}):
+            response = self._call_route(self._result(), page_size=5)
+
+        body = json.loads(response.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["page_size"], 5)
 
     def test_profile_link_failure_does_not_hide_found_logs(self):
         db = _FailingPlayerLookupDB()
