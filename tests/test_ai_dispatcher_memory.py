@@ -225,7 +225,7 @@ def test_tracked_contact_exposes_movement_but_hides_distant_species() -> None:
         assert distant["movement_relative_to_yasa"] == "closer"
         assert distant["distance_change_from_reported_m"] == -200
         assert distant["contact_names"] == []
-        assert nearby["contact_names"] == ["Crawler"]
+        assert nearby["contact_names"] == ["Ползун"]
     finally:
         db.close()
         engine.dispose()

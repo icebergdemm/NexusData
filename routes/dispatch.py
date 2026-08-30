@@ -35,7 +35,10 @@ from models import (
     AppSetting, WorldRound,
 )
 from schemas import AIDispatcherConfigIn, DispatchMessageIn, RoundStartIn, RoundEndIn
-from services_creature_alerts import is_configured_large_species
+from services_creature_alerts import (
+    canonical_creature_name_ru,
+    is_configured_large_species,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -1077,7 +1080,12 @@ def _queue_ai_large_creature_alert(
                         # only inside Yasa's 250 m perimeter. Distant large
                         # returns deliberately remain unnamed sonar marks.
                         "contact_names": (
-                            sorted({str(alert.species).strip() for alert in group})
+                            sorted(
+                                {
+                                    canonical_creature_name_ru(alert.species)
+                                    for alert in group
+                                }
+                            )
                             if yasa_perimeter
                             else []
                         ),

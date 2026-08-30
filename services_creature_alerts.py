@@ -27,6 +27,52 @@ _BUILTIN_LARGE_CREATURE_KEYS = frozenset(
 )
 _SPECIES_VARIANT_SUFFIXES = ("_male", "_female", "_m", "_f")
 
+# Canonical names shown by the Russian Barotrauma localisation. The world
+# snapshot contains internal prefab identifiers, not player-facing names. Do
+# this conversion before data reaches the language model so it cannot invent
+# translations or replace a creature with a loose synonym.
+_CREATURE_NAMES_RU = {
+    "ancient": "Древний",
+    "balloon": "Пузырь",
+    "bonethresher": "Костяной акулий тигр",
+    "carrier": "Носитель",
+    "charybdis": "Харибда",
+    "coelanth": "Целанф",
+    "crawler": "Ползун",
+    "crawlerbroodmother": "Матка роя ползунов",
+    "crawlerhusk": "Ползун-хаск",
+    "deathraptor": "Раптор-убийца",
+    "doomworm": "Гибельный червь",
+    "endworm": "Червь Рока",
+    "fractalguardian": "Фрактальный страж",
+    "fractalguardian2": "Фрактальный страж",
+    "giantspineling": "Гигантский шипостай",
+    "hammerhead": "Молотоглав",
+    "hammerheadgold": "Золотой молотоглав",
+    "hammerheadmatriarch": "Молотоглав-матриарх",
+    "hammerheadspawn": "Малек молотоглава",
+    "humanhusk": "Хаск",
+    "husk": "Хаск",
+    "latcher": "Блокиратор",
+    "leucocyte": "Лейкоцит",
+    "mantis": "Богомол",
+    "moloch": "Молох",
+    "molochbaby": "Детеныш молоха",
+    "molochblack": "Черный молох",
+    "mudraptor": "Грязевой раптор",
+    "mudraptorunarmored": "Грязевой раптор",
+    "orangeboy": "Оранжевый парень",
+    "peanut": "Арахис",
+    "psilotoad": "Псиложаба",
+    "spineling": "Шипостай",
+    "spinelinggiant": "Гигантский шипостай",
+    "terminalcell": "Терминальная клетка",
+    "thalamus": "Таламус",
+    "tigerthresher": "Акулий тигр",
+    "watcher": "Смотритель",
+}
+_UNKNOWN_CREATURE_NAME_RU = "Неизвестное существо"
+
 
 @dataclass(frozen=True)
 class LargeCreatureSpawn:
@@ -35,6 +81,26 @@ class LargeCreatureSpawn:
     distance_from_yasa_m_approx: int
     contact_class: str = "large"
     yasa_perimeter: bool = False
+
+
+def canonical_creature_name_ru(species: Any) -> str:
+    """Return one stable, player-facing Russian name for a prefab species.
+
+    Unknown/modded prefabs deliberately become an unidentified creature. The
+    technical identifier remains available internally for tracking and
+    deduplication, but must not be exposed to the model as something it could
+    mistranslate or repeat in roleplay.
+    """
+
+    if not isinstance(species, str) or not species.strip():
+        return _UNKNOWN_CREATURE_NAME_RU
+    base = species.strip().casefold()
+    for suffix in _SPECIES_VARIANT_SUFFIXES:
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    key = "".join(character for character in base if character.isalnum())
+    return _CREATURE_NAMES_RU.get(key, _UNKNOWN_CREATURE_NAME_RU)
 
 
 def detect_large_creature_spawns(

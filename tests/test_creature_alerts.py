@@ -15,9 +15,38 @@ from routes.dispatch import _queue_ai_large_creature_alert
 from routes.world_state import _claim_large_creature_alerts, world_snapshot
 from services_creature_alerts import (
     LargeCreatureSpawn,
+    canonical_creature_name_ru,
     detect_large_creature_spawns,
     is_configured_large_species,
 )
+
+
+def test_creature_prefabs_use_canonical_russian_game_names():
+    assert canonical_creature_name_ru("Hammerhead") == "Молотоглав"
+    assert canonical_creature_name_ru("Hammerheadmatriarch_f") == "Молотоглав-матриарх"
+    assert canonical_creature_name_ru("Crawlerbroodmother") == "Матка роя ползунов"
+    assert canonical_creature_name_ru("Spineling_giant") == "Гигантский шипостай"
+    assert canonical_creature_name_ru("GiantSpineling_m") == "Гигантский шипостай"
+    assert canonical_creature_name_ru("Watcher") == "Смотритель"
+    assert canonical_creature_name_ru("unknown_mod_monster") == "Неизвестное существо"
+
+    configured_large_species = (
+        "Bonethresher",
+        "Tigerthresher",
+        "Moloch",
+        "Molochblack",
+        "Hammerhead",
+        "Hammerheadgold",
+        "Hammerheadmatriarch",
+        "Watcher",
+        "Spineling_giant",
+        "Crawlerbroodmother",
+        "Carrier",
+    )
+    assert all(
+        canonical_creature_name_ru(species) != "Неизвестное существо"
+        for species in configured_large_species
+    )
 
 
 def _submarines():
@@ -781,7 +810,7 @@ def test_yasa_perimeter_contacts_share_one_alert_even_when_sizes_differ():
                 "contact_class": "large",
                 "yasa_perimeter": True,
                 "distance_from_yasa_m_approx": 150,
-                "contact_names": ["Crawler", "Hammerhead"],
+                "contact_names": ["Молотоглав", "Ползун"],
                 "contact_ids": ["43", "44"],
             },
         ]
@@ -842,7 +871,7 @@ def test_regular_and_giant_spinelings_near_yasa_queue_one_warning():
             "contact_class": "large",
             "yasa_perimeter": True,
             "distance_from_yasa_m_approx": 110,
-            "contact_names": ["Spineling", "Spineling_giant"],
+            "contact_names": ["Гигантский шипостай", "Шипостай"],
             "contact_ids": ["giant-spineling-1", "spineling-1"],
         }
     finally:

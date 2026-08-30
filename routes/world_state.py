@@ -35,6 +35,7 @@ from config import get_settings
 from models import AICreatureAlert, AdminUser, AdminSession, WorldRound
 from services_creature_alerts import (
     LargeCreatureSpawn,
+    canonical_creature_name_ru,
     detect_large_creature_spawns,
     find_yasa_position,
     is_configured_large_species,
@@ -723,7 +724,11 @@ def _serialize_ai_tracked_contacts(db: Session, r: WorldRound) -> list[dict]:
                 "reported_distance_from_yasa_m_approx": reported_distance,
                 "distance_change_from_reported_m": change,
                 "movement_relative_to_yasa": movement,
-                "contact_names": [row.species] if yasa_perimeter else [],
+                "contact_names": (
+                    [canonical_creature_name_ru(row.species)]
+                    if yasa_perimeter
+                    else []
+                ),
                 "last_seen_at": (
                     row.last_seen_at.isoformat() if row.last_seen_at else None
                 ),
