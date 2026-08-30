@@ -22,6 +22,7 @@
   // parseDemo() or the parser IIFE leaves broadcastTime()/buildPlayersPanel()
   // with an unresolved identifier and crashes only after a real replay parses.
   const collectTimeline = document.documentElement.dataset.uiVersion === "v2";
+  const isHumanSpecies = (species) => typeof species === "string" && species.toLowerCase() === "human";
 
 (function () {
   "use strict";
@@ -176,8 +177,12 @@
     }
     const geometry = { hulls: [], walls: [], doors: [] };
     const world = { w: 0, h: 0, polys: [] };
-    const chat = [], events = [], spawnEvents = [];
+    const chat = [], events = [], spawnEvents = [], healthDrops = [];
     const spawns = new Map();
+    const activeSpawns = new Map();
+    const sampledHealth = new Map();
+    const healthSampleIntervalMs = Math.max(50, Math.round(1000 / Math.max(1, header.tickRate || 10)));
+    let nextHealthSampleMs = 0;
     let origin = { x: 0, y: 0 }, durationMs = 0;
     // Lazy snapshot index: parallel arrays (time, byte-offset, origin at that point)
     const snapTimes = [], snapOffsets = [], snapOx = [], snapOy = [];
@@ -203,20 +208,41 @@
       } else if (type === 0x02) { origin={x:r.i32(),y:r.i32()}; }
       else if (type === 0x03) {
         const t=r.u32(),id=r.u16(),species=r.str(),name=r.str(),teamId=r.i8();
-        const spawn={id,species,name,teamId};spawns.set(id,spawn);
+        const spawn={id,species,name,teamId};spawns.set(id,spawn);activeSpawns.set(id,spawn);sampledHealth.delete(id);
         if(collectTimeline)spawnEvents.push({timeMs:t,kind:"spawn",...spawn});
         if(t>durationMs)durationMs=t;
       }
       else if (type === 0x04) {
-        const t=r.u32(),id=r.u16(),known=collectTimeline?spawns.get(id):null;
+        const t=r.u32(),id=r.u16(),known=collectTimeline?activeSpawns.get(id):null;
         if(collectTimeline)spawnEvents.push({timeMs:t,kind:"despawn",id,species:known?.species||"",name:known?.name||"",teamId:known?.teamId??0});
+        activeSpawns.delete(id);sampledHealth.delete(id);
         if(t>durationMs)durationMs=t;
       }
       else if (type === 0x01) { // SNAPSHOT — INDEX ONLY (lazy decode at render)
         const snapStart = r.o - 1; // include the frame-type byte
         const timeMs=r.u32(); const ec=r.u16();
         if(ec>LIM.ent)throw new Error("Битый счётчик entities="+ec+" — рассинхрон парсера");
-        r.skip(ec*8); // entity = u16 id + i16 x + i16 y + u8 flags + u8 health = 8 bytes
+        if(collectTimeline&&timeMs>=nextHealthSampleMs){
+          // Real recordings repeat every active affliction as damage telemetry.
+          // Sample the authoritative health byte at the advertised tick rate;
+          // later only a real health decrease can become an audit event.
+          for(let i=0;i<ec;i++){
+            const id=r.u16();r.skip(4);r.u8();const healthByte=r.u8();
+            const spawn=activeSpawns.get(id);
+            if(!isHumanSpecies(spawn?.species))continue;
+            const previous=sampledHealth.get(id);
+            if(previous!==undefined&&healthByte<previous){
+              healthDrops.push({
+                timeMs,victimId:id,victimName:spawn.name||"",
+                healthLossPct:(previous-healthByte)*200/255,
+              });
+            }
+            sampledHealth.set(id,healthByte);
+          }
+          nextHealthSampleMs=timeMs+healthSampleIntervalMs;
+        }else{
+          r.skip(ec*8); // entity = u16 id + i16 x + i16 y + u8 flags + u8 health = 8 bytes
+        }
         const ddc=r.u16();if(ddc>LIM.door)throw new Error("Битый счётчик doors="+ddc);
         r.skip(ddc*3); // u16 id + u8 open
         const hwc=r.u16();if(hwc>LIM.water)throw new Error("Битый счётчик water="+hwc);
@@ -263,7 +289,7 @@
       oy: Int32Array.from(snapOy),
       store: pagedBuffer,
     };
-    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,durationMs,voice};
+    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,durationMs,voice};
   }
 
   function indexAtTime(snaps, t) {
@@ -546,7 +572,7 @@
   }
 
   function teamColor(sp){
-    if(!sp)return C.creature;if(sp.species!=="human")return C.creature;
+    if(!sp)return C.creature;if(!isHumanSpecies(sp.species))return C.creature;
     if(sp.teamId===1)return C.team1;if(sp.teamId===2)return C.team2;return C.team0;
   }
   function hex2rgb(h){h=h.replace("#","");return[parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)];}
@@ -604,7 +630,7 @@
       ctx.fillStyle=dead?C.dead:teamColor(sp);ctx.fillRect(X-sz/2,Y-sz/2,sz,sz);
       if(!dead){ctx.strokeStyle="#fff";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(X,Y);ctx.lineTo(X+(facingLeft?-sz:sz),Y);ctx.stroke();}
       if(speakingNow.has(e.id)){ctx.strokeStyle="#22d06f";ctx.lineWidth=2;ctx.beginPath();ctx.arc(X,Y,sz,0,Math.PI*2);ctx.stroke();}
-      if(sp&&sp.species==="human"&&!dead){
+      if(sp&&isHumanSpecies(sp.species)&&!dead){
         const bw=sz*1.5,bh=2;ctx.fillStyle="#333";ctx.fillRect(X-bw/2,Y-sz/2-6,bw,bh);
         ctx.fillStyle=lerpColor("#5ADC5A","#DC4646",1-e.healthPct/200);ctx.fillRect(X-bw/2,Y-sz/2-6,bw*Math.max(0,Math.min(1,e.healthPct/200)),bh);
       }
@@ -903,7 +929,7 @@
     // Подстраховка на «немой» записи (нет ни голоса, ни чата): показываем
     // хотя бы людей, чтобы панель не оказалась пустой совсем.
     if(ids.size===0){
-      for(const sp of demo.spawns.values())if(sp.species==="human")ids.add(sp.id);
+      for(const sp of demo.spawns.values())if(isHumanSpecies(sp.species))ids.add(sp.id);
     }
 
     if(ids.size===0){
@@ -1054,11 +1080,12 @@
       return lifecycle.length?active:(demo.spawns.get(id)||null);
     };
     const nameOf=(id,timeMs)=>{const sp=spawnAt(id,timeMs);return(sp&&sp.name)?sp.name:(sp&&sp.species?sp.species:null);};
+    const isHumanSpawn=(spawn)=>isHumanSpecies(spawn?.species);
     const players=[];
     const seenNames=new Set();
     for(const sp of demo.spawnEvents){
       if(sp.kind!=="spawn")continue;
-      if(sp.species!=="human"||!sp.name||seenNames.has(sp.name))continue;
+      if(!isHumanSpawn(sp)||!sp.name||seenNames.has(sp.name))continue;
       seenNames.add(sp.name);players.push({id:sp.id,name:sp.name,species:sp.species,teamId:sp.teamId});
     }
     for(const chat of demo.chat){
@@ -1068,12 +1095,10 @@
     players.sort((a,b)=>a.name.localeCompare(b.name,"ru"));
 
     const timelineEvents=[];
-    // Damage frames also carry afflictions, status ticks and environmental
-    // harm, which previously flooded the investigation timeline. Preserve
-    // only unambiguous PvP: two different live human entities. One physical
-    // hit can contain several damage components, so merge them inside a
-    // short bucket while keeping the exact attacker and victim.
-    const pvpDamageBuckets=new Map();
+    // Real v4 recordings emit kind=10 for every active affliction tick. Keep
+    // those frames for the canvas effect, but index them by victim only as
+    // evidence for sampled, real health decreases below.
+    const pvpTelemetryByVictim=new Map();
     demo.chat.forEach((chat,index)=>timelineEvents.push({
       id:"chat:"+index,offset_ms:chat.timeMs,player_name:chat.author||nameOf(chat.senderId,chat.timeMs),
       action_type:"chat",details:chat.text||"",source:"demo_chat",lane:"communication",item:null,
@@ -1081,19 +1106,15 @@
     demo.events.forEach((event,index)=>{
       const subject=nameOf(event.subjectId,event.timeMs),target=nameOf(event.targetId,event.timeMs);
       let action=null,playerName=subject,details=event.text||"",lane="system";
-      // Kinds 10/11 are renderer telemetry: the recorder can emit dozens of
-      // damage/shot frames per second for afflictions, projectiles and status
-      // effects. Kind 10 is admitted above only for grouped human-to-human
-      // damage; everything else remains visual-only. Authoritative named
-      // combat rows still come from the indexed server text logs.
+      // In the file format subjectId is the damaged entity and targetId is
+      // the source. A previous implementation treated them in reverse and
+      // grouped every recurring status tick as a new hit.
       if(event.kind===10){
-        const sourceSpawn=spawnAt(event.subjectId,event.timeMs),targetSpawn=spawnAt(event.targetId,event.timeMs);
+        const victimSpawn=spawnAt(event.subjectId,event.timeMs),attackerSpawn=spawnAt(event.targetId,event.timeMs);
         const amount=Number.isFinite(event.amount)?Math.max(0,event.amount):0;
-        if(event.subjectId!==event.targetId&&amount>0&&sourceSpawn?.species==="human"&&targetSpawn?.species==="human"&&sourceSpawn.name&&targetSpawn.name){
-          const bucket=Math.floor(event.timeMs/250),key=event.subjectId+":"+event.targetId+":"+bucket;
-          const existing=pvpDamageBuckets.get(key);
-          if(existing){existing.amount+=amount;existing.components++;}
-          else pvpDamageBuckets.set(key,{timeMs:event.timeMs,attacker:sourceSpawn.name,target:targetSpawn.name,amount,components:1});
+        if(event.subjectId!==event.targetId&&amount>0&&isHumanSpawn(victimSpawn)&&isHumanSpawn(attackerSpawn)&&victimSpawn.name&&attackerSpawn.name){
+          if(!pvpTelemetryByVictim.has(event.subjectId))pvpTelemetryByVictim.set(event.subjectId,[]);
+          pvpTelemetryByVictim.get(event.subjectId).push(event);
         }
         return;
       }
@@ -1115,21 +1136,52 @@
         details,source:"demo_event",lane,item:null,
       });
     });
-    let pvpIndex=0;
-    for(const event of pvpDamageBuckets.values()){
-      const rounded=Math.round(event.amount*10)/10;
-      timelineEvents.push({
-        id:"demo-pvp:"+(pvpIndex++),offset_ms:event.timeMs,player_name:event.attacker,
-        action_type:"damage",details:"Нанёс "+rounded.toLocaleString("ru-RU")+" урона · цель: "+event.target,
-        source:"demo_pvp",lane:"combat",item:null,target_name:event.target,
-      });
+    const lowerBoundEventTime=(events,timeMs)=>{
+      let lo=0,hi=events.length;
+      while(lo<hi){const mid=(lo+hi)>>1;if(events[mid].timeMs<timeMs)lo=mid+1;else hi=mid;}
+      return lo;
+    };
+    const pvpDamage=[];
+    const lastDamageByPair=new Map();
+    for(const drop of demo.healthDrops||[]){
+      const telemetry=pvpTelemetryByVictim.get(drop.victimId)||[];
+      const from=drop.timeMs-200,to=drop.timeMs+100;
+      let index=lowerBoundEventTime(telemetry,from);
+      const sources=new Map();
+      for(;index<telemetry.length&&telemetry[index].timeMs<=to;index++){
+        const raw=telemetry[index];
+        const attacker=spawnAt(raw.targetId,raw.timeMs);
+        if(!isHumanSpawn(attacker)||!attacker.name||attacker.name===drop.victimName)continue;
+        sources.set(attacker.name,attacker);
+      }
+      // Ambiguous simultaneous sources are deliberately omitted. Guessing an
+      // attacker in an administrative replay is worse than showing no row.
+      if(sources.size!==1)continue;
+      const attacker=sources.keys().next().value;
+      const pair=attacker+"\u0000"+drop.victimName;
+      const previous=lastDamageByPair.get(pair);
+      if(previous&&drop.timeMs-previous.lastTimeMs<=750){
+        previous.healthLossPct+=drop.healthLossPct;
+        previous.lastTimeMs=drop.timeMs;
+      }else{
+        const damage={timeMs:drop.timeMs,lastTimeMs:drop.timeMs,attacker,target:drop.victimName,healthLossPct:drop.healthLossPct};
+        pvpDamage.push(damage);lastDamageByPair.set(pair,damage);
+      }
     }
+    pvpDamage.forEach((event,pvpIndex)=>{
+      const rounded=Math.round(event.healthLossPct*10)/10;
+      timelineEvents.push({
+        id:"demo-pvp:"+pvpIndex,offset_ms:event.timeMs,player_name:event.attacker,
+        action_type:"damage",details:"Нанёс урон · около "+rounded.toLocaleString("ru-RU")+"% здоровья · цель: "+event.target,
+        source:"demo_pvp",lane:"combat",item:null,target_name:event.target,damage_pct:rounded,
+      });
+    });
     demo.spawnEvents.forEach((event,index)=>{
       // Keep the complete entity lifecycle. Creature, pet, NPC and human
       // appearances are investigation evidence just like player actions; the
       // editor clusters dense markers visually instead of discarding facts.
       const entityName=event.name||event.species||"Неизвестная сущность";
-      const entityKind=event.species==="human"?"Персонаж":"Сущность";
+      const entityKind=isHumanSpecies(event.species)?"Персонаж":"Сущность";
       const speciesDetails=event.species?" · вид: "+event.species:"";
       timelineEvents.push({
         id:"spawn:"+index,offset_ms:event.timeMs,player_name:entityName,
