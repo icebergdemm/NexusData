@@ -218,7 +218,8 @@ def build_replay_timeline_overview_rows(
         rows.append({
             "event_id": f"overview:{offset}:{lane}:{action_name}",
             "offset_ms": offset,
-            "player_name": None,
+            "player_name": bucket.get("player_name"),
+            "player_count": max(0, int(bucket.get("player_count") or 0)),
             "action_type": action_name,
             "details": f"{amount} событий этого типа в участке",
             "lane": lane,

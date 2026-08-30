@@ -127,8 +127,8 @@ class ReplayTimelineHelperTests(unittest.TestCase):
     def test_overview_keeps_distinct_actions_in_the_same_lane_and_bucket(self):
         rows, counts = services_replays.build_replay_timeline_overview_rows(
             [
-                {"offset_ms": 500, "action_type": "attack", "count": 3},
-                {"offset_ms": 500, "action_type": "death", "count": 1},
+                {"offset_ms": 500, "action_type": "attack", "count": 3, "player_count": 2},
+                {"offset_ms": 500, "action_type": "death", "count": 1, "player_count": 1, "player_name": "Борис"},
                 {"offset_ms": 500, "action_type": "radio", "count": 2},
             ],
             duration_ms=10_000,
@@ -145,6 +145,9 @@ class ReplayTimelineHelperTests(unittest.TestCase):
         self.assertEqual(len({row["event_id"] for row in rows}), 3)
         self.assertEqual(counts, {"attack": 3, "death": 1, "radio": 2})
         self.assertEqual(sum(row["aggregate_count"] for row in rows), 6)
+        self.assertEqual(rows[0]["player_count"], 2)
+        self.assertIsNone(rows[0]["player_name"])
+        self.assertEqual(rows[1]["player_name"], "Борис")
 
     def test_overview_clamps_offsets_but_keeps_adjacent_action_buckets(self):
         rows, _ = services_replays.build_replay_timeline_overview_rows(

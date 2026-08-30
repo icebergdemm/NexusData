@@ -77,10 +77,10 @@ class LogTimelineOverviewTests(unittest.TestCase):
         self.assertEqual(
             overview.buckets,
             [
-                {"offset_ms": 500, "action_type": "wire", "count": 2},
-                {"offset_ms": 1500, "action_type": "attack", "count": 2},
-                {"offset_ms": 1500, "action_type": "repair", "count": 1},
-                {"offset_ms": 2500, "action_type": "radio", "count": 1},
+                {"offset_ms": 500, "action_type": "wire", "count": 2, "player_count": 1, "player_name": "Алиса"},
+                {"offset_ms": 1500, "action_type": "attack", "count": 2, "player_count": 1, "player_name": "Борис"},
+                {"offset_ms": 1500, "action_type": "repair", "count": 1, "player_count": 1, "player_name": "Алиса"},
+                {"offset_ms": 2500, "action_type": "radio", "count": 1, "player_count": 1, "player_name": "Вера"},
             ],
         )
 
@@ -96,9 +96,9 @@ class LogTimelineOverviewTests(unittest.TestCase):
         self.assertEqual(
             overview.buckets,
             [
-                {"offset_ms": 500, "action_type": "attack", "count": 2},
-                {"offset_ms": 500, "action_type": "damage", "count": 1},
-                {"offset_ms": 500, "action_type": "death", "count": 1},
+                {"offset_ms": 500, "action_type": "attack", "count": 2, "player_count": 2, "player_name": None},
+                {"offset_ms": 500, "action_type": "damage", "count": 1, "player_count": 1, "player_name": "Алиса"},
+                {"offset_ms": 500, "action_type": "death", "count": 1, "player_count": 1, "player_name": "Борис"},
             ],
         )
 
@@ -121,6 +121,23 @@ class LogTimelineOverviewTests(unittest.TestCase):
             ],
         )
 
+    def test_mixed_attributed_and_system_rows_do_not_name_one_player_as_every_actor(self):
+        self._insert(100, "ASPER1", "Алиса", "other")
+        self._insert(200, "ASPER1", None, "other")
+
+        overview = self._overview()
+
+        self.assertEqual(
+            overview.buckets,
+            [{
+                "offset_ms": 500,
+                "action_type": "other",
+                "count": 2,
+                "player_count": 1,
+                "player_name": None,
+            }],
+        )
+
     def test_isolates_requested_server_and_time_range(self):
         self._insert(500, "ASPER1", "Внутри", "wire")
         self._insert(500, "ASPER2", "Другой сервер", "attack")
@@ -131,7 +148,7 @@ class LogTimelineOverviewTests(unittest.TestCase):
 
         self.assertEqual(
             overview.buckets,
-            [{"offset_ms": 500, "action_type": "wire", "count": 1}],
+            [{"offset_ms": 500, "action_type": "wire", "count": 1, "player_count": 1, "player_name": "Внутри"}],
         )
         self.assertEqual(
             overview.players,
@@ -148,8 +165,8 @@ class LogTimelineOverviewTests(unittest.TestCase):
         self.assertEqual(
             overview.buckets,
             [
-                {"offset_ms": 125, "action_type": "wire", "count": 2},
-                {"offset_ms": 375, "action_type": "wire", "count": 1},
+                {"offset_ms": 125, "action_type": "wire", "count": 2, "player_count": 1, "player_name": "Алиса"},
+                {"offset_ms": 375, "action_type": "wire", "count": 1, "player_count": 1, "player_name": "Алиса"},
             ],
         )
 
@@ -164,8 +181,8 @@ class LogTimelineOverviewTests(unittest.TestCase):
         self.assertEqual(
             overview.buckets,
             [
-                {"offset_ms": 500, "action_type": "wire", "count": 1},
-                {"offset_ms": 1500, "action_type": "repair", "count": 1},
+                {"offset_ms": 500, "action_type": "wire", "count": 1, "player_count": 1, "player_name": "Алиса"},
+                {"offset_ms": 1500, "action_type": "repair", "count": 1, "player_count": 1, "player_name": "Алиса"},
             ],
         )
         self.assertEqual(

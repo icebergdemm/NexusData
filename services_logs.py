@@ -1763,7 +1763,10 @@ def get_log_timeline_overview(
     try:
         with _apply_budget(conn, budget):
             bucket_rows = conn.execute(
-                "SELECT CAST((ts - ?) / ? AS INTEGER) AS bucket, action, COUNT(*) "
+                "SELECT CAST((ts - ?) / ? AS INTEGER) AS bucket, action, COUNT(*), "
+                "COUNT(DISTINCT NULLIF(player, '')) AS player_count, "
+                "MIN(NULLIF(player, '')) AS representative_player, "
+                "COUNT(NULLIF(player, '')) AS attributed_count "
                 "FROM log_events INDEXED BY ix_log_server "
                 f"WHERE server=? AND ts>=? AND ts<=?{actor_clause} "
                 "GROUP BY bucket, action ORDER BY bucket ASC, action ASC",
@@ -1788,6 +1791,14 @@ def get_log_timeline_overview(
                 "offset_ms": max(0, int(row[0]) * bucket_ms + bucket_ms // 2),
                 "action_type": row[1] or "other",
                 "count": int(row[2]),
+                "player_count": int(row[3] or 0),
+                # Naming one actor is truthful only when every attributed row
+                # in this bucket/action belongs to that same player.
+                "player_name": (
+                    row[4]
+                    if int(row[3] or 0) == 1 and int(row[5] or 0) == int(row[2])
+                    else None
+                ),
             }
             for row in bucket_rows
         ],

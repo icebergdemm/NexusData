@@ -76,8 +76,29 @@ export interface TimelineEvent {
   lane: TimelineLane
   item?: TimelineItem | null
   aggregate_count?: number
+  player_count?: number
   precision_ms?: number
   player_overlay?: boolean
+}
+
+function playerCountLabel(count: number): string {
+  const value = Math.max(0, Math.round(count))
+  const mod100 = value % 100
+  const mod10 = value % 10
+  const noun = mod100 >= 11 && mod100 <= 14
+    ? "игроков"
+    : mod10 === 1
+      ? "игрок"
+      : mod10 >= 2 && mod10 <= 4
+        ? "игрока"
+        : "игроков"
+  return `${value} ${noun}`
+}
+
+function eventActorLabel(event: TimelineEvent, systemLabel = "Система"): string {
+  if (event.player_name) return event.player_name
+  if ((event.player_count ?? 0) > 0) return playerCountLabel(event.player_count ?? 0)
+  return systemLabel
 }
 
 interface TimelineResponse {
@@ -635,7 +656,7 @@ function TimelineCanvas({
             y: event.clientY - rect.top,
             label: hit.events.reduce((sum, item) => sum + (item.aggregate_count ?? 1), 0) > 1
               ? `${hit.events.reduce((sum, item) => sum + (item.aggregate_count ?? 1), 0)} событий · ${formatTimecode(first.offset_ms)}`
-              : `${first.player_name ?? "Система"} · ${actionLabel(first.action_type)}`,
+              : `${eventActorLabel(first)} · ${actionLabel(first.action_type)}`,
           })
         }}
         onPointerUp={() => {
@@ -781,7 +802,7 @@ const VisibleEventsPanel = memo(function VisibleEventsPanel({
                 <time>{event.precision_ms ? "≈ " : ""}{formatTimecode(event.offset_ms)}</time>
                 {event.item ? <ItemPreview item={event.item} /> : <Icon className="rpv-editor-event-icon" />}
                 <span className="rpv-editor-event-copy">
-                  <b>{event.player_name ?? "Система"}</b>
+                  <b>{eventActorLabel(event)}</b>
                   <small>{actionLabel(event.action_type)} · {event.details}</small>
                 </span>
               </button>
@@ -1280,7 +1301,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
               <div className="rpv-editor-inspector-time">{selectedEvent.precision_ms ? "≈ " : ""}{formatTimecode(selectedEvent.offset_ms)}</div>
               <div className="rpv-editor-inspector-kind">
                 {selectedEvent.item && <ItemPreview item={selectedEvent.item} />}
-                <div><span>{actionLabel(selectedEvent.action_type)}</span><b>{selectedEvent.player_name ?? "Системное событие"}</b></div>
+                <div><span>{actionLabel(selectedEvent.action_type)}</span><b>{eventActorLabel(selectedEvent, "Системное событие")}</b></div>
               </div>
               <dl>
                 <div><dt>Дорожка</dt><dd>{LANES.find((lane) => lane.id === selectedEvent.lane)?.label}</dd></div>
