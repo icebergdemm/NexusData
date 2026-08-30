@@ -2922,14 +2922,26 @@ async def api_audit_logs(
     source: Optional[str] = Query(None, pattern="^(discord)?$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=10, le=200),
+    q: Optional[str] = Query(None, max_length=200, description="Полнотекстовый поиск по действию, админу и деталям"),
+    category: Optional[str] = Query(None, pattern="^(create|update|delete|auth|other)$", description="Фильтр по категории действия"),
+    admin_id: Optional[int] = Query(None, description="Фильтр по ID админа"),
+    date_from: Optional[str] = Query(None, description="ISO дата начала (включительно)"),
+    date_to: Optional[str] = Query(None, description="ISO дата конца (включительно)"),
+    action: Optional[str] = Query(None, max_length=100, description="Точный фильтр по action (подстрока)"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """JSON API for audit logs with pagination."""
+    """JSON API for audit logs with pagination + мощный поиск.
+
+    q — ищет по action, admin_name (через join), деталям JSON (CAST to TEXT).
+    category — маппится на паттерны как в фронте actionCategory.
+    date_from/date_to — ISO строки, фильтруют по created_at.
+    """
     if not check_permission(current_admin, "audit", "view"):
         raise HTTPException(status_code=403)
 
     from fastapi.responses import JSONResponse
+    from sqlalchemy import or_, func, cast, String as SAString
 
     offset = (page - 1) * page_size
     query = db.query(AdminActionLog)
@@ -2937,6 +2949,76 @@ async def api_audit_logs(
         query = query.filter(AdminActionLog.action.like("discord:%"))
     elif source == "":
         query = query.filter(~AdminActionLog.action.like("discord:%"))
+
+    # Фильтр по категории действия (как в фронте actionCategory)
+    if category:
+        cat = category.lower()
+        if cat == "delete":
+            query = query.filter(or_(
+                AdminActionLog.action.ilike("%delete%"),
+                AdminActionLog.action.ilike("%revoke%"),
+                AdminActionLog.action.ilike("%remove%"),
+                AdminActionLog.action.ilike("%void%"),
+                AdminActionLog.action.ilike("%kick%"),
+                AdminActionLog.action.ilike("%ban%"),
+            ))
+        elif cat == "create":
+            query = query.filter(or_(
+                AdminActionLog.action.ilike("%create%"),
+                AdminActionLog.action.ilike("%add%"),
+                AdminActionLog.action.ilike("%assign%"),
+                AdminActionLog.action.ilike("%generate%"),
+                AdminActionLog.action.ilike("%grant%"),
+            ))
+        elif cat == "update":
+            query = query.filter(or_(
+                AdminActionLog.action.ilike("%update%"),
+                AdminActionLog.action.ilike("%edit%"),
+                AdminActionLog.action.ilike("%save%"),
+                AdminActionLog.action.ilike("%toggle%"),
+                AdminActionLog.action.ilike("%change%"),
+            ))
+        elif cat == "auth":
+            query = query.filter(or_(
+                AdminActionLog.action.ilike("%login%"),
+                AdminActionLog.action.ilike("%logout%"),
+                AdminActionLog.action.ilike("%auth%"),
+            ))
+        # other — не фильтруем
+
+    if action:
+        query = query.filter(AdminActionLog.action.ilike(f"%{action}%"))
+    if admin_id is not None:
+        query = query.filter(AdminActionLog.admin_id == admin_id)
+    if date_from:
+        try:
+            dt_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+            query = query.filter(AdminActionLog.created_at >= dt_from)
+        except Exception:
+            pass
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            query = query.filter(AdminActionLog.created_at <= dt_to)
+        except Exception:
+            pass
+    if q:
+        q = q.strip()
+        if q:
+            like = f"%{q}%"
+            # Для деталей JSON кастим к строке (работает и на SQLite и MySQL)
+            # Для админа — join не делаем, ищем по admin_id через подзапрос или по admin lookup ниже
+            # Упростим: ищем по action и details, а по имени админа — через EXISTS подзапрос
+            from sqlalchemy import exists
+            admin_exists = db.query(AdminUser.id).filter(
+                AdminUser.id == AdminActionLog.admin_id,
+                AdminUser.discord_username.ilike(like)
+            ).exists()
+            query = query.filter(or_(
+                AdminActionLog.action.ilike(like),
+                cast(AdminActionLog.details, SAString).ilike(like),
+                admin_exists,
+            ))
     total = query.count()
     logs = (
         query
