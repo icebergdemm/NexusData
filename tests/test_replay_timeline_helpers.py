@@ -55,6 +55,20 @@ class ReplayTimelineHelperTests(unittest.TestCase):
         self.assertEqual(item["identifier"], "chaingun")
         self.assertEqual(item["name"], "Цепная пушка")
 
+    def test_extracts_used_item_without_losing_its_target(self):
+        with patch.object(
+            services_replays,
+            "_load_timeline_item_index",
+            return_value=self._item_index(),
+        ):
+            item = services_replays.extract_replay_timeline_item(
+                "used",
+                "Ст. Матрос used Водолазный скафандр on Шкаф снабжения",
+            )
+
+        self.assertEqual(item["identifier"], "divingsuit")
+        self.assertEqual(item["name"], "Водолазный скафандр")
+
     def test_unknown_item_keeps_truthful_name_for_frontend_fallback(self):
         with patch.object(
             services_replays,

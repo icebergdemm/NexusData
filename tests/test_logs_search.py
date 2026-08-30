@@ -232,6 +232,19 @@ class LogSearchTests(unittest.TestCase):
         self.assertEqual(events[0].action_type, "attack")
         self.assertEqual(events[0].player_name, attacker)
 
+    def test_item_use_parser_preserves_item_and_target_details(self):
+        line = "Ст. Матрос Испытатель used Медицинский сканер on Питомец Борис"
+        events, _player_map = services_logs.parse_log_content(
+            f"[08/31/2026 12:00:00]\n{line}",
+            server_name="ASPER1",
+            source_file="items.log",
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].action_type, "used")
+        self.assertEqual(events[0].player_name, "Ст. Матрос Испытатель")
+        self.assertEqual(events[0].details, line)
+
     def test_legacy_pvp_attack_actor_is_restored_from_details(self):
         attacker = "Ст. Матрос Нападающий"
         details = (

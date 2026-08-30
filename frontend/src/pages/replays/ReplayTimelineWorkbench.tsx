@@ -80,6 +80,8 @@ export interface TimelineEvent {
   player_count?: number
   precision_ms?: number
   player_overlay?: boolean
+  entity_species?: string | null
+  entity_team_id?: number | null
 }
 
 function playerCountLabel(count: number): string {
@@ -1310,6 +1312,8 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
               <dl>
                 <div><dt>Дорожка</dt><dd>{LANES.find((lane) => lane.id === selectedEvent.lane)?.label}</dd></div>
                 {selectedEvent.item?.identifier && <div><dt>Identifier</dt><dd>{selectedEvent.item.identifier}</dd></div>}
+                {selectedEvent.entity_species && <div><dt>Вид сущности</dt><dd>{selectedEvent.entity_species}</dd></div>}
+                {selectedEvent.entity_team_id != null && <div><dt>Команда</dt><dd>{selectedEvent.entity_team_id}</dd></div>}
                 {selectedEvent.timestamp && <div><dt>Время сервера</dt><dd>{formatServerClock(selectedEvent.timestamp)}</dd></div>}
                 {selectedEvent.source_file && <div><dt>Источник</dt><dd title={selectedEvent.source_file}>{selectedEvent.source_file}</dd></div>}
               </dl>

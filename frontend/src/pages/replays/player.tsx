@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { ReplayLogsPanel } from "./ReplayLogsPanel"
 import { ReplayTimelineWorkbench } from "./ReplayTimelineWorkbench"
-import { Camera, Clapperboard, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
+import { Camera, Clapperboard, Download, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { IS_V2 } from "@/lib/ui-version"
 import { V2ReplayTransport } from "./V2ReplayTransport"
@@ -15,6 +15,7 @@ interface ReplayDetail {
   replay: {
     id: number; submarine_name: string | null; level_name: string | null
     recorded_at: string | null; has_voice: boolean; duration_ms: number | null
+    filename: string | null; file_size: number | null
   }
 }
 
@@ -120,6 +121,8 @@ export function ReplayPlayerPage() {
       <style>{`
         .rpv-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;}
         .rpv-top h2{display:flex;align-items:center;gap:6px;font-size:18px;font-weight:700;color:var(--foreground);margin:0;}
+        .rpv-top-actions{display:flex;align-items:center;gap:8px;}
+        .rpv-download{text-decoration:none;white-space:nowrap;}
         .rpv-back{color:var(--muted-foreground);text-decoration:none;font-size:13px;}
         .rpv-back:hover{color:var(--foreground);}
         .rpv-layout{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start;}
@@ -214,7 +217,19 @@ export function ReplayPlayerPage() {
           <AdaptiveIcon emoji="🎬" icon={Clapperboard} /> {data?.replay.submarine_name ?? "Раунд"} #{replayId}
           {data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
         </h2>
-        <span className="rpv-time">{data?.replay.recorded_at ? new Date(data.replay.recorded_at).toLocaleString("ru-RU") : ""}</span>
+        <div className="rpv-top-actions">
+          <span className="rpv-time">{data?.replay.recorded_at ? new Date(data.replay.recorded_at).toLocaleString("ru-RU") : ""}</span>
+          {IS_V2 && replayId && (
+            <a
+              className="rpv-btn rpv-download"
+              href={`/api/v1/admin/replays/${replayId}/archive`}
+              download={`replay_${replayId}.barodemo.zip`}
+              title="Скачать исходную демозапись в ZIP"
+            >
+              <Download className="size-3.5" aria-hidden="true" /> ZIP
+            </a>
+          )}
+        </div>
       </div>
 
       <div className="rpv-layout">

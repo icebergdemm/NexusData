@@ -10,6 +10,7 @@ which unpacks and parses it client-side (minimal server load).
 import os
 import secrets
 import logging
+import tempfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -20,6 +21,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session, aliased, joinedload
@@ -31,6 +33,7 @@ from models import AdminUser, AdminSession, RoundEvent, RoundReplay
 import services_replays
 from services_replays import ReplayService
 from services_replays import (
+    build_replay_download_archive,
     build_replay_timeline_overview_rows,
     classify_replay_timeline_lane,
     extract_replay_timeline_item,
@@ -1408,6 +1411,68 @@ async def api_replay_download(request: Request, replay_id: int, db: Session = De
         filename=replay.stored_filename,
         media_type=_replay_media_type(replay.stored_filename),
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+def _replay_archive_member_name(replay) -> str:
+    original_name = os.path.basename((replay.filename or "").strip())
+    stored_name = os.path.basename((replay.stored_filename or "").strip())
+    if stored_name.endswith(".gz"):
+        return original_name if original_name.endswith(".gz") else f"replay_{replay.id}.barodemo.gz"
+    return original_name if original_name.endswith(".barodemo") else f"replay_{replay.id}.barodemo"
+
+
+@panel_router.get("/api/v1/admin/replays/{replay_id}/archive")
+async def api_replay_archive(request: Request, replay_id: int, db: Session = Depends(get_db)):
+    """Download a genuine ZIP regardless of the replay's storage format."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    svc = ReplayService(db)
+    replay = svc.get_by_id(replay_id)
+    if not replay:
+        raise HTTPException(status_code=404, detail="Реплей не найден")
+
+    source_path = svc.get_file_path(replay)
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail="Файл не найден на диске")
+
+    archive_name = f"replay_{replay.id}.barodemo.zip"
+    if replay.stored_filename.endswith(".zip"):
+        return FileResponse(
+            path=source_path,
+            filename=archive_name,
+            media_type="application/zip",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    file_descriptor, archive_path = tempfile.mkstemp(
+        prefix=f"nexus_replay_{replay.id}_",
+        suffix=".barodemo.zip",
+    )
+    os.close(file_descriptor)
+    try:
+        await run_in_threadpool(
+            build_replay_download_archive,
+            source_path,
+            archive_path,
+            _replay_archive_member_name(replay),
+        )
+    except Exception:
+        try:
+            os.remove(archive_path)
+        except OSError:
+            pass
+        logger.exception("replay.archive.failed replay_id=%s", replay.id)
+        raise HTTPException(status_code=500, detail="Не удалось подготовить ZIP-архив")
+
+    return FileResponse(
+        path=archive_path,
+        filename=archive_name,
+        media_type="application/zip",
+        headers={"Cache-Control": "private, no-store"},
+        background=BackgroundTask(os.remove, archive_path),
     )
 
 

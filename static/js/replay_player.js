@@ -1099,8 +1099,14 @@
       }
       if(event.kind===1){action="death";playerName=target||subject;lane="combat";if(!details)details=subject?"Погиб · источник: "+subject:"Погиб";}
       else if(event.kind===2){action="attack";lane="combat";if(!details)details=target?"Убийство · цель: "+target:"Убийство";}
-      else if(event.kind===3){action="used";lane="inventory";if(!details)details="Использование предмета";}
-      else if(event.kind===4){action="picked_up";lane="inventory";if(!details)details="Поднят предмет";}
+      else if(event.kind===3){
+        action="used";lane="inventory";
+        if(!details)details=target&&target!==subject?"Использовал предмет · цель: "+target:"Использовал предмет";
+      }
+      else if(event.kind===4){
+        action="picked_up";lane="inventory";
+        if(!details)details=target&&target!==subject?"Поднял предмет · объект: "+target:"Поднял предмет";
+      }
       else if(event.kind===99&&details.trim()){action="demo_event";}
       else if(event.kind!==10&&event.kind!==11&&details.trim()){action="demo_event";}
       if(!action)return;
@@ -1119,13 +1125,18 @@
       });
     }
     demo.spawnEvents.forEach((event,index)=>{
-      // Creature/NPC lifecycle is useful on the map but overwhelms a player
-      // investigation timeline. Human lifecycles remain as navigation anchors.
-      if(event.species!=="human")return;
+      // Keep the complete entity lifecycle. Creature, pet, NPC and human
+      // appearances are investigation evidence just like player actions; the
+      // editor clusters dense markers visually instead of discarding facts.
+      const entityName=event.name||event.species||"Неизвестная сущность";
+      const entityKind=event.species==="human"?"Персонаж":"Сущность";
+      const speciesDetails=event.species?" · вид: "+event.species:"";
       timelineEvents.push({
-        id:"spawn:"+index,offset_ms:event.timeMs,player_name:event.name||null,
-        action_type:event.kind,details:event.kind==="spawn"?"Персонаж появился в раунде":"Персонаж покинул сцену",
+        id:"spawn:"+index,offset_ms:event.timeMs,player_name:entityName,
+        action_type:event.kind,
+        details:(event.kind==="spawn"?entityKind+" появился":entityKind+" исчез")+speciesDetails,
         source:"demo_spawn",lane:"system",item:null,
+        entity_species:event.species||null,entity_team_id:event.teamId??null,
       });
     });
     timelineEvents.sort((a,b)=>a.offset_ms-b.offset_ms||a.id.localeCompare(b.id));

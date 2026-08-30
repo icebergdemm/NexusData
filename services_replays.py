@@ -559,6 +559,29 @@ class ReplayService:
         return count
 
 
+def build_replay_download_archive(
+    source_path: str,
+    destination_path: str,
+    member_name: str,
+) -> None:
+    """Wrap one stored replay in a ZIP without loading it into memory.
+
+    Streamed uploads may intentionally be kept as raw ``.barodemo`` or gzip
+    files to avoid a large recompression step during ingestion.  The admin UI
+    nevertheless promises a real ZIP export, so build it only on explicit
+    request. ``ZIP_STORED`` keeps the operation bounded and fast even for
+    several-hundred-megabyte voice replays; gzip inputs are already compressed.
+    """
+    safe_member_name = os.path.basename(member_name).strip() or "round.barodemo"
+    with zipfile.ZipFile(
+        destination_path,
+        "w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=True,
+    ) as archive:
+        archive.write(source_path, arcname=safe_member_name)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Background retention worker
 # ══════════════════════════════════════════════════════════════════════════════
