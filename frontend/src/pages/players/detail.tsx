@@ -33,7 +33,7 @@ import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
-import { AdaptiveIcon, PlatformIcon } from "@/components/layout/PlatformIcon"
+import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 
 interface AdminOption { id: number; discord_username: string | null }
 
@@ -177,6 +177,7 @@ export function PlayerDetailPage() {
   const removeLabelMutation = useMutation({
     mutationFn: (labelId: number) => api.delete(`/api/v1/admin/players/${playerId}/labels/${labelId}`),
     onSuccess: () => { toast.success("Метка удалена"); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const setTrapMutation = useMutation({
@@ -494,18 +495,18 @@ export function PlayerDetailPage() {
         <TabsContent value="labels">
           <Card>
             <CardContent className="space-y-3">
-              {data.has_edit && (
+              {data.can_manage_labels && (
                 <div className="flex gap-2">
                   <Select value={labelCategoryId} onValueChange={setLabelCategoryId}>
                     <SelectTrigger className="w-64"><SelectValue placeholder="Выбрать метку" /></SelectTrigger>
                     <SelectContent>
                       {data.label_categories.map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><PlatformIcon value={c.icon} />{c.name}</span></SelectItem>
+                        <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><span aria-hidden="true">{c.icon || "🏷"}</span>{c.name}</span></SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                   <Button
-                    disabled={!labelCategoryId}
+                    disabled={!labelCategoryId || assignLabelMutation.isPending}
                     onClick={() => assignLabelMutation.mutate(Number(labelCategoryId))}
                   >
                     Назначить
@@ -515,9 +516,17 @@ export function PlayerDetailPage() {
               <div className="flex flex-wrap gap-2">
                 {data.label_pairs.map((lp) => (
                   <Badge key={lp.id} style={{ backgroundColor: lp.category.color }} className="gap-1.5 text-white">
-                    <PlatformIcon value={lp.category.icon} />{lp.category.name}
-                    {data.has_edit && (
-                      <button onClick={() => removeLabelMutation.mutate(lp.id)} className="ml-1">✕</button>
+                    <span aria-hidden="true">{lp.category.icon || "🏷"}</span>{lp.category.name}
+                    {data.can_manage_labels && (
+                      <button
+                        type="button"
+                        onClick={() => removeLabelMutation.mutate(lp.id)}
+                        disabled={removeLabelMutation.isPending}
+                        className="ml-1 inline-flex"
+                        aria-label={`Снять метку ${lp.category.name}`}
+                      >
+                        <X className="size-3" aria-hidden="true" />
+                      </button>
                     )}
                   </Badge>
                 ))}

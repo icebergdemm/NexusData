@@ -4,7 +4,7 @@ import {
   Clock, ScrollText, BarChart3, Tags, FileText, NotebookText, Building2,
   KanbanSquare, Globe2, Music, UserPlus, ClipboardCheck, Trophy, Bug, Activity, Skull,
 } from "lucide-react"
-import type { CurrentAdmin, PermissionPage } from "@/lib/auth"
+import { canDo, type CurrentAdmin, type PermissionPage } from "@/lib/auth"
 
 export interface NavItem {
   label: string
@@ -35,7 +35,12 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Игроки и модерация",
     items: [
       { label: "Игроки", to: "/players", icon: Users, permission: "players" },
-      { label: "Метки игроков", to: "/label-categories", icon: Tags, permission: "players" },
+      {
+        label: "Метки игроков",
+        to: "/label-categories",
+        icon: Tags,
+        isVisible: (admin) => canDo(admin, "players", "manage_label_categories"),
+      },
       { label: "Модерирование", to: "/moderation", icon: ShieldAlert, permission: "moderation" },
       { label: "Логи сервера", to: "/logs", icon: FileText, permission: "moderation" },
       { label: "Звуки для ивентов", to: "/sounds", icon: Music, permission: "sounds" },

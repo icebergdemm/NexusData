@@ -145,6 +145,8 @@ export interface PlayerDetailResponse {
   /** players:manage_notes — отдельно от has_edit по той же причине, что и
    * выше: у заметок личного дела своё собственное право, не общий "edit". */
   can_manage_notes: boolean
+  /** players:manage_labels — назначение и снятие меток в профиле игрока. */
+  can_manage_labels: boolean
   has_delete: boolean
   has_special: boolean
   can_issue_punishment: boolean

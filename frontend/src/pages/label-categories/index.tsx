@@ -1,14 +1,13 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Pencil, Check, X } from "lucide-react"
+import { AlertTriangle, Check, Pencil, RefreshCw, X } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
-import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 
 interface LabelCategory { id: number; name: string; color: string; icon: string }
 
@@ -18,7 +17,7 @@ export function LabelCategoriesPage() {
   const [editDraft, setEditDraft] = useState({ name: "", color: "#888888", icon: "🏷" })
   const queryClient = useQueryClient()
 
-  const { data } = useQuery({
+  const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ["label-categories"],
     queryFn: () => api.get<{ categories: LabelCategory[] }>("/api/v1/admin/label-categories"),
   })
@@ -34,6 +33,7 @@ export function LabelCategoriesPage() {
   const remove = useMutation({
     mutationFn: (id: number) => api.delete(`/api/v1/admin/label-categories/${id}`),
     onSuccess: () => { toast.success("Категория удалена"); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const update = useMutation({
@@ -54,9 +54,19 @@ export function LabelCategoriesPage() {
         <CardHeader><CardTitle>Новая метка</CardTitle></CardHeader>
         <CardContent className="flex flex-wrap items-end gap-2">
           <div><label className="mb-1 block text-xs text-muted-foreground">Название</label><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
-          <div><label className="mb-1 block text-xs text-muted-foreground">Иконка</label><PlatformIconField value={form.icon} onChange={(icon) => setForm((f) => ({ ...f, icon }))} className="w-16" v2ClassName="w-44" /></div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">Эмодзи</label>
+            <Input
+              value={form.icon}
+              onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))}
+              className="w-20 text-center text-lg"
+              placeholder="🏷"
+              maxLength={8}
+              aria-label="Эмодзи метки"
+            />
+          </div>
           <div><label className="mb-1 block text-xs text-muted-foreground">Цвет</label><Input type="color" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} className="w-16 p-1" /></div>
-          <Button disabled={!form.name.trim()} onClick={() => create.mutate()}>Создать</Button>
+          <Button disabled={!form.name.trim() || create.isPending} onClick={() => create.mutate()}>Создать</Button>
         </CardContent>
       </Card>
 
@@ -72,7 +82,14 @@ export function LabelCategoriesPage() {
                     <>
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-2">
-                          <PlatformIconField value={editDraft.icon} onChange={(icon) => setEditDraft((d) => ({ ...d, icon }))} className="w-16" v2ClassName="w-44" />
+                          <Input
+                            value={editDraft.icon}
+                            onChange={(e) => setEditDraft((d) => ({ ...d, icon: e.target.value }))}
+                            className="w-20 text-center text-lg"
+                            placeholder="🏷"
+                            maxLength={8}
+                            aria-label={`Эмодзи метки ${c.name}`}
+                          />
                           <Input
                             value={editDraft.name}
                             onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))}
@@ -103,20 +120,34 @@ export function LabelCategoriesPage() {
                     </>
                   ) : (
                     <>
-                      <TableCell><Badge style={{ backgroundColor: c.color }} className="gap-1.5 text-white"><PlatformIcon value={c.icon} />{c.name}</Badge></TableCell>
+                      <TableCell><Badge style={{ backgroundColor: c.color }} className="gap-1.5 text-white"><span aria-hidden="true">{c.icon || "🏷"}</span>{c.name}</Badge></TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1.5">
                           <Button size="sm" variant="outline" onClick={() => startEdit(c)}>
                             <Pencil className="size-3.5" /> Изменить
                           </Button>
-                          <Button size="sm" variant="destructive" onClick={() => remove.mutate(c.id)}>Удалить</Button>
+                          <Button size="sm" variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate(c.id)}>Удалить</Button>
                         </div>
                       </TableCell>
                     </>
                   )}
                 </TableRow>
               ))}
-              {!data?.categories.length && <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground">Меток нет</TableCell></TableRow>}
+              {isLoading && <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground">Загрузка меток…</TableCell></TableRow>}
+              {isError && (
+                <TableRow>
+                  <TableCell colSpan={2}>
+                    <div className="flex items-center justify-center gap-2 py-4 text-destructive">
+                      <AlertTriangle className="size-4" />
+                      <span>{error instanceof Error ? error.message : "Не удалось загрузить метки"}</span>
+                      <Button size="sm" variant="outline" onClick={() => refetch()}>
+                        <RefreshCw className="size-3.5" /> Повторить
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+              {!isLoading && !isError && !data?.categories.length && <TableRow><TableCell colSpan={2} className="text-center text-muted-foreground">Меток нет</TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>
