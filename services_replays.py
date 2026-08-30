@@ -17,12 +17,13 @@ import json
 import re
 import struct
 import logging
+import queue
 import threading
 import time
 import zipfile
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Iterator, Optional, List
 
 from sqlalchemy.orm import Session
 
@@ -606,6 +607,119 @@ def build_replay_download_archive(
         allowZip64=True,
     ) as archive:
         archive.write(source_path, arcname=safe_member_name)
+
+
+class _StreamingZipSink:
+    """Non-seekable file object that forwards ZIP bytes to a bounded queue."""
+
+    def __init__(self, messages: queue.Queue, cancelled: threading.Event):
+        self._messages = messages
+        self._cancelled = cancelled
+        self._position = 0
+
+    def _put(self, value) -> None:
+        while not self._cancelled.is_set():
+            try:
+                self._messages.put(value, timeout=0.25)
+                return
+            except queue.Full:
+                continue
+        raise BrokenPipeError("Replay archive download was cancelled")
+
+    def write(self, data) -> int:
+        payload = bytes(data)
+        if payload:
+            self._put(payload)
+            self._position += len(payload)
+        return len(payload)
+
+    def tell(self) -> int:
+        return self._position
+
+    def seekable(self) -> bool:
+        return False
+
+    def flush(self) -> None:
+        return None
+
+
+def iter_replay_download_archive(
+    source_path: str,
+    member_name: str,
+    *,
+    chunk_size: int = 1024 * 1024,
+) -> Iterator[bytes]:
+    """Stream one stored replay as a standards-compliant ZIP archive.
+
+    ``ZipFile`` supports non-seekable outputs by writing data descriptors. A
+    small producer thread performs disk I/O and feeds a bounded queue, so the
+    HTTP response can send its headers and first ZIP header immediately rather
+    than waiting for a multi-gigabyte temporary copy to finish.  The queue also
+    caps memory use and the cancellation event stops the producer when a client
+    aborts the download.
+    """
+    safe_member_name = os.path.basename(member_name).strip() or "round.barodemo"
+    source_size = os.path.getsize(source_path)
+    messages: queue.Queue = queue.Queue(maxsize=4)
+    cancelled = threading.Event()
+    finished = object()
+
+    def enqueue_terminal(value) -> None:
+        while not cancelled.is_set():
+            try:
+                messages.put(value, timeout=0.25)
+                return
+            except queue.Full:
+                continue
+
+    def produce() -> None:
+        sink = _StreamingZipSink(messages, cancelled)
+        try:
+            with zipfile.ZipFile(
+                sink,
+                "w",
+                compression=zipfile.ZIP_STORED,
+                allowZip64=True,
+            ) as archive:
+                info = zipfile.ZipInfo(safe_member_name)
+                info.compress_type = zipfile.ZIP_STORED
+                info.file_size = source_size
+                with open(source_path, "rb") as source, archive.open(
+                    info,
+                    "w",
+                    force_zip64=source_size >= zipfile.ZIP64_LIMIT,
+                ) as member:
+                    while not cancelled.is_set():
+                        chunk = source.read(chunk_size)
+                        if not chunk:
+                            break
+                        member.write(chunk)
+        except BrokenPipeError:
+            return
+        except BaseException as exc:
+            if not cancelled.is_set():
+                enqueue_terminal(exc)
+        finally:
+            if not cancelled.is_set():
+                enqueue_terminal(finished)
+
+    producer = threading.Thread(
+        target=produce,
+        name="replay-zip-stream",
+        daemon=True,
+    )
+    producer.start()
+    try:
+        while True:
+            message = messages.get()
+            if message is finished:
+                break
+            if isinstance(message, BaseException):
+                raise message
+            yield message
+    finally:
+        cancelled.set()
+        producer.join(timeout=1.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

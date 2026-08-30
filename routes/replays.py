@@ -10,7 +10,6 @@ which unpacks and parses it client-side (minimal server load).
 import os
 import secrets
 import logging
-import tempfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -19,9 +18,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import (
     APIRouter, Depends, HTTPException, Request, Query, Form, UploadFile, File,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session, aliased, joinedload
@@ -33,11 +31,11 @@ from models import AdminUser, AdminSession, RoundEvent, RoundReplay
 import services_replays
 from services_replays import ReplayService
 from services_replays import (
-    build_replay_download_archive,
     build_replay_timeline_overview_rows,
     classify_replay_timeline_lane,
     extract_replay_timeline_item,
     extract_replay_timeline_target,
+    iter_replay_download_archive,
 )
 
 settings = get_settings()
@@ -1449,32 +1447,18 @@ async def api_replay_archive(request: Request, replay_id: int, db: Session = Dep
             headers={"Cache-Control": "private, no-store"},
         )
 
-    file_descriptor, archive_path = tempfile.mkstemp(
-        prefix=f"nexus_replay_{replay.id}_",
-        suffix=".barodemo.zip",
-    )
-    os.close(file_descriptor)
-    try:
-        await run_in_threadpool(
-            build_replay_download_archive,
+    archive_name_ascii = f"replay_{replay.id}.barodemo.zip"
+    return StreamingResponse(
+        iter_replay_download_archive(
             source_path,
-            archive_path,
             _replay_archive_member_name(replay),
-        )
-    except Exception:
-        try:
-            os.remove(archive_path)
-        except OSError:
-            pass
-        logger.exception("replay.archive.failed replay_id=%s", replay.id)
-        raise HTTPException(status_code=500, detail="Не удалось подготовить ZIP-архив")
-
-    return FileResponse(
-        path=archive_path,
-        filename=archive_name,
+        ),
         media_type="application/zip",
-        headers={"Cache-Control": "private, no-store"},
-        background=BackgroundTask(os.remove, archive_path),
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="{archive_name_ascii}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

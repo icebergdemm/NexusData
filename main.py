@@ -60,7 +60,7 @@ class _NoGzipForRawPayloads:
        external X-API-Key/client_api_key integrations) — those clients want
        the raw bytes.
 
-    2. File-download endpoints (`.../download`). These serve payloads that are
+    2. File-download endpoints (`.../download` and replay `.../archive`). These serve payloads that are
        ALREADY compressed (replay .barodemo.zip, gzipped .sub files), so
        gzipping them again gains nothing while burning real CPU — at
        compresslevel=9 on a 100+ МБ replay that is very much not free.
@@ -89,7 +89,8 @@ class _NoGzipForRawPayloads:
         if not skip_gzip:
             # Только точное окончание пути: не ловим случайные совпадения
             # вроде "/downloads" или "?x=/download".
-            skip_gzip = scope.get("path", "").rstrip("/").endswith("/download")
+            path = scope.get("path", "").rstrip("/")
+            skip_gzip = path.endswith("/download") or path.endswith("/archive")
 
         if skip_gzip:
             scope = {
