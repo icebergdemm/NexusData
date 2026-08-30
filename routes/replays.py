@@ -30,7 +30,11 @@ from config import get_settings
 from models import AdminUser, AdminSession, RoundEvent, RoundReplay
 import services_replays
 from services_replays import ReplayService
-from services_replays import classify_replay_timeline_lane, extract_replay_timeline_item
+from services_replays import (
+    build_replay_timeline_overview_rows,
+    classify_replay_timeline_lane,
+    extract_replay_timeline_item,
+)
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -1143,39 +1147,12 @@ async def api_replay_logs(
             bucket_ms=bucket_ms,
             player_name=player if player_scope == "actor" else None,
         )
-        groups: dict[tuple[int, str], dict] = {}
-        action_counts: Counter[str] = Counter()
-        for bucket in raw.buckets:
-            action_name = bucket["action_type"]
-            amount = bucket["count"]
-            action_counts[action_name] += amount
-            lane = classify_replay_timeline_lane(action_name)
-            offset = min(effective_duration_ms, bucket["offset_ms"])
-            key = (offset, lane)
-            group = groups.setdefault(key, {
-                "offset_ms": offset,
-                "lane": lane,
-                "aggregate_count": 0,
-                "actions": Counter(),
-            })
-            group["aggregate_count"] += amount
-            group["actions"][action_name] += amount
-
-        overview_rows = []
-        for (offset, lane), group in sorted(groups.items()):
-            dominant = group["actions"].most_common(1)[0][0]
-            amount = group["aggregate_count"]
-            overview_rows.append({
-                "event_id": f"overview:{offset}:{lane}",
-                "offset_ms": offset,
-                "player_name": None,
-                "action_type": dominant,
-                "details": f"{amount} событий в этом участке",
-                "lane": lane,
-                "item": None,
-                "aggregate_count": amount,
-                "precision_ms": bucket_ms,
-            })
+        overview_rows, action_counts = build_replay_timeline_overview_rows(
+            raw.buckets,
+            effective_duration_ms,
+        )
+        for row in overview_rows:
+            row["precision_ms"] = bucket_ms
         return overview_rows, raw.players, action_counts
 
     try:

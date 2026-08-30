@@ -1,4 +1,7 @@
-export const MIN_TIMELINE_WINDOW_MS = 5_000
+// Server text logs are second-precise, while demo events retain millisecond
+// offsets.  A half-second floor keeps both useful without turning the ruler
+// into an unreadable sub-frame view.
+export const MIN_TIMELINE_WINDOW_MS = 500
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))

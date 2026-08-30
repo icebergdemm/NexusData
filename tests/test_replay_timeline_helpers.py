@@ -111,6 +111,7 @@ class ReplayTimelineHelperTests(unittest.TestCase):
             "damage": "combat",
             "shot": "combat",
             "picked_up": "inventory",
+            "looted_body": "inventory",
             "wire": "systems",
             "client_error": "system",
             "totally_unknown_action": "system",
@@ -122,6 +123,40 @@ class ReplayTimelineHelperTests(unittest.TestCase):
                     services_replays.classify_replay_timeline_lane(action_type),
                     lane,
                 )
+
+    def test_overview_keeps_distinct_actions_in_the_same_lane_and_bucket(self):
+        rows, counts = services_replays.build_replay_timeline_overview_rows(
+            [
+                {"offset_ms": 500, "action_type": "attack", "count": 3},
+                {"offset_ms": 500, "action_type": "death", "count": 1},
+                {"offset_ms": 500, "action_type": "radio", "count": 2},
+            ],
+            duration_ms=10_000,
+        )
+
+        self.assertEqual(
+            [(row["action_type"], row["lane"], row["aggregate_count"]) for row in rows],
+            [
+                ("attack", "combat", 3),
+                ("death", "combat", 1),
+                ("radio", "communication", 2),
+            ],
+        )
+        self.assertEqual(len({row["event_id"] for row in rows}), 3)
+        self.assertEqual(counts, {"attack": 3, "death": 1, "radio": 2})
+        self.assertEqual(sum(row["aggregate_count"] for row in rows), 6)
+
+    def test_overview_clamps_offsets_but_keeps_adjacent_action_buckets(self):
+        rows, _ = services_replays.build_replay_timeline_overview_rows(
+            [
+                {"offset_ms": 1_500, "action_type": "wire", "count": 1},
+                {"offset_ms": 2_500, "action_type": "wire", "count": 2},
+            ],
+            duration_ms=2_000,
+        )
+
+        self.assertEqual([row["offset_ms"] for row in rows], [1_500, 2_000])
+        self.assertEqual([row["aggregate_count"] for row in rows], [1, 2])
 
 
 if __name__ == "__main__":

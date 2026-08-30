@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -17,6 +18,7 @@ import {
   Minus,
   Package,
   Pause,
+  PanelRightOpen,
   Play,
   Plus,
   Search,
@@ -34,6 +36,14 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet"
 import {
   clamp,
   findEventAtOrBefore,
@@ -116,6 +126,14 @@ interface TimelineHit {
   events: TimelineEvent[]
 }
 
+interface TimelineRenderHit extends TimelineHit {
+  belongsToSelected: boolean
+  clusterCount: number
+  isGlobal: boolean
+  isSelected: boolean
+  representative: TimelineEvent
+}
+
 const LANES: Array<{ id: TimelineLane; label: string }> = [
   { id: "combat", label: "БОЙ" },
   { id: "inventory", label: "ПРЕДМЕТЫ" },
@@ -123,6 +141,7 @@ const LANES: Array<{ id: TimelineLane; label: string }> = [
   { id: "systems", label: "СИСТЕМЫ" },
   { id: "system", label: "СЕРВЕР" },
 ]
+const LANE_INDEX = new Map<TimelineLane, number>(LANES.map((lane, index) => [lane.id, index]))
 
 const DETAIL_WINDOW_MAX_MS = 20 * 60 * 1_000
 const DETAIL_WINDOW_PADDING_MS = 1_000
@@ -162,6 +181,25 @@ const ACTION_LABELS: Record<string, string> = {
   logout: "выход",
   spawn: "появление",
   despawn: "исчезновение",
+  attached: "прикрепил предмет",
+  ban: "блокировка игрока",
+  client_error: "ошибка клиента",
+  command_denied: "команда отклонена",
+  connection: "соединение",
+  console: "команда консоли",
+  joined: "подключился к серверу",
+  kick: "отключение игрока",
+  looted_body: "обыскал тело",
+  name_change: "сменил имя",
+  name_history: "история имён",
+  other: "прочее событие",
+  ready: "готов к раунду",
+  respawn: "возрождение",
+  talent_gained: "получил талант",
+}
+
+function actionLabel(actionType: string): string {
+  return ACTION_LABELS[actionType] ?? actionType.replaceAll("_", " ")
 }
 
 function getReplayBridge(): ReplayBridge | undefined {
@@ -193,7 +231,7 @@ function fallbackLane(actionType: string): TimelineLane {
   if (["reactor", "repair", "repair_failed", "wire", "pump", "settings_change"].includes(actionType)) return "systems"
   if ([
     "picked_up", "placed", "removed", "opened", "closed", "equipped", "unequipped",
-    "dropped", "threw", "used", "fabrication", "fabrication_cancel", "activated", "deactivated",
+    "dropped", "threw", "used", "fabrication", "fabrication_cancel", "activated", "deactivated", "attached", "looted_body",
   ].includes(actionType)) return "inventory"
   return "system"
 }
@@ -334,6 +372,43 @@ function TimelineCanvas({
     return events.slice(start, end)
   }, [events, viewEndMs, viewStartMs])
 
+  const clusters = useMemo<TimelineHit[]>(() => {
+    const width = canvasSize.width
+    const labelWidth = width < 700 ? 66 : 92
+    const plotWidth = Math.max(1, width - 12 - labelWidth)
+    const rulerHeight = 34
+    const laneHeight = 34
+    const grouped = new Map<string, TimelineHit>()
+    for (const event of visibleEvents) {
+      const laneIndex = LANE_INDEX.get(event.lane)
+      if (laneIndex === undefined) continue
+      const x = labelWidth + ((event.offset_ms - viewStartMs) / windowMs) * plotWidth
+      const y = rulerHeight + laneIndex * laneHeight + laneHeight / 2
+      const key = `${laneIndex}:${Math.round(x / 4)}`
+      const existing = grouped.get(key)
+      if (existing) existing.events.push(event)
+      else grouped.set(key, { x, y, events: [event] })
+    }
+    return [...grouped.values()]
+  }, [canvasSize.width, viewStartMs, visibleEvents, windowMs])
+
+  const renderHits = useMemo<TimelineRenderHit[]>(() => clusters.map((cluster) => {
+    const representative = cluster.events.find((event) => event.id === selectedEvent?.id)
+      ?? (selectedPlayer ? cluster.events.find((event) => event.player_name === selectedPlayer) : undefined)
+      ?? cluster.events[0]
+    return {
+      ...cluster,
+      representative,
+      belongsToSelected: !selectedPlayer || cluster.events.some((event) => event.player_name === selectedPlayer),
+      isGlobal: !representative.player_name,
+      isSelected: cluster.events.some((event) => event.id === selectedEvent?.id),
+      clusterCount: cluster.events.reduce(
+        (sum, event) => sum + (event.player_overlay ? 0 : (event.aggregate_count ?? 1)),
+        0,
+      ),
+    }
+  }), [clusters, selectedEvent?.id, selectedPlayer])
+
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || durationMs <= 0) return
@@ -398,30 +473,8 @@ function TimelineCanvas({
       context.fillText(width < 700 ? lane.label.slice(0, 4) : lane.label, 10, top + laneHeight / 2)
     })
 
-    const clusters = new Map<string, TimelineHit>()
-    for (const event of visibleEvents) {
-      const laneIndex = LANES.findIndex((lane) => lane.id === event.lane)
-      if (laneIndex < 0) continue
-      const x = timeToX(event.offset_ms)
-      const y = rulerHeight + laneIndex * laneHeight + laneHeight / 2
-      const key = `${laneIndex}:${Math.round(x / 4)}`
-      const existing = clusters.get(key)
-      if (existing) existing.events.push(event)
-      else clusters.set(key, { x, y, events: [event] })
-    }
-
-    const hits: TimelineHit[] = []
-    for (const cluster of clusters.values()) {
-      const representative = cluster.events.find((event) => event.id === selectedEvent?.id)
-        ?? (selectedPlayer ? cluster.events.find((event) => event.player_name === selectedPlayer) : undefined)
-        ?? cluster.events[0]
-      const belongsToSelected = !selectedPlayer || cluster.events.some((event) => event.player_name === selectedPlayer)
-      const isGlobal = !representative.player_name
-      const isSelected = cluster.events.some((event) => event.id === selectedEvent?.id)
-      const clusterCount = cluster.events.reduce(
-        (sum, event) => sum + (event.player_overlay ? 0 : (event.aggregate_count ?? 1)),
-        0,
-      )
+    for (const cluster of renderHits) {
+      const { belongsToSelected, clusterCount, isGlobal, isSelected, representative } = cluster
       context.globalAlpha = belongsToSelected ? 1 : (isGlobal ? 0.48 : 0.2)
       context.fillStyle = representative.lane === "combat" ? destructive : foreground
       context.strokeStyle = foreground
@@ -455,9 +508,8 @@ function TimelineCanvas({
         context.fillText(String(Math.min(99, clusterCount)), cluster.x, cluster.y + 0.5)
         context.font = "10px ui-monospace, monospace"
       }
-      hits.push(cluster)
     }
-    hitsRef.current = hits
+    hitsRef.current = clusters
 
     if (timeMs >= viewStartMs && timeMs <= viewEndMs) {
       const x = Math.round(timeToX(timeMs)) + 0.5
@@ -476,7 +528,7 @@ function TimelineCanvas({
       context.closePath()
       context.fill()
     }
-  }, [canvasSize, durationMs, selectedEvent?.id, selectedPlayer, themeRevision, timeMs, viewEndMs, viewStartMs, visibleEvents, windowMs])
+  }, [canvasSize, clusters, durationMs, renderHits, themeRevision, timeMs, viewEndMs, viewStartMs, windowMs])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -528,11 +580,11 @@ function TimelineCanvas({
     }
     if (event.key === "+" || event.key === "=") {
       event.preventDefault()
-      onViewChange(zoomWindowAroundPoint({ durationMs, viewStartMs, windowMs, anchorRatio: 0.5, factor: 1.5 }))
+      onViewChange(zoomWindowAroundPoint({ durationMs, viewStartMs, windowMs, anchorRatio: 0.5, factor: 2 }))
     }
     if (event.key === "-") {
       event.preventDefault()
-      onViewChange(zoomWindowAroundPoint({ durationMs, viewStartMs, windowMs, anchorRatio: 0.5, factor: 1 / 1.5 }))
+      onViewChange(zoomWindowAroundPoint({ durationMs, viewStartMs, windowMs, anchorRatio: 0.5, factor: 1 / 2 }))
     }
   }
 
@@ -576,7 +628,7 @@ function TimelineCanvas({
             y: event.clientY - rect.top,
             label: hit.events.reduce((sum, item) => sum + (item.aggregate_count ?? 1), 0) > 1
               ? `${hit.events.reduce((sum, item) => sum + (item.aggregate_count ?? 1), 0)} событий · ${formatTimecode(first.offset_ms)}`
-              : `${first.player_name ?? "Система"} · ${ACTION_LABELS[first.action_type] ?? first.action_type}`,
+              : `${first.player_name ?? "Система"} · ${actionLabel(first.action_type)}`,
           })
         }}
         onPointerUp={() => { dragRef.current = false }}
@@ -603,6 +655,148 @@ function ItemPreview({ item }: { item?: TimelineItem | null }) {
   )
 }
 
+interface VisibleEventsPanelProps {
+  actionFilter: string
+  actionTypes: Array<{ name: string; eventCount: number }>
+  detailMode: boolean
+  filteredEventCount: number
+  filteredRowCount: number
+  isError: boolean
+  isLoading: boolean
+  listWindow: TimelineEvent[]
+  loadedCount: number
+  onActionFilterChange: (value: string) => void
+  onRetry: () => void
+  onSearchChange: (value: string) => void
+  onSelectEvent: (event: TimelineEvent) => void
+  rangeEndMs: number
+  rangeStartMs: number
+  search: string
+  selectedEventId?: string
+  selectedPlayer: string | null
+  showHeading?: boolean
+  totalIsCapped: boolean
+  unavailableReason?: string | null
+  variant?: "inline" | "sheet"
+}
+
+const VisibleEventsPanel = memo(function VisibleEventsPanel({
+  actionFilter,
+  actionTypes,
+  detailMode,
+  filteredEventCount,
+  filteredRowCount,
+  isError,
+  isLoading,
+  listWindow,
+  loadedCount,
+  onActionFilterChange,
+  onRetry,
+  onSearchChange,
+  onSelectEvent,
+  rangeEndMs,
+  rangeStartMs,
+  search,
+  selectedEventId,
+  selectedPlayer,
+  showHeading = true,
+  totalIsCapped,
+  unavailableReason,
+  variant = "inline",
+}: VisibleEventsPanelProps) {
+  return (
+    <div className={`rpv-editor-events rpv-editor-events--${variant}`}>
+      <div className={`rpv-editor-events-head ${showHeading ? "" : "filters-only"}`}>
+        {showHeading && (
+          <div>
+            <strong>СОБЫТИЯ ВИДИМОГО УЧАСТКА</strong>
+            <span>
+              {formatTimecode(rangeStartMs)} — {formatTimecode(rangeEndMs)}
+              {` · ${filteredEventCount.toLocaleString("ru-RU")}`}
+            </span>
+          </div>
+        )}
+        <div className="rpv-editor-filters">
+          <div className="relative">
+            <Search className="rpv-editor-search-icon" />
+            <Input
+              aria-label="Поиск событий видимого участка"
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="Поиск в участке"
+            />
+          </div>
+          <Select value={actionFilter} onValueChange={onActionFilterChange}>
+            <SelectTrigger aria-label="Фильтр по типу действия"><Filter /><SelectValue /></SelectTrigger>
+            <SelectContent className="max-h-72">
+              <SelectItem value="all">Все действия</SelectItem>
+              {actionTypes.map((action) => (
+                <SelectItem key={action.name} value={action.name}>
+                  {actionLabel(action.name)} · {action.eventCount.toLocaleString("ru-RU")}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {isLoading && <div className="space-y-1 p-3">{Array.from({ length: 7 }).map((_, index) => <Skeleton key={index} className="h-9" />)}</div>}
+      {isError && (
+        <div className="rpv-editor-error">
+          Не удалось получить серверные события. Данные самой демозаписи остаются доступны.
+          <Button variant="outline" size="sm" onClick={onRetry}>Повторить</Button>
+        </div>
+      )}
+      {!isLoading && (
+        <div className="rpv-editor-event-list">
+          {listWindow.map((event) => {
+            const Icon = laneIcon(event.lane)
+            const dimmed = Boolean(selectedPlayer && event.player_name && event.player_name !== selectedPlayer)
+            const selected = selectedEventId === event.id
+            return (
+              <button
+                type="button"
+                key={event.id}
+                aria-current={selected ? "true" : undefined}
+                className={`${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}`}
+                onClick={() => onSelectEvent(event)}
+              >
+                <time>{event.precision_ms ? "≈ " : ""}{formatTimecode(event.offset_ms)}</time>
+                {event.item ? <ItemPreview item={event.item} /> : <Icon className="rpv-editor-event-icon" />}
+                <span className="rpv-editor-event-copy">
+                  <b>{event.player_name ?? "Система"}</b>
+                  <small>{actionLabel(event.action_type)} · {event.details}</small>
+                </span>
+              </button>
+            )
+          })}
+          {!listWindow.length && <div className="rpv-editor-empty">На видимом участке событий нет</div>}
+        </div>
+      )}
+      {!detailMode && (
+        <div className="rpv-editor-cap">Серверные маркеры сгруппированы. Увеличьте масштаб до участка короче 20 минут, чтобы загрузить точные строки.</div>
+      )}
+      {filteredRowCount > listWindow.length && (
+        <div className="rpv-editor-cap">Показаны ближайшие {listWindow.length} из {filteredRowCount} строк. Увеличьте масштаб для точного разбора.</div>
+      )}
+      {totalIsCapped && (
+        <div className="rpv-editor-warning">
+          В участке больше {loadedCount.toLocaleString("ru-RU")} точных строк. Увеличьте масштаб, чтобы дозагрузить остальные.
+        </div>
+      )}
+      {unavailableReason && (
+        <div className="rpv-editor-warning">
+          <span>{unavailableReason}</span>
+          <Button variant="outline" size="sm" onClick={onRetry}>Повторить</Button>
+        </div>
+      )}
+      {loadedCount > 0 && variant === "sheet" && (
+        <div className="rpv-editor-cap">Загружено точных строк: {loadedCount.toLocaleString("ru-RU")}</div>
+      )}
+    </div>
+  )
+})
+
 export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   replayId: string
   initialDurationMs?: number | null
@@ -619,6 +813,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   const [windowMs, setWindowMs] = useState(Math.max(1, initialDurationMs || 1))
   const [search, setSearch] = useState("")
   const [actionFilter, setActionFilter] = useState("all")
+  const [eventsSheetOpen, setEventsSheetOpen] = useState(false)
 
   const seekTo = useCallback((value: number) => {
     const next = clamp(Math.round(value), 0, durationMs || Number.MAX_SAFE_INTEGER)
@@ -642,6 +837,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     setDemoEvents([])
     setSelectedPlayer(null)
     setSelectedEvent(null)
+    setEventsSheetOpen(false)
     const expectedReplayUrl = `/api/v1/admin/replays/${replayId}/download`
     const existingBridge = getReplayBridge()
     const existingData = existingBridge?.getTimelineData?.()
@@ -751,11 +947,14 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
   const overviewData = overviewQuery.data
   const isLoading = detailMode ? detailQuery.isLoading : overviewQuery.isLoading
   const isError = detailMode ? detailQuery.isError : overviewQuery.isError
-  const refetchTimeline = () => {
-    void overviewQuery.refetch()
-    if (detailMode) void detailQuery.refetch()
-    if (!detailMode && selectedPlayer) void playerOverviewQuery.refetch()
-  }
+  const refetchOverview = overviewQuery.refetch
+  const refetchPlayerOverview = playerOverviewQuery.refetch
+  const refetchDetail = detailQuery.refetch
+  const refetchTimeline = useCallback(() => {
+    void refetchOverview()
+    if (detailMode) void refetchDetail()
+    if (!detailMode && selectedPlayer) void refetchPlayerOverview()
+  }, [detailMode, refetchDetail, refetchOverview, refetchPlayerOverview, selectedPlayer])
   const unavailableReason = data?.unavailable_reason
     ?? overviewData?.unavailable_reason
     ?? playerOverviewQuery.data?.unavailable_reason
@@ -854,6 +1053,10 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
         .toLocaleLowerCase("ru").includes(term)
     })
   }, [actionFilter, listEvents, search, viewStartMs, visibleEndMs])
+  const filteredEventCount = useMemo(
+    () => filteredListEvents.reduce((sum, event) => sum + (event.aggregate_count ?? 1), 0),
+    [filteredListEvents],
+  )
 
   const activeIndex = useMemo(() => findEventAtOrBefore(filteredListEvents, timeMs), [filteredListEvents, timeMs])
   const listWindow = useMemo(() => {
@@ -867,6 +1070,11 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     setWindowMs(next.windowMs)
     setViewStartMs(next.viewStartMs)
   }, [])
+
+  const selectEvent = useCallback((event: TimelineEvent) => {
+    setSelectedEvent(event)
+    seekTo(event.offset_ms)
+  }, [seekTo])
 
   const zoom = (factor: number) => changeView(zoomWindowAroundPoint({
     durationMs,
@@ -904,17 +1112,57 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
           <TimecodeInput valueMs={timeMs} durationMs={durationMs} onSeek={seekTo} />
         </div>
         <div className="rpv-editor-zoom">
-          <Button variant="outline" size="icon-sm" onClick={() => zoom(1 / 1.5)} title="Уменьшить масштаб"><Minus /></Button>
-          <span>{durationMs ? `${Math.max(1, Math.round(durationMs / windowMs))}×` : "1×"}</span>
-          <Button variant="outline" size="icon-sm" onClick={() => zoom(1.5)} title="Увеличить масштаб"><Plus /></Button>
+          <Button variant="outline" size="icon-sm" onClick={() => zoom(1 / 2)} title="Уменьшить масштаб"><Minus /></Button>
+          <span>{durationMs ? `${Math.max(1, Math.round(durationMs / windowMs)).toLocaleString("ru-RU")}×` : "1×"}</span>
+          <Button variant="outline" size="icon-sm" onClick={() => zoom(2)} title="Увеличить масштаб"><Plus /></Button>
           <Button variant="outline" size="sm" onClick={() => changeView({ viewStartMs: 0, windowMs: durationMs })}>
             <Focus /> Весь раунд
           </Button>
+          <Sheet open={eventsSheetOpen} onOpenChange={setEventsSheetOpen}>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="sm" title="Открыть события текущего участка">
+                <PanelRightOpen /> События
+                <span className="rpv-editor-events-count">{filteredEventCount.toLocaleString("ru-RU")}</span>
+              </Button>
+            </SheetTrigger>
+            <SheetContent className="rpv-editor-events-sheet w-full gap-0 p-0 sm:max-w-2xl">
+              <SheetHeader className="rpv-editor-sheet-head">
+                <SheetTitle>События видимого участка</SheetTitle>
+                <SheetDescription>
+                  {formatTimecode(viewStartMs)} — {formatTimecode(visibleEndMs)} · {filteredEventCount.toLocaleString("ru-RU")} событий
+                </SheetDescription>
+              </SheetHeader>
+              <VisibleEventsPanel
+                actionFilter={actionFilter}
+                actionTypes={actionTypes}
+                detailMode={detailMode}
+                filteredEventCount={filteredEventCount}
+                filteredRowCount={filteredListEvents.length}
+                isError={isError}
+                isLoading={isLoading}
+                listWindow={listWindow}
+                loadedCount={data?.loaded ?? 0}
+                onActionFilterChange={setActionFilter}
+                onRetry={refetchTimeline}
+                onSearchChange={setSearch}
+                onSelectEvent={selectEvent}
+                rangeEndMs={visibleEndMs}
+                rangeStartMs={viewStartMs}
+                search={search}
+                selectedEventId={selectedEvent?.id}
+                selectedPlayer={selectedPlayer}
+                showHeading={false}
+                totalIsCapped={Boolean(data?.total_is_capped)}
+                unavailableReason={unavailableReason}
+                variant="sheet"
+              />
+            </SheetContent>
+          </Sheet>
         </div>
       </header>
 
       <div className="rpv-editor-hint">
-        <span><kbd>Ctrl</kbd> + колесо: масштаб</span>
+        <span><kbd>Ctrl</kbd> + колесо: масштаб до 0,5 с</span>
         <span>колесо: прокрутка</span>
         <span><kbd>←</kbd><kbd>→</kbd>: 100 мс</span>
         <span><kbd>Shift</kbd> + стрелка: 1 с</span>
@@ -955,67 +1203,27 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
       </div>
 
       <div className="rpv-editor-lower">
-        <div className="rpv-editor-events">
-          <div className="rpv-editor-events-head">
-            <div>
-              <strong>СОБЫТИЯ ВИДИМОГО УЧАСТКА</strong>
-              <span>{formatTimecode(viewStartMs)} — {formatTimecode(visibleEndMs)}</span>
-            </div>
-            <div className="rpv-editor-filters">
-              <div className="relative">
-                <Search className="rpv-editor-search-icon" />
-                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск в участке" />
-              </div>
-              <Select value={actionFilter} onValueChange={setActionFilter}>
-                <SelectTrigger><Filter /><SelectValue /></SelectTrigger>
-                <SelectContent className="max-h-72">
-                  <SelectItem value="all">Все действия</SelectItem>
-                  {actionTypes.map((action) => (
-                    <SelectItem key={action.name} value={action.name}>{ACTION_LABELS[action.name] ?? action.name} · {action.eventCount}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          {isLoading && <div className="space-y-1 p-3">{Array.from({ length: 7 }).map((_, index) => <Skeleton key={index} className="h-9" />)}</div>}
-          {isError && (
-            <div className="rpv-editor-error">
-              Не удалось получить серверные события. Данные самой демозаписи остаются доступны.
-              <Button variant="outline" size="sm" onClick={refetchTimeline}>Повторить</Button>
-            </div>
-          )}
-          {!isLoading && (
-            <div className="rpv-editor-event-list">
-              {listWindow.map((event) => {
-                const Icon = laneIcon(event.lane)
-                const dimmed = Boolean(selectedPlayer && event.player_name && event.player_name !== selectedPlayer)
-                return (
-                  <button
-                    type="button"
-                    key={event.id}
-                    className={`${selectedEvent?.id === event.id ? "selected" : ""} ${dimmed ? "dimmed" : ""}`}
-                    onClick={() => { setSelectedEvent(event); seekTo(event.offset_ms) }}
-                  >
-                    <time>{event.precision_ms ? "≈ " : ""}{formatTimecode(event.offset_ms)}</time>
-                    {event.item ? <ItemPreview item={event.item} /> : <Icon className="rpv-editor-event-icon" />}
-                    <span className="rpv-editor-event-copy">
-                      <b>{event.player_name ?? "Система"}</b>
-                      <small>{ACTION_LABELS[event.action_type] ?? event.action_type} · {event.details}</small>
-                    </span>
-                  </button>
-                )
-              })}
-              {!listWindow.length && <div className="rpv-editor-empty">На видимом участке событий нет</div>}
-            </div>
-          )}
-          {!detailMode && (
-            <div className="rpv-editor-cap">Серверные маркеры сгруппированы. Увеличьте масштаб до участка короче 20 минут, чтобы загрузить точные строки.</div>
-          )}
-          {filteredListEvents.length > listWindow.length && (
-            <div className="rpv-editor-cap">Показаны ближайшие {listWindow.length} из {filteredListEvents.length}. Увеличьте масштаб для точного разбора.</div>
-          )}
-        </div>
+        <VisibleEventsPanel
+          actionFilter={actionFilter}
+          actionTypes={actionTypes}
+          detailMode={detailMode}
+          filteredEventCount={filteredEventCount}
+          filteredRowCount={filteredListEvents.length}
+          isError={isError}
+          isLoading={isLoading}
+          listWindow={listWindow}
+          loadedCount={data?.loaded ?? 0}
+          onActionFilterChange={setActionFilter}
+          onRetry={refetchTimeline}
+          onSearchChange={setSearch}
+          onSelectEvent={selectEvent}
+          rangeEndMs={visibleEndMs}
+          rangeStartMs={viewStartMs}
+          search={search}
+          selectedEventId={selectedEvent?.id}
+          selectedPlayer={selectedPlayer}
+          totalIsCapped={Boolean(data?.total_is_capped)}
+        />
 
         <aside className="rpv-editor-inspector">
           <div className="rpv-editor-inspector-head">
@@ -1027,7 +1235,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
               <div className="rpv-editor-inspector-time">{selectedEvent.precision_ms ? "≈ " : ""}{formatTimecode(selectedEvent.offset_ms)}</div>
               <div className="rpv-editor-inspector-kind">
                 {selectedEvent.item && <ItemPreview item={selectedEvent.item} />}
-                <div><span>{ACTION_LABELS[selectedEvent.action_type] ?? selectedEvent.action_type}</span><b>{selectedEvent.player_name ?? "Системное событие"}</b></div>
+                <div><span>{actionLabel(selectedEvent.action_type)}</span><b>{selectedEvent.player_name ?? "Системное событие"}</b></div>
               </div>
               <dl>
                 <div><dt>Дорожка</dt><dd>{LANES.find((lane) => lane.id === selectedEvent.lane)?.label}</dd></div>
@@ -1043,9 +1251,6 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
               <Crosshair />
               <p>Нажмите на маркер или строку события, чтобы увидеть точное время и детали.</p>
             </div>
-          )}
-          {data?.total_is_capped && (
-            <div className="rpv-editor-warning">В этом участке больше {data.loaded.toLocaleString("ru-RU")} событий. Увеличьте масштаб, чтобы дозагрузить все строки.</div>
           )}
           {unavailableReason && (
             <div className="rpv-editor-warning">

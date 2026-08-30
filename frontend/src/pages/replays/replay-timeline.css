@@ -8,7 +8,7 @@ html[data-ui-version="v2"] .rpv-editor {
 html[data-ui-version="v2"] .rpv-editor-toolbar {
   min-height: 64px;
   display: grid;
-  grid-template-columns: minmax(170px, 1fr) auto minmax(220px, 1fr);
+  grid-template-columns: minmax(170px, 1fr) auto minmax(360px, 1fr);
   align-items: center;
   gap: 18px;
   padding: 9px 12px;
@@ -36,6 +36,16 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
   color: var(--muted-foreground);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
+}
+.rpv-editor-events-count {
+  min-width: 24px;
+  border-left: 1px solid var(--border);
+  padding-left: 6px;
+  color: var(--muted-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .rpv-editor-timecode { position: relative; display: grid; grid-template-columns: auto 148px; align-items: center; gap: 7px; margin-left: 5px; }
@@ -72,6 +82,7 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-events { min-width: 0; border-right: 1px solid var(--border); }
 .rpv-editor-events-head { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .rpv-editor-events-head > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.rpv-editor-events-head.filters-only { min-height: 50px; justify-content: flex-end; }
 .rpv-editor-filters { display: flex; align-items: center; gap: 6px; }
 .rpv-editor-filters .relative { position: relative; }
 .rpv-editor-filters input { width: 220px; height: 31px; padding-left: 28px; font-size: 11px; }
@@ -114,6 +125,45 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-warning { border-top: 1px solid var(--border); border-bottom: 0; }
 .rpv-editor-item-fallback { width: 34px; height: 34px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); }
 .rpv-editor-item-fallback svg { width: 17px; height: 17px; }
+
+html[data-ui-version="v2"] .rpv-editor-events-sheet {
+  width: min(720px, 100vw);
+  max-width: min(720px, 100vw);
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 0;
+}
+.rpv-editor-sheet-head {
+  flex: 0 0 auto;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 52px 12px 14px;
+}
+.rpv-editor-sheet-head [data-slot="sheet-title"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.rpv-editor-sheet-head [data-slot="sheet-description"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.rpv-editor-events--sheet {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 0;
+}
+.rpv-editor-events--sheet .rpv-editor-event-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+.rpv-editor-events--sheet .rpv-editor-warning,
+.rpv-editor-events--sheet .rpv-editor-cap { flex: 0 0 auto; }
 
 html[data-ui-version="v2"] .rpv-player { cursor: pointer; transition: opacity .14s ease, border-color .14s ease, background .14s ease; border: 1px solid transparent; }
 html[data-ui-version="v2"] .rpv-player[data-filter-selected="true"] { border-color: var(--foreground); background: var(--accent); }

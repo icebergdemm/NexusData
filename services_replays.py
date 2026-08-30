@@ -20,6 +20,7 @@ import logging
 import threading
 import time
 import zipfile
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional, List
 
@@ -177,7 +178,7 @@ def classify_replay_timeline_lane(action_type: str) -> str:
     if action_type in {
         "picked_up", "placed", "removed", "opened", "closed", "equipped",
         "unequipped", "dropped", "threw", "used", "fabrication",
-        "fabrication_cancel", "activated", "deactivated", "attached",
+        "fabrication_cancel", "activated", "deactivated", "attached", "looted_body",
     }:
         return "inventory"
     if action_type in {
@@ -186,6 +187,46 @@ def classify_replay_timeline_lane(action_type: str) -> str:
     }:
         return "systems"
     return "system"
+
+
+def build_replay_timeline_overview_rows(
+    buckets: list[dict],
+    duration_ms: int,
+) -> tuple[list[dict], Counter[str]]:
+    """Convert SQL overview buckets without losing less frequent actions.
+
+    ``get_log_timeline_overview`` already groups by both time bucket and
+    action type.  A second grouping by visual lane used to collapse, for
+    example, ``attack`` and ``death`` into one dominant marker.  Keep one
+    lightweight row per action type here; the canvas performs its own pixel
+    clustering, so dense views stay compact without making data disappear.
+    """
+    effective_duration_ms = max(0, int(duration_ms))
+    rows: list[dict] = []
+    action_counts: Counter[str] = Counter()
+    for bucket in sorted(
+        buckets,
+        key=lambda item: (int(item["offset_ms"]), str(item["action_type"])),
+    ):
+        action_name = str(bucket["action_type"])
+        amount = max(0, int(bucket["count"]))
+        if amount <= 0:
+            continue
+        offset = min(effective_duration_ms, max(0, int(bucket["offset_ms"])))
+        lane = classify_replay_timeline_lane(action_name)
+        action_counts[action_name] += amount
+        rows.append({
+            "event_id": f"overview:{offset}:{lane}:{action_name}",
+            "offset_ms": offset,
+            "player_name": None,
+            "action_type": action_name,
+            "details": f"{amount} событий этого типа в участке",
+            "lane": lane,
+            "item": None,
+            "aggregate_count": amount,
+            "precision_ms": None,
+        })
+    return rows, action_counts
 
 
 # ══════════════════════════════════════════════════════════════════════════════

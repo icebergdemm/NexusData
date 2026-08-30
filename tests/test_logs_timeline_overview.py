@@ -84,6 +84,24 @@ class LogTimelineOverviewTests(unittest.TestCase):
             ],
         )
 
+    def test_same_bucket_preserves_every_distinct_action_type(self):
+        """Do not collapse same-lane actions into one dominant action."""
+        self._insert(100, "ASPER1", "Алиса", "attack")
+        self._insert(200, "ASPER1", "Алиса", "damage")
+        self._insert(300, "ASPER1", "Борис", "death")
+        self._insert(400, "ASPER1", "Борис", "attack")
+
+        overview = self._overview()
+
+        self.assertEqual(
+            overview.buckets,
+            [
+                {"offset_ms": 500, "action_type": "attack", "count": 2},
+                {"offset_ms": 500, "action_type": "damage", "count": 1},
+                {"offset_ms": 500, "action_type": "death", "count": 1},
+            ],
+        )
+
     def test_counts_players_orders_by_activity_and_honours_limit(self):
         for offset in (0, 100, 200):
             self._insert(offset, "ASPER1", "Алиса", "wire")
