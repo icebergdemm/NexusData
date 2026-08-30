@@ -11,8 +11,18 @@ import {
   seekByMilliseconds,
   shouldActivatePrecisionScrub,
   formatTimecode,
+  isInvestigationTimelineEvent,
   zoomWindowAroundPoint,
 } from "../frontend/src/pages/replays/replay-timeline-utils.ts"
+
+
+test("investigation timeline rejects high-frequency renderer telemetry", () => {
+  assert.equal(isInvestigationTimelineEvent({ source: "demo_event", action_type: "damage" }), false)
+  assert.equal(isInvestigationTimelineEvent({ source: "demo_event", action_type: "shot" }), false)
+  assert.equal(isInvestigationTimelineEvent({ source: "demo_event", action_type: "picked_up" }), true)
+  assert.equal(isInvestigationTimelineEvent({ source: "demo_chat", action_type: "chat" }), true)
+  assert.equal(isInvestigationTimelineEvent({ source: "server_log", action_type: "damage" }), true)
+})
 
 
 test("deep zoom keeps the pointed time under the cursor", () => {

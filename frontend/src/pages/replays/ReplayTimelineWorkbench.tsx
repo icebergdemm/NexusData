@@ -48,6 +48,7 @@ import {
   clamp,
   findEventAtOrBefore,
   formatTimecode,
+  isInvestigationTimelineEvent,
   nearestTickInterval,
   parseTimecode,
   zoomWindowAroundPoint,
@@ -877,7 +878,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
       setWindowMs(existingDuration)
       setTickRate(existingData?.tickRate ?? 0)
       setDemoPlayers(existingData?.players ?? [])
-      setDemoEvents(existingData?.timelineEvents ?? [])
+      setDemoEvents((existingData?.timelineEvents ?? []).filter(isInvestigationTimelineEvent))
     }
     const onReady = (raw: Event) => {
       const detail = (raw as CustomEvent<ReplayReadyDetail>).detail
@@ -888,7 +889,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
       setViewStartMs(0)
       setTickRate(detail.tickRate)
       setDemoPlayers(detail.players ?? [])
-      setDemoEvents(detail.timelineEvents ?? [])
+      setDemoEvents((detail.timelineEvents ?? []).filter(isInvestigationTimelineEvent))
     }
     const onTime = (raw: Event) => {
       const detail = (raw as CustomEvent<{ timeMs: number; durationMs: number; playing: boolean }>).detail
@@ -939,8 +940,20 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     // "unavailable" is a recoverable storage/index state returned as HTTP
     // 200 so the demo remains usable. Do not cache that semantic failure as a
     // permanently successful overview; retry until the index is back.
-    staleTime: (query) => query.state.data?.status === "unavailable" ? 0 : Infinity,
-    refetchInterval: (query) => query.state.data?.status === "unavailable" ? UNAVAILABLE_RETRY_MS : false,
+    // A freshly uploaded demo can appear before its closed text-log file has
+    // reached the SFTP index. A valid empty overview is therefore temporary,
+    // not immutable: retry it just like an unavailable index. Non-empty round
+    // data stays cached for the lifetime of the player.
+    staleTime: (query) => (
+      query.state.data?.status === "unavailable" || query.state.data?.total === 0
+        ? 0
+        : Infinity
+    ),
+    refetchInterval: (query) => (
+      query.state.data?.status === "unavailable" || query.state.data?.total === 0
+        ? UNAVAILABLE_RETRY_MS
+        : false
+    ),
     gcTime: 5 * 60 * 1_000,
     retry: 1,
   })

@@ -1073,14 +1073,24 @@
       action_type:"chat",details:chat.text||"",source:"demo_chat",lane:"communication",item:null,
     }));
     demo.events.forEach((event,index)=>{
-      const action=event.kind===10?"damage":event.kind===11?"shot":"demo_event";
       const subject=nameOf(event.subjectId,event.timeMs),target=nameOf(event.targetId,event.timeMs);
-      let details=event.text||"";
-      if(!details&&action==="damage")details="Урон "+(Number.isFinite(event.amount)?Math.round(event.amount*10)/10:"—")+(target?" · цель: "+target:"");
-      if(!details&&action==="shot")details="Выстрел"+(target?" · цель: "+target:"");
+      let action=null,playerName=subject,details=event.text||"",lane="system";
+      // Kinds 10/11 are renderer telemetry: the recorder can emit dozens of
+      // damage/shot frames per second for afflictions, projectiles and status
+      // effects. They remain available to the visual replay renderer above,
+      // but are not discrete audit-log actions and must not flood the V2
+      // investigation timeline. Authoritative combat rows come from the
+      // indexed server text logs.
+      if(event.kind===1){action="death";playerName=target||subject;lane="combat";if(!details)details=subject?"Погиб · источник: "+subject:"Погиб";}
+      else if(event.kind===2){action="attack";lane="combat";if(!details)details=target?"Убийство · цель: "+target:"Убийство";}
+      else if(event.kind===3){action="used";lane="inventory";if(!details)details="Использование предмета";}
+      else if(event.kind===4){action="picked_up";lane="inventory";if(!details)details="Поднят предмет";}
+      else if(event.kind===99&&details.trim()){action="demo_event";}
+      else if(event.kind!==10&&event.kind!==11&&details.trim()){action="demo_event";}
+      if(!action)return;
       timelineEvents.push({
-        id:"demo:"+index,offset_ms:event.timeMs,player_name:subject,action_type:action,
-        details,source:"demo_event",lane:"combat",item:null,
+        id:"demo:"+index,offset_ms:event.timeMs,player_name:playerName,action_type:action,
+        details,source:"demo_event",lane,item:null,
       });
     });
     demo.spawnEvents.forEach((event,index)=>{

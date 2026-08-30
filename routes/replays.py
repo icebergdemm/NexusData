@@ -867,6 +867,67 @@ def _round_for_replay(db: Session, replay) -> Optional[RoundEvent]:
     if replay.manual_round_event_id:
         return db.query(RoundEvent).filter(RoundEvent.id == replay.manual_round_event_id).first()
 
+    # A replay can finish uploading hours after the round (large voice demos,
+    # a temporary network outage, or a manual retry).  The old reverse lookup
+    # considered only uploaded_at and then delegated to a strict +60 minute
+    # upload window, so a perfectly valid header timestamp still failed to
+    # link and the timeline queried the wrong clock.  Prefer a same-server
+    # lifecycle start close to the recording start before using upload time.
+    if replay.recorded_at:
+        start_event = aliased(RoundEvent)
+        candidates = (
+            db.query(RoundEvent)
+            .join(start_event, RoundEvent.paired_start_id == start_event.id)
+            .filter(
+                RoundEvent.event_type == "end",
+                start_event.event_type == "start",
+                # Historic recorder builds sometimes wrote server-local wall
+                # time into the nominal Unix field. Keep a bounded window so
+                # we can also test the configured server UTC offset below.
+                start_event.created_at >= replay.recorded_at - timedelta(hours=15),
+                start_event.created_at <= replay.recorded_at + timedelta(hours=15),
+            )
+        )
+        if replay.server_name:
+            candidates = candidates.filter(RoundEvent.server_name == replay.server_name)
+        nearby = candidates.limit(100).all()
+        if nearby:
+            def start_time(event):
+                return event.paired_start.created_at if event.paired_start else event.created_at
+
+            def choose(values, distance):
+                plausible = [event for event in values if distance(event) <= 15 * 60]
+                if not plausible:
+                    return None
+                replay_sub = (replay.submarine_name or "").strip().casefold()
+                return min(
+                    plausible,
+                    key=lambda event: (
+                        0 if replay_sub and (event.paired_start.submarine_name or "").strip().casefold() == replay_sub else 1,
+                        distance(event),
+                    ),
+                )
+
+            direct = choose(nearby, lambda event: abs((start_time(event) - replay.recorded_at).total_seconds()))
+            if direct:
+                return direct
+
+            # Fallback for the legacy local-clock-as-UTC header. A direct
+            # match always wins, preventing a different round exactly one
+            # timezone offset away from stealing a valid modern replay.
+            try:
+                log_zone = ZoneInfo(_replay_log_timezone_name(replay.server_name))
+                aware_recorded = replay.recorded_at.replace(tzinfo=timezone.utc)
+                server_offset = aware_recorded.astimezone(log_zone).utcoffset() or timedelta(0)
+            except (ZoneInfoNotFoundError, ValueError):
+                server_offset = timedelta(0)
+            shifted = choose(
+                nearby,
+                lambda event: abs((start_time(event) + server_offset - replay.recorded_at).total_seconds()),
+            )
+            if shifted:
+                return shifted
+
     q = db.query(RoundEvent).filter(RoundEvent.event_type == "end")
     if replay.server_name:
         q = q.filter(RoundEvent.server_name == replay.server_name)
@@ -1071,6 +1132,7 @@ async def api_replay_logs(
     from services_logs import (
         LogDataUnavailable,
         LogSearchTooSlow,
+        get_log_stats,
         get_log_timeline_overview,
         search_logs,
     )
@@ -1177,6 +1239,41 @@ async def api_replay_logs(
         unavailable_reason = "Серверные логи временно недоступны. Демозапись можно просматривать без них."
     else:
         unavailable_reason = None
+
+    # A normal Barotrauma round cannot produce literally zero server-log
+    # lines. Treat that result as an incomplete/misaligned index instead of
+    # presenting it as evidence that no actions happened. This is especially
+    # common during the short gap between demo upload and SFTP log rotation.
+    if overview_only and not player and not unavailable_reason and total == 0:
+        stats = await run_in_threadpool(get_log_stats)
+        server_stats = stats.get(replay.server_name or "", {})
+        newest_raw = server_stats.get("newest_event")
+        oldest_raw = server_stats.get("oldest_event")
+        try:
+            newest_event = datetime.fromisoformat(newest_raw) if newest_raw else None
+            oldest_event = datetime.fromisoformat(oldest_raw) if oldest_raw else None
+        except (TypeError, ValueError):
+            newest_event = oldest_event = None
+        if newest_event and newest_event < ended_at:
+            unavailable_reason = "Лог этого раунда ещё не поступил в индекс. Повторная проверка выполняется автоматически."
+        elif oldest_event and started_at < oldest_event:
+            unavailable_reason = "Лог этого раунда уже находится вне срока хранения индекса."
+        elif not end_event:
+            unavailable_reason = "Демозапись не удалось связать с раундом, поэтому время серверных логов нельзя подтвердить."
+        else:
+            unavailable_reason = "В интервале раунда серверные записи не найдены. Проверьте привязку демозаписи к раунду."
+        logger.warning(
+            "replay.timeline.empty replay_id=%s server=%s round_id=%s anchor=%s "
+            "started_at=%s ended_at=%s oldest_log=%s newest_log=%s",
+            replay.id,
+            replay.server_name,
+            end_event.id if end_event else None,
+            anchor_source,
+            started_at,
+            ended_at,
+            oldest_raw,
+            newest_raw,
+        )
 
     if unavailable_reason:
         return JSONResponse(_timeline_unavailable_payload(

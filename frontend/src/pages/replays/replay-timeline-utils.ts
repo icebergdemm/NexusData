@@ -8,6 +8,20 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+/**
+ * Raw demo damage/shot frames drive the visual renderer but are not audit
+ * actions. Older cached player scripts may still expose them through the
+ * bridge, so the React investigation view applies the same boundary
+ * defensively instead of trusting one particular static asset revision.
+ */
+export function isInvestigationTimelineEvent(event: {
+  source?: string | null
+  action_type?: string | null
+}): boolean {
+  if (event.source !== "demo_event") return true
+  return event.action_type !== "damage" && event.action_type !== "shot"
+}
+
 export function seekByMilliseconds(args: {
   currentMs: number
   deltaMs: number
