@@ -1580,6 +1580,15 @@ _COUNT_TIME_BUDGET_SEC = 2.0
 # падающим за 10 с вместо того, чтобы уносить сервер.
 _ROW_TIME_BUDGET_SEC = 10.0
 
+# Полный поиск внутри одного реплея принципиально не зависит от FTS. В нём
+# уже известны сервер и короткий (обычно 20-120 минут) временной диапазон,
+# поэтому надёжнее последовательно прочитать только этот диапазон по
+# составному B-tree индексу и проверить Unicode-текст в Python. Так запрос не
+# меняет поведение в зависимости от состояния фонового FTS-бэкфилла и не
+# требует Redis/отдельного поискового сервиса.
+_ROUND_SEARCH_TIME_BUDGET_SEC = 12.0
+_ROUND_SEARCH_FETCH_SIZE = 2_000
+
 # Через сколько «виртуальных инструкций» SQLite дёргает progress-handler.
 # Это ПИТОНОВСКИЙ колбэк, и каждый его вызов забирает GIL. При прежних
 # 10 000 он срабатывал десятки тысяч раз в секунду, и поток из threadpool
@@ -1818,6 +1827,170 @@ def search_logs(
         len(names_list) if names_list else int(bool(player_name)),
     )
     return LogSearchResult(events, total, total_is_capped, has_more, next_cursor)
+
+
+def search_logs_in_round(
+    *,
+    server_name: str,
+    time_from: datetime,
+    time_to: datetime,
+    search_text: str,
+    action_type: Optional[str] = None,
+    category: Optional[str] = None,
+    player_name: Optional[str] = None,
+    names_list: Optional[List[str]] = None,
+    player_scope: str = "related",
+    limit: int = 5_000,
+    raise_on_unavailable: bool = False,
+) -> LogSearchResult:
+    """Надёжный literal-поиск по серверным логам одного раунда.
+
+    SQL здесь отвечает только за ограничение ``server + ts`` (и, при
+    наличии, ``action``). Эти поля обслуживаются составными индексами и
+    позволяют стримить даже плотный раунд без широкого скана всей истории.
+    Сам текст сравнивается через :py:meth:`str.casefold` в Python, поэтому
+    запросы вроде ``физ`` стабильно находят ``Физраствор`` независимо от
+    SQLite NOCASE, локали и готовности FTS5.
+
+    В память попадает не весь раунд: курсор читает фиксированные порции, а
+    совпадения сохраняются только до ``limit + 1``. ``has_more`` означает,
+    что совпадений больше лимита; точный COUNT намеренно не запускается.
+    """
+    if not server_name:
+        raise ValueError("server_name обязателен для поиска по раунду")
+    if time_to < time_from:
+        raise ValueError("time_to должен быть не раньше time_from")
+    if player_scope not in {"actor", "related"}:
+        raise ValueError("player_scope must be 'actor' or 'related'")
+    if limit <= 0:
+        raise ValueError("limit должен быть положительным")
+
+    try:
+        conn = _get_conn()
+    except Exception as exc:
+        logger.error("search_logs_in_round: DB unavailable: %s", exc)
+        if raise_on_unavailable:
+            raise LogDataUnavailable("Хранилище серверных логов недоступно.") from exc
+        return LogSearchResult([], 0, False, False, None)
+
+    clauses = ["server = ?", "ts >= ?", "ts <= ?"]
+    params: list = [server_name, _ts_to_ms(time_from), _ts_to_ms(time_to)]
+    selected_action = action_type if action_type and action_type != "all" else None
+    if selected_action:
+        clauses.append("action = ?")
+        params.append(selected_action)
+        from_sql = "log_events INDEXED BY ix_log_server_action_ts"
+    else:
+        from_sql = "log_events INDEXED BY ix_log_server"
+
+    if category == "player":
+        placeholders = ",".join("?" * len(PLAYER_ACTIONS))
+        clauses.append(f"action IN ({placeholders})")
+        params.extend(PLAYER_ACTIONS)
+    elif category == "technical":
+        placeholders = ",".join("?" * len(PLAYER_ACTIONS))
+        clauses.append(f"action NOT IN ({placeholders})")
+        params.extend(PLAYER_ACTIONS)
+
+    requested_names = list(dict.fromkeys(names_list or ([player_name] if player_name else [])))
+    exact_players = set(requested_names) if player_scope == "actor" else set()
+    related_players = [name.casefold() for name in requested_names] if player_scope == "related" else []
+    folded_search = (search_text or "").strip().casefold()
+
+    sql = (
+        "SELECT ts, id, player, action, details, server, source_file "
+        f"FROM {from_sql} WHERE {' AND '.join(clauses)} "
+        "ORDER BY ts DESC, id DESC"
+    )
+    started = time.monotonic()
+    budget = _Budget(_ROUND_SEARCH_TIME_BUDGET_SEC)
+    matched_rows: list[tuple] = []
+    scanned = 0
+    manually_expired = False
+    try:
+        with _apply_budget(conn, budget):
+            cursor = conn.execute(sql, params)
+            while len(matched_rows) <= limit:
+                batch = cursor.fetchmany(_ROUND_SEARCH_FETCH_SIZE)
+                if not batch:
+                    break
+                scanned += len(batch)
+                for row in batch:
+                    actor = row[2] or ""
+                    details = row[4] or ""
+                    if exact_players and actor not in exact_players:
+                        continue
+                    folded_haystack = f"{actor}\n{row[3] or ''}\n{details}\n{row[6] or ''}".casefold()
+                    if related_players and not any(name in folded_haystack for name in related_players):
+                        continue
+                    if folded_search and folded_search not in folded_haystack:
+                        continue
+                    matched_rows.append(row)
+                    if len(matched_rows) > limit:
+                        break
+                if time.monotonic() > budget.deadline:
+                    manually_expired = True
+                    break
+    except sqlite3.Error as exc:
+        if budget.expired:
+            logger.warning(
+                "logs.round_search.timeout server=%s action=%s scanned=%d",
+                server_name,
+                selected_action or "all",
+                scanned,
+            )
+            raise LogSearchTooSlow() from exc
+        logger.error("search_logs_in_round: query failed: %s", exc)
+        if raise_on_unavailable:
+            raise LogDataUnavailable("Индекс серверных логов недоступен.") from exc
+        return LogSearchResult([], 0, False, False, None)
+
+    if manually_expired:
+        logger.warning(
+            "logs.round_search.timeout server=%s action=%s scanned=%d",
+            server_name,
+            selected_action or "all",
+            scanned,
+        )
+        raise LogSearchTooSlow()
+
+    has_more = len(matched_rows) > limit
+    matched_rows = matched_rows[:limit]
+    events = [
+        LogEvent(
+            timestamp=_ms_to_dt(row[0]),
+            row_id=row[1],
+            player_name=row[2] or "",
+            action_type=row[3],
+            details=row[4] or "",
+            raw_line=row[4] or "",
+            server_name=row[5] or "",
+            source_file=row[6] or "",
+        )
+        for row in matched_rows
+    ]
+    elapsed_ms = int((time.monotonic() - started) * 1_000)
+    logger.info(
+        "logs.round_search.complete elapsed_ms=%d scanned=%d matches=%d capped=%s "
+        "server=%s action=%s category=%s text_chars=%d",
+        elapsed_ms,
+        scanned,
+        len(events),
+        has_more,
+        server_name,
+        selected_action or "all",
+        category or "all",
+        len(search_text or ""),
+    )
+    # Если диапазон исчерпан, число найденных строк уже точное. При ранней
+    # остановке UI честно покажет его как ограниченное лимитом.
+    return LogSearchResult(
+        events,
+        len(events),
+        has_more,
+        has_more,
+        None,
+    )
 
 
 def get_log_timeline_overview(

@@ -126,6 +126,131 @@ class LogSearchTests(unittest.TestCase):
         ).fetchall()
         self.assertTrue(any("ix_log_server" in row[-1] for row in plan), plan)
 
+    def test_dedicated_round_search_is_unicode_literal_and_does_not_use_fts(self):
+        timestamp = datetime(2026, 8, 29, 12, 5)
+        self.conn.executemany(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) VALUES (?,?,?,?,?,?)",
+            [
+                (
+                    services_logs._ts_to_ms(timestamp),
+                    "ASPER1",
+                    "Ст. Матрос Тест",
+                    "picked_up",
+                    "Ст. Матрос Тест picked up x8 Физраствор",
+                    "items.log",
+                ),
+                (
+                    services_logs._ts_to_ms(timestamp),
+                    "ASPER2",
+                    "Чужой сервер",
+                    "picked_up",
+                    "Чужой сервер picked up Физраствор",
+                    "items.log",
+                ),
+                (
+                    services_logs._ts_to_ms(timestamp + timedelta(hours=2)),
+                    "ASPER1",
+                    "Другой раунд",
+                    "picked_up",
+                    "Другой раунд picked up Физраствор",
+                    "items.log",
+                ),
+            ],
+        )
+        self.conn.commit()
+
+        with patch.object(
+            services_logs,
+            "fts_is_ready",
+            side_effect=AssertionError("round search must not inspect FTS"),
+        ):
+            result = services_logs.search_logs_in_round(
+                server_name="ASPER1",
+                search_text="физ",
+                time_from=timestamp - timedelta(minutes=1),
+                time_to=timestamp + timedelta(minutes=1),
+                limit=100,
+                raise_on_unavailable=True,
+            )
+
+        self.assertEqual(len(result.events), 1)
+        self.assertEqual(result.events[0].player_name, "Ст. Матрос Тест")
+        self.assertIn("Физраствор", result.events[0].details)
+        self.assertFalse(result.has_more)
+        self.assertEqual(result.total, 1)
+
+    def test_dedicated_round_search_applies_action_filter(self):
+        timestamp = datetime(2026, 8, 29, 12, 6)
+        self.conn.executemany(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) VALUES (?,?,?,?,?,?)",
+            [
+                (
+                    services_logs._ts_to_ms(timestamp),
+                    "ASPER1",
+                    "Медик",
+                    "picked_up",
+                    "Медик picked up Физраствор",
+                    "items.log",
+                ),
+                (
+                    services_logs._ts_to_ms(timestamp + timedelta(seconds=1)),
+                    "ASPER1",
+                    "Медик",
+                    "used",
+                    "Медик used Физраствор on Пациент",
+                    "items.log",
+                ),
+            ],
+        )
+        self.conn.commit()
+
+        result = services_logs.search_logs_in_round(
+            server_name="ASPER1",
+            search_text="физ",
+            action_type="used",
+            time_from=timestamp - timedelta(minutes=1),
+            time_to=timestamp + timedelta(minutes=1),
+            limit=100,
+        )
+
+        self.assertEqual([event.action_type for event in result.events], ["used"])
+
+    def test_dedicated_round_search_caps_results_without_count_scan(self):
+        timestamp = datetime(2026, 8, 29, 12, 7)
+        self.conn.executemany(
+            "INSERT INTO log_events(ts, server, player, action, details, source_file) VALUES (?,?,?,?,?,?)",
+            [
+                (
+                    services_logs._ts_to_ms(timestamp + timedelta(seconds=index)),
+                    "ASPER1",
+                    f"Медик {index}",
+                    "used",
+                    f"Медик {index} used Физраствор",
+                    "items.log",
+                )
+                for index in range(4)
+            ],
+        )
+        self.conn.commit()
+
+        with patch.object(
+            services_logs,
+            "_bounded_count",
+            side_effect=AssertionError("round search must not run COUNT"),
+        ):
+            result = services_logs.search_logs_in_round(
+                server_name="ASPER1",
+                search_text="физ",
+                time_from=timestamp - timedelta(minutes=1),
+                time_to=timestamp + timedelta(minutes=1),
+                limit=2,
+            )
+
+        self.assertEqual(len(result.events), 2)
+        self.assertTrue(result.has_more)
+        self.assertTrue(result.total_is_capped)
+        self.assertEqual(result.total, 2)
+
     def test_actor_and_action_query_is_forced_through_player_index(self):
         from_sql, where, params = services_logs._build_where(
             "ASPER1",

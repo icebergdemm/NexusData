@@ -997,6 +997,10 @@ async def api_replay_logs(
     action_type: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    round_search: bool = Query(
+        False,
+        description="Индексированный literal-поиск по всему временному диапазону раунда.",
+    ),
     # Preserve the classic panel's historical default; V2 requests its own
     # explicit window limits (100 overview / 10,000 exact rows).
     limit: int = Query(2000, ge=100, le=25000),
@@ -1137,43 +1141,62 @@ async def api_replay_logs(
         get_log_stats,
         get_log_timeline_overview,
         search_logs,
+        search_logs_in_round,
     )
 
     def load_pages():
         """Read and enrich one exact visible window in the worker thread."""
-        loaded = []
-        cursor = None
-        first_total = None
-        first_total_is_capped = False
-        has_more = False
-        while len(loaded) < limit:
-            page_size = min(5000, limit - len(loaded))
-            result = search_logs(
-                server_name=replay.server_name or None,
+        if round_search and search and search.strip():
+            result = search_logs_in_round(
+                server_name=replay.server_name or "",
                 player_name=player or None,
                 action_type=action_type or None,
-                search_text=search or None,
+                search_text=search,
                 time_from=query_started_at,
                 time_to=query_ended_at,
                 category=category or None,
-                limit=page_size,
-                offset=0,
-                cursor=cursor,
-                # The timeline only needs the loaded rows and has_more. A
-                # full COUNT over a dense round can be slower than all keyset
-                # pages combined and used to surface as a 503 in production.
-                count_total=False,
+                limit=limit,
                 player_scope=player_scope,
                 raise_on_unavailable=True,
             )
-            if cursor is None:
-                first_total = result.total
-                first_total_is_capped = result.total_is_capped
-            loaded.extend(result.events)
+            loaded = list(result.events)
+            first_total = result.total
+            first_total_is_capped = result.total_is_capped
             has_more = result.has_more
-            cursor = result.next_cursor
-            if not has_more or not cursor or not result.events:
-                break
+        else:
+            loaded = []
+            cursor = None
+            first_total = None
+            first_total_is_capped = False
+            has_more = False
+            while len(loaded) < limit:
+                page_size = min(5000, limit - len(loaded))
+                result = search_logs(
+                    server_name=replay.server_name or None,
+                    player_name=player or None,
+                    action_type=action_type or None,
+                    search_text=search or None,
+                    time_from=query_started_at,
+                    time_to=query_ended_at,
+                    category=category or None,
+                    limit=page_size,
+                    offset=0,
+                    cursor=cursor,
+                    # The timeline only needs the loaded rows and has_more. A
+                    # full COUNT over a dense round can be slower than all keyset
+                    # pages combined and used to surface as a 503 in production.
+                    count_total=False,
+                    player_scope=player_scope,
+                    raise_on_unavailable=True,
+                )
+                if cursor is None:
+                    first_total = result.total
+                    first_total_is_capped = result.total_is_capped
+                loaded.extend(result.events)
+                has_more = result.has_more
+                cursor = result.next_cursor
+                if not has_more or not cursor or not result.events:
+                    break
         rows = []
         player_counts: Counter[str] = Counter()
         action_counts: Counter[str] = Counter()

@@ -1119,6 +1119,7 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
     queryFn: ({ signal }) => {
       const params = new URLSearchParams({
         limit: "5000",
+        round_search: "true",
         duration_ms: String(Math.round(durationMs)),
         from_ms: "0",
         to_ms: String(Math.round(durationMs)),
