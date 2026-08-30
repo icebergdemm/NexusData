@@ -331,7 +331,7 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
         <div className="rpv-precision-panel" aria-hidden={!precision}>
           <div className="rpv-precision-copy">
             <span><Crosshair aria-hidden="true" /> Точный режим</span>
-            <span>{precision ? `${compactTimecode(precision.startMs)} — ${compactTimecode(precision.endMs)}` : "Удерживайте шкалу 3 секунды"}</span>
+            <span>{precision ? `${compactTimecode(precision.startMs)} — ${compactTimecode(precision.endMs)}` : "Удерживайте шкалу 1,5 секунды"}</span>
           </div>
           <div className="rpv-precision-ruler" aria-hidden="true" />
           <button type="button" className="rpv-precision-close" onClick={() => closePrecision(false)} aria-label="Закрыть точный режим"><X /></button>
@@ -385,7 +385,7 @@ export function V2ReplayTransport({ initialDurationMs }: { initialDurationMs?: n
         {invalid && <span id="rpvDirectTimeError" role="alert">Формат: ЧЧ:ММ:СС.мс</span>}
       </form>
 
-      <span id="rpvSeekHelp" className="sr-only">Стрелки меняют время на секунду, Shift со стрелкой на пять секунд, Control со стрелкой на сто миллисекунд. Удерживайте шкалу три секунды для точного режима.</span>
+      <span id="rpvSeekHelp" className="sr-only">Стрелки меняют время на секунду, Shift со стрелкой на пять секунд, Control со стрелкой на сто миллисекунд. Удерживайте шкалу полторы секунды для точного режима.</span>
       <span className="sr-only" aria-live="polite">{holding ? "Удерживайте для точного режима" : precision ? "Точный режим включён" : ""}</span>
       <span className="sr-only">{playing ? "Реплей воспроизводится" : "Реплей на паузе"}</span>
     </div>

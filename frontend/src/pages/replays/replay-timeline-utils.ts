@@ -2,7 +2,7 @@
 // offsets.  A half-second floor keeps both useful without turning the ruler
 // into an unreadable sub-frame view.
 export const MIN_TIMELINE_WINDOW_MS = 500
-export const PRECISION_HOLD_DELAY_MS = 3_000
+export const PRECISION_HOLD_DELAY_MS = 1_500
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))

@@ -105,12 +105,12 @@ test("exact transport time rejects ambiguous or out-of-range clock fields", () =
 })
 
 
-test("precision scrub activates only after three stationary seconds", () => {
+test("precision scrub activates only after one and a half stationary seconds", () => {
   const stationary = { pointerDown: true, cancelled: false, maxMovementPx: 0 }
 
   assert.equal(shouldActivatePrecisionScrub({ ...stationary, elapsedMs: PRECISION_HOLD_DELAY_MS - 1 }), false)
   assert.equal(shouldActivatePrecisionScrub({ ...stationary, elapsedMs: PRECISION_HOLD_DELAY_MS }), true)
-  assert.equal(PRECISION_HOLD_DELAY_MS, 3_000)
+  assert.equal(PRECISION_HOLD_DELAY_MS, 1_500)
 })
 
 
