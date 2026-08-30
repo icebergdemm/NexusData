@@ -84,6 +84,14 @@ export interface TimelineEvent {
   player_overlay?: boolean
   entity_species?: string | null
   entity_team_id?: number | null
+  entity_id?: number | null
+  entity_world_x?: number | null
+  entity_world_y?: number | null
+  entity_observed_at_ms?: number | null
+  spawn_evidence_kind?: "direct_event" | "nearby_server_log" | "unavailable" | null
+  spawn_source_name?: string | null
+  spawn_source_action?: string | null
+  spawn_source_details?: string | null
   target_name?: string | null
 }
 
@@ -263,7 +271,36 @@ function mergeServerAndDemoEvents(
     const key = `${event.player_name ?? ""}\u0000${communicationText(event)}`
     return !(communicationTimes.get(key) ?? []).some((time) => Math.abs(time - event.offset_ms) <= 1_500)
   })
-  return [...serverEvents, ...deduplicatedDemo]
+  const spawnEvidenceActions = new Set(["respawn", "used", "placed", "activated", "console"])
+  const enrichedDemo = deduplicatedDemo.map((event) => {
+    if (event.source !== "demo_spawn" || event.action_type !== "spawn" || event.spawn_evidence_kind === "direct_event") {
+      return event
+    }
+    const terms = [event.player_name, event.entity_species]
+      .map((value) => value?.trim().toLocaleLowerCase("ru") ?? "")
+      .filter((value) => value.length >= 3 && value !== "human")
+    if (!terms.length) return event
+    let evidence: TimelineEvent | null = null
+    let distance = Number.POSITIVE_INFINITY
+    for (const candidate of serverEvents) {
+      const candidateDistance = Math.abs(candidate.offset_ms - event.offset_ms)
+      if (candidateDistance > 5_000 || !spawnEvidenceActions.has(candidate.action_type)) continue
+      const haystack = `${candidate.player_name ?? ""} ${candidate.details}`.toLocaleLowerCase("ru")
+      if (!terms.some((term) => haystack.includes(term))) continue
+      if (candidateDistance < distance) { evidence = candidate; distance = candidateDistance }
+    }
+    if (!evidence) return event
+    const source = evidence.player_name || "Серверный журнал"
+    return {
+      ...event,
+      details: `${event.details.replace(/ · причина и инициатор не записаны$/, "")} · связанный лог: ${source} · ${evidence.details}`,
+      spawn_evidence_kind: "nearby_server_log" as const,
+      spawn_source_name: evidence.player_name,
+      spawn_source_action: evidence.action_type,
+      spawn_source_details: evidence.details,
+    }
+  })
+  return [...serverEvents, ...enrichedDemo]
     .filter((event) => event.offset_ms >= 0 && event.offset_ms <= durationMs)
     .sort((left, right) => left.offset_ms - right.offset_ms || left.id.localeCompare(right.id))
 }
@@ -1462,7 +1499,34 @@ export function ReplayTimelineWorkbench({ replayId, initialDurationMs = 0 }: {
                 {selectedEvent.item?.identifier && <div><dt>Identifier</dt><dd>{selectedEvent.item.identifier}</dd></div>}
                 {selectedEvent.target_name && <div><dt>Цель / контейнер</dt><dd>{selectedEvent.target_name}</dd></div>}
                 {selectedEvent.entity_species && <div><dt>Вид сущности</dt><dd>{selectedEvent.entity_species}</dd></div>}
+                {selectedEvent.entity_id != null && <div><dt>ID сущности</dt><dd>{selectedEvent.entity_id}</dd></div>}
                 {selectedEvent.entity_team_id != null && <div><dt>Команда</dt><dd>{selectedEvent.entity_team_id}</dd></div>}
+                {selectedEvent.entity_world_x != null && selectedEvent.entity_world_y != null && (
+                  <div><dt>Первая позиция</dt><dd>≈ X {Math.round(selectedEvent.entity_world_x)}, Y {Math.round(selectedEvent.entity_world_y)}</dd></div>
+                )}
+                {selectedEvent.source === "demo_spawn" && (
+                  selectedEvent.spawn_evidence_kind === "direct_event" ? (
+                    <div>
+                      <dt>Связанное действие</dt>
+                      <dd>
+                        {selectedEvent.spawn_source_name || "Сущность в демозаписи"}
+                        {selectedEvent.spawn_source_action ? ` · ${actionLabel(selectedEvent.spawn_source_action)}` : ""}
+                        {selectedEvent.spawn_source_details ? ` · ${selectedEvent.spawn_source_details}` : ""}
+                      </dd>
+                    </div>
+                  ) : selectedEvent.spawn_evidence_kind === "nearby_server_log" ? (
+                    <div>
+                      <dt>Связанная запись</dt>
+                      <dd>
+                        {selectedEvent.spawn_source_name || "Серверный журнал"}
+                        {selectedEvent.spawn_source_action ? ` · ${actionLabel(selectedEvent.spawn_source_action)}` : ""}
+                        {selectedEvent.spawn_source_details ? ` · ${selectedEvent.spawn_source_details}` : ""}
+                      </dd>
+                    </div>
+                  ) : (
+                    <div><dt>Причина и инициатор</dt><dd>Не записаны форматом .barodemo v4</dd></div>
+                  )
+                )}
                 {selectedEvent.timestamp && <div><dt>Время сервера</dt><dd>{formatServerClock(selectedEvent.timestamp)}</dd></div>}
                 {selectedEvent.source_file && <div><dt>Источник</dt><dd title={selectedEvent.source_file}>{selectedEvent.source_file}</dd></div>}
               </dl>

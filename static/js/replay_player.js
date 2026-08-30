@@ -1081,6 +1081,51 @@
     };
     const nameOf=(id,timeMs)=>{const sp=spawnAt(id,timeMs);return(sp&&sp.name)?sp.name:(sp&&sp.species?sp.species:null);};
     const isHumanSpawn=(spawn)=>isHumanSpecies(spawn?.species);
+    const lowerBoundEventTime=(events,timeMs)=>{
+      let lo=0,hi=events.length;
+      while(lo<hi){const mid=(lo+hi)>>1;if(events[mid].timeMs<timeMs)lo=mid+1;else hi=mid;}
+      return lo;
+    };
+    // v4 SPAWN stores only id/species/name/team. Some recorders also emit a
+    // separate meaningful EVENT that directly targets the new entity; index
+    // those references once, instead of scanning 300k+ telemetry frames for
+    // every spawn. Damage/shot telemetry is deliberately excluded: being hit
+    // immediately after appearing does not explain who created the entity.
+    const spawnEvidenceByTarget=new Map();
+    for(const event of demo.events){
+      if(event.kind!==3&&event.kind!==4&&event.kind!==99)continue;
+      if(!spawnEvidenceByTarget.has(event.targetId))spawnEvidenceByTarget.set(event.targetId,[]);
+      spawnEvidenceByTarget.get(event.targetId).push(event);
+    }
+    const directSpawnEvidence=(spawn)=>{
+      const candidates=spawnEvidenceByTarget.get(spawn.id)||[];
+      const from=spawn.timeMs-2_000,to=spawn.timeMs+2_000;
+      let index=lowerBoundEventTime(candidates,from),best=null,bestDistance=Infinity;
+      for(;index<candidates.length&&candidates[index].timeMs<=to;index++){
+        const candidate=candidates[index],distance=Math.abs(candidate.timeMs-spawn.timeMs);
+        if(distance<bestDistance){best=candidate;bestDistance=distance;}
+      }
+      if(!best)return null;
+      const actor=nameOf(best.subjectId,best.timeMs);
+      return{
+        actor:actor||null,
+        action:best.kind===3?"used":best.kind===4?"picked_up":"demo_event",
+        details:best.text||null,
+        offsetMs:best.timeMs,
+      };
+    };
+    const firstSpawnObservation=(spawn)=>{
+      if(!demo.snaps?.count)return null;
+      let index=API.indexAtTime(demo.snaps,spawn.timeMs);
+      if(demo.snaps.t[index]<spawn.timeMs)index++;
+      const latest=spawn.timeMs+2_000;
+      for(;index<demo.snaps.count&&demo.snaps.t[index]<=latest;index++){
+        const snapshot=API.decodeSnapshot(demo.snaps,index);
+        const entity=snapshot?.ents.find(item=>item.id===spawn.id);
+        if(entity)return{x:entity.x,y:entity.y,observedAtMs:snapshot.timeMs};
+      }
+      return null;
+    };
     const players=[];
     const seenNames=new Set();
     for(const sp of demo.spawnEvents){
@@ -1136,11 +1181,6 @@
         details,source:"demo_event",lane,item:null,
       });
     });
-    const lowerBoundEventTime=(events,timeMs)=>{
-      let lo=0,hi=events.length;
-      while(lo<hi){const mid=(lo+hi)>>1;if(events[mid].timeMs<timeMs)lo=mid+1;else hi=mid;}
-      return lo;
-    };
     const pvpDamage=[];
     const lastDamageByPair=new Map();
     for(const drop of demo.healthDrops||[]){
@@ -1183,12 +1223,24 @@
       const entityName=event.name||event.species||"Неизвестная сущность";
       const entityKind=isHumanSpecies(event.species)?"Персонаж":"Сущность";
       const speciesDetails=event.species?" · вид: "+event.species:"";
+      const evidence=event.kind==="spawn"?directSpawnEvidence(event):null;
+      const observation=event.kind==="spawn"?firstSpawnObservation(event):null;
+      const evidenceDetails=evidence
+        ? " · связанное действие: "+(evidence.actor?evidence.actor+" · ":"")+(evidence.details||evidence.action)
+        : event.kind==="spawn"?" · причина и инициатор не записаны":"";
       timelineEvents.push({
         id:"spawn:"+index,offset_ms:event.timeMs,player_name:entityName,
         action_type:event.kind,
-        details:(event.kind==="spawn"?entityKind+" появился":entityKind+" исчез")+speciesDetails,
+        details:(event.kind==="spawn"?entityKind+" появился":entityKind+" исчез")+speciesDetails+evidenceDetails,
         source:"demo_spawn",lane:"system",item:null,
         entity_species:event.species||null,entity_team_id:event.teamId??null,
+        entity_id:event.id,
+        entity_world_x:observation?.x??null,entity_world_y:observation?.y??null,
+        entity_observed_at_ms:observation?.observedAtMs??null,
+        spawn_evidence_kind:evidence?"direct_event":"unavailable",
+        spawn_source_name:evidence?.actor??null,
+        spawn_source_action:evidence?.action??null,
+        spawn_source_details:evidence?.details??null,
       });
     });
     timelineEvents.sort((a,b)=>a.offset_ms-b.offset_ms||a.id.localeCompare(b.id));
