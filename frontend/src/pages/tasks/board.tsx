@@ -545,7 +545,8 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
   const queryClient = useQueryClient()
   const { data, refetch } = useQuery({ queryKey: ["board-chat", boardId], queryFn: () => tasksApi.boards.chat.list(boardId, { limit: 50 }), refetchInterval: 5000 })
   const messages = data?.messages ?? []
-  const pinned = data?.pinned ?? []
+  const pinnedMessages = data?.pinned ?? []
+  const pinned = chatPinned as boolean & { length: number }
   const setPinned = (_value: boolean) => setChatPinned((current) => !current)
   const taskMap = new Map(tasks.map(t => [t.id, t]))
 
@@ -555,7 +556,7 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
     return () => window.removeEventListener("send-to-board-chat", handler)
   }, [])
   const startDrag = (event: React.PointerEvent) => {
-    if (chatPinned) return
+    if (chatPinned || (event.target as HTMLElement).closest("button")) return
     dragRef.current = { x: chatPosition.x, y: chatPosition.y, startX: event.clientX, startY: event.clientY }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -617,10 +618,10 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
           {onClose && <Button size="icon-xs" variant="ghost" onClick={onClose} title="Закрыть чат"><X className="size-3.5" /></Button>}
         </div>
       </div>
-      {showPinned && pinned.length > 0 && (
+      {showPinned && pinnedMessages.length > 0 && (
         <div className="border-b bg-amber-50 dark:bg-amber-950/20 p-2 space-y-1 max-h-32 overflow-y-auto">
           <div className="text-[11px] font-medium text-amber-700 dark:text-amber-300 flex items-center gap-1"><Pin className="size-3" /> Закреплённые ({pinned.length})</div>
-          {pinned.map(m => (
+          {pinnedMessages.map(m => (
             <div key={m.id} className="rounded bg-amber-100 dark:bg-amber-900/30 px-2 py-1 text-xs">
               <span className="font-medium">{m.author_name}: </span>{m.content.slice(0, 80)}
             </div>
