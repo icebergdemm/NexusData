@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, Check,
+  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -18,17 +18,16 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
-import { SearchInput } from "@/components/layout/SearchInput"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
-import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
-  type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type AssigneeCandidates, type BoardPermission,
+  type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type AssigneeCandidates,
 } from "./api"
+import { BoardPermissionsDialog } from "./BoardPermissionsDialog"
 
 function isOverdue(task: TaskRow): boolean {
   return !!task.deadline && new Date(task.deadline).getTime() < Date.now()
@@ -38,206 +37,17 @@ function copyToClipboard(text: string, label: string) {
   navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
 }
 
+function sendLinkToChat(text: string) {
+  window.dispatchEvent(new CustomEvent("send-to-board-chat", { detail: text }))
+  window.dispatchEvent(new CustomEvent("open-board-chat"))
+  toast.success("Ссылка добавлена в чат")
+}
+
 function TaskStatusBadge({ status }: { status: TaskStatus }) {
   return <Badge style={{ backgroundColor: `${STATUS_COLORS[status as TaskStatus]}22`, color: STATUS_COLORS[status as TaskStatus] }} className="text-[10px]">{STATUS_LABELS[status as TaskStatus] ?? status}</Badge>
 }
 
 // ── Board Permissions Dialog с поиском ───────────────────────────────────────
-function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: number; open: boolean; onOpenChange: (o: boolean) => void }) {
-  const { data: permsData } = useQuery({ queryKey: ["board-perms", boardId], queryFn: () => tasksApi.boards.permissions.get(boardId), enabled: open })
-  const { data: candidates } = useQuery({ queryKey: ["tasks-assignee-candidates"], queryFn: () => tasksApi.assigneeCandidates(), enabled: open })
-  const { data: groupsData } = useQuery({ queryKey: ["admin-groups"], queryFn: () => import("@/lib/api").then(m => m.api.get<{ groups: { id: number; name: string }[] }>("/api/v1/admin/users").then(r => (r as unknown as { groups: { id: number; name: string }[] }).groups ? { groups: (r as unknown as { groups: { id: number; name: string }[] }).groups } : { groups: [] })), enabled: open })
-  // fallback: fetch groups via users endpoint already returns groups, use candidates for admins
-  const [rows, setRows] = useState<BoardPermission[]>([])
-  const [newType, setNewType] = useState<BoardPermission["grantee_type"]>("user")
-  const [searchAdmin, setSearchAdmin] = useState("")
-  const [searchGroup, setSearchGroup] = useState("")
-  const [searchDept, setSearchDept] = useState("")
-  const [selectedAdminId, setSelectedAdminId] = useState("")
-  const [selectedGroupId, setSelectedGroupId] = useState("")
-  const [selectedDeptLevel, setSelectedDeptLevel] = useState("")
-  const [deptLevelDeptId, setDeptLevelDeptId] = useState<number | null>(null)
-  const [searchLevel, setSearchLevel] = useState("")
-
-  useEffect(() => { if (permsData) setRows(permsData.permissions) }, [permsData])
-
-  const { data: deptDetail } = useQuery({
-    queryKey: ["dept-levels", deptLevelDeptId],
-    queryFn: () => api.get<{ access_levels: { key: string; name: string; kind: string }[] }>(`/api/v1/admin/departments/${deptLevelDeptId}`),
-    enabled: !!deptLevelDeptId && open,
-  })
-
-  const filteredAdmins = (candidates?.admins ?? []).filter(a => {
-    if (!searchAdmin.trim()) return true
-    const q = searchAdmin.toLowerCase()
-    return (a.name ?? "").toLowerCase().includes(q) || String(a.id).includes(q)
-  }).slice(0, 8)
-
-  const filteredGroups = ((groupsData as unknown as { groups: { id: number; name: string }[] })?.groups ?? candidates?.departments ?? []).filter((g: { id: number; name: string | null }) => {
-    if (!searchGroup.trim()) return true
-    const q = searchGroup.toLowerCase()
-    return (g.name ?? "").toLowerCase().includes(q) || String(g.id).includes(q)
-  }).slice(0, 8) as { id: number; name: string | null }[]
-
-  const filteredDepts = (candidates?.departments ?? []).filter(d => {
-    if (!searchDept.trim()) return true
-    const q = searchDept.toLowerCase()
-    return (d.name ?? "").toLowerCase().includes(q) || String(d.id).includes(q)
-  }).slice(0, 8)
-
-  const saveMutation = useMutation({
-    mutationFn: () => tasksApi.boards.permissions.set(boardId, rows),
-    onSuccess: () => { toast.success("Права сохранены"); onOpenChange(false) },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const addRow = () => {
-    let key = ""
-    if (newType === "user") key = selectedAdminId
-    else if (newType === "group_nd") key = selectedGroupId
-    else if (newType === "dept_level") key = selectedDeptLevel
-    if (!key) { toast.error("Выберите значение"); return }
-    if (rows.some(r => r.grantee_type === newType && r.grantee_key === key)) { toast.error("Уже добавлено"); return }
-    setRows([...rows, { grantee_type: newType, grantee_key: key, can_view: true, can_create: false, can_edit: false, can_delete: false }])
-    setSelectedAdminId(""); setSelectedGroupId(""); setSelectedDeptLevel("")
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
-        <DialogHeader><DialogTitle>Права доски</DialogTitle><DialogDescription>Кто может смотреть / добавлять / изменять / удалять. Пусто = только глобальные права + суперюзер.</DialogDescription></DialogHeader>
-        <div className="space-y-3">
-          {rows.map((r, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-2 rounded border p-2 text-xs">
-              <Badge variant="secondary" className="text-[10px]">{r.grantee_type === "group_nd" ? "Группа ND" : r.grantee_type === "user" ? "Пользователь" : "Уровень отдела"}</Badge>
-              <span className="font-mono text-xs">{r.grantee_key}</span>
-              <div className="ml-auto flex gap-1">
-                {(["can_view", "can_create", "can_edit", "can_delete"] as const).map(k => (
-                  <label key={k} className="flex items-center gap-1 text-[11px]"><input type="checkbox" checked={r[k]} onChange={e => setRows(rows.map((x, idx) => idx === i ? { ...x, [k]: e.target.checked } : x))} />{k.replace("can_", "")}</label>
-                ))}
-                <Button size="icon-xs" variant="ghost" onClick={() => setRows(rows.filter((_, idx) => idx !== i))}><X className="size-3" /></Button>
-              </div>
-            </div>
-          ))}
-          <div className="rounded border p-3 space-y-2 bg-muted/20">
-            <div className="flex gap-2">
-              <Select value={newType} onValueChange={v => setNewType(v as BoardPermission["grantee_type"])}><SelectTrigger className="w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="user">Пользователь</SelectItem><SelectItem value="group_nd">Группа ND</SelectItem><SelectItem value="dept_level">Уровень отдела</SelectItem></SelectContent></Select>
-              <Button size="sm" onClick={addRow}><Plus className="size-3" /> Добавить</Button>
-            </div>
-            {newType === "user" && (
-              <div className="space-y-1">
-                <SearchInput value={searchAdmin} onChange={e => setSearchAdmin(e.target.value)} placeholder="Поиск по нику / DS ID / ID..." className="h-8" />
-                <div className="max-h-28 overflow-y-auto rounded border bg-background">
-                  {filteredAdmins.map(a => (
-                    <button key={a.id} className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent ${selectedAdminId === String(a.id) ? "bg-accent" : ""}`} onClick={() => setSelectedAdminId(String(a.id))}>
-                      <span>{a.name ?? `#${a.id}`} <span className="text-muted-foreground">#{a.id}</span></span>{selectedAdminId === String(a.id) && <Check className="size-3 text-primary" />}
-                    </button>
-                  ))}
-                  {!filteredAdmins.length && <div className="px-2 py-2 text-xs text-muted-foreground">Не найдено</div>}
-                </div>
-              </div>
-            )}
-            {newType === "group_nd" && (
-              <div className="space-y-1">
-                <SearchInput value={searchGroup} onChange={e => setSearchGroup(e.target.value)} placeholder="Поиск группы..." className="h-8" />
-                <div className="max-h-28 overflow-y-auto rounded border bg-background">
-                  {filteredGroups.map((g: { id: number; name: string | null }) => (
-                    <button key={g.id} className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent ${selectedGroupId === String(g.id) ? "bg-accent" : ""}`} onClick={() => setSelectedGroupId(String(g.id))}>
-                      <span>{g.name ?? `#${g.id}`}</span>{selectedGroupId === String(g.id) && <Check className="size-3 text-primary" />}
-                    </button>
-                  ))}
-                  {!filteredGroups.length && <div className="px-2 py-2 text-xs text-muted-foreground">Не найдено</div>}
-                </div>
-              </div>
-            )}
-            {newType === "dept_level" && (
-              <div className="space-y-3">
-                {!deptLevelDeptId ? (
-                  <>
-                    <SearchInput value={searchDept} onChange={e => setSearchDept(e.target.value)} placeholder="Поиск отдела по названию..." className="h-8" />
-                    <div className="grid max-h-40 grid-cols-1 gap-1.5 overflow-y-auto pr-1">
-                      {filteredDepts.map(d => (
-                        <button
-                          key={d.id}
-                          onClick={() => setDeptLevelDeptId(d.id)}
-                          className="flex items-center gap-2.5 rounded-lg border bg-card px-3 py-2 text-left transition-colors hover:border-primary/50 hover:bg-accent"
-                        >
-                          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                            <PlatformIcon value={d.icon} fallback={Building2} className="size-4 text-primary" />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-xs font-medium">{d.name}</div>
-                            <div className="text-[11px] text-muted-foreground">ID {d.id} · нажмите для выбора уровня</div>
-                          </div>
-                          <span className="text-muted-foreground">→</span>
-                        </button>
-                      ))}
-                      {!filteredDepts.length && <div className="rounded border border-dashed p-4 text-center text-xs text-muted-foreground">Отделы не найдены</div>}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
-                      <Button size="xs" variant="ghost" onClick={() => { setDeptLevelDeptId(null); setSearchLevel("") }} className="h-6 px-2">← Назад</Button>
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <PlatformIcon value={candidates?.departments.find(x => x.id === deptLevelDeptId)?.icon} fallback={Building2} className="size-3.5 text-primary" />
-                        <span className="font-medium">{candidates?.departments.find(x => x.id === deptLevelDeptId)?.name ?? `Отдел #${deptLevelDeptId}`}</span>
-                      </div>
-                      {selectedDeptLevel && <Badge variant="secondary" className="ml-auto font-mono text-[10px]">{selectedDeptLevel}</Badge>}
-                    </div>
-                    <SearchInput value={searchLevel} onChange={e => setSearchLevel(e.target.value)} placeholder="Поиск уровня по названию, ключу, типу..." className="h-8" />
-                    <div className="grid max-h-48 grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
-                      {(deptDetail?.access_levels ?? [])
-                        .filter(l => {
-                          if (!searchLevel.trim()) return true
-                          const q = searchLevel.toLowerCase()
-                          return l.name.toLowerCase().includes(q) || l.key.toLowerCase().includes(q) || l.kind.toLowerCase().includes(q)
-                        })
-                        .map(l => {
-                          const key = `${deptLevelDeptId}:${l.key}`
-                          const active = selectedDeptLevel === key
-                          const kindColor: Record<string, string> = { base: "bg-blue-500/15 text-blue-600 border-blue-500/30", qualification: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30", head: "bg-purple-500/15 text-purple-600 border-purple-500/30", deputy_head: "bg-orange-500/15 text-orange-600 border-orange-500/30" }
-                          const kindLabel: Record<string, string> = { base: "Базовый", qualification: "Квалификация", head: "Глава", deputy_head: "Зам. главы" }
-                          return (
-                            <button
-                              key={l.key}
-                              onClick={() => setSelectedDeptLevel(key)}
-                              className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-all hover:shadow-sm ${active ? "border-primary bg-primary/5 ring-1 ring-primary" : "bg-card hover:border-primary/30"}`}
-                            >
-                              <div className="flex w-full items-center justify-between gap-1">
-                                <span className="truncate text-xs font-medium">{l.name}</span>
-                                {active && <Check className="size-3.5 shrink-0 text-primary" />}
-                              </div>
-                              <div className="flex flex-wrap items-center gap-1">
-                                <span className="font-mono text-[11px] text-muted-foreground">{l.key}</span>
-                                <Badge variant="outline" className={`text-[10px] ${kindColor[l.kind] ?? ""}`}>{kindLabel[l.kind] ?? l.kind}</Badge>
-                              </div>
-                            </button>
-                          )
-                        })}
-                      {!deptDetail?.access_levels?.length && <div className="col-span-2 rounded border border-dashed p-4 text-center text-xs text-muted-foreground">Загрузка уровней...</div>}
-                    </div>
-                    <div className="flex items-center gap-2 rounded bg-muted/30 px-2 py-1.5">
-                      <span className="text-[11px] text-muted-foreground">Выбрано:</span>
-                      <span className="font-mono text-xs font-medium">{selectedDeptLevel || "— не выбрано —"}</span>
-                      {selectedDeptLevel && <Button size="xs" variant="ghost" className="ml-auto h-5 px-1.5 text-[11px]" onClick={() => setSelectedDeptLevel("")}>Сбросить</Button>}
-                    </div>
-                    <details className="text-[11px]">
-                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Ручной ввод deptId:levelKey</summary>
-                      <Input placeholder="напр. 3:senior_medic" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="mt-1 h-7 font-mono text-xs" />
-                    </details>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-        <DialogFooter><Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>Сохранить</Button></DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 // ── Task Card (без тегов, с анимацией) ───────────────────────────────────────
 function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
   task: TaskRow
@@ -253,6 +63,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
     const url = `${window.location.origin}/tasks/${boardId}?task=${task.id}`
     copyToClipboard(url, "Ссылка на задачу")
   }
+  const taskLink = `${window.location.origin}/tasks/${boardId}?task=${task.id}`
   const deleteMutation = useMutation({
     mutationFn: () => tasksApi.tasks.delete(task.id),
     onSuccess: onDeleted,
@@ -274,6 +85,8 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
       actions={[
         { label: "Открыть", icon: Pencil, onSelect: onOpen },
         { label: "Копировать название", icon: Copy, onSelect: () => copyToClipboard(task.title, "Название") },
+        { label: "Копировать ссылку на задачу", icon: Link2, onSelect: () => copyToClipboard(taskLink, "Ссылка") },
+        { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}`) },
         ...moveActions.slice(0, 5),
         { label: task.priority === "urgent" ? "Снять высокий приоритет" : "Выделить высоким приоритетом", icon: Flag, onSelect: toggleUrgent, separatorBefore: true },
         { label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : EyeOff, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) },
@@ -655,7 +468,8 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Комментарии</Label>
             {commentsData?.comments.map((c) => (
-              <div key={c.id} className="rounded-md border p-2 text-sm">
+              <AppContextMenu key={c.id} actions={[{ label: "Копировать ссылку на комментарий", icon: Link2, onSelect: () => copyToClipboard(`${window.location.origin}/tasks/${boardId}?task=${task.id}&comment=${c.id}`, "Ссылка") }, { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}/comment/${c.id}`) }]}>
+              <div id={`comment-${c.id}`} className="rounded-md border p-2 text-sm">
                 <div className="mb-1 flex items-center justify-between">
                   <span className="text-xs font-medium">{c.admin_name ?? "—"}</span>
                   <div className="flex items-center gap-2">
@@ -669,6 +483,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
                 </div>
                 <div className="whitespace-pre-wrap">{c.content}</div>
               </div>
+              </AppContextMenu>
             ))}
             <div className="flex gap-2">
               <Textarea rows={2} value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Написать комментарий..." />
@@ -718,7 +533,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
 }
 
 // ── Board Chat (закрывающийся сайдбар, скриншоты, якоря с названием) ─────────
-function BoardChat({ boardId, tasks, onClose }: { boardId: number; tasks: TaskRow[]; onClose?: () => void }) {
+function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; tasks: TaskRow[]; onClose?: () => void; open?: boolean }) {
   const [input, setInput] = useState("")
   const [replyTo, setReplyTo] = useState<number | null>(null)
   const [showPinned, setShowPinned] = useState(true)
@@ -728,6 +543,12 @@ function BoardChat({ boardId, tasks, onClose }: { boardId: number; tasks: TaskRo
   const messages = data?.messages ?? []
   const pinned = data?.pinned ?? []
   const taskMap = new Map(tasks.map(t => [t.id, t]))
+
+  useEffect(() => {
+    const handler = (event: Event) => setInput((event as CustomEvent<string>).detail ?? "")
+    window.addEventListener("send-to-board-chat", handler)
+    return () => window.removeEventListener("send-to-board-chat", handler)
+  }, [])
 
   const sendMutation = useMutation({
     mutationFn: async () => {
@@ -747,18 +568,19 @@ function BoardChat({ boardId, tasks, onClose }: { boardId: number; tasks: TaskRo
   })
 
   const renderContent = (text: string) => {
-    const parts = text.split(/(task:\/\/\d+|#task-\d+|https?:\/\/[^\s]+\/tasks\/\d+\?task=\d+|#\d+)/g)
+    const parts = text.split(/(task:\/\/\d+(?:\/comment\/\d+)?|#task-\d+|https?:\/\/[^\s]+\/tasks\/\d+\?task=\d+(?:&comment=\d+)?|#\d+)/g)
     return parts.map((p, i) => {
-      const m = p.match(/task:\/\/(\d+)|#task-(\d+)|#(\d+)/)
+      const m = p.match(/task:\/\/(\d+)(?:\/comment\/(\d+))?|#task-(\d+)|#(\d+)/)
       let taskId: string | null = null
-      if (m) taskId = m[1] || m[2] || m[3]
+      if (m) taskId = m[1] || m[3] || m[4]
       else {
         const u = p.match(/task=(\d+)/)
         if (u) taskId = u[1]
       }
       if (taskId) {
         const t = taskMap.get(Number(taskId))
-        const label = t ? `${t.title.slice(0, 24)}` : `#${taskId}`
+        const comment = m?.[2] || (p.match(/comment=(\d+)/)?.[1])
+        const label = t ? `${t.title.slice(0, 24)}${comment ? ` · комментарий #${comment}` : ""}` : `#${taskId}`
         const emoji = t ? (t.priority === "urgent" ? "🔥 " : t.status === "done" ? "✅ " : "📋 ") : "🔗 "
         return <a key={i} href={`?task=${taskId}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("open-task", { detail: Number(taskId) })) }} className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-xs text-primary hover:underline">{emoji}{label}</a>
       }
@@ -770,7 +592,7 @@ function BoardChat({ boardId, tasks, onClose }: { boardId: number; tasks: TaskRo
   }
 
   return (
-    <div className="flex max-h-[calc(100vh-6rem)] w-80 shrink-0 flex-col border-l bg-card sticky top-4 self-start rounded-lg shadow-sm transition-all duration-300 data-[closed=true]:translate-x-full data-[closed=true]:opacity-0">
+    <div aria-hidden={!open} className={`fixed right-4 top-20 z-40 flex h-[calc(100vh-6rem)] w-[min(22rem,calc(100vw-2rem))] flex-col rounded-xl border bg-card shadow-xl transition-all duration-300 ${open ? "translate-x-0 opacity-100" : "-translate-x-full opacity-0 pointer-events-none"}`}>
       <div className="flex items-center justify-between border-b p-2">
         <span className="text-sm font-semibold flex items-center gap-1.5"><MessageSquare className="size-4" /> Чат доски</span>
         <div className="flex gap-1">
@@ -870,6 +692,11 @@ export function TaskBoardPage() {
     const h = (e: Event) => setSelectedTaskId((e as CustomEvent).detail)
     window.addEventListener("open-task", h as EventListener)
     return () => window.removeEventListener("open-task", h as EventListener)
+  }, [])
+  useEffect(() => {
+    const h = () => setChatOpen(true)
+    window.addEventListener("open-board-chat", h)
+    return () => window.removeEventListener("open-board-chat", h)
   }, [])
 
   const { data: candidates } = useQuery({
@@ -982,7 +809,7 @@ export function TaskBoardPage() {
         </div>
       </div>
 
-      {chatOpen && <BoardChat boardId={boardIdNum} tasks={data.tasks} onClose={() => setChatOpen(false)} />}
+      <BoardChat boardId={boardIdNum} tasks={data.tasks} open={chatOpen} onClose={() => setChatOpen(false)} />
 
       {/* Task detail по центру, чат остаётся интерактивным */}
       <TaskDetailDialog
