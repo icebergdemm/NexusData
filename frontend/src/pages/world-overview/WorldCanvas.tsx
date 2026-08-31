@@ -56,6 +56,7 @@ export function WorldCanvas({
   geometry, state, selectedCharacterId, onSelectCharacter,
   targetMode = false, targetPoint = null, onPickTarget,
   markers = [], selectedMarkerId = null, onSelectMarker, onMoveMarker,
+  onMapContextMenu,
 }: {
   geometry: WorldGeometry
   state: WorldState
@@ -68,6 +69,7 @@ export function WorldCanvas({
   selectedMarkerId?: string | null
   onSelectMarker?: (id: string | null) => void
   onMoveMarker?: (id: string, x: number, y: number) => void
+  onMapContextMenu?: (info: { wx: number; wy: number; markerId: string | null; screenX: number; screenY: number }) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -389,6 +391,23 @@ export function WorldCanvas({
     popupStyle = { left, top, width: POPUP_WIDTH }
   }
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    if (!onMapContextMenu) return
+    const container = containerRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
+    const v = viewRef.current
+    const [wx, wy] = toWorld(mx, my, v)
+    const hit = markers.find((m) => {
+      const [sx, sy] = toScreen(m.x, m.y, v)
+      return Math.hypot(sx - mx, sy - my) < 14
+    })
+    onMapContextMenu({ wx: Math.round(wx), wy: Math.round(wy), markerId: hit?.id ?? null, screenX: e.clientX, screenY: e.clientY })
+  }
+
   return (
     <div
       ref={containerRef}
@@ -398,6 +417,7 @@ export function WorldCanvas({
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={() => { dragRef.current = null; markerDragRef.current = null }}
+      onContextMenu={handleContextMenu}
     >
       <canvas ref={canvasRef} />
       <Button
