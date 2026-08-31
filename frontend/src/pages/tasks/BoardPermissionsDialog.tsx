@@ -439,6 +439,10 @@ export function BoardPermissionsDialog({
                               </button>
                             ))}
                         </div>
+                        <Button className="mt-3 w-full" onClick={add} disabled={!selected}>
+                          <Plus className="mr-2 size-4" />
+                          Добавить правило
+                        </Button>
                       </>
                     )}
                   </>
