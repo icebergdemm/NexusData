@@ -85,7 +85,9 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Рабочая зона",
     items: [
       { label: "Документы", to: "/documents", icon: NotebookText, permission: "documents" },
-      { label: "Задачи", to: "/tasks", icon: KanbanSquare, permission: "tasks" },
+      // Задачи видны всем аутентифицированным — доступ к конкретным доскам определяется
+      // гибкими правами доски (group_nd/user/dept_level) + глобальными tasks:view
+      { label: "Задачи", to: "/tasks", icon: KanbanSquare },
       { label: "Отделы", to: "/departments", icon: Building2, permission: "departments" },
     ],
   },

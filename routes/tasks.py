@@ -34,6 +34,28 @@ TASK_PRIORITIES = {"low", "medium", "high", "urgent"}
 
 # ── Auth (self-contained, mirrors routes/departments.py's dependency) ───────
 
+def _has_any_board_view(db: Session, admin: AdminUser) -> bool:
+    if admin.is_superuser:
+        return True
+    from models import TaskBoardPermission
+    perms = db.query(TaskBoardPermission).filter(TaskBoardPermission.can_view.is_(True)).all()
+    for p in perms:
+        if p.grantee_type == "user" and str(p.grantee_key) == str(admin.id):
+            return True
+        if p.grantee_type == "group_nd" and admin.privilege_group_id and str(p.grantee_key) == str(admin.privilege_group_id):
+            return True
+        if p.grantee_type == "dept_level":
+            try:
+                dept_id_str, level_key = p.grantee_key.split(":", 1)
+                from models import DepartmentMember
+                m = db.query(DepartmentMember).filter(DepartmentMember.department_id == int(dept_id_str), DepartmentMember.admin_id == admin.id).first()
+                if m and level_key in (m.held_level_keys or []):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
     token = request.cookies.get("admin_token")
     now = datetime.utcnow()
@@ -51,11 +73,18 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
             if admin:
                 from security import compute_department_site_permissions
                 admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
+                try:
+                    admin._has_task_board_view = _has_any_board_view(db, admin)
+                except Exception:
+                    admin._has_task_board_view = False
                 return admin
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 def require_tasks_page(admin: AdminUser, action: str = "view"):
+    # п. “доступ к вкладке Задачи если есть право на доску”
+    if action == "view" and getattr(admin, "_has_task_board_view", False):
+        return
     if not check_permission(admin, "tasks", action):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
@@ -267,6 +296,9 @@ async def api_list_task_boards(db: Session = Depends(get_db), current_admin: Adm
         .order_by(TaskBoard.created_at.desc())
         .all()
     )
+    # если нет глобального tasks:view, показываем только доски где есть can_view
+    if not check_permission(current_admin, "tasks", "view") and not current_admin.is_superuser:
+        boards = [b for b in boards if _has_board_perm(db, current_admin, b.id, "view")]
     counts = dict(
         db.query(Task.board_id, func.count(Task.id))
         .filter(Task.board_id.in_([b.id for b in boards]))
