@@ -16,6 +16,7 @@ import { SearchInput } from "@/components/layout/SearchInput"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { RatingConfigSection } from "./config-section"
 
 const ROLE_LABELS: Record<string, string> = {
@@ -154,7 +155,7 @@ export function RatingsPage() {
                 <TableRow key={s.filename}>
                   <TableCell><Link to={`/ratings/snapshots/${s.filename}`} className="font-medium text-primary underline-offset-2 hover:underline">{s.title}</Link></TableCell>
                   <TableCell>{s.total_players}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{s.created_at ? new Date(s.created_at).toLocaleString("ru-RU") : "-"}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{s.created_at ? formatBrowserDate(s.created_at) : "-"}</TableCell>
                   {data.can_edit && (
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1.5">

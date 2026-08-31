@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { ReplayLogsPanel } from "./ReplayLogsPanel"
 import { ReplayTimelineWorkbench } from "./ReplayTimelineWorkbench"
 import { Camera, Clapperboard, Download, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
@@ -218,7 +219,7 @@ export function ReplayPlayerPage() {
           {data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
         </h2>
         <div className="rpv-top-actions">
-          <span className="rpv-time">{data?.replay.recorded_at ? new Date(data.replay.recorded_at).toLocaleString("ru-RU") : ""}</span>
+          <span className="rpv-time">{data?.replay.recorded_at ? formatBrowserDate(data.replay.recorded_at) : ""}</span>
           {IS_V2 && replayId && (
             <a
               className="rpv-btn rpv-download"

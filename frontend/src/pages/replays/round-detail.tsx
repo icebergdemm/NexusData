@@ -13,6 +13,7 @@ import { ArrowLeft, Crown, LogOut, MapPin, Ship, Target, Video, Link2, Link2Off 
 import { PageHeader } from "@/components/layout/PageHeader"
 import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 
 interface RoundPlayer {
   steamid: string
@@ -44,10 +45,7 @@ interface RoundDetail {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 /** Только время: дата и так видна в шапке раунда. */

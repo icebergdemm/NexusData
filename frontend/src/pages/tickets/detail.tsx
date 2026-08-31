@@ -8,15 +8,13 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import type { TicketDetailResponse } from "./types"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { Ticket } from "lucide-react"
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 export function TicketDetailPage() {

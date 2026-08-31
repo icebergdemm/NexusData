@@ -20,6 +20,7 @@ import {
   CheckCircle2, ClipboardCheck, Download, Loader2, RotateCw, Undo2, UserCog, X, XCircle,
 } from "lucide-react"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { SubCheckDialog } from "@/pages/sub-checker/report"
 import type { CheckResponse, SubReport } from "@/pages/sub-checker/types"
 import type { SubProjectDetailResponse } from "./types"
@@ -27,10 +28,7 @@ import type { SubProjectDetailResponse } from "./types"
 interface AdminOption { id: number; name: string }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 function fmtSize(bytes: number | null): string {
   if (!bytes) return "-"

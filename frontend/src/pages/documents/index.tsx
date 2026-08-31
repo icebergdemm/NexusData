@@ -1,5 +1,6 @@
 // @ts-nocheck - документы выведены из эксплуатации, оригинальный код оставлен как мёртвый для быстрого возврата
 import { useRef, useState } from "react"
+import { formatBrowserDate } from "@/lib/format-date"
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -630,7 +631,7 @@ export function DocumentsPage() {
                         <span className="truncate">{doc.owner?.name}</span>
                       </div>
                       <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        {doc.updated_at ? new Date(doc.updated_at).toLocaleString("ru-RU") : "-"}
+                        {doc.updated_at ? formatBrowserDate(doc.updated_at) : "-"}
                       </div>
                     </CardContent>
                   </Link>

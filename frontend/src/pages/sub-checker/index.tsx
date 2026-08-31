@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { canDo, useCurrentAdmin } from "@/lib/auth"
 import { CheckerClasses } from "./classes"
 import { SubFileDropZone } from "./DropZone"
@@ -22,10 +23,7 @@ import { CheckerSettings } from "./settings"
 import type { CheckerConfig, CheckResponse, ConfigResponse, HistoryRow, SubReport } from "./types"
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function VerdictBadge({ passed, errors, warnings }: { passed: boolean; errors: number; warnings: number }) {

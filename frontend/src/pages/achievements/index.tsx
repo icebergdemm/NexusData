@@ -22,6 +22,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { AchievementEditor } from "./AchievementEditor"
 import { TriggerSummary } from "./trigger-builder"
 import { SearchPicker, type Option } from "./pickers"
@@ -237,7 +238,7 @@ function PlayerProgressTab({ achievements, canGrant }: {
                 )}
                 {p.unlocked_at && (
                   <div className="text-xs text-muted-foreground">
-                    Разблокировано: {new Date(p.unlocked_at).toLocaleString("ru-RU")}
+                    Разблокировано: {formatBrowserDate(p.unlocked_at)}
                   </div>
                 )}
                 {p.granted_manually && <Badge variant="outline">выдано вручную</Badge>}

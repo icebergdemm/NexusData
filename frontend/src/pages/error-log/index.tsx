@@ -17,6 +17,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { useCurrentAdmin } from "@/lib/auth"
 
 interface ErrorLogEntryRow {
@@ -39,10 +40,7 @@ interface ErrorLogResponse {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function EntryRow({ entry }: { entry: ErrorLogEntryRow }) {

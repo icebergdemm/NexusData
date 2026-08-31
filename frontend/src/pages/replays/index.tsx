@@ -23,6 +23,7 @@ import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 
 interface ReplayRow {
   id: number; server_name: string | null; submarine_name: string | null; level_name: string | null
@@ -72,10 +73,7 @@ function fmtSize(n: number | null): string {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function isCaptain(role: string | undefined): boolean {

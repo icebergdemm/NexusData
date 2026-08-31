@@ -16,6 +16,7 @@ import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { ChartNoAxesColumn, Gift, Pencil, RefreshCw, Save, Timer, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import type { PlaytimeCondition, PlaytimePeriod, PlaytimeStats, RewardGroup } from "./rewards-types"
 import { PERIOD_LABELS } from "./rewards-types"
 
@@ -82,7 +83,7 @@ export function PlaytimeSection({ conditions, groups, canEdit }: { conditions: P
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
         <Card><CardContent className="text-center"><div className="text-2xl font-bold">{Object.keys(stats?.players ?? {}).length}</div><div className="text-xs text-muted-foreground">Игроков в статистике</div></CardContent></Card>
-        <Card><CardContent className="text-center"><div className="text-sm font-bold">{stats?.generated_at ? new Date(stats.generated_at).toLocaleString("ru-RU") : "никогда"}</div><div className="text-xs text-muted-foreground">Последний расчёт</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-sm font-bold">{stats?.generated_at ? formatBrowserDate(stats.generated_at) : "никогда"}</div><div className="text-xs text-muted-foreground">Последний расчёт</div></CardContent></Card>
         {canEdit && (
           <Card><CardContent className="flex flex-col justify-center gap-2">
             <Button size="sm" variant="outline" onClick={() => generatePlaytime.mutate()}><AdaptiveIcon emoji="🔄" icon={RefreshCw} /> Пересчитать сейчас</Button>

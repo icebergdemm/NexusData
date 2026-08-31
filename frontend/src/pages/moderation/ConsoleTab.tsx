@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, ApiError } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 
 interface ConsolePermissions { servers: { server: string; enabled: boolean }[]; can_manage_settings: boolean }
@@ -30,10 +31,7 @@ interface ConsoleHistoryEntry {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function fmtBytes(n: number | null): string {

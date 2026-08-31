@@ -24,6 +24,7 @@ import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
+import { formatBrowserDate } from "@/lib/format-date"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS,
   type TaskColumnRow, type TaskRow, type TaskPriority, type AssigneeCandidates,
@@ -38,7 +39,7 @@ function copyToClipboard(text: string, label: string) {
 }
 
 function fmtDeadline(iso: string): string {
-  return new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
+  return formatBrowserDate(iso)
 }
 
 // ── Task card (draggable) ───────────────────────────────────────────────────
@@ -410,7 +411,7 @@ function TaskDetailSheet({ taskId, task, onClose, candidates, canEditAll, canDel
         <div className="flex-1 space-y-4 px-4 pb-4">
           <div className="grid grid-cols-[100px_1fr] items-center gap-2 text-sm">
             <span className="text-muted-foreground">Создано</span>
-            <span>{task.created_at ? new Date(task.created_at).toLocaleString("ru-RU") : "-"}{task.created_by_name ? ` · ${task.created_by_name}` : ""}</span>
+            <span>{task.created_at ? formatBrowserDate(task.created_at) : "-"}{task.created_by_name ? ` · ${task.created_by_name}` : ""}</span>
 
             <span className="text-muted-foreground">Приоритет</span>
             <Select
@@ -509,7 +510,7 @@ function TaskDetailSheet({ taskId, task, onClose, candidates, canEditAll, canDel
                 <div className="mb-1 flex items-center justify-between">
                   <span className="text-xs font-medium">{c.admin_name ?? "—"}</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-muted-foreground">{c.created_at ? new Date(c.created_at).toLocaleString("ru-RU") : ""}</span>
+                    <span className="text-[10px] text-muted-foreground">{c.created_at ? formatBrowserDate(c.created_at) : ""}</span>
                     {(c.admin_id === currentAdminId || canEditAll) && (
                       <button onClick={() => deleteCommentMutation.mutate(c.id)} className="text-muted-foreground hover:text-destructive">
                         <Trash2 className="size-3" />

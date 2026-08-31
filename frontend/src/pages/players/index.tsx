@@ -22,6 +22,7 @@ import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
+import { formatBrowserDate } from "@/lib/format-date"
 import type { PlayersListResponse } from "./types"
 
 /** Superuser-only popover — lets them tweak the background color shown
@@ -319,7 +320,7 @@ export function PlayersListPage() {
                       <TableCell>{p.kit_name || "-"}</TableCell>
                       <TableCell>{formatPlayTime(p.play_time_hours)}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {p.last_login_time ? new Date(p.last_login_time).toLocaleString("ru-RU") : "-"}
+                        {p.last_login_time ? formatBrowserDate(p.last_login_time) : "-"}
                       </TableCell>
                       <TableCell><ChevronRight className="h-4 w-4 text-muted-foreground" /></TableCell>
                     </TableRow>

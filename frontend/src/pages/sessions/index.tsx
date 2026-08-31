@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 
 interface SessionRow {
   id: number; admin_id: number; admin_name: string | null; token_preview: string
@@ -16,10 +17,7 @@ interface SessionRow {
 interface SessionsResponse { sessions: SessionRow[]; can_edit: boolean }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "Бессрочно"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 export function SessionsPage() {

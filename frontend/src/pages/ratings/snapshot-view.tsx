@@ -6,6 +6,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 
 const ROLE_LABELS: Record<string, string> = {
   captain: "Капитан", mechanic: "Механик", medic: "Врач", security: "СБ", engineer: "Инженер",
@@ -34,7 +35,7 @@ export function RatingSnapshotViewPage() {
       <Card>
         <CardHeader><CardTitle>{data.meta.title}</CardTitle></CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          {data.meta.total_players} игроков · {data.meta.created_at ? new Date(data.meta.created_at).toLocaleString("ru-RU") : ""}
+          {data.meta.total_players} игроков · {data.meta.created_at ? formatBrowserDate(data.meta.created_at) : ""}
           {data.meta.created_by && ` · создал ${data.meta.created_by}`}
         </CardContent>
       </Card>

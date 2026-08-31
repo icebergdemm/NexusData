@@ -317,7 +317,7 @@ export function LogsPage() {
     if (appliedFilters.timeFrom || appliedFilters.timeTo) {
       activeChips.push({
         key: "period",
-        label: `Период: ${appliedFilters.timeFrom ? new Date(appliedFilters.timeFrom).toLocaleString("ru-RU") : "…"} — ${appliedFilters.timeTo ? new Date(appliedFilters.timeTo).toLocaleString("ru-RU") : "…"}`,
+        label: `Период: ${appliedFilters.timeFrom ? formatBrowserDate(appliedFilters.timeFrom) : "…"} — ${appliedFilters.timeTo ? formatBrowserDate(appliedFilters.timeTo) : "…"}`,
         onRemove: () => applyFiltersImmediately({ timeFrom: "", timeTo: "" }),
       })
     }

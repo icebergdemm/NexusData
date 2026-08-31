@@ -5,14 +5,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import type { PlayerDetailResponse } from "@/pages/players/detail-types"
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const normalized = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function fmtPlayTime(hours: number): string {

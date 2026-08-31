@@ -30,6 +30,7 @@ import {
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
@@ -38,10 +39,7 @@ import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 interface AdminOption { id: number; discord_username: string | null }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function copyToClipboard(text: string, label: string) {
@@ -958,7 +956,7 @@ function NoteRow({ note, canEdit, onSave, onDelete, saving, deleting }: {
             )}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {note.admin_name ? `Оставил(а): ${note.admin_name} · ` : ""}{note.updated_at ? new Date(note.updated_at).toLocaleString("ru-RU") : "-"}
+            {note.admin_name ? `Оставил(а): ${note.admin_name} · ` : ""}{note.updated_at ? formatBrowserDate(note.updated_at) : "-"}
           </div>
         </>
       )}

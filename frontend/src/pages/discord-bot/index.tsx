@@ -14,6 +14,7 @@ import { Bot, MessageSquare, Plus, RefreshCw, Save, Send, Settings, Ticket as Ti
 import { PageHeader } from "@/components/layout/PageHeader"
 import { PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import { DiscordViewerTab } from "./viewer"
 
 const KNOWN_KEYS: { key: string; label: string }[] = [
@@ -422,7 +423,7 @@ export function DiscordBotPage() {
       <div className="grid grid-cols-3 gap-4">
         <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.members_count ?? "-"}</div><div className="text-xs text-muted-foreground">Участников Discord в базе данных (не актуальное кол-во, а общее)</div></CardContent></Card>
         <Card><CardContent className="text-center"><div className="text-2xl font-bold">{data?.bot_online ? "Онлайн" : "Оффлайн"}</div><div className="text-xs text-muted-foreground">Подключение бота</div></CardContent></Card>
-        <Card><CardContent className="text-center"><div className="text-sm font-bold">{data?.last_sync ? new Date(data.last_sync).toLocaleString("ru-RU") : "-"}</div><div className="text-xs text-muted-foreground">Последняя синхронизация</div></CardContent></Card>
+        <Card><CardContent className="text-center"><div className="text-sm font-bold">{data?.last_sync ? formatBrowserDate(data.last_sync) : "-"}</div><div className="text-xs text-muted-foreground">Последняя синхронизация</div></CardContent></Card>
       </div>
 
       <Card>
@@ -453,7 +454,7 @@ export function DiscordBotPage() {
                 <TableRow key={i}>
                   <TableCell>{e.event_type}</TableCell>
                   <TableCell>{e.username ?? e.discord_id ?? "-"}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{e.occurred_at ? new Date(e.occurred_at).toLocaleString("ru-RU") : "-"}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{e.occurred_at ? formatBrowserDate(e.occurred_at) : "-"}</TableCell>
                   <TableCell><Badge variant={e.resolved ? "secondary" : "destructive"}>{e.resolved ? "Решено" : "Активно"}</Badge></TableCell>
                 </TableRow>
               ))}
@@ -485,7 +486,7 @@ export function DiscordBotPage() {
                       {f.remove_role_id && <span className="text-destructive">-{f.remove_role_id}</span>}
                     </TableCell>
                     <TableCell className="max-w-xs truncate text-xs text-muted-foreground" title={f.error_message ?? undefined}>{f.error_message ?? "-"}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{f.executed_at ? new Date(f.executed_at).toLocaleString("ru-RU") : "-"}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{f.executed_at ? formatBrowserDate(f.executed_at) : "-"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Checkbox } from "@/components/ui/checkbox"
 import { Hash, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck } from "lucide-react"
 import { api, ApiError } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 
 // ── Типы ─────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ function initials(name: string): string {
 // ── Лента сообщений ─────────────────────────────────────────────────────
 
 function MessageRow({ msg }: { msg: DiscordMessage }) {
-  const time = new Date(msg.created_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+  const time = formatBrowserDate(msg.created_at)
   return (
     <div className="flex gap-2.5 rounded px-2 py-1.5 hover:bg-[#2e3035]">
       <Avatar className="mt-0.5 size-9 shrink-0">

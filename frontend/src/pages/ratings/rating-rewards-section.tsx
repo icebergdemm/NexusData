@@ -16,14 +16,12 @@ import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { Award, Medal, Pencil, Save, Trash2, Trophy, Zap } from "lucide-react"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import type { RatingRewardCondition, RatingRewardHolder, RewardGroup } from "./rewards-types"
 import { ROLES, ROLE_LABELS, WEEKDAY_LABELS } from "./rewards-types"
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 export function RatingRewardsSection({ conditions, groups, canEdit }: { conditions: RatingRewardCondition[]; groups: RewardGroup[]; canEdit: boolean }) {

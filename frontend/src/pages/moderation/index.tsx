@@ -23,6 +23,7 @@ import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
+import { formatBrowserDate } from "@/lib/format-date"
 import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
@@ -32,10 +33,7 @@ function copyToClipboard(text: string, label: string) {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "-"
-  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
-  const normalized = hasTz ? iso : iso + "Z"
-  return new Date(normalized).toLocaleString("ru-RU")
+  return formatBrowserDate(iso)
 }
 
 function fmtPlayTime(hours: number | null | undefined): string {

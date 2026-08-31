@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { formatBrowserDate } from "@/lib/format-date"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { History } from "lucide-react"
@@ -54,7 +55,7 @@ export function VersionHistoryDialog({ documentId, open, onOpenChange, onRestore
                 onClick={() => setSelectedId(r.id)}
                 className={`rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent ${selectedId === r.id ? "bg-accent" : ""}`}
               >
-                <div className="font-medium">{r.created_at ? new Date(r.created_at).toLocaleString("ru-RU") : "-"}</div>
+                <div className="font-medium">{r.created_at ? formatBrowserDate(r.created_at) : "-"}</div>
                 <div className="text-xs text-muted-foreground">{r.saved_by?.name ?? "Автосохранение"} · v{r.version}</div>
               </button>
             ))}
