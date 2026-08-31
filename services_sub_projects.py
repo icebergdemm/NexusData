@@ -694,9 +694,10 @@ class SubProjectService:
         return True
 
     def undeploy_version(self, version_id: int, server_number: int) -> bool:
-        """Remove a .sub file from a remote server (filelist.xml + the
-        physical file — an explicit undeploy, unlike the replace-on-deploy
-        path above, IS meant to actually delete it)."""
+        """Убрать .sub файл из filelist.xml на удалённом сервере — физическое
+        удаление файла на SFTP НЕ происходит, файл остаётся на диске (требование
+        заказчика). Отличается от replace-on-deploy только тем, что версия
+        помечается как не задеплоенная."""
         version = self.get_version_by_id(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Версия не найдена")
@@ -706,7 +707,6 @@ class SubProjectService:
         remote_filename = self._versioned_remote_filename(version)
 
         sftp = SFTPManager(server_number)
-        sftp.delete_file(remote_filename)
         sftp.remove_from_filelist(remote_filename)
 
         # Mark as undeployed
