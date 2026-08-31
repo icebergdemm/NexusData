@@ -535,6 +535,10 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
 // ── Board Chat (закрывающийся сайдбар, скриншоты, якоря с названием) ─────────
 function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; tasks: TaskRow[]; onClose?: () => void; open?: boolean }) {
   const [input, setInput] = useState("")
+  const [chatPinned, setChatPinned] = useState(true)
+  const chatSize = { width: 352, height: Math.max(420, window.innerHeight - 96) }
+  const [chatPosition, setChatPosition] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null)
   const [replyTo, setReplyTo] = useState<number | null>(null)
   const [showPinned, setShowPinned] = useState(true)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -542,6 +546,7 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
   const { data, refetch } = useQuery({ queryKey: ["board-chat", boardId], queryFn: () => tasksApi.boards.chat.list(boardId, { limit: 50 }), refetchInterval: 5000 })
   const messages = data?.messages ?? []
   const pinned = data?.pinned ?? []
+  const setPinned = (_value: boolean) => setChatPinned((current) => !current)
   const taskMap = new Map(tasks.map(t => [t.id, t]))
 
   useEffect(() => {
@@ -549,6 +554,16 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
     window.addEventListener("send-to-board-chat", handler)
     return () => window.removeEventListener("send-to-board-chat", handler)
   }, [])
+  const startDrag = (event: React.PointerEvent) => {
+    if (chatPinned) return
+    dragRef.current = { x: chatPosition.x, y: chatPosition.y, startX: event.clientX, startY: event.clientY }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const drag = (event: React.PointerEvent) => {
+    if (!dragRef.current) return
+    setChatPosition({ x: dragRef.current.x + event.clientX - dragRef.current.startX, y: dragRef.current.y + event.clientY - dragRef.current.startY })
+  }
+  const stopDrag = () => { dragRef.current = null }
 
   const sendMutation = useMutation({
     mutationFn: async () => {
@@ -592,10 +607,11 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
   }
 
   return (
-    <div aria-hidden={!open} className={`fixed right-4 top-20 z-40 flex h-[calc(100vh-6rem)] w-[min(22rem,calc(100vw-2rem))] flex-col rounded-xl border bg-card shadow-xl transition-all duration-300 ${open ? "translate-x-0 opacity-100" : "-translate-x-full opacity-0 pointer-events-none"}`}>
-      <div className="flex items-center justify-between border-b p-2">
+    <div aria-hidden={!open} style={{ width: chatSize.width, height: chatSize.height, right: 16 - chatPosition.x, top: 80 + chatPosition.y }} className={`fixed z-40 flex min-h-[24rem] min-w-[18rem] max-w-[calc(100vw-2rem)] resize overflow-hidden flex-col rounded-xl border border-white/30 bg-card/85 shadow-xl backdrop-blur-md transition-all duration-300 ${open ? "translate-x-0 opacity-100" : "-translate-x-full opacity-0 pointer-events-none"}`}>
+      <div className={`flex items-center justify-between border-b border-white/20 bg-background/35 p-2 ${chatPinned ? "cursor-default" : "cursor-move"}`} onPointerDown={startDrag} onPointerMove={drag} onPointerUp={stopDrag}>
         <span className="text-sm font-semibold flex items-center gap-1.5"><MessageSquare className="size-4" /> Чат доски</span>
         <div className="flex gap-1">
+          <Button size="icon-xs" variant={pinned ? "secondary" : "ghost"} onClick={() => { setPinned(!pinned); if (!pinned) setChatPosition({ x: 0, y: 0 }) }} title="Прикрепить или открепить чат"><Pin className="size-3.5" /></Button>
           <Button size="icon-xs" variant="ghost" onClick={() => refetch()} title="Обновить">↻</Button>
           <Button size="icon-xs" variant="ghost" onClick={() => setShowPinned(!showPinned)} title={showPinned ? "Скрыть закрепы" : "Показать закрепы"}>{showPinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}</Button>
           {onClose && <Button size="icon-xs" variant="ghost" onClick={onClose} title="Закрыть чат"><X className="size-3.5" /></Button>}
