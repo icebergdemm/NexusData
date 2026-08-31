@@ -1566,6 +1566,22 @@ class TaskColumn(Base):
     board = relationship("TaskBoard", back_populates="columns")
 
 
+class TaskBoardPermission(Base):
+    """Гибкие права по доске: кто может смотреть/редактировать/удалять."""
+    __tablename__ = "task_board_permissions"
+    __table_args__ = (UniqueConstraint("board_id", "grantee_type", "grantee_key", name="uq_task_board_perm"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    board_id = Column(Integer, ForeignKey("task_boards.id", ondelete="CASCADE"), nullable=False, index=True)
+    grantee_type = Column(String(20), nullable=False)  # group_nd | user | dept_level
+    grantee_key = Column(String(128), nullable=False)  # group_id | admin_id | "deptId:levelKey"
+    can_view = Column(Boolean, nullable=False, default=True)
+    can_create = Column(Boolean, nullable=False, default=False)  # добавлять задачи
+    can_edit = Column(Boolean, nullable=False, default=False)  # перемещать/редактировать
+    can_delete = Column(Boolean, nullable=False, default=False)  # удалять задачи
+    created_at = Column(DateTime, default=func.now())
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -1583,6 +1599,12 @@ class Task(Base):
     assignee_department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     sort_order = Column(Integer, default=0)
+    # p.3: статус и скрытость
+    status = Column(String(20), nullable=False, default="review")  # review | in_progress | done | rejected
+    is_hidden = Column(Boolean, nullable=False, default=False)
+    rejection_reason = Column(String(1000), nullable=True)
+    # p.2: превью скриншота
+    preview_attachment_id = Column(Integer, ForeignKey("task_attachments.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -1592,6 +1614,7 @@ class Task(Base):
     assignee_department = relationship("Department", foreign_keys=[assignee_department_id])
     created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
     comments = relationship("TaskComment", back_populates="task", order_by="TaskComment.created_at", cascade="all, delete-orphan")
+    preview_attachment = relationship("TaskAttachment", foreign_keys=[preview_attachment_id])
 
 
 class TaskComment(Base):
@@ -1605,6 +1628,70 @@ class TaskComment(Base):
 
     task = relationship("Task", back_populates="comments")
     admin = relationship("AdminUser", foreign_keys=[admin_id])
+
+
+class TaskAttachment(Base):
+    """Скриншот/файл, прикреплённый к задаче. is_preview отмечает превью плашки."""
+    __tablename__ = "task_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    uploader_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    filename = Column(String(255), nullable=False)
+    stored_path = Column(String(500), nullable=False)
+    mime_type = Column(String(128), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    is_preview = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now())
+
+    task = relationship("Task", foreign_keys=[task_id])
+    uploader = relationship("AdminUser", foreign_keys=[uploader_admin_id])
+
+
+class TaskActivityLog(Base):
+    """Лог действий по задаче: кто, что, когда."""
+    __tablename__ = "task_activity_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    action = Column(String(50), nullable=False)  # create, update, move, status_change, hide, unhide, reject, attach, preview
+    detail = Column(String(2000), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    task = relationship("Task", foreign_keys=[task_id])
+    admin = relationship("AdminUser", foreign_keys=[admin_id])
+
+
+class TaskBoardMessage(Base):
+    """Общий чат доски."""
+    __tablename__ = "task_board_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    board_id = Column(Integer, ForeignKey("task_boards.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    content = Column(String(4000), nullable=False)
+    reply_to_id = Column(Integer, ForeignKey("task_board_messages.id", ondelete="SET NULL"), nullable=True)
+    is_pinned = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now())
+
+    board = relationship("TaskBoard", foreign_keys=[board_id])
+    author = relationship("AdminUser", foreign_keys=[author_admin_id])
+    reply_to = relationship("TaskBoardMessage", remote_side=[id])
+
+
+class TaskBoardMessageAttachment(Base):
+    __tablename__ = "task_board_message_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("task_board_messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    stored_path = Column(String(500), nullable=False)
+    mime_type = Column(String(128), nullable=True)
+    file_size = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+    message = relationship("TaskBoardMessage", foreign_keys=[message_id])
 
 
 class PlayerAnomaly(Base):

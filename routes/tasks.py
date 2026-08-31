@@ -11,16 +11,20 @@ or assignee) unless the admin holds the "_all" variant. See
 permissions_registry.py's "tasks" entry for the full action list.
 """
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timezone
 import logging
+import os
+import uuid
+import shutil
 
 from database import get_db
 from security import check_permission
-from models import AdminUser, AdminSession, Department, TaskBoard, TaskColumn, Task, TaskComment
+from config import get_settings
+from models import AdminUser, AdminSession, Department, TaskBoard, TaskColumn, Task, TaskComment, TaskBoardPermission, TaskAttachment, TaskActivityLog, TaskBoardMessage, TaskBoardMessageAttachment
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,6 +68,51 @@ def _has_task_action(admin: AdminUser, own_action: str, all_action: str, task: T
     if check_permission(admin, "tasks", all_action):
         return True
     return _task_is_owner(admin, task) and check_permission(admin, "tasks", own_action)
+
+
+def _log_task_activity(db: Session, task_id: int, admin_id: Optional[int], action: str, detail: Optional[str] = None):
+    try:
+        db.add(TaskActivityLog(task_id=task_id, admin_id=admin_id, action=action, detail=(detail or "")[:2000]))
+        db.flush()
+    except Exception:
+        pass
+
+
+def _has_board_perm(db: Session, admin: AdminUser, board_id: int, need: str) -> bool:
+    """Гибкие права по доске: group_nd / user / dept_level + fallback на глобальные."""
+    if admin.is_superuser:
+        return True
+    if check_permission(admin, "tasks", "manage_boards"):
+        return True
+    perms = db.query(TaskBoardPermission).filter(TaskBoardPermission.board_id == board_id).all()
+    # map need to column
+    col = {"view": "can_view", "create": "can_create", "edit": "can_edit", "delete": "can_delete"}.get(need, need)
+    for p in perms:
+        allowed = getattr(p, col, False)
+        if not allowed:
+            continue
+        if p.grantee_type == "user" and str(p.grantee_key) == str(admin.id):
+            return True
+        if p.grantee_type == "group_nd" and admin.privilege_group_id and str(p.grantee_key) == str(admin.privilege_group_id):
+            return True
+        if p.grantee_type == "dept_level":
+            try:
+                dept_id_str, level_key = p.grantee_key.split(":", 1)
+                dept_id = int(dept_id_str)
+                from models import DepartmentMember
+                m = db.query(DepartmentMember).filter(DepartmentMember.department_id == dept_id, DepartmentMember.admin_id == admin.id).first()
+                if m and level_key in (m.held_level_keys or []):
+                    return True
+            except Exception:
+                continue
+    # fallback на глобальные tasks права
+    if need == "view":
+        return check_permission(admin, "tasks", "view")
+    if need in ("create", "edit"):
+        return check_permission(admin, "tasks", "create") or check_permission(admin, "tasks", "edit") or check_permission(admin, "tasks", "edit_all")
+    if need == "delete":
+        return check_permission(admin, "tasks", "delete") or check_permission(admin, "tasks", "delete_all")
+    return False
 
 
 def get_board_or_404(db: Session, board_id: int) -> TaskBoard:
@@ -131,7 +180,10 @@ def serialize_column(col: TaskColumn) -> dict:
     }
 
 
-def serialize_task(task: Task, comment_count: int = 0) -> dict:
+def serialize_task(task: Task, comment_count: int = 0, attachment_count: int = 0) -> dict:
+    preview_url = None
+    if task.preview_attachment_id:
+        preview_url = f"/api/v1/admin/tasks/attachments/{task.preview_attachment_id}/file"
     return {
         "id": task.id,
         "board_id": task.board_id,
@@ -148,9 +200,46 @@ def serialize_task(task: Task, comment_count: int = 0) -> dict:
         "created_by_admin_id": task.created_by_admin_id,
         "created_by_name": task.created_by.discord_username if task.created_by else None,
         "sort_order": task.sort_order,
+        "status": getattr(task, "status", "review"),
+        "is_hidden": bool(getattr(task, "is_hidden", False)),
+        "rejection_reason": getattr(task, "rejection_reason", None),
+        "preview_attachment_id": getattr(task, "preview_attachment_id", None),
+        "preview_url": preview_url,
+        "attachment_count": attachment_count,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,
         "comment_count": comment_count,
+    }
+
+
+def serialize_attachment(a: TaskAttachment) -> dict:
+    return {
+        "id": a.id, "task_id": a.task_id, "filename": a.filename, "mime_type": a.mime_type,
+        "file_size": a.file_size, "is_preview": bool(a.is_preview),
+        "url": f"/api/v1/admin/tasks/attachments/{a.id}/file",
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "uploader_name": a.uploader.discord_username if a.uploader else None,
+    }
+
+
+def serialize_activity(a: TaskActivityLog) -> dict:
+    return {
+        "id": a.id, "task_id": a.task_id, "admin_id": a.admin_id,
+        "admin_name": a.admin.discord_username if a.admin else None,
+        "action": a.action, "detail": a.detail,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+def serialize_board_message(m: TaskBoardMessage, attachments=None) -> dict:
+    return {
+        "id": m.id, "board_id": m.board_id, "author_admin_id": m.author_admin_id,
+        "author_name": m.author.discord_username if m.author else None,
+        "author_avatar": m.author.discord_avatar if m.author else None,
+        "content": m.content, "reply_to_id": m.reply_to_id,
+        "is_pinned": bool(m.is_pinned),
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "attachments": attachments or [],
     }
 
 
@@ -226,32 +315,43 @@ async def api_create_task_board(request: Request, db: Session = Depends(get_db),
 
 
 @router.get("/api/v1/admin/tasks/boards/{board_id}")
-async def api_get_task_board(board_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+async def api_get_task_board(board_id: int, show_hidden: bool = False, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
+    if not _has_board_perm(db, current_admin, board_id, "view"):
+        raise HTTPException(status_code=403, detail="Нет доступа к доске")
     board = get_board_or_404(db, board_id)
     columns = db.query(TaskColumn).filter(TaskColumn.board_id == board.id).order_by(TaskColumn.sort_order).all()
-    tasks = (
-        db.query(Task)
-        .options(joinedload(Task.assignee_admin), joinedload(Task.assignee_department), joinedload(Task.created_by))
-        .filter(Task.board_id == board.id)
-        .order_by(Task.sort_order)
-        .all()
-    )
+    q = db.query(Task).options(joinedload(Task.assignee_admin), joinedload(Task.assignee_department), joinedload(Task.created_by)).filter(Task.board_id == board.id)
+    if not show_hidden:
+        q = q.filter(Task.is_hidden.is_(False))
+    tasks = q.order_by(Task.sort_order).all()
     comment_counts = dict(
         db.query(TaskComment.task_id, func.count(TaskComment.id))
         .filter(TaskComment.task_id.in_([t.id for t in tasks]))
         .group_by(TaskComment.task_id)
         .all()
     ) if tasks else {}
+    attachment_counts = dict(
+        db.query(TaskAttachment.task_id, func.count(TaskAttachment.id))
+        .filter(TaskAttachment.task_id.in_([t.id for t in tasks]))
+        .group_by(TaskAttachment.task_id)
+        .all()
+    ) if tasks else {}
 
     return {
         "board": serialize_board(board),
         "columns": [serialize_column(c) for c in columns],
-        "tasks": [serialize_task(t, comment_counts.get(t.id, 0)) for t in tasks],
+        "tasks": [serialize_task(t, comment_counts.get(t.id, 0), attachment_counts.get(t.id, 0)) for t in tasks],
         "can_manage_boards": check_permission(current_admin, "tasks", "manage_boards"),
-        "can_create": check_permission(current_admin, "tasks", "create"),
-        "can_edit_all": check_permission(current_admin, "tasks", "edit_all"),
-        "can_delete_all": check_permission(current_admin, "tasks", "delete_all"),
+        "can_create": _has_board_perm(db, current_admin, board_id, "create"),
+        "can_edit_all": _has_board_perm(db, current_admin, board_id, "edit"),
+        "can_delete_all": _has_board_perm(db, current_admin, board_id, "delete"),
+        "my_board_perms": {
+            "view": _has_board_perm(db, current_admin, board_id, "view"),
+            "create": _has_board_perm(db, current_admin, board_id, "create"),
+            "edit": _has_board_perm(db, current_admin, board_id, "edit"),
+            "delete": _has_board_perm(db, current_admin, board_id, "delete"),
+        },
     }
 
 
@@ -371,6 +471,8 @@ async def api_delete_task_column(board_id: int, column_id: int, db: Session = De
 @router.post("/api/v1/admin/tasks/boards/{board_id}/tasks")
 async def api_create_task(board_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "create")
+    if not _has_board_perm(db, current_admin, board_id, "create"):
+        raise HTTPException(status_code=403, detail="Нет прав на создание задач на этой доске")
     board = get_board_or_404(db, board_id)
     body = await request.json()
 
@@ -421,7 +523,7 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
 async def api_update_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     task = get_task_or_404(db, task_id)
-    if not _has_task_action(current_admin, "edit", "edit_all", task):
+    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     body = await request.json()
 
@@ -458,10 +560,33 @@ async def api_update_task(task_id: int, request: Request, db: Session = Depends(
         task.column_id = column.id
     if "sort_order" in body:
         task.sort_order = int(body.get("sort_order") or 0)
+    if "status" in body:
+        st = body.get("status")
+        if st not in ("review", "in_progress", "done", "rejected"):
+            raise HTTPException(status_code=400, detail="Некорректный статус")
+        old_status = task.status
+        task.status = st
+        _log_task_activity(db, task.id, current_admin.id, "status_change", f"{old_status} -> {st}")
+    if "is_hidden" in body:
+        task.is_hidden = bool(body.get("is_hidden"))
+        _log_task_activity(db, task.id, current_admin.id, "hide" if task.is_hidden else "unhide", None)
+    if "rejection_reason" in body:
+        task.rejection_reason = (body.get("rejection_reason") or "").strip()[:1000] or None
+        if task.rejection_reason:
+            _log_task_activity(db, task.id, current_admin.id, "reject", task.rejection_reason)
+    if "preview_attachment_id" in body:
+        pid = body.get("preview_attachment_id")
+        if pid is not None:
+            att = db.query(TaskAttachment).filter(TaskAttachment.id == pid, TaskAttachment.task_id == task.id).first()
+            if not att:
+                raise HTTPException(status_code=404, detail="Вложение не найдено")
+        task.preview_attachment_id = pid
 
     db.commit()
+    _log_task_activity(db, task.id, current_admin.id, "update", None)
     comment_count = db.query(TaskComment).filter(TaskComment.task_id == task.id).count()
-    return {"status": "ok", "task": serialize_task(task, comment_count)}
+    attachment_count = db.query(TaskAttachment).filter(TaskAttachment.task_id == task.id).count()
+    return {"status": "ok", "task": serialize_task(task, comment_count, attachment_count)}
 
 
 @router.delete("/api/v1/admin/tasks/tasks/{task_id}")
@@ -568,3 +693,256 @@ async def api_task_assignee_candidates(db: Session = Depends(get_db), current_ad
         "admins": [{"id": a.id, "name": a.discord_username} for a in admins],
         "departments": [{"id": d.id, "name": d.name, "icon": d.icon} for d in departments],
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Гибкие права доски (п.1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/v1/admin/tasks/boards/{board_id}/permissions")
+async def api_get_board_permissions(board_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    get_board_or_404(db, board_id)
+    perms = db.query(TaskBoardPermission).filter(TaskBoardPermission.board_id == board_id).all()
+    return {"permissions": [{"id": p.id, "grantee_type": p.grantee_type, "grantee_key": p.grantee_key, "can_view": p.can_view, "can_create": p.can_create, "can_edit": p.can_edit, "can_delete": p.can_delete} for p in perms]}
+
+
+@router.put("/api/v1/admin/tasks/boards/{board_id}/permissions")
+async def api_set_board_permissions(board_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "manage_boards")
+    get_board_or_404(db, board_id)
+    body = await request.json()
+    items = body.get("permissions") or []
+    db.query(TaskBoardPermission).filter(TaskBoardPermission.board_id == board_id).delete()
+    for it in items:
+        gt = it.get("grantee_type")
+        gk = str(it.get("grantee_key") or "").strip()
+        if gt not in ("group_nd", "user", "dept_level") or not gk:
+            continue
+        db.add(TaskBoardPermission(board_id=board_id, grantee_type=gt, grantee_key=gk, can_view=bool(it.get("can_view")), can_create=bool(it.get("can_create")), can_edit=bool(it.get("can_edit")), can_delete=bool(it.get("can_delete"))))
+    db.commit()
+    return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Вложения задач — скриншоты + превью (п.2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_task_upload_dir(task_id: int) -> str:
+    settings = get_settings()
+    base = getattr(settings, "uploads_dir", "uploads")
+    path = os.path.join(base, "task_attachments", str(task_id))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+@router.get("/api/v1/admin/tasks/tasks/{task_id}/attachments")
+async def api_list_task_attachments(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    get_task_or_404(db, task_id)
+    atts = db.query(TaskAttachment).filter(TaskAttachment.task_id == task_id).order_by(TaskAttachment.created_at).all()
+    return {"attachments": [serialize_attachment(a) for a in atts]}
+
+
+@router.post("/api/v1/admin/tasks/tasks/{task_id}/attachments")
+async def api_upload_task_attachment(task_id: int, file: UploadFile = File(...), is_preview: bool = Form(False), db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    task = get_task_or_404(db, task_id)
+    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    if file.size and file.size > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Файл слишком большой (10 MB)")
+    ext = os.path.splitext(file.filename or "file")[1][:10]
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dir_path = _ensure_task_upload_dir(task_id)
+    stored_path = os.path.join(dir_path, stored_name)
+    with open(stored_path, "wb") as out:
+        shutil.copyfileobj(file.file, out)
+    size = os.path.getsize(stored_path) if os.path.exists(stored_path) else None
+    att = TaskAttachment(task_id=task_id, uploader_admin_id=current_admin.id, filename=file.filename or stored_name, stored_path=stored_path, mime_type=file.content_type, file_size=size, is_preview=bool(is_preview))
+    db.add(att)
+    db.flush()
+    if is_preview:
+        task.preview_attachment_id = att.id
+    db.commit()
+    _log_task_activity(db, task_id, current_admin.id, "attach", file.filename or stored_name)
+    db.commit()
+    return {"status": "ok", "attachment": serialize_attachment(att)}
+
+
+@router.delete("/api/v1/admin/tasks/tasks/{task_id}/attachments/{attachment_id}")
+async def api_delete_task_attachment(task_id: int, attachment_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    att = db.query(TaskAttachment).filter(TaskAttachment.id == attachment_id, TaskAttachment.task_id == task_id).first()
+    if not att:
+        raise HTTPException(status_code=404, detail="Вложение не найдено")
+    task = get_task_or_404(db, task_id)
+    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    try:
+        if att.stored_path and os.path.exists(att.stored_path):
+            os.remove(att.stored_path)
+    except Exception:
+        pass
+    if task.preview_attachment_id == att.id:
+        task.preview_attachment_id = None
+    db.delete(att)
+    db.commit()
+    _log_task_activity(db, task_id, current_admin.id, "detach", att.filename)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/api/v1/admin/tasks/attachments/{attachment_id}/file")
+async def api_get_task_attachment_file(attachment_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    att = db.query(TaskAttachment).filter(TaskAttachment.id == attachment_id).first()
+    if not att or not att.stored_path or not os.path.exists(att.stored_path):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    from fastapi.responses import FileResponse
+    return FileResponse(att.stored_path, filename=att.filename, media_type=att.mime_type or "application/octet-stream")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Активность + статусы + скрытые (п.3)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/v1/admin/tasks/tasks/{task_id}/activity")
+async def api_get_task_activity(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    get_task_or_404(db, task_id)
+    logs = db.query(TaskActivityLog).filter(TaskActivityLog.task_id == task_id).order_by(TaskActivityLog.created_at.desc()).limit(100).all()
+    for l in logs:
+        if l.admin_id:
+            db.refresh(l)
+    # joinedload for admin
+    logs = db.query(TaskActivityLog).options(joinedload(TaskActivityLog.admin)).filter(TaskActivityLog.task_id == task_id).order_by(TaskActivityLog.created_at.desc()).limit(100).all()
+    return {"activity": [serialize_activity(a) for a in logs]}
+
+
+@router.post("/api/v1/admin/tasks/tasks/{task_id}/reject")
+async def api_reject_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    task = get_task_or_404(db, task_id)
+    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    body = await request.json()
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Укажите причину отклонения")
+    task.status = "rejected"
+    task.is_hidden = True
+    task.rejection_reason = reason[:1000]
+    db.commit()
+    _log_task_activity(db, task_id, current_admin.id, "reject", reason)
+    db.commit()
+    return {"status": "ok", "task": serialize_task(task)}
+
+
+@router.post("/api/v1/admin/tasks/tasks/{task_id}/toggle-hidden")
+async def api_toggle_task_hidden(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    task = get_task_or_404(db, task_id)
+    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    task.is_hidden = not task.is_hidden
+    db.commit()
+    _log_task_activity(db, task_id, current_admin.id, "unhide" if not task.is_hidden else "hide", None)
+    db.commit()
+    return {"status": "ok", "is_hidden": task.is_hidden}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Чат доски — общий чат + файлы + закрепления (п.5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/api/v1/admin/tasks/boards/{board_id}/chat")
+async def api_get_board_chat(board_id: int, limit: int = 50, before_id: Optional[int] = None, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    get_board_or_404(db, board_id)
+    if not _has_board_perm(db, current_admin, board_id, "view"):
+        raise HTTPException(status_code=403, detail="Нет доступа к чату доски")
+    q = db.query(TaskBoardMessage).options(joinedload(TaskBoardMessage.author)).filter(TaskBoardMessage.board_id == board_id)
+    if before_id:
+        q = q.filter(TaskBoardMessage.id < before_id)
+    msgs = q.order_by(TaskBoardMessage.created_at.desc()).limit(limit).all()
+    msgs = list(reversed(msgs))
+    result = []
+    for m in msgs:
+        atts = db.query(TaskBoardMessageAttachment).filter(TaskBoardMessageAttachment.message_id == m.id).all()
+        result.append(serialize_board_message(m, [{"id": a.id, "filename": a.filename, "url": f"/api/v1/admin/tasks/board-chat/attachments/{a.id}/file", "mime_type": a.mime_type} for a in atts]))
+    pinned = db.query(TaskBoardMessage).filter(TaskBoardMessage.board_id == board_id, TaskBoardMessage.is_pinned.is_(True)).order_by(TaskBoardMessage.created_at.desc()).limit(10).all()
+    return {"messages": result, "pinned": [serialize_board_message(m) for m in pinned]}
+
+
+@router.post("/api/v1/admin/tasks/boards/{board_id}/chat")
+async def api_post_board_chat(board_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    get_board_or_404(db, board_id)
+    if not _has_board_perm(db, current_admin, board_id, "view"):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+    # support both JSON and multipart
+    content_type = request.headers.get("content-type", "")
+    files = []
+    content = ""
+    reply_to_id = None
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        content = (form.get("content") or "").strip()
+        reply_to_id = form.get("reply_to_id")
+        files = form.getlist("files") if hasattr(form, "getlist") else []
+        if not files and "file" in form:
+            files = [form["file"]]
+    else:
+        body = await request.json()
+        content = (body.get("content") or "").strip()
+        reply_to_id = body.get("reply_to_id")
+    if not content and not files:
+        raise HTTPException(status_code=400, detail="Сообщение не может быть пустым")
+    if len(content) > 4000:
+        content = content[:4000]
+    msg = TaskBoardMessage(board_id=board_id, author_admin_id=current_admin.id, content=content or "(файл)", reply_to_id=int(reply_to_id) if reply_to_id else None)
+    db.add(msg)
+    db.flush()
+    # save files
+    for f in files:
+        if not hasattr(f, "filename"):
+            continue
+        ext = os.path.splitext(f.filename or "file")[1][:10]
+        stored_name = f"{uuid.uuid4().hex}{ext}"
+        base = getattr(get_settings(), "uploads_dir", "uploads")
+        dir_path = os.path.join(base, "task_board_chat", str(board_id))
+        os.makedirs(dir_path, exist_ok=True)
+        stored_path = os.path.join(dir_path, stored_name)
+        try:
+            data = await f.read()
+            with open(stored_path, "wb") as out:
+                out.write(data)
+            db.add(TaskBoardMessageAttachment(message_id=msg.id, filename=f.filename or stored_name, stored_path=stored_path, mime_type=getattr(f, "content_type", None), file_size=len(data)))
+        except Exception:
+            continue
+    db.commit()
+    db.refresh(msg)
+    atts = db.query(TaskBoardMessageAttachment).filter(TaskBoardMessageAttachment.message_id == msg.id).all()
+    return {"status": "ok", "message": serialize_board_message(msg, [{"id": a.id, "filename": a.filename, "url": f"/api/v1/admin/tasks/board-chat/attachments/{a.id}/file"} for a in atts])}
+
+
+@router.post("/api/v1/admin/tasks/boards/{board_id}/chat/{message_id}/pin")
+async def api_toggle_pin_board_chat(board_id: int, message_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    msg = db.query(TaskBoardMessage).filter(TaskBoardMessage.id == message_id, TaskBoardMessage.board_id == board_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Сообщение не найдено")
+    msg.is_pinned = not msg.is_pinned
+    db.commit()
+    return {"status": "ok", "is_pinned": msg.is_pinned}
+
+
+@router.get("/api/v1/admin/tasks/board-chat/attachments/{attachment_id}/file")
+async def api_get_board_chat_attachment(attachment_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "view")
+    att = db.query(TaskBoardMessageAttachment).filter(TaskBoardMessageAttachment.id == attachment_id).first()
+    if not att or not os.path.exists(att.stored_path):
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    from fastapi.responses import FileResponse
+    return FileResponse(att.stored_path, filename=att.filename, media_type=att.mime_type or "application/octet-stream")

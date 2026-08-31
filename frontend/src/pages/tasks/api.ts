@@ -1,6 +1,7 @@
 import { api } from "@/lib/api"
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent"
+export type TaskStatus = "review" | "in_progress" | "done" | "rejected"
 
 export const PRIORITY_LABELS: Record<TaskPriority, string> = {
   low: "Низкий",
@@ -14,6 +15,20 @@ export const PRIORITY_COLORS: Record<TaskPriority, string> = {
   medium: "#3B82F6",
   high: "#F59E0B",
   urgent: "#EF4444",
+}
+
+export const STATUS_LABELS: Record<TaskStatus, string> = {
+  review: "Рассмотрение",
+  in_progress: "В работе",
+  done: "Завершено",
+  rejected: "Отклонено",
+}
+
+export const STATUS_COLORS: Record<TaskStatus, string> = {
+  review: "#8B9ECF",
+  in_progress: "#3B82F6",
+  done: "#22C55E",
+  rejected: "#EF4444",
 }
 
 export interface TaskBoardRow {
@@ -53,6 +68,12 @@ export interface TaskRow {
   created_by_admin_id: number | null
   created_by_name: string | null
   sort_order: number
+  status: TaskStatus
+  is_hidden: boolean
+  rejection_reason: string | null
+  preview_attachment_id: number | null
+  preview_url: string | null
+  attachment_count: number
   created_at: string | null
   updated_at: string | null
   comment_count: number
@@ -76,6 +97,7 @@ export interface TaskBoardDetail {
   can_create: boolean
   can_edit_all: boolean
   can_delete_all: boolean
+  my_board_perms?: { view: boolean; create: boolean; edit: boolean; delete: boolean }
 }
 
 export interface AssigneeCandidates {
@@ -83,17 +105,84 @@ export interface AssigneeCandidates {
   departments: { id: number; name: string; icon: string | null }[]
 }
 
+export interface BoardPermission {
+  id?: number
+  grantee_type: "group_nd" | "user" | "dept_level"
+  grantee_key: string
+  can_view: boolean
+  can_create: boolean
+  can_edit: boolean
+  can_delete: boolean
+}
+
+export interface TaskAttachment {
+  id: number
+  task_id: number
+  filename: string
+  mime_type: string | null
+  file_size: number | null
+  is_preview: boolean
+  url: string
+  created_at: string | null
+  uploader_name: string | null
+}
+
+export interface TaskActivity {
+  id: number
+  task_id: number
+  admin_id: number | null
+  admin_name: string | null
+  action: string
+  detail: string | null
+  created_at: string | null
+}
+
+export interface BoardMessageAttachment {
+  id: number
+  filename: string
+  url: string
+  mime_type: string | null
+}
+
+export interface BoardMessage {
+  id: number
+  board_id: number
+  author_admin_id: number | null
+  author_name: string | null
+  author_avatar: string | null
+  content: string
+  reply_to_id: number | null
+  is_pinned: boolean
+  created_at: string | null
+  attachments: BoardMessageAttachment[]
+}
+
 const base = "/api/v1/admin/tasks"
 
 export const tasksApi = {
   boards: {
     list: () => api.get<{ boards: TaskBoardRow[]; can_manage_boards: boolean; can_create: boolean }>(`${base}/boards`),
-    get: (boardId: number) => api.get<TaskBoardDetail>(`${base}/boards/${boardId}`),
+    get: (boardId: number, showHidden = false) => api.get<TaskBoardDetail>(`${base}/boards/${boardId}${showHidden ? "?show_hidden=true" : ""}`),
     create: (body: { name: string; description?: string; icon?: string; color?: string; department_id?: number | null }) =>
       api.post<{ status: string; board: TaskBoardRow }>(`${base}/boards`, body),
     update: (boardId: number, body: { name?: string; description?: string; icon?: string; color?: string; department_id?: number | null }) =>
       api.patch<{ status: string; board: TaskBoardRow }>(`${base}/boards/${boardId}`, body),
     archive: (boardId: number) => api.delete<{ status: string }>(`${base}/boards/${boardId}`),
+    permissions: {
+      get: (boardId: number) => api.get<{ permissions: BoardPermission[] }>(`${base}/boards/${boardId}/permissions`),
+      set: (boardId: number, permissions: BoardPermission[]) => api.put<{ status: string }>(`${base}/boards/${boardId}/permissions`, { permissions }),
+    },
+    chat: {
+      list: (boardId: number, params?: { limit?: number; before_id?: number }) => {
+        const qs = new URLSearchParams()
+        if (params?.limit) qs.set("limit", String(params.limit))
+        if (params?.before_id) qs.set("before_id", String(params.before_id))
+        return api.get<{ messages: BoardMessage[]; pinned: BoardMessage[] }>(`${base}/boards/${boardId}/chat?${qs}`)
+      },
+      send: (boardId: number, formData: FormData) => api.post<{ status: string; message: BoardMessage }>(`${base}/boards/${boardId}/chat`, formData as unknown as Record<string, unknown>),
+      sendJson: (boardId: number, body: { content: string; reply_to_id?: number | null }) => api.post<{ status: string; message: BoardMessage }>(`${base}/boards/${boardId}/chat`, body),
+      togglePin: (boardId: number, messageId: number) => api.post<{ status: string; is_pinned: boolean }>(`${base}/boards/${boardId}/chat/${messageId}/pin`, {}),
+    },
   },
 
   columns: {
@@ -118,10 +207,24 @@ export const tasksApi = {
       priority: TaskPriority | null; tags: string[]
       assignee_admin_id: number | null; assignee_department_id: number | null
       column_id: number; sort_order: number
+      status: TaskStatus; is_hidden: boolean; rejection_reason: string | null; preview_attachment_id: number | null
     }>) => api.patch<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}`, body),
     delete: (taskId: number) => api.delete<{ status: string }>(`${base}/tasks/${taskId}`),
     reorder: (boardId: number, columns: Record<number, number[]>) =>
       api.post<{ status: string }>(`${base}/boards/${boardId}/tasks/reorder`, { columns }),
+    reject: (taskId: number, reason: string) => api.post<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}/reject`, { reason }),
+    toggleHidden: (taskId: number) => api.post<{ status: string; is_hidden: boolean }>(`${base}/tasks/${taskId}/toggle-hidden`, {}),
+    attachments: {
+      list: (taskId: number) => api.get<{ attachments: TaskAttachment[] }>(`${base}/tasks/${taskId}/attachments`),
+      upload: (taskId: number, file: File, isPreview = false) => {
+        const fd = new FormData()
+        fd.append("file", file)
+        fd.append("is_preview", String(isPreview))
+        return api.post<{ status: string; attachment: TaskAttachment }>(`${base}/tasks/${taskId}/attachments`, fd as unknown as Record<string, unknown>)
+      },
+      delete: (taskId: number, attachmentId: number) => api.delete<{ status: string }>(`${base}/tasks/${taskId}/attachments/${attachmentId}`),
+    },
+    activity: (taskId: number) => api.get<{ activity: TaskActivity[] }>(`${base}/tasks/${taskId}/activity`),
   },
 
   comments: {

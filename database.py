@@ -240,6 +240,11 @@ def _apply_migrations():
         # original kick/ban/message columns — torpedo strike coordinates,
         # cargo item list, etc. (see routes/dispatch.py's new action types).
         ("server_actions", "payload", "JSON"),
+        # tasks — flexible board permissions, attachments, activity log, hidden/status (items 1-3)
+        ("tasks", "status", 'VARCHAR(20) NOT NULL DEFAULT "review"'),
+        ("tasks", "is_hidden", "TINYINT NOT NULL DEFAULT 0"),
+        ("tasks", "rejection_reason", "VARCHAR(1000)"),
+        ("tasks", "preview_attachment_id", "INT"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:
