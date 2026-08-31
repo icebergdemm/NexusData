@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban,
+  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, Check,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
+import { SearchInput } from "@/components/layout/SearchInput"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
@@ -37,30 +38,61 @@ function copyToClipboard(text: string, label: string) {
 }
 
 function TaskStatusBadge({ status }: { status: TaskStatus }) {
-  return <Badge style={{ backgroundColor: `${STATUS_COLORS[status]}22`, color: STATUS_COLORS[status] }} className="text-[10px]">{STATUS_LABELS[status]}</Badge>
+  return <Badge style={{ backgroundColor: `${STATUS_COLORS[status as TaskStatus]}22`, color: STATUS_COLORS[status as TaskStatus] }} className="text-[10px]">{STATUS_LABELS[status as TaskStatus] ?? status}</Badge>
 }
 
-// ── Board Permissions Dialog ─────────────────────────────────────────────────
+// ── Board Permissions Dialog с поиском ───────────────────────────────────────
 function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: number; open: boolean; onOpenChange: (o: boolean) => void }) {
   const { data: permsData } = useQuery({ queryKey: ["board-perms", boardId], queryFn: () => tasksApi.boards.permissions.get(boardId), enabled: open })
+  const { data: candidates } = useQuery({ queryKey: ["tasks-assignee-candidates"], queryFn: () => tasksApi.assigneeCandidates(), enabled: open })
+  const { data: groupsData } = useQuery({ queryKey: ["admin-groups"], queryFn: () => import("@/lib/api").then(m => m.api.get<{ groups: { id: number; name: string }[] }>("/api/v1/admin/users").then(r => (r as unknown as { groups: { id: number; name: string }[] }).groups ? { groups: (r as unknown as { groups: { id: number; name: string }[] }).groups } : { groups: [] })), enabled: open })
+  // fallback: fetch groups via users endpoint already returns groups, use candidates for admins
   const [rows, setRows] = useState<BoardPermission[]>([])
   const [newType, setNewType] = useState<BoardPermission["grantee_type"]>("user")
-  const [newKey, setNewKey] = useState("")
+  const [searchAdmin, setSearchAdmin] = useState("")
+  const [searchGroup, setSearchGroup] = useState("")
+  const [searchDept, setSearchDept] = useState("")
+  const [selectedAdminId, setSelectedAdminId] = useState("")
+  const [selectedGroupId, setSelectedGroupId] = useState("")
   const [selectedDeptLevel, setSelectedDeptLevel] = useState("")
 
   useEffect(() => { if (permsData) setRows(permsData.permissions) }, [permsData])
+
+  const filteredAdmins = (candidates?.admins ?? []).filter(a => {
+    if (!searchAdmin.trim()) return true
+    const q = searchAdmin.toLowerCase()
+    return (a.name ?? "").toLowerCase().includes(q) || String(a.id).includes(q)
+  }).slice(0, 8)
+
+  const filteredGroups = ((groupsData as unknown as { groups: { id: number; name: string }[] })?.groups ?? candidates?.departments ?? []).filter((g: { id: number; name: string | null }) => {
+    if (!searchGroup.trim()) return true
+    const q = searchGroup.toLowerCase()
+    return (g.name ?? "").toLowerCase().includes(q) || String(g.id).includes(q)
+  }).slice(0, 8) as { id: number; name: string | null }[]
+
+  const filteredDepts = (candidates?.departments ?? []).filter(d => {
+    if (!searchDept.trim()) return true
+    const q = searchDept.toLowerCase()
+    return (d.name ?? "").toLowerCase().includes(q) || String(d.id).includes(q)
+  }).slice(0, 8)
+
   const saveMutation = useMutation({
     mutationFn: () => tasksApi.boards.permissions.set(boardId, rows),
     onSuccess: () => { toast.success("Права сохранены"); onOpenChange(false) },
     onError: (e: Error) => toast.error(e.message),
   })
+
   const addRow = () => {
-    let key = newKey.trim()
-    if (newType === "dept_level") key = selectedDeptLevel
-    if (!key) return
+    let key = ""
+    if (newType === "user") key = selectedAdminId
+    else if (newType === "group_nd") key = selectedGroupId
+    else if (newType === "dept_level") key = selectedDeptLevel
+    if (!key) { toast.error("Выберите значение"); return }
+    if (rows.some(r => r.grantee_type === newType && r.grantee_key === key)) { toast.error("Уже добавлено"); return }
     setRows([...rows, { grantee_type: newType, grantee_key: key, can_view: true, can_create: false, can_edit: false, can_delete: false }])
-    setNewKey(""); setSelectedDeptLevel("")
+    setSelectedAdminId(""); setSelectedGroupId(""); setSelectedDeptLevel("")
   }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
@@ -78,14 +110,49 @@ function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: numb
               </div>
             </div>
           ))}
-          <div className="flex gap-2">
-            <Select value={newType} onValueChange={v => setNewType(v as BoardPermission["grantee_type"])}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="user">Пользователь</SelectItem><SelectItem value="group_nd">Группа ND</SelectItem><SelectItem value="dept_level">Уровень отдела</SelectItem></SelectContent></Select>
-            {newType === "user" && <Input placeholder="admin_id" value={newKey} onChange={e => setNewKey(e.target.value)} className="w-32" />}
-            {newType === "group_nd" && <Input placeholder="group_id" value={newKey} onChange={e => setNewKey(e.target.value)} className="w-32" />}
-            {newType === "dept_level" && <Input placeholder="deptId:levelKey (напр. 3:base)" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="w-48" />}
-            <Button size="sm" onClick={addRow}><Plus className="size-3" /> Добавить</Button>
+          <div className="rounded border p-3 space-y-2 bg-muted/20">
+            <div className="flex gap-2">
+              <Select value={newType} onValueChange={v => setNewType(v as BoardPermission["grantee_type"])}><SelectTrigger className="w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="user">Пользователь</SelectItem><SelectItem value="group_nd">Группа ND</SelectItem><SelectItem value="dept_level">Уровень отдела</SelectItem></SelectContent></Select>
+              <Button size="sm" onClick={addRow}><Plus className="size-3" /> Добавить</Button>
+            </div>
+            {newType === "user" && (
+              <div className="space-y-1">
+                <SearchInput value={searchAdmin} onChange={e => setSearchAdmin(e.target.value)} placeholder="Поиск по нику / DS ID / ID..." className="h-8" />
+                <div className="max-h-28 overflow-y-auto rounded border bg-background">
+                  {filteredAdmins.map(a => (
+                    <button key={a.id} className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent ${selectedAdminId === String(a.id) ? "bg-accent" : ""}`} onClick={() => setSelectedAdminId(String(a.id))}>
+                      <span>{a.name ?? `#${a.id}`} <span className="text-muted-foreground">#{a.id}</span></span>{selectedAdminId === String(a.id) && <Check className="size-3 text-primary" />}
+                    </button>
+                  ))}
+                  {!filteredAdmins.length && <div className="px-2 py-2 text-xs text-muted-foreground">Не найдено</div>}
+                </div>
+              </div>
+            )}
+            {newType === "group_nd" && (
+              <div className="space-y-1">
+                <SearchInput value={searchGroup} onChange={e => setSearchGroup(e.target.value)} placeholder="Поиск группы..." className="h-8" />
+                <div className="max-h-28 overflow-y-auto rounded border bg-background">
+                  {filteredGroups.map((g: { id: number; name: string | null }) => (
+                    <button key={g.id} className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent ${selectedGroupId === String(g.id) ? "bg-accent" : ""}`} onClick={() => setSelectedGroupId(String(g.id))}>
+                      <span>{g.name ?? `#${g.id}`}</span>{selectedGroupId === String(g.id) && <Check className="size-3 text-primary" />}
+                    </button>
+                  ))}
+                  {!filteredGroups.length && <div className="px-2 py-2 text-xs text-muted-foreground">Не найдено</div>}
+                </div>
+              </div>
+            )}
+            {newType === "dept_level" && (
+              <div className="space-y-1">
+                <SearchInput value={searchDept} onChange={e => setSearchDept(e.target.value)} placeholder="Поиск отдела..." className="h-8" />
+                <div className="max-h-28 overflow-y-auto rounded border bg-background">
+                  {filteredDepts.map(d => (
+                    <button key={d.id} className="w-full px-2 py-1.5 text-left text-xs hover:bg-accent" onClick={() => setSelectedDeptLevel(`${d.id}:base`)}>{d.name} <span className="text-muted-foreground">#{d.id}</span></button>
+                  ))}
+                </div>
+                <Input placeholder="deptId:levelKey (напр. 3:base)" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="h-8" />
+              </div>
+            )}
           </div>
-          <div className="text-[11px] text-muted-foreground">Подсказка: ID пользователя/группы можно взять из «Пользователи ND» или API. Уровень отдела — вид `department_id:level_key`.</div>
         </div>
         <DialogFooter><Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>Сохранить</Button></DialogFooter>
       </DialogContent>
@@ -93,15 +160,17 @@ function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: numb
   )
 }
 
-// ── Task Card ───────────────────────────────────────────────────────────────────
-function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId }: {
+// ── Task Card (без тегов, с анимацией) ───────────────────────────────────────
+function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
   task: TaskRow
   onOpen: () => void
   onDragStart: (e: React.DragEvent) => void
   onDeleted: () => void
   boardId: number
+  columns: TaskColumnRow[]
 }) {
   const overdue = isOverdue(task)
+  const queryClient = useQueryClient()
   const copyLink = () => {
     const url = `${window.location.origin}/tasks/${boardId}?task=${task.id}`
     copyToClipboard(url, "Ссылка на задачу")
@@ -111,21 +180,34 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId }: {
     onSuccess: onDeleted,
     onError: (e: Error) => toast.error(e.message),
   })
+  const toggleUrgent = () => {
+    const newPriority = task.priority === "urgent" ? null : "urgent" as TaskPriority
+    tasksApi.tasks.update(task.id, { priority: newPriority }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }))
+  }
+
+  const moveActions = columns.filter(c => c.id !== task.column_id).map(c => ({
+    label: `Переместить → ${c.name}`,
+    icon: GripVertical,
+    onSelect: () => tasksApi.tasks.update(task.id, { column_id: c.id }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })),
+  }))
 
   return (
     <AppContextMenu
       actions={[
         { label: "Открыть", icon: Pencil, onSelect: onOpen },
-        { label: "Копировать ссылку", icon: Link2, onSelect: copyLink },
         { label: "Копировать название", icon: Copy, onSelect: () => copyToClipboard(task.title, "Название") },
-        { label: "Удалить", icon: Trash2, destructive: true, separatorBefore: true, onSelect: () => deleteMutation.mutate() },
+        ...moveActions.slice(0, 5),
+        { label: task.priority === "urgent" ? "Снять высокий приоритет" : "Выделить высоким приоритетом", icon: Flag, onSelect: toggleUrgent, separatorBefore: true },
+        { label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : EyeOff, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) },
+        { label: "Отклонить с причиной", icon: Ban, onSelect: () => { const r = prompt("Причина отклонения:"); if (r) tasksApi.tasks.reject(task.id, r).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) }, separatorBefore: true, destructive: true },
+        { label: "Удалить", icon: Trash2, destructive: true, onSelect: () => deleteMutation.mutate() },
       ]}
     >
     <Card
       draggable
       onDragStart={onDragStart}
       onClick={onOpen}
-      className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-95 ${task.is_hidden ? "opacity-60 border-dashed" : ""}`}
+      className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-[0.98] data-[dragging=true]:opacity-50 ${task.is_hidden ? "opacity-60 border-dashed" : ""} ${task.priority === "urgent" ? "ring-1 ring-urgent/30" : ""}`}
     >
       {task.preview_url && <img src={task.preview_url} alt="" className="h-28 w-full object-cover" />}
       <CardContent className="space-y-1.5 p-3">
@@ -134,10 +216,10 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId }: {
           {task.is_hidden && <Badge variant="outline" className="text-[10px] border-warning/40 text-warning shrink-0">скрыта</Badge>}
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          {task.status && <TaskStatusBadge status={task.status} />}
+          <TaskStatusBadge status={task.status} />
           {task.priority && <Badge style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className="text-[10px]">{PRIORITY_LABELS[task.priority]}</Badge>}
-          {task.tags.slice(0, 2).map((t) => <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>)}
           {task.attachment_count > 0 && <Badge variant="outline" className="gap-1 text-[10px]"><ImageIcon className="size-3" />{task.attachment_count}</Badge>}
+          {task.rejection_reason && <Badge variant="outline" className="text-[10px] border-destructive/40 text-destructive">отклонена</Badge>}
         </div>
         {(task.assignee_admin_name || task.assignee_department_name) && (
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -163,7 +245,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId }: {
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
-function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, boardId }: {
+function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, boardId, allColumns }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
@@ -175,6 +257,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   onCreateTask: (columnId: number, title: string) => void
   onTaskDeleted: () => void
   boardId: number
+  allColumns: TaskColumnRow[]
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
@@ -220,6 +303,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             key={t.id}
             task={t}
             boardId={boardId}
+            columns={allColumns}
             onOpen={() => onOpenTask(t.id)}
             onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
             onDeleted={onTaskDeleted}
@@ -252,25 +336,27 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   )
 }
 
-// ── Task Detail Dialog (center, chat remains interactive) ───────────────────────
+// ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
 function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDeleteAll, currentAdminId, boardId }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
-  candidates?: import("./api").AssigneeCandidates
+  candidates?: AssigneeCandidates
   canEditAll: boolean
   canDeleteAll: boolean
   currentAdminId: number | undefined
   boardId: number
+  allTasks?: TaskRow[]
 }) {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [tagInput, setTagInput] = useState("")
   const [commentText, setCommentText] = useState("")
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState("")
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data: activityData } = useQuery({ queryKey: ["task-activity", taskId], queryFn: () => tasksApi.tasks.activity(taskId as number), enabled: !!taskId })
   const { data: attachmentsData } = useQuery({ queryKey: ["task-attachments", taskId], queryFn: () => tasksApi.tasks.attachments.list(taskId as number), enabled: !!taskId })
@@ -321,11 +407,13 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
     onError: (e: Error) => toast.error(e.message),
   })
 
-  const uploadMutation = useMutation({
-    mutationFn: (file: File) => tasksApi.tasks.attachments.upload(taskId as number, file, false),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["task-attachments", taskId] }); invalidateBoard(); toast.success("Файл прикреплён") },
-    onError: (e: Error) => toast.error(e.message),
-  })
+  const uploadFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files as unknown as File[])
+    for (const f of list) {
+      try { await tasksApi.tasks.attachments.upload(taskId as number, f, false); toast.success(`${f.name} прикреплён`) } catch (e: unknown) { toast.error((e as Error).message) }
+    }
+    queryClient.invalidateQueries({ queryKey: ["task-attachments", taskId] }); invalidateBoard()
+  }
 
   const setPreviewMutation = useMutation({
     mutationFn: (attachmentId: number | null) => tasksApi.tasks.update(taskId as number, { preview_attachment_id: attachmentId }),
@@ -339,14 +427,6 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
   }
 
   if (!task) return null
-
-  const addTag = () => {
-    const tag = tagInput.trim()
-    if (!tag || task.tags.includes(tag)) { setTagInput(""); return }
-    updateMutation.mutate({ tags: [...task.tags, tag] })
-    setTagInput("")
-  }
-  const removeTag = (tag: string) => updateMutation.mutate({ tags: task.tags.filter((t) => t !== tag) })
 
   return (
     <>
@@ -366,7 +446,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
           <DialogDescription className="flex flex-wrap gap-1">
             <TaskStatusBadge status={task.status} />
             {task.is_hidden && <Badge variant="outline" className="border-warning/40 text-warning">скрыта</Badge>}
-            {task.rejection_reason && <span className="text-xs text-destructive">Причина отклонения: {task.rejection_reason}</span>}
+            {task.rejection_reason && <span className="text-xs text-destructive">Отклонена: {task.rejection_reason}</span>}
           </DialogDescription>
         </DialogHeader>
 
@@ -434,25 +514,6 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
                 ))}
               </SelectContent>
             </Select>
-
-            <span className="pt-1 text-muted-foreground">Теги</span>
-            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-              {task.tags.map((t) => (
-                <Badge key={t} variant="secondary" className="gap-1 text-[10px]">
-                  {t}
-                  {canEditThis && <button onClick={() => removeTag(t)}><X className="size-3" /></button>}
-                </Badge>
-              ))}
-              {canEditThis && (
-                <Input
-                  value={tagInput}
-                  onChange={(e) => setTagInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addTag()}
-                  placeholder="+ тег"
-                  className="h-6 w-20 text-xs"
-                />
-              )}
-            </div>
           </div>
 
           <div>
@@ -467,17 +528,27 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
             />
           </div>
 
-          {/* Attachments */}
+          {/* Большое поле для скриншотов/файлов */}
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground flex items-center gap-1"><Paperclip className="size-3" /> Скриншоты / файлы</Label>
-            <div className="flex gap-2">
-              <Input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadMutation.mutate(f) }} className="text-xs" disabled={!canEditThis} />
-              <Button size="sm" variant="outline" onClick={() => document.getElementById(`file-paste-${taskId}`)?.click()} disabled={!canEditThis}>Вставить из буфера</Button>
+            <Label className="text-xs text-muted-foreground flex items-center gap-1"><Paperclip className="size-3" /> Скриншоты / файлы — перетащите или нажмите</Label>
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files) }}
+              onPaste={(e) => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); uploadFiles(files as unknown as FileList) } }}
+              onClick={() => fileInputRef.current?.click()}
+              className={`flex min-h-32 cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-4 text-center transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-muted-foreground/30 bg-muted/20 hover:bg-muted/30"}`}
+            >
+              <ImageIcon className="size-8 text-muted-foreground" />
+              <div className="text-sm">Перетащите файл или картинку сюда</div>
+              <div className="text-xs text-muted-foreground">или нажмите для выбора · поддерживается Ctrl+V</div>
+              <div className="text-[11px] text-muted-foreground">PNG, JPG, PDF до 10 MB</div>
             </div>
+            <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.txt,.log" className="hidden" onChange={(e) => { if (e.target.files?.length) uploadFiles(e.target.files) }} />
             <div className="grid grid-cols-3 gap-2">
               {(attachmentsData?.attachments ?? []).map((att) => (
                 <div key={att.id} className={`relative rounded border overflow-hidden group ${task.preview_attachment_id === att.id ? "ring-2 ring-primary" : ""}`}>
-                  {att.mime_type?.startsWith("image/") ? <img src={att.url} alt={att.filename} className="h-24 w-full object-cover" /> : <div className="h-24 flex items-center justify-center bg-muted text-xs">{att.filename}</div>}
+                  {att.mime_type?.startsWith("image/") ? <img src={att.url} alt={att.filename} className="h-24 w-full object-cover" /> : <div className="h-24 flex items-center justify-center bg-muted text-xs p-1 text-center">{att.filename}</div>}
                   <div className="absolute inset-0 hidden group-hover:flex items-center justify-center gap-1 bg-black/40">
                     <Button size="icon-xs" variant="secondary" onClick={() => setPreviewMutation.mutate(att.id)} title="Сделать превью"><Star className="size-3" /></Button>
                     <Button size="icon-xs" variant="secondary" onClick={() => window.open(att.url, "_blank")} title="Открыть"><Eye className="size-3" /></Button>
@@ -489,7 +560,6 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
             </div>
           </div>
 
-          {/* Actions: reject / hide */}
           <div className="flex flex-wrap gap-2">
             {canEditThis && (
               <>
@@ -504,23 +574,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
             )}
           </div>
 
-          {/* Activity log */}
-          <div className="space-y-2 border-t pt-3">
-            <Label className="text-xs text-muted-foreground">История действий</Label>
-            <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
-              {(activityData?.activity ?? []).map((a) => (
-                <div key={a.id} className="flex gap-2 text-xs rounded bg-muted/30 px-2 py-1">
-                  <span className="font-medium shrink-0">{a.admin_name ?? "Система"}</span>
-                  <span className="text-muted-foreground">{a.action}</span>
-                  {a.detail && <span className="truncate">— {a.detail}</span>}
-                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{a.created_at ? formatBrowserDate(a.created_at) : ""}</span>
-                </div>
-              ))}
-              {!activityData?.activity.length && <div className="text-xs text-muted-foreground text-center py-2">Нет записей</div>}
-            </div>
-          </div>
-
-          <div className="space-y-2 border-t pt-3">
+          <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Комментарии</Label>
             {commentsData?.comments.map((c) => (
               <div key={c.id} className="rounded-md border p-2 text-sm">
@@ -541,6 +595,22 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
             <div className="flex gap-2">
               <Textarea rows={2} value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Написать комментарий..." />
               <Button size="sm" disabled={!commentText.trim()} onClick={() => addCommentMutation.mutate(commentText.trim())}>Отправить</Button>
+            </div>
+          </div>
+
+          {/* Логи в самом низу */}
+          <div className="space-y-2 border-t pt-3">
+            <Label className="text-xs text-muted-foreground">История действий — лог</Label>
+            <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+              {(activityData?.activity ?? []).map((a) => (
+                <div key={a.id} className="flex gap-2 text-xs rounded bg-muted/30 px-2 py-1">
+                  <span className="font-medium shrink-0">{a.admin_name ?? "Система"}</span>
+                  <span className="text-muted-foreground">{a.action}</span>
+                  {a.detail && <span className="truncate">— {a.detail}</span>}
+                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0">{a.created_at ? formatBrowserDate(a.created_at) : ""}</span>
+                </div>
+              ))}
+              {!activityData?.activity.length && <div className="text-xs text-muted-foreground text-center py-2">Нет записей</div>}
             </div>
           </div>
         </div>
@@ -569,8 +639,8 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
   )
 }
 
-// ── Board Chat (п.5) ─────────────────────────────────────────────────────────
-function BoardChat({ boardId }: { boardId: number }) {
+// ── Board Chat (закрывающийся сайдбар, скриншоты, якоря с названием) ─────────
+function BoardChat({ boardId, tasks, onClose }: { boardId: number; tasks: TaskRow[]; onClose?: () => void }) {
   const [input, setInput] = useState("")
   const [replyTo, setReplyTo] = useState<number | null>(null)
   const [showPinned, setShowPinned] = useState(true)
@@ -579,6 +649,7 @@ function BoardChat({ boardId }: { boardId: number }) {
   const { data, refetch } = useQuery({ queryKey: ["board-chat", boardId], queryFn: () => tasksApi.boards.chat.list(boardId, { limit: 50 }), refetchInterval: 5000 })
   const messages = data?.messages ?? []
   const pinned = data?.pinned ?? []
+  const taskMap = new Map(tasks.map(t => [t.id, t]))
 
   const sendMutation = useMutation({
     mutationFn: async () => {
@@ -588,7 +659,6 @@ function BoardChat({ boardId }: { boardId: number }) {
       if (replyTo) fd.append("reply_to_id", String(replyTo))
       const files = fileRef.current?.files
       if (files) for (let i = 0; i < files.length; i++) fd.append("files", files[i])
-      // if no files, fallback to json endpoint
       if (!files || files.length === 0) {
         return tasksApi.boards.chat.sendJson(boardId, { content: input.trim(), reply_to_id: replyTo })
       }
@@ -599,17 +669,22 @@ function BoardChat({ boardId }: { boardId: number }) {
   })
 
   const renderContent = (text: string) => {
-    // task://123 или #task-123 или ссылка /tasks/:boardId?task=:id
-    const parts = text.split(/(task:\/\/\d+|#task-\d+|https?:\/\/[^\s]+\/tasks\/\d+\?task=\d+)/g)
+    const parts = text.split(/(task:\/\/\d+|#task-\d+|https?:\/\/[^\s]+\/tasks\/\d+\?task=\d+|#\d+)/g)
     return parts.map((p, i) => {
-      const m = p.match(/task:\/\/(\d+)|#task-(\d+)/)
-      const taskId = m ? (m[1] || m[2]) : null
+      const m = p.match(/task:\/\/(\d+)|#task-(\d+)|#(\d+)/)
+      let taskId: string | null = null
+      if (m) taskId = m[1] || m[2] || m[3]
+      else {
+        const u = p.match(/task=(\d+)/)
+        if (u) taskId = u[1]
+      }
       if (taskId) {
-        return <a key={i} href={`?task=${taskId}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("open-task", { detail: Number(taskId) })) }} className="rounded bg-primary/15 px-1 py-0.5 font-mono text-xs text-primary hover:underline">#{taskId}</a>
+        const t = taskMap.get(Number(taskId))
+        const label = t ? `${t.title.slice(0, 24)}` : `#${taskId}`
+        const emoji = t ? (t.priority === "urgent" ? "🔥 " : t.status === "done" ? "✅ " : "📋 ") : "🔗 "
+        return <a key={i} href={`?task=${taskId}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("open-task", { detail: Number(taskId) })) }} className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-xs text-primary hover:underline">{emoji}{label}</a>
       }
       if (p.startsWith("http")) {
-        const u = p.match(/task=(\d+)/)
-        if (u) return <a key={i} href={p} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("open-task", { detail: Number(u[1]) })) }} className="text-primary underline">{p}</a>
         return <a key={i} href={p} target="_blank" rel="noreferrer" className="text-primary underline">{p}</a>
       }
       return <span key={i}>{p}</span>
@@ -617,12 +692,13 @@ function BoardChat({ boardId }: { boardId: number }) {
   }
 
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col border-l bg-card">
+    <div className="flex h-[calc(100vh-4rem)] w-80 shrink-0 flex-col border-l bg-card sticky top-4 self-start">
       <div className="flex items-center justify-between border-b p-2">
         <span className="text-sm font-semibold flex items-center gap-1.5"><MessageSquare className="size-4" /> Чат доски</span>
         <div className="flex gap-1">
           <Button size="icon-xs" variant="ghost" onClick={() => refetch()} title="Обновить">↻</Button>
           <Button size="icon-xs" variant="ghost" onClick={() => setShowPinned(!showPinned)} title={showPinned ? "Скрыть закрепы" : "Показать закрепы"}>{showPinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}</Button>
+          {onClose && <Button size="icon-xs" variant="ghost" onClick={onClose} title="Закрыть чат"><X className="size-3.5" /></Button>}
         </div>
       </div>
       {showPinned && pinned.length > 0 && (
@@ -656,23 +732,21 @@ function BoardChat({ boardId }: { boardId: number }) {
       </div>
       {replyTo && <div className="flex items-center justify-between bg-muted px-2 py-1 text-xs"><span>Ответ на #{replyTo}</span><Button size="icon-xs" variant="ghost" onClick={() => setReplyTo(null)}><X className="size-3" /></Button></div>}
       <div className="border-t p-2 flex gap-1">
-        <Input type="file" ref={fileRef} multiple accept="image/*,.pdf,.txt,.log" className="hidden" onChange={() => {}} />
-        <Button size="icon-sm" variant="ghost" onClick={() => fileRef.current?.click()} title="Файлы/скриншоты"><Paperclip className="size-4" /></Button>
+        <Input type="file" ref={fileRef} multiple accept="image/*,.pdf,.txt,.log" className="hidden" />
+        <Button size="icon-sm" variant="ghost" onClick={() => fileRef.current?.click()} title="Файлы"><Paperclip className="size-4" /></Button>
         <Textarea
           rows={1}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMutation.mutate() } }}
           onPaste={(e) => {
-            const items = e.clipboardData.items
-            for (const it of items) if (it.type.startsWith("image/")) {
-              const file = it.getAsFile()
-              if (file && fileRef.current) {
-                const dt = new DataTransfer()
-                dt.items.add(file)
-                fileRef.current.files = dt.files
-                toast.success("Скриншот из буфера добавлен")
-              }
+            const files = Array.from(e.clipboardData.files)
+            if (files.length && fileRef.current) {
+              e.preventDefault()
+              const dt = new DataTransfer()
+              files.forEach(f => dt.items.add(f))
+              fileRef.current.files = dt.files
+              toast.success("Файл из буфера добавлен — отправьте сообщением")
             }
           }}
           placeholder="Сообщение... (task://123 — якорь)"
@@ -699,6 +773,7 @@ export function TaskBoardPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [showHidden, setShowHidden] = useState(false)
   const [permsOpen, setPermsOpen] = useState(false)
+  const [chatOpen, setChatOpen] = useState(true)
 
   const boardIdNum = Number(boardId)
 
@@ -779,7 +854,7 @@ export function TaskBoardPage() {
   const selectedTask = data.tasks.find((t) => t.id === selectedTaskId)
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
+    <div className="flex h-[calc(100vh-4rem)] gap-3">
       <div className="flex flex-1 flex-col min-w-0">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -795,6 +870,7 @@ export function TaskBoardPage() {
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1.5 text-xs"><Switch checked={showHidden} onCheckedChange={setShowHidden} /> Показывать скрытые</label>
             <Button variant="outline" size="sm" onClick={() => setPermsOpen(true)}><Shield className="size-4" /> Права</Button>
+            <Button variant={chatOpen ? "secondary" : "outline"} size="sm" onClick={() => setChatOpen(!chatOpen)}><MessageSquare className="size-4" /> {chatOpen ? "Скрыть чат" : "Чат"}</Button>
             {data.can_manage_boards && (
               <>
                 <Button variant="outline" size="sm" onClick={() => setAddColumnOpen(true)}><Plus className="size-4" /> Колонка</Button>
@@ -819,6 +895,7 @@ export function TaskBoardPage() {
               onCreateTask={(columnId, title) => createTaskMutation.mutate({ columnId, title })}
               onTaskDeleted={invalidate}
               boardId={boardIdNum}
+              allColumns={data.columns}
             />
           ))}
           {!data.columns.length && (
@@ -827,8 +904,7 @@ export function TaskBoardPage() {
         </div>
       </div>
 
-      {/* Chat справа */}
-      <BoardChat boardId={boardIdNum} />
+      {chatOpen && <BoardChat boardId={boardIdNum} tasks={data.tasks} onClose={() => setChatOpen(false)} />}
 
       {/* Task detail по центру, чат остаётся интерактивным */}
       <TaskDetailDialog
@@ -881,7 +957,8 @@ export function TaskBoardPage() {
   )
 }
 
-// ── Reused dialogs from original (ColumnForm, BoardSettings) ─────────────────
+// ── Reused dialogs ─────────────────
+
 function ColumnFormDialog({ open, onOpenChange, initial, onSubmit, title }: {
   open: boolean
   onOpenChange: (open: boolean) => void

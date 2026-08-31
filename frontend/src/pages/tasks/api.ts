@@ -1,7 +1,7 @@
 import { api } from "@/lib/api"
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent"
-export type TaskStatus = "review" | "in_progress" | "done" | "rejected"
+export type TaskStatus = "review" | "in_progress" | "done"
 
 export const PRIORITY_LABELS: Record<TaskPriority, string> = {
   low: "Низкий",
@@ -21,14 +21,12 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
   review: "Рассмотрение",
   in_progress: "В работе",
   done: "Завершено",
-  rejected: "Отклонено",
 }
 
 export const STATUS_COLORS: Record<TaskStatus, string> = {
   review: "#8B9ECF",
   in_progress: "#3B82F6",
   done: "#22C55E",
-  rejected: "#EF4444",
 }
 
 export interface TaskBoardRow {

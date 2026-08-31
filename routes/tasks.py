@@ -830,7 +830,7 @@ async def api_reject_task(task_id: int, request: Request, db: Session = Depends(
     reason = (body.get("reason") or "").strip()
     if not reason:
         raise HTTPException(status_code=400, detail="Укажите причину отклонения")
-    task.status = "rejected"
+    # п.5: отклонено — состояние (is_hidden + rejection_reason), а не статус
     task.is_hidden = True
     task.rejection_reason = reason[:1000]
     db.commit()
