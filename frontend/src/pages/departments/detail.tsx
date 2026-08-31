@@ -623,8 +623,9 @@ function CreateAccessLevelDialog({ open, onOpenChange, department, isSuperuser }
             </div>
           )}
           <div>
-            <Label className="mb-1.5 block">ID роли Discord</Label>
-            <Input value={roleId} onChange={(e) => setRoleId(e.target.value)} placeholder="123456789012345678" />
+            <Label className="mb-1.5 block">ID роли Discord <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
+            <Input value={roleId} onChange={(e) => setRoleId(e.target.value)} placeholder="123456789012345678 — оставьте пустым для ручной выдачи" />
+            <p className="mt-1 text-[11px] text-muted-foreground">Без роли уровень выдаётся только вручную через «Участники» и не синхронизируется с Discord.</p>
           </div>
         </div>
         <DialogFooter>
@@ -690,9 +691,9 @@ function EditAccessLevelDialog({ open, onOpenChange, department, level, isSuperu
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Название уровня" />
           </div>
           <div>
-            <Label className="mb-1.5 block">ID роли Discord</Label>
-            <Input value={roleId} onChange={(e) => setRoleId(e.target.value)} placeholder="123456789012345678" />
-            <p className="mt-1 text-[11px] text-muted-foreground">Оставьте пустым, чтобы отвязать роль Discord от уровня.</p>
+            <Label className="mb-1.5 block">ID роли Discord <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
+            <Input value={roleId} onChange={(e) => setRoleId(e.target.value)} placeholder="123456789012345678 — пусто = ручной уровень без синхронизации" />
+            <p className="mt-1 text-[11px] text-muted-foreground">Без роли уровень выдаётся только вручную и не синхронизируется с Discord.</p>
           </div>
           {isSuperuser && (
             <div>
@@ -1049,35 +1050,55 @@ export function DepartmentDetailPage() {
                   <Button size="xs" variant="outline" onClick={() => setCreateLevelOpen(true)}><Plus className="size-3.5" /> Уровень</Button>
                 )}
               </div>
-              {data.access_levels.length ? (
-                <div className="flex flex-col gap-1.5">
-                  {data.access_levels.map((l) => (
-                    <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                      <span className="flex items-center gap-1.5">
-                        {(l.kind === "head" || l.kind === "deputy_head") && <Crown className="size-3.5 text-primary" />}
-                        {l.name}
-                        <Badge variant="secondary" className="text-[10px]">{l.kind}</Badge>
-                        {l.discord_role_id && <span className="font-mono text-xs text-muted-foreground">{l.discord_role_id}</span>}
-                      </span>
-                      {canManage && (
-                        <div className="flex items-center gap-1">
-                          <Button size="icon-xs" variant="ghost" onClick={() => setEditLevelTarget(l)} title="Переименовать / сменить роль и тип">
-                            <Pencil className="size-3.5" />
-                          </Button>
-                          <Button size="icon-xs" variant="ghost" onClick={() => setPermsTarget(l)} title="Настроить права">
-                            <Settings2 className="size-3.5" />
-                          </Button>
-                          {isSuperuser && l.kind !== "base" && (
-                            <Button size="icon-xs" variant="ghost" className="text-destructive" onClick={() => setDeleteLevelTarget(l)} title="Удалить уровень">
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          )}
-                        </div>
+              {data.access_levels.length ? (() => {
+                const withRole = data.access_levels.filter((l) => !!l.discord_role_id)
+                const manual = data.access_levels.filter((l) => !l.discord_role_id)
+                const renderRow = (l: DepartmentAccessLevel, manualOnly: boolean) => (
+                  <div key={l.id} className={`flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-sm ${manualOnly ? "border-dashed border-warning/30 bg-warning/5" : ""}`}>
+                    <span className="flex items-center gap-1.5">
+                      {(l.kind === "head" || l.kind === "deputy_head") && <Crown className="size-3.5 text-primary" />}
+                      {l.name}
+                      <Badge variant="secondary" className="text-[10px]">{l.kind}</Badge>
+                      {l.discord_role_id ? (
+                        <span className="font-mono text-xs text-muted-foreground">{l.discord_role_id}</span>
+                      ) : (
+                        <Badge variant="outline" className="border-warning/30 bg-warning/10 text-[10px] text-warning" title="Без Discord-роли — выдаётся только вручную">ручной · без роли</Badge>
                       )}
+                    </span>
+                    {canManage && (
+                      <div className="flex items-center gap-1">
+                        <Button size="icon-xs" variant="ghost" onClick={() => setEditLevelTarget(l)} title="Переименовать / сменить роль и тип">
+                          <Pencil className="size-3.5" />
+                        </Button>
+                        <Button size="icon-xs" variant="ghost" onClick={() => setPermsTarget(l)} title="Настроить права">
+                          <Settings2 className="size-3.5" />
+                        </Button>
+                        {isSuperuser && l.kind !== "base" && (
+                          <Button size="icon-xs" variant="ghost" className="text-destructive" onClick={() => setDeleteLevelTarget(l)} title="Удалить уровень">
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+                return (
+                <div className="space-y-3">
+                  {withRole.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-[11px] font-medium text-muted-foreground">С привязкой к Discord-роли · синхронизируются автоматически</div>
+                      <div className="flex flex-col gap-1.5">{withRole.map((l) => renderRow(l, false))}</div>
                     </div>
-                  ))}
+                  )}
+                  {manual.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-[11px] font-medium text-warning">Ручные · без Discord-роли — выдаются только вручную</div>
+                      <div className="flex flex-col gap-1.5">{manual.map((l) => renderRow(l, true))}</div>
+                    </div>
+                  )}
                 </div>
-              ) : (
+                )
+              })() : (
                 <p className="text-sm text-muted-foreground">Уровней пока нет.</p>
               )}
             </CardContent>
