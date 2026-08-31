@@ -151,28 +151,42 @@ function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: numb
               </div>
             )}
             {newType === "dept_level" && (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {!deptLevelDeptId ? (
                   <>
-                    <SearchInput value={searchDept} onChange={e => setSearchDept(e.target.value)} placeholder="Поиск отдела..." className="h-8" />
-                    <div className="max-h-32 overflow-y-auto rounded border bg-background">
+                    <SearchInput value={searchDept} onChange={e => setSearchDept(e.target.value)} placeholder="Поиск отдела по названию..." className="h-8" />
+                    <div className="grid max-h-40 grid-cols-1 gap-1.5 overflow-y-auto pr-1">
                       {filteredDepts.map(d => (
-                        <button key={d.id} className="flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent" onClick={() => setDeptLevelDeptId(d.id)}>
-                          <span>{d.name} <span className="text-muted-foreground">#{d.id}</span></span><span className="text-muted-foreground">→</span>
+                        <button
+                          key={d.id}
+                          onClick={() => setDeptLevelDeptId(d.id)}
+                          className="flex items-center gap-2.5 rounded-lg border bg-card px-3 py-2 text-left transition-colors hover:border-primary/50 hover:bg-accent"
+                        >
+                          <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
+                            <PlatformIcon value={d.icon} fallback={Building2} className="size-4 text-primary" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-xs font-medium">{d.name}</div>
+                            <div className="text-[11px] text-muted-foreground">ID {d.id} · нажмите для выбора уровня</div>
+                          </div>
+                          <span className="text-muted-foreground">→</span>
                         </button>
                       ))}
-                      {!filteredDepts.length && <div className="px-2 py-2 text-xs text-muted-foreground">Не найдено</div>}
+                      {!filteredDepts.length && <div className="rounded border border-dashed p-4 text-center text-xs text-muted-foreground">Отделы не найдены</div>}
                     </div>
                   </>
                 ) : (
                   <>
-                    <div className="flex items-center gap-2">
-                      <Button size="xs" variant="ghost" onClick={() => { setDeptLevelDeptId(null); setSearchLevel("") }}>← Назад</Button>
-                      <span className="text-xs font-medium">Отдел #{deptLevelDeptId}</span>
-                      {selectedDeptLevel && <Badge variant="secondary" className="text-[10px]">{selectedDeptLevel}</Badge>}
+                    <div className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+                      <Button size="xs" variant="ghost" onClick={() => { setDeptLevelDeptId(null); setSearchLevel("") }} className="h-6 px-2">← Назад</Button>
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <PlatformIcon value={candidates?.departments.find(x => x.id === deptLevelDeptId)?.icon} fallback={Building2} className="size-3.5 text-primary" />
+                        <span className="font-medium">{candidates?.departments.find(x => x.id === deptLevelDeptId)?.name ?? `Отдел #${deptLevelDeptId}`}</span>
+                      </div>
+                      {selectedDeptLevel && <Badge variant="secondary" className="ml-auto font-mono text-[10px]">{selectedDeptLevel}</Badge>}
                     </div>
-                    <SearchInput value={searchLevel} onChange={e => setSearchLevel(e.target.value)} placeholder="Поиск уровня по названию/ключу..." className="h-8" />
-                    <div className="max-h-32 overflow-y-auto rounded border bg-background">
+                    <SearchInput value={searchLevel} onChange={e => setSearchLevel(e.target.value)} placeholder="Поиск уровня по названию, ключу, типу..." className="h-8" />
+                    <div className="grid max-h-48 grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
                       {(deptDetail?.access_levels ?? [])
                         .filter(l => {
                           if (!searchLevel.trim()) return true
@@ -182,17 +196,36 @@ function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: numb
                         .map(l => {
                           const key = `${deptLevelDeptId}:${l.key}`
                           const active = selectedDeptLevel === key
+                          const kindColor: Record<string, string> = { base: "bg-blue-500/15 text-blue-600 border-blue-500/30", qualification: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30", head: "bg-purple-500/15 text-purple-600 border-purple-500/30", deputy_head: "bg-orange-500/15 text-orange-600 border-orange-500/30" }
+                          const kindLabel: Record<string, string> = { base: "Базовый", qualification: "Квалификация", head: "Глава", deputy_head: "Зам. главы" }
                           return (
-                            <button key={l.key} className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent ${active ? "bg-accent" : ""}`} onClick={() => setSelectedDeptLevel(key)}>
-                              <span>{l.name} <span className="text-muted-foreground">({l.key})</span> <Badge variant="outline" className="ml-1 text-[10px]">{l.kind}</Badge></span>
-                              {active && <Check className="size-3 text-primary" />}
+                            <button
+                              key={l.key}
+                              onClick={() => setSelectedDeptLevel(key)}
+                              className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-all hover:shadow-sm ${active ? "border-primary bg-primary/5 ring-1 ring-primary" : "bg-card hover:border-primary/30"}`}
+                            >
+                              <div className="flex w-full items-center justify-between gap-1">
+                                <span className="truncate text-xs font-medium">{l.name}</span>
+                                {active && <Check className="size-3.5 shrink-0 text-primary" />}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="font-mono text-[11px] text-muted-foreground">{l.key}</span>
+                                <Badge variant="outline" className={`text-[10px] ${kindColor[l.kind] ?? ""}`}>{kindLabel[l.kind] ?? l.kind}</Badge>
+                              </div>
                             </button>
                           )
                         })}
-                      {!deptDetail?.access_levels?.length && <div className="px-2 py-2 text-xs text-muted-foreground">Загрузка уровней...</div>}
+                      {!deptDetail?.access_levels?.length && <div className="col-span-2 rounded border border-dashed p-4 text-center text-xs text-muted-foreground">Загрузка уровней...</div>}
                     </div>
-                    <div className="text-[11px] text-muted-foreground">Выбрано: <span className="font-mono">{selectedDeptLevel || "—"}</span></div>
-                    <Input placeholder="или вручную deptId:levelKey" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="h-7 text-xs" />
+                    <div className="flex items-center gap-2 rounded bg-muted/30 px-2 py-1.5">
+                      <span className="text-[11px] text-muted-foreground">Выбрано:</span>
+                      <span className="font-mono text-xs font-medium">{selectedDeptLevel || "— не выбрано —"}</span>
+                      {selectedDeptLevel && <Button size="xs" variant="ghost" className="ml-auto h-5 px-1.5 text-[11px]" onClick={() => setSelectedDeptLevel("")}>Сбросить</Button>}
+                    </div>
+                    <details className="text-[11px]">
+                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Ручной ввод deptId:levelKey</summary>
+                      <Input placeholder="напр. 3:senior_medic" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="mt-1 h-7 font-mono text-xs" />
+                    </details>
                   </>
                 )}
               </div>
