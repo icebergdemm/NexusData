@@ -23,6 +23,7 @@ import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
+import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
@@ -55,8 +56,16 @@ function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: numb
   const [selectedAdminId, setSelectedAdminId] = useState("")
   const [selectedGroupId, setSelectedGroupId] = useState("")
   const [selectedDeptLevel, setSelectedDeptLevel] = useState("")
+  const [deptLevelDeptId, setDeptLevelDeptId] = useState<number | null>(null)
+  const [searchLevel, setSearchLevel] = useState("")
 
   useEffect(() => { if (permsData) setRows(permsData.permissions) }, [permsData])
+
+  const { data: deptDetail } = useQuery({
+    queryKey: ["dept-levels", deptLevelDeptId],
+    queryFn: () => api.get<{ access_levels: { key: string; name: string; kind: string }[] }>(`/api/v1/admin/departments/${deptLevelDeptId}`),
+    enabled: !!deptLevelDeptId && open,
+  })
 
   const filteredAdmins = (candidates?.admins ?? []).filter(a => {
     if (!searchAdmin.trim()) return true
@@ -142,14 +151,50 @@ function BoardPermissionsDialog({ boardId, open, onOpenChange }: { boardId: numb
               </div>
             )}
             {newType === "dept_level" && (
-              <div className="space-y-1">
-                <SearchInput value={searchDept} onChange={e => setSearchDept(e.target.value)} placeholder="Поиск отдела..." className="h-8" />
-                <div className="max-h-28 overflow-y-auto rounded border bg-background">
-                  {filteredDepts.map(d => (
-                    <button key={d.id} className="w-full px-2 py-1.5 text-left text-xs hover:bg-accent" onClick={() => setSelectedDeptLevel(`${d.id}:base`)}>{d.name} <span className="text-muted-foreground">#{d.id}</span></button>
-                  ))}
-                </div>
-                <Input placeholder="deptId:levelKey (напр. 3:base)" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="h-8" />
+              <div className="space-y-2">
+                {!deptLevelDeptId ? (
+                  <>
+                    <SearchInput value={searchDept} onChange={e => setSearchDept(e.target.value)} placeholder="Поиск отдела..." className="h-8" />
+                    <div className="max-h-32 overflow-y-auto rounded border bg-background">
+                      {filteredDepts.map(d => (
+                        <button key={d.id} className="flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent" onClick={() => setDeptLevelDeptId(d.id)}>
+                          <span>{d.name} <span className="text-muted-foreground">#{d.id}</span></span><span className="text-muted-foreground">→</span>
+                        </button>
+                      ))}
+                      {!filteredDepts.length && <div className="px-2 py-2 text-xs text-muted-foreground">Не найдено</div>}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Button size="xs" variant="ghost" onClick={() => { setDeptLevelDeptId(null); setSearchLevel("") }}>← Назад</Button>
+                      <span className="text-xs font-medium">Отдел #{deptLevelDeptId}</span>
+                      {selectedDeptLevel && <Badge variant="secondary" className="text-[10px]">{selectedDeptLevel}</Badge>}
+                    </div>
+                    <SearchInput value={searchLevel} onChange={e => setSearchLevel(e.target.value)} placeholder="Поиск уровня по названию/ключу..." className="h-8" />
+                    <div className="max-h-32 overflow-y-auto rounded border bg-background">
+                      {(deptDetail?.access_levels ?? [])
+                        .filter(l => {
+                          if (!searchLevel.trim()) return true
+                          const q = searchLevel.toLowerCase()
+                          return l.name.toLowerCase().includes(q) || l.key.toLowerCase().includes(q) || l.kind.toLowerCase().includes(q)
+                        })
+                        .map(l => {
+                          const key = `${deptLevelDeptId}:${l.key}`
+                          const active = selectedDeptLevel === key
+                          return (
+                            <button key={l.key} className={`flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-accent ${active ? "bg-accent" : ""}`} onClick={() => setSelectedDeptLevel(key)}>
+                              <span>{l.name} <span className="text-muted-foreground">({l.key})</span> <Badge variant="outline" className="ml-1 text-[10px]">{l.kind}</Badge></span>
+                              {active && <Check className="size-3 text-primary" />}
+                            </button>
+                          )
+                        })}
+                      {!deptDetail?.access_levels?.length && <div className="px-2 py-2 text-xs text-muted-foreground">Загрузка уровней...</div>}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">Выбрано: <span className="font-mono">{selectedDeptLevel || "—"}</span></div>
+                    <Input placeholder="или вручную deptId:levelKey" value={selectedDeptLevel} onChange={e => setSelectedDeptLevel(e.target.value)} className="h-7 text-xs" />
+                  </>
+                )}
               </div>
             )}
           </div>
