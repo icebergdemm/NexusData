@@ -1,6 +1,7 @@
 import logging
 import logging.handlers
 import os
+from copy import copy
 from pathlib import Path
 from config import get_settings
 
@@ -10,13 +11,33 @@ settings = get_settings()
 logs_dir = Path("logs")
 logs_dir.mkdir(exist_ok=True)
 
+class _FailSafeFormatter(logging.Formatter):
+    """Format malformed third-party records without mutating them.
+
+    discord.py appends a captured Python stack to a percent-style log message
+    when its heartbeat is blocked. If a source line in that stack itself
+    contains ``%s``, ``LogRecord.getMessage`` may raise ``TypeError`` and all
+    ordinary handlers print a second noisy "Logging error" traceback. Keep
+    the original record intact for other handlers and preserve its raw data.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        try:
+            return super().format(record)
+        except (TypeError, ValueError):
+            safe_record = copy(record)
+            safe_record.msg = f"{record.msg!s} | args={record.args!r}"
+            safe_record.args = ()
+            return super().format(safe_record)
+
+
 # Форматирование логов
-DETAILED_FORMAT = logging.Formatter(
+DETAILED_FORMAT = _FailSafeFormatter(
     fmt='%(asctime)s | %(name)s | %(levelname)-8s | %(funcName)s:%(lineno)d | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-SIMPLE_FORMAT = logging.Formatter(
+SIMPLE_FORMAT = _FailSafeFormatter(
     fmt='%(levelname)-8s | %(message)s'
 )
 

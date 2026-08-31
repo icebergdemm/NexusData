@@ -15,14 +15,18 @@
 """
 import contextvars
 import logging
+import queue
 import random
+import threading
 import traceback as tb_module
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 MSK = timezone(timedelta(hours=3))
 
 RETENTION_DAYS = 30
+ERROR_QUEUE_MAXSIZE = 512
 
 _request_context: contextvars.ContextVar[Optional[Tuple[str, str]]] = contextvars.ContextVar(
     "error_log_request_context", default=None
@@ -37,46 +41,117 @@ def set_request_context(method: str, path: str) -> None:
     _request_context.set((method, path))
 
 
+@dataclass(frozen=True)
+class _PendingError:
+    level: str
+    logger_name: str
+    message: str
+    traceback: Optional[str]
+    path: Optional[str]
+    method: Optional[str]
+    created_at: datetime
+
+
+_error_queue: "queue.Queue[_PendingError]" = queue.Queue(maxsize=ERROR_QUEUE_MAXSIZE)
+_worker_lock = threading.Lock()
+_worker_started = False
+
+
+def _persist_error(payload: _PendingError) -> None:
+    """Write one queued record outside the request/event-loop thread."""
+    from database import SessionLocal
+    from models import ErrorLogEntry
+
+    db = SessionLocal()
+    try:
+        db.add(ErrorLogEntry(
+            level=payload.level,
+            logger_name=payload.logger_name,
+            message=payload.message,
+            traceback=payload.traceback,
+            path=payload.path,
+            method=payload.method,
+            created_at=payload.created_at,
+        ))
+        db.commit()
+        if random.random() < 1 / 500:
+            prune_old(db)
+    except Exception:
+        db.rollback()
+        # Never log from the logging sink itself: that would recurse back into
+        # DatabaseErrorHandler while the database is already unavailable.
+    finally:
+        db.close()
+
+
+def _error_writer_loop() -> None:
+    while True:
+        payload = _error_queue.get()
+        try:
+            _persist_error(payload)
+        except Exception:
+            # Imports/startup failures must not terminate the only consumer.
+            pass
+        finally:
+            _error_queue.task_done()
+
+
+def _ensure_worker() -> None:
+    global _worker_started
+    if _worker_started:
+        return
+    with _worker_lock:
+        if _worker_started:
+            return
+        threading.Thread(
+            target=_error_writer_loop,
+            name="nexus-error-log-writer",
+            daemon=True,
+        ).start()
+        _worker_started = True
+
+
+def _safe_record_message(record: logging.LogRecord) -> str:
+    try:
+        return record.getMessage()
+    except Exception:
+        # Some third-party records embed percent signs from a captured stack
+        # in their format string. Preserve the evidence without mutating the
+        # shared LogRecord seen by console/file handlers.
+        return f"{record.msg!s} | args={record.args!r}"
+
+
 class DatabaseErrorHandler(logging.Handler):
     """Персистирует ERROR/CRITICAL записи в error_log_entries.
 
-    КРИТИЧНО: emit() глушит абсолютно любое собственное исключение молча —
-    никогда logger.error/exception отсюда. Если этого не сделать, сбой самой
-    записи в БД (недоступна, таблицы ещё нет при первом старте до init_db()
-    и т.п.) уйдёт в тот же логгер, на который подписан этот же handler —
-    прямая бесконечная рекурсия/лавина логов вместо одной тихо пропущенной
-    записи."""
+    ``emit`` никогда не обращается к БД: он только складывает неизменяемый
+    снимок записи в ограниченную очередь. Иначе исчерпание SQLAlchemy pool
+    блокирует event loop на ``pool_timeout`` прямо во время обработки исходной
+    ошибки и превращает временный сбой БД в полное зависание сайта.
+
+    Очередь fail-open: при переполнении диагностическая строка пропускается,
+    но запросы, Discord heartbeat и игровой API продолжают работать."""
 
     def __init__(self):
         super().__init__(level=logging.ERROR)
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            from database import SessionLocal
-            from models import ErrorLogEntry
-
             method, path = _request_context.get() or (None, None)
-            entry = ErrorLogEntry(
+            payload = _PendingError(
                 level=record.levelname,
                 logger_name=record.name,
-                message=record.getMessage()[:8000],
+                message=_safe_record_message(record)[:8000],
                 traceback=self._format_traceback(record),
                 path=path,
                 method=method,
                 created_at=_now_msk(),
             )
-            db = SessionLocal()
             try:
-                db.add(entry)
-                db.commit()
-                # Лёгкая ротация без отдельного воркера: на каждую ~500-ю
-                # вставку заодно подчищаем то, что старше RETENTION_DAYS.
-                # Вероятностно, а не "каждый раз count()" — не добавлять
-                # лишний SELECT на горячий путь логирования ошибок.
-                if random.random() < 1 / 500:
-                    prune_old(db)
-            finally:
-                db.close()
+                _error_queue.put_nowait(payload)
+            except queue.Full:
+                return
+            _ensure_worker()
         except Exception:
             pass  # см. докстринг класса
 

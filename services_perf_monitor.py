@@ -29,9 +29,11 @@
 """
 import logging
 import os
+import queue
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, Optional
 
@@ -47,6 +49,7 @@ HIGH_MEMORY_THRESHOLD_PCT = 90.0     # системная RAM
 
 RETENTION_DAYS = 14
 HISTORY_MAXLEN = 240                 # ~2 часа при сэмплировании раз в 30с
+ANOMALY_QUEUE_MAXSIZE = 256
 
 # Раз в COOLDOWN_SECONDS[kind] на уникальный ключ источника — не даёт одной
 # и той же аномалии (например, устойчиво высокой нагрузке) плодить сотни
@@ -68,6 +71,21 @@ _history: Deque[Dict[str, Any]] = deque(maxlen=HISTORY_MAXLEN)
 _latest_event_loop_lag_ms: float = 0.0
 
 
+@dataclass(frozen=True)
+class _PendingAnomaly:
+    kind: str
+    value: float
+    path: Optional[str]
+    method: Optional[str]
+    detail: Optional[str]
+    created_at: datetime
+
+
+_anomaly_queue: "queue.Queue[_PendingAnomaly]" = queue.Queue(maxsize=ANOMALY_QUEUE_MAXSIZE)
+_anomaly_worker_lock = threading.Lock()
+_anomaly_worker_started = False
+
+
 def _now_msk() -> datetime:
     return datetime.now(tz=MSK).replace(tzinfo=None)
 
@@ -83,29 +101,80 @@ def _should_record(key: str, kind: str) -> bool:
     return True
 
 
+def _persist_anomaly(payload: _PendingAnomaly) -> None:
+    from database import SessionLocal
+    from models import PerfAnomaly
+
+    db = SessionLocal()
+    try:
+        db.add(PerfAnomaly(
+            kind=payload.kind,
+            value=payload.value,
+            path=payload.path,
+            method=payload.method,
+            detail=payload.detail,
+            created_at=payload.created_at,
+        ))
+        db.commit()
+        import random
+        if random.random() < 1 / 200:
+            _prune_old(db)
+    except Exception:
+        db.rollback()
+        # Diagnostics are fail-open. Logging here would feed the database
+        # error handler and create a recursive error storm during an outage.
+    finally:
+        db.close()
+
+
+def _anomaly_writer_loop() -> None:
+    while True:
+        payload = _anomaly_queue.get()
+        try:
+            _persist_anomaly(payload)
+        except Exception:
+            pass
+        finally:
+            _anomaly_queue.task_done()
+
+
+def _ensure_anomaly_worker() -> None:
+    global _anomaly_worker_started
+    if _anomaly_worker_started:
+        return
+    with _anomaly_worker_lock:
+        if _anomaly_worker_started:
+            return
+        threading.Thread(
+            target=_anomaly_writer_loop,
+            name="nexus-perf-anomaly-writer",
+            daemon=True,
+        ).start()
+        _anomaly_worker_started = True
+
+
 def record_anomaly(kind: str, value: float, path: Optional[str] = None,
                     method: Optional[str] = None, detail: Optional[str] = None) -> None:
-    """Персистирует одну аномалию. Как и DatabaseErrorHandler в
-    services_error_log.py — глушит абсолютно любое собственное исключение:
-    сбой самого мониторинга не должен ронять то, что он мониторит."""
-    try:
-        from database import SessionLocal
-        from models import PerfAnomaly
+    """Queue one anomaly without ever waiting for a database connection.
 
-        db = SessionLocal()
-        try:
-            db.add(PerfAnomaly(
-                kind=kind, value=value, path=path, method=method, detail=detail,
-                created_at=_now_msk(),
-            ))
-            db.commit()
-            import random
-            if random.random() < 1 / 200:
-                _prune_old(db)
-        finally:
-            db.close()
-    except Exception:
-        logger.warning("perf_monitor: не удалось записать аномалию kind=%s", kind, exc_info=True)
+    This function is called from the event-loop watchdog and HTTP middleware;
+    a synchronous ``Session.commit`` here used to freeze every request for the
+    SQLAlchemy pool's 30-second checkout timeout precisely when the database
+    was already overloaded.
+    """
+    payload = _PendingAnomaly(
+        kind=kind,
+        value=value,
+        path=path,
+        method=method,
+        detail=detail,
+        created_at=_now_msk(),
+    )
+    try:
+        _anomaly_queue.put_nowait(payload)
+    except queue.Full:
+        return
+    _ensure_anomaly_worker()
 
 
 def _prune_old(db) -> None:

@@ -1125,6 +1125,16 @@ async def api_replay_logs(
             log_timezone=log_timezone,
         ))
 
+    # Everything the slow SQLite timeline query needs is now detached scalar
+    # data. Release the main MySQL connection before awaiting the worker:
+    # aborted/full-round searches can keep running for up to their budget, and
+    # retaining one checked-out connection per search used to exhaust the
+    # 5+10 pool and make unrelated requests, workers and Discord wait 30s.
+    resolved_replay_id = int(replay.id)
+    resolved_server_name = str(replay.server_name)
+    resolved_round_id = end_event.id if end_event else None
+    db.close()
+
     range_start_ms = min(from_ms, effective_duration_ms)
     range_end_ms = min(to_ms if to_ms is not None else effective_duration_ms, effective_duration_ms)
     if range_end_ms <= range_start_ms and not overview_only:
@@ -1148,7 +1158,7 @@ async def api_replay_logs(
         """Read and enrich one exact visible window in the worker thread."""
         if round_search and search and search.strip():
             result = search_logs_in_round(
-                server_name=replay.server_name or "",
+                server_name=resolved_server_name,
                 player_name=player or None,
                 action_type=action_type or None,
                 search_text=search,
@@ -1172,7 +1182,7 @@ async def api_replay_logs(
             while len(loaded) < limit:
                 page_size = min(5000, limit - len(loaded))
                 result = search_logs(
-                    server_name=replay.server_name or None,
+                    server_name=resolved_server_name,
                     player_name=player or None,
                     action_type=action_type or None,
                     search_text=search or None,
@@ -1229,7 +1239,7 @@ async def api_replay_logs(
         # while remaining much smaller than its exact event stream.
         bucket_ms = max(1_000, (effective_duration_ms + 599) // 600)
         raw = get_log_timeline_overview(
-            server_name=replay.server_name or "",
+            server_name=resolved_server_name,
             time_from=started_at,
             time_to=ended_at,
             bucket_ms=bucket_ms,
@@ -1259,8 +1269,8 @@ async def api_replay_logs(
     except LogDataUnavailable:
         logger.exception(
             "Replay timeline log index is unavailable (replay_id=%s, server=%s)",
-            replay.id,
-            replay.server_name,
+            resolved_replay_id,
+            resolved_server_name,
         )
         unavailable_reason = "Серверные логи временно недоступны. Демозапись можно просматривать без них."
     else:
@@ -1272,7 +1282,7 @@ async def api_replay_logs(
     # common during the short gap between demo upload and SFTP log rotation.
     if overview_only and not player and not unavailable_reason and total == 0:
         stats = await run_in_threadpool(get_log_stats)
-        server_stats = stats.get(replay.server_name or "", {})
+        server_stats = stats.get(resolved_server_name, {})
         newest_raw = server_stats.get("newest_event")
         oldest_raw = server_stats.get("oldest_event")
         try:
@@ -1291,9 +1301,9 @@ async def api_replay_logs(
         logger.warning(
             "replay.timeline.empty replay_id=%s server=%s round_id=%s anchor=%s "
             "started_at=%s ended_at=%s oldest_log=%s newest_log=%s",
-            replay.id,
-            replay.server_name,
-            end_event.id if end_event else None,
+            resolved_replay_id,
+            resolved_server_name,
+            resolved_round_id,
             anchor_source,
             started_at,
             ended_at,
@@ -1304,8 +1314,8 @@ async def api_replay_logs(
     if unavailable_reason:
         return JSONResponse(_timeline_unavailable_payload(
             unavailable_reason,
-            round_id=end_event.id if end_event else None,
-            server_name=replay.server_name,
+            round_id=resolved_round_id,
+            server_name=resolved_server_name,
             started_at=started_at,
             ended_at=ended_at,
             duration_ms=effective_duration_ms,
@@ -1326,8 +1336,8 @@ async def api_replay_logs(
         "total_is_capped": bool(total_is_capped or has_more),
         "has_more": has_more,
         "loaded": len(rows),
-        "round_id": end_event.id if end_event else None,
-        "server_name": replay.server_name,
+        "round_id": resolved_round_id,
+        "server_name": resolved_server_name,
         "started_at": started_at.isoformat(),
         "ended_at": ended_at.isoformat(),
         "duration_ms": effective_duration_ms,

@@ -11,6 +11,11 @@ engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
     pool_recycle=3600,
+    # Never let an async route stall the single event-loop thread for
+    # SQLAlchemy's 30-second default merely waiting for a free connection.
+    # Under overload it is safer to fail one request quickly than freeze the
+    # website, Discord heartbeat and every game-server callback together.
+    pool_timeout=3,
     # Размеры пулов подобраны под жёсткий лимит памяти контейнера (2 ГБ) и
     # ограниченный пул потоков (12, см. main.py): держать десятки открытых
     # соединений с их буферами незачем — параллелизм всё равно упирается в
@@ -41,6 +46,7 @@ game_engine = create_engine(
     pool_recycle=3600,
     pool_size=5,
     max_overflow=8,
+    pool_timeout=3,
     connect_args=_CONNECT_ARGS,
 )
 
