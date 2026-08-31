@@ -255,14 +255,12 @@ export function PlayerDetailPage() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold">{player.forced_display_name || player.player_last_time_name}</h1>
+                <h1 className="text-xl font-bold">{player.player_last_time_name}</h1>
+                {player.forced_display_name && (
+                  <span className="text-[11px] text-muted-foreground" title={`Закреплённое имя: ${player.forced_display_name}`}>🔗 {player.forced_display_name}</span>
+                )}
                 {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
                 {player.is_secret && <Badge variant="outline" className="gap-1 border-warning/40 text-warning"><AdaptiveIcon emoji="🔒" icon={LockKeyhole} />Секретно</Badge>}
-                {player.forced_display_name && (
-                  <Badge variant="outline" className="border-info/40 text-info" title={`Настоящий ник: ${player.player_last_time_name}`}>
-                    <Link2 className="mr-1 size-3" /> {player.linked_admin_name ?? "принудительное имя"}
-                  </Badge>
-                )}
                 {admin?.is_superuser && (
                   <Button size="icon-xs" variant="ghost" onClick={openLinkDialog} title="Связать с пользователем Nexus Data">
                     <Link2 className="size-3.5" />

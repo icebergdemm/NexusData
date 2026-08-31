@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Link2, Terminal, Circle } from "lucide-react"
+import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Terminal, Circle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -46,19 +46,41 @@ function fmtPlayTime(hours: number | null | undefined): string {
 }
 
 function onlineDisplayName(p: OnlinePlayer): string {
-  return p.forced_display_name || p.player_name || p.player_steamid
+  return p.player_name || p.player_steamid
 }
 
 function offlineDisplayName(p: OfflinePlayer): string {
-  return p.forced_display_name || p.player_last_time_name
+  return p.player_last_time_name
 }
 
-/** Small badge shown next to a forced nickname, with the real name in a tooltip. */
-function ForcedNameBadge({ realName }: { realName: string | null }) {
-  if (!realName) return null
+function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {
+  if (!forcedName) return null
   return (
-    <Badge variant="outline" className="ml-1.5 border-info/40 text-info" title={`Настоящий ник: ${realName}`}>
-      <Link2 className="mr-1 size-3" /> принудительное имя
+    <span
+      className="ml-1 inline-flex items-center text-[11px]"
+      title={`Закреплённое имя: ${forcedName}`}
+      aria-label={`Закреплённое имя: ${forcedName}`}
+    >
+      🔗
+    </span>
+  )
+}
+
+function RankMismatchBadge({ nickname, rankId, ranks }: { nickname: string | null; rankId: number | null | undefined; ranks: Record<string, string> | undefined }) {
+  if (!nickname || rankId == null || !ranks) return null
+  const rankName = ranks[String(rankId)]
+  if (!rankName) return null
+  const firstWord = nickname.trim().split(/\s+/)[0] ?? ""
+  if (!firstWord) return null
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-zа-яё0-9]/gi, "")
+  if (norm(firstWord) === norm(rankName) || norm(firstWord) === norm(rankName.replace(".", ""))) return null
+  // Also allow abbreviated forms like "Ст." matching "Ст. Матрос" already handled loosely — if rank contains dot, check prefix
+  // But strict check above: if first word equals rank's first word (before space) consider match
+  const rankFirstWord = rankName.trim().split(/\s+/)[0] ?? ""
+  if (norm(firstWord) === norm(rankFirstWord)) return null
+  return (
+    <Badge variant="outline" className="ml-1.5 border-warning/40 bg-warning/10 text-warning text-[10px]" title={`Звание: ${rankName}, ник начинается с «${firstWord}» — несоответствие`}>
+      ⚠︎ звание
     </Badge>
   )
 }
@@ -228,7 +250,8 @@ export function ModerationPage() {
                             <PlayerHoverLink playerId={p.player_id}>{name}</PlayerHoverLink>
                           ) : name}
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
-                          {p.forced_display_name && <ForcedNameBadge realName={p.player_name} />}
+                          <ForcedNameBadge forcedName={p.forced_display_name} />
+                          <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />
                         </TableCell>
                         <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
                         <TableCell>{p.job_id ?? "-"}</TableCell>
@@ -309,7 +332,8 @@ export function ModerationPage() {
                         <TableCell>
                           <PlayerHoverLink playerId={p.player_id} className="font-medium text-primary underline-offset-2 hover:underline">{name}</PlayerHoverLink>
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
-                          {p.forced_display_name && <ForcedNameBadge realName={p.player_last_time_name} />}
+                          <ForcedNameBadge forcedName={p.forced_display_name} />
+                          <RankMismatchBadge nickname={p.player_last_time_name} rankId={p.rank_id} ranks={data.ranks} />
                           <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
                         </TableCell>
                         <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
-import { Users, ChevronRight, ExternalLink, Copy, IdCard, Link2, Palette, RefreshCw } from "lucide-react"
+import { Users, ChevronRight, ExternalLink, Copy, IdCard, Palette, RefreshCw } from "lucide-react"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -194,9 +194,10 @@ export function PlayersListPage() {
                   <PlayerAvatar url={p.steam_avatar_url} name={p.player_last_time_name} size={22} />
                   <span
                     className="min-w-0 flex-1 truncate"
-                    title={p.forced_display_name ? `Настоящий ник: ${p.player_last_time_name}` : undefined}
+                    title={p.forced_display_name ? `Закреплённое: ${p.forced_display_name}` : undefined}
                   >
-                    {playerDisplayName(p)}
+                    {p.player_last_time_name}
+                    {p.forced_display_name && <span className="ml-1 text-muted-foreground">🔗 {p.forced_display_name}</span>}
                   </span>
                   <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{p.player_steamid}</span>
                 </button>
@@ -296,15 +297,12 @@ export function PlayersListPage() {
                       onAuxClick={(e) => { if (e.button === 1) window.open(`/players/${p.player_id}`, "_blank") }}
                     >
                       <TableCell className="font-medium">
-                        {playerDisplayName(p)}
+                        <span>{p.player_last_time_name}</span>
                         {p.forced_display_name && (
-                          <Badge
-                            variant="outline"
-                            className="ml-1.5 border-info/40 text-info"
-                            title={`Настоящий ник: ${p.player_last_time_name}`}
-                          >
-                            <Link2 className="mr-1 size-3" /> принудительное имя
-                          </Badge>
+                          <span className="ml-1 text-[11px] text-muted-foreground" title={`Закреплённое имя: ${p.forced_display_name}`}>🔗</span>
+                        )}
+                        {p.forced_display_name && p.forced_display_name !== p.player_last_time_name && (
+                          <div className="text-xs font-normal text-muted-foreground">🔗 {p.forced_display_name}</div>
                         )}
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{p.player_steamid}</TableCell>

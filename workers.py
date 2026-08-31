@@ -110,6 +110,71 @@ def task_compensate_playtime() -> dict:
         db.close()
 
 
+# 8 часов — порог, выше которого сессия считается битой (зависший logout,
+# сбой часов, незакрытая сессия). Такие сессии искажают play_time.
+_BROKEN_SESSION_THRESHOLD_SECS = 8 * 3600  # 28800
+_BROKEN_SESSION_BATCH = 500
+
+
+def task_cleanup_broken_sessions() -> dict:
+    """Находит битые сессии (>8ч), удаляет их батчами и пересчитывает play_time.
+
+    Эффективность:
+      - один SELECT с LIMIT батча, один DELETE по PK, один UPDATE-JOIN для
+        пересчёта play_time только затронутых игроков — без full table scan;
+      - работает на BACKGROUND приоритете, не конкурирует с API/важными воркерами;
+      - идемпотентен и безопасен при конкурентной записи новых сессий.
+    Запускается каждый час.
+    """
+    db = SessionLocal()
+    try:
+        # 1. Найти батч битых сессий
+        rows = db.execute(text("""
+            SELECT id, player_id FROM player_sessions
+            WHERE session_duration IS NOT NULL
+              AND session_duration > :thr
+            LIMIT :lim
+        """), {"thr": _BROKEN_SESSION_THRESHOLD_SECS, "lim": _BROKEN_SESSION_BATCH}).fetchall()
+
+        if not rows:
+            return {"deleted": 0, "recalculated_players": 0, "status": "ok"}
+
+        ids = [r[0] for r in rows]
+        player_ids = list({r[1] for r in rows})
+
+        # 2. Удалить битые сессии одним запросом по PK (эффективно, использует primary index)
+        # MySQL не позволяет bind список напрямую — строим placeholders.
+        # Батч 500 — безопасно для длины запроса.
+        placeholders = ",".join(str(int(x)) for x in ids)
+        db.execute(text(f"DELETE FROM player_sessions WHERE id IN ({placeholders})"))
+
+        # 3. Пересчитать play_time для затронутых игроков.
+        # SUM по оставшимся сессиям; COALESCE -> 0 если сессий не осталось.
+        # UPDATE-JOIN — один запрос на всех игроков батча.
+        placeholders_p = ",".join(str(int(x)) for x in player_ids)
+        db.execute(text(f"""
+            UPDATE players_data pd
+            LEFT JOIN (
+                SELECT player_id, COALESCE(SUM(session_duration), 0) AS total
+                FROM player_sessions
+                WHERE player_id IN ({placeholders_p})
+                  AND session_duration IS NOT NULL
+                GROUP BY player_id
+            ) st ON st.player_id = pd.player_id
+            SET pd.play_time = COALESCE(st.total, 0)
+            WHERE pd.player_id IN ({placeholders_p})
+        """))
+        db.commit()
+        logger.info("[BrokenSessions] deleted=%s players_recalculated=%s", len(ids), len(player_ids))
+        return {"deleted": len(ids), "recalculated_players": len(player_ids), "status": "ok"}
+    except Exception:
+        db.rollback()
+        logger.exception("[BrokenSessions] failed")
+        raise
+    finally:
+        db.close()
+
+
 def task_recalculate_ratings() -> dict:
     """Full rating recalculation. Runs every 24h."""
     from rating_engine import calculate_all_ratings, sync_ratings_to_db, apply_daily_erosion
@@ -1018,6 +1083,7 @@ def _start_simple_workers():
         (task_sample_perf_resources, 30),
         (task_memory_maintenance, 5 * 60),
         (task_process_ai_dispatcher_reminders, 5),
+        (task_cleanup_broken_sessions, 60 * 60),
     ]:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
         t.start()
@@ -1200,6 +1266,15 @@ def _start_scheduler():
         interval_secs=5,
         priority=Priority.NORMAL,
         task_id="ai_dispatcher_reminders",
+    )
+
+    # Broken sessions (>8h) cleanup + play_time recalc: BACKGROUND priority
+    # (не мешает важным процессам), раз в час, батчами по 500.
+    scheduler.register_periodic(
+        task_cleanup_broken_sessions,
+        interval_secs=60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="broken_sessions_cleanup",
     )
 
     scheduler.start()

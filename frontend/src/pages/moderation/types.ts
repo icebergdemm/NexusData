@@ -6,6 +6,7 @@ export interface OnlinePlayer {
   job_id: string | null
   ping: number | null
   player_id: number | null
+  rank_id: number | null
   server_name: string | null
   join_time: string | null
   last_seen: string | null
@@ -18,6 +19,7 @@ export interface OfflinePlayer {
   player_steamid: string
   player_last_time_name: string
   forced_display_name: string | null
+  rank_id: number | null
   first_login: string | null
   last_login_time: string | null
   last_session_logout: string | null
@@ -57,6 +59,7 @@ export interface ModerationOverview {
   search_results: OfflinePlayer[]
   search_query: string | null
   ac_events: AnticheatEvent[]
+  ranks: Record<string, string>
   can_edit: boolean
   can_delete: boolean
   can_issue_punishment: boolean

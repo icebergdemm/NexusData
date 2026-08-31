@@ -68,7 +68,10 @@ export function PlayerSummaryDialog({ playerId, open, onOpenChange }: {
               <div className="flex items-center gap-3">
                 <PlayerAvatar url={data.player.steam_avatar_url} name={data.player.player_last_time_name} size={48} online={data.is_online} />
                 <div className="min-w-0">
-                  <DialogTitle className="truncate">{data.player.forced_display_name || data.player.player_last_time_name}</DialogTitle>
+                  <DialogTitle className="truncate">{data.player.player_last_time_name}</DialogTitle>
+                  {data.player.forced_display_name && (
+                    <div className="truncate text-xs text-muted-foreground">🔗 {data.player.forced_display_name}</div>
+                  )}
                   <div className="font-mono text-xs text-muted-foreground">{data.player.player_steamid}</div>
                 </div>
                 {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}

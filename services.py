@@ -1202,6 +1202,7 @@ class ServerModerationService:
                     "job_id": job_id,
                     "ping": ping,
                     "player_id": player_id,
+                    "rank_id": pd.rank_id if pd else None,
                     "last_seen": now,
                     "join_time": join_time,
                     "total_play_time": play_time,

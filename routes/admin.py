@@ -5914,6 +5914,8 @@ def _serialize_punishment_full(p, player) -> dict:
         # Forced display name wins regardless of how the punishment was
         # issued (game-server API or admin panel) — resolved at display time.
         "player_name": (player.forced_display_name or player.player_last_time_name) if player else None,
+        "player_actual_name": player.player_last_time_name if player else None,
+        "player_forced_name": player.forced_display_name if player else None,
         "type": p.type,
         "reason": p.reason,
         "issued_by_name": p.issued_by_name,

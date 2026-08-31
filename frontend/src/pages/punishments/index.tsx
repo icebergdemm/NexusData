@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api } from "@/lib/api"
 
 interface PunishmentRow {
@@ -28,6 +29,8 @@ interface PunishmentRow {
   player_id: number
   player_steamid: string
   player_name: string | null
+  player_actual_name?: string | null
+  player_forced_name?: string | null
   type: string
   reason: string | null
   issued_by_name: string | null
@@ -247,7 +250,15 @@ export function PunishmentsPage() {
               {allRows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell>
-                    <div className="font-medium">{r.player_name || "-"}</div>
+                    <div className="font-medium">
+                      {r.player_id ? (
+                        <PlayerHoverLink playerId={r.player_id}>{r.player_actual_name || r.player_name || "-"}</PlayerHoverLink>
+                      ) : (r.player_actual_name || r.player_name || "-")}
+                      {r.player_forced_name && <span className="ml-1 text-[11px] text-muted-foreground" title={`Закреплённое: ${r.player_forced_name}`}>🔗</span>}
+                    </div>
+                    {r.player_forced_name && r.player_forced_name !== (r.player_actual_name || r.player_name) && (
+                      <div className="text-xs text-muted-foreground">🔗 {r.player_forced_name}</div>
+                    )}
                     <div className="font-mono text-xs text-muted-foreground">{r.player_steamid}</div>
                   </TableCell>
                   <TableCell className="max-w-52 truncate" title={r.reason ?? undefined}>{r.reason || "-"}</TableCell>
