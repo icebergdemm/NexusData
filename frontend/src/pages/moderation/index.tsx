@@ -79,7 +79,7 @@ function RankMismatchBadge({ nickname, rankId, ranks }: { nickname: string | nul
   const rankFirstWord = rankName.trim().split(/\s+/)[0] ?? ""
   if (norm(firstWord) === norm(rankFirstWord)) return null
   return (
-    <Badge variant="outline" className="ml-1.5 border-warning/40 bg-warning/10 text-warning text-[10px]" title={`Звание: ${rankName}, ник начинается с «${firstWord}» — несоответствие`}>
+    <Badge variant="outline" className="ml-1.5 border-destructive/40 bg-destructive/10 text-destructive text-[10px]" title={`Звание: ${rankName}, ник начинается с «${firstWord}» — несоответствие`}>
       ⚠︎ звание
     </Badge>
   )

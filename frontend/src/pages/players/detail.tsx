@@ -210,6 +210,15 @@ export function PlayerDetailPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const toggleSecretMutation = useMutation({
+    mutationFn: () => api.post<{ is_secret: boolean }>(`/api/v1/admin/players/${playerId}/toggle-secret`, {}),
+    onSuccess: (res) => {
+      toast.success(res.is_secret ? "Профиль засекречен" : "Профиль рассекречен")
+      invalidate()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const createPunishmentMutation = useMutation({
     mutationFn: () => api.post("/api/v1/admin/punishments", {
       player_steamid: data?.player.player_steamid,
@@ -235,8 +244,15 @@ export function PlayerDetailPage() {
   if (data.classified) {
     return (
       <Card>
-        <CardContent className="text-center text-muted-foreground">
-          <AdaptiveIcon emoji="🔒" icon={LockKeyhole} /> Профиль засекречен. Нужен допуск (право «Игроки → Доступ к засекреченным профилям») или права суперпользователя.
+        <CardContent className="py-10 text-center">
+          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+            <span className="flex items-center gap-2"><AdaptiveIcon emoji="🔒" icon={LockKeyhole} /> Профиль засекречен. Нужен допуск (право «Игроки → Доступ к засекреченным профилям») или права суперпользователя.</span>
+            {admin?.is_superuser && (
+              <Button size="sm" variant="outline" disabled={toggleSecretMutation.isPending} onClick={() => toggleSecretMutation.mutate()}>
+                <LockKeyhole className="size-4" /> Рассекретить
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
     )
@@ -261,6 +277,17 @@ export function PlayerDetailPage() {
                 )}
                 {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
                 {player.is_secret && <Badge variant="outline" className="gap-1 border-warning/40 text-warning"><AdaptiveIcon emoji="🔒" icon={LockKeyhole} />Секретно</Badge>}
+                {admin?.is_superuser && (
+                  <Button
+                    size="sm"
+                    variant={player.is_secret ? "default" : "outline"}
+                    disabled={toggleSecretMutation.isPending}
+                    onClick={() => toggleSecretMutation.mutate()}
+                    title={player.is_secret ? "Рассекретить профиль" : "Засекретить профиль"}
+                  >
+                    <LockKeyhole className="size-3.5" /> {player.is_secret ? "Рассекретить" : "Засекретить"}
+                  </Button>
+                )}
                 {admin?.is_superuser && (
                   <Button size="icon-xs" variant="ghost" onClick={openLinkDialog} title="Связать с пользователем Nexus Data">
                     <Link2 className="size-3.5" />

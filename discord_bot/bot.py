@@ -18,7 +18,7 @@ import logging
 import json
 import os
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 import discord
@@ -157,6 +157,7 @@ async def on_ready():
     publish_department_ratings_task.start()
     round_status_task.start()
     reconcile_ticket_channels_task.start()
+    mute_voice_cleanup_task.start()
 
     # Initial ticket status refresh
     await refresh_ticket_status()
@@ -722,6 +723,44 @@ async def reconcile_ticket_channels_task():
 
     if closed_any:
         await refresh_ticket_status()
+
+
+@tasks.loop(minutes=5)
+async def mute_voice_cleanup_task():
+    """Авто-снятие голосовых ограничений после истечения мута (п.7)."""
+    try:
+        raw = await asyncio.to_thread(bot_data.get_json_bot_config, "discord_mutes", {})
+        now = datetime.utcnow()
+        expired_ids = []
+        for did, val in list(raw.items()):
+            try:
+                if datetime.fromisoformat(str(val.get("expires_at", ""))) <= now:
+                    expired_ids.append(did)
+            except Exception:
+                expired_ids.append(did)
+        if not expired_ids:
+            # still prune stale via get_active_mutes
+            await asyncio.to_thread(bot_data.get_active_mutes)
+            return
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            await asyncio.to_thread(bot_data.get_active_mutes)
+            return
+        for did in expired_ids:
+            try:
+                member = guild.get_member(int(did))
+                if not member:
+                    try:
+                        member = await guild.fetch_member(int(did))
+                    except Exception:
+                        continue
+                await _restore_voice_on_unmute(member, "авто-размут (истёк срок)")
+            except Exception as e:
+                logger.warning(f"mute_voice_cleanup failed for {did}: {e}")
+        # после снятия ограничений — почистить хранилище мутов
+        await asyncio.to_thread(bot_data.get_active_mutes)
+    except Exception as e:
+        logger.warning(f"mute_voice_cleanup_task error: {e}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1368,22 +1407,72 @@ async def _user_has_mute_permission(user) -> bool:
     return bool(allowed & {str(r.id) for r in getattr(user, "roles", [])})
 
 
+async def _restrict_voice_on_mute(member: discord.Member, reason: str):
+    """п.7: ограничить доступ в голосовые каналы при муте — server mute + deny connect/speak."""
+    guild = member.guild
+    if not guild:
+        return
+    # server-mute если уже в войсе
+    try:
+        if member.voice and member.voice.channel:
+            await member.edit(mute=True, reason=f"Мут: {reason}"[:512])
+    except Exception as e:
+        logger.warning(f"Failed to server-mute {member}: {e}")
+    # deny на все голосовые каналы (включая будущие — cover через пермишены)
+    for ch in guild.voice_channels:
+        try:
+            await ch.set_permissions(member, connect=False, speak=False, reason=f"Мут: {reason}"[:512])
+        except Exception as e:
+            logger.warning(f"Failed to set voice overwrite for {member} in {ch}: {e}")
+
+
+async def _restore_voice_on_unmute(member: discord.Member, reason: str):
+    guild = member.guild
+    if not guild:
+        return
+    try:
+        if member.voice and member.voice.channel:
+            await member.edit(mute=False, reason=f"Размут: {reason}"[:512] if reason else "Размут")
+    except Exception as e:
+        logger.warning(f"Failed to server-unmute {member}: {e}")
+    for ch in guild.voice_channels:
+        try:
+            # снимаем персональный оверрайт (возврат к ролям по умолчанию)
+            await ch.set_permissions(member, overwrite=None, reason=f"Размут: {reason}"[:512] if reason else "Размут")
+        except Exception as e:
+            logger.warning(f"Failed to clear voice overwrite for {member} in {ch}: {e}")
+
+
 async def _send_mute_notification(channel, title: str, target, moderator, reason: str, expires_at: Optional[datetime] = None):
     config = await asyncio.to_thread(bot_data.get_bot_config)
-    channel_id = config.get("punishment_channel_id") or config.get("ban_channel_id")
-    if not channel_id:
-        return
-    target_channel = bot.get_channel(int(channel_id))
-    if not target_channel:
+    # Отправляем и в punishment_channel_id, и в ban_channel_id (если назначены) — требование п.4
+    channel_ids = []
+    for key in ("punishment_channel_id", "ban_channel_id"):
+        cid = config.get(key)
+        if cid:
+            try:
+                cid_int = int(cid)
+                if cid_int not in channel_ids:
+                    channel_ids.append(cid_int)
+            except (ValueError, TypeError):
+                continue
+    if not channel_ids:
         return
     embed = discord.Embed(title=title, color=0xe67e22)
     embed.add_field(name="Нарушитель", value=target.mention, inline=False)
     embed.add_field(name="Выдал", value=moderator.mention, inline=False)
     if expires_at:
-        embed.add_field(name="До", value=f"<t:{int(expires_at.timestamp())}:F>", inline=False)
-    if reason:
-        embed.add_field(name="Причина", value=reason[:1024], inline=False)
-    await target_channel.send(embed=embed)
+        ts = int(expires_at.replace(tzinfo=timezone.utc).timestamp()) if expires_at.tzinfo is None else int(expires_at.timestamp())
+        embed.add_field(name="До", value=f"<t:{ts}:F> (<t:{ts}:R>)", inline=False)
+    # причина обязательна для мута (п.2 и п.4) — всегда выводим
+    embed.add_field(name="Причина", value=(reason or "Не указана")[:1024], inline=False)
+    for cid in channel_ids:
+        target_channel = bot.get_channel(cid)
+        if target_channel:
+            try:
+                await target_channel.send(embed=embed)
+            except Exception as e:
+                logger.warning(f"_send_mute_notification failed for channel {cid}: {e}")
 
 
 async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: str):
@@ -1642,7 +1731,7 @@ async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
 
 @bot.tree.command(name="mute", description="Запретить пользователю писать вне тикетов")
 @app_commands.describe(member="Нарушитель", duration="Например: 1ч30м, 2нед3д", reason="Причина")
-async def slash_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: Optional[str] = None):
+async def slash_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
     if not await _user_has_mute_permission(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав на мут.", ephemeral=True)
         return
@@ -1654,15 +1743,20 @@ async def slash_mute(interaction: discord.Interaction, member: discord.Member, d
     expires_at = datetime.utcnow() + delta
     await asyncio.to_thread(bot_data.set_mute, str(member.id), expires_at, {
         "id": str(interaction.user.id), "name": interaction.user.display_name,
-    }, reason or "")
+    }, reason)
     await asyncio.to_thread(bot_data.log_discord_command, "mute", {
         "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
         "target_id": str(member.id), "target": member.display_name, "duration": duration,
-        "expires_at": expires_at.isoformat(), "reason": reason or "",
+        "expires_at": expires_at.isoformat(), "reason": reason,
     })
-    await interaction.response.send_message(f"🔇 {member.mention} получил(а) мут до <t:{int(expires_at.timestamp())}:F>.")
+    ts = int(expires_at.replace(tzinfo=timezone.utc).timestamp()) if expires_at.tzinfo is None else int(expires_at.timestamp())
+    await interaction.response.send_message(f"🔇 {member.mention} получил(а) мут до <t:{ts}:F> (<t:{ts}:R>). Причина: {reason}")
     try:
-        await _send_mute_notification(interaction.channel, "🔇 Мут", member, interaction.user, reason or "", expires_at)
+        await _restrict_voice_on_mute(member, reason)
+    except Exception as exc:
+        logger.warning(f"Failed to restrict voice on mute for {member}: {exc}")
+    try:
+        await _send_mute_notification(interaction.channel, "🔇 Мут", member, interaction.user, reason, expires_at)
     except Exception as exc:
         logger.warning("Failed to publish mute notification: %s", exc)
 
@@ -1681,7 +1775,11 @@ async def slash_unmute(interaction: discord.Interaction, member: discord.Member,
         "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
         "target_id": str(member.id), "target": member.display_name, "reason": reason or "",
     })
-    await interaction.response.send_message(f"🔊 Мут с {member.mention} снят.")
+    await interaction.response.send_message(f"🔊 Мут с {member.mention} снят." + (f" Причина: {reason}" if reason else ""))
+    try:
+        await _restore_voice_on_unmute(member, reason or "")
+    except Exception as exc:
+        logger.warning(f"Failed to restore voice on unmute for {member}: {exc}")
     try:
         await _send_mute_notification(interaction.channel, "🔊 Мут снят", member, interaction.user, reason or "")
     except Exception as exc:
@@ -1932,6 +2030,7 @@ async def cmd_set_ticket_status(ctx, channel: discord.TextChannel):
 # Sync messages from ticket channels to NexusData
 @bot.event
 async def on_message(message: discord.Message):
+    global FORWARD_CHANNEL_ID
     if message.author.bot:
         await bot.process_commands(message)
         return
@@ -1942,10 +2041,49 @@ async def on_message(message: discord.Message):
     channel_name = getattr(message.channel, "name", "") or ""
     active_mutes = await asyncio.to_thread(bot_data.get_active_mutes)
     if str(message.author.id) in active_mutes and not channel_name.startswith("ticket-"):
+        # п.6: логируем удалённое сообщение замьюченного в канал логирования особым embed
+        content_copy = message.content
+        attachments_copy = list(message.attachments)
+        author_name = message.author.display_name
+        author_mention = message.author.mention
+        channel_mention = getattr(message.channel, "mention", f"#{channel_name}") if hasattr(message.channel, "mention") else f"#{channel_name}"
+        mute_info = active_mutes.get(str(message.author.id), {})
         try:
             await message.delete()
         except (discord.Forbidden, discord.NotFound):
             pass
+        # отправляем в FORWARD-канал специальным embed (не мешает дальнейшей обработке)
+        try:
+            if FORWARD_CHANNEL_ID:
+                forward_ch = bot.get_channel(FORWARD_CHANNEL_ID)
+                if forward_ch:
+                    embed = discord.Embed(
+                        title="🔇 Удалено сообщение от замьюченного",
+                        description=content_copy[:4000] if content_copy else "*без текста*",
+                        color=0xff4444,
+                    )
+                    embed.set_author(name=f"{author_name} ({author_mention})", icon_url=message.author.display_avatar.url if message.author.display_avatar else None)
+                    embed.add_field(name="Канал", value=channel_mention, inline=True)
+                    embed.add_field(name="Автор", value=f"{author_name} <@{message.author.id}>", inline=True)
+                    if mute_info.get("reason"):
+                        embed.add_field(name="Причина мута", value=str(mute_info["reason"])[:1024], inline=False)
+                    if mute_info.get("expires_at"):
+                        try:
+                            exp = datetime.fromisoformat(str(mute_info["expires_at"]))
+                            ts = int(exp.replace(tzinfo=timezone.utc).timestamp()) if exp.tzinfo is None else int(exp.timestamp())
+                            embed.add_field(name="Мут до", value=f"<t:{ts}:F>", inline=True)
+                        except Exception:
+                            pass
+                    embed.set_footer(text=f"ID {message.author.id} | {format_msk(message.created_at.replace(tzinfo=None))} МСК")
+                    files_to_send = []
+                    for att in attachments_copy[:4]:
+                        try:
+                            files_to_send.append(await att.to_file())
+                        except Exception:
+                            embed.add_field(name="Файл", value=f"[{att.filename}]({att.url})", inline=False)
+                    await forward_ch.send(embed=embed, files=files_to_send if files_to_send else discord.utils.MISSING)
+        except Exception as e:
+            logger.warning(f"Failed to log muted message to forward channel: {e}")
         return
 
     # Check if this is a ticket channel
@@ -2016,7 +2154,6 @@ async def on_message(message: discord.Message):
         )
 
     # Forward to designated channel (existing logic)
-    global FORWARD_CHANNEL_ID
     if FORWARD_CHANNEL_ID and message.channel.id != FORWARD_CHANNEL_ID:
         forward_ch = bot.get_channel(FORWARD_CHANNEL_ID)
         if forward_ch:

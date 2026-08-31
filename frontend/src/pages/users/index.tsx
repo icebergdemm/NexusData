@@ -17,6 +17,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { UserCog, ShieldCheck, KeyRound } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
+import { SearchInput } from "@/components/layout/SearchInput"
 import { api } from "@/lib/api"
 import { LoginKeysDialog } from "./LoginKeysDialog"
 import { useCurrentAdmin, usePermissionRegistry } from "@/lib/auth"
@@ -58,9 +59,23 @@ export function UsersPage() {
   const [keysTarget, setKeysTarget] = useState<{ id: number; name: string } | null>(null)
   const [indivTarget, setIndivTarget] = useState<AdminUserRow | null>(null)
   const [indivPerms, setIndivPerms] = useState<PermissionValue>({})
+  const [search, setSearch] = useState("")
   const queryClient = useQueryClient()
 
   const { data } = useQuery({ queryKey: ["admin-users"], queryFn: () => api.get<UsersResponse>("/api/v1/admin/users") })
+
+  const filteredAdmins = (data?.admins ?? []).filter((a) => {
+    if (!search.trim()) return true
+    const q = search.trim().toLowerCase()
+    return (
+      (a.discord_username ?? "").toLowerCase().includes(q) ||
+      (a.discord_id ?? "").toLowerCase().includes(q) ||
+      (a.privilege_group_name ?? "").toLowerCase().includes(q) ||
+      (a.linked_player?.player_name ?? "").toLowerCase().includes(q) ||
+      (a.role ?? "").toLowerCase().includes(q) ||
+      (a.is_superuser ? "суперпользователь superuser" : "").includes(q)
+    )
+  })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin-users"] })
 
@@ -156,6 +171,10 @@ export function UsersPage() {
               </CardContent>
             </Card>
           )}
+          <div className="flex items-center gap-2">
+            <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по имени, Discord ID, группе, игроку..." className="max-w-sm" />
+            {search && <span className="text-xs text-muted-foreground">Найдено {filteredAdmins.length} из {data?.admins.length ?? 0}</span>}
+          </div>
           <Card>
             <CardContent>
               <Table>
@@ -163,7 +182,7 @@ export function UsersPage() {
                   <TableRow><TableHead>Админ</TableHead><TableHead>Игрок</TableHead><TableHead>Группа прав</TableHead><TableHead>Индивидуальные права</TableHead><TableHead>Суперпользователь</TableHead>{me?.is_superuser && <TableHead>Вход по ключу</TableHead>}{data?.can_delete && <TableHead />}</TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data?.admins.map((a) => (
+                  {filteredAdmins.map((a) => (
                     <TableRow key={a.id}>
                       <TableCell>
                         <div className="font-medium">{a.discord_username}</div>
@@ -180,7 +199,7 @@ export function UsersPage() {
                         {a.linked_player?.auto && <Badge variant="outline" className="ml-1.5 text-[10px]">авто</Badge>}
                       </TableCell>
                       <TableCell>
-                        {data.can_edit ? (
+                        {data?.can_edit ? (
                           <Select
                             value={a.privilege_group_id ? String(a.privilege_group_id) : "none"}
                             onValueChange={(v) => assignGroup.mutate({ id: a.id, privilege_group_id: v === "none" ? null : Number(v) })}
@@ -188,7 +207,7 @@ export function UsersPage() {
                             <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="none">Без группы</SelectItem>
-                              {data.groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                              {data?.groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
                             </SelectContent>
                           </Select>
                         ) : (a.privilege_group_name ?? "-")}

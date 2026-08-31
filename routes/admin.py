@@ -6040,6 +6040,13 @@ async def api_punishment_create(
 
     log_admin_action(db, current_admin.id, "punishment_create",
                      {"punishment_id": punishment.id, "type": ptype, "player_id": player_id})
+    # п.5: наказания с сайта — сразу в Discord (оба канала)
+    try:
+        from routes.game_api import _queue_punishment_discord_notification
+        _queue_punishment_discord_notification(db, punishment)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to queue punishment discord notification for {punishment.id}: {e}")
     row = _serialize_punishment_full(punishment, player)
     row["status"] = svc.effective_status(punishment)
     return {"status": "ok", "punishment": row, "player_id": player_id}
