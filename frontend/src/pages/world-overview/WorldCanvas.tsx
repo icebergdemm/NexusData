@@ -78,6 +78,7 @@ export function WorldCanvas({
   viewRef.current = view
   const dragRef = useRef<{ startX: number; startY: number; startOffsetX: number; startOffsetY: number; moved: boolean } | null>(null)
   const markerDragRef = useRef<string | null>(null)
+  const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null)
   const [fittedFor, setFittedFor] = useState<string | null>(null)
   // Tracks which character we've already auto-centered on, so re-selecting
   // the SAME character on every ~3s poll doesn't keep snapping the camera
@@ -247,6 +248,7 @@ export function WorldCanvas({
     for (const marker of markers) {
       const [sx, sy] = toScreen(marker.x, marker.y, view)
       const selected = marker.id === selectedMarkerId
+      const hovered = marker.id === hoveredMarkerId
       ctx.globalAlpha = marker.muted ? 0.35 : 1
       ctx.fillStyle = marker.color || "#F6C453"
       ctx.beginPath()
@@ -259,6 +261,12 @@ export function WorldCanvas({
         ctx.strokeStyle = "#FFFFFF"
         ctx.lineWidth = 2
         ctx.stroke()
+      } else if (hovered) {
+        ctx.strokeStyle = "rgba(255,255,255,0.7)"
+        ctx.setLineDash([4, 3])
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+        ctx.setLineDash([])
       }
       ctx.fillStyle = "rgba(255,255,255,.9)"
       ctx.font = "10px sans-serif"
@@ -282,7 +290,7 @@ export function WorldCanvas({
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, state, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId])
+  }, [geometry, state, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
@@ -329,6 +337,20 @@ export function WorldCanvas({
       const [wx, wy] = toWorld(e.clientX - rect.left, e.clientY - rect.top, view)
       onMoveMarker?.(markerDragRef.current, Math.round(wx), Math.round(wy))
       return
+    }
+    // hover-подсветка для ПКМ по существующим меткам
+    if (!dragRef.current && onMapContextMenu && markers.length) {
+      const container = containerRef.current
+      if (container) {
+        const rect = container.getBoundingClientRect()
+        const mx = e.clientX - rect.left
+        const my = e.clientY - rect.top
+        const hit = markers.find((m) => {
+          const [sx, sy] = toScreen(m.x, m.y, view)
+          return Math.hypot(sx - mx, sy - my) < 14
+        })
+        setHoveredMarkerId(hit?.id ?? null)
+      }
     }
     const drag = dragRef.current
     if (!drag) return
@@ -411,12 +433,13 @@ export function WorldCanvas({
   return (
     <div
       ref={containerRef}
-      className={`relative h-full w-full overflow-hidden rounded-lg border bg-[#0A0E14] ${targetMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+      className={`relative h-full w-full overflow-hidden rounded-lg border bg-[#0A0E14] ${hoveredMarkerId ? "cursor-context-menu" : targetMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+      title={hoveredMarkerId ? "ПКМ — меню метки" : undefined}
       onWheel={onWheel}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
-      onMouseLeave={() => { dragRef.current = null; markerDragRef.current = null }}
+      onMouseLeave={() => { dragRef.current = null; markerDragRef.current = null; setHoveredMarkerId(null) }}
       onContextMenu={handleContextMenu}
     >
       <canvas ref={canvasRef} />
