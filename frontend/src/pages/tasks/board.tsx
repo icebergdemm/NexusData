@@ -692,7 +692,7 @@ function BoardChat({ boardId, tasks, onClose }: { boardId: number; tasks: TaskRo
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] w-80 shrink-0 flex-col border-l bg-card sticky top-4 self-start">
+    <div className="flex max-h-[calc(100vh-6rem)] w-80 shrink-0 flex-col border-l bg-card sticky top-4 self-start rounded-lg shadow-sm transition-all duration-300 data-[closed=true]:translate-x-full data-[closed=true]:opacity-0">
       <div className="flex items-center justify-between border-b p-2">
         <span className="text-sm font-semibold flex items-center gap-1.5"><MessageSquare className="size-4" /> Чат доски</span>
         <div className="flex gap-1">
@@ -854,7 +854,7 @@ export function TaskBoardPage() {
   const selectedTask = data.tasks.find((t) => t.id === selectedTaskId)
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] gap-3">
+    <div className="flex min-h-[calc(100vh-4rem)] gap-3 items-start">
       <div className="flex flex-1 flex-col min-w-0">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
