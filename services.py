@@ -1661,29 +1661,69 @@ class PlayerNoteService:
 # Label Categories
 # ══════════════════════════════════════════════════════════════════════════════
 
+class LabelFolderService:
+    def __init__(self, db: Session):
+        self.db = db
+    def get_all(self):
+        from models import LabelFolder
+        return self.db.query(LabelFolder).order_by(LabelFolder.sort_order, LabelFolder.name).all()
+    def create(self, name: str, admin_id: int):
+        from models import LabelFolder
+        max_order = self.db.query(LabelFolder).order_by(LabelFolder.sort_order.desc()).first()
+        order = (max_order.sort_order + 1) if max_order else 0
+        folder = LabelFolder(name=name, sort_order=order, created_by_admin_id=admin_id)
+        self.db.add(folder); self.db.commit(); self.db.refresh(folder)
+        return folder
+    def update(self, folder_id: int, name: str):
+        from models import LabelFolder
+        f = self.db.query(LabelFolder).filter(LabelFolder.id == folder_id).first()
+        if not f: return None
+        f.name = name; self.db.commit(); return f
+    def delete(self, folder_id: int) -> bool:
+        from models import LabelFolder, LabelCategory
+        f = self.db.query(LabelFolder).filter(LabelFolder.id == folder_id).first()
+        if not f: return False
+        self.db.query(LabelCategory).filter(LabelCategory.folder_id == folder_id).update({LabelCategory.folder_id: None})
+        self.db.delete(f); self.db.commit(); return True
+    def reorder(self, ordered_ids: list):
+        from models import LabelFolder
+        for idx, fid in enumerate(ordered_ids):
+            self.db.query(LabelFolder).filter(LabelFolder.id == fid).update({LabelFolder.sort_order: idx})
+        self.db.commit()
+
+
 class LabelCategoryService:
     def __init__(self, db: Session):
         self.db = db
 
     def get_all(self) -> List[LabelCategory]:
-        return self.db.query(LabelCategory).order_by(LabelCategory.name).all()
+        return self.db.query(LabelCategory).order_by(LabelCategory.sort_order, LabelCategory.name).all()
 
-    def create(self, name: str, color: str, icon: str, admin_id: int) -> LabelCategory:
-        cat = LabelCategory(name=name, color=color, icon=icon, created_by_admin_id=admin_id)
+    def create(self, name: str, color: str, icon: str, admin_id: int, folder_id=None, description=None) -> LabelCategory:
+        max_order = self.db.query(LabelCategory).order_by(LabelCategory.sort_order.desc()).first()
+        order = (max_order.sort_order + 1) if max_order and max_order.sort_order is not None else 0
+        cat = LabelCategory(name=name, color=color, icon=icon, created_by_admin_id=admin_id, folder_id=folder_id, sort_order=order, description=description)
         self.db.add(cat)
         self.db.commit()
         self.db.refresh(cat)
         return cat
 
-    def update(self, cat_id: int, name: str, color: str, icon: str) -> Optional[LabelCategory]:
+    def update(self, cat_id: int, name: str = None, color: str = None, icon: str = None, folder_id=None, description=None, has_folder=False, has_desc=False) -> Optional[LabelCategory]:
         cat = self.db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
         if not cat:
             return None
-        cat.name = name
-        cat.color = color
-        cat.icon = icon
+        if name is not None: cat.name = name
+        if color is not None: cat.color = color
+        if icon is not None: cat.icon = icon
+        if has_folder: cat.folder_id = folder_id
+        if has_desc: cat.description = description
         self.db.commit()
         return cat
+
+    def reorder(self, ordered_ids: list):
+        for idx, cid in enumerate(ordered_ids):
+            self.db.query(LabelCategory).filter(LabelCategory.id == cid).update({LabelCategory.sort_order: idx})
+        self.db.commit()
 
     def delete(self, cat_id: int) -> bool:
         cat = self.db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()

@@ -690,7 +690,7 @@ export function TaskBoardPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [showHidden, setShowHidden] = useState(false)
   const [permsOpen, setPermsOpen] = useState(false)
-  const [chatOpen, setChatOpen] = useState(true)
+  const [chatOpen, setChatOpen] = useState(false)
 
   const boardIdNum = Number(boardId)
 

@@ -81,6 +81,9 @@ export interface DepartmentAccessLevel {
   name: string
   discord_role_id: string | null
   kind: "base" | "qualification" | "head" | "deputy_head"
+  description: string | null
+  sort_order: number
+  can_bind_server_privilege: boolean
   permissions: { pages?: Record<string, Record<string, boolean>> }
   site_permissions: { pages?: Record<string, Record<string, boolean>> }
   kit_binding: { job_id: string; kit_level: number } | null
@@ -188,12 +191,14 @@ export const departmentsApi = {
   archive: (id: number) => api.delete<{ status: string }>(`/api/v1/admin/departments/${id}`),
 
   accessLevels: {
-    create: (departmentId: number, body: { name: string; kind?: "qualification" | "head" | "deputy_head"; discord_role_id?: string; permissions?: unknown }) =>
+    create: (departmentId: number, body: { name: string; kind?: "qualification" | "head" | "deputy_head"; discord_role_id?: string; description?: string; permissions?: unknown }) =>
       api.post<{ status: string; access_level: DepartmentAccessLevel }>(`/api/v1/admin/departments/${departmentId}/access-levels`, body),
-    update: (departmentId: number, levelId: number, body: { name?: string; discord_role_id?: string; kind?: "qualification" | "head" | "deputy_head" | "base"; permissions?: unknown; site_permissions?: unknown; kit_binding?: { job_id: string; kit_level: number } | null; server_privilege_group_id?: number | null }) =>
+    update: (departmentId: number, levelId: number, body: { name?: string; discord_role_id?: string; kind?: "qualification" | "head" | "deputy_head" | "base"; description?: string; permissions?: unknown; site_permissions?: unknown; kit_binding?: { job_id: string; kit_level: number } | null; server_privilege_group_id?: number | null; can_bind_server_privilege?: boolean }) =>
       api.patch<{ status: string; access_level: DepartmentAccessLevel }>(`/api/v1/admin/departments/${departmentId}/access-levels/${levelId}`, body),
     delete: (departmentId: number, levelId: number) =>
       api.delete<{ status: string }>(`/api/v1/admin/departments/${departmentId}/access-levels/${levelId}`),
+    reorder: (departmentId: number, ordered_ids: number[]) =>
+      api.post<{ status: string }>(`/api/v1/admin/departments/${departmentId}/access-levels/reorder`, { ordered_ids }),
   },
 
   documentFolders: {

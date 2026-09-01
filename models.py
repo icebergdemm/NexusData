@@ -452,6 +452,17 @@ class PlayerNote(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class LabelFolder(Base):
+    """Folder grouping for label categories."""
+    __tablename__ = "label_folders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
 class LabelCategory(Base):
     """Admin-defined label categories (e.g. 'Подозрение на читы')."""
     __tablename__ = "label_categories"
@@ -460,6 +471,9 @@ class LabelCategory(Base):
     name = Column(String(128), unique=True, nullable=False)
     color = Column(String(16), default="#888888")  # hex color for UI
     icon = Column(String(8), default="🏷")         # emoji icon
+    description = Column(String(500), nullable=True)
+    folder_id = Column(Integer, ForeignKey("label_folders.id", ondelete="SET NULL"), nullable=True, index=True)
+    sort_order = Column(Integer, nullable=False, default=0)
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
@@ -583,6 +597,17 @@ class TicketMessage(Base):
     content = Column(String(4000), nullable=True)
     attachments = Column(JSON, default=lambda: [])  # [{url, filename, content_type}]
     is_bot = Column(Integer, default=0)  # 1 = sent from web panel via bot
+    created_at = Column(DateTime, default=func.now())
+
+
+class TicketCooldown(Base):
+    """Cooldown record for repeated ticket creation per user+ticket_type."""
+    __tablename__ = "ticket_cooldowns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    creator_discord_id = Column(String(25), nullable=False, index=True)
+    ticket_type = Column(String(50), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
     created_at = Column(DateTime, default=func.now())
 
 
@@ -1327,6 +1352,10 @@ class DepartmentAccessLevel(Base):
     # task_sync_auto_server_privileges. Ranked against other simultaneously
     # held levels by kind (head > qualification > base), then by id desc.
     server_privilege_group_id = Column(Integer, ForeignKey("server_privilege_groups.id"), nullable=True)
+    # Разрешает ли суперпользователь привязывать серверную группу к этому уровню (п.5).
+    can_bind_server_privilege = Column(Boolean, nullable=False, default=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    description = Column(String(500), nullable=True)
     permissions = Column(JSON, nullable=False, default=lambda: {})
     # Hybrid permissions (item 3): additive SITE-WIDE {"pages": {page: {action: bool}}}
     # grants, same shape as AdminPrivilegeGroup.permissions — but unlike

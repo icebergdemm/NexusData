@@ -1283,10 +1283,9 @@ async def admin_player_detail(
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
 
-    # См. комментарий в JSON-версии этого эндпоинта (api_player_detail) —
-    # привязка к суперу всегда только для супера, is_secret — по праву
-    # players_special:view.
-    if linked_admin and not current_admin.is_superuser:
+    # Профиль, привязанный к суперпользователю, и is_secret открываются
+    # правом players_special:view (или статусом суперпользователя).
+    if linked_admin and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
         return templates.TemplateResponse("admin/player_classified.html", {
             "request": request,
             "admin": current_admin,
@@ -1742,13 +1741,9 @@ async def api_player_detail(
         AdminUser.discord_id == player.discord_id,
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
-    # Профиль, привязанный к аккаунту СУПЕРПОЛЬЗОВАТЕЛЯ, защищён отдельно от
-    # обычной "секретности" и всегда только для супера — это про анонимность
-    # самого суперпользователя перед остальным персоналом, а не про допуск к
-    # засекреченным делам. А вот is_secret (явная пометка "секретно" на
-    # произвольном профиле) теперь открывается правом players_special:view —
-    # тем самым его наконец можно выдавать не только суперам.
-    if linked_admin and not current_admin.is_superuser:
+    # Профиль, привязанный к аккаунту СУПЕРПОЛЬЗОВАТЕЛЯ, и is_secret
+    # открываются правом players_special:view (или статусом суперпользователя).
+    if linked_admin and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
         return {"classified": True}
     if is_secret and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
         return {"classified": True}
@@ -5028,7 +5023,10 @@ async def api_label_categories_list(db: Session = Depends(get_db), current_admin
     ) and not check_permission(current_admin, "players", "manage_labels") and not check_permission(current_admin, "players", "view"):
         raise HTTPException(status_code=403)
     cats = LabelCategoryService(db).get_all()
-    return {"categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in cats]}
+    from services import LabelFolderService
+    folders = LabelFolderService(db).get_all()
+    return {"categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon, "folder_id": c.folder_id, "sort_order": c.sort_order, "description": c.description} for c in cats],
+            "folders": [{"id": f.id, "name": f.name, "sort_order": f.sort_order} for f in folders]}
 
 
 @router.post("/api/v1/admin/label-categories")
@@ -5038,18 +5036,18 @@ async def api_create_label_category(request: Request, db: Session = Depends(get_
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name required")
-    cat = LabelCategoryService(db).create(name, body.get("color") or "#888888", body.get("icon") or "🏷", current_admin.id)
-    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon}}
+    cat = LabelCategoryService(db).create(name, body.get("color") or "#888888", body.get("icon") or "🏷", current_admin.id, folder_id=body.get("folder_id"), description=body.get("description"))
+    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon, "folder_id": cat.folder_id, "sort_order": cat.sort_order, "description": cat.description}}
 
 
 @router.post("/api/v1/admin/label-categories/{cat_id}")
 async def api_update_label_category(cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     _require_label_category_perm(current_admin, "edit_label_category")
     body = await request.json()
-    cat = LabelCategoryService(db).update(cat_id, body.get("name"), body.get("color"), body.get("icon"))
+    cat = LabelCategoryService(db).update(cat_id, body.get("name"), body.get("color"), body.get("icon"), folder_id=body.get("folder_id"), description=body.get("description"), has_folder="folder_id" in body, has_desc="description" in body)
     if not cat:
         raise HTTPException(status_code=404, detail="Категория не найдена")
-    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon}}
+    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon, "folder_id": cat.folder_id, "sort_order": cat.sort_order, "description": cat.description}}
 
 
 @router.delete("/api/v1/admin/label-categories/{cat_id}")
@@ -5058,6 +5056,61 @@ async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), 
     ok = LabelCategoryService(db).delete(cat_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Категория не найдена")
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/label-categories/reorder")
+async def api_reorder_label_categories(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_label_category_perm(current_admin, "edit_label_category")
+    body = await request.json()
+    ordered_ids = body.get("ordered_ids") or []
+    LabelCategoryService(db).reorder(ordered_ids)
+    return {"status": "ok"}
+
+
+@router.get("/api/v1/admin/label-folders")
+async def api_label_folders_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    from services import LabelFolderService
+    folders = LabelFolderService(db).get_all()
+    return {"folders": [{"id": f.id, "name": f.name, "sort_order": f.sort_order} for f in folders]}
+
+
+@router.post("/api/v1/admin/label-folders")
+async def api_create_label_folder(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_label_category_perm(current_admin, "create_label_category")
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name: raise HTTPException(status_code=400, detail="name required")
+    from services import LabelFolderService
+    folder = LabelFolderService(db).create(name, current_admin.id)
+    return {"status": "ok", "folder": {"id": folder.id, "name": folder.name, "sort_order": folder.sort_order}}
+
+
+@router.post("/api/v1/admin/label-folders/{folder_id}")
+async def api_update_label_folder(folder_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_label_category_perm(current_admin, "edit_label_category")
+    body = await request.json()
+    from services import LabelFolderService
+    folder = LabelFolderService(db).update(folder_id, body.get("name"))
+    if not folder: raise HTTPException(status_code=404, detail="Папка не найдена")
+    return {"status": "ok", "folder": {"id": folder.id, "name": folder.name}}
+
+
+@router.delete("/api/v1/admin/label-folders/{folder_id}")
+async def api_delete_label_folder(folder_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_label_category_perm(current_admin, "delete_label_category")
+    from services import LabelFolderService
+    ok = LabelFolderService(db).delete(folder_id)
+    if not ok: raise HTTPException(status_code=404, detail="Папка не найдена")
+    return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/label-folders/reorder")
+async def api_reorder_label_folders(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_label_category_perm(current_admin, "edit_label_category")
+    body = await request.json()
+    from services import LabelFolderService
+    LabelFolderService(db).reorder(body.get("ordered_ids") or [])
     return {"status": "ok"}
 
 

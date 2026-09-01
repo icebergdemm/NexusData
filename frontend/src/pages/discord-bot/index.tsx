@@ -155,6 +155,7 @@ interface TicketTypeConfig {
   color: string
   ping_roles: string[]
   template: string
+  allow_cooldown?: boolean
 }
 interface TicketsConfig {
   types: Record<string, TicketTypeConfig>
@@ -167,7 +168,7 @@ interface TicketsConfig {
 }
 interface TicketsConfigResponse { config: TicketsConfig; can_manage_config: boolean }
 
-const EMPTY_TICKET_TYPE: TicketTypeConfig = { name: "", emoji: "🎫", color: "2b7af0", ping_roles: [], template: "" }
+const EMPTY_TICKET_TYPE: TicketTypeConfig = { name: "", emoji: "🎫", color: "2b7af0", ping_roles: [], template: "", allow_cooldown: false }
 
 /** Список Discord ID (ролей и т.п.) как строка через запятую — тот же приём,
  * что и у CORS/Allowed IPs на странице «Администрирование»: отдельный
@@ -258,6 +259,10 @@ function TicketTypeEditor({ typeKey, type, onChange, onRename, onRemove, disable
           onChange={(e) => onChange(typeKey, { ...type, template: e.target.value })}
         />
       </div>
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox checked={!!type.allow_cooldown} disabled={disabled} onCheckedChange={(c)=>onChange(typeKey,{...type, allow_cooldown: c===true})} />
+        Разрешить кулдаун для этого типа (устанавливается через /close)
+      </label>
     </div>
   )
 }

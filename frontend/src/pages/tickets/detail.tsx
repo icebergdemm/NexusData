@@ -59,7 +59,7 @@ export function TicketDetailPage() {
         <CardContent className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2 font-semibold">
-              <PlatformIcon value={meta?.emoji ?? "🎫"} fallback={Ticket} /> {ticket.title}
+              <PlatformIcon value={meta?.emoji ?? "🎫"} fallback={Ticket} /> <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">#{ticket.id}</span> {ticket.title}
               <Badge variant={isClosed ? "secondary" : "default"}>{ticket.status}</Badge>
             </div>
             <div className="mt-1 text-xs text-muted-foreground">

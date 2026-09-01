@@ -144,7 +144,12 @@
 
 <!-- ═══════ TAB: ИГРОКИ ═══════ -->
 <div class="tab-pane" id="tab-players">
-  <div style="display:flex;justify-content:flex-end;margin-bottom:var(--spacing-16);">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:var(--spacing-16);">
+    <div class="tab-bar" id="server-scope-bar" style="margin-bottom:0;">
+      <button class="tab-btn active" data-scope="all" onclick="filterServerScope('all')">Все серверы</button>
+      <button class="tab-btn" data-scope="ASPER1" onclick="filterServerScope('ASPER1')">ASPER1</button>
+      <button class="tab-btn" data-scope="ASPER2" onclick="filterServerScope('ASPER2')">ASPER2</button>
+    </div>
     <button class="btn btn-primary" onclick="openModal('assign-modal')">Назначить привилегии</button>
   </div>
 
@@ -180,7 +185,7 @@
         </thead>
         <tbody>
           {% for priv in privileges %}
-          <tr>
+          <tr data-scope-row="{{ priv.server_scope or 'all' }}">
             <td>
               {% if priv.player_last_time_name %}
               <div style="font-size:13px;font-weight:600;color:var(--white);">{{ priv.player_last_time_name }}</div>
@@ -460,6 +465,15 @@ function openEditPriv(btn) {
   document.getElementById('ap-aids').value     = btn.dataset.aids;
   document.getElementById('ap-reason').value   = btn.dataset.reason;
   openModal('assign-modal');
+}
+
+// ── server scope filter (ASPER1/ASPER2) ───────────────────────────────
+function filterServerScope(scope){
+  document.querySelectorAll('#server-scope-bar .tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.scope===scope));
+  document.querySelectorAll('[data-scope-row]').forEach(row=>{
+    const rs = row.getAttribute('data-scope-row');
+    row.style.display = (scope==='all' || rs===scope || (scope!=='all' && rs==='all')) ? '' : 'none';
+  });
 }
 
 // Reset steamid readonly when opening fresh

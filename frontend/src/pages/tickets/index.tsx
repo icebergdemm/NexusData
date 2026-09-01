@@ -48,7 +48,7 @@ export function TicketsListPage() {
                 <CardContent className="flex items-center gap-3 py-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-xl"><PlatformIcon value={meta?.emoji ?? "🎫"} fallback={Ticket} className="size-5" /></div>
                   <div className="flex-1">
-                    <div className="font-medium">{t.title}</div>
+                    <div className="flex items-center gap-1.5 font-medium"><span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">#{t.id}</span> {t.title}</div>
                     <div className="text-xs text-muted-foreground">
                       {meta?.name ?? t.ticket_type} · {t.creator_display_name || t.creator_username} · {fmtDate(t.created_at)}
                       {t.status === "closed" && t.closed_by && <> · закрыл(а) {t.closed_by}</>}

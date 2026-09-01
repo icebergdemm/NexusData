@@ -11,7 +11,7 @@ blocking DB work never stalls the bot's asyncio event loop (same reasoning as
 the rest of this app's run_in_threadpool usage).
 """
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from database import SessionLocal
@@ -563,5 +563,33 @@ def close_ticket(ticket_id: int, closed_by: str) -> bool:
         ticket.closed_at = datetime.utcnow()
         db.commit()
         return True
+    finally:
+        db.close()
+
+
+def check_ticket_cooldown(creator_discord_id: str, ticket_type: str) -> Optional[datetime]:
+    """Return expires_at if active cooldown exists, else None."""
+    from models import TicketCooldown
+    db = SessionLocal()
+    try:
+        rec = db.query(TicketCooldown).filter(
+            TicketCooldown.creator_discord_id == str(creator_discord_id),
+            TicketCooldown.ticket_type == ticket_type,
+            TicketCooldown.expires_at > datetime.utcnow()
+        ).order_by(TicketCooldown.expires_at.desc()).first()
+        return rec.expires_at if rec else None
+    finally:
+        db.close()
+
+
+def set_ticket_cooldown(creator_discord_id: str, ticket_type: str, days: int) -> None:
+    from models import TicketCooldown
+    if days <= 0:
+        return
+    db = SessionLocal()
+    try:
+        expires = datetime.utcnow() + timedelta(days=days)
+        rec = TicketCooldown(creator_discord_id=str(creator_discord_id), ticket_type=ticket_type, expires_at=expires)
+        db.add(rec); db.commit()
     finally:
         db.close()

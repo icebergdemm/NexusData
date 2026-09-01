@@ -315,6 +315,9 @@ def serialize_access_level(level: DepartmentAccessLevel) -> dict:
     return {
         "id": level.id, "key": level.key, "name": level.name,
         "discord_role_id": level.discord_role_id, "kind": level.kind,
+        "description": getattr(level, "description", None),
+        "sort_order": getattr(level, "sort_order", 0) or 0,
+        "can_bind_server_privilege": bool(getattr(level, "can_bind_server_privilege", False)),
         "permissions": level.permissions or {},
         "site_permissions": level.site_permissions or {},
         "server_privilege_group_id": level.server_privilege_group_id,
@@ -491,7 +494,8 @@ async def api_get_department(department_id: int, db: Session = Depends(get_db), 
     ):
         raise HTTPException(status_code=404, detail="Отдел не найден")
     data = serialize_department(dept, db, current_admin, member=member)
-    data["access_levels"] = [serialize_access_level(l) for l in dept.access_levels]
+    levels = sorted(dept.access_levels, key=lambda l: (getattr(l, "sort_order", 0) or 0, l.id))
+    data["access_levels"] = [serialize_access_level(l) for l in levels]
     return data
 
 
@@ -650,6 +654,13 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
     # Discord role ID – allowed for head/deputy/superuser
     if "discord_role_id" in body:
         level.discord_role_id = (body.get("discord_role_id") or "").strip() or None
+    if "description" in body:
+        level.description = (body.get("description") or "").strip() or None
+    # sort_order is handled via dedicated reorder endpoint; allow direct patch too
+    if "sort_order" in body and current_admin.is_superuser:
+        try:
+            level.sort_order = int(body.get("sort_order"))
+        except: pass
     if current_admin.is_superuser:
         # Kind change – superuser only, base level protected
         if "kind" in body:
@@ -675,21 +686,39 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
         if "kit_binding" in body:
             _set_kit_binding(db, level, body.get("kit_binding"), current_admin.id)
         if "server_privilege_group_id" in body:
-            # Superuser-only link: a member currently holding this level
-            # auto-receives this server privilege group — see
-            # workers.task_sync_auto_server_privileges.
+            # Superuser-only link, but gated by can_bind_server_privilege flag on head/deputy levels.
+            if level.kind in ("head", "deputy_head") and not level.can_bind_server_privilege:
+                raise HTTPException(status_code=403, detail="Привязка группы привилегий для этого уровня отключена")
             raw = body.get("server_privilege_group_id")
             level.server_privilege_group_id = int(raw) if raw not in (None, "") else None
+        if "can_bind_server_privilege" in body:
+            level.can_bind_server_privilege = bool(body.get("can_bind_server_privilege"))
     db.commit()
     return {"status": "ok", "access_level": serialize_access_level(level)}
+
+
+@router.post("/api/v1/admin/departments/{department_id}/access-levels/reorder")
+async def api_reorder_access_levels(department_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_departments_page(current_admin, "view")
+    dept = get_department_or_404(db, department_id)
+    member = get_member(db, dept.id, current_admin.id)
+    if not is_head_or_deputy_or_superuser(current_admin, member):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    body = await request.json()
+    ordered_ids = body.get("ordered_ids") or []
+    for idx, lid in enumerate(ordered_ids):
+        db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.id == lid, DepartmentAccessLevel.department_id == dept.id).update({DepartmentAccessLevel.sort_order: idx})
+    db.commit()
+    return {"status": "ok"}
 
 
 @router.delete("/api/v1/admin/departments/{department_id}/access-levels/{level_id}")
 async def api_delete_access_level(department_id: int, level_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_departments_page(current_admin, "view")
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователя")
     dept = get_department_or_404(db, department_id)
+    member = get_member(db, dept.id, current_admin.id)
+    if not is_head_or_deputy_or_superuser(current_admin, member):
+        raise HTTPException(status_code=403, detail="Только глава отдела, заместитель или суперпользователь")
     level = db.query(DepartmentAccessLevel).filter(DepartmentAccessLevel.id == level_id, DepartmentAccessLevel.department_id == dept.id).first()
     if not level:
         raise HTTPException(status_code=404, detail="Уровень доступа не найден")

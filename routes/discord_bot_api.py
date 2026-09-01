@@ -197,7 +197,7 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
 # шаблон), категория, канал статуса, роли персонала для /close и /ticket_add.
 # ══════════════════════════════════════════════════════════════════════════════
 
-_TICKET_TYPE_FIELDS = {"name", "emoji", "color", "ping_roles", "template"}
+_TICKET_TYPE_FIELDS = {"name", "emoji", "color", "ping_roles", "template", "allow_cooldown"}
 
 
 def _validate_tickets_config(config: dict) -> Optional[str]:

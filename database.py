@@ -245,6 +245,14 @@ def _apply_migrations():
         ("tasks", "is_hidden", "TINYINT NOT NULL DEFAULT 0"),
         ("tasks", "rejection_reason", "VARCHAR(1000)"),
         ("tasks", "preview_attachment_id", "INT"),
+        # label folders/sorting + department access level sorting/description + superuser bind flag
+        ("label_categories", "folder_id", "INT"),
+        ("label_categories", "sort_order", "INT NOT NULL DEFAULT 0"),
+        ("label_categories", "description", "VARCHAR(500)"),
+        ("label_folders", "sort_order", "INT NOT NULL DEFAULT 0"),
+        ("department_access_levels", "sort_order", "INT NOT NULL DEFAULT 0"),
+        ("department_access_levels", "description", "VARCHAR(500)"),
+        ("department_access_levels", "can_bind_server_privilege", "TINYINT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     with engine.connect() as conn:

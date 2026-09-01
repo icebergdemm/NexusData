@@ -68,16 +68,39 @@ function RankMismatchBadge({ nickname, rankId, ranks }: { nickname: string | nul
   if (!nickname || rankId == null || !ranks) return null
   const rankName = ranks[String(rankId)]
   if (!rankName) return null
-  const firstWord = nickname.trim().split(/\s+/)[0] ?? ""
-  if (!firstWord) return null
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-zа-яё0-9]/gi, "")
-  if (norm(firstWord) === norm(rankName) || norm(firstWord) === norm(rankName.replace(".", ""))) return null
-  // Also allow abbreviated forms like "Ст." matching "Ст. Матрос" already handled loosely — if rank contains dot, check prefix
-  // But strict check above: if first word equals rank's first word (before space) consider match
-  const rankFirstWord = rankName.trim().split(/\s+/)[0] ?? ""
-  if (norm(firstWord) === norm(rankFirstWord)) return null
+  const nickTrim = nickname.trim()
+  if (!nickTrim) return null
+  // Токенизация по буквам/цифрам — унифицирует "Ст.", "Ст", "Капитан-лейтенант" vs "Капитан Лейтенант",
+  // "1-ст" vs "1 ст" и т.п. Звание может быть из 1-3 токенов (например "Ст. Матрос" -> ["ст","матрос"],
+  // "Старшина 1-ст" -> ["старшина","1","ст"], "Капитан-лейтенант" -> ["капитан","лейтенант"]).
+  const tokenRe = /[a-zа-яё0-9]+/gi
+  const rankTokens = (rankName.toLowerCase().match(tokenRe) ?? []) as string[]
+  const nickTokens = (nickTrim.toLowerCase().match(tokenRe) ?? []) as string[]
+  if (!rankTokens.length) return null
+  if (nickTokens.length < rankTokens.length) {
+    const prefix = nickTrim.split(/\s+/).slice(0, rankTokens.length).join(" ") || nickTrim.split(/\s+/)[0]!
+    return (
+      <Badge variant="outline" className="ml-1.5 border-destructive/40 bg-destructive/10 text-destructive text-[10px]" title={`Звание: ${rankName}, ник начинается с «${prefix}» — несоответствие`}>
+        ⚠︎ звание
+      </Badge>
+    )
+  }
+  const isMatch = rankTokens.every((t, i) => t === nickTokens[i])
+  if (isMatch) return null
+  // Для подсказки показываем столько слов ника, сколько токенов в звании (минимум 1)
+  const nickWords = nickTrim.split(/\s+/)
+  // Оценка количества слов ника, покрывающих rankTokens: считаем токены пословно
+  let usedWords = 0
+  let consumed = 0
+  for (const w of nickWords) {
+    const c = (w.toLowerCase().match(tokenRe) ?? []).length || 1
+    consumed += c
+    usedWords += 1
+    if (consumed >= rankTokens.length) break
+  }
+  const prefix = nickWords.slice(0, Math.max(1, usedWords)).join(" ")
   return (
-    <Badge variant="outline" className="ml-1.5 border-destructive/40 bg-destructive/10 text-destructive text-[10px]" title={`Звание: ${rankName}, ник начинается с «${firstWord}» — несоответствие`}>
+    <Badge variant="outline" className="ml-1.5 border-destructive/40 bg-destructive/10 text-destructive text-[10px]" title={`Звание: ${rankName}, ник начинается с «${prefix}» — несоответствие`}>
       ⚠︎ звание
     </Badge>
   )

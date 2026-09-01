@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Building2, Settings, Settings2, Plus, Crown, Trash2, UserPlus, ArrowLeft, Pencil, Star, ShieldAlert,
-  AlertTriangle, KeyRound,
+  AlertTriangle, KeyRound, GripVertical,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -425,6 +425,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
   const [sitePerms, setSitePerms] = useState<PermissionValue>({})
   const [kitBindingKey, setKitBindingKey] = useState<string>("none")
   const [serverPrivGroupId, setServerPrivGroupId] = useState<number | null>(null)
+  const [canBind, setCanBind] = useState<boolean>(level.can_bind_server_privilege ?? false)
 
   const { data: kitsData } = useQuery({
     queryKey: ["kits"],
@@ -447,7 +448,10 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
     setSitePerms((level.site_permissions?.pages as PermissionValue) ?? {})
     setKitBindingKey(level.kit_binding ? `${level.kit_binding.job_id}::${level.kit_binding.kit_level}` : "none")
     setServerPrivGroupId(level.server_privilege_group_id)
+    setCanBind(level.can_bind_server_privilege ?? false)
   }, [open, level])
+
+  const isHeadOrDeputy = level.kind === "head" || level.kind === "deputy_head"
 
   const updateMutation = useMutation({
     mutationFn: () => {
@@ -461,8 +465,8 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
         }
       }
       return departmentsApi.accessLevels.update(department.id, level.id, {
-        permissions: { pages: perms },
-        ...(isSuperuser ? { site_permissions: { pages: sitePerms }, kit_binding: kitBinding, server_privilege_group_id: serverPrivGroupId } : {}),
+        permissions: isHeadOrDeputy ? undefined : { pages: perms },
+        ...(isSuperuser ? { site_permissions: { pages: sitePerms }, kit_binding: kitBinding, server_privilege_group_id: serverPrivGroupId, can_bind_server_privilege: canBind } : {}),
       })
     },
     onSuccess: () => {
@@ -478,8 +482,9 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Права уровня «{level.name}»</DialogTitle>
-          <DialogDescription>Какие вкладки отдела доступны сотрудникам с этим уровнем.</DialogDescription>
+          <DialogDescription>{isHeadOrDeputy ? "Глава и заместитель имеют полный доступ ко всем вкладкам по умолчанию." : "Какие вкладки отдела доступны сотрудникам с этим уровнем."}</DialogDescription>
         </DialogHeader>
+        {!isHeadOrDeputy && (
         <div className="space-y-1.5">
           {MODULE_KEYS.map((mod) => (
             <div key={mod} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
@@ -507,6 +512,12 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
             </div>
           ))}
         </div>
+        )}
+        {isHeadOrDeputy && (
+          <div className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+            Уровни «Глава» и «Заместитель» получают полный доступ автоматически. Настройка вкладок скрыта.
+          </div>
+        )}
 
         {isSuperuser && registryData && (
           <div className="space-y-1.5 border-t pt-3">
@@ -541,6 +552,16 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
         )}
 
         {isSuperuser && (
+          <div className="space-y-1.5 border-t pt-3">
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox checked={canBind} onCheckedChange={(c) => setCanBind(c === true)} />
+              Может привязывать группу серверных привилегий к уровню доступа
+              <span className="text-xs text-muted-foreground">(только суперпользователь)</span>
+            </label>
+          </div>
+        )}
+
+        {isSuperuser && (!isHeadOrDeputy || canBind) && (
           <div className="space-y-1.5 border-t pt-3">
             <div className="text-xs font-semibold text-muted-foreground">
               Серверная группа привилегий (только для суперпользователя)
@@ -580,15 +601,17 @@ function CreateAccessLevelDialog({ open, onOpenChange, department, isSuperuser }
   const [name, setName] = useState("")
   const [kind, setKind] = useState<"qualification" | "head" | "deputy_head">("qualification")
   const [roleId, setRoleId] = useState("")
+  const [description, setDescription] = useState("")
 
   const createMutation = useMutation({
-    mutationFn: () => departmentsApi.accessLevels.create(department.id, { name: name.trim(), kind: isSuperuser ? kind : "qualification", discord_role_id: roleId.trim() || undefined }),
-    onSuccess: () => {
+    mutationFn: () => departmentsApi.accessLevels.create(department.id, { name: name.trim(), kind: isSuperuser ? kind : "qualification", discord_role_id: roleId.trim() || undefined, description: description.trim() || undefined }),
+      onSuccess: () => {
       toast.success("Уровень доступа создан")
       queryClient.invalidateQueries({ queryKey: ["department", department.id] })
       onOpenChange(false)
       setName("")
       setRoleId("")
+      setDescription("")
       setKind("qualification")
     },
     onError: (e: Error) => toast.error(e.message),
@@ -623,6 +646,10 @@ function CreateAccessLevelDialog({ open, onOpenChange, department, isSuperuser }
             </div>
           )}
           <div>
+            <Label className="mb-1.5 block">Описание <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
+            <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Краткое описание роли внутри отдела" />
+          </div>
+          <div>
             <Label className="mb-1.5 block">ID роли Discord <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
             <Input value={roleId} onChange={(e) => setRoleId(e.target.value)} placeholder="123456789012345678 — оставьте пустым для ручной выдачи" />
             <p className="mt-1 text-[11px] text-muted-foreground">Без роли уровень выдаётся только вручную через «Участники» и не синхронизируется с Discord.</p>
@@ -647,12 +674,14 @@ function EditAccessLevelDialog({ open, onOpenChange, department, level, isSuperu
   const queryClient = useQueryClient()
   const [name, setName] = useState(level.name)
   const [roleId, setRoleId] = useState(level.discord_role_id ?? "")
+  const [description, setDescription] = useState(level.description ?? "")
   const [kind, setKind] = useState<DepartmentAccessLevel["kind"]>(level.kind)
 
   useEffect(() => {
     if (open) {
       setName(level.name)
       setRoleId(level.discord_role_id ?? "")
+      setDescription(level.description ?? "")
       setKind(level.kind)
     }
   }, [open, level])
@@ -664,6 +693,7 @@ function EditAccessLevelDialog({ open, onOpenChange, department, level, isSuperu
       const normalizedRole = roleId.trim() || ""
       const currentRole = level.discord_role_id ?? ""
       if (normalizedRole !== currentRole) body.discord_role_id = normalizedRole || null
+      if ((description ?? "") !== (level.description ?? "")) body.description = description.trim() || null
       if (isSuperuser && kind !== level.kind) body.kind = kind
       if (Object.keys(body).length === 0) return Promise.resolve({ status: "ok" } as unknown as { status: string; access_level: DepartmentAccessLevel })
       return departmentsApi.accessLevels.update(department.id, level.id, body as never)
@@ -689,6 +719,10 @@ function EditAccessLevelDialog({ open, onOpenChange, department, level, isSuperu
           <div>
             <Label className="mb-1.5 block">Название</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Название уровня" />
+          </div>
+          <div>
+            <Label className="mb-1.5 block">Описание <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
+            <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Что делает эта роль внутри отдела" />
           </div>
           <div>
             <Label className="mb-1.5 block">ID роли Discord <span className="font-normal text-muted-foreground">(необязательно)</span></Label>
@@ -915,6 +949,38 @@ function RosterTab({ department, canEdit, isSuperuser }: { department: Departmen
   )
 }
 
+function ReprimandsTab({ department, isSuperuser, canManage }: { department: DepartmentDetail; isSuperuser: boolean; canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const { data, isLoading } = useQuery({ queryKey: ["department-reprimands", department.id], queryFn: () => departmentsApi.reprimands.list(department.id) })
+  const isHead = isSuperuser || department.is_head
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => departmentsApi.reprimands.delete(department.id, id),
+    onSuccess: () => { toast.success("Выговор снят"); queryClient.invalidateQueries({ queryKey: ["department-reprimands", department.id] }) },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  if (isLoading) return <div className="space-y-2">{Array.from({length:3}).map((_,i)=><Skeleton key={i} className="h-16"/>)}</div>
+  return (
+    <div className="space-y-3">
+      {!data?.reprimands.length ? <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">Выговоров нет — дисциплина в отделе на высоте.</CardContent></Card> : (
+        <div className="space-y-2">
+          {data.reprimands.map((r)=> (
+            <Card key={r.id} className="py-0">
+              <CardContent className="flex items-start justify-between gap-3 p-3">
+                <div>
+                  <div className="text-sm font-medium">Сотрудник #{r.admin_id} <span className="font-normal text-muted-foreground">от {r.issued_by ?? "—"}</span></div>
+                  <div className="mt-1 text-sm whitespace-pre-wrap">{r.reason}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{r.created_at ? new Date(r.created_at).toLocaleString("ru-RU") : ""}</div>
+                </div>
+                {isHead && <Button size="icon-xs" variant="ghost" className="text-destructive shrink-0" onClick={()=>deleteMutation.mutate(r.id)}><Trash2 className="size-4"/></Button>}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function DepartmentDetailPage() {
   const { departmentId } = useParams<{ departmentId: string }>()
   const navigate = useNavigate()
@@ -1014,6 +1080,7 @@ export function DepartmentDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Обзор</TabsTrigger>
           <TabsTrigger value="roster">Участники</TabsTrigger>
+          <TabsTrigger value="reprimands">Выговоры</TabsTrigger>
           <TabsTrigger value="news">Новости</TabsTrigger>
           {visibleModules.map((mod) => <TabsTrigger key={mod} value={mod}>{MODULE_LABELS[mod]}</TabsTrigger>)}
         </TabsList>
@@ -1051,29 +1118,42 @@ export function DepartmentDetailPage() {
                 )}
               </div>
               {data.access_levels.length ? (() => {
-                const withRole = data.access_levels.filter((l) => !!l.discord_role_id)
-                const manual = data.access_levels.filter((l) => !l.discord_role_id)
+                const sorted = [...data.access_levels].sort((a,b)=> (a.sort_order??0)-(b.sort_order??0))
+                const handleDragStart = (e: React.DragEvent, id: number) => { e.dataTransfer.setData("text/plain", String(id)); e.dataTransfer.effectAllowed="move" }
+                const handleDrop = async (e: React.DragEvent, targetId: number) => {
+                  e.preventDefault()
+                  const draggedId = Number(e.dataTransfer.getData("text/plain"))
+                  if (!draggedId || draggedId===targetId) return
+                  const ids = sorted.map(l=>l.id)
+                  const from = ids.indexOf(draggedId), to = ids.indexOf(targetId)
+                  if (from<0||to<0) return
+                  ids.splice(to,0,ids.splice(from,1)[0])
+                  try { await departmentsApi.accessLevels.reorder(Number(data.id), ids); queryClient.invalidateQueries({queryKey:["department",Number(data.id)]}) } catch(err:any){ toast.error(err.message)}
+                }
                 const renderRow = (l: DepartmentAccessLevel, manualOnly: boolean) => (
-                  <div key={l.id} className={`flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-sm ${manualOnly ? "border-dashed border-warning/30 bg-warning/5" : ""}`}>
-                    <span className="flex items-center gap-1.5">
-                      {(l.kind === "head" || l.kind === "deputy_head") && <Crown className="size-3.5 text-primary" />}
-                      {l.name}
-                      <Badge variant="secondary" className="text-[10px]">{l.kind}</Badge>
+                  <div key={l.id} draggable={canManage} onDragStart={(e)=>handleDragStart(e,l.id)} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e,l.id)}
+                    className={`group flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-sm transition-all duration-200 hover:shadow-sm hover:border-primary/30 ${manualOnly ? "border-dashed border-warning/30 bg-warning/5" : ""} ${canManage ? "cursor-grab active:cursor-grabbing" : ""}`}>
+                    <span className="flex items-center gap-1.5 flex-1 min-w-0">
+                      {canManage && <GripVertical className="size-3.5 shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />}
+                      {(l.kind === "head" || l.kind === "deputy_head") && <Crown className="size-3.5 text-primary shrink-0" />}
+                      <span className="font-medium">{l.name}</span>
+                      <Badge variant="secondary" className="text-[10px] shrink-0">{l.kind}</Badge>
                       {l.discord_role_id ? (
-                        <span className="font-mono text-xs text-muted-foreground">{l.discord_role_id}</span>
+                        <span className="font-mono text-xs text-muted-foreground truncate">{l.discord_role_id}</span>
                       ) : (
-                        <Badge variant="outline" className="border-warning/30 bg-warning/10 text-[10px] text-warning" title="Без Discord-роли — выдаётся только вручную">ручной · без роли</Badge>
+                        <Badge variant="outline" className="border-warning/30 bg-warning/10 text-[10px] text-warning shrink-0" title="Без Discord-роли — выдаётся только вручную">ручной</Badge>
                       )}
+                      {l.description && <span className="truncate text-xs text-muted-foreground" title={l.description}>— {l.description}</span>}
                     </span>
                     {canManage && (
-                      <div className="flex items-center gap-1">
-                        <Button size="icon-xs" variant="ghost" onClick={() => setEditLevelTarget(l)} title="Переименовать / сменить роль и тип">
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button size="icon-xs" variant="ghost" onClick={() => setEditLevelTarget(l)} title="Переименовать / описание">
                           <Pencil className="size-3.5" />
                         </Button>
                         <Button size="icon-xs" variant="ghost" onClick={() => setPermsTarget(l)} title="Настроить права">
                           <Settings2 className="size-3.5" />
                         </Button>
-                        {isSuperuser && l.kind !== "base" && (
+                        {l.kind !== "base" && (
                           <Button size="icon-xs" variant="ghost" className="text-destructive" onClick={() => setDeleteLevelTarget(l)} title="Удалить уровень">
                             <Trash2 className="size-3.5" />
                           </Button>
@@ -1083,19 +1163,9 @@ export function DepartmentDetailPage() {
                   </div>
                 )
                 return (
-                <div className="space-y-3">
-                  {withRole.length > 0 && (
-                    <div className="space-y-1.5">
-                      <div className="text-[11px] font-medium text-muted-foreground">С привязкой к Discord-роли · синхронизируются автоматически</div>
-                      <div className="flex flex-col gap-1.5">{withRole.map((l) => renderRow(l, false))}</div>
-                    </div>
-                  )}
-                  {manual.length > 0 && (
-                    <div className="space-y-1.5">
-                      <div className="text-[11px] font-medium text-warning">Ручные · без Discord-роли — выдаются только вручную</div>
-                      <div className="flex flex-col gap-1.5">{manual.map((l) => renderRow(l, true))}</div>
-                    </div>
-                  )}
+                <div className="flex flex-col gap-1.5">
+                  <p className="text-[11px] text-muted-foreground">Перетащите для изменения порядка · анимация при перемещении</p>
+                  {sorted.map((l) => renderRow(l, !l.discord_role_id))}
                 </div>
                 )
               })() : (
@@ -1107,6 +1177,10 @@ export function DepartmentDetailPage() {
 
         <TabsContent value="roster">
           <RosterTab department={data} canEdit={canManage} isSuperuser={isSuperuser} />
+        </TabsContent>
+
+        <TabsContent value="reprimands">
+          <ReprimandsTab department={data} isSuperuser={isSuperuser} canManage={canManage} />
         </TabsContent>
 
         <TabsContent value="news">

@@ -1515,6 +1515,15 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
         await interaction.followup.send("Ошибка загрузки конфигурации", ephemeral=True)
         return
 
+    # Кулдаун повторного создания (п.9)
+    tconf_check = (config.get("types", {}) or {}).get(ticket_type, {})
+    if tconf_check.get("allow_cooldown"):
+        expires = await asyncio.to_thread(bot_data.check_ticket_cooldown, str(user.id), ticket_type)
+        if expires:
+            ts = int(expires.replace(tzinfo=timezone.utc).timestamp()) if expires.tzinfo is None else int(expires.timestamp())
+            await interaction.followup.send(f"❌ У вас кулдаун на создание обращений этого типа до <t:{ts}:F> (<t:{ts}:R>).", ephemeral=True)
+            return
+
     category_id = (bot_config or {}).get("ticket_category_id") or config.get("category_id")
     type_config = config.get("types", {}).get(ticket_type, {})
     ping_roles = type_config.get("ping_roles", [])
@@ -1579,9 +1588,8 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
     embed.set_footer(text=f"Тикет #{ticket_id}")
 
     msg_content = f"{user.mention} {silent_pings}" if silent_pings.strip() else user.mention
-    # Tickets are closed only through /close, where the configured staff role
-    # check and delayed-close workflow are both enforced.
-    await channel.send(content=msg_content, embed=embed)
+    view = TicketCloseView(ticket_id=ticket_id, channel=channel)
+    await channel.send(content=msg_content, embed=embed, view=view)
 
     await interaction.followup.send(f"✅ Обращение создано: {channel.mention}", ephemeral=True)
     await refresh_ticket_status()
@@ -1789,9 +1797,10 @@ async def slash_unmute(interaction: discord.Interaction, member: discord.Member,
 @bot.tree.command(name="close", description="Закрыть тикет через указанное время (только для администраторов)")
 @app_commands.describe(
     minutes="Через сколько минут закрыть (0 = через 15 секунд)",
-    answer="Итоговый ответ по обращению"
+    answer="Итоговый ответ по обращению",
+    cooldown_days="Кулдаун повторного создания тикета этого типа (дней, 0 = без кулдауна)"
 )
-async def slash_close_ticket(interaction: discord.Interaction, minutes: int, answer: str):
+async def slash_close_ticket(interaction: discord.Interaction, minutes: int, answer: str, cooldown_days: int = 0):
     """Slash command /close <minutes> <answer> — only for ping roles in ticket channels."""
     channel = interaction.channel
 
@@ -1883,6 +1892,15 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
             await refresh_ticket_status()
             return
 
+        # Кулдаун повторного создания тикета этого типа (п.9): если allow_cooldown включён для типа
+        if cooldown_days and cooldown_days > 0 and ticket and ticket.get("ticket_type"):
+            tconf = config.get("types", {}).get(ticket.get("ticket_type"), {})
+            if tconf.get("allow_cooldown"):
+                try:
+                    await asyncio.to_thread(bot_data.set_ticket_cooldown, creator_discord_id, ticket.get("ticket_type"), cooldown_days)
+                except Exception as e:
+                    logger.warning(f"Failed to set ticket cooldown: {e}")
+
         # Send DM to ticket creator
         if creator_discord_id:
             try:
@@ -1896,6 +1914,8 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
                         ),
                         color=0x2b7af0,
                     )
+                    if cooldown_days and cooldown_days > 0:
+                        dm_embed.add_field(name="Кулдаун", value=f"Повторное обращение этого типа доступно через {cooldown_days} дн.", inline=False)
                     dm_embed.set_footer(text="Сделано за сухарики")
                     await creator.send(embed=dm_embed)
             except Exception as e:
@@ -2118,6 +2138,26 @@ async def on_message(message: discord.Message):
             # Update status embed
             await refresh_ticket_status()
 
+            # Деактивация кнопки "Закрыть обращение" после ответа админа (п.8): как только
+            # в тикете пишет сотрудник с ролью ответчика — кнопка становится неинтерактивной.
+            if not message.author.bot and ticket_id:
+                config_for_staff = await asyncio.to_thread(bot_data.get_tickets_config)
+                if await _user_has_ticket_staff_permission(message.author, message.guild, config_for_staff):
+                    try:
+                        async for msg in message.channel.history(limit=20):
+                            if msg.author.id == bot.user.id and msg.components:
+                                for row in msg.components:
+                                    for comp in row.children:
+                                        if getattr(comp, 'custom_id', None) == 'ticket_close_btn' and not comp.disabled:
+                                            view = TicketCloseView(ticket_id=ticket_id)
+                                            for child in view.children:
+                                                child.disabled = True
+                                            await msg.edit(view=view)
+                                            break
+                                break
+                    except Exception as e:
+                        logger.warning(f"Failed to disable close button in {channel_id}: {e}")
+
             # Отмена отложенного /close сообщением от сотрудника (item 6):
             # раньше единственный способ отменить закрытие — набрать /close
             # ЕЩЁ РАЗ (toggle), что неочевидно и требует помнить точную
@@ -2223,6 +2263,7 @@ async def setup_hook():
     slash commands. Runs on module import (not gated behind __main__ like it
     used to be) since this module is now imported, not exec'd as a script."""
     bot.add_view(TicketPanelView())
+    bot.add_view(TicketCloseView())
     try:
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} slash command(s)")
