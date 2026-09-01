@@ -71,6 +71,7 @@ export interface DepartmentRow {
   is_member: boolean
   is_head: boolean
   is_deputy_head: boolean
+  can_manage_server_privilege_binding: boolean
   my_access: Record<DepartmentModule, DepartmentAccessSummary>
   created_at: string | null
 }

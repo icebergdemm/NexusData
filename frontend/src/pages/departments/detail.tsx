@@ -436,7 +436,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
   const { data: privGroupsData } = useQuery({
     queryKey: ["server-privileges-groups-picker"],
     queryFn: () => api.get<{ priv_groups: { id: number; name: string }[] }>("/api/v1/admin/server-privileges"),
-    enabled: isSuperuser && open,
+    enabled: (isSuperuser || department.can_manage_server_privilege_binding) && open,
   })
 
   useEffect(() => {
@@ -452,6 +452,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
   }, [open, level])
 
   const isHeadOrDeputy = level.kind === "head" || level.kind === "deputy_head"
+  const canManageBind = department.can_manage_server_privilege_binding || isSuperuser
 
   const updateMutation = useMutation({
     mutationFn: () => {
@@ -466,7 +467,8 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
       }
       return departmentsApi.accessLevels.update(department.id, level.id, {
         permissions: isHeadOrDeputy ? undefined : { pages: perms },
-        ...(isSuperuser ? { site_permissions: { pages: sitePerms }, kit_binding: kitBinding, server_privilege_group_id: serverPrivGroupId, can_bind_server_privilege: canBind } : {}),
+        ...(isSuperuser ? { site_permissions: { pages: sitePerms }, kit_binding: kitBinding, can_bind_server_privilege: canBind } : {}),
+        ...(canManageBind ? { server_privilege_group_id: serverPrivGroupId } : {}),
       })
     },
     onSuccess: () => {
@@ -561,10 +563,10 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
           </div>
         )}
 
-        {isSuperuser && (!isHeadOrDeputy || canBind) && (
+        {canManageBind && (
           <div className="space-y-1.5 border-t pt-3">
             <div className="text-xs font-semibold text-muted-foreground">
-              Серверная группа привилегий (только для суперпользователя)
+              Серверная группа привилегий {isSuperuser ? "(суперпользователь)" : "(делегировано — может привязывать)"}
             </div>
             <p className="text-xs text-muted-foreground">
               Игрок, привязанный к сотруднику, держащему этот уровень, автоматически получит эту группу — если она не назначена вручную.

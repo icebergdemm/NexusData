@@ -97,6 +97,28 @@ def is_head_or_deputy_or_superuser(admin: AdminUser, member: Optional[Department
     return bool(admin.is_superuser or (member and (member.is_head or member.is_deputy_head)))
 
 
+def _can_manage_server_privilege_binding(dept: Department, member: Optional[DepartmentMember], admin: AdminUser) -> bool:
+    """Может ли текущий пользователь привязывать серверные группы к уровням.
+    Разрешено суперпользователю всегда, либо держателю любого уровня с
+    can_bind_server_privilege=True. Флаг выставляется ТОЛЬКО суперпользователем
+    (см. api_update_access_level) и делегирует право управления привязками."""
+    if admin.is_superuser:
+        return True
+    if not member:
+        return False
+    held = set(member.held_level_keys or [])
+    for lvl in dept.access_levels:
+        if not getattr(lvl, "can_bind_server_privilege", False):
+            continue
+        if lvl.key in held:
+            return True
+        if lvl.kind == "head" and member.is_head:
+            return True
+        if lvl.kind == "deputy_head" and member.is_deputy_head:
+            return True
+    return False
+
+
 def _linked_admin_ids(db: Session, admin_ids: list) -> set:
     """Batch lookup — which of these admin ids have a linked in-game profile."""
     from models import PlayerData
@@ -404,6 +426,7 @@ def serialize_department(dept: Department, db: Session, current_admin: AdminUser
         "is_member": member is not None,
         "is_head": bool(member and member.is_head),
         "is_deputy_head": bool(member and member.is_deputy_head),
+        "can_manage_server_privilege_binding": _can_manage_server_privilege_binding(dept, member, current_admin),
         "my_access": my_access,
         "created_at": dept.created_at.isoformat() if dept.created_at else None,
     }
@@ -685,14 +708,14 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
             level.site_permissions = {"pages": cleaned}
         if "kit_binding" in body:
             _set_kit_binding(db, level, body.get("kit_binding"), current_admin.id)
-        if "server_privilege_group_id" in body:
-            # Superuser-only link, but gated by can_bind_server_privilege flag on head/deputy levels.
-            if level.kind in ("head", "deputy_head") and not level.can_bind_server_privilege:
-                raise HTTPException(status_code=403, detail="Привязка группы привилегий для этого уровня отключена")
-            raw = body.get("server_privilege_group_id")
-            level.server_privilege_group_id = int(raw) if raw not in (None, "") else None
         if "can_bind_server_privilege" in body:
             level.can_bind_server_privilege = bool(body.get("can_bind_server_privilege"))
+    # Привязка серверной группы — суперпользователь либо держатель уровня с can_bind_server_privilege
+    if "server_privilege_group_id" in body:
+        if not _can_manage_server_privilege_binding(dept, member, current_admin):
+            raise HTTPException(status_code=403, detail="Нет права привязывать группы серверных привилегий")
+        raw = body.get("server_privilege_group_id")
+        level.server_privilege_group_id = int(raw) if raw not in (None, "") else None
     db.commit()
     return {"status": "ok", "access_level": serialize_access_level(level)}
 
