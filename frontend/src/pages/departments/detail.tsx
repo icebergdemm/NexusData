@@ -1168,7 +1168,7 @@ export function DepartmentDetailPage() {
                 )
                 return (
                 <div className="flex flex-col gap-1.5">
-                  <p className="text-[11px] text-muted-foreground">Перетащите для изменения порядка · анимация при перемещении</p>
+                  <p className="text-[11px] text-muted-foreground">Перетащите для изменения порядка</p>
                   {sorted.map((l) => renderRow(l, !l.discord_role_id))}
                 </div>
                 )
