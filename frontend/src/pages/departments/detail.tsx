@@ -949,7 +949,7 @@ function RosterTab({ department, canEdit, isSuperuser }: { department: Departmen
   )
 }
 
-function ReprimandsTab({ department, isSuperuser, canManage }: { department: DepartmentDetail; isSuperuser: boolean; canManage: boolean }) {
+function ReprimandsTab({ department, isSuperuser }: { department: DepartmentDetail; isSuperuser: boolean }) {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ["department-reprimands", department.id], queryFn: () => departmentsApi.reprimands.list(department.id) })
   const isHead = isSuperuser || department.is_head
@@ -1180,7 +1180,7 @@ export function DepartmentDetailPage() {
         </TabsContent>
 
         <TabsContent value="reprimands">
-          <ReprimandsTab department={data} isSuperuser={isSuperuser} canManage={canManage} />
+          <ReprimandsTab department={data} isSuperuser={isSuperuser} />
         </TabsContent>
 
         <TabsContent value="news">
