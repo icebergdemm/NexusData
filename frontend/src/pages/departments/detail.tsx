@@ -453,6 +453,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
 
   const isHeadOrDeputy = level.kind === "head" || level.kind === "deputy_head"
   const canManageBind = department.can_manage_server_privilege_binding || isSuperuser
+  const canEditSite = isSuperuser || department.is_head || department.is_deputy_head
 
   const updateMutation = useMutation({
     mutationFn: () => {
@@ -467,7 +468,8 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
       }
       return departmentsApi.accessLevels.update(department.id, level.id, {
         permissions: isHeadOrDeputy ? undefined : { pages: perms },
-        ...(isSuperuser ? { site_permissions: { pages: sitePerms }, kit_binding: kitBinding, can_bind_server_privilege: canBind } : {}),
+        ...(canEditSite ? { site_permissions: { pages: sitePerms } } : {}),
+        ...(isSuperuser ? { kit_binding: kitBinding, can_bind_server_privilege: canBind } : {}),
         ...(canManageBind ? { server_privilege_group_id: serverPrivGroupId } : {}),
       })
     },
@@ -521,13 +523,13 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
           </div>
         )}
 
-        {isSuperuser && registryData && (
+        {(isSuperuser || department.can_manage_server_privilege_binding || department.is_head || department.is_deputy_head) && registryData && (
           <div className="space-y-1.5 border-t pt-3">
             <div className="text-xs font-semibold text-muted-foreground">
-              Дополнительные права на весь сайт (только для суперпользователя)
+              Дополнительные права на весь сайт {isSuperuser ? "(суперпользователь)" : "(только те, что есть у вас)"}
             </div>
             <p className="text-xs text-muted-foreground">
-              Выдаются в ДОПОЛНЕНИЕ к правам из «Пользователи ND» всем, кто держит этот уровень доступа.
+              Выдаются в ДОПОЛНЕНИЕ к правам из «Пользователи ND» всем, кто держит этот уровень доступа. Вы можете выдать только те функции, которые есть у вас самого и только если у вас есть право изменять уровни доступа.
             </p>
             <PermissionMatrixEditor registry={registryData.pages} value={sitePerms} onChange={setSitePerms} />
           </div>

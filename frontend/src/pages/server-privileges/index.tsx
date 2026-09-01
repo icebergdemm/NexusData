@@ -40,6 +40,7 @@ const EMPTY_GROUP_FORM = { name: "", group_key: "", commands: "", allowed_action
 export function ServerPrivilegesPage() {
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
+  const [serverTab, setServerTab] = useState<"all" | "ASPER1" | "ASPER2">("all")
   const [assignOpen, setAssignOpen] = useState(false)
   const [assignForm, setAssignForm] = useState(EMPTY_ASSIGN_FORM)
   const [editingPrivId, setEditingPrivId] = useState<number | null>(null)
@@ -150,45 +151,80 @@ export function ServerPrivilegesPage() {
       </TabsList>
 
       <TabsContent value="players" className="space-y-4">
-        <div className="flex justify-end">
-          <Button onClick={openCreatePriv}><Plus className="size-4" /> Назначить привилегии</Button>
+        {/* ── 2 серверных таба ── */}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex gap-1 rounded-lg bg-muted p-1">
+              {([
+                { id: "all", label: "Все серверы", icon: "🌐" },
+                { id: "ASPER1", label: "ASPER1", icon: "🟦" },
+                { id: "ASPER2", label: "ASPER2", icon: "🟪" },
+              ] as const).map((t) => {
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => setServerTab(t.id)}
+                    className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all ${serverTab === t.id ? "bg-background shadow text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {t.icon} {t.label} <span className="ml-1 text-xs opacity-60">({t.id === "all" ? data?.total ?? 0 : data?.privileges.filter((p) => p.server_scope === t.id).length ?? 0})</span>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={() => { setEditingPrivId(null); setAssignForm({ ...EMPTY_ASSIGN_FORM, server_scope: serverTab === "all" ? "" : serverTab }); setAssignOpen(true) }} className="bg-gradient-to-r from-primary to-primary/80 shadow">
+                <Plus className="size-4" /> Назначить {serverTab === "all" ? "" : `на ${serverTab}`}
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Один игрок может иметь <b>разные права на разных серверах</b> — создайте два отдельных гранта с областью ASPER1 и ASPER2. Глобальные гранты (Все) суммируются с серверными.
+          </p>
         </div>
 
         <Card className="overflow-hidden py-0">
           <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b bg-muted/30 py-3">
-            <CardTitle className="text-sm font-semibold">Игроки с привилегиями ({data?.total ?? 0})</CardTitle>
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск..." className="ml-auto max-w-xs" />
+            <CardTitle className="text-sm font-semibold">
+              {serverTab === "all" ? `Игроки с привилегиями (${data?.total ?? 0})` : `Игроки — ${serverTab} (${data?.privileges.filter((p) => p.server_scope === serverTab).length ?? 0})`}
+            </CardTitle>
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по SteamID / имени..." className="ml-auto max-w-xs" />
           </CardHeader>
           <CardContent className="p-0">
             <Table>
               <TableHeader><TableRow><TableHead>Игрок</TableHead><TableHead>Группа</TableHead><TableHead>Область</TableHead><TableHead>Команды</TableHead><TableHead /></TableRow></TableHeader>
               <TableBody>
-                {data?.privileges.map((p) => (
-                  <TableRow key={p.id}>
+                {(serverTab === "all" ? data?.privileges : data?.privileges.filter((p) => p.server_scope === serverTab))?.map((p) => (
+                  <TableRow key={p.id} className="group hover:bg-muted/50 transition-colors">
                     <TableCell>
-                      <div className="font-medium">{p.player_name ?? "-"}</div>
+                      <div className="font-medium group-hover:text-primary transition-colors">{p.player_name ?? "-"}</div>
                       <div className="font-mono text-xs text-muted-foreground">{p.steamid}</div>
                     </TableCell>
                     <TableCell className="space-x-1">
-                      <Badge variant="secondary">{groupName(p.server_group_id)}</Badge>
+                      <Badge variant="secondary" className="shadow-sm">{groupName(p.server_group_id)}</Badge>
                       {p.is_auto && (
                         <Badge variant="outline" className="border-info/40 text-[10px] text-info">
                           От отдела: {p.auto_source_department_name ?? "—"}
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell>{p.server_scope ?? "Все"}</TableCell>
+                    <TableCell>
+                      {p.server_scope ? (
+                        <Badge className={p.server_scope === "ASPER1" ? "bg-blue-500 hover:bg-blue-600" : "bg-purple-500 hover:bg-purple-600"}>{p.server_scope}</Badge>
+                      ) : (
+                        <Badge variant="outline">Все</Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="max-w-xs truncate text-xs text-muted-foreground">{p.commands.join(", ") || "-"}</TableCell>
                     <TableCell className="space-x-1.5 text-right whitespace-nowrap">
-                      <Button size="sm" variant="outline" onClick={() => openEditPriv(p)}>Изменить</Button>
+                      <Button size="sm" variant="outline" onClick={() => openEditPriv(p)} className="hover:border-primary/50">Изменить</Button>
                       <Button size="sm" variant="destructive" onClick={() => setRevokeTarget(p)}>Отозвать</Button>
                     </TableCell>
                   </TableRow>
                 ))}
-                {!data?.privileges.length && <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Нет назначений</TableCell></TableRow>}
+                {!(serverTab === "all" ? data?.privileges.length : data?.privileges.filter((p) => p.server_scope === serverTab).length) && <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Нет назначений для {serverTab === "all" ? "выбранного фильтра" : serverTab}</TableCell></TableRow>}
               </TableBody>
             </Table>
-            {data && data.total_pages > 1 && (
+            {data && data.total_pages > 1 && serverTab === "all" && (
               <div className="flex items-center justify-center gap-2 border-t bg-muted/30 py-3">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Назад</Button>
                 <span className="text-sm text-muted-foreground">Страница {data.page} из {data.total_pages}</span>
@@ -252,17 +288,19 @@ export function ServerPrivilegesPage() {
               </Select>
             </div>
             <div>
-              <Label className="mb-1.5 block">Область (пусто = все сервера)</Label>
-              <Input
-                value={assignForm.server_scope}
-                disabled={!!editingPrivId}
-                onChange={(e) => setAssignForm((f) => ({ ...f, server_scope: e.target.value }))}
-                placeholder="ASPER1 / ASPER2"
-              />
+              <Label className="mb-1.5 block">Область</Label>
+              <Select value={assignForm.server_scope || "all"} onValueChange={(v) => setAssignForm((f) => ({ ...f, server_scope: v === "all" ? "" : v }))} disabled={!!editingPrivId}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">🌐 Все серверы</SelectItem>
+                  <SelectItem value="ASPER1">🟦 ASPER1</SelectItem>
+                  <SelectItem value="ASPER2">🟪 ASPER2</SelectItem>
+                </SelectContent>
+              </Select>
               <p className="mt-1 text-[11px] text-muted-foreground">
                 {editingPrivId
                   ? "Область гранта нельзя сменить при редактировании — отзовите его и назначьте заново на нужную область."
-                  : "Каждая область — отдельный грант. Назначив ASPER1, а затем отдельно ASPER2, игрок получит оба одновременно."}
+                  : "Каждая область — отдельный грант. Назначив ASPER1, а затем отдельно ASPER2, игрок получит разные права на каждом сервере."}
               </p>
             </div>
             <div>

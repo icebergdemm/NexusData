@@ -695,21 +695,36 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
             if new_kind == "base" and level.kind != "base":
                 raise HTTPException(status_code=400, detail="Нельзя создать второй базовый уровень через изменение типа")
             level.kind = new_kind
-        if "site_permissions" in body:
-            from permissions_registry import PERMISSION_REGISTRY
-            raw = body.get("site_permissions") or {}
-            pages = raw.get("pages", raw) if isinstance(raw, dict) else {}
-            cleaned = {}
-            for page, actions in (pages or {}).items():
-                if page not in PERMISSION_REGISTRY or not isinstance(actions, dict):
-                    continue
-                valid_actions = {a["key"] for a in PERMISSION_REGISTRY[page]["actions"]}
-                cleaned[page] = {k: True for k, v in actions.items() if k in valid_actions and v}
-            level.site_permissions = {"pages": cleaned}
-        if "kit_binding" in body:
-            _set_kit_binding(db, level, body.get("kit_binding"), current_admin.id)
         if "can_bind_server_privilege" in body:
             level.can_bind_server_privilege = bool(body.get("can_bind_server_privilege"))
+    # site_permissions — суперпользователь всегда, либо держатель права на изменение уровней
+    # может делегировать только те функции сайта, которые есть у него самого
+    if "site_permissions" in body:
+        from permissions_registry import PERMISSION_REGISTRY
+        raw = body.get("site_permissions") or {}
+        pages = raw.get("pages", raw) if isinstance(raw, dict) else {}
+        cleaned = {}
+        for page, actions in (pages or {}).items():
+            if page not in PERMISSION_REGISTRY or not isinstance(actions, dict):
+                continue
+            valid_actions = {a["key"] for a in PERMISSION_REGISTRY[page]["actions"]}
+            cleaned[page] = {k: True for k, v in actions.items() if k in valid_actions and v}
+        if not current_admin.is_superuser:
+            if not is_head_or_deputy_or_superuser(current_admin, member):
+                raise HTTPException(status_code=403, detail="Только суперпользователь может выдавать права сайта")
+            # Проверка: можно выдавать только то, что есть у самого настройщика
+            from security import check_permission as _check_perm
+            for page, actions in cleaned.items():
+                for act, allowed in actions.items():
+                    if allowed and not _check_perm(current_admin, page, act):
+                        raise HTTPException(status_code=403, detail=f"Нет права выдавать {page}:{act} — у вас самого его нет")
+        level.site_permissions = {"pages": cleaned}
+    if current_admin.is_superuser:
+        if "kit_binding" in body:
+            _set_kit_binding(db, level, body.get("kit_binding"), current_admin.id)
+    else:
+        if "kit_binding" in body:
+            raise HTTPException(status_code=403, detail="Только суперпользователь может привязывать квал-киты")
     # Привязка серверной группы — суперпользователь либо держатель уровня с can_bind_server_privilege
     if "server_privilege_group_id" in body:
         if not _can_manage_server_privilege_binding(dept, member, current_admin):
