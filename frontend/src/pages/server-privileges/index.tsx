@@ -81,9 +81,9 @@ export function ServerPrivilegesPage() {
     onSuccess: () => { toast.success("Привилегии отозваны"); setRevokeTarget(null); invalidate() },
   })
 
-  const openCreatePriv = () => {
+  const openCreatePriv = (scope: string = "") => {
     setEditingPrivId(null)
-    setAssignForm(EMPTY_ASSIGN_FORM)
+    setAssignForm({ ...EMPTY_ASSIGN_FORM, server_scope: scope })
     setAssignOpen(true)
   }
   const openEditPriv = (p: PlayerPriv) => {
@@ -172,7 +172,7 @@ export function ServerPrivilegesPage() {
               })}
             </div>
             <div className="flex gap-2">
-              <Button onClick={() => { setEditingPrivId(null); setAssignForm({ ...EMPTY_ASSIGN_FORM, server_scope: serverTab === "all" ? "" : serverTab }); setAssignOpen(true) }} className="bg-gradient-to-r from-primary to-primary/80 shadow">
+              <Button onClick={() => openCreatePriv(serverTab === "all" ? "" : serverTab)} className="bg-gradient-to-r from-primary to-primary/80 shadow">
                 <Plus className="size-4" /> Назначить {serverTab === "all" ? "" : `на ${serverTab}`}
               </Button>
             </div>
