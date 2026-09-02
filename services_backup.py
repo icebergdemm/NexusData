@@ -1,8 +1,9 @@
-"""Encrypted, key-only SFTP backups for NexusData.
+"""Encrypted SFTP backups for NexusData.
 
 Security invariants:
-  * backup SFTP never accepts a password and never accepts the ``root`` user;
-  * the SSH host key must already exist in a dedicated known_hosts file;
+  * credentials are never written to application logs or subprocess arguments;
+  * the SSH host key is pinned after the first successful connection (TOFU),
+    or checked strictly immediately when a known_hosts file already exists;
   * the complete archive is encrypted with AES-256-GCM before upload;
   * remote upload is atomic (``.part`` -> final name) and mode 0600;
   * plaintext database snapshots exist only in a mode-0700 temporary directory
@@ -38,6 +39,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Iterable
+from urllib.parse import urlsplit
 
 import paramiko
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -58,6 +60,7 @@ ARCHIVE_RE = re.compile(
 PROJECT_ROOT = Path(__file__).resolve().parent
 LOG_INDEX_PATH = PROJECT_ROOT / "data" / "logs_cache" / "logs.db"
 BACKUP_LOCK_PATH = PROJECT_ROOT / "data" / "backup.lock"
+DEFAULT_KNOWN_HOSTS_PATH = PROJECT_ROOT / "data" / "backup_known_hosts"
 
 _backup_lock = threading.Lock()
 
@@ -90,46 +93,75 @@ def decode_encryption_key(value: str) -> bytes:
     return key
 
 
-def _expanded_file(path_value: str, setting_name: str) -> Path:
-    path = Path(path_value or "").expanduser()
-    if not path_value or not path.is_file():
-        raise BackupConfigurationError(f"{setting_name} must point to an existing file")
-    return path.resolve()
-
-
 def validate_backup_settings(settings: Settings) -> dict:
     """Validate fail-closed backup settings and return normalized values."""
 
-    host = (settings.backup_sftp_host or "").strip()
+    # Select password aliases as one coherent profile. This prevents a stale
+    # BACKUP_SFTP_USERNAME/key path from being combined with SFTP_PASSWORD.
+    use_compact_password = bool(settings.sftp_password) and not bool(
+        settings.backup_sftp_password
+    )
+    if use_compact_password:
+        host_value = settings.sftp_ip or settings.backup_sftp_host
+        username_value = settings.sftp_user or settings.backup_sftp_username
+        password = settings.sftp_password
+        private_key_value = ""
+        port = settings.sftp_port
+    else:
+        host_value = settings.backup_sftp_host or settings.sftp_ip
+        username_value = settings.backup_sftp_username or settings.sftp_user
+        password = settings.backup_sftp_password
+        private_key_value = settings.backup_sftp_private_key_path
+        port = settings.backup_sftp_port
+
+    host = (host_value or "").strip()
     if not host:
-        raise BackupConfigurationError("BACKUP_SFTP_HOST is required")
-    if "://" in host or "/" in host or any(char.isspace() for char in host):
+        raise BackupConfigurationError("BACKUP_SFTP_HOST or SFTP_IP is required")
+    if "://" in host:
+        parsed_host = urlsplit(host).hostname
+        if not parsed_host:
+            raise BackupConfigurationError("SFTP host URL does not contain a hostname/IP")
+        host = parsed_host
+    if "/" in host or any(char.isspace() for char in host):
         raise BackupConfigurationError(
-            "BACKUP_SFTP_HOST must be a hostname/IP without http://, https:// or a path"
+            "SFTP host must be a hostname/IP without a path"
         )
 
-    username = (settings.backup_sftp_username or "").strip()
+    username = (username_value or "").strip()
     if not username:
-        raise BackupConfigurationError("BACKUP_SFTP_USERNAME is required")
-    if username.casefold() == "root":
-        raise BackupConfigurationError("root is forbidden for backup SFTP")
+        raise BackupConfigurationError("BACKUP_SFTP_USERNAME or SFTP_USER is required")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}", username):
         raise BackupConfigurationError("BACKUP_SFTP_USERNAME contains unsafe characters")
 
-    private_key = _expanded_file(
-        settings.backup_sftp_private_key_path,
-        "BACKUP_SFTP_PRIVATE_KEY_PATH",
-    )
-    key_mode = stat.S_IMODE(private_key.stat().st_mode)
-    if key_mode & 0o077:
+    private_key: Path | None = None
+    if private_key_value:
+        configured_key = Path(private_key_value).expanduser()
+        if configured_key.is_file():
+            private_key = configured_key.resolve()
+            key_mode = stat.S_IMODE(private_key.stat().st_mode)
+            if key_mode & 0o077:
+                raise BackupConfigurationError(
+                    "BACKUP_SFTP_PRIVATE_KEY_PATH must not be readable by group/others (use chmod 600)"
+                )
+        elif not password:
+            raise BackupConfigurationError(
+                "BACKUP_SFTP_PRIVATE_KEY_PATH must point to an existing file"
+            )
+    if private_key is None and not password:
         raise BackupConfigurationError(
-            "BACKUP_SFTP_PRIVATE_KEY_PATH must not be readable by group/others (use chmod 600)"
+            "BACKUP_SFTP_PASSWORD/SFTP_PASSWORD or an existing private key is required"
         )
 
-    known_hosts = _expanded_file(
-        settings.backup_sftp_known_hosts_path,
-        "BACKUP_SFTP_KNOWN_HOSTS_PATH",
-    )
+    known_hosts = Path(
+        settings.backup_sftp_known_hosts_path or DEFAULT_KNOWN_HOSTS_PATH
+    ).expanduser().resolve()
+    known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    if not known_hosts.exists():
+        descriptor = os.open(known_hosts, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+    elif not known_hosts.is_file():
+        raise BackupConfigurationError("BACKUP_SFTP_KNOWN_HOSTS_PATH must be a file")
+    host_key_is_pinned = known_hosts.stat().st_size > 0
 
     remote_dir = posixpath.normpath((settings.backup_sftp_remote_dir or "").strip())
     if not remote_dir.startswith("/") or remote_dir in ("/", "/."):
@@ -141,10 +173,13 @@ def validate_backup_settings(settings: Settings) -> dict:
     return {
         "host": host,
         "username": username,
+        "password": password or None,
         "private_key": private_key,
         "known_hosts": known_hosts,
+        "host_key_is_pinned": host_key_is_pinned,
         "remote_dir": remote_dir,
         "encryption_key": encryption_key,
+        "port": port,
     }
 
 
@@ -457,14 +492,25 @@ def _mkdir_remote(sftp: paramiko.SFTPClient, path: str) -> None:
 def _connect_sftp(settings: Settings, normalized: dict) -> tuple[paramiko.SSHClient, paramiko.SFTPClient]:
     client = paramiko.SSHClient()
     client.load_host_keys(str(normalized["known_hosts"]))
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    if normalized["host_key_is_pinned"]:
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    else:
+        # Trust on first use: the first successful server key is persisted to
+        # the private backup known_hosts file; every later connection rejects
+        # a missing/changed key. This keeps simple password-only setup usable
+        # while still detecting changes after enrollment.
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         client.connect(
             hostname=normalized["host"],
-            port=settings.backup_sftp_port,
+            port=normalized["port"],
             username=normalized["username"],
-            password=None,
-            key_filename=str(normalized["private_key"]),
+            password=normalized["password"],
+            key_filename=(
+                str(normalized["private_key"])
+                if normalized["private_key"] is not None
+                else None
+            ),
             passphrase=settings.backup_sftp_private_key_passphrase or None,
             look_for_keys=False,
             allow_agent=False,
@@ -476,6 +522,16 @@ def _connect_sftp(settings: Settings, normalized: dict) -> tuple[paramiko.SSHCli
         if transport is not None:
             transport.set_keepalive(30)
         return client, client.open_sftp()
+    except TimeoutError as exc:
+        client.close()
+        raise BackupExecutionError(
+            f"SFTP connection timed out: {normalized['host']}:{normalized['port']} is unreachable"
+        ) from exc
+    except paramiko.ssh_exception.NoValidConnectionsError as exc:
+        client.close()
+        raise BackupExecutionError(
+            f"SFTP connection failed: cannot reach {normalized['host']}:{normalized['port']}"
+        ) from exc
     except Exception:
         client.close()
         raise
@@ -544,7 +600,13 @@ def test_backup_connection(settings: Settings | None = None) -> dict:
     try:
         _mkdir_remote(sftp, normalized["remote_dir"])
         sftp.listdir_attr(normalized["remote_dir"])
-        return {"status": "ok", "host_key_verified": True, "password_auth": False}
+        return {
+            "status": "ok",
+            "host_key_pinned": True,
+            "host_key_enrolled_now": not normalized["host_key_is_pinned"],
+            "auth": "password" if normalized["password"] else "private_key",
+            "username": normalized["username"],
+        }
     finally:
         sftp.close()
         client.close()

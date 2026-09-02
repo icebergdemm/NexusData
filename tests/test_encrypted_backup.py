@@ -37,16 +37,24 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
     return Settings(_env_file=None, **values)
 
 
-def test_backup_configuration_rejects_root_and_url_host(tmp_path):
-    with pytest.raises(services_backup.BackupConfigurationError, match="root"):
-        services_backup.validate_backup_settings(
-            _settings(tmp_path, backup_sftp_username="root")
-        )
+def test_backup_configuration_accepts_compact_password_credentials(tmp_path):
+    settings = _settings(
+        tmp_path,
+        backup_sftp_host="stale-backup.invalid",
+        backup_sftp_username="stale-backup-user",
+        backup_sftp_private_key_path=str(tmp_path / "missing-stale-key"),
+        sftp_ip="https://213.108.170.48",
+        sftp_user="root",
+        sftp_password="test-password",
+        sftp_port=2222,
+    )
+    normalized = services_backup.validate_backup_settings(settings)
 
-    with pytest.raises(services_backup.BackupConfigurationError, match="without http"):
-        services_backup.validate_backup_settings(
-            _settings(tmp_path, backup_sftp_host="https://213.108.170.48")
-        )
+    assert normalized["host"] == "213.108.170.48"
+    assert normalized["username"] == "root"
+    assert normalized["password"] == "test-password"
+    assert normalized["private_key"] is None
+    assert normalized["port"] == 2222
 
 
 def test_backup_configuration_requires_private_key_permissions(tmp_path):
@@ -95,6 +103,77 @@ def test_sftp_connection_is_host_pinned_and_key_only(tmp_path, monkeypatch):
     assert captured["connect"]["key_filename"] == str(normalized["private_key"])
     assert captured["keepalive"] == 30
     client.close()
+
+
+def test_sftp_timeout_has_actionable_safe_error(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    normalized = services_backup.validate_backup_settings(settings)
+
+    class FakeClient:
+        def load_host_keys(self, _path):
+            pass
+
+        def set_missing_host_key_policy(self, _policy):
+            pass
+
+        def connect(self, **_kwargs):
+            raise TimeoutError()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(services_backup.paramiko, "SSHClient", FakeClient)
+    with pytest.raises(
+        services_backup.BackupExecutionError,
+        match=r"backup\.invalid:22 is unreachable",
+    ):
+        services_backup._connect_sftp(settings, normalized)
+
+
+def test_password_connection_enrolls_first_host_key_then_pins_it(tmp_path, monkeypatch):
+    known_hosts = tmp_path / "new-known-hosts"
+    settings = _settings(
+        tmp_path,
+        backup_sftp_private_key_path="",
+        backup_sftp_password="password-only",
+        backup_sftp_known_hosts_path=str(known_hosts),
+    )
+    normalized = services_backup.validate_backup_settings(settings)
+    captured = {}
+
+    class FakeTransport:
+        def set_keepalive(self, _seconds):
+            pass
+
+    class FakeClient:
+        def load_host_keys(self, path):
+            captured["known_hosts"] = path
+
+        def set_missing_host_key_policy(self, policy):
+            captured["policy"] = policy
+
+        def connect(self, **kwargs):
+            captured["connect"] = kwargs
+
+        def get_transport(self):
+            return FakeTransport()
+
+        def open_sftp(self):
+            return object()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(services_backup.paramiko, "SSHClient", FakeClient)
+    services_backup._connect_sftp(settings, normalized)
+
+    assert known_hosts.exists()
+    assert known_hosts.stat().st_mode & 0o777 == 0o600
+    assert isinstance(captured["policy"], paramiko.AutoAddPolicy)
+    assert captured["connect"]["password"] == "password-only"
+    assert captured["connect"]["key_filename"] is None
+    assert captured["connect"]["allow_agent"] is False
+    assert captured["connect"]["look_for_keys"] is False
 
 
 def test_archive_is_encrypted_authenticated_and_restorable(tmp_path):

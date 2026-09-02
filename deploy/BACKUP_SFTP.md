@@ -11,15 +11,37 @@ The live NexusData log index is still its operational SQLite database. This
 feature encrypts the off-site copy; encrypting the live database at rest would
 be a separate SQLCipher migration.
 
-## 0. Rotate the exposed root credential
+## 0. Password-only quick setup
 
-If a real root password was pasted into chat, a ticket or a log, rotate it now.
-Do not put `SFTP_USER=root` or `SFTP_PASSWORD=...` into NexusData. The backup
-module deliberately rejects root and does not implement password auth.
+The compact mode accepts the existing `SFTP_IP`, `SFTP_PORT`, `SFTP_USER` and
+`SFTP_PASSWORD` settings. The password is never written to application logs or
+subprocess arguments. `BACKUP_ENCRYPTION_KEY` is still mandatory because it
+encrypts the backup itself before upload.
 
-`BACKUP_SFTP_HOST` is `213.108.170.48`, not `https://213.108.170.48`.
+When `SFTP_PASSWORD` is non-empty and `BACKUP_SFTP_PASSWORD` is empty, these
+four compact values form one profile and take precedence over leftover
+`BACKUP_SFTP_HOST`, username and private-key settings.
 
-## 1. Create a dedicated client key on the NexusData host
+```dotenv
+SFTP_IP=213.108.170.48
+SFTP_PORT=22
+SFTP_USER=your-sftp-user
+SFTP_PASSWORD=your-sftp-password
+BACKUP_ENCRYPTION_KEY=PASTE_THE_GENERATED_32_BYTE_BASE64_KEY
+BACKUP_SFTP_REMOTE_DIR=/data
+BACKUP_ENABLED=false
+```
+
+An `https://` prefix is tolerated and stripped, though a bare IP/hostname is
+clearer. If `BACKUP_SFTP_KNOWN_HOSTS_PATH` is empty, NexusData creates
+`data/backup_known_hosts`: the first connection enrolls the server key and all
+later connections reject a changed key (trust on first use).
+
+Using `root` is supported but strongly discouraged: anyone who obtains the site
+`.env` then obtains full access to the backup host. The restricted setup below
+contains the impact to backup files only.
+
+## 1. Optional recommended restricted key setup
 
 Run as the same OS user that runs NexusData:
 
@@ -50,7 +72,7 @@ If the host is actively scanned and NexusData has a stable public IP, also
 allow TCP/22 only from that IP in the provider firewall (or, for example, UFW),
 then deny other sources. Keep console access before changing firewall rules.
 
-## 3. Pin and verify the SSH host key
+## 3. Optional manual host-key verification
 
 On the backup host/provider console, obtain the authoritative fingerprint:
 
@@ -67,8 +89,9 @@ ssh-keygen -lf /home/container/.ssh/nexus_backup_known_hosts -E sha256
 chmod 0644 /home/container/.ssh/nexus_backup_known_hosts
 ```
 
-Do not trust an unverified `ssh-keyscan` result by itself. NexusData uses
-Paramiko `RejectPolicy`; an unknown or changed key stops the backup.
+Do not trust an unverified `ssh-keyscan` result by itself. With a pre-populated
+file NexusData uses strict verification; after automatic first-use enrollment,
+an unknown or changed key also stops the backup.
 
 ## 4. Configure NexusData
 
@@ -90,6 +113,7 @@ BACKUP_RETENTION_COUNT=14
 BACKUP_SFTP_HOST=213.108.170.48
 BACKUP_SFTP_PORT=22
 BACKUP_SFTP_USERNAME=nexusbackup
+BACKUP_SFTP_PASSWORD=
 BACKUP_SFTP_PRIVATE_KEY_PATH=/home/container/.ssh/nexus_backup
 BACKUP_SFTP_PRIVATE_KEY_PASSPHRASE=
 BACKUP_SFTP_KNOWN_HOSTS_PATH=/home/container/.ssh/nexus_backup_known_hosts

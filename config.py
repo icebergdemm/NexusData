@@ -262,20 +262,20 @@ class Settings(BaseSettings):
     sftp_server_1_logs_timezone: str = ""
     sftp_server_2_logs_timezone: str = ""
 
-    # Encrypted off-site backups.  This is deliberately separate from the
-    # game-server SFTP credentials above: a backup destination is a different
-    # trust boundary and must use its own restricted, key-only account.
+    # Encrypted off-site backups. Dedicated BACKUP_* names are preferred, but
+    # the compact SFTP_IP/SFTP_USER/SFTP_PASSWORD aliases are supported for a
+    # single simple backup destination.
     backup_enabled: bool = False
     backup_interval_hours: int = Field(24, ge=1, le=720)
     backup_retention_count: int = Field(14, ge=1, le=365)
     backup_sftp_host: str = ""
     backup_sftp_port: int = Field(22, ge=1, le=65535)
-    backup_sftp_username: str = "nexusbackup"
+    backup_sftp_username: str = ""
+    backup_sftp_password: str = ""
     backup_sftp_private_key_path: str = ""
     backup_sftp_private_key_passphrase: str = ""
-    # A dedicated known_hosts file is mandatory when backups are enabled.  We
-    # never auto-accept a key: doing so would make an actively scanned network
-    # path vulnerable to a machine-in-the-middle receiving the backup.
+    # An explicit file can be pre-populated for strict verification. If empty,
+    # the backup service uses a private default file and pins on first use.
     backup_sftp_known_hosts_path: str = ""
     backup_sftp_remote_dir: str = "/data"
     # URL-safe or regular base64 encoding of exactly 32 random bytes.  The key
@@ -295,6 +295,13 @@ class Settings(BaseSettings):
     # Empty means the OS private temporary directory.  Nothing is retained
     # here after a successful or failed run.
     backup_temp_dir: str = ""
+
+    # Compact/simple backup credentials. A non-empty SFTP_PASSWORD selects this
+    # coherent profile unless BACKUP_SFTP_PASSWORD is explicitly configured.
+    sftp_ip: str = ""
+    sftp_user: str = ""
+    sftp_password: str = ""
+    sftp_port: int = Field(22, ge=1, le=65535)
 
     # Discord Bot channel for sub-projects publishing
     sub_projects_discord_channel_id: str = ""
