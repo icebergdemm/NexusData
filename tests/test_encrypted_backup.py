@@ -254,6 +254,7 @@ def test_mysql_password_is_in_mode_600_option_file_not_command_or_environment(tm
         kwargs["stdout"].write(b"-- consistent dump\n")
         return Completed()
 
+    monkeypatch.setattr(services_backup.shutil, "which", lambda _binary: "/usr/bin/mysqldump")
     monkeypatch.setattr(services_backup.subprocess, "run", fake_run)
     settings = _settings(
         tmp_path,
@@ -268,6 +269,102 @@ def test_mysql_password_is_in_mode_600_option_file_not_command_or_environment(tm
     assert captured["password_env"] is None
     assert all("very-secret" not in part for part in captured["command"])
     assert not (tmp_path / ".mysql-backup.cnf").exists()
+
+
+def test_builtin_mysql_dump_streams_schema_and_rows_without_system_client(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeCursor:
+        def __init__(self, streaming=False):
+            self.streaming = streaming
+            self.rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+        def execute(self, query):
+            if query == "SHOW FULL TABLES":
+                self.rows = [("players", "BASE TABLE")]
+            elif query == "SHOW CREATE TABLE `players`":
+                self.rows = [("players", "CREATE TABLE `players` (`id` INT, `name` TEXT, `label` TEXT GENERATED ALWAYS AS (`name`) VIRTUAL)")]
+            elif query == "SHOW COLUMNS FROM `players`":
+                self.rows = [
+                    ("id", "int", "NO", "", None, ""),
+                    ("name", "text", "YES", "", None, ""),
+                    ("label", "text", "YES", "", None, "VIRTUAL GENERATED"),
+                ]
+            elif query == "SELECT `id`,`name` FROM `players`":
+                assert self.streaming is True
+                self.rows = [(1, "Alice"), (2, "O'Reilly")]
+            else:
+                self.rows = []
+            return len(self.rows)
+
+        def fetchall(self):
+            return list(self.rows)
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+        def __iter__(self):
+            return iter(self.rows)
+
+        def close(self):
+            pass
+
+    class FakeConnection:
+        def cursor(self, cursor_type=None):
+            return FakeCursor(streaming=cursor_type is services_backup.pymysql.cursors.SSCursor)
+
+        def escape(self, value):
+            if value is None:
+                return "NULL"
+            if isinstance(value, str):
+                return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            return str(value)
+
+        def rollback(self):
+            captured["rolled_back"] = True
+
+        def close(self):
+            captured["closed"] = True
+
+    def fake_connect(**kwargs):
+        captured["connect"] = kwargs
+        return FakeConnection()
+
+    monkeypatch.setattr(services_backup.shutil, "which", lambda _binary: None)
+    monkeypatch.setattr(services_backup.pymysql, "connect", fake_connect)
+    settings = _settings(
+        tmp_path,
+        database_url="mysql+pymysql://backup_user:very-secret@db.invalid:3306/nexus",
+    )
+    destination = tmp_path / "database.sql"
+
+    result = services_backup._dump_mysql(settings, destination)
+    dump = destination.read_text(encoding="utf-8")
+
+    assert result == {
+        "included": True,
+        "bytes": destination.stat().st_size,
+        "method": "pymysql",
+        "tables": 1,
+        "rows": 2,
+        "views": 0,
+        "skipped_objects": 0,
+    }
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert captured["connect"]["password"] == "very-secret"
+    assert captured["rolled_back"] is True
+    assert captured["closed"] is True
+    assert "very-secret" not in dump
+    assert "CREATE TABLE `players`" in dump
+    assert "INSERT INTO `players` (`id`,`name`)" in dump
+    assert "O\\'Reilly" in dump
+    assert "INSERT INTO `players` (`id`,`name`,`label`)" not in dump
 
 
 def test_create_backup_removes_local_temporary_copy(tmp_path, monkeypatch):

@@ -128,10 +128,12 @@ BACKUP_MYSQLDUMP_BINARY=mysqldump
 BACKUP_COMMAND_TIMEOUT_SECONDS=1800
 ```
 
-Install the MySQL/MariaDB client package so `mysqldump` is available. Add the
-extra log paths to `BACKUP_INCLUDE_PATHS` when they are provided. `.env`, SSH
-keys, common key/certificate files, Git metadata, virtual environments,
-`node_modules`, device files and symlinks are excluded from archives.
+If `mysqldump` is installed NexusData uses it. In restricted containers without
+system-package access, it automatically falls back to a streaming schema/data
+export through the already installed PyMySQL driver. Add the extra log paths to
+`BACKUP_INCLUDE_PATHS` when they are provided. `.env`, SSH keys, common
+key/certificate files, Git metadata, virtual environments, `node_modules`,
+device files and symlinks are excluded from archives.
 
 ## 5. Check, run once, then enable the schedule
 

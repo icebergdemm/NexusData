@@ -28,6 +28,7 @@ import os
 import posixpath
 import re
 import secrets
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -42,6 +43,7 @@ from typing import BinaryIO, Iterable
 from urllib.parse import urlsplit
 
 import paramiko
+import pymysql
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy.engine import make_url
 
@@ -267,6 +269,150 @@ def decrypt_archive(encrypted_path: Path, output_tar_path: Path, key_value: str 
             raise
 
 
+def _mysql_identifier(value: str) -> str:
+    if not value or "\x00" in value:
+        raise BackupExecutionError("database contains an unsafe SQL identifier")
+    return f"`{value.replace('`', '``')}`"
+
+
+def _dump_mysql_with_pymysql(url, destination: Path) -> dict:
+    """Portable schema/data dump used when the system client is unavailable.
+
+    Rows are read with an unbuffered cursor and emitted in bounded INSERT
+    batches, so the fallback does not load a large production table into RAM.
+    """
+
+    connection = None
+    table_count = 0
+    row_count = 0
+    try:
+        connection = pymysql.connect(
+            host=url.host or "localhost",
+            port=url.port or 3306,
+            user=url.username,
+            password=url.password or "",
+            database=url.database,
+            charset="utf8mb4",
+            autocommit=False,
+            connect_timeout=10,
+            read_timeout=300,
+            write_timeout=30,
+        )
+
+        tables: list[tuple[str, str, list[str]]] = []
+        views: list[tuple[str, str]] = []
+        skipped_objects: list[str] = []
+        with connection.cursor() as cursor:
+            cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+            cursor.execute("SHOW FULL TABLES")
+            objects = cursor.fetchall()
+            for object_name, object_type in objects:
+                name = str(object_name)
+                quoted_name = _mysql_identifier(name)
+                cursor.execute(f"SHOW CREATE TABLE {quoted_name}")
+                create_row = cursor.fetchone()
+                if not create_row or len(create_row) < 2:
+                    raise BackupExecutionError("database object schema could not be read")
+                create_sql = str(create_row[1]).rstrip(";\n")
+                if str(object_type).upper() == "BASE TABLE":
+                    cursor.execute(f"SHOW COLUMNS FROM {quoted_name}")
+                    # Generated columns are recomputed by MySQL and must not be
+                    # included in INSERT statements during restore.
+                    columns = [
+                        str(column[0])
+                        for column in cursor.fetchall()
+                        if len(column) < 6 or "GENERATED" not in str(column[5] or "").upper()
+                    ]
+                    tables.append((name, create_sql, columns))
+                elif str(object_type).upper() == "VIEW":
+                    views.append((name, create_sql))
+                else:
+                    skipped_objects.append(name)
+
+        with destination.open("x", encoding="utf-8", newline="\n") as output:
+            os.chmod(destination, 0o600)
+            output.write("-- NexusData built-in MySQL/MariaDB backup\n")
+            output.write("SET NAMES utf8mb4;\n")
+            output.write("SET FOREIGN_KEY_CHECKS=0;\n")
+            output.write("SET UNIQUE_CHECKS=0;\n\n")
+
+            for table_name, create_sql, columns in tables:
+                quoted_table = _mysql_identifier(table_name)
+                output.write(f"DROP TABLE IF EXISTS {quoted_table};\n")
+                output.write(f"{create_sql};\n")
+                table_count += 1
+                if not columns:
+                    output.write("\n")
+                    continue
+
+                quoted_columns = ",".join(_mysql_identifier(column) for column in columns)
+                query = f"SELECT {quoted_columns} FROM {quoted_table}"
+                data_cursor = connection.cursor(pymysql.cursors.SSCursor)
+                try:
+                    data_cursor.execute(query)
+                    batch: list[str] = []
+                    batch_bytes = 0
+                    for row in data_cursor:
+                        values = ",".join(connection.escape(value) for value in row)
+                        encoded_row = f"({values})"
+                        batch.append(encoded_row)
+                        batch_bytes += len(encoded_row)
+                        row_count += 1
+                        if len(batch) >= 250 or batch_bytes >= CHUNK_SIZE:
+                            output.write(
+                                f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES\n"
+                                + ",\n".join(batch)
+                                + ";\n"
+                            )
+                            batch.clear()
+                            batch_bytes = 0
+                    if batch:
+                        output.write(
+                            f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES\n"
+                            + ",\n".join(batch)
+                            + ";\n"
+                        )
+                finally:
+                    data_cursor.close()
+                output.write("\n")
+
+            for view_name, create_sql in views:
+                quoted_view = _mysql_identifier(view_name)
+                output.write(f"DROP VIEW IF EXISTS {quoted_view};\n")
+                output.write(f"{create_sql};\n\n")
+
+            output.write("SET UNIQUE_CHECKS=1;\n")
+            output.write("SET FOREIGN_KEY_CHECKS=1;\n")
+            output.flush()
+            os.fsync(output.fileno())
+
+        connection.rollback()
+        return {
+            "included": True,
+            "bytes": destination.stat().st_size,
+            "method": "pymysql",
+            "tables": table_count,
+            "rows": row_count,
+            "views": len(views),
+            "skipped_objects": len(skipped_objects),
+        }
+    except (BackupConfigurationError, BackupExecutionError):
+        with suppress(FileNotFoundError):
+            destination.unlink()
+        raise
+    except Exception as exc:
+        with suppress(FileNotFoundError):
+            destination.unlink()
+        raise BackupExecutionError(
+            f"built-in database export failed ({type(exc).__name__})"
+        ) from exc
+    finally:
+        if connection is not None:
+            with suppress(Exception):
+                connection.close()
+
+
 def _dump_mysql(settings: Settings, destination: Path) -> dict:
     url = make_url(settings.backup_database_url or settings.database_url)
     if not url.drivername.startswith(("mysql", "mariadb")):
@@ -275,6 +421,13 @@ def _dump_mysql(settings: Settings, destination: Path) -> dict:
         raise BackupConfigurationError("DATABASE_URL is missing database name or username")
     if url.database.startswith("-") or any(char in url.database for char in ("\x00", "\n", "\r")):
         raise BackupConfigurationError("DATABASE_URL contains an unsafe database name")
+
+    dump_binary = shutil.which(settings.backup_mysqldump_binary)
+    if dump_binary is None:
+        logger.warning(
+            "[Backup] MySQL client is unavailable; using built-in streaming database export"
+        )
+        return _dump_mysql_with_pymysql(url, destination)
 
     def option_value(value: str) -> str:
         return (
@@ -299,7 +452,7 @@ def _dump_mysql(settings: Settings, destination: Path) -> dict:
         config_file.write("protocol=tcp\n")
 
     command = [
-        settings.backup_mysqldump_binary,
+        dump_binary,
         f"--defaults-extra-file={option_file}",
         "--single-transaction",
         "--quick",
@@ -322,10 +475,13 @@ def _dump_mysql(settings: Settings, destination: Path) -> dict:
                 check=False,
                 timeout=settings.backup_command_timeout_seconds,
             )
-    except FileNotFoundError as exc:
-        raise BackupExecutionError(
-            "mysqldump is not installed; install the MySQL/MariaDB client tools"
-        ) from exc
+    except FileNotFoundError:
+        # The executable may disappear between shutil.which() and Popen (for
+        # example during a container image update). Preserve availability by
+        # using the same dependency-free fallback.
+        with suppress(FileNotFoundError):
+            destination.unlink()
+        return _dump_mysql_with_pymysql(url, destination)
     except subprocess.TimeoutExpired as exc:
         raise BackupExecutionError("mysqldump exceeded the configured timeout") from exc
     finally:
@@ -341,7 +497,11 @@ def _dump_mysql(settings: Settings, destination: Path) -> dict:
         raise BackupExecutionError(
             f"mysqldump failed with exit code {completed.returncode}: {detail or 'no diagnostic'}"
         )
-    return {"included": True, "bytes": destination.stat().st_size}
+    return {
+        "included": True,
+        "bytes": destination.stat().st_size,
+        "method": "mysqldump",
+    }
 
 
 def _snapshot_sqlite(source_path: Path, destination: Path) -> dict:
