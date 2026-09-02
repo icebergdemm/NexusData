@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -434,6 +434,20 @@ def create_app() -> FastAPI:
     @app.get("/v2/{full_path:path}")
     async def spa_v2_catchall(full_path: str):
         return await _spa_index_response()
+
+    # Back-compat: external links were shared as /tasks/... (без /admin префикса).
+    # До фикса они отдавали 404 со статусом 404 (SPA через exception_handler) и
+    # не матчились с basename /admin, поэтому React перекидывал на /. Редирект
+    # сохраняет старые ссылки и внешние переходы (из Discord, браузера).
+    @app.get("/tasks")
+    async def spa_tasks_root(request: Request):
+        qs = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(url=f"/admin/tasks{qs}", status_code=302)
+
+    @app.get("/tasks/{full_path:path}")
+    async def spa_tasks_catchall(full_path: str, request: Request):
+        qs = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(url=f"/admin/tasks/{full_path}{qs}", status_code=302)
 
     # Startup event
     @app.on_event("startup")

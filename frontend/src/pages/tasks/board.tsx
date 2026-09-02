@@ -23,6 +23,7 @@ import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIco
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
 import { formatBrowserDate } from "@/lib/format-date"
+import { UI_BASENAME } from "@/lib/ui-version"
 import { ImageLightbox, type LightboxImage } from "@/components/ui/image-lightbox"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
@@ -61,10 +62,10 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
   const overdue = isOverdue(task)
   const queryClient = useQueryClient()
   const copyLink = () => {
-    const url = `${window.location.origin}/tasks/${boardId}?task=${task.id}`
+    const url = `${window.location.origin}${UI_BASENAME}/tasks/${boardId}?task=${task.id}`
     copyToClipboard(url, "Ссылка на задачу")
   }
-  const taskLink = `${window.location.origin}/tasks/${boardId}?task=${task.id}`
+  const taskLink = `${window.location.origin}${UI_BASENAME}/tasks/${boardId}?task=${task.id}`
   const deleteMutation = useMutation({
     mutationFn: () => tasksApi.tasks.delete(task.id),
     onSuccess: onDeleted,
@@ -229,7 +230,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
 }
 
 // ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
-function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDeleteAll, currentAdminId, boardId, onOpenLightbox }: {
+function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDeleteAll, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
@@ -240,6 +241,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
   boardId: number
   allTasks?: TaskRow[]
   onOpenLightbox?: (images: LightboxImage[], index: number) => void
+  highlightCommentId?: number | null
 }) {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState("")
@@ -314,8 +316,22 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
     onError: (e: Error) => toast.error(e.message),
   })
 
+  // Scroll to highlighted comment when dialog opened via ?comment= link or task:// anchor
+  useEffect(() => {
+    if (!highlightCommentId || !commentsData?.comments.length) return
+    const t = setTimeout(() => {
+      const el = document.getElementById(`comment-${highlightCommentId}`)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+        el.classList.add("ring-2", "ring-primary")
+        setTimeout(() => el.classList.remove("ring-2", "ring-primary"), 2500)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [highlightCommentId, commentsData?.comments])
+
   const copyLink = () => {
-    const url = `${window.location.origin}/tasks/${boardId}?task=${taskId}`
+    const url = `${window.location.origin}${UI_BASENAME}/tasks/${boardId}?task=${taskId}`
     copyToClipboard(url, "Ссылка на задачу")
   }
 
@@ -480,8 +496,8 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Комментарии</Label>
             {commentsData?.comments.map((c) => (
-              <AppContextMenu key={c.id} actions={[{ label: "Копировать ссылку на комментарий", icon: Link2, onSelect: () => copyToClipboard(`${window.location.origin}/tasks/${boardId}?task=${task.id}&comment=${c.id}`, "Ссылка") }, { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}/comment/${c.id}`) }]}>
-              <div id={`comment-${c.id}`} className="rounded-md border p-2 text-sm">
+              <AppContextMenu key={c.id} actions={[{ label: "Копировать ссылку на комментарий", icon: Link2, onSelect: () => copyToClipboard(`${window.location.origin}${UI_BASENAME}/tasks/${boardId}?task=${task.id}&comment=${c.id}`, "Ссылка") }, { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}/comment/${c.id}`) }]}>
+              <div id={`comment-${c.id}`} className={`rounded-md border p-2 text-sm transition-colors ${highlightCommentId === c.id ? "bg-primary/10 border-primary/50 ring-1 ring-primary/30" : ""}`}>
                 <div className="mb-1 flex items-center justify-between">
                   <span className="text-xs font-medium">{c.admin_name ?? "—"}</span>
                   <div className="flex items-center gap-2">
@@ -596,7 +612,7 @@ function BoardChat({ boardId, tasks, onClose, open = true, onOpenLightbox }: { b
   })
 
   const renderContent = (text: string) => {
-    const parts = text.split(/(task:\/\/\d+(?:\/comment\/\d+)?|#task-\d+|https?:\/\/[^\s]+\/tasks\/\d+\?task=\d+(?:&comment=\d+)?|#\d+)/g)
+    const parts = text.split(/(task:\/\/\d+(?:\/comment\/\d+)?|#task-\d+|https?:\/\/[^\s]+\/(?:admin\/|v2\/)?tasks\/\d+\?task=\d+(?:&comment=\d+)?|#\d+)/g)
     return parts.map((p, i) => {
       const m = p.match(/task:\/\/(\d+)(?:\/comment\/(\d+))?|#task-(\d+)|#(\d+)/)
       let taskId: string | null = null
@@ -610,7 +626,7 @@ function BoardChat({ boardId, tasks, onClose, open = true, onOpenLightbox }: { b
         const comment = m?.[2] || (p.match(/comment=(\d+)/)?.[1])
         const label = t ? `${t.title.slice(0, 24)}${comment ? ` · комментарий #${comment}` : ""}` : `#${taskId}`
         const emoji = t ? (t.priority === "urgent" ? "🔥 " : t.status === "done" ? "✅ " : "📋 ") : "🔗 "
-        return <a key={i} href={`?task=${taskId}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("open-task", { detail: Number(taskId) })) }} className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-xs text-primary hover:underline">{emoji}{label}</a>
+        return <a key={i} href={comment ? `?task=${taskId}&comment=${comment}` : `?task=${taskId}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("open-task", { detail: { taskId: Number(taskId), commentId: comment ? Number(comment) : null } })) }} className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-xs text-primary hover:underline">{emoji}{label}</a>
       }
       if (p.startsWith("http")) {
         return <a key={i} href={p} target="_blank" rel="noreferrer" className="text-primary underline">{p}</a>
@@ -707,6 +723,7 @@ export function TaskBoardPage() {
   const [deleteColumn, setDeleteColumn] = useState<TaskColumnRow | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
+  const [highlightCommentId, setHighlightCommentId] = useState<number | null>(null)
   const [showHidden, setShowHidden] = useState(false)
   const [permsOpen, setPermsOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
@@ -721,13 +738,28 @@ export function TaskBoardPage() {
     enabled: !!boardId,
   })
 
-  // open task from ?task= query or anchor event
+  // open task from ?task= query or anchor event (supports ?task=17&comment=3 and task://123/comment/4)
   useEffect(() => {
     const q = searchParams.get("task")
-    if (q) setSelectedTaskId(Number(q))
+    const c = searchParams.get("comment")
+    if (q) {
+      setSelectedTaskId(Number(q))
+      setHighlightCommentId(c ? Number(c) : null)
+    } else {
+      setHighlightCommentId(null)
+    }
   }, [searchParams])
   useEffect(() => {
-    const h = (e: Event) => setSelectedTaskId((e as CustomEvent).detail)
+    const h = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (typeof detail === "number") {
+        setSelectedTaskId(detail)
+        setHighlightCommentId(null)
+      } else if (detail && typeof detail === "object") {
+        setSelectedTaskId(Number(detail.taskId))
+        setHighlightCommentId(detail.commentId ? Number(detail.commentId) : null)
+      }
+    }
     window.addEventListener("open-task", h as EventListener)
     return () => window.removeEventListener("open-task", h as EventListener)
   }, [])
@@ -831,7 +863,7 @@ export function TaskBoardPage() {
               tasks={tasksByColumn.get(col.id) ?? []}
               canCreate={data.can_create}
               canManageBoards={data.can_manage_boards}
-              onOpenTask={setSelectedTaskId}
+              onOpenTask={(id) => { setSelectedTaskId(id); setHighlightCommentId(null) }}
               onDropTask={handleDropTask}
               onEditColumn={() => setEditColumn(col)}
               onDeleteColumn={() => setDeleteColumn(col)}
@@ -853,13 +885,14 @@ export function TaskBoardPage() {
       <TaskDetailDialog
         taskId={selectedTaskId}
         task={selectedTask}
-        onClose={() => { setSelectedTaskId(null); setSearchParams(prev => { prev.delete("task"); return prev }, { replace: true }) }}
+        onClose={() => { setSelectedTaskId(null); setHighlightCommentId(null); setSearchParams(prev => { prev.delete("task"); prev.delete("comment"); return prev }, { replace: true }) }}
         candidates={candidates}
         canEditAll={data.can_edit_all}
         canDeleteAll={data.can_delete_all}
         currentAdminId={admin?.id}
         boardId={boardIdNum}
         onOpenLightbox={openLightbox}
+        highlightCommentId={highlightCommentId}
       />
 
       <BoardPermissionsDialog boardId={boardIdNum} open={permsOpen} onOpenChange={setPermsOpen} />
