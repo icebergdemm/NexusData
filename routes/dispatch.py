@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from contextlib import contextmanager
 from queue import Full, Queue
 import secrets
+import json
 import logging
 import os
 import re
@@ -70,6 +71,22 @@ _AI_BRIEFING_LIFECYCLE_MATCH_SECONDS = 180.0
 _AI_MAX_REPLY_PARTS = 8
 _AI_PROCESS_LOCK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 _AI_DISPATCHER_ENABLED_SETTING = "dispatch_ai_enabled"
+_AI_DISPATCHER_RUNTIME_CONFIG_SETTING = "dispatch_ai_runtime_config_v1"
+_AI_CONFIGURABLE_TOOLS = (
+    "get_world_state",
+    "get_navigation_relation",
+    "get_warehouse",
+    "queue_supply_cargo",
+    "control_supply_shuttle",
+    "schedule_follow_up",
+)
+_AI_REPORT_TYPES = (
+    "round_briefing",
+    "threat_alert",
+    "scheduled_follow_up",
+)
+_AI_DEFAULT_HISTORY_MESSAGES = 5
+_AI_MAX_HISTORY_MESSAGES = 30
 _AI_IGNORED_SENDER_NAMES = frozenset({"console"})
 
 
@@ -390,6 +407,117 @@ def _ai_dispatcher_enabled(db: Session) -> bool:
     return value.strip().casefold() not in {"0", "false", "off", "no"}
 
 
+def _default_ai_dispatcher_runtime_config() -> dict:
+    return {
+        "history_messages": _AI_DEFAULT_HISTORY_MESSAGES,
+        "enabled_tools": list(_AI_CONFIGURABLE_TOOLS),
+        "report_types": {name: True for name in _AI_REPORT_TYPES},
+    }
+
+
+def _ai_dispatcher_runtime_config(db: Session) -> dict:
+    """Read and validate the shared runtime policy, falling back safely."""
+
+    config = _default_ai_dispatcher_runtime_config()
+    try:
+        raw = _get_app_setting(db, _AI_DISPATCHER_RUNTIME_CONFIG_SETTING)
+    except SQLAlchemyError:
+        # Rolling deployments and narrow unit-test schemas can briefly omit
+        # app_settings. Runtime defaults keep the dispatcher operational.
+        db.rollback()
+        return config
+    if not raw:
+        return config
+    try:
+        stored = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("AI dispatcher runtime config is invalid JSON; using defaults")
+        return config
+    if not isinstance(stored, dict):
+        return config
+
+    history_messages = stored.get("history_messages")
+    if isinstance(history_messages, int) and not isinstance(history_messages, bool):
+        config["history_messages"] = max(
+            1,
+            min(_AI_MAX_HISTORY_MESSAGES, history_messages),
+        )
+
+    enabled_tools = stored.get("enabled_tools")
+    if isinstance(enabled_tools, list):
+        config["enabled_tools"] = [
+            name
+            for name in _AI_CONFIGURABLE_TOOLS
+            if name in enabled_tools
+        ]
+
+    report_types = stored.get("report_types")
+    if isinstance(report_types, dict):
+        config["report_types"] = {
+            name: (
+                report_types[name]
+                if isinstance(report_types.get(name), bool)
+                else config["report_types"][name]
+            )
+            for name in _AI_REPORT_TYPES
+        }
+    return config
+
+
+def _set_ai_dispatcher_runtime_config(
+    db: Session,
+    *,
+    history_messages: Optional[int] = None,
+    enabled_tools: Optional[List[str]] = None,
+    report_types: Optional[dict] = None,
+) -> dict:
+    config = _ai_dispatcher_runtime_config(db)
+    if history_messages is not None:
+        config["history_messages"] = history_messages
+    if enabled_tools is not None:
+        enabled = set(enabled_tools)
+        config["enabled_tools"] = [
+            name for name in _AI_CONFIGURABLE_TOOLS if name in enabled
+        ]
+    if report_types is not None:
+        config["report_types"].update(report_types)
+    _set_app_setting(
+        db,
+        _AI_DISPATCHER_RUNTIME_CONFIG_SETTING,
+        json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+    )
+    return config
+
+
+def _ai_report_enabled(db: Session, message_type: str) -> bool:
+    return bool(
+        _ai_dispatcher_runtime_config(db)["report_types"].get(message_type, False)
+    )
+
+
+def _ai_dispatcher_request_config(db: Optional[Session]) -> dict:
+    config = (
+        _ai_dispatcher_runtime_config(db)
+        if db is not None
+        else _default_ai_dispatcher_runtime_config()
+    )
+    return {
+        "history_messages": config["history_messages"],
+        "enabled_tools": config["enabled_tools"],
+        "enabled_report_types": [
+            name for name in _AI_REPORT_TYPES if config["report_types"][name]
+        ],
+    }
+
+
+def _ai_dispatcher_public_config(db: Session) -> dict:
+    return {
+        "enabled": _ai_dispatcher_enabled(db),
+        "configured": _ai_dispatcher_configured(),
+        **_ai_dispatcher_runtime_config(db),
+    }
+
+
 def _ai_dispatcher_configured() -> bool:
     return bool(
         (settings.ai_dispatcher_url or "").strip()
@@ -481,6 +609,7 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         "server_name": server_name,
         "text": msg.text,
         "sender_name": msg.player_name,
+        "dispatcher_config": _ai_dispatcher_request_config(db),
         "communication_context": _build_ai_communication_context(
             db,
             server_name,
@@ -752,7 +881,7 @@ def _build_ai_communication_context(
                     >= journal_started_at - timedelta(seconds=1),
                 )
                 .order_by(DispatchMessage.created_at.desc(), DispatchMessage.id.desc())
-                .limit(16)
+                .limit(_ai_dispatcher_runtime_config(db)["history_messages"])
                 .all()
             )
     except SQLAlchemyError:
@@ -822,6 +951,12 @@ def _queue_ai_round_briefing(
     if db is not None and not _ai_dispatcher_enabled(db):
         logger.info(
             "AI round briefing skipped: disabled by operator; round_event_id=%s",
+            event.id,
+        )
+        return
+    if db is not None and not _ai_report_enabled(db, "round_briefing"):
+        logger.info(
+            "AI round briefing skipped: report type disabled; round_event_id=%s",
             event.id,
         )
         return
@@ -898,6 +1033,7 @@ def _queue_ai_round_briefing(
                 "text": "Первичный доклад по сектору.",
                 "sender_name": None,
                 "message_type": "round_briefing",
+                "dispatcher_config": _ai_dispatcher_request_config(db),
                 "briefing_context": {
                     "submarine_name": event.submarine_name,
                     "mission": event.mission,
@@ -936,6 +1072,8 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
     """Queue one briefing from first world telemetry when /round/start is absent."""
 
     if not _ai_dispatcher_enabled(db):
+        return
+    if not _ai_report_enabled(db, "round_briefing"):
         return
 
     url = (settings.ai_dispatcher_url or "").strip()
@@ -990,6 +1128,7 @@ def _queue_ai_world_briefing(world_round: WorldRound, db: Session) -> None:
                 "text": "Первичный доклад по сектору.",
                 "sender_name": None,
                 "message_type": "round_briefing",
+                "dispatcher_config": _ai_dispatcher_request_config(db),
                 "briefing_context": {
                     "submarine_name": world_round.sub_name,
                     "mission": None,
@@ -1025,6 +1164,17 @@ def _queue_ai_large_creature_alert(
     if not _ai_dispatcher_enabled(db):
         logger.info(
             "AI creature alert suppressed: disabled by operator; round_id=%s alerts=%s",
+            world_round.round_id,
+            len(alerts),
+        )
+        _finish_ai_creature_alert_delivery(
+            tuple(int(alert.id) for alert in alerts if alert.id is not None),
+            delivered=True,
+        )
+        return False
+    if not _ai_report_enabled(db, "threat_alert"):
+        logger.info(
+            "AI creature alert suppressed: threat reports disabled; round_id=%s alerts=%s",
             world_round.round_id,
             len(alerts),
         )
@@ -1071,6 +1221,7 @@ def _queue_ai_large_creature_alert(
                     "text": "Оперативное предупреждение о новой сонарной отметке.",
                     "sender_name": None,
                     "message_type": "threat_alert",
+                    "dispatcher_config": _ai_dispatcher_request_config(db),
                     "threat_context": {
                         "contact_scope": "group" if len(group) > 1 else "single",
                         "contact_class": contact_class,
@@ -1512,6 +1663,8 @@ def _queue_due_ai_dispatcher_reminders() -> dict:
     try:
         if not _ai_dispatcher_enabled(reminder_db):
             return {"status": "disabled", "queued": 0, "cancelled": 0}
+        if not _ai_report_enabled(reminder_db, "scheduled_follow_up"):
+            return {"status": "report_disabled", "queued": 0, "cancelled": 0}
         due_rows = (
             reminder_db.query(AIDispatcherReminder)
             .filter(
@@ -1568,6 +1721,7 @@ def _queue_due_ai_dispatcher_reminders() -> dict:
                         "text": "Отложенная проверка диспетчерского поста.",
                         "sender_name": None,
                         "message_type": "scheduled_follow_up",
+                        "dispatcher_config": _ai_dispatcher_request_config(reminder_db),
                         "follow_up_context": {
                             "reminder_id": reminder.id,
                             "note": reminder.note,
@@ -2679,10 +2833,7 @@ def get_dispatch_ai_config(
 
     if not check_permission(current_admin, "dispatch", "view"):
         raise HTTPException(status_code=403, detail="Нет права на просмотр диспетчерской")
-    return {
-        "enabled": _ai_dispatcher_enabled(db),
-        "configured": _ai_dispatcher_configured(),
-    }
+    return _ai_dispatcher_public_config(db)
 
 
 @panel_router.patch("/api/v1/admin/dispatch/ai-config")
@@ -2698,35 +2849,46 @@ def set_dispatch_ai_config(
             status_code=403,
             detail="Нет права на управление ИИ-диспетчером",
         )
-    if body.enabled and not _ai_dispatcher_configured():
+    if body.enabled is True and not _ai_dispatcher_configured():
         raise HTTPException(
             status_code=409,
             detail="ИИ-диспетчер не настроен в окружении NexusData",
         )
 
-    _set_app_setting(
-        db,
-        _AI_DISPATCHER_ENABLED_SETTING,
-        "true" if body.enabled else "false",
-    )
+    changed: dict = {}
+    if body.enabled is not None:
+        _set_app_setting(
+            db,
+            _AI_DISPATCHER_ENABLED_SETTING,
+            "true" if body.enabled else "false",
+        )
+        changed["enabled"] = body.enabled
+    if any(
+        value is not None
+        for value in (body.history_messages, body.enabled_tools, body.report_types)
+    ):
+        runtime_config = _set_ai_dispatcher_runtime_config(
+            db,
+            history_messages=body.history_messages,
+            enabled_tools=body.enabled_tools,
+            report_types=body.report_types,
+        )
+        changed.update(runtime_config)
     db.commit()
     from routes.admin import log_admin_action
 
     log_admin_action(
         db,
         current_admin.id,
-        "dispatch_ai_toggle",
-        {"enabled": body.enabled},
+        "dispatch_ai_config_update",
+        changed,
     )
     logger.info(
-        "AI dispatcher runtime switch changed: enabled=%s admin_id=%s",
-        body.enabled,
+        "AI dispatcher runtime config changed: fields=%s admin_id=%s",
+        ",".join(sorted(changed)) or "none",
         current_admin.id,
     )
-    return {
-        "enabled": _ai_dispatcher_enabled(db),
-        "configured": _ai_dispatcher_configured(),
-    }
+    return _ai_dispatcher_public_config(db)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

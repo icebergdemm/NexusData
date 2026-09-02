@@ -151,6 +151,161 @@ interface DispatchMessage {
 interface AIDispatcherConfig {
   enabled: boolean
   configured: boolean
+  history_messages: number
+  enabled_tools: DispatcherToolName[]
+  report_types: Record<DispatcherReportType, boolean>
+}
+
+type DispatcherToolName =
+  | "get_world_state"
+  | "get_navigation_relation"
+  | "get_warehouse"
+  | "queue_supply_cargo"
+  | "control_supply_shuttle"
+  | "schedule_follow_up"
+
+type DispatcherReportType = "round_briefing" | "threat_alert" | "scheduled_follow_up"
+
+type AIDispatcherConfigPatch = Partial<
+  Pick<AIDispatcherConfig, "enabled" | "history_messages" | "enabled_tools" | "report_types">
+>
+
+const AI_TOOLS: ReadonlyArray<{ name: DispatcherToolName; label: string; description: string }> = [
+  { name: "get_world_state", label: "Состояние мира", description: "Карта, цели и телеметрия активного раунда" },
+  { name: "get_navigation_relation", label: "Навигация", description: "Расстояние и направление между объектами" },
+  { name: "get_warehouse", label: "Склад", description: "Проверка остатков и идентификаторов предметов" },
+  { name: "queue_supply_cargo", label: "Заказ груза", description: "Постановка снабжения в очередь" },
+  { name: "control_supply_shuttle", label: "Челнок снабжения", description: "Отправка и отзыв челнока" },
+  { name: "schedule_follow_up", label: "Повторная проверка", description: "Отложенная самопроверка диспетчера" },
+]
+
+const AI_REPORT_TYPES: ReadonlyArray<{ name: DispatcherReportType; label: string; description: string }> = [
+  { name: "round_briefing", label: "Первичный доклад", description: "Автоматический доклад в начале раунда" },
+  { name: "threat_alert", label: "Тревога по целям", description: "Доклады о новых и существенно сместившихся целях" },
+  { name: "scheduled_follow_up", label: "Отложенные доклады", description: "Проверки, запланированные самим диспетчером" },
+]
+
+function AIDispatcherConfigDialog({
+  open,
+  onOpenChange,
+  config,
+  saving,
+  onSave,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  config: AIDispatcherConfig | undefined
+  saving: boolean
+  onSave: (patch: AIDispatcherConfigPatch) => void
+}) {
+  const [historyMessages, setHistoryMessages] = useState(5)
+  const [enabledTools, setEnabledTools] = useState<DispatcherToolName[]>([])
+  const [reportTypes, setReportTypes] = useState<Record<DispatcherReportType, boolean>>({
+    round_briefing: true,
+    threat_alert: true,
+    scheduled_follow_up: true,
+  })
+
+  useEffect(() => {
+    if (!open || !config) return
+    setHistoryMessages(config.history_messages)
+    setEnabledTools(config.enabled_tools)
+    setReportTypes(config.report_types)
+  }, [open, config])
+
+  const toggleTool = (name: DispatcherToolName, enabled: boolean) => {
+    setEnabledTools((current) => (
+      enabled
+        ? AI_TOOLS.map((tool) => tool.name).filter((toolName) => toolName === name || current.includes(toolName))
+        : current.filter((toolName) => toolName !== name)
+    ))
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Конфигурация ИИ-диспетчера</DialogTitle>
+          <DialogDescription>
+            Изменения общие для всех серверов и применяются к новым запросам без перезапуска.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="ai-history-messages">Сообщений в истории чата</Label>
+            <Input
+              id="ai-history-messages"
+              type="number"
+              min={1}
+              max={30}
+              step={1}
+              value={historyMessages}
+              onChange={(event) => setHistoryMessages(Number(event.target.value))}
+              className="max-w-28"
+            />
+            <p className="text-xs text-muted-foreground">
+              По умолчанию 5. Допустимо от 1 до 30 предыдущих сообщений.
+            </p>
+          </div>
+
+          <section className="space-y-2" aria-labelledby="ai-report-types-title">
+            <div>
+              <h3 id="ai-report-types-title" className="text-sm font-semibold">Типы автоматических докладов</h3>
+              <p className="text-xs text-muted-foreground">Выключенный тип не ставится в очередь NexusData.</p>
+            </div>
+            <div className="divide-y rounded-md border">
+              {AI_REPORT_TYPES.map((report) => (
+                <div key={report.name} className="flex items-center justify-between gap-4 p-3">
+                  <div className="min-w-0">
+                    <Label htmlFor={`ai-report-${report.name}`} className="text-sm">{report.label}</Label>
+                    <p className="text-xs text-muted-foreground">{report.description}</p>
+                  </div>
+                  <Switch
+                    id={`ai-report-${report.name}`}
+                    checked={reportTypes[report.name]}
+                    onCheckedChange={(enabled) => setReportTypes((current) => ({ ...current, [report.name]: enabled }))}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="space-y-2" aria-labelledby="ai-tools-title">
+            <div>
+              <h3 id="ai-tools-title" className="text-sm font-semibold">Инструменты</h3>
+              <p className="text-xs text-muted-foreground">Недоступные инструменты не передаются модели.</p>
+            </div>
+            <div className="grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-2">
+              {AI_TOOLS.map((tool) => (
+                <div key={tool.name} className="flex items-center justify-between gap-3 bg-card p-3">
+                  <div className="min-w-0">
+                    <Label htmlFor={`ai-tool-${tool.name}`} className="text-sm">{tool.label}</Label>
+                    <p className="text-xs text-muted-foreground">{tool.description}</p>
+                  </div>
+                  <Switch
+                    id={`ai-tool-${tool.name}`}
+                    checked={enabledTools.includes(tool.name)}
+                    onCheckedChange={(enabled) => toggleTool(tool.name, enabled)}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
+          <Button
+            disabled={saving || !Number.isInteger(historyMessages) || historyMessages < 1 || historyMessages > 30}
+            onClick={() => onSave({ history_messages: historyMessages, enabled_tools: enabledTools, report_types: reportTypes })}
+          >
+            Сохранить
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 const SERVERS = [
@@ -199,6 +354,7 @@ export function DispatchPage() {
   const [cargoOpen, setCargoOpen] = useState(false)
   const [torpedoOpen, setTorpedoOpen] = useState(false)
   const [webhookConfigOpen, setWebhookConfigOpen] = useState(false)
+  const [aiConfigOpen, setAIConfigOpen] = useState(false)
 
   const canSend = canDo(admin, "dispatch", "send_message")
   const canShuttle = canDo(admin, "dispatch", "shuttle")
@@ -233,11 +389,16 @@ export function DispatchPage() {
   })
 
   const aiConfigMutation = useMutation({
-    mutationFn: (enabled: boolean) =>
-      api.patch<AIDispatcherConfig>("/api/v1/admin/dispatch/ai-config", { enabled }),
-    onSuccess: (nextConfig) => {
+    mutationFn: (patch: AIDispatcherConfigPatch) =>
+      api.patch<AIDispatcherConfig>("/api/v1/admin/dispatch/ai-config", patch),
+    onSuccess: (nextConfig, patch) => {
       queryClient.setQueryData(["dispatch-ai-config"], nextConfig)
-      toast.success(nextConfig.enabled ? "ИИ-диспетчер включён" : "ИИ-диспетчер отключён")
+      if (Object.keys(patch).length === 1 && patch.enabled !== undefined) {
+        toast.success(nextConfig.enabled ? "ИИ-диспетчер включён" : "ИИ-диспетчер отключён")
+      } else {
+        toast.success("Конфигурация ИИ-диспетчера сохранена")
+        setAIConfigOpen(false)
+      }
     },
     onError: (error: Error) => toast.error(error.message),
   })
@@ -338,10 +499,22 @@ export function DispatchPage() {
                 id="ai-dispatcher-toggle"
                 checked={Boolean(aiConfig?.configured && aiConfig.enabled)}
                 disabled={aiToggleDisabled}
-                onCheckedChange={(enabled) => aiConfigMutation.mutate(enabled)}
+                onCheckedChange={(enabled) => aiConfigMutation.mutate({ enabled })}
                 aria-label="Включить или отключить запросы к ИИ-диспетчеру"
                 title={aiToggleTitle}
               />
+              {canManageAI ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => setAIConfigOpen(true)}
+                  disabled={aiConfigPending || Boolean(aiConfigError)}
+                  aria-label="Настроить ИИ-диспетчера"
+                  title="Настроить ИИ-диспетчера"
+                >
+                  <Settings />
+                </Button>
+              ) : null}
             </div>
 
             <div className="flex gap-1 rounded-lg border bg-card p-1">
@@ -497,6 +670,15 @@ export function DispatchPage() {
       <TorpedoDialog open={torpedoOpen} onOpenChange={setTorpedoOpen} defaultServer={server} />
       {canWebhooks && (
         <WebhookConfigDialog open={webhookConfigOpen} onOpenChange={setWebhookConfigOpen} />
+      )}
+      {canManageAI && (
+        <AIDispatcherConfigDialog
+          open={aiConfigOpen}
+          onOpenChange={setAIConfigOpen}
+          config={aiConfig}
+          saving={aiConfigMutation.isPending}
+          onSave={(patch) => aiConfigMutation.mutate(patch)}
+        />
       )}
     </div>
   )

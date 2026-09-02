@@ -83,24 +83,65 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 patch.object(dispatch_routes.settings, "ai_dispatcher_api_key", "secret"),
             ):
                 self.assertTrue(_ai_dispatcher_enabled(db))
-                self.assertEqual(
-                    get_dispatch_ai_config(db=db, current_admin=Mock()),
-                    {"enabled": True, "configured": True},
-                )
+                initial = get_dispatch_ai_config(db=db, current_admin=Mock())
+                self.assertTrue(initial["enabled"])
+                self.assertTrue(initial["configured"])
+                self.assertEqual(initial["history_messages"], 5)
+                self.assertTrue(initial["report_types"]["round_briefing"])
                 result = set_dispatch_ai_config(
                     AIDispatcherConfigIn(enabled=False),
                     db=db,
                     current_admin=Mock(id=17),
                 )
 
-            self.assertEqual(result, {"enabled": False, "configured": True})
+            self.assertFalse(result["enabled"])
+            self.assertTrue(result["configured"])
+            self.assertEqual(result["history_messages"], 5)
             self.assertFalse(_ai_dispatcher_enabled(db))
             audit_log.assert_called_once_with(
                 db,
                 17,
-                "dispatch_ai_toggle",
+                "dispatch_ai_config_update",
                 {"enabled": False},
             )
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_ai_runtime_config_persists_history_tools_and_report_types(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__])
+        db = Session(engine)
+        try:
+            with (
+                patch("routes.dispatch.check_permission", return_value=True),
+                patch("routes.admin.log_admin_action"),
+                patch.object(dispatch_routes.settings, "ai_dispatcher_url", "http://dispatcher/api"),
+                patch.object(dispatch_routes.settings, "ai_dispatcher_api_key", "secret"),
+            ):
+                result = set_dispatch_ai_config(
+                    AIDispatcherConfigIn(
+                        history_messages=12,
+                        enabled_tools=["get_world_state", "get_warehouse"],
+                        report_types={
+                            "round_briefing": False,
+                            "threat_alert": True,
+                        },
+                    ),
+                    db=db,
+                    current_admin=Mock(id=19),
+                )
+                reloaded = get_dispatch_ai_config(db=db, current_admin=Mock())
+
+            self.assertEqual(result, reloaded)
+            self.assertEqual(reloaded["history_messages"], 12)
+            self.assertEqual(
+                reloaded["enabled_tools"],
+                ["get_world_state", "get_warehouse"],
+            )
+            self.assertFalse(reloaded["report_types"]["round_briefing"])
+            self.assertTrue(reloaded["report_types"]["threat_alert"])
+            self.assertTrue(reloaded["report_types"]["scheduled_follow_up"])
         finally:
             db.close()
             engine.dispose()
@@ -203,6 +244,35 @@ class AIDispatcherBridgeTests(unittest.TestCase):
             db.close()
             engine.dispose()
 
+    @patch("routes.dispatch._enqueue_ai_dispatch_job")
+    def test_disabled_round_briefing_type_does_not_claim_world_briefing(self, enqueue_job):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            engine,
+            tables=[WorldRound.__table__, AppSetting.__table__],
+        )
+        db = Session(engine)
+        try:
+            world_round = WorldRound(round_id="world-disabled-report", server_name="ASPER1")
+            db.add_all(
+                [
+                    world_round,
+                    AppSetting(
+                        key="dispatch_ai_runtime_config_v1",
+                        value='{"report_types":{"round_briefing":false}}',
+                    ),
+                ]
+            )
+            db.commit()
+
+            _queue_ai_world_briefing(world_round, db)
+
+            enqueue_job.assert_not_called()
+            self.assertIsNone(world_round.ai_briefing_queued_at)
+        finally:
+            db.close()
+            engine.dispose()
+
     @patch("routes.dispatch._queue_ai_round_briefing")
     @patch("routes.dispatch._queue_round_status_refresh")
     def test_round_start_normalizes_server_and_queues_briefing(
@@ -274,6 +344,22 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 "text": "Первичный доклад по сектору.",
                 "sender_name": None,
                 "message_type": "round_briefing",
+                "dispatcher_config": {
+                    "history_messages": 5,
+                    "enabled_tools": [
+                        "get_world_state",
+                        "get_navigation_relation",
+                        "get_warehouse",
+                        "queue_supply_cargo",
+                        "control_supply_shuttle",
+                        "schedule_follow_up",
+                    ],
+                    "enabled_report_types": [
+                        "round_briefing",
+                        "threat_alert",
+                        "scheduled_follow_up",
+                    ],
+                },
                 "briefing_context": {
                     "submarine_name": "Сигнатура",
                     "mission": "Доставка",
@@ -342,6 +428,22 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                     "text": "Первичный доклад по сектору.",
                     "sender_name": None,
                     "message_type": "round_briefing",
+                    "dispatcher_config": {
+                        "history_messages": 5,
+                        "enabled_tools": [
+                            "get_world_state",
+                            "get_navigation_relation",
+                            "get_warehouse",
+                            "queue_supply_cargo",
+                            "control_supply_shuttle",
+                            "schedule_follow_up",
+                        ],
+                        "enabled_report_types": [
+                            "round_briefing",
+                            "threat_alert",
+                            "scheduled_follow_up",
+                        ],
+                    },
                     "briefing_context": {
                         "submarine_name": "Сигнатура",
                         "mission": None,

@@ -10,6 +10,7 @@ from database import Base
 from models import (
     AICreatureAlert,
     AIDispatcherReminder,
+    AppSetting,
     DispatchMessage,
     WorldRound,
 )
@@ -89,6 +90,54 @@ def test_communication_context_keeps_recent_chat_and_players_actual_vessel() -> 
         assert [item["text"] for item in context["recent_messages"]] == [
             "Диспетчер, приём.",
             "[Диспетчер] -> «Иван, борт «Касатка»» Слушаю.",
+        ]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_communication_context_uses_configured_message_limit() -> None:
+    engine = _engine_for(
+        WorldRound.__table__,
+        DispatchMessage.__table__,
+        AppSetting.__table__,
+    )
+    db = Session(engine)
+    try:
+        db.add(
+            WorldRound(
+                round_id="round-history",
+                server_name="ASPER1",
+                created_at=datetime.utcnow() - timedelta(minutes=1),
+                last_update_at=datetime.utcnow(),
+            )
+        )
+        db.add(
+            AppSetting(
+                key="dispatch_ai_runtime_config_v1",
+                value='{"history_messages":3}',
+            )
+        )
+        db.add_all(
+            [
+                DispatchMessage(
+                    player_name="Экипаж",
+                    sender_type="player",
+                    server_name="ASPER1",
+                    text=f"Сообщение {index}",
+                    created_at=datetime.utcnow() + timedelta(seconds=index),
+                )
+                for index in range(6)
+            ]
+        )
+        db.commit()
+
+        context = _build_ai_communication_context(db, "ASPER1")
+
+        assert [item["text"] for item in context["recent_messages"]] == [
+            "Сообщение 3",
+            "Сообщение 4",
+            "Сообщение 5",
         ]
     finally:
         db.close()

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator, computed_field
-from typing import List, Optional, Generic, TypeVar, Dict, Any
+from typing import List, Optional, Generic, TypeVar, Dict, Any, Literal
 from datetime import datetime
 
 T = TypeVar("T")
@@ -361,9 +361,30 @@ class DispatchMessageOut(BaseModel):
 
 
 class AIDispatcherConfigIn(BaseModel):
-    """Runtime switch for all NexusData requests to AsperAIDispatcher."""
+    """Часткове оновлення runtime-конфігурації AsperAIDispatcher."""
 
-    enabled: bool
+    enabled: Optional[bool] = None
+    history_messages: Optional[int] = Field(default=None, ge=1, le=30)
+    enabled_tools: Optional[List[Literal[
+        "get_world_state",
+        "get_navigation_relation",
+        "get_warehouse",
+        "queue_supply_cargo",
+        "control_supply_shuttle",
+        "schedule_follow_up",
+    ]]] = Field(default=None, max_length=6)
+    report_types: Optional[Dict[Literal[
+        "round_briefing",
+        "threat_alert",
+        "scheduled_follow_up",
+    ], bool]] = None
+
+    @field_validator("enabled_tools")
+    @classmethod
+    def validate_enabled_tools(cls, value):
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("enabled_tools не повинен містити повторів")
+        return value
 
 
 # ── Round lifecycle schemas ──────────────────────────────────────────────────
