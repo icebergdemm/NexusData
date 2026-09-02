@@ -177,7 +177,7 @@ export const tasksApi = {
         if (params?.before_id) qs.set("before_id", String(params.before_id))
         return api.get<{ messages: BoardMessage[]; pinned: BoardMessage[] }>(`${base}/boards/${boardId}/chat?${qs}`)
       },
-      send: (boardId: number, formData: FormData) => api.post<{ status: string; message: BoardMessage }>(`${base}/boards/${boardId}/chat`, formData as unknown as Record<string, unknown>),
+      send: (boardId: number, formData: FormData) => api.postForm<{ status: string; message: BoardMessage }>(`${base}/boards/${boardId}/chat`, formData),
       sendJson: (boardId: number, body: { content: string; reply_to_id?: number | null }) => api.post<{ status: string; message: BoardMessage }>(`${base}/boards/${boardId}/chat`, body),
       togglePin: (boardId: number, messageId: number) => api.post<{ status: string; is_pinned: boolean }>(`${base}/boards/${boardId}/chat/${messageId}/pin`, {}),
     },
@@ -218,7 +218,7 @@ export const tasksApi = {
         const fd = new FormData()
         fd.append("file", file)
         fd.append("is_preview", String(isPreview))
-        return api.post<{ status: string; attachment: TaskAttachment }>(`${base}/tasks/${taskId}/attachments`, fd as unknown as Record<string, unknown>)
+        return api.postForm<{ status: string; attachment: TaskAttachment }>(`${base}/tasks/${taskId}/attachments`, fd)
       },
       delete: (taskId: number, attachmentId: number) => api.delete<{ status: string }>(`${base}/tasks/${taskId}/attachments/${attachmentId}`),
     },

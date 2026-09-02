@@ -850,10 +850,14 @@ class SubProjectService:
                 mime, _ = mimetypes.guess_type(image_path)
                 mime = mime or "image/png"
                 filename = os.path.basename(image_path)
-                payload = {"embeds": [embed]}
+                # Discord v10 multipart: file parts must be named files[n] and
+                # bound via the attachments array in payload_json — a bare
+                # "file" part makes the API reject the request (400 Invalid
+                # Form Body), so the whole message would fail to post.
+                payload = {"embeds": [embed], "attachments": [{"id": 0, "filename": filename}]}
                 # webhook?wait=true only for POST, PATCH edit URL already contains message id
                 with open(image_path, "rb") as f:
-                    files = {"file": (filename, f.read(), mime)}
+                    files = {"files[0]": (filename, f.read(), mime)}
                     data = {"payload_json": _json.dumps(payload)}
                     if method == "POST":
                         resp = httpx.post(f"{url}?wait=true", data=data, files=files, timeout=20.0)
