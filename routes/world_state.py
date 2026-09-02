@@ -590,17 +590,42 @@ async def api_item_catalog(request: Request, db: Session = Depends(get_db)):
     return JSONResponse(_load_item_catalog())
 
 
-@admin_router.get("/api/v1/admin/world/rounds")
-async def api_list_world_rounds(request: Request, db: Session = Depends(get_db)):
-    """Currently-active rounds only — lightweight, drives the round picker."""
+@admin_router.get("/api/v1/admin/world/servers")
+async def api_list_world_servers(request: Request, db: Session = Depends(get_db)):
+    """Distinct server_names for the server picker — includes all known servers, not only active."""
     _require_world_state(request, db)
-    threshold = datetime.utcnow() - timedelta(seconds=ACTIVE_THRESHOLD_SECONDS)
     rows = (
-        db.query(WorldRound)
-        .filter(WorldRound.last_update_at >= threshold)
-        .order_by(WorldRound.last_update_at.desc())
+        db.query(WorldRound.server_name)
+        .filter(WorldRound.server_name.isnot(None))
+        .distinct()
         .all()
     )
+    servers = sorted({r[0].strip().upper() for r in rows if r[0] and r[0].strip()})
+    # Always expose the known game servers even before they have sent any world data
+    # or when their last round is currently inactive — otherwise the picker would
+    # hide ASPER2 completely while it is offline (the exact bug report: "Для ASPER2
+    # нет активной карты раунда").
+    for known in [settings.world_default_server_name.strip().upper(), "ASPER1", "ASPER2"]:
+        if known and known not in servers:
+            servers.append(known)
+    servers = sorted(set(servers))
+    return {"servers": servers}
+
+
+@admin_router.get("/api/v1/admin/world/rounds")
+async def api_list_world_rounds(
+    request: Request,
+    server_name: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Currently-active rounds only — lightweight, drives the round picker. Optional server_name filter for multiservers."""
+    _require_world_state(request, db)
+    threshold = datetime.utcnow() - timedelta(seconds=ACTIVE_THRESHOLD_SECONDS)
+    q = db.query(WorldRound).filter(WorldRound.last_update_at >= threshold)
+    normalized = (server_name or "").strip().upper() or None
+    if normalized:
+        q = q.filter(WorldRound.server_name == normalized)
+    rows = q.order_by(WorldRound.last_update_at.desc()).all()
     return {
         "rounds": [
             {

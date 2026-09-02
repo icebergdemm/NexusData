@@ -51,10 +51,20 @@ function CharacterRow({ c, selected, onSelect }: { c: WorldCharacter; selected: 
 export function WorldOverviewPage() {
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
   const [selectedCharacterId, setSelectedCharacterId] = useState<number | null>(null)
+  const [selectedServer, setSelectedServer] = useState<string | null>(() => {
+    try { return localStorage.getItem("world-overview:server") || null } catch { return null }
+  })
+
+  const { data: serversData } = useQuery({
+    queryKey: ["world-servers"],
+    queryFn: () => worldStateApi.listServers(),
+    refetchInterval: 10000,
+    retry: false,
+  })
 
   const { data: roundsData, isLoading: roundsLoading, isError: roundsError, error: roundsErrorObj } = useQuery({
-    queryKey: ["world-rounds"],
-    queryFn: () => worldStateApi.listRounds(),
+    queryKey: ["world-rounds", selectedServer],
+    queryFn: () => worldStateApi.listRounds(selectedServer),
     refetchInterval: 5000,
     retry: false,
   })
@@ -82,24 +92,66 @@ export function WorldOverviewPage() {
 
   useEffect(() => { setSelectedCharacterId(null) }, [selectedRoundId])
 
+  useEffect(() => {
+    try {
+      if (selectedServer) localStorage.setItem("world-overview:server", selectedServer)
+      else localStorage.removeItem("world-overview:server")
+    } catch { /* ignore */ }
+  }, [selectedServer])
+
+  // If selected server disappeared (no active rounds), reset to "all"
+  useEffect(() => {
+    if (!serversData) return
+    if (selectedServer && !serversData.servers.includes(selectedServer)) {
+      // keep selection — server may have no active rounds right now, don't force-reset
+    }
+  }, [serversData, selectedServer])
+
+  const handleServerChange = (v: string) => {
+    const next = v === "__all__" ? null : v
+    setSelectedServer(next)
+    setSelectedRoundId(null)
+  }
+
   return (
     <div className="flex h-[calc(100vh-6rem)] flex-col">
       <PageHeader
         title="Обзор мира"
-        description="Просмотр раунда"
+        description={selectedServer ? `Просмотр раунда — ${selectedServer}` : "Просмотр раунда — все серверы"}
         icon={Globe2}
-        actions={!!roundsData?.rounds.length && (
-          <Select value={selectedRoundId ?? undefined} onValueChange={setSelectedRoundId}>
-            <SelectTrigger className="w-64"><SelectValue placeholder="Выберите раунд" /></SelectTrigger>
-            <SelectContent>
-              {roundsData.rounds.map((r) => (
-                <SelectItem key={r.round_id} value={r.round_id}>
-                  {r.server_name ?? "?"} — {r.level_name ?? "?"} ({fmtDuration(r.t)})
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
+        actions={
+          <div className="flex gap-2">
+            <Select value={selectedServer ?? "__all__"} onValueChange={handleServerChange}>
+              <SelectTrigger className="w-36"><SelectValue placeholder="Сервер" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">Все серверы</SelectItem>
+                {(serversData?.servers ?? []).map((s) => (
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+                {/* fallback: if rounds contain a server not yet in /servers (race), show it too */}
+                {roundsData?.rounds
+                  .map((r) => r.server_name?.toUpperCase())
+                  .filter((s): s is string => !!s)
+                  .filter((s, i, a) => a.indexOf(s) === i && !(serversData?.servers ?? []).includes(s))
+                  .map((s) => (
+                    <SelectItem key={`fb-${s}`} value={s}>{s}</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            {!!roundsData?.rounds.length && (
+              <Select value={selectedRoundId ?? undefined} onValueChange={setSelectedRoundId}>
+                <SelectTrigger className="w-64"><SelectValue placeholder="Выберите раунд" /></SelectTrigger>
+                <SelectContent>
+                  {roundsData.rounds.map((r) => (
+                    <SelectItem key={r.round_id} value={r.round_id}>
+                      {r.server_name ?? "?"} — {r.level_name ?? "?"} ({fmtDuration(r.t)})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+        }
       />
 
       {roundsLoading ? (
@@ -115,7 +167,7 @@ export function WorldOverviewPage() {
         </CardContent></Card>
       ) : !roundsData?.rounds.length ? (
         <Card className="flex-1"><CardContent className="flex h-full items-center justify-center py-12 text-center text-sm text-muted-foreground">
-          Похоже раунд не начался :(
+          {selectedServer ? `На сервере ${selectedServer} сейчас нет активных раундов` : "Похоже раунд не начался :("}
         </CardContent></Card>
       ) : !geometry || !state ? (
         <Skeleton className="flex-1" />

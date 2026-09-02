@@ -136,7 +136,12 @@ export interface WorldState {
 const base = "/api/v1/admin/world"
 
 export const worldStateApi = {
-  listRounds: () => api.get<{ rounds: WorldRoundSummary[] }>(`${base}/rounds`),
+  listServers: () => api.get<{ servers: string[] }>(`${base}/servers`),
+  listRounds: (serverName?: string | null | unknown) => {
+    const s = typeof serverName === "string" ? serverName.trim() : ""
+    const qs = s ? `?server_name=${encodeURIComponent(s)}` : ""
+    return api.get<{ rounds: WorldRoundSummary[] }>(`${base}/rounds${qs}`)
+  },
   getGeometry: (roundId: string) => api.get<WorldGeometry>(`${base}/rounds/${roundId}/geometry`),
   getState: (roundId: string) => api.get<WorldState>(`${base}/rounds/${roundId}/state`),
 }
