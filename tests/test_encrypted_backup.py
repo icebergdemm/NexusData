@@ -1,0 +1,218 @@
+import base64
+import os
+import tarfile
+from pathlib import Path
+
+import pytest
+import paramiko
+from cryptography.exceptions import InvalidTag
+
+from config import Settings
+import services_backup
+
+
+def _key_value() -> str:
+    return base64.urlsafe_b64encode(bytes(range(32))).decode("ascii")
+
+
+def _settings(tmp_path: Path, **overrides) -> Settings:
+    private_key = tmp_path / "backup.key"
+    private_key.write_text("test-only-private-key", encoding="utf-8")
+    private_key.chmod(0o600)
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("backup.invalid ssh-ed25519 AAAATEST\n", encoding="utf-8")
+    values = {
+        "backup_enabled": True,
+        "backup_sftp_host": "backup.invalid",
+        "backup_sftp_username": "nexusbackup",
+        "backup_sftp_private_key_path": str(private_key),
+        "backup_sftp_known_hosts_path": str(known_hosts),
+        "backup_sftp_remote_dir": "/data",
+        "backup_encryption_key": _key_value(),
+        "backup_include_database": False,
+        "backup_include_log_index": False,
+        "backup_include_paths": "",
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def test_backup_configuration_rejects_root_and_url_host(tmp_path):
+    with pytest.raises(services_backup.BackupConfigurationError, match="root"):
+        services_backup.validate_backup_settings(
+            _settings(tmp_path, backup_sftp_username="root")
+        )
+
+    with pytest.raises(services_backup.BackupConfigurationError, match="without http"):
+        services_backup.validate_backup_settings(
+            _settings(tmp_path, backup_sftp_host="https://213.108.170.48")
+        )
+
+
+def test_backup_configuration_requires_private_key_permissions(tmp_path):
+    settings = _settings(tmp_path)
+    Path(settings.backup_sftp_private_key_path).chmod(0o644)
+    with pytest.raises(services_backup.BackupConfigurationError, match="chmod 600"):
+        services_backup.validate_backup_settings(settings)
+
+
+def test_sftp_connection_is_host_pinned_and_key_only(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    normalized = services_backup.validate_backup_settings(settings)
+    captured = {}
+
+    class FakeTransport:
+        def set_keepalive(self, seconds):
+            captured["keepalive"] = seconds
+
+    class FakeClient:
+        def load_host_keys(self, path):
+            captured["known_hosts"] = path
+
+        def set_missing_host_key_policy(self, policy):
+            captured["policy"] = policy
+
+        def connect(self, **kwargs):
+            captured["connect"] = kwargs
+
+        def get_transport(self):
+            return FakeTransport()
+
+        def open_sftp(self):
+            return object()
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(services_backup.paramiko, "SSHClient", FakeClient)
+    client, _sftp = services_backup._connect_sftp(settings, normalized)
+
+    assert isinstance(captured["policy"], paramiko.RejectPolicy)
+    assert captured["known_hosts"] == str(normalized["known_hosts"])
+    assert captured["connect"]["password"] is None
+    assert captured["connect"]["allow_agent"] is False
+    assert captured["connect"]["look_for_keys"] is False
+    assert captured["connect"]["key_filename"] == str(normalized["private_key"])
+    assert captured["keepalive"] == 30
+    client.close()
+
+
+def test_archive_is_encrypted_authenticated_and_restorable(tmp_path):
+    source = tmp_path / "site-logs"
+    source.mkdir()
+    secret_text = b"private game log: player 76561198000000000"
+    (source / "server.log").write_bytes(secret_text)
+    settings = _settings(tmp_path, backup_include_paths=str(source))
+    key = services_backup.decode_encryption_key(settings.backup_encryption_key)
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    archive, _manifest = services_backup._build_encrypted_archive(
+        settings,
+        work_dir,
+        key,
+        "nexusdata-20260902T000000Z-12345678",
+    )
+
+    encrypted = archive.read_bytes()
+    assert encrypted.startswith(services_backup.ARCHIVE_MAGIC)
+    assert secret_text not in encrypted
+
+    plain_tar = tmp_path / "restored.tar.gz"
+    services_backup.decrypt_archive(archive, plain_tar, key)
+    with tarfile.open(plain_tar, "r:gz") as restored:
+        member = next(item for item in restored.getmembers() if item.name.endswith("server.log"))
+        assert restored.extractfile(member).read() == secret_text
+
+    tampered = tmp_path / "tampered.aes"
+    payload = bytearray(encrypted)
+    payload[len(services_backup.ARCHIVE_MAGIC) + services_backup.NONCE_SIZE + 5] ^= 1
+    tampered.write_bytes(payload)
+    with pytest.raises(InvalidTag):
+        services_backup.decrypt_archive(tampered, tmp_path / "must-not-exist.tar.gz", key)
+    assert not (tmp_path / "must-not-exist.tar.gz").exists()
+
+
+def test_env_secret_files_and_symlinks_are_not_archived(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "normal.txt").write_text("included", encoding="utf-8")
+    (source / ".env").write_text("PASSWORD=must-not-leak", encoding="utf-8")
+    outside = tmp_path / "outside.key"
+    outside.write_text("private-key", encoding="utf-8")
+    os.symlink(outside, source / "linked-secret")
+    settings = _settings(tmp_path, backup_include_paths=str(source))
+
+    archive, _ = services_backup._build_encrypted_archive(
+        settings,
+        tmp_path / "archive-work",
+        services_backup.decode_encryption_key(settings.backup_encryption_key),
+        "nexusdata-20260902T000000Z-12345678",
+    )
+    plain_tar = tmp_path / "archive.tar.gz"
+    services_backup.decrypt_archive(archive, plain_tar, settings.backup_encryption_key)
+    with tarfile.open(plain_tar, "r:gz") as restored:
+        names = restored.getnames()
+    assert any(name.endswith("normal.txt") for name in names)
+    assert not any(name.endswith(".env") for name in names)
+    assert not any(name.endswith("linked-secret") for name in names)
+
+
+def test_mysql_password_is_in_mode_600_option_file_not_command_or_environment(tmp_path, monkeypatch):
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        option_argument = command[1]
+        option_path = Path(option_argument.split("=", 1)[1])
+        captured["option_mode"] = option_path.stat().st_mode & 0o777
+        captured["option_contents"] = option_path.read_text(encoding="utf-8")
+        captured["password_env"] = kwargs["env"].get("MYSQL_PWD")
+        kwargs["stdout"].write(b"-- consistent dump\n")
+        return Completed()
+
+    monkeypatch.setattr(services_backup.subprocess, "run", fake_run)
+    settings = _settings(
+        tmp_path,
+        database_url="mysql+pymysql://backup_user:very-secret@db.invalid:3306/nexus",
+    )
+    destination = tmp_path / "database.sql"
+    result = services_backup._dump_mysql(settings, destination)
+
+    assert result["included"] is True
+    assert captured["option_mode"] == 0o600
+    assert 'password="very-secret"' in captured["option_contents"]
+    assert captured["password_env"] is None
+    assert all("very-secret" not in part for part in captured["command"])
+    assert not (tmp_path / ".mysql-backup.cnf").exists()
+
+
+def test_create_backup_removes_local_temporary_copy(tmp_path, monkeypatch):
+    source = tmp_path / "logs"
+    source.mkdir()
+    (source / "app.log").write_text("safe only after encryption", encoding="utf-8")
+    temp_parent = tmp_path / "temp"
+    settings = _settings(
+        tmp_path,
+        backup_include_paths=str(source),
+        backup_temp_dir=str(temp_parent),
+    )
+
+    def fake_upload(_settings, _normalized, archive_path):
+        assert archive_path.is_file()
+        return {
+            "remote_file": archive_path.name,
+            "encrypted_bytes": archive_path.stat().st_size,
+            "retention_removed": 0,
+        }
+
+    monkeypatch.setattr(services_backup, "_upload_archive", fake_upload)
+    result = services_backup.create_and_upload_backup(settings)
+
+    assert result["status"] == "ok"
+    assert temp_parent.exists()
+    assert list(temp_parent.iterdir()) == []

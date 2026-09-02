@@ -215,6 +215,7 @@ class TaskScheduler:
         task_id: Optional[str] = None,
         args: tuple = (),
         kwargs: Optional[dict] = None,
+        timeout: Optional[float] = 120.0,
     ):
         """Register a function to run periodically in the background."""
         self._periodic.append({
@@ -224,6 +225,7 @@ class TaskScheduler:
             "task_id": task_id or fn.__name__,
             "args": args,
             "kwargs": kwargs or {},
+            "timeout": timeout,
             "last_run": 0.0,
         })
         logger.info(f"[Scheduler] Registered periodic task '{task_id or fn.__name__}' every {interval_secs}s")
@@ -312,6 +314,7 @@ class TaskScheduler:
                         task_id=p["task_id"],
                         args=p["args"],
                         kwargs=p["kwargs"],
+                        timeout=p["timeout"],
                         deduplicate=True,
                     )
             time.sleep(5)  # check every 5 seconds

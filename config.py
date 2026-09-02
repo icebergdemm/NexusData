@@ -262,6 +262,40 @@ class Settings(BaseSettings):
     sftp_server_1_logs_timezone: str = ""
     sftp_server_2_logs_timezone: str = ""
 
+    # Encrypted off-site backups.  This is deliberately separate from the
+    # game-server SFTP credentials above: a backup destination is a different
+    # trust boundary and must use its own restricted, key-only account.
+    backup_enabled: bool = False
+    backup_interval_hours: int = Field(24, ge=1, le=720)
+    backup_retention_count: int = Field(14, ge=1, le=365)
+    backup_sftp_host: str = ""
+    backup_sftp_port: int = Field(22, ge=1, le=65535)
+    backup_sftp_username: str = "nexusbackup"
+    backup_sftp_private_key_path: str = ""
+    backup_sftp_private_key_passphrase: str = ""
+    # A dedicated known_hosts file is mandatory when backups are enabled.  We
+    # never auto-accept a key: doing so would make an actively scanned network
+    # path vulnerable to a machine-in-the-middle receiving the backup.
+    backup_sftp_known_hosts_path: str = ""
+    backup_sftp_remote_dir: str = "/data"
+    # URL-safe or regular base64 encoding of exactly 32 random bytes.  The key
+    # is intentionally not included in backups and must be escrowed separately.
+    backup_encryption_key: str = ""
+    backup_include_database: bool = True
+    # Optional dedicated least-privilege dump account. Empty reuses
+    # DATABASE_URL, which preserves existing deployments.
+    backup_database_url: str = ""
+    backup_include_log_index: bool = True
+    # Project-relative or absolute paths.  Missing paths are recorded in the
+    # encrypted manifest instead of silently creating an empty backup.
+    backup_include_paths: str = "config,uploads,logs"
+    backup_include_paths_list: List[str] = []
+    backup_mysqldump_binary: str = "mysqldump"
+    backup_command_timeout_seconds: int = Field(1800, ge=30, le=7200)
+    # Empty means the OS private temporary directory.  Nothing is retained
+    # here after a successful or failed run.
+    backup_temp_dir: str = ""
+
     # Discord Bot channel for sub-projects publishing
     sub_projects_discord_channel_id: str = ""
 
@@ -307,6 +341,10 @@ class Settings(BaseSettings):
         object.__setattr__(self, "ai_abyss_creature_species_list", _str_to_list(
             self.ai_abyss_creature_species,
             [],
+        ))
+        object.__setattr__(self, "backup_include_paths_list", _str_to_list(
+            self.backup_include_paths,
+            ["config", "uploads", "logs"],
         ))
 
         # Load JSON config files

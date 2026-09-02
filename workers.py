@@ -1041,6 +1041,18 @@ def task_process_ai_dispatcher_reminders() -> dict:
     return _queue_due_ai_dispatcher_reminders()
 
 
+def task_create_encrypted_backup() -> dict:
+    """Create and upload one encrypted off-site backup.
+
+    The implementation has its own non-blocking lock, so even a slow SFTP
+    destination cannot create overlapping backup runs.
+    """
+
+    from services_backup import create_and_upload_backup
+
+    return create_and_upload_backup()
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # STARTUP: register all periodic tasks and start scheduler
 # ═══════════════════════════════════════════════════════════════════════
@@ -1065,7 +1077,7 @@ def _start_simple_workers():
                 logger.error(f"Worker {fn.__name__} error: {e}")
             time.sleep(interval)
 
-    for fn, interval in [
+    periodic_tasks = [
         (task_compensate_playtime, 30 * 60),
         (task_recalculate_ratings, 24 * 60 * 60),
         (task_check_rating_reward_schedules, 5 * 60),
@@ -1084,7 +1096,15 @@ def _start_simple_workers():
         (task_memory_maintenance, 5 * 60),
         (task_process_ai_dispatcher_reminders, 5),
         (task_cleanup_broken_sessions, 60 * 60),
-    ]:
+    ]
+    from config import get_settings
+    backup_settings = get_settings()
+    if backup_settings.backup_enabled:
+        periodic_tasks.append(
+            (task_create_encrypted_backup, backup_settings.backup_interval_hours * 60 * 60)
+        )
+
+    for fn, interval in periodic_tasks:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
         t.start()
         logger.info(f"[Workers] Started fallback worker: {fn.__name__} every {interval}s")
@@ -1276,6 +1296,22 @@ def _start_scheduler():
         priority=Priority.BACKGROUND,
         task_id="broken_sessions_cleanup",
     )
+
+    # Encrypted off-site backup.  It starts only when explicitly enabled and
+    # has no scheduler timeout: database dumps/uploads can legitimately take
+    # longer than the generic 120-second task limit.  One of the two worker
+    # threads remains free for normal maintenance while this BACKGROUND task
+    # runs, and services_backup prevents overlap itself.
+    from config import get_settings
+    backup_settings = get_settings()
+    if backup_settings.backup_enabled:
+        scheduler.register_periodic(
+            task_create_encrypted_backup,
+            interval_secs=backup_settings.backup_interval_hours * 60 * 60,
+            priority=Priority.BACKGROUND,
+            task_id="encrypted_sftp_backup",
+            timeout=None,
+        )
 
     scheduler.start()
     logger.info("[Workers] All periodic tasks registered and scheduler started")
