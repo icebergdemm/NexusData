@@ -12,6 +12,7 @@ from models import (
     AIDispatcherReminder,
     AppSetting,
     DispatchMessage,
+    RoundEvent,
     WorldRound,
 )
 from routes.dispatch import (
@@ -20,6 +21,7 @@ from routes.dispatch import (
     _finish_ai_creature_alert_delivery,
     _persist_ai_dispatcher_reminders,
     _queue_due_ai_dispatcher_reminders,
+    client_round_conversation_context,
 )
 from routes.world_state import _serialize_ai_tracked_contacts
 
@@ -115,7 +117,7 @@ def test_communication_context_uses_configured_message_limit() -> None:
         db.add(
             AppSetting(
                 key="dispatch_ai_runtime_config_v1",
-                value='{"history_messages":3}',
+                value='{"history_messages":9,"nearby_context_messages":3}',
             )
         )
         db.add_all(
@@ -138,6 +140,82 @@ def test_communication_context_uses_configured_message_limit() -> None:
             "Сообщение 3",
             "Сообщение 4",
             "Сообщение 5",
+        ]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_round_conversation_tool_searches_the_entire_active_round() -> None:
+    engine = _engine_for(
+        WorldRound.__table__,
+        RoundEvent.__table__,
+        DispatchMessage.__table__,
+    )
+    db = Session(engine)
+    try:
+        started_at = datetime.utcnow() - timedelta(minutes=2)
+        db.add(
+            WorldRound(
+                round_id="round-search",
+                server_name="ASPER1",
+                created_at=started_at,
+                last_update_at=datetime.utcnow(),
+            )
+        )
+        db.add(
+            RoundEvent(
+                event_type="start",
+                server_name="ASPER1",
+                created_at=started_at,
+            )
+        )
+        db.add_all(
+            [
+                DispatchMessage(
+                    player_name="Старый экипаж",
+                    sender_type="player",
+                    server_name="ASPER1",
+                    text="Кислород до начала раунда.",
+                    created_at=started_at - timedelta(minutes=1),
+                ),
+                DispatchMessage(
+                    player_name="Механик",
+                    sender_type="player",
+                    server_name="ASPER1",
+                    text="Проверил кислородный генератор.",
+                    created_at=started_at + timedelta(seconds=5),
+                ),
+                DispatchMessage(
+                    player_name="Console",
+                    sender_type="player",
+                    server_name="ASPER1",
+                    text="кислород internal echo",
+                    created_at=started_at + timedelta(seconds=6),
+                ),
+                DispatchMessage(
+                    player_name="Медик",
+                    sender_type="player",
+                    server_name="ASPER2",
+                    text="кислород чужого сервера",
+                    created_at=started_at + timedelta(seconds=7),
+                ),
+            ]
+        )
+        db.commit()
+
+        result = client_round_conversation_context(
+            server_name="asper1",
+            query="кислород",
+            limit=100,
+            db=db,
+        )
+
+        assert result["round_id"] == "round-search"
+        assert result["total"] == 1
+        assert result["truncated"] is False
+        assert [item["text"] for item in result["messages"]] == [
+            "Проверил кислородный генератор."
         ]
     finally:
         db.close()

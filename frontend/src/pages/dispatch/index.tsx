@@ -152,6 +152,8 @@ interface AIDispatcherConfig {
   enabled: boolean
   configured: boolean
   history_messages: number
+  nearby_context_messages: number
+  alert_history_messages: number
   enabled_tools: DispatcherToolName[]
   report_types: Record<DispatcherReportType, boolean>
 }
@@ -159,6 +161,7 @@ interface AIDispatcherConfig {
 type DispatcherToolName =
   | "get_world_state"
   | "get_navigation_relation"
+  | "get_round_conversation_context"
   | "get_warehouse"
   | "queue_supply_cargo"
   | "control_supply_shuttle"
@@ -167,12 +170,25 @@ type DispatcherToolName =
 type DispatcherReportType = "round_briefing" | "threat_alert" | "scheduled_follow_up"
 
 type AIDispatcherConfigPatch = Partial<
-  Pick<AIDispatcherConfig, "enabled" | "history_messages" | "enabled_tools" | "report_types">
+  Pick<
+    AIDispatcherConfig,
+    | "enabled"
+    | "history_messages"
+    | "nearby_context_messages"
+    | "alert_history_messages"
+    | "enabled_tools"
+    | "report_types"
+  >
 >
 
 const AI_TOOLS: ReadonlyArray<{ name: DispatcherToolName; label: string; description: string }> = [
   { name: "get_world_state", label: "Состояние мира", description: "Карта, цели и телеметрия активного раунда" },
   { name: "get_navigation_relation", label: "Навигация", description: "Расстояние и направление между объектами" },
+  {
+    name: "get_round_conversation_context",
+    label: "Журнал раунда",
+    description: "Поиск по всему раунду только когда ближайшего контекста недостаточно",
+  },
   { name: "get_warehouse", label: "Склад", description: "Проверка остатков и идентификаторов предметов" },
   { name: "queue_supply_cargo", label: "Заказ груза", description: "Постановка снабжения в очередь" },
   { name: "control_supply_shuttle", label: "Челнок снабжения", description: "Отправка и отзыв челнока" },
@@ -199,6 +215,8 @@ function AIDispatcherConfigDialog({
   onSave: (patch: AIDispatcherConfigPatch) => void
 }) {
   const [historyMessages, setHistoryMessages] = useState(5)
+  const [nearbyContextMessages, setNearbyContextMessages] = useState(4)
+  const [alertHistoryMessages, setAlertHistoryMessages] = useState(5)
   const [enabledTools, setEnabledTools] = useState<DispatcherToolName[]>([])
   const [reportTypes, setReportTypes] = useState<Record<DispatcherReportType, boolean>>({
     round_briefing: true,
@@ -209,6 +227,8 @@ function AIDispatcherConfigDialog({
   useEffect(() => {
     if (!open || !config) return
     setHistoryMessages(config.history_messages)
+    setNearbyContextMessages(config.nearby_context_messages)
+    setAlertHistoryMessages(config.alert_history_messages)
     setEnabledTools(config.enabled_tools)
     setReportTypes(config.report_types)
   }, [open, config])
@@ -232,21 +252,46 @@ function AIDispatcherConfigDialog({
         </DialogHeader>
 
         <div className="space-y-5">
-          <div className="space-y-2">
-            <Label htmlFor="ai-history-messages">Сообщений в истории чата</Label>
-            <Input
-              id="ai-history-messages"
-              type="number"
-              min={1}
-              max={30}
-              step={1}
-              value={historyMessages}
-              onChange={(event) => setHistoryMessages(Number(event.target.value))}
-              className="max-w-28"
-            />
-            <p className="text-xs text-muted-foreground">
-              По умолчанию 5. Допустимо от 1 до 30 предыдущих сообщений.
-            </p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="space-y-2">
+              <Label htmlFor="ai-history-messages">История диалога</Label>
+              <Input
+                id="ai-history-messages"
+                type="number"
+                min={1}
+                max={30}
+                step={1}
+                value={historyMessages}
+                onChange={(event) => setHistoryMessages(Number(event.target.value))}
+              />
+              <p className="text-xs text-muted-foreground">Обычная память ответов. По умолчанию 5.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="ai-nearby-context-messages">Ближайший контекст</Label>
+              <Input
+                id="ai-nearby-context-messages"
+                type="number"
+                min={1}
+                max={30}
+                step={1}
+                value={nearbyContextMessages}
+                onChange={(event) => setNearbyContextMessages(Number(event.target.value))}
+              />
+              <p className="text-xs text-muted-foreground">Строк канала в каждом запросе. По умолчанию 4.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="ai-alert-history-messages">История тревог</Label>
+              <Input
+                id="ai-alert-history-messages"
+                type="number"
+                min={1}
+                max={30}
+                step={1}
+                value={alertHistoryMessages}
+                onChange={(event) => setAlertHistoryMessages(Number(event.target.value))}
+              />
+              <p className="text-xs text-muted-foreground">Отдельный индекс тревог. По умолчанию 5.</p>
+            </div>
           </div>
 
           <section className="space-y-2" aria-labelledby="ai-report-types-title">
@@ -297,8 +342,15 @@ function AIDispatcherConfigDialog({
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
           <Button
-            disabled={saving || !Number.isInteger(historyMessages) || historyMessages < 1 || historyMessages > 30}
-            onClick={() => onSave({ history_messages: historyMessages, enabled_tools: enabledTools, report_types: reportTypes })}
+            disabled={saving || [historyMessages, nearbyContextMessages, alertHistoryMessages]
+              .some((value) => !Number.isInteger(value) || value < 1 || value > 30)}
+            onClick={() => onSave({
+              history_messages: historyMessages,
+              nearby_context_messages: nearbyContextMessages,
+              alert_history_messages: alertHistoryMessages,
+              enabled_tools: enabledTools,
+              report_types: reportTypes,
+            })}
           >
             Сохранить
           </Button>

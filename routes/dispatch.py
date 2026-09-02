@@ -75,6 +75,7 @@ _AI_DISPATCHER_RUNTIME_CONFIG_SETTING = "dispatch_ai_runtime_config_v1"
 _AI_CONFIGURABLE_TOOLS = (
     "get_world_state",
     "get_navigation_relation",
+    "get_round_conversation_context",
     "get_warehouse",
     "queue_supply_cargo",
     "control_supply_shuttle",
@@ -86,6 +87,8 @@ _AI_REPORT_TYPES = (
     "scheduled_follow_up",
 )
 _AI_DEFAULT_HISTORY_MESSAGES = 5
+_AI_DEFAULT_NEARBY_CONTEXT_MESSAGES = 4
+_AI_DEFAULT_ALERT_HISTORY_MESSAGES = 5
 _AI_MAX_HISTORY_MESSAGES = 30
 _AI_IGNORED_SENDER_NAMES = frozenset({"console"})
 
@@ -410,6 +413,8 @@ def _ai_dispatcher_enabled(db: Session) -> bool:
 def _default_ai_dispatcher_runtime_config() -> dict:
     return {
         "history_messages": _AI_DEFAULT_HISTORY_MESSAGES,
+        "nearby_context_messages": _AI_DEFAULT_NEARBY_CONTEXT_MESSAGES,
+        "alert_history_messages": _AI_DEFAULT_ALERT_HISTORY_MESSAGES,
         "enabled_tools": list(_AI_CONFIGURABLE_TOOLS),
         "report_types": {name: True for name in _AI_REPORT_TYPES},
     }
@@ -436,12 +441,14 @@ def _ai_dispatcher_runtime_config(db: Session) -> dict:
     if not isinstance(stored, dict):
         return config
 
-    history_messages = stored.get("history_messages")
-    if isinstance(history_messages, int) and not isinstance(history_messages, bool):
-        config["history_messages"] = max(
-            1,
-            min(_AI_MAX_HISTORY_MESSAGES, history_messages),
-        )
+    for key in (
+        "history_messages",
+        "nearby_context_messages",
+        "alert_history_messages",
+    ):
+        message_limit = stored.get(key)
+        if isinstance(message_limit, int) and not isinstance(message_limit, bool):
+            config[key] = max(1, min(_AI_MAX_HISTORY_MESSAGES, message_limit))
 
     enabled_tools = stored.get("enabled_tools")
     if isinstance(enabled_tools, list):
@@ -468,12 +475,18 @@ def _set_ai_dispatcher_runtime_config(
     db: Session,
     *,
     history_messages: Optional[int] = None,
+    nearby_context_messages: Optional[int] = None,
+    alert_history_messages: Optional[int] = None,
     enabled_tools: Optional[List[str]] = None,
     report_types: Optional[dict] = None,
 ) -> dict:
     config = _ai_dispatcher_runtime_config(db)
     if history_messages is not None:
         config["history_messages"] = history_messages
+    if nearby_context_messages is not None:
+        config["nearby_context_messages"] = nearby_context_messages
+    if alert_history_messages is not None:
+        config["alert_history_messages"] = alert_history_messages
     if enabled_tools is not None:
         enabled = set(enabled_tools)
         config["enabled_tools"] = [
@@ -503,6 +516,8 @@ def _ai_dispatcher_request_config(db: Optional[Session]) -> dict:
     )
     return {
         "history_messages": config["history_messages"],
+        "nearby_context_messages": config["nearby_context_messages"],
+        "alert_history_messages": config["alert_history_messages"],
         "enabled_tools": config["enabled_tools"],
         "enabled_report_types": [
             name for name in _AI_REPORT_TYPES if config["report_types"][name]
@@ -688,6 +703,49 @@ def _latest_world_round(db: Session, server_name: str) -> Optional[WorldRound]:
     )
 
 
+def _ai_round_journal_started_at(
+    db: Session,
+    server_name: str,
+    *,
+    world_round: Optional[WorldRound] = None,
+) -> Optional[datetime]:
+    """Return the active round boundary shared by nearby and tool searches."""
+
+    if world_round is None:
+        world_round = _latest_world_round(db, server_name)
+    journal_started_at = world_round.created_at if world_round is not None else None
+    try:
+        latest_start = (
+            db.query(RoundEvent)
+            .filter(
+                RoundEvent.server_name == server_name,
+                RoundEvent.event_type == "start",
+            )
+            .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
+            .first()
+        )
+        latest_end = (
+            db.query(RoundEvent)
+            .filter(
+                RoundEvent.server_name == server_name,
+                RoundEvent.event_type == "end",
+            )
+            .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
+            .first()
+        )
+        if latest_start is not None and (
+            latest_end is None or latest_start.created_at > latest_end.created_at
+        ):
+            return latest_start.created_at
+        if latest_end is not None and (
+            journal_started_at is None or journal_started_at <= latest_end.created_at
+        ):
+            return None
+    except SQLAlchemyError:
+        db.rollback()
+    return journal_started_at
+
+
 def _build_ai_communication_context(
     db: Session,
     server_name: str,
@@ -829,36 +887,11 @@ def _build_ai_communication_context(
         default_target = f'Борт «{vessel_name}»'
     else:
         default_target = "Неопределено"
-    journal_started_at = world_round.created_at if world_round is not None else None
-    try:
-        latest_start = (
-            db.query(RoundEvent)
-            .filter(
-                RoundEvent.server_name == server_name,
-                RoundEvent.event_type == "start",
-            )
-            .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
-            .first()
-        )
-        latest_end = (
-            db.query(RoundEvent)
-            .filter(
-                RoundEvent.server_name == server_name,
-                RoundEvent.event_type == "end",
-            )
-            .order_by(RoundEvent.created_at.desc(), RoundEvent.id.desc())
-            .first()
-        )
-        if latest_start is not None and (
-            latest_end is None or latest_start.created_at > latest_end.created_at
-        ):
-            journal_started_at = latest_start.created_at
-        elif latest_end is not None and (
-            journal_started_at is None or journal_started_at <= latest_end.created_at
-        ):
-            journal_started_at = None
-    except SQLAlchemyError:
-        db.rollback()
+    journal_started_at = _ai_round_journal_started_at(
+        db,
+        server_name,
+        world_round=world_round,
+    )
     try:
         if journal_started_at is None:
             recent_rows = []
@@ -881,7 +914,7 @@ def _build_ai_communication_context(
                     >= journal_started_at - timedelta(seconds=1),
                 )
                 .order_by(DispatchMessage.created_at.desc(), DispatchMessage.id.desc())
-                .limit(_ai_dispatcher_runtime_config(db)["history_messages"])
+                .limit(_ai_dispatcher_runtime_config(db)["nearby_context_messages"])
                 .all()
             )
     except SQLAlchemyError:
@@ -2865,11 +2898,19 @@ def set_dispatch_ai_config(
         changed["enabled"] = body.enabled
     if any(
         value is not None
-        for value in (body.history_messages, body.enabled_tools, body.report_types)
+        for value in (
+            body.history_messages,
+            body.nearby_context_messages,
+            body.alert_history_messages,
+            body.enabled_tools,
+            body.report_types,
+        )
     ):
         runtime_config = _set_ai_dispatcher_runtime_config(
             db,
             history_messages=body.history_messages,
+            nearby_context_messages=body.nearby_context_messages,
+            alert_history_messages=body.alert_history_messages,
             enabled_tools=body.enabled_tools,
             report_types=body.report_types,
         )
@@ -3161,3 +3202,83 @@ async def client_dispatch_message(request: Request, db: Session = Depends(get_ga
     sender_label = (body.get("sender_name") or "").strip() or "Внешняя система"
     msg, action = _send_dispatcher_message(db, body.get("text", ""), server_name, admin_id=None, sender_label=sender_label)
     return {"status": "ok", "id": msg.id, "action_id": action.id}
+
+
+@client_router.get("/conversation-context")
+def client_round_conversation_context(
+    server_name: str = Query(..., min_length=1, max_length=100),
+    query: Optional[str] = Query(default=None, max_length=200),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_game_db),
+):
+    """Search the entire active-round terminal journal for the AI tool."""
+
+    normalized_server = server_name.strip().upper()
+    if not normalized_server:
+        raise HTTPException(status_code=422, detail="server_name is required")
+    world_round = _latest_world_round(db, normalized_server)
+    journal_started_at = _ai_round_journal_started_at(
+        db,
+        normalized_server,
+        world_round=world_round,
+    )
+    if journal_started_at is None:
+        return {
+            "server_name": normalized_server,
+            "round_id": world_round.round_id if world_round is not None else None,
+            "query": query.strip() if query and query.strip() else None,
+            "total": 0,
+            "truncated": False,
+            "messages": [],
+        }
+
+    statement = db.query(DispatchMessage).filter(
+        DispatchMessage.server_name == normalized_server,
+        DispatchMessage.sender_type.in_(("player", "dispatcher")),
+        or_(
+            DispatchMessage.player_name.is_(None),
+            func.lower(func.trim(DispatchMessage.player_name)).notin_(
+                tuple(_AI_IGNORED_SENDER_NAMES)
+            ),
+        ),
+        DispatchMessage.created_at >= journal_started_at - timedelta(seconds=1),
+    )
+    clean_query = query.strip() if query and query.strip() else None
+    if clean_query is not None:
+        escaped_query = (
+            clean_query.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        pattern = f"%{escaped_query}%"
+        statement = statement.filter(
+            or_(
+                DispatchMessage.text.ilike(pattern, escape="\\"),
+                DispatchMessage.player_name.ilike(pattern, escape="\\"),
+            )
+        )
+    total = statement.count()
+    rows = (
+        statement
+        .order_by(DispatchMessage.created_at.desc(), DispatchMessage.id.desc())
+        .limit(limit)
+        .all()
+    )
+    visible_rows = [row for row in reversed(rows) if _is_ai_visible_dispatch_message(row)]
+    return {
+        "server_name": normalized_server,
+        "round_id": world_round.round_id if world_round is not None else None,
+        "query": clean_query,
+        "total": total,
+        "truncated": total > len(rows),
+        "messages": [
+            {
+                "id": row.id,
+                "sender_name": row.player_name,
+                "sender_type": row.sender_type,
+                "text": row.text,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in visible_rows
+        ],
+    }

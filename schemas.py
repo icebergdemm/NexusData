@@ -365,14 +365,17 @@ class AIDispatcherConfigIn(BaseModel):
 
     enabled: Optional[bool] = None
     history_messages: Optional[int] = Field(default=None, ge=1, le=30)
+    nearby_context_messages: Optional[int] = Field(default=None, ge=1, le=30)
+    alert_history_messages: Optional[int] = Field(default=None, ge=1, le=30)
     enabled_tools: Optional[List[Literal[
         "get_world_state",
         "get_navigation_relation",
+        "get_round_conversation_context",
         "get_warehouse",
         "queue_supply_cargo",
         "control_supply_shuttle",
         "schedule_follow_up",
-    ]]] = Field(default=None, max_length=6)
+    ]]] = Field(default=None, max_length=7)
     report_types: Optional[Dict[Literal[
         "round_briefing",
         "threat_alert",

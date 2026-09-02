@@ -87,6 +87,8 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 self.assertTrue(initial["enabled"])
                 self.assertTrue(initial["configured"])
                 self.assertEqual(initial["history_messages"], 5)
+                self.assertEqual(initial["nearby_context_messages"], 4)
+                self.assertEqual(initial["alert_history_messages"], 5)
                 self.assertTrue(initial["report_types"]["round_briefing"])
                 result = set_dispatch_ai_config(
                     AIDispatcherConfigIn(enabled=False),
@@ -122,7 +124,12 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 result = set_dispatch_ai_config(
                     AIDispatcherConfigIn(
                         history_messages=12,
-                        enabled_tools=["get_world_state", "get_warehouse"],
+                        nearby_context_messages=4,
+                        alert_history_messages=7,
+                        enabled_tools=[
+                            "get_world_state",
+                            "get_round_conversation_context",
+                        ],
                         report_types={
                             "round_briefing": False,
                             "threat_alert": True,
@@ -135,9 +142,11 @@ class AIDispatcherBridgeTests(unittest.TestCase):
 
             self.assertEqual(result, reloaded)
             self.assertEqual(reloaded["history_messages"], 12)
+            self.assertEqual(reloaded["nearby_context_messages"], 4)
+            self.assertEqual(reloaded["alert_history_messages"], 7)
             self.assertEqual(
                 reloaded["enabled_tools"],
-                ["get_world_state", "get_warehouse"],
+                ["get_world_state", "get_round_conversation_context"],
             )
             self.assertFalse(reloaded["report_types"]["round_briefing"])
             self.assertTrue(reloaded["report_types"]["threat_alert"])
@@ -346,9 +355,12 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                 "message_type": "round_briefing",
                 "dispatcher_config": {
                     "history_messages": 5,
+                    "nearby_context_messages": 4,
+                    "alert_history_messages": 5,
                     "enabled_tools": [
                         "get_world_state",
                         "get_navigation_relation",
+                        "get_round_conversation_context",
                         "get_warehouse",
                         "queue_supply_cargo",
                         "control_supply_shuttle",
@@ -430,9 +442,12 @@ class AIDispatcherBridgeTests(unittest.TestCase):
                     "message_type": "round_briefing",
                     "dispatcher_config": {
                         "history_messages": 5,
+                        "nearby_context_messages": 4,
+                        "alert_history_messages": 5,
                         "enabled_tools": [
                             "get_world_state",
                             "get_navigation_relation",
+                            "get_round_conversation_context",
                             "get_warehouse",
                             "queue_supply_cargo",
                             "control_supply_shuttle",
