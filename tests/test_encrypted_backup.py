@@ -216,3 +216,48 @@ def test_create_backup_removes_local_temporary_copy(tmp_path, monkeypatch):
     assert result["status"] == "ok"
     assert temp_parent.exists()
     assert list(temp_parent.iterdir()) == []
+
+
+def test_manual_backup_can_run_before_schedule_is_enabled(tmp_path, monkeypatch):
+    source = tmp_path / "logs"
+    source.mkdir()
+    (source / "app.log").write_text("manual preflight", encoding="utf-8")
+    settings = _settings(
+        tmp_path,
+        backup_enabled=False,
+        backup_include_paths=str(source),
+        backup_temp_dir=str(tmp_path / "temp"),
+    )
+
+    monkeypatch.setattr(
+        services_backup,
+        "_upload_archive",
+        lambda _settings, _normalized, archive_path: {
+            "remote_file": archive_path.name,
+            "encrypted_bytes": archive_path.stat().st_size,
+            "retention_removed": 0,
+        },
+    )
+
+    assert services_backup.create_and_upload_backup(settings)["status"] == "disabled"
+    assert services_backup.create_and_upload_backup(
+        settings,
+        allow_when_disabled=True,
+    )["status"] == "ok"
+
+
+def test_cli_configuration_error_is_json_without_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(
+        services_backup,
+        "test_backup_connection",
+        lambda: (_ for _ in ()).throw(
+            services_backup.BackupConfigurationError("BACKUP_SFTP_HOST is required")
+        ),
+    )
+
+    assert services_backup._main(["check"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert '"status": "error"' in captured.err
+    assert "BACKUP_SFTP_HOST is required" in captured.err
+    assert "Traceback" not in captured.err

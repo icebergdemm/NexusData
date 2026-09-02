@@ -30,6 +30,7 @@ import secrets
 import sqlite3
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -549,11 +550,20 @@ def test_backup_connection(settings: Settings | None = None) -> dict:
         client.close()
 
 
-def create_and_upload_backup(settings: Settings | None = None) -> dict:
-    """Create one encrypted archive, upload it, then remove every local temp."""
+def create_and_upload_backup(
+    settings: Settings | None = None,
+    *,
+    allow_when_disabled: bool = False,
+) -> dict:
+    """Create one encrypted archive, upload it, then remove every local temp.
+
+    ``allow_when_disabled`` is reserved for the explicit CLI ``run`` command:
+    it lets an operator test one backup before enabling the periodic schedule.
+    Scheduler calls keep the fail-closed default.
+    """
 
     settings = settings or get_settings()
-    if not settings.backup_enabled:
+    if not settings.backup_enabled and not allow_when_disabled:
         return {"status": "disabled"}
     if not _backup_lock.acquire(blocking=False):
         return {"status": "skipped", "reason": "already_running"}
@@ -661,15 +671,34 @@ def _main(argv: Iterable[str] | None = None) -> int:
     restore.add_argument("output_dir", type=Path)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    if args.command == "check":
-        print(json.dumps(test_backup_connection(), ensure_ascii=False))
-    elif args.command == "run":
-        print(json.dumps(create_and_upload_backup(), ensure_ascii=False))
-    else:
-        settings = get_settings()
-        restore_archive(args.archive, args.output_dir, settings.backup_encryption_key)
-        print(json.dumps({"status": "ok", "output_dir": str(args.output_dir)}, ensure_ascii=False))
-    return 0
+    try:
+        if args.command == "check":
+            result = test_backup_connection()
+        elif args.command == "run":
+            result = create_and_upload_backup(allow_when_disabled=True)
+        else:
+            settings = get_settings()
+            restore_archive(args.archive, args.output_dir, settings.backup_encryption_key)
+            result = {"status": "ok", "output_dir": str(args.output_dir)}
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except (BackupConfigurationError, BackupExecutionError) as exc:
+        print(
+            json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        # Keep CLI output useful without leaking arbitrary third-party error
+        # messages which may contain connection metadata.
+        print(
+            json.dumps(
+                {"status": "error", "error": f"backup failed ({type(exc).__name__})"},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
 
 
 if __name__ == "__main__":
