@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag,
+  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -23,6 +23,7 @@ import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIco
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { useCurrentAdmin } from "@/lib/auth"
 import { formatBrowserDate } from "@/lib/format-date"
+import { ImageLightbox, type LightboxImage } from "@/components/ui/image-lightbox"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
   type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type AssigneeCandidates,
@@ -228,7 +229,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
 }
 
 // ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
-function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDeleteAll, currentAdminId, boardId }: {
+function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDeleteAll, currentAdminId, boardId, onOpenLightbox }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
@@ -238,6 +239,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
   currentAdminId: number | undefined
   boardId: number
   allTasks?: TaskRow[]
+  onOpenLightbox?: (images: LightboxImage[], index: number) => void
 }) {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState("")
@@ -437,17 +439,27 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
             </div>
             <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.txt,.log" className="hidden" onChange={(e) => { if (e.target.files?.length) uploadFiles(e.target.files) }} />
             <div className="grid grid-cols-3 gap-2">
-              {(attachmentsData?.attachments ?? []).map((att) => (
+              {(attachmentsData?.attachments ?? []).map((att) => {
+                const isImage = att.mime_type?.startsWith("image/")
+                const imgIndex = isImage ? (attachmentsData?.attachments ?? []).filter(a => a.mime_type?.startsWith("image/")).findIndex(a => a.id === att.id) : -1
+                const handleOpen = () => {
+                  if (!isImage || !onOpenLightbox) return
+                  const imgs: LightboxImage[] = (attachmentsData?.attachments ?? []).filter(a => a.mime_type?.startsWith("image/")).map(a => ({ url: a.url, filename: a.filename }))
+                  onOpenLightbox(imgs, imgIndex >= 0 ? imgIndex : 0)
+                }
+                return (
                 <div key={att.id} className={`relative rounded border overflow-hidden group ${task.preview_attachment_id === att.id ? "ring-2 ring-primary" : ""}`}>
-                  {att.mime_type?.startsWith("image/") ? <img src={att.url} alt={att.filename} className="h-24 w-full object-cover" /> : <div className="h-24 flex items-center justify-center bg-muted text-xs p-1 text-center">{att.filename}</div>}
+                  {isImage ? <img src={att.url} alt={att.filename} className="h-24 w-full object-cover cursor-zoom-in" onClick={handleOpen} /> : <div className="h-24 flex items-center justify-center bg-muted text-xs p-1 text-center">{att.filename}</div>}
                   <div className="absolute inset-0 hidden group-hover:flex items-center justify-center gap-1 bg-black/40">
+                    {isImage && <Button size="icon-xs" variant="secondary" onClick={handleOpen} title="Открыть просмотр"><Eye className="size-3" /></Button>}
                     <Button size="icon-xs" variant="secondary" onClick={() => setPreviewMutation.mutate(att.id)} title="Сделать превью"><Star className="size-3" /></Button>
-                    <Button size="icon-xs" variant="secondary" onClick={() => window.open(att.url, "_blank")} title="Открыть"><Eye className="size-3" /></Button>
+                    <Button size="icon-xs" variant="secondary" onClick={() => window.open(att.url, "_blank")} title="Открыть в новой вкладке"><ExternalLink className="size-3" /></Button>
                     {canEditThis && <Button size="icon-xs" variant="destructive" onClick={() => tasksApi.tasks.attachments.delete(task.id, att.id).then(() => { queryClient.invalidateQueries({ queryKey: ["task-attachments", taskId] }); invalidateBoard() })}><Trash2 className="size-3" /></Button>}
                   </div>
                   <div className="p-1 text-[10px] truncate bg-background/80">{att.filename}</div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
 
@@ -533,7 +545,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
 }
 
 // ── Board Chat (закрывающийся сайдбар, скриншоты, якоря с названием) ─────────
-function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; tasks: TaskRow[]; onClose?: () => void; open?: boolean }) {
+function BoardChat({ boardId, tasks, onClose, open = true, onOpenLightbox }: { boardId: number; tasks: TaskRow[]; onClose?: () => void; open?: boolean; onOpenLightbox?: (images: LightboxImage[], index: number) => void }) {
   const [input, setInput] = useState("")
   const [chatPinned, setChatPinned] = useState(true)
   const chatSize = { width: 352, height: Math.max(420, window.innerHeight - 96) }
@@ -637,7 +649,14 @@ function BoardChat({ boardId, tasks, onClose, open = true }: { boardId: number; 
             </div>
             {m.reply_to_id && <div className="text-[11px] text-muted-foreground border-l-2 pl-1">↳ ответ на #{m.reply_to_id}</div>}
             <div className="whitespace-pre-wrap break-words text-sm mt-1">{renderContent(m.content)}</div>
-            {m.attachments?.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{m.attachments.map(a => a.mime_type?.startsWith("image/") ? <a key={a.id} href={a.url} target="_blank" rel="noreferrer"><img src={a.url} alt={a.filename} className="h-16 rounded border" /></a> : <a key={a.id} href={a.url} target="_blank" className="text-xs text-primary underline">{a.filename}</a>)}</div>}
+            {m.attachments?.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{m.attachments.map(a => {
+              if (a.mime_type?.startsWith("image/")) {
+                const allImgs: LightboxImage[] = (messages.flatMap(msg => msg.attachments ?? []).filter(x => x.mime_type?.startsWith("image/")).map(x => ({ url: x.url, filename: x.filename })))
+                const idx = allImgs.findIndex(x => x.url === a.url)
+                return <button key={a.id} onClick={() => onOpenLightbox?.(allImgs, idx >= 0 ? idx : 0)} className="rounded border overflow-hidden hover:opacity-90 transition-opacity" title="Открыть просмотр"><img src={a.url} alt={a.filename} className="h-16 w-auto object-cover" /></button>
+              }
+              return <a key={a.id} href={a.url} target="_blank" className="text-xs text-primary underline">{a.filename}</a>
+            })}</div>}
             <div className="mt-1 hidden group-hover:flex gap-1">
               <Button size="xs" variant="ghost" onClick={() => setReplyTo(m.id)}>Ответить</Button>
               <Button size="xs" variant="ghost" onClick={() => tasksApi.boards.chat.togglePin(m.board_id, m.id).then(() => queryClient.invalidateQueries({ queryKey: ["board-chat", boardId] }))}>{m.is_pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />} {m.is_pinned ? "Открепить" : "Закрепить"}</Button>
@@ -691,6 +710,8 @@ export function TaskBoardPage() {
   const [showHidden, setShowHidden] = useState(false)
   const [permsOpen, setPermsOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
+  const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null)
+  const openLightbox = (images: LightboxImage[], index: number) => setLightbox({ images, index })
 
   const boardIdNum = Number(boardId)
 
@@ -826,7 +847,7 @@ export function TaskBoardPage() {
         </div>
       </div>
 
-      <BoardChat boardId={boardIdNum} tasks={data.tasks} open={chatOpen} onClose={() => setChatOpen(false)} />
+      <BoardChat boardId={boardIdNum} tasks={data.tasks} open={chatOpen} onClose={() => setChatOpen(false)} onOpenLightbox={openLightbox} />
 
       {/* Task detail по центру, чат остаётся интерактивным */}
       <TaskDetailDialog
@@ -838,6 +859,7 @@ export function TaskBoardPage() {
         canDeleteAll={data.can_delete_all}
         currentAdminId={admin?.id}
         boardId={boardIdNum}
+        onOpenLightbox={openLightbox}
       />
 
       <BoardPermissionsDialog boardId={boardIdNum} open={permsOpen} onOpenChange={setPermsOpen} />
@@ -875,6 +897,14 @@ export function TaskBoardPage() {
         }}
         candidates={candidates}
       />
+      {lightbox && (
+        <ImageLightbox
+          images={lightbox.images}
+          index={lightbox.index}
+          onClose={() => setLightbox(null)}
+          onIndexChange={(i) => setLightbox((v) => (v ? { ...v, index: i } : null))}
+        />
+      )}
     </div>
   )
 }
