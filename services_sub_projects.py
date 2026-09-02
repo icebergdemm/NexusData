@@ -760,80 +760,117 @@ class SubProjectService:
         Dispatches directly to the in-process bot to send/edit messages in
         the configured sub_projects channel. Falls back to webhook if
         channel is not configured.
+
+        Image handling — FIX for "картинка не прикрепляется":
+        Previously the embed only ever contained a remote URL
+        (public_site_url/sub_projects/images/...) which Discord must fetch
+        server-side. That silently fails when the URL is internal (127.0.0.1),
+        when public_site_url is blank/misconfigured, or when the file simply
+        doesn't exist on disk anymore — the text still posts, the image just
+        disappears. Now we prefer uploading the actual file as a Discord
+        attachment (attachment://filename) whenever the file exists locally:
+        Discord stores the attachment itself, so no external fetch is needed
+        and the image is always visible. Remote URL is kept only as a
+        fallback when the file is missing from disk but image_filename is set.
         """
         project = self.get_by_id(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Проект не найден")
 
-        # Build image URL — MUST be settings.public_site_url, not the
-        # request-derived base_url the caller passes in. Discord fetches an
-        # embed's image URL server-side to render it, so it needs an address
-        # reachable from Discord's own network. request.base_url reflects
-        # whatever scheme/host/port the app process itself sees the request
-        # arrive as — behind nginx/proxy_server.py that's frequently an
-        # internal one (http://127.0.0.1:8000 and similar), which Discord
-        # obviously can't reach: the embed still posts (text is inline, no
-        # fetch needed), but the image silently never attaches. This is
-        # exactly the bug reports of "картинка не прикрепляется" — it wasn't
-        # random, it depended on how the request happened to reach the app.
-        # base_url is kept as a last-resort fallback only for the (unusual)
-        # case public_site_url was left blank by misconfiguration.
-        effective_base = (settings.public_site_url or base_url or "").rstrip("/")
-        if not settings.public_site_url:
-            logger.warning(
-                "publish_to_discord: public_site_url не настроен — картинка эмбеда "
-                "использует request.base_url и может не прикрепиться в Discord"
-            )
         image_url = None
+        image_path = None
         if project.image_filename:
-            image_url = f"{effective_base}/sub_projects/images/{project.image_filename}"
+            candidate = os.path.join(settings.sub_projects_upload_dir, "images", project.image_filename)
+            if os.path.exists(candidate):
+                # Prefer attachment upload — guaranteed delivery, no public URL needed
+                image_path = candidate
+                image_url = f"attachment://{os.path.basename(candidate)}"
+            else:
+                # Fallback to remote URL (preserves old behaviour when file missing)
+                logger.warning(f"publish_to_discord: image file missing on disk {candidate}, falling back to URL")
+                effective_base = (settings.public_site_url or base_url or "").rstrip("/")
+                if not settings.public_site_url:
+                    logger.warning(
+                        "publish_to_discord: public_site_url не настроен — картинка эмбеда "
+                        "использует request.base_url и может не прикрепиться в Discord"
+                    )
+                image_url = f"{effective_base}/sub_projects/images/{project.image_filename}"
 
         embed = self.build_embed(project, image_url)
 
         # Try bot-based publishing first (via channel)
         channel_id = settings.sub_projects_discord_channel_id
         if channel_id:
-            return self._publish_via_bot(project, embed, channel_id)
+            return self._publish_via_bot(project, embed, channel_id, image_path)
 
         # Fallback to webhook
         webhook_url = settings.sub_projects_webhook_url
         if not webhook_url:
             raise HTTPException(status_code=400, detail="Ни канал Discord бота, ни Webhook URL не настроены")
 
-        return self._publish_via_webhook(project, embed, webhook_url)
+        return self._publish_via_webhook(project, embed, webhook_url, image_path)
 
-    def _publish_via_bot(self, project: SubProject, embed: dict, channel_id: str) -> Optional[str]:
+    def _publish_via_bot(self, project: SubProject, embed: dict, channel_id: str, image_path: Optional[str] = None) -> Optional[str]:
         """Publish embed via the in-process Discord bot."""
         from discord_bot import bot as discord_bot
 
+        payload_common = {"channel_id": channel_id, "embed": embed}
+        if image_path:
+            payload_common["image_path"] = image_path
+
         if project.discord_message_id:
             # Edit existing message via bot
-            discord_bot.schedule(discord_bot.execute_bot_action("edit_embed", {
-                "channel_id": channel_id,
-                "message_id": project.discord_message_id,
-                "embed": embed,
-            }))
-            logger.info(f"Dispatched edit_embed bot action for project {project.id}")
+            payload = {**payload_common, "message_id": project.discord_message_id}
+            discord_bot.schedule(discord_bot.execute_bot_action("edit_embed", payload))
+            logger.info(f"Dispatched edit_embed bot action for project {project.id} image={'yes' if image_path else 'no'}")
             return project.discord_message_id
         else:
             # Send new message via bot
-            discord_bot.schedule(discord_bot.execute_bot_action("send_sub_project_embed", {
-                "channel_id": channel_id,
-                "embed": embed,
-                "project_id": project.id,
-            }))
-            logger.info(f"Dispatched send_sub_project_embed bot action for project {project.id}")
+            payload = {**payload_common, "project_id": project.id}
+            discord_bot.schedule(discord_bot.execute_bot_action("send_sub_project_embed", payload))
+            logger.info(f"Dispatched send_sub_project_embed bot action for project {project.id} image={'yes' if image_path else 'no'}")
             # Message ID will be set by the bot after sending (see
             # discord_bot/data.py's set_sub_project_message_id).
             return "pending"
 
-    def _publish_via_webhook(self, project: SubProject, embed: dict, webhook_url: str) -> Optional[str]:
-        """Fallback: publish embed via Discord webhook."""
+    def _publish_via_webhook(self, project: SubProject, embed: dict, webhook_url: str, image_path: Optional[str] = None) -> Optional[str]:
+        """Fallback: publish embed via Discord webhook.
+
+        When image_path is set the image is uploaded as an attachment
+        (multipart/form-data with payload_json) so Discord hosts the file
+        itself — no public URL fetch needed. Embed's image.url must already
+        be attachment://filename in that case (set by publish_to_discord).
+        """
+        import json as _json
+        import mimetypes
+
+        def _webhook_send(url: str, method: str = "POST"):
+            """POST (new) or PATCH (edit) with optional attachment."""
+            if image_path and os.path.exists(image_path):
+                mime, _ = mimetypes.guess_type(image_path)
+                mime = mime or "image/png"
+                filename = os.path.basename(image_path)
+                payload = {"embeds": [embed]}
+                # webhook?wait=true only for POST, PATCH edit URL already contains message id
+                with open(image_path, "rb") as f:
+                    files = {"file": (filename, f.read(), mime)}
+                    data = {"payload_json": _json.dumps(payload)}
+                    if method == "POST":
+                        resp = httpx.post(f"{url}?wait=true", data=data, files=files, timeout=20.0)
+                    else:
+                        resp = httpx.patch(url, data=data, files=files, timeout=20.0)
+                return resp
+            else:
+                if method == "POST":
+                    return httpx.post(f"{url}?wait=true", json={"embeds": [embed]}, timeout=10.0)
+                else:
+                    return httpx.patch(url, json={"embeds": [embed]}, timeout=10.0)
+
         if project.discord_message_id:
             # Edit existing message
             edit_url = f"{webhook_url}/messages/{project.discord_message_id}"
             try:
-                resp = httpx.patch(edit_url, json={"embeds": [embed]}, timeout=10.0)
+                resp = _webhook_send(edit_url, method="PATCH")
                 if resp.status_code == 200:
                     return project.discord_message_id
                 else:
@@ -845,11 +882,7 @@ class SubProjectService:
 
         # Send new message
         try:
-            resp = httpx.post(
-                f"{webhook_url}?wait=true",
-                json={"embeds": [embed]},
-                timeout=10.0,
-            )
+            resp = _webhook_send(webhook_url, method="POST")
             if resp.status_code in (200, 201, 204):
                 data = resp.json()
                 message_id = data.get("id")

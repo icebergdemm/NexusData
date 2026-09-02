@@ -1195,13 +1195,29 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
 
         elif action_type == "send_sub_project_embed":
             # Send a new sub-project embed to the configured channel
+            # FIX: upload image as Discord attachment when image_path is provided —
+            # previously the embed only referenced a remote URL (public_site_url)
+            # which Discord must fetch server-side; that silently fails when the
+            # URL is internal (127.0.0.1) or not publicly reachable, so the text
+            # posts but the image never appears. Attachment upload makes Discord
+            # host the file itself and always shows the image.
             channel_id = int(payload.get("channel_id", 0))
             embed_data = payload.get("embed", {})
             project_id = payload.get("project_id")
+            image_path = payload.get("image_path")
             channel = bot.get_channel(channel_id)
             if channel:
                 embed = discord.Embed.from_dict(embed_data)
-                msg = await channel.send(embed=embed)
+                file = None
+                if image_path and os.path.exists(image_path):
+                    try:
+                        file = discord.File(image_path, filename=os.path.basename(image_path))
+                        # Ensure embed points to the attachment (in case caller didn't set it)
+                        if not embed.image.url or not embed.image.url.startswith("attachment://"):
+                            embed.set_image(url=f"attachment://{os.path.basename(image_path)}")
+                    except Exception as e:
+                        logger.warning(f"send_sub_project_embed: failed to attach image {image_path}: {e}")
+                msg = await channel.send(embed=embed, file=file) if file else await channel.send(embed=embed)
                 # Report message_id back to NexusData
                 if project_id:
                     await asyncio.to_thread(bot_data.set_sub_project_message_id, project_id, str(msg.id))
@@ -1223,16 +1239,32 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
                 return True, None
 
         elif action_type == "edit_embed":
-            # Edit an existing embed message
+            # Edit an existing embed message — supports attachment image as well
             channel_id = int(payload.get("channel_id", 0))
             message_id = payload.get("message_id")
             embed_data = payload.get("embed", {})
+            image_path = payload.get("image_path")
             channel = bot.get_channel(channel_id)
             if channel and message_id:
                 try:
                     msg = await channel.fetch_message(int(message_id))
                     embed = discord.Embed.from_dict(embed_data)
-                    await msg.edit(embed=embed)
+                    file = None
+                    if image_path and os.path.exists(image_path):
+                        try:
+                            file = discord.File(image_path, filename=os.path.basename(image_path))
+                            if not embed.image.url or not embed.image.url.startswith("attachment://"):
+                                embed.set_image(url=f"attachment://{os.path.basename(image_path)}")
+                        except Exception as e:
+                            logger.warning(f"edit_embed: failed to attach image {image_path}: {e}")
+                    if file:
+                        # discord.py 2.x: edit with new attachment via attachments/file param
+                        try:
+                            await msg.edit(embed=embed, attachments=[file])
+                        except TypeError:
+                            await msg.edit(embed=embed, attachments=[file])
+                    else:
+                        await msg.edit(embed=embed)
                     return True, None
                 except (discord.NotFound, discord.HTTPException) as e:
                     logger.warning(f"Failed to edit embed: {e}")
