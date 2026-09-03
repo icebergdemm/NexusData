@@ -21,7 +21,7 @@ import { Switch } from "@/components/ui/switch"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
-import { useCurrentAdmin } from "@/lib/auth"
+import { useCurrentAdmin, canDo } from "@/lib/auth"
 import { formatBrowserDate } from "@/lib/format-date"
 import { UI_BASENAME } from "@/lib/ui-version"
 import { ImageLightbox, type LightboxImage } from "@/components/ui/image-lightbox"
@@ -51,13 +51,15 @@ function TaskStatusBadge({ status }: { status: TaskStatus }) {
 
 // ── Board Permissions Dialog с поиском ───────────────────────────────────────
 // ── Task Card (без тегов, с анимацией) ───────────────────────────────────────
-function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
+function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns, canEdit, canDelete }: {
   task: TaskRow
   onOpen: () => void
   onDragStart: (e: React.DragEvent) => void
   onDeleted: () => void
   boardId: number
   columns: TaskColumnRow[]
+  canEdit: boolean
+  canDelete: boolean
 }) {
   const overdue = isOverdue(task)
   const queryClient = useQueryClient()
@@ -76,11 +78,11 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
     tasksApi.tasks.update(task.id, { priority: newPriority }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }))
   }
 
-  const moveActions = columns.filter(c => c.id !== task.column_id).map(c => ({
+  const moveActions = (canEdit ? columns.filter(c => c.id !== task.column_id).map(c => ({
     label: `Переместить → ${c.name}`,
     icon: GripVertical,
     onSelect: () => tasksApi.tasks.update(task.id, { column_id: c.id }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })),
-  }))
+  })) : [])
 
   return (
     <AppContextMenu
@@ -90,15 +92,19 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
         { label: "Копировать ссылку на задачу", icon: Link2, onSelect: () => copyToClipboard(taskLink, "Ссылка") },
         { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}`) },
         ...moveActions.slice(0, 5),
-        { label: task.priority === "urgent" ? "Снять высокий приоритет" : "Выделить высоким приоритетом", icon: Flag, onSelect: toggleUrgent, separatorBefore: true },
-        { label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : EyeOff, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) },
-        { label: "Отклонить с причиной", icon: Ban, onSelect: () => { const r = prompt("Причина отклонения:"); if (r) tasksApi.tasks.reject(task.id, r).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) }, separatorBefore: true, destructive: true },
-        { label: "Удалить", icon: Trash2, destructive: true, onSelect: () => deleteMutation.mutate() },
+        ...(canEdit ? [
+          { label: task.priority === "urgent" ? "Снять высокий приоритет" : "Выделить высоким приоритетом", icon: Flag, onSelect: toggleUrgent, separatorBefore: true },
+          { label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : EyeOff, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) },
+          { label: "Отклонить с причиной", icon: Ban, onSelect: () => { const r = prompt("Причина отклонения:"); if (r) tasksApi.tasks.reject(task.id, r).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) }, separatorBefore: true, destructive: true },
+        ] : []),
+        ...(canDelete ? [
+          { label: "Удалить", icon: Trash2, destructive: true, separatorBefore: !canEdit, onSelect: () => deleteMutation.mutate() },
+        ] : []),
       ]}
     >
     <Card
-      draggable
-      onDragStart={onDragStart}
+      draggable={canEdit}
+      onDragStart={canEdit ? onDragStart : undefined}
       onClick={onOpen}
       className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-[0.98] data-[dragging=true]:opacity-50 ${task.is_hidden ? "opacity-60 border-dashed" : ""} ${task.priority === "urgent" ? "ring-1 ring-urgent/30" : ""}`}
     >
@@ -138,7 +144,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns }: {
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
-function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, boardId, allColumns }: {
+function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
@@ -151,10 +157,20 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   onTaskDeleted: () => void
   boardId: number
   allColumns: TaskColumnRow[]
+  currentAdminId: number | undefined
+  canEditAll: boolean
+  canEditOwn: boolean
+  canDeleteAll: boolean
+  canDeleteOwn: boolean
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
   const [newTitle, setNewTitle] = useState("")
+
+  const taskRights = (t: TaskRow) => {
+    const isOwn = t.created_by_admin_id === currentAdminId || t.assignee_admin_id === currentAdminId
+    return { edit: canEditAll || (isOwn && canEditOwn), delete: canDeleteAll || (isOwn && canDeleteOwn) }
+  }
 
   const submitNewTask = () => {
     const title = newTitle.trim()
@@ -197,6 +213,8 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             task={t}
             boardId={boardId}
             columns={allColumns}
+            canEdit={taskRights(t).edit}
+            canDelete={taskRights(t).delete}
             onOpen={() => onOpenTask(t.id)}
             onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
             onDeleted={onTaskDeleted}
@@ -230,13 +248,15 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
 }
 
 // ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
-function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDeleteAll, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
+function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
   candidates?: AssigneeCandidates
   canEditAll: boolean
+  canEditOwn: boolean
   canDeleteAll: boolean
+  canDeleteOwn: boolean
   currentAdminId: number | undefined
   boardId: number
   allTasks?: TaskRow[]
@@ -260,8 +280,11 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canDe
     if (task) { setTitle(task.title); setDescription(task.description ?? "") }
   }, [task])
 
-  const canEditThis = !!task && (canEditAll || task.created_by_admin_id === currentAdminId || task.assignee_admin_id === currentAdminId)
-  const canDeleteThis = !!task && (canDeleteAll || task.created_by_admin_id === currentAdminId || task.assignee_admin_id === currentAdminId)
+  // Сервер разрешает правку любых задач доски при can_edit_all, а «свои»
+  // (созданные/назначенные) — только при глобальном tasks:edit / tasks:delete.
+  const isOwn = !!task && (task.created_by_admin_id === currentAdminId || task.assignee_admin_id === currentAdminId)
+  const canEditThis = !!task && (canEditAll || (isOwn && canEditOwn))
+  const canDeleteThis = !!task && (canDeleteAll || (isOwn && canDeleteOwn))
 
   const invalidateBoard = () => { if (task) queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }); queryClient.invalidateQueries({ queryKey: ["task-activity", taskId] }); queryClient.invalidateQueries({ queryKey: ["task-attachments", taskId] }) }
 
@@ -718,6 +741,10 @@ export function TaskBoardPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const { data: admin } = useCurrentAdmin()
+  // Глобальные «свои задачи» права — сервер разрешает правку/удаление своей
+  // задачи только при наличии tasks:edit / tasks:delete (см. routes/tasks.py).
+  const canEditOwn = canDo(admin, "tasks", "edit")
+  const canDeleteOwn = canDo(admin, "tasks", "delete")
   const [addColumnOpen, setAddColumnOpen] = useState(false)
   const [editColumn, setEditColumn] = useState<TaskColumnRow | null>(null)
   const [deleteColumn, setDeleteColumn] = useState<TaskColumnRow | null>(null)
@@ -871,6 +898,11 @@ export function TaskBoardPage() {
               onTaskDeleted={invalidate}
               boardId={boardIdNum}
               allColumns={data.columns}
+              currentAdminId={admin?.id}
+              canEditAll={data.can_edit_all}
+              canEditOwn={canEditOwn}
+              canDeleteAll={data.can_delete_all}
+              canDeleteOwn={canDeleteOwn}
             />
           ))}
           {!data.columns.length && (
@@ -888,7 +920,9 @@ export function TaskBoardPage() {
         onClose={() => { setSelectedTaskId(null); setHighlightCommentId(null); setSearchParams(prev => { prev.delete("task"); prev.delete("comment"); return prev }, { replace: true }) }}
         candidates={candidates}
         canEditAll={data.can_edit_all}
+        canEditOwn={canEditOwn}
         canDeleteAll={data.can_delete_all}
+        canDeleteOwn={canDeleteOwn}
         currentAdminId={admin?.id}
         boardId={boardIdNum}
         onOpenLightbox={openLightbox}
