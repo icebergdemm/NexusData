@@ -1769,6 +1769,216 @@ async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
     return False
 
 
+async def add_ticket_member(
+    channel_id: str,
+    member_id: str,
+    added_by: str,
+    ticket_id: int,
+) -> dict:
+    """Grant one live Discord member access to an open ticket channel.
+
+    This is deliberately request/response based: the web panel must not write
+    a successful audit record before Discord confirms the permission change.
+    """
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return {"status": "error", "code": "guild_not_found", "detail": "Бот не подключён к Discord-серверу"}
+
+    try:
+        discord_member_id = int(member_id)
+    except (TypeError, ValueError):
+        return {"status": "error", "code": "member_not_found", "detail": "Некорректный Discord ID участника"}
+
+    member = guild.get_member(discord_member_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(discord_member_id)
+        except discord.NotFound:
+            return {"status": "error", "code": "member_not_found", "detail": "Участник больше не состоит на Discord-сервере"}
+        except discord.Forbidden:
+            return {"status": "error", "code": "member_forbidden", "detail": "Бот не может проверить участника на Discord-сервере"}
+        except Exception as exc:
+            logger.warning("Failed to fetch ticket member %s: %s", member_id, exc)
+            return {"status": "error", "code": "member_lookup_failed", "detail": "Discord не ответил при проверке участника"}
+
+    if getattr(member, "bot", False):
+        return {"status": "error", "code": "member_is_bot", "detail": "Ботов нельзя добавлять в тикеты"}
+
+    channel = bot.get_channel(int(channel_id))
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.NotFound:
+            return {"status": "error", "code": "channel_not_found", "detail": "Discord-канал тикета уже удалён"}
+        except discord.Forbidden:
+            return {"status": "error", "code": "channel_forbidden", "detail": "Бот не может открыть Discord-канал тикета"}
+        except Exception as exc:
+            logger.warning("Failed to fetch ticket channel %s: %s", channel_id, exc)
+            return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
+
+    overwrite = channel.overwrites_for(member)
+    if (
+        overwrite.view_channel is True
+        and overwrite.send_messages is True
+        and overwrite.read_message_history is True
+    ):
+        return {"status": "already_present", "member_id": str(member.id)}
+
+    try:
+        await channel.set_permissions(
+            member,
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            reason=f"Ticket #{ticket_id}: added from NexusData by {added_by}",
+        )
+    except discord.Forbidden:
+        return {"status": "error", "code": "channel_forbidden", "detail": "У бота нет прав менять доступ к Discord-каналу"}
+    except discord.NotFound:
+        return {"status": "error", "code": "channel_not_found", "detail": "Discord-канал тикета уже удалён"}
+    except Exception as exc:
+        logger.warning("Failed to grant ticket channel access for %s: %s", member_id, exc)
+        return {"status": "error", "code": "permission_failed", "detail": "Не удалось выдать доступ в Discord"}
+
+    announcement = f"Участник {member.mention} добавлен в тикет администратором {added_by}."
+    try:
+        message = await channel.send(
+            announcement,
+            allowed_mentions=discord.AllowedMentions(
+                users=[member], roles=False, everyone=False, replied_user=False
+            ),
+        )
+    except discord.Forbidden:
+        return {"status": "partial", "detail": "Доступ выдан, но бот не смог отправить сообщение в тикет"}
+    except Exception as exc:
+        logger.warning("Failed to announce ticket member %s: %s", member_id, exc)
+        return {"status": "partial", "detail": "Доступ выдан, но сообщение в тикет не отправлено"}
+
+    saved = await asyncio.to_thread(
+        bot_data.add_ticket_message,
+        ticket_id=ticket_id,
+        author_discord_id="system",
+        author_username=added_by,
+        author_display_name=f"[ND] {added_by}",
+        content=announcement,
+        discord_message_id=str(message.id),
+    )
+    if not saved:
+        return {"status": "partial", "detail": "Доступ и сообщение отправлены, но локальная история тикета не обновилась"}
+
+    return {
+        "status": "ok",
+        "member_id": str(member.id),
+        "message_id": str(message.id),
+        "announcement": announcement,
+    }
+
+
+async def remove_ticket_member(
+    channel_id: str,
+    member_id: str,
+    removed_by: str,
+    ticket_id: int,
+) -> dict:
+    """Remove one member-specific access overwrite from an open ticket channel."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return {"status": "error", "code": "guild_not_found", "detail": "Бот не подключён к Discord-серверу"}
+
+    try:
+        discord_member_id = int(member_id)
+    except (TypeError, ValueError):
+        return {"status": "error", "code": "member_not_found", "detail": "Некорректный Discord ID участника"}
+
+    member = guild.get_member(discord_member_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(discord_member_id)
+        except discord.NotFound:
+            return {"status": "error", "code": "member_not_found", "detail": "Участник больше не состоит на Discord-сервере"}
+        except discord.Forbidden:
+            return {"status": "error", "code": "member_forbidden", "detail": "Бот не может проверить участника на Discord-сервере"}
+        except Exception as exc:
+            logger.warning("Failed to fetch ticket member %s for removal: %s", member_id, exc)
+            return {"status": "error", "code": "member_lookup_failed", "detail": "Discord не ответил при проверке участника"}
+
+    if getattr(member, "bot", False):
+        return {"status": "error", "code": "member_is_bot", "detail": "Ботов нельзя удалять из тикетов"}
+
+    channel = bot.get_channel(int(channel_id))
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.NotFound:
+            return {"status": "error", "code": "channel_not_found", "detail": "Discord-канал тикета уже удалён"}
+        except discord.Forbidden:
+            return {"status": "error", "code": "channel_forbidden", "detail": "Бот не может открыть Discord-канал тикета"}
+        except Exception as exc:
+            logger.warning("Failed to fetch ticket channel %s for removal: %s", channel_id, exc)
+            return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
+
+    overwrite = channel.overwrites_for(member)
+    is_empty = getattr(overwrite, "is_empty", None)
+    if callable(is_empty):
+        has_member_overwrite = not is_empty()
+    else:
+        has_member_overwrite = any(
+            getattr(overwrite, attribute, None) is not None
+            for attribute in ("view_channel", "send_messages", "read_message_history")
+        )
+    if not has_member_overwrite:
+        return {"status": "already_absent", "member_id": str(member.id)}
+
+    try:
+        await channel.set_permissions(
+            member,
+            overwrite=None,
+            reason=f"Ticket #{ticket_id}: removed from NexusData by {removed_by}",
+        )
+    except discord.Forbidden:
+        return {"status": "error", "code": "channel_forbidden", "detail": "У бота нет прав менять доступ к Discord-каналу"}
+    except discord.NotFound:
+        return {"status": "error", "code": "channel_not_found", "detail": "Discord-канал тикета уже удалён"}
+    except Exception as exc:
+        logger.warning("Failed to remove ticket channel access for %s: %s", member_id, exc)
+        return {"status": "error", "code": "permission_failed", "detail": "Не удалось убрать доступ в Discord"}
+
+    announcement = f"Участник {member.display_name} удалён из тикета администратором {removed_by}."
+    try:
+        message = await channel.send(
+            announcement,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.Forbidden:
+        return {"status": "partial", "detail": "Доступ убран, но бот не смог отправить сообщение в тикет"}
+    except Exception as exc:
+        logger.warning("Failed to announce ticket member removal %s: %s", member_id, exc)
+        return {"status": "partial", "detail": "Доступ убран, но сообщение в тикет не отправлено"}
+
+    try:
+        saved = await asyncio.to_thread(
+            bot_data.add_ticket_message,
+            ticket_id=ticket_id,
+            author_discord_id="system",
+            author_username=removed_by,
+            author_display_name=f"[ND] {removed_by}",
+            content=announcement,
+            discord_message_id=str(message.id),
+        )
+    except Exception as exc:
+        logger.warning("Failed to save ticket member removal %s: %s", member_id, exc)
+        saved = False
+    if not saved:
+        return {"status": "partial", "detail": "Доступ убран, но локальная история тикета не обновилась"}
+
+    return {
+        "status": "ok",
+        "member_id": str(member.id),
+        "message_id": str(message.id),
+        "announcement": announcement,
+    }
+
+
 @bot.tree.command(name="mute", description="Запретить пользователю писать вне тикетов")
 @app_commands.describe(member="Нарушитель", duration="Например: 1ч30м, 2нед3д", reason="Причина")
 async def slash_mute(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):

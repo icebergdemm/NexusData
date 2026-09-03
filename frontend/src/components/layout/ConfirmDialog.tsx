@@ -3,13 +3,14 @@ import {
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel = "Удалить", onConfirm }: {
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel = "Удалить", onConfirm, confirmDisabled = false }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   title: string
   description?: string
   confirmLabel?: string
   onConfirm: () => void
+  confirmDisabled?: boolean
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -20,7 +21,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Отмена</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm}>{confirmLabel}</AlertDialogAction>
+          <AlertDialogAction disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

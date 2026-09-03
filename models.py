@@ -579,6 +579,8 @@ class Ticket(Base):
     closed_by = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=func.now())
     closed_at = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+    deleted_by = Column(String(255), nullable=True)
     last_message_at = Column(DateTime, nullable=True)
     awaiting_admin = Column(Integer, default=1, index=True)  # 1 = waiting for admin reply
 

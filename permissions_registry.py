@@ -192,6 +192,7 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
         {"key": "reply", "label": "Ответ на обращение"},
         {"key": "close", "label": "Закрытие обращения"},
         {"key": "assign", "label": "Назначение обращения"},
+        {"key": "delete", "label": "Удаление закрытого обращения"},
         {"key": "edit", "label": "Изменение (прочее)"},
     ]},
     "analytics": {"label": "Аналитика", "actions": [{"key": "view", "label": "Просмотр"}]},

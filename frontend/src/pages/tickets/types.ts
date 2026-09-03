@@ -10,6 +10,8 @@ export interface TicketRow {
   closed_by: string | null
   created_at: string | null
   closed_at: string | null
+  deleted_at: string | null
+  deleted_by: string | null
   last_message_at: string | null
   awaiting_admin: boolean
 }
@@ -25,6 +27,8 @@ export interface TicketsListResponse {
   status_filter: string
   ticket_config: { types: Record<string, TicketTypeMeta> }
   can_edit: boolean
+  can_assign: boolean
+  can_delete: boolean
 }
 
 export interface TicketMessageRow {
@@ -45,4 +49,19 @@ export interface TicketDetailResponse {
   messages: TicketMessageRow[]
   ticket_config: { types: Record<string, TicketTypeMeta> }
   can_edit: boolean
+  can_assign: boolean
+  can_delete: boolean
+}
+
+export interface TicketMember {
+  discord_id: string
+  username: string | null
+  display_name: string | null
+  avatar_url: string | null
+  joined_at: string | null
+}
+
+export interface TicketMembersResponse {
+  total: number
+  members: TicketMember[]
 }

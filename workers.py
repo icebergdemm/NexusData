@@ -851,6 +851,20 @@ def task_auto_close_stale_tickets() -> dict:
         db.close()
 
 
+def task_cleanup_deleted_tickets() -> dict:
+    """Permanently remove ticket history after the 30-day soft-delete window."""
+    from services_ticket_management import purge_deleted_tickets
+
+    db = SessionLocal()
+    try:
+        return purge_deleted_tickets(db)
+    except Exception as exc:
+        logger.exception("Deleted ticket cleanup failed")
+        return {"status": "error", "error": str(exc)}
+    finally:
+        db.close()
+
+
 def task_fetch_steam_avatars() -> dict:
     """Fetch/refresh Steam avatars for players missing one or with a stale
     (>7 day old) one, via Steam Web API GetPlayerSummaries (up to 100
@@ -1087,6 +1101,7 @@ def _start_simple_workers():
         (task_sync_department_kits, 60),
         (task_fetch_steam_avatars, 15 * 60),
         (task_auto_close_stale_tickets, 30 * 60),
+        (task_cleanup_deleted_tickets, 30 * 60),
         (task_sync_auto_server_privileges, 5 * 60),
         (task_reconcile_department_discord_roles, 30 * 60),
         (task_cleanup_online_snapshots, 6 * 60 * 60),
@@ -1215,6 +1230,16 @@ def _start_scheduler():
         interval_secs=30 * 60,
         priority=Priority.BACKGROUND,
         task_id="ticket_auto_close",
+    )
+
+    # Deleted-ticket retention: BACKGROUND priority, every 30 min. The
+    # service deletes TicketMessage rows before Ticket because the historical
+    # foreign key has no database-level cascade.
+    scheduler.register_periodic(
+        task_cleanup_deleted_tickets,
+        interval_secs=30 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="ticket_deleted_cleanup",
     )
 
     # Auto server-privilege-group sync from department roles: BACKGROUND

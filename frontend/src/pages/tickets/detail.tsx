@@ -52,6 +52,7 @@ export function TicketDetailPage() {
   const { ticket } = data
   const meta = data.ticket_config.types[ticket.ticket_type]
   const isClosed = ticket.status === "closed"
+  const isDeleted = ticket.deleted_at !== null
 
   return (
     <div className="mx-auto flex h-[calc(100vh-8rem)] max-w-3xl flex-col gap-3">
@@ -60,7 +61,7 @@ export function TicketDetailPage() {
           <div>
             <div className="flex items-center gap-2 font-semibold">
               <PlatformIcon value={meta?.emoji ?? "🎫"} fallback={Ticket} /> <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">#{ticket.id}</span> {ticket.title}
-              <Badge variant={isClosed ? "secondary" : "default"}>{ticket.status}</Badge>
+              <Badge variant={isDeleted ? "destructive" : isClosed ? "secondary" : "default"}>{isDeleted ? "Удалён" : ticket.status}</Badge>
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               {meta?.name ?? ticket.ticket_type} · {ticket.creator_display_name || ticket.creator_username}
@@ -71,6 +72,9 @@ export function TicketDetailPage() {
               )}
               {isClosed && ticket.closed_by && (
                 <span> · закрыл(а) {ticket.closed_by}{ticket.closed_at ? `, ${fmtDate(ticket.closed_at)}` : ""}</span>
+              )}
+              {isDeleted && (
+                <span> · удалил(а) {ticket.deleted_by || "администратор"}{ticket.deleted_at ? `, ${fmtDate(ticket.deleted_at)}` : ""}</span>
               )}
             </div>
           </div>

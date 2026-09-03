@@ -16,7 +16,14 @@ from database import get_db
 from security import check_permission
 from config import get_settings
 from models import (
-    Ticket, TicketMessage, PlayerData, AdminUser, AdminSession,
+    Ticket, TicketMessage, PlayerData, AdminUser, AdminSession, DiscordMember,
+)
+from services_ticket_management import (
+    TicketStateError,
+    apply_ticket_status_filter,
+    restore_ticket,
+    search_ticket_members,
+    soft_delete_ticket,
 )
 
 settings = get_settings()
@@ -47,6 +54,10 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+def _ticket_query(db: Session, status: str):
+    return apply_ticket_status_filter(db.query(Ticket), status)
+
+
 @panel_router.get("/adminold/tickets", response_class=HTMLResponse)
 async def admin_tickets_list(request: Request, status: str = Query("open"), db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
@@ -56,11 +67,7 @@ async def admin_tickets_list(request: Request, status: str = Query("open"), db: 
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
 
-    q = db.query(Ticket)
-    if status == "open":
-        q = q.filter(Ticket.status != "closed")
-    elif status == "closed":
-        q = q.filter(Ticket.status == "closed")
+    q = _ticket_query(db, status)
 
     tickets = q.order_by(desc(Ticket.created_at)).limit(100).all()
 
@@ -127,6 +134,8 @@ async def admin_ticket_send_message(
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404)
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет нельзя изменять")
 
     if not content.strip():
         return RedirectResponse(url=f"/adminold/tickets/{ticket_id}", status_code=302)
@@ -181,6 +190,8 @@ def _serialize_ticket(t: Ticket) -> dict:
         "closed_by": t.closed_by,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        "deleted_at": t.deleted_at.isoformat() if t.deleted_at else None,
+        "deleted_by": t.deleted_by,
         "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None,
         "awaiting_admin": bool(t.awaiting_admin),
     }
@@ -192,11 +203,7 @@ async def api_tickets_list(request: Request, status: str = Query("open"), db: Se
     if not check_permission(admin, "tickets", "view"):
         raise HTTPException(status_code=403)
 
-    q = db.query(Ticket)
-    if status == "open":
-        q = q.filter(Ticket.status != "closed")
-    elif status == "closed":
-        q = q.filter(Ticket.status == "closed")
+    q = _ticket_query(db, status)
     tickets = q.order_by(desc(Ticket.created_at)).limit(100).all()
 
     return {
@@ -204,6 +211,37 @@ async def api_tickets_list(request: Request, status: str = Query("open"), db: Se
         "status_filter": status,
         "ticket_config": _load_ticket_config(),
         "can_edit": check_permission(admin, "tickets", "edit"),
+        "can_assign": check_permission(admin, "tickets", "assign"),
+        "can_delete": check_permission(admin, "tickets", "delete"),
+    }
+
+
+@panel_router.get("/api/v1/admin/tickets/members")
+async def api_ticket_members(
+    request: Request,
+    search: str = Query(""),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    db: Session = Depends(get_db),
+):
+    """Search the cached server members used by the ticket picker."""
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "assign"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для добавления участников")
+
+    total, members = search_ticket_members(db, search, limit=limit, offset=offset)
+    return {
+        "total": total,
+        "members": [
+            {
+                "discord_id": member.discord_id,
+                "username": member.username,
+                "display_name": member.display_name,
+                "avatar_url": member.avatar,
+                "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+            }
+            for member in members
+        ],
     }
 
 
@@ -234,7 +272,162 @@ async def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depe
         ],
         "ticket_config": _load_ticket_config(),
         "can_edit": check_permission(admin, "tickets", "edit"),
+        "can_assign": check_permission(admin, "tickets", "assign"),
+        "can_delete": check_permission(admin, "tickets", "delete"),
     }
+
+
+@panel_router.post("/api/v1/admin/tickets/{ticket_id}/members")
+async def api_ticket_add_member(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "assign"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для добавления участников")
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Тикет не найден")
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет недоступен для изменения")
+    if ticket.status == "closed":
+        raise HTTPException(status_code=409, detail="Закрытый тикет недоступен для добавления участников")
+    if not ticket.discord_channel_id:
+        raise HTTPException(status_code=409, detail="У тикета нет Discord-канала")
+
+    body = await request.json()
+    discord_id = str(body.get("discord_id") or "").strip()
+    if not discord_id.isdigit():
+        raise HTTPException(status_code=400, detail="Выберите участника из списка Discord")
+
+    member = db.query(DiscordMember).filter(DiscordMember.discord_id == discord_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Участник отсутствует в кеше Discord — обновите список")
+
+    from discord_bot import bot as discord_bot
+    from routes.discord_viewer_api import _call_bot
+
+    result = await _call_bot(discord_bot.add_ticket_member(
+        channel_id=ticket.discord_channel_id,
+        member_id=discord_id,
+        added_by=admin.discord_username,
+        ticket_id=ticket.id,
+    ))
+    result_status = result.get("status") if isinstance(result, dict) else None
+    if result_status == "already_present":
+        return {"status": "already_present"}
+    if result_status == "partial":
+        raise HTTPException(status_code=502, detail=result.get("detail", "Доступ мог быть выдан, но сообщение не отправлено"))
+    if result_status != "ok":
+        code = result.get("code") if isinstance(result, dict) else None
+        status_code = 404 if code in {"member_not_found", "channel_not_found"} else 502
+        raise HTTPException(status_code=status_code, detail=result.get("detail", "Не удалось изменить доступ в Discord"))
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "ticket_member_add", {
+        "ticket_id": ticket.id,
+        "discord_id": discord_id,
+        "channel_id": ticket.discord_channel_id,
+        "discord_message_id": result.get("message_id"),
+    })
+    return {"status": "ok", "member": {"discord_id": discord_id, "display_name": member.display_name}}
+
+
+@panel_router.post("/api/v1/admin/tickets/{ticket_id}/members/{discord_id}/remove")
+async def api_ticket_remove_member(request: Request, ticket_id: int, discord_id: str, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "assign"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для управления участниками")
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Тикет не найден")
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет недоступен для изменения")
+    if ticket.status == "closed":
+        raise HTTPException(status_code=409, detail="Закрытый тикет недоступен для изменения")
+    if not ticket.discord_channel_id:
+        raise HTTPException(status_code=409, detail="У тикета нет Discord-канала")
+
+    discord_id = str(discord_id).strip()
+    if not discord_id.isdigit():
+        raise HTTPException(status_code=400, detail="Выберите участника из списка Discord")
+    if str(ticket.creator_discord_id) == discord_id:
+        raise HTTPException(status_code=409, detail="Нельзя убрать автора тикета")
+
+    member = db.query(DiscordMember).filter(DiscordMember.discord_id == discord_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Участник отсутствует в кеше Discord — обновите список")
+
+    from discord_bot import bot as discord_bot
+    from routes.discord_viewer_api import _call_bot
+
+    result = await _call_bot(discord_bot.remove_ticket_member(
+        channel_id=ticket.discord_channel_id,
+        member_id=discord_id,
+        removed_by=admin.discord_username,
+        ticket_id=ticket.id,
+    ))
+    result_status = result.get("status") if isinstance(result, dict) else None
+    if result_status == "partial":
+        raise HTTPException(status_code=502, detail=result.get("detail", "Доступ убран, но сообщение не отправлено"))
+    if result_status not in {"ok", "already_absent"}:
+        code = result.get("code") if isinstance(result, dict) else None
+        status_code = 404 if code in {"member_not_found", "channel_not_found"} else 502
+        raise HTTPException(status_code=status_code, detail=result.get("detail", "Не удалось убрать доступ в Discord"))
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "ticket_member_remove", {
+        "ticket_id": ticket.id,
+        "discord_id": discord_id,
+        "channel_id": ticket.discord_channel_id,
+    })
+    return {"status": result_status, "member": {"discord_id": discord_id, "display_name": member.display_name}}
+
+
+@panel_router.post("/api/v1/admin/tickets/{ticket_id}/delete")
+async def api_ticket_delete(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "delete"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для удаления тикетов")
+
+    try:
+        ticket = soft_delete_ticket(db, ticket_id, admin.discord_username)
+        db.commit()
+    except TicketStateError as exc:
+        db.rollback()
+        detail = str(exc)
+        status_code = 409 if detail != "Тикет не найден" else 404
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "ticket_delete", {
+        "ticket_id": ticket.id,
+        "title": ticket.title,
+        "status": ticket.status,
+    })
+    return {"status": "deleted", "deleted_at": ticket.deleted_at.isoformat()}
+
+
+@panel_router.post("/api/v1/admin/tickets/{ticket_id}/restore")
+async def api_ticket_restore(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "delete"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для восстановления тикетов")
+
+    try:
+        ticket = restore_ticket(db, ticket_id)
+        db.commit()
+    except TicketStateError as exc:
+        db.rollback()
+        detail = str(exc)
+        status_code = 409 if detail != "Тикет не найден" else 404
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "ticket_restore", {
+        "ticket_id": ticket.id,
+        "channel_id": ticket.discord_channel_id,
+    })
+    return {"status": "restored", "ticket_id": ticket.id}
 
 
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/send")
@@ -246,6 +439,8 @@ async def api_ticket_send_message(request: Request, ticket_id: int, db: Session 
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404)
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет нельзя изменять")
 
     body = await request.json()
     content = (body.get("content") or "").strip()
@@ -277,6 +472,8 @@ async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depen
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404)
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет нельзя изменять")
 
     ticket.status = "closed"
     ticket.closed_by = admin.discord_username
@@ -335,6 +532,8 @@ async def admin_ticket_close(request: Request, ticket_id: int, db: Session = Dep
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404)
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет нельзя изменять")
 
     ticket.status = "closed"
     ticket.closed_by = admin.discord_username

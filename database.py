@@ -148,6 +148,9 @@ def _apply_migrations():
         ("players_data", "steam_avatar_fetched_at", "DATETIME"),
         # round_events: link an "end" row back to the "start" row that opened it
         ("round_events", "paired_start_id", "INT"),
+        # tickets: retain closed ticket history in a soft-deleted archive
+        ("tickets", "deleted_at", "DATETIME"),
+        ("tickets", "deleted_by", "VARCHAR(255)"),
         # world_rounds: durable once-per-round claim for the automatic AI briefing
         ("world_rounds", "ai_briefing_queued_at", "DATETIME"),
         # ai_creature_alerts: retryable outbox state. A detected contact must
@@ -359,6 +362,7 @@ _MISSING_INDEX_COLUMNS = [
     ("tickets", "status"),
     ("tickets", "awaiting_admin"),
     ("tickets", "player_id"),
+    ("tickets", "deleted_at"),
     ("player_anomalies", "status"),
     ("player_anomalies", "score"),
     ("player_anomalies", "last_seen_at"),
