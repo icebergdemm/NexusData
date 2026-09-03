@@ -303,10 +303,7 @@ async def api_ticket_assigned_members(request: Request, ticket_id: int, db: Sess
         status_code = 404 if code == "channel_not_found" else 502
         raise HTTPException(status_code=status_code, detail=result.get("detail", "Не удалось получить участников тикета из Discord"))
 
-    creator_id = str(ticket.creator_discord_id)
-    return {
-        "members": [member for member in result.get("members", []) if str(member.get("discord_id")) != creator_id],
-    }
+    return {"members": result.get("members", [])}
 
 
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/members")
@@ -382,12 +379,6 @@ async def api_ticket_remove_member(request: Request, ticket_id: int, discord_id:
     discord_id = str(discord_id).strip()
     if not discord_id.isdigit():
         raise HTTPException(status_code=400, detail="Выберите участника из списка Discord")
-    if str(ticket.creator_discord_id) == discord_id:
-        raise HTTPException(status_code=409, detail="Нельзя убрать автора тикета")
-
-    member = db.query(DiscordMember).filter(DiscordMember.discord_id == discord_id).first()
-    if not member:
-        raise HTTPException(status_code=404, detail="Участник отсутствует в кеше Discord — обновите список")
 
     from discord_bot import bot as discord_bot
     from routes.discord_viewer_api import _call_bot
@@ -412,7 +403,7 @@ async def api_ticket_remove_member(request: Request, ticket_id: int, discord_id:
         "discord_id": discord_id,
         "channel_id": ticket.discord_channel_id,
     })
-    return {"status": result_status, "member": {"discord_id": discord_id, "display_name": member.display_name}}
+    return {"status": result_status, "member": {"discord_id": discord_id}}
 
 
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/delete")

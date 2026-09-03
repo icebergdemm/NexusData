@@ -77,7 +77,7 @@ export function TicketMemberRemoveDialog({
                 {selected?.discord_id === member.discord_id && <Check className="size-4 text-primary" />}
               </button>
             ))}
-            {!membersQuery.isLoading && !membersQuery.isError && !membersQuery.data?.members.length && <div className="p-4 text-center text-sm text-muted-foreground">В тикете нет дополнительных участников</div>}
+            {!membersQuery.isLoading && !membersQuery.isError && !membersQuery.data?.members.length && <div className="p-4 text-center text-sm text-muted-foreground">В тикете нет участников с персональным доступом</div>}
           </div>
 
           <DialogFooter>

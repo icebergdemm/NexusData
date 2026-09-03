@@ -47,6 +47,10 @@ class _FakeChannel:
     def overwrites_for(self, member):
         return self.overwrite
 
+    @property
+    def overwrites(self):
+        return [(_FakeMember(), self.overwrite)]
+
 
 class _FakeGuild:
     members = [_FakeMember()]
@@ -176,6 +180,17 @@ class TicketManagementTests(unittest.TestCase):
 
 
 class TicketDiscordOperationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_ticket_members_reads_channel_overwrites_not_member_cache(self):
+        channel = _FakeChannel(_FakeOverwrite(view_channel=True, send_messages=True, read_message_history=True))
+        guild = _FakeGuild()
+        guild.members = []
+        with patch.object(discord_bot.bot, "get_guild", return_value=guild), \
+             patch.object(discord_bot.bot, "get_channel", return_value=channel):
+            result = await discord_bot.list_ticket_members("555")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([member["discord_id"] for member in result["members"]], ["200"])
+
     async def test_list_ticket_members_returns_only_members_with_channel_access(self):
         channel = _FakeChannel(_FakeOverwrite(view_channel=True, send_messages=True, read_message_history=True))
         with patch.object(discord_bot.bot, "get_guild", return_value=_FakeGuild()), \

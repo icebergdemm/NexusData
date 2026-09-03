@@ -1780,7 +1780,12 @@ def _has_ticket_member_overwrite(overwrite) -> bool:
 
 
 async def list_ticket_members(channel_id: str) -> dict:
-    """Return live guild members with a member-specific overwrite in a ticket channel."""
+    """Return members with a member-specific overwrite in the ticket channel.
+
+    The channel overwrites are the source of truth here.  The guild member
+    cache is not guaranteed to contain every member who has a channel
+    permission, especially after a restart or with limited member intents.
+    """
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return {"status": "error", "code": "guild_not_found", "detail": "Бот не подключён к Discord-серверу"}
@@ -1801,11 +1806,26 @@ async def list_ticket_members(channel_id: str) -> dict:
             return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
 
     members = []
-    for member in getattr(guild, "members", []):
+    for target, overwrite in getattr(channel, "overwrites", []):
+        if isinstance(target, discord.Role):
+            continue
+        if getattr(target, "id", None) == getattr(guild, "id", None):
+            continue
+        if not _has_ticket_member_overwrite(overwrite):
+            continue
+
+        member = target if getattr(target, "display_name", None) is not None else guild.get_member(target.id)
+        if not member:
+            try:
+                member = await guild.fetch_member(target.id)
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except Exception as exc:
+                logger.warning("Failed to resolve ticket member %s: %s", target.id, exc)
+                continue
         if getattr(member, "bot", False):
             continue
-        if not _has_ticket_member_overwrite(channel.overwrites_for(member)):
-            continue
+
         display_avatar = getattr(member, "display_avatar", None)
         avatar_url = str(display_avatar.url) if display_avatar and getattr(display_avatar, "url", None) else None
         members.append({
