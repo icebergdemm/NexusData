@@ -1806,7 +1806,7 @@ async def list_ticket_members(channel_id: str) -> dict:
             return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
 
     members = []
-    for target, overwrite in getattr(channel, "overwrites", []):
+    for target, overwrite in getattr(channel, "overwrites", {}).items():
         if isinstance(target, discord.Role):
             continue
         if getattr(target, "id", None) == getattr(guild, "id", None):

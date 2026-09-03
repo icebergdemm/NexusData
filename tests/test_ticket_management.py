@@ -49,7 +49,7 @@ class _FakeChannel:
 
     @property
     def overwrites(self):
-        return [(_FakeMember(), self.overwrite)]
+        return {_FakeMember(): self.overwrite}
 
 
 class _FakeGuild:
