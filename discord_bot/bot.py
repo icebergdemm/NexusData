@@ -1769,6 +1769,54 @@ async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
     return False
 
 
+def _has_ticket_member_overwrite(overwrite) -> bool:
+    is_empty = getattr(overwrite, "is_empty", None)
+    if callable(is_empty):
+        return not is_empty()
+    return any(
+        getattr(overwrite, attribute, None) is not None
+        for attribute in ("view_channel", "send_messages", "read_message_history")
+    )
+
+
+async def list_ticket_members(channel_id: str) -> dict:
+    """Return live guild members with a member-specific overwrite in a ticket channel."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return {"status": "error", "code": "guild_not_found", "detail": "Бот не подключён к Discord-серверу"}
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except (TypeError, ValueError):
+        return {"status": "error", "code": "channel_not_found", "detail": "Некорректный Discord-канал тикета"}
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.NotFound:
+            return {"status": "error", "code": "channel_not_found", "detail": "Discord-канал тикета уже удалён"}
+        except discord.Forbidden:
+            return {"status": "error", "code": "channel_forbidden", "detail": "Бот не может открыть Discord-канал тикета"}
+        except Exception as exc:
+            logger.warning("Failed to fetch ticket channel %s for member listing: %s", channel_id, exc)
+            return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
+
+    members = []
+    for member in getattr(guild, "members", []):
+        if getattr(member, "bot", False):
+            continue
+        if not _has_ticket_member_overwrite(channel.overwrites_for(member)):
+            continue
+        display_avatar = getattr(member, "display_avatar", None)
+        avatar_url = str(display_avatar.url) if display_avatar and getattr(display_avatar, "url", None) else None
+        members.append({
+            "discord_id": str(member.id),
+            "username": getattr(member, "name", None),
+            "display_name": getattr(member, "display_name", None),
+            "avatar_url": avatar_url,
+        })
+    return {"status": "ok", "members": members}
+
+
 async def add_ticket_member(
     channel_id: str,
     member_id: str,
@@ -1918,14 +1966,7 @@ async def remove_ticket_member(
             return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
 
     overwrite = channel.overwrites_for(member)
-    is_empty = getattr(overwrite, "is_empty", None)
-    if callable(is_empty):
-        has_member_overwrite = not is_empty()
-    else:
-        has_member_overwrite = any(
-            getattr(overwrite, attribute, None) is not None
-            for attribute in ("view_channel", "send_messages", "read_message_history")
-        )
+    has_member_overwrite = _has_ticket_member_overwrite(overwrite)
     if not has_member_overwrite:
         return {"status": "already_absent", "member_id": str(member.id)}
 

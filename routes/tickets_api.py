@@ -277,6 +277,38 @@ async def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depe
     }
 
 
+@panel_router.get("/api/v1/admin/tickets/{ticket_id}/members")
+async def api_ticket_assigned_members(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "tickets", "assign"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для управления участниками")
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Тикет не найден")
+    if ticket.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Удалённый тикет недоступен для изменения")
+    if ticket.status == "closed":
+        raise HTTPException(status_code=409, detail="Закрытый тикет недоступен для изменения")
+    if not ticket.discord_channel_id:
+        raise HTTPException(status_code=409, detail="У тикета нет Discord-канала")
+
+    from discord_bot import bot as discord_bot
+    from routes.discord_viewer_api import _call_bot
+
+    result = await _call_bot(discord_bot.list_ticket_members(ticket.discord_channel_id))
+    result_status = result.get("status") if isinstance(result, dict) else None
+    if result_status != "ok":
+        code = result.get("code") if isinstance(result, dict) else None
+        status_code = 404 if code == "channel_not_found" else 502
+        raise HTTPException(status_code=status_code, detail=result.get("detail", "Не удалось получить участников тикета из Discord"))
+
+    creator_id = str(ticket.creator_discord_id)
+    return {
+        "members": [member for member in result.get("members", []) if str(member.get("discord_id")) != creator_id],
+    }
+
+
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/members")
 async def api_ticket_add_member(request: Request, ticket_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)

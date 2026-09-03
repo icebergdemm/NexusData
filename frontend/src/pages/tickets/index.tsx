@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Ticket, ChevronRight, RotateCcw, Trash2, UserPlus } from "lucide-react"
+import { Ticket, ChevronRight, RotateCcw, Trash2, UserMinus, UserPlus } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -17,6 +17,7 @@ import { formatBrowserDate } from "@/lib/format-date"
 import type { TicketsListResponse } from "./types"
 import type { TicketRow } from "./types"
 import { TicketMemberDialog } from "./TicketMemberDialog"
+import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
 
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
@@ -28,6 +29,7 @@ export function TicketsListPage() {
   const [deleteTicket, setDeleteTicket] = useState<TicketRow | null>(null)
   const [restoreTicket, setRestoreTicket] = useState<TicketRow | null>(null)
   const [memberTicketId, setMemberTicketId] = useState<number | null>(null)
+  const [removeMemberTicketId, setRemoveMemberTicketId] = useState<number | null>(null)
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
@@ -77,6 +79,7 @@ export function TicketsListPage() {
             const actions: ContextMenuAction[] = []
             if (!t.deleted_at && t.status !== "closed" && data.can_assign) {
               actions.push({ label: "Добавить участника", icon: UserPlus, onSelect: () => setMemberTicketId(t.id) })
+              actions.push({ label: "Удалить участника", icon: UserMinus, destructive: true, onSelect: () => setRemoveMemberTicketId(t.id) })
             }
             if (!t.deleted_at && t.status === "closed" && data.can_delete) {
               actions.push({ label: "Удалить тикет", icon: Trash2, destructive: true, separatorBefore: true, onSelect: () => setDeleteTicket(t) })
@@ -137,6 +140,12 @@ export function TicketsListPage() {
         open={memberTicketId !== null}
         ticketId={memberTicketId}
         onOpenChange={(open) => !open && setMemberTicketId(null)}
+      />
+
+      <TicketMemberRemoveDialog
+        open={removeMemberTicketId !== null}
+        ticketId={removeMemberTicketId}
+        onOpenChange={(open) => !open && setRemoveMemberTicketId(null)}
       />
     </div>
   )

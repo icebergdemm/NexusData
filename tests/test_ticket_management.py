@@ -49,6 +49,8 @@ class _FakeChannel:
 
 
 class _FakeGuild:
+    members = [_FakeMember()]
+
     def get_member(self, member_id):
         return _FakeMember() if member_id == 200 else None
 
@@ -174,6 +176,15 @@ class TicketManagementTests(unittest.TestCase):
 
 
 class TicketDiscordOperationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_ticket_members_returns_only_members_with_channel_access(self):
+        channel = _FakeChannel(_FakeOverwrite(view_channel=True, send_messages=True, read_message_history=True))
+        with patch.object(discord_bot.bot, "get_guild", return_value=_FakeGuild()), \
+             patch.object(discord_bot.bot, "get_channel", return_value=channel):
+            result = await discord_bot.list_ticket_members("555")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["members"][0]["discord_id"], "200")
+
     async def test_add_member_does_not_duplicate_existing_access(self):
         channel = _FakeChannel(_FakeOverwrite(view_channel=True, send_messages=True, read_message_history=True))
         with patch.object(discord_bot.bot, "get_guild", return_value=_FakeGuild()), \

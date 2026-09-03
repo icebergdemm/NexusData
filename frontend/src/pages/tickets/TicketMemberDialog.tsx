@@ -1,12 +1,11 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Check, Search, UserMinus, UserPlus } from "lucide-react"
+import { Check, Search, UserPlus } from "lucide-react"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
 import type { TicketMembersResponse, TicketMember } from "./types"
 
@@ -21,7 +20,6 @@ export function TicketMemberDialog({
 }) {
   const [search, setSearch] = useState("")
   const [selected, setSelected] = useState<TicketMember | null>(null)
-  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
 
   const membersQuery = useQuery({
@@ -41,25 +39,11 @@ export function TicketMemberDialog({
     onError: (error: Error) => toast.error(error.message),
   })
 
-  const removeMutation = useMutation({
-    mutationFn: () => api.post<{ status: "ok" | "already_absent" }>(`/api/v1/admin/tickets/${ticketId}/members/${selected?.discord_id}/remove`),
-    onSuccess: (result) => {
-      toast.success(result.status === "already_absent" ? "Участник уже не имеет доступа" : "Участник убран из тикета")
-      if (ticketId !== null) queryClient.invalidateQueries({ queryKey: ["ticket-detail", String(ticketId)] })
-      queryClient.invalidateQueries({ queryKey: ["tickets"] })
-      onOpenChange(false)
-    },
-    onError: (error: Error) => toast.error(error.message),
-  })
-
-  const isPending = addMutation.isPending || removeMutation.isPending
-
   const close = (nextOpen: boolean) => {
-    if (isPending) return
+    if (addMutation.isPending) return
     if (!nextOpen) {
       setSelected(null)
       setSearch("")
-      setRemoveConfirmOpen(false)
     }
     onOpenChange(nextOpen)
   }
@@ -99,25 +83,12 @@ export function TicketMemberDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => close(false)} disabled={isPending}>Отмена</Button>
-          <Button variant="destructive" onClick={() => setRemoveConfirmOpen(true)} disabled={!selected || isPending}>
-            {removeMutation.isPending ? "Удаление..." : <><UserMinus className="size-4" /> Убрать</>}
-          </Button>
-          <Button onClick={() => addMutation.mutate()} disabled={!selected || isPending}>
+          <Button variant="outline" onClick={() => close(false)} disabled={addMutation.isPending}>Отмена</Button>
+          <Button onClick={() => addMutation.mutate()} disabled={!selected || addMutation.isPending}>
             {addMutation.isPending ? "Добавление..." : <><UserPlus className="size-4" /> Добавить</>}
           </Button>
         </DialogFooter>
       </DialogContent>
-
-      <ConfirmDialog
-        open={removeConfirmOpen}
-        onOpenChange={(open) => !removeMutation.isPending && setRemoveConfirmOpen(open)}
-        title="Убрать участника из тикета?"
-        description={selected ? `${selected.display_name || selected.username || selected.discord_id} потеряет персональный доступ к Discord-каналу этого тикета.` : undefined}
-        confirmLabel={removeMutation.isPending ? "Удаление..." : "Убрать участника"}
-        confirmDisabled={removeMutation.isPending}
-        onConfirm={() => removeMutation.mutate()}
-      />
     </Dialog>
   )
 }
