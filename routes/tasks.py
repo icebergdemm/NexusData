@@ -5,10 +5,12 @@ priority, tags, assignee admin/department, description, comments), and
 drag-and-drop reordering both of columns and of tasks within/across columns.
 
 A board's department_id is purely an organizational tag (filter/label) —
-never an access-control boundary. Visibility is all-or-nothing via the
-site-wide "tasks" permission page; edit/delete are own-task-scoped (creator
-or assignee) unless the admin holds the "_all" variant. See
-permissions_registry.py's "tasks" entry for the full action list.
+never an access-control boundary. Access is governed by per-board rules
+(TaskBoardPermission, see _has_board_perm) when they match the user, with
+site-wide "tasks" permissions as the fallback; edit/delete are additionally
+own-task-scoped (creator or assignee) via "edit"/"delete" unless the admin
+holds the "_all" variant. See permissions_registry.py's "tasks" entry for
+the full action list.
 """
 
 from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form
@@ -34,25 +36,39 @@ TASK_PRIORITIES = {"low", "medium", "high", "urgent"}
 
 # ── Auth (self-contained, mirrors routes/departments.py's dependency) ───────
 
+def _dept_level_matches(db: Session, admin: AdminUser, grantee_key: str) -> bool:
+    """True if admin holds the department level encoded as "deptId:levelKey"."""
+    try:
+        dept_id_str, level_key = grantee_key.split(":", 1)
+        dept_id = int(dept_id_str)
+    except (ValueError, AttributeError):
+        return False
+    from models import DepartmentMember
+    m = db.query(DepartmentMember).filter(
+        DepartmentMember.department_id == dept_id,
+        DepartmentMember.admin_id == admin.id,
+    ).first()
+    return bool(m and level_key in (m.held_level_keys or []))
+
+
+def _perm_matches_admin(db: Session, admin: AdminUser, p) -> bool:
+    if p.grantee_type == "user":
+        return str(p.grantee_key) == str(admin.id)
+    if p.grantee_type == "group_nd":
+        return bool(admin.privilege_group_id) and str(p.grantee_key) == str(admin.privilege_group_id)
+    if p.grantee_type == "dept_level":
+        return _dept_level_matches(db, admin, p.grantee_key)
+    return False
+
+
 def _has_any_board_view(db: Session, admin: AdminUser) -> bool:
     if admin.is_superuser:
         return True
     from models import TaskBoardPermission
     perms = db.query(TaskBoardPermission).filter(TaskBoardPermission.can_view.is_(True)).all()
     for p in perms:
-        if p.grantee_type == "user" and str(p.grantee_key) == str(admin.id):
+        if _perm_matches_admin(db, admin, p):
             return True
-        if p.grantee_type == "group_nd" and admin.privilege_group_id and str(p.grantee_key) == str(admin.privilege_group_id):
-            return True
-        if p.grantee_type == "dept_level":
-            try:
-                dept_id_str, level_key = p.grantee_key.split(":", 1)
-                from models import DepartmentMember
-                m = db.query(DepartmentMember).filter(DepartmentMember.department_id == int(dept_id_str), DepartmentMember.admin_id == admin.id).first()
-                if m and level_key in (m.held_level_keys or []):
-                    return True
-            except Exception:
-                continue
     return False
 
 
@@ -93,10 +109,18 @@ def _task_is_owner(admin: AdminUser, task: Task) -> bool:
     return task.created_by_admin_id == admin.id or task.assignee_admin_id == admin.id
 
 
-def _has_task_action(admin: AdminUser, own_action: str, all_action: str, task: Task) -> bool:
-    if check_permission(admin, "tasks", all_action):
+def _can_edit_task(db: Session, admin: AdminUser, task: Task) -> bool:
+    """Любую задачу доски — по правилу доски (can_edit) или tasks:edit_all;
+    свою (созданную/назначенную) — ещё и по tasks:edit."""
+    if _has_board_perm(db, admin, task.board_id, "edit"):
         return True
-    return _task_is_owner(admin, task) and check_permission(admin, "tasks", own_action)
+    return _task_is_owner(admin, task) and check_permission(admin, "tasks", "edit")
+
+
+def _can_delete_task(db: Session, admin: AdminUser, task: Task) -> bool:
+    if _has_board_perm(db, admin, task.board_id, "delete"):
+        return True
+    return _task_is_owner(admin, task) and check_permission(admin, "tasks", "delete")
 
 
 def _log_task_activity(db: Session, task_id: int, admin_id: Optional[int], action: str, detail: Optional[str] = None):
@@ -108,39 +132,38 @@ def _log_task_activity(db: Session, task_id: int, admin_id: Optional[int], actio
 
 
 def _has_board_perm(db: Session, admin: AdminUser, board_id: int, need: str) -> bool:
-    """Гибкие права по доске: group_nd / user / dept_level + fallback на глобальные."""
+    """Права по доске. Правила доски (TaskBoardPermission) имеют приоритет над
+    глобальными tasks-правами: если для доски есть правила и хотя бы одно
+    подходит пользователю, действует самый конкретный подходивший уровень
+    (user → group_nd → dept_level, внутри уровня — union) — в т.ч. когда он
+    запрещает действие. Глобальные права применяются только как fallback,
+    когда правил нет или ни одно не касается этого пользователя:
+      view   ← tasks:view, create ← tasks:create,
+      edit   ← tasks:edit_all, delete ← tasks:delete_all
+    (правка/удаление СВОИХ задач — отдельно, см. _can_edit_task/_can_delete_task)."""
     if admin.is_superuser:
         return True
     if check_permission(admin, "tasks", "manage_boards"):
         return True
-    perms = db.query(TaskBoardPermission).filter(TaskBoardPermission.board_id == board_id).all()
-    # map need to column
     col = {"view": "can_view", "create": "can_create", "edit": "can_edit", "delete": "can_delete"}.get(need, need)
+    perms = db.query(TaskBoardPermission).filter(TaskBoardPermission.board_id == board_id).all()
+    matched_by_level: dict = {}
     for p in perms:
-        allowed = getattr(p, col, False)
-        if not allowed:
-            continue
-        if p.grantee_type == "user" and str(p.grantee_key) == str(admin.id):
-            return True
-        if p.grantee_type == "group_nd" and admin.privilege_group_id and str(p.grantee_key) == str(admin.privilege_group_id):
-            return True
-        if p.grantee_type == "dept_level":
-            try:
-                dept_id_str, level_key = p.grantee_key.split(":", 1)
-                dept_id = int(dept_id_str)
-                from models import DepartmentMember
-                m = db.query(DepartmentMember).filter(DepartmentMember.department_id == dept_id, DepartmentMember.admin_id == admin.id).first()
-                if m and level_key in (m.held_level_keys or []):
-                    return True
-            except Exception:
-                continue
-    # fallback на глобальные tasks права
+        if _perm_matches_admin(db, admin, p):
+            matched_by_level.setdefault(p.grantee_type, []).append(p)
+    for level in ("user", "group_nd", "dept_level"):
+        rows = matched_by_level.get(level)
+        if rows:
+            return any(getattr(p, col, False) for p in rows)
+    # fallback на глобальные tasks права (правил нет / не про этого пользователя)
     if need == "view":
         return check_permission(admin, "tasks", "view")
-    if need in ("create", "edit"):
-        return check_permission(admin, "tasks", "create") or check_permission(admin, "tasks", "edit") or check_permission(admin, "tasks", "edit_all")
+    if need == "create":
+        return check_permission(admin, "tasks", "create")
+    if need == "edit":
+        return check_permission(admin, "tasks", "edit_all")
     if need == "delete":
-        return check_permission(admin, "tasks", "delete") or check_permission(admin, "tasks", "delete_all")
+        return check_permission(admin, "tasks", "delete_all")
     return False
 
 
@@ -296,8 +319,9 @@ async def api_list_task_boards(db: Session = Depends(get_db), current_admin: Adm
         .order_by(TaskBoard.created_at.desc())
         .all()
     )
-    # если нет глобального tasks:view, показываем только доски где есть can_view
-    if not check_permission(current_admin, "tasks", "view") and not current_admin.is_superuser:
+    # показываем только доски, которые пользователю реально видны
+    # (правила доски приоритетнее глобального tasks:view)
+    if not current_admin.is_superuser:
         boards = [b for b in boards if _has_board_perm(db, current_admin, b.id, "view")]
     counts = dict(
         db.query(Task.board_id, func.count(Task.id))
@@ -502,7 +526,7 @@ async def api_delete_task_column(board_id: int, column_id: int, db: Session = De
 
 @router.post("/api/v1/admin/tasks/boards/{board_id}/tasks")
 async def api_create_task(board_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    require_tasks_page(current_admin, "create")
+    require_tasks_page(current_admin, "view")
     if not _has_board_perm(db, current_admin, board_id, "create"):
         raise HTTPException(status_code=403, detail="Нет прав на создание задач на этой доске")
     board = get_board_or_404(db, board_id)
@@ -555,7 +579,7 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
 async def api_update_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     task = get_task_or_404(db, task_id)
-    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+    if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     body = await request.json()
 
@@ -625,7 +649,7 @@ async def api_update_task(task_id: int, request: Request, db: Session = Depends(
 async def api_delete_task(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     task = get_task_or_404(db, task_id)
-    if not _has_task_action(current_admin, "delete", "delete_all", task):
+    if not _can_delete_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     db.delete(task)
     db.commit()
@@ -659,7 +683,7 @@ async def api_reorder_tasks(board_id: int, request: Request, db: Session = Depen
         }
         for idx, tid in enumerate(task_ids):
             t = tasks.get(int(tid))
-            if not t or not _has_task_action(current_admin, "edit", "edit_all", t):
+            if not t or not _can_edit_task(db, current_admin, t):
                 continue
             t.column_id = column_id
             t.sort_order = idx
@@ -706,7 +730,7 @@ async def api_delete_task_comment(task_id: int, comment_id: int, db: Session = D
     comment = db.query(TaskComment).filter(TaskComment.id == comment_id, TaskComment.task_id == task_id).first()
     if not comment:
         raise HTTPException(status_code=404, detail="Комментарий не найден")
-    if comment.admin_id != current_admin.id and not check_permission(current_admin, "tasks", "edit_all"):
+    if comment.admin_id != current_admin.id and not _can_edit_task(db, current_admin, get_task_or_404(db, task_id)):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     db.delete(comment)
@@ -780,7 +804,7 @@ async def api_list_task_attachments(task_id: int, db: Session = Depends(get_db),
 async def api_upload_task_attachment(task_id: int, file: UploadFile = File(...), is_preview: bool = Form(False), db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     task = get_task_or_404(db, task_id)
-    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+    if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     if file.size and file.size > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Файл слишком большой (10 MB)")
@@ -809,7 +833,7 @@ async def api_delete_task_attachment(task_id: int, attachment_id: int, db: Sessi
     if not att:
         raise HTTPException(status_code=404, detail="Вложение не найдено")
     task = get_task_or_404(db, task_id)
-    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+    if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     try:
         if att.stored_path and os.path.exists(att.stored_path):
@@ -856,7 +880,7 @@ async def api_get_task_activity(task_id: int, db: Session = Depends(get_db), cur
 async def api_reject_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     task = get_task_or_404(db, task_id)
-    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+    if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     body = await request.json()
     reason = (body.get("reason") or "").strip()
@@ -875,7 +899,7 @@ async def api_reject_task(task_id: int, request: Request, db: Session = Depends(
 async def api_toggle_task_hidden(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     task = get_task_or_404(db, task_id)
-    if not _has_board_perm(db, current_admin, task.board_id, "edit") and not _has_task_action(current_admin, "edit", "edit_all", task):
+    if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     task.is_hidden = not task.is_hidden
     db.commit()
