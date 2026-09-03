@@ -7,11 +7,15 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import type { TicketDetailResponse } from "./types"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { Ticket } from "lucide-react"
+import { TicketActionsMenu } from "./TicketActionsMenu"
+import { TicketMemberDialog } from "./TicketMemberDialog"
+import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
 
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
@@ -20,6 +24,10 @@ function fmtDate(iso: string | null): string {
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>()
   const [text, setText] = useState("")
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [restoreOpen, setRestoreOpen] = useState(false)
+  const [memberDialogOpen, setMemberDialogOpen] = useState(false)
+  const [removeMemberDialogOpen, setRemoveMemberDialogOpen] = useState(false)
   const queryClient = useQueryClient()
   const scrollRef = useRef<HTMLDivElement>(null)
   const queryKey = ["ticket-detail", ticketId]
@@ -42,7 +50,34 @@ export function TicketDetailPage() {
 
   const closeMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/admin/tickets/${ticketId}/close`),
-    onSuccess: () => { toast.success("Тикет закрыт"); queryClient.invalidateQueries({ queryKey }) },
+    onSuccess: () => {
+      toast.success("Тикет закрыт")
+      queryClient.invalidateQueries({ queryKey })
+      queryClient.invalidateQueries({ queryKey: ["tickets"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/tickets/${ticketId}/delete`),
+    onSuccess: () => {
+      toast.success("Тикет перемещён в удалённые")
+      setDeleteOpen(false)
+      queryClient.invalidateQueries({ queryKey })
+      queryClient.invalidateQueries({ queryKey: ["tickets"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const restoreMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/tickets/${ticketId}/restore`),
+    onSuccess: () => {
+      toast.success("Тикет восстановлен")
+      setRestoreOpen(false)
+      queryClient.invalidateQueries({ queryKey })
+      queryClient.invalidateQueries({ queryKey: ["tickets"] })
+    },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   if (isLoading || !data) {
@@ -78,9 +113,18 @@ export function TicketDetailPage() {
               )}
             </div>
           </div>
-          {data.can_edit && !isClosed && (
-            <Button variant="destructive" size="sm" onClick={() => closeMutation.mutate()}>Закрыть тикет</Button>
-          )}
+          <TicketActionsMenu
+            ticket={ticket}
+            canAssign={data.can_assign}
+            canEdit={data.can_edit}
+            canDelete={data.can_delete}
+            disabled={closeMutation.isPending || deleteMutation.isPending || restoreMutation.isPending}
+            onAddMember={() => setMemberDialogOpen(true)}
+            onRemoveMember={() => setRemoveMemberDialogOpen(true)}
+            onClose={() => closeMutation.mutate()}
+            onDelete={() => setDeleteOpen(true)}
+            onRestore={() => setRestoreOpen(true)}
+          />
         </CardContent>
       </Card>
 
@@ -110,6 +154,38 @@ export function TicketDetailPage() {
           </div>
         )}
       </Card>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={(open) => !deleteMutation.isPending && setDeleteOpen(open)}
+        title={`Удалить тикет #${ticket.id}?`}
+        description={`«${ticket.title}» будет убран из обычных списков. История сохранится на 30 дней, после чего тикет и сообщения будут удалены окончательно.`}
+        confirmLabel={deleteMutation.isPending ? "Удаление..." : "Удалить тикет"}
+        confirmDisabled={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
+
+      <ConfirmDialog
+        open={restoreOpen}
+        onOpenChange={(open) => !restoreMutation.isPending && setRestoreOpen(open)}
+        title={`Восстановить тикет #${ticket.id}?`}
+        description={`«${ticket.title}» снова появится в списке закрытых тикетов. Discord-канал не восстанавливается.`}
+        confirmLabel={restoreMutation.isPending ? "Восстановление..." : "Восстановить тикет"}
+        confirmDisabled={restoreMutation.isPending}
+        onConfirm={() => restoreMutation.mutate()}
+      />
+
+      <TicketMemberDialog
+        open={memberDialogOpen}
+        ticketId={ticket.id}
+        onOpenChange={setMemberDialogOpen}
+      />
+
+      <TicketMemberRemoveDialog
+        open={removeMemberDialogOpen}
+        ticketId={ticket.id}
+        onOpenChange={setRemoveMemberDialogOpen}
+      />
     </div>
   )
 }
