@@ -192,6 +192,7 @@ export interface AIDossierResponse {
     prompt_tokens: number | null
     completion_tokens: number | null
     requested_by_admin_id: number | null
+    raw_response?: string | null
   } | null
 }
 

@@ -216,12 +216,54 @@ class AIDossierContractTests(unittest.TestCase):
         run = AIPlayerDossierRun(
             id=4, player_id=7, source="manual", status="succeeded", model="qwen",
             latency_ms=1200, prompt_tokens=100, completion_tokens=20,
+            raw_response="private model output",
         )
         public = dossier_run_public_dict(run, player_name="Alice")
         self.assertEqual(public["player_name"], "Alice")
         self.assertEqual(public["latency_ms"], 1200)
         self.assertNotIn("result", public)
         self.assertNotIn("raw_response", public)
+        privileged = dossier_run_public_dict(run, player_name="Alice", include_raw=True)
+        self.assertEqual(privileged["raw_response"], "private model output")
+
+    def test_failed_generation_keeps_bounded_raw_response_for_superuser_debug(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__, AIPlayerDossierRun.__table__])
+        db = Session(engine)
+        try:
+            report = AIPlayerDossier(player_id=7, status="queued")
+            db.add(report)
+            db.commit()
+
+            raw_response = "not-json model output" + ("x" * 15000)
+            fake_response = SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"choices": [{"message": {"content": raw_response}}]},
+            )
+            fake_settings = SimpleNamespace(
+                ai_dossier_url="https://qwen.test/v1/chat/completions",
+                ai_dossier_api_key="secret",
+                ai_dossier_model="qwen",
+                ai_dossier_tls_ca_file="",
+                ai_dossier_timeout_seconds=1,
+                ai_dossier_active_days=30,
+                ai_dossier_max_log_events=10,
+                ai_dossier_max_input_chars=30000,
+            )
+            with (
+                patch("database.SessionLocal", return_value=db),
+                patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7}),
+                patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch("httpx.Client.post", return_value=fake_response),
+            ):
+                result = services_ai_dossier.process_one_dossier()
+
+            self.assertEqual(result["status"], "failed")
+            stored = db.query(AIPlayerDossierRun).one()
+            self.assertEqual(stored.raw_response, raw_response[:12000])
+        finally:
+            db.close()
+            engine.dispose()
 
     def test_empty_dossier_response_does_not_require_a_report_row(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")

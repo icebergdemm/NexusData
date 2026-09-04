@@ -16,7 +16,7 @@ This repository contains the NexusData website and its data/API integrations. Re
 
 - Never print, commit, or upload `.env` contents, API keys, bearer tokens, passwords, CA/private-key material, or raw credentials.
 - Keep AI endpoint credentials and TLS files in the NexusData/Qwen host environment. Keep prompts and response schemas in Git.
-- AI dossiers may persist normalized results and run metadata, but never persist the raw model response. Treat the dossier as moderator reference material; a human makes moderation decisions.
+- AI dossiers may persist normalized results and run metadata. For explicit superuser debugging, a bounded raw model response may be stored on the run and returned only to superusers in the AI-center profile view; never expose it to ordinary moderators or general API lists. Treat the dossier as moderator reference material; a human makes moderation decisions.
 
 ## Local checks
 

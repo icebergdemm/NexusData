@@ -77,7 +77,7 @@ async def get_player_ai_dossier(
         raise HTTPException(status_code=404, detail="Player not found")
     _require_player_access(db, player, current_admin)
     report = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id).first()
-    return dossier_response_with_run(db, report)
+    return dossier_response_with_run(db, report, include_raw=current_admin.is_superuser)
 
 
 @router.post("/api/v1/admin/players/{player_id}/ai-dossier", status_code=202)
@@ -97,7 +97,7 @@ async def request_player_ai_dossier(
     if queued:
         log_admin_action(db, current_admin.id, "queue_ai_player_dossier", {"target": {"player_id": player_id}, "force": force})
         _wake_worker()
-    return {"queued": queued, "dossier": dossier_response_with_run(db, report)}
+    return {"queued": queued, "dossier": dossier_response_with_run(db, report, include_raw=current_admin.is_superuser)}
 
 
 @router.post("/api/v1/admin/ai-dossiers/test-run", status_code=202)

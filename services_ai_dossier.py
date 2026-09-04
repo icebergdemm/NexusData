@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 DOSSIER_STATUSES = {"queued", "running", "succeeded", "failed"}
 CONFIDENCE_VALUES = {"low", "medium", "high"}
 MAX_OUTPUT_TOKENS = 650
+MAX_RAW_RESPONSE_CHARS = 12000
 DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
 ALLOWED_RUN_SOURCES = {"manual", "daily", "test", "health"}
@@ -102,13 +103,18 @@ def normalize_dossier_result(value: Any) -> dict:
     }
 
 
-def parse_kobold_response(payload: dict) -> dict:
+def _kobold_chat_content(payload: dict) -> Optional[str]:
     try:
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("KoboldCpp response has no chat content") from exc
     if not isinstance(content, str):
         raise ValueError("KoboldCpp chat content is not text")
+    return content
+
+
+def parse_kobold_response(payload: dict) -> dict:
+    content = _kobold_chat_content(payload)
     content = content.strip()
     candidates = [content]
     if content.startswith("```"):
@@ -436,6 +442,7 @@ def process_one_dossier() -> dict:
         if not report:
             return {"status": "idle"}
         settings = get_settings()
+        raw_response = None
         run = db.query(AIPlayerDossierRun).filter(
             AIPlayerDossierRun.dossier_id == report.id,
             AIPlayerDossierRun.status == "running",
@@ -458,6 +465,7 @@ def process_one_dossier() -> dict:
                     response = client.post(settings.ai_dossier_url, **request)
                     response.raise_for_status()
                     response_payload = response.json()
+                    raw_response = _kobold_chat_content(response_payload)
                     result = sanitize_dossier_result(parse_kobold_response(response_payload), payload)
             usage = response_payload.get("usage") or {}
             elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -480,6 +488,7 @@ def process_one_dossier() -> dict:
                 run.completion_tokens = usage.get("completion_tokens")
                 run.model = settings.ai_dossier_model
                 run.input_hash = request_hash
+                run.raw_response = None
             db.commit()
             return {"status": "succeeded", "player_id": report.player_id}
         except Exception as exc:
@@ -495,6 +504,7 @@ def process_one_dossier() -> dict:
                 run.finished_at = report.finished_at
                 run.error_message = report.error_message
                 run.model = settings.ai_dossier_model
+                run.raw_response = raw_response[:MAX_RAW_RESPONSE_CHARS] if isinstance(raw_response, str) else None
             db.commit()
             return {"status": "failed", "player_id": report.player_id, "error": report.error_message}
     finally:
@@ -594,7 +604,7 @@ def dossier_public_dict(report: Optional[AIPlayerDossier]) -> dict:
     }
 
 
-def dossier_response_with_run(db: Session, report: Optional[AIPlayerDossier]) -> dict:
+def dossier_response_with_run(db: Session, report: Optional[AIPlayerDossier], include_raw: bool = False) -> dict:
     """Serialize an optional report without dereferencing a missing row."""
     if report is None:
         return {"status": "none", "result": None, "run": None}
@@ -602,7 +612,7 @@ def dossier_response_with_run(db: Session, report: Optional[AIPlayerDossier]) ->
         AIPlayerDossierRun.dossier_id == report.id,
     ).order_by(AIPlayerDossierRun.id.desc()).first()
     response = dossier_public_dict(report)
-    response["run"] = dossier_run_public_dict(run) if run else None
+    response["run"] = dossier_run_public_dict(run, include_raw=include_raw) if run else None
     return response
 
 
@@ -632,8 +642,8 @@ def dossier_evidence_link(kind: Any, source_id: Any, player_id: Optional[int]) -
     return f"/players/{int(player_id)}?tab={tab}&source_id={source_id}" if tab else None
 
 
-def dossier_run_public_dict(run: AIPlayerDossierRun, player_name: Optional[str] = None) -> dict:
-    return {
+def dossier_run_public_dict(run: AIPlayerDossierRun, player_name: Optional[str] = None, include_raw: bool = False) -> dict:
+    result = {
         "id": run.id,
         "player_id": run.player_id,
         "player_name": player_name,
@@ -650,6 +660,9 @@ def dossier_run_public_dict(run: AIPlayerDossierRun, player_name: Optional[str] 
         "input_hash": run.input_hash,
         "error": run.error_message,
     }
+    if include_raw:
+        result["raw_response"] = run.raw_response
+    return result
 
 
 def list_dossier_runs(db: Session, limit: int, include_secret: bool) -> list[dict]:

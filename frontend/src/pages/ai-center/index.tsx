@@ -43,6 +43,10 @@ function DataList({ title, rows }: { title: string; rows: Array<Record<string, u
   return <div><h3 className="mb-2 text-sm font-medium">{title}</h3>{rows.length ? <div className="space-y-2">{rows.map((row, index) => <div key={index} className="rounded border p-2 text-sm">{Object.entries(row).map(([key, value]) => <div key={key}><span className="text-muted-foreground">{key}: </span>{typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div>)}</div> : <p className="text-sm text-muted-foreground">Нет данных</p>}</div>
 }
 
+function RawResponsePanel({ value }: { value: string }) {
+  return <Card><CardHeader><CardTitle className="text-sm">Сырой ответ Qwen</CardTitle></CardHeader><CardContent><p className="mb-2 text-xs text-warning">Только для суперпользователя. Ответ может содержать данные игрока; не копируйте его за пределы модераторского контура.</p><pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded border bg-muted/30 p-3 font-mono text-xs">{value}</pre></CardContent></Card>
+}
+
 export function AICenterPage() {
   const { data: me } = useCurrentAdmin()
   const queryClient = useQueryClient()
@@ -160,5 +164,6 @@ export function AICenterPage() {
     <Card><CardHeader><CardTitle className="text-sm">Последние AI-запуски</CardTitle></CardHeader><CardContent className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-xs text-muted-foreground"><th className="p-2">Время</th><th className="p-2">Источник</th><th className="p-2">Игрок</th><th className="p-2">Инициатор</th><th className="p-2">Статус</th><th className="p-2">Latency / токены</th><th className="p-2">Ошибка</th></tr></thead><tbody>{runs?.runs.map((run) => <tr key={run.id} className="border-b last:border-0"><td className="p-2 whitespace-nowrap">{fmt(run.requested_at)}</td><td className="p-2">{sourceLabel[run.source] || run.source}</td><td className="p-2">{run.player_id ? <Link className="text-primary underline" to={`/players/${run.player_id}`}>{run.player_name || `#${run.player_id}`}</Link> : "—"}</td><td className="p-2">{run.requested_by_admin_id ? `#${run.requested_by_admin_id}` : "система"}</td><td className="p-2"><Status value={run.status} /></td><td className="p-2 whitespace-nowrap">{run.latency_ms ?? "—"} мс / {run.prompt_tokens ?? "—"}+{run.completion_tokens ?? "—"}</td><td className="max-w-xs truncate p-2 text-xs text-destructive">{run.error || "—"}</td></tr>)}</tbody></table>{!runs?.runs.length && <p className="p-3 text-sm text-muted-foreground">Запусков пока нет.</p>}</CardContent></Card>
 
     <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Отправить данные игрока в Qwen?</AlertDialogTitle><AlertDialogDescription>Будет отправлен ограниченный профиль, метрики, наказания, заметки и срез логов за окно активности. Убедитесь, что это разрешено правилами доступа.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction onClick={() => requestDossier.mutate()} disabled={requestDossier.isPending}>Подтвердить запуск</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    {isSuperuser && dossier?.run?.raw_response && <RawResponsePanel value={dossier.run.raw_response} />}
   </div>
 }

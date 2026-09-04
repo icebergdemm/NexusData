@@ -1089,7 +1089,7 @@ class AIPlayerDossier(Base):
 
 
 class AIPlayerDossierRun(Base):
-    """Metadata for one AI dossier/health run; never stores the model response."""
+    """Metadata for one AI run plus superuser-only bounded debug output."""
     __tablename__ = "ai_player_dossier_runs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1107,6 +1107,7 @@ class AIPlayerDossierRun(Base):
     model = Column(String(255), nullable=True)
     input_hash = Column(String(64), nullable=True, index=True)
     error_message = Column(String(2000), nullable=True)
+    raw_response = Column(Text, nullable=True)
 
 
 class OnlineSnapshot(Base):

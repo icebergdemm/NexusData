@@ -153,6 +153,9 @@ def _apply_migrations():
         ("tickets", "deleted_by", "VARCHAR(255)"),
         # world_rounds: durable once-per-round claim for the automatic AI briefing
         ("world_rounds", "ai_briefing_queued_at", "DATETIME"),
+        # AI dossier diagnostics: bounded raw model content, exposed only to
+        # superusers by the AI-center API.
+        ("ai_player_dossier_runs", "raw_response", "TEXT"),
         # ai_creature_alerts: retryable outbox state. A detected contact must
         # not become permanently suppressed merely because an AI request or
         # game-server delivery failed once.
