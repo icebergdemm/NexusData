@@ -33,6 +33,7 @@ import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { AIDossierResponse, PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
+import { DossierResultView } from "../ai-center/dossier-result"
 import { RewardsSection } from "./rewards-section"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
@@ -802,34 +803,11 @@ export function PlayerDetailPage() {
                     {dossier.model && <span className="font-mono text-muted-foreground">{dossier.model}</span>}
                   </div>
                   {dossier.status === "failed" && dossier.error && (
-                    <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">Новая генерация не удалась: {dossier.error}. Старый отчёт ниже не удалён.</div>
+                    <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">Qwen не ответил: {dossier.error}. Показан последний валидный результат или серверный rules-only результат.</div>
                   )}
+                  {dossier.stale && <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">Старый формат досье устарел и скрыт до перегенерации. История запусков сохранена.</div>}
                   {dossier.result ? (
-                    <>
-                      <div className="rounded-md border bg-muted/30 p-4 text-sm">{dossier.result.summary}</div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <DossierList title="Факты" rows={dossier.result.facts} />
-                        <DossierList title="Сигналы для проверки" rows={dossier.result.signals} />
-                      </div>
-                      {dossier.result.caveats.length > 0 && (
-                        <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
-                          <div className="mb-1 font-medium">Ограничения</div>
-                          <ul className="list-disc space-y-1 pl-5">{dossier.result.caveats.map((item, index) => <li key={index}>{item}</li>)}</ul>
-                        </div>
-                      )}
-                      {dossier.result.evidence.length > 0 && (
-                        <div className="space-y-2 text-sm">
-                          <div className="font-medium">Источники</div>
-                          <div className="flex flex-wrap gap-2">
-                            {dossier.result.evidence.map((item, index) => item.href ? (
-                              <a key={index} className="text-primary underline" href={item.href}>{item.kind === "log" ? "Лог" : item.kind} {item.id}</a>
-                            ) : (
-                              <span key={index} className="rounded border px-2 py-1 text-xs text-muted-foreground">{item.kind}: {item.id}</span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
+                    <DossierResultView result={dossier.result} />
                   ) : dossier.status === "none" ? (
                     <div className="text-sm text-muted-foreground">Отчёта ещё нет. Запустите генерацию вручную.</div>
                   ) : dossier.status === "queued" || dossier.status === "running" ? (
@@ -987,19 +965,6 @@ export function PlayerDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  )
-}
-
-function DossierList({ title, rows }: { title: string; rows: Array<Record<string, string>> }) {
-  return (
-    <div className="rounded-md border p-3 text-sm">
-      <div className="mb-2 font-medium">{title}</div>
-      {rows.length ? (
-        <ul className="list-disc space-y-1 pl-5">
-          {rows.map((row, index) => <li key={index}>{row.text || Object.values(row).join(" · ")}</li>)}
-        </ul>
-      ) : <div className="text-muted-foreground">Нет данных</div>}
     </div>
   )
 }

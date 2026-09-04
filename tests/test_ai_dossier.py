@@ -1,5 +1,6 @@
 import unittest
 import os
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,13 +16,17 @@ from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, 
 from services_ai_dossier import (
     build_kobold_request,
     build_dossier_analytics,
+    build_moderation_packet,
+    build_rules_result,
     dossier_evidence_link,
+    dossier_public_dict,
     dossier_run_public_dict,
     dossier_response_with_run,
     get_dossier_config,
     get_dossier_prompt,
     validate_dossier_ca_pem,
     normalize_dossier_result,
+    normalize_ai_summary,
     parse_kobold_response,
     should_queue_dossier,
     select_active_player_ids,
@@ -34,28 +39,28 @@ import services_ai_dossier
 class AIDossierContractTests(unittest.TestCase):
     @staticmethod
     def _valid_response_content():
-        return '{"summary":"OK","facts":[],"signals":[],"caveats":[],"confidence":"high","evidence":[]}'
+        return '{"summary":"Есть основания проверить сигнал."}'
 
     def test_kobold_response_accepts_json_fence(self):
         payload = {"choices": [{"message": {"content": f"```json\n{self._valid_response_content()}\n```"}}]}
 
         result = parse_kobold_response(payload)
 
-        self.assertEqual(result["summary"], "OK")
+        self.assertEqual(result["summary"], "Есть основания проверить сигнал.")
 
     def test_kobold_response_accepts_thinking_or_prose_before_json(self):
         payload = {"choices": [{"message": {"content": f"<think>Проверяю входные данные.</think>\n{self._valid_response_content()}"}}]}
 
         result = parse_kobold_response(payload)
 
-        self.assertEqual(result["confidence"], "high")
+        self.assertEqual(result["summary"], "Есть основания проверить сигнал.")
 
     def test_kobold_response_skips_braces_inside_reasoning(self):
         payload = {"choices": [{"message": {"content": f"<think>Пример структуры: {{\"not\": \"the answer\"}}</think>\n{self._valid_response_content()}"}}]}
 
         result = parse_kobold_response(payload)
 
-        self.assertEqual(result["summary"], "OK")
+        self.assertEqual(result["summary"], "Есть основания проверить сигнал.")
 
     def test_kobold_response_parse_error_contains_only_safe_size_diagnostic(self):
         secret_like_text = "Player private detail that must never be persisted"
@@ -99,17 +104,16 @@ class AIDossierContractTests(unittest.TestCase):
 
         self.assertEqual(request["headers"]["Authorization"], "Bearer secret")
         self.assertFalse(request["json"]["stream"])
-        self.assertEqual(request["json"]["max_tokens"], 650)
+        self.assertEqual(request["json"]["max_tokens"], 260)
         response_format = request["json"]["response_format"]
         self.assertEqual(response_format["type"], "json_schema")
         self.assertEqual(response_format["json_schema"]["name"], "player_dossier")
         self.assertEqual(response_format["json_schema"]["schema"]["type"], "object")
-        self.assertEqual(response_format["json_schema"]["schema"]["required"], ["summary", "facts", "signals", "caveats", "confidence", "evidence"])
+        self.assertEqual(response_format["json_schema"]["schema"]["required"], ["summary"])
         self.assertIn("player_id", request["json"]["messages"][1]["content"])
-        self.assertIn("короткое досье игрока для модератора", request["json"]["messages"][1]["content"])
+        self.assertIn("moderation packet", request["json"]["messages"][1]["content"])
         self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", request["json"]["messages"][0]["content"])
-        self.assertIn("every human-readable value in Russian", request["json"]["messages"][0]["content"])
-        self.assertIn("Do not create a signal merely because activity exists", request["json"]["messages"][0]["content"])
+        self.assertIn("Не добавляй новые факты", request["json"]["messages"][0]["content"])
 
     def test_dossier_analytics_is_a_moderator_focused_concentrate(self):
         analytics = build_dossier_analytics({
@@ -139,11 +143,137 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual(analytics["moderation"]["logs"], 2)
         self.assertEqual(analytics["missing"], ["server_logs"])
 
+    def test_moderation_packet_keeps_only_actionable_sources(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": {"killed_monsters": 624},
+            "sessions": [{"id": 1}],
+            "anomalies": [
+                {"id": 51, "category": "behavior", "subtype": "sauron_deviant", "score": 6,
+                 "status": "new", "incidents": [{"label": "Убийств союзников: 4"}]},
+                {"id": 52, "category": "twink", "subtype": "sauron_pair", "score": 3,
+                 "status": "dismissed", "related_player": {"id": 8, "name": "Другой"}},
+            ],
+            "anticheat_events": [{"id": 61, "event_type": "speed", "reviewed": False}],
+            "logs": [
+                {"id": 71, "action": "command_denied", "details": "команда запрещена"},
+                {"id": 72, "action": "picked_up", "details": "обычная игра"},
+            ],
+            "punishments": [{"id": 81, "type": "warning", "active": False, "reason": "старое"}],
+            "labels": [{"id": 91, "name": "Наблюдение", "note": "проверить"}],
+            "notes": [{"id": 101, "content": "служебная заметка"}],
+            "shared_accounts": [],
+            "missing": [],
+        })
+
+        self.assertEqual({finding["category"] for finding in packet["findings"]}, {"deviant_behavior", "anticheat"})
+        self.assertNotIn("killed_monsters", json.dumps(packet, ensure_ascii=False))
+        self.assertNotIn("picked_up", json.dumps(packet, ensure_ascii=False))
+        self.assertEqual([item["kind"] for item in packet["context"]], ["log_security", "punishment", "label", "note"])
+
+    def test_moderation_packet_detects_ip_ban_evasion_and_second_side_anomaly(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест", "known_ips": ["10.0.0.1"]},
+            "anomalies": [{
+                "id": 52, "category": "twink", "subtype": "sauron_pair", "score": 4,
+                "status": "new", "related_player": {"id": 8, "name": "Связанный"},
+            }],
+            "shared_accounts": [{"player_id": 9, "name": "Забаненный", "active_ban": True}],
+            "punishments": [], "labels": [], "notes": [], "anticheat_events": [], "logs": [], "missing": [],
+        })
+
+        self.assertEqual({finding["category"] for finding in packet["findings"]}, {"twink_link", "ban_evasion"})
+        self.assertTrue(any(item["kind"] == "player" and item["id"] == 9 for item in packet["findings"][0]["evidence"] + packet["findings"][1]["evidence"]))
+        self.assertNotIn("10.0.0.1", json.dumps(packet, ensure_ascii=False))
+
+    def test_dismissed_anomalies_and_ordinary_gameplay_create_no_findings(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": {"killed_monsters": 624}, "sessions": [{"id": 1}],
+            "anomalies": [{"id": 1, "category": "behavior", "status": "dismissed"}],
+            "anticheat_events": [], "logs": [{"id": 1, "action": "picked_up"}],
+            "punishments": [{"id": 2, "type": "warning", "status": "expired", "recent": False}],
+            "labels": [], "notes": [], "shared_accounts": [], "missing": [],
+        })
+
+        self.assertEqual(packet["findings"], [])
+        self.assertFalse(build_rules_result(packet)["triage"]["level"] != "none")
+
+    def test_rules_result_uses_aggressive_independent_category_priority(self):
+        packet = {
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [
+                {"category": "anticheat", "severity": "medium", "title": "Античит", "details": "A", "reason": "B", "next_step": "C", "evidence": [{"kind": "anticheat", "id": 1}]},
+                {"category": "deviant_behavior", "severity": "medium", "title": "Поведение", "details": "A", "reason": "B", "next_step": "C", "evidence": [{"kind": "anomaly", "id": 2}]},
+            ],
+            "context": [],
+            "missing": [],
+        }
+
+        result = build_rules_result(packet)
+
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["triage"]["level"], "urgent")
+        self.assertEqual(len(result["findings"]), 2)
+        self.assertEqual(result["summary_source"], "rules")
+
+    def test_qwen_summary_cannot_add_findings_or_evidence(self):
+        packet = {
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [{"category": "anticheat", "severity": "medium", "title": "Античит", "details": "A", "reason": "B", "next_step": "C", "evidence": [{"kind": "anticheat", "id": 1}]}],
+            "context": [],
+            "missing": [],
+        }
+        rules = build_rules_result(packet)
+        summary = normalize_ai_summary({
+            "summary": "Найдено событие античита; проверить запись.",
+            "caveats": ["Ответ модели ограничен готовыми находками."],
+            "findings": [{"category": "invented", "details": "не добавлять"}],
+            "evidence": [{"kind": "log", "id": 999}],
+        })
+
+        merged = services_ai_dossier.merge_ai_summary(rules, summary)
+
+        self.assertEqual(len(merged["findings"]), 1)
+        self.assertEqual(merged["findings"][0]["category"], "anticheat")
+        self.assertEqual(merged["summary_source"], "qwen")
+
+    def test_generic_or_english_qwen_summary_is_replaced_by_rules_summary(self):
+        rules = build_rules_result({
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [{"category": "anticheat", "severity": "medium", "title": "Непроверенное античит-событие", "details": "A", "reason": "B", "next_step": "C", "evidence": []}],
+            "context": [], "missing": [],
+        })
+
+        merged = services_ai_dossier.merge_ai_summary(rules, {"summary": "This JSON object contains player data.", "caveats": []})
+
+        self.assertEqual(merged["summary_source"], "rules")
+        self.assertEqual(merged["summary"], rules["summary"])
+
+    def test_old_result_is_not_current_dossier(self):
+        self.assertFalse(services_ai_dossier.is_current_dossier_result({"summary": "старый", "facts": []}))
+        self.assertTrue(services_ai_dossier.is_current_dossier_result({"schema_version": 2, "triage": {}}))
+
+    def test_stale_result_is_hidden_but_not_deleted_from_report(self):
+        report = SimpleNamespace(
+            status="succeeded", result_json={"summary": "v1", "facts": []}, summary_text="v1",
+            input_hash="old", model="qwen", requested_at=None, started_at=None,
+            generated_at=None, finished_at=None, error_message=None, requested_by_admin_id=None,
+            player_id=7,
+        )
+
+        public = dossier_public_dict(report)
+
+        self.assertTrue(public["stale"])
+        self.assertIsNone(public["result"])
+        self.assertEqual(report.result_json["summary"], "v1")
+
     def test_should_queue_only_when_changed_or_stale_unless_forced(self):
         now = datetime(2026, 9, 4, 12, 0)
         successful = AIPlayerDossier(
             status="succeeded",
             input_hash="same",
+            result_json={"schema_version": 2},
             generated_at=now - timedelta(days=2),
         )
         self.assertFalse(should_queue_dossier(successful, "same", False, now, 7))
@@ -319,7 +449,7 @@ class AIDossierContractTests(unittest.TestCase):
         try:
             db.add(AIPlayerDossier(player_id=7, status="queued"))
             db.commit()
-            raw_response = '{"summary":"Готово","facts":[],"signals":[],"caveats":[],"confidence":"high","evidence":[]}'
+            raw_response = '{"summary":"Готово: активных сигналов не найдено.","caveats":[]}'
             fake_response = SimpleNamespace(
                 raise_for_status=lambda: None,
                 json=lambda: {
@@ -359,7 +489,7 @@ class AIDossierContractTests(unittest.TestCase):
             report = AIPlayerDossier(
                 player_id=7,
                 status="queued",
-                result_json={"summary": "старый", "facts": [], "signals": [], "caveats": [], "confidence": "high", "evidence": []},
+                result_json={"schema_version": 2, "triage": {"level": "none", "title": "Старый", "reason": ""}, "summary": "старый", "findings": [], "context": [], "caveats": [], "confidence": "high"},
                 summary_text="старый",
                 input_hash="old",
                 generated_at=datetime(2026, 9, 1),
@@ -460,13 +590,45 @@ class AIDossierContractTests(unittest.TestCase):
             db.close()
             engine.dispose()
 
+    def test_generation_failure_replaces_legacy_result_with_rules_only_v2(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__, AIPlayerDossierRun.__table__])
+        db = Session(engine)
+        try:
+            db.add(AIPlayerDossier(
+                player_id=7, status="queued",
+                result_json={"summary": "legacy", "facts": [], "signals": []}, summary_text="legacy",
+            ))
+            db.commit()
+            fake_settings = SimpleNamespace(
+                ai_dossier_url="https://qwen.test/v1/chat/completions", ai_dossier_api_key="secret",
+                ai_dossier_model="qwen", ai_dossier_tls_ca_file="", ai_dossier_timeout_seconds=1,
+                ai_dossier_active_days=30, ai_dossier_max_log_events=10, ai_dossier_max_input_chars=30000,
+            )
+            with (
+                patch("database.SessionLocal", return_value=db),
+                patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7}),
+                patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch("httpx.Client.post", side_effect=RuntimeError("qwen offline")),
+            ):
+                services_ai_dossier.process_one_dossier()
+
+            stored = db.query(AIPlayerDossier).one()
+            self.assertEqual(stored.status, "failed")
+            self.assertTrue(services_ai_dossier.is_current_dossier_result(stored.result_json))
+            self.assertEqual(stored.result_json["summary_source"], "rules")
+            self.assertNotEqual(stored.summary_text, "legacy")
+        finally:
+            db.close()
+            engine.dispose()
+
     def test_empty_dossier_response_does_not_require_a_report_row(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine, tables=[AIPlayerDossierRun.__table__])
         db = Session(engine)
         try:
             response = dossier_response_with_run(db, None)
-            self.assertEqual(response, {"status": "none", "result": None, "run": None})
+            self.assertEqual(response, {"status": "none", "result": None, "stale": False, "run": None})
         finally:
             db.close()
             engine.dispose()

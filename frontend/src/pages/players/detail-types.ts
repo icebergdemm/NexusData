@@ -165,18 +165,41 @@ export interface AIDossierEvidence {
   href?: string
 }
 
+export type AIDossierTriage = "none" | "review" | "urgent"
+export type AIDossierSeverity = "low" | "medium" | "high"
+
+export interface AIDossierFinding {
+  category: string
+  severity: AIDossierSeverity
+  title: string
+  details: string
+  reason: string
+  next_step: string
+  evidence: AIDossierEvidence[]
+}
+
+export interface AIDossierContext {
+  kind: string
+  text: string
+  source_id?: string | number
+  href?: string
+}
+
 export interface AIDossierResult {
   summary: string
-  facts: Array<Record<string, string>>
-  signals: Array<Record<string, string>>
+  schema_version: 2
+  triage: { level: AIDossierTriage; title: string; reason: string }
+  summary_source?: "rules" | "qwen"
+  findings: AIDossierFinding[]
+  context: AIDossierContext[]
   caveats: string[]
   confidence: "low" | "medium" | "high"
-  evidence: AIDossierEvidence[]
 }
 
 export interface AIDossierResponse {
   status: "none" | "queued" | "running" | "succeeded" | "failed"
   result: AIDossierResult | null
+  stale: boolean
   summary: string | null
   model: string | null
   requested_at: string | null
