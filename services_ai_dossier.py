@@ -724,7 +724,7 @@ def process_one_dossier() -> dict:
                 run.completion_tokens = usage.get("completion_tokens")
                 run.model = settings.ai_dossier_model
                 run.input_hash = request_hash
-                run.raw_response = None
+                run.raw_response = raw_response[:MAX_RAW_RESPONSE_CHARS] if isinstance(raw_response, str) else None
             db.commit()
             return {"status": "succeeded", "player_id": report.player_id}
         except Exception as exc:

@@ -312,6 +312,45 @@ class AIDossierContractTests(unittest.TestCase):
             db.close()
             engine.dispose()
 
+    def test_successful_generation_keeps_bounded_raw_response_for_superuser_debug(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__, AIPlayerDossierRun.__table__])
+        db = Session(engine)
+        try:
+            db.add(AIPlayerDossier(player_id=7, status="queued"))
+            db.commit()
+            raw_response = '{"summary":"Готово","facts":[],"signals":[],"caveats":[],"confidence":"high","evidence":[]}'
+            fake_response = SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "choices": [{"message": {"content": raw_response}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+                },
+            )
+            fake_settings = SimpleNamespace(
+                ai_dossier_url="https://qwen.test/v1/chat/completions",
+                ai_dossier_api_key="secret",
+                ai_dossier_model="qwen",
+                ai_dossier_tls_ca_file="",
+                ai_dossier_timeout_seconds=1,
+                ai_dossier_active_days=30,
+                ai_dossier_max_log_events=10,
+                ai_dossier_max_input_chars=30000,
+            )
+            with (
+                patch("database.SessionLocal", return_value=db),
+                patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7, "profile": {"player_id": 7}}),
+                patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch("httpx.Client.post", return_value=fake_response),
+            ):
+                result = services_ai_dossier.process_one_dossier()
+
+            self.assertEqual(result["status"], "succeeded")
+            self.assertEqual(db.query(AIPlayerDossierRun).one().raw_response, raw_response)
+        finally:
+            db.close()
+            engine.dispose()
+
     def test_generation_failure_keeps_previous_successful_result(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__, AIPlayerDossierRun.__table__])
