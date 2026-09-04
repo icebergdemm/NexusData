@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { toast } from "sonner"
 import {
   AlertTriangle,
   ArchiveRestore,
@@ -188,6 +189,8 @@ export function AttachmentGallery({ attachments, compact = false }: { attachment
 
 function MentionChip({ discordId, profile }: { discordId: string; profile?: TicketMentionProfile }) {
   const label = `@${profile?.display_name || profile?.username || discordId}`
+  const discordAppUrl = `discord://-/users/${encodeURIComponent(discordId)}`
+  const discordWebUrl = `https://discord.com/users/${encodeURIComponent(discordId)}`
   const chip = (
     <span
       className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 align-baseline font-medium leading-none text-primary transition-colors hover:border-primary/60 hover:bg-primary/15"
@@ -203,7 +206,21 @@ function MentionChip({ discordId, profile }: { discordId: string; profile?: Tick
     return <PlayerHoverLink playerId={profile.player_id} className="inline-flex max-w-full no-underline">{chip}</PlayerHoverLink>
   }
   return (
-    <a href={`https://discord.com/users/${discordId}`} target="_blank" rel="noreferrer" className="inline-flex max-w-full no-underline">
+    <a
+      href={discordAppUrl}
+      className="inline-flex max-w-full no-underline"
+      title={`Открыть профиль в приложении Discord · ${discordId}`}
+      onClick={() => {
+        toast.info("Открываем профиль в Discord", {
+          description: "Если приложение не открылось, используйте веб-версию.",
+          action: {
+            label: "Веб-версия",
+            onClick: () => window.open(discordWebUrl, "_blank", "noopener,noreferrer"),
+          },
+          duration: 6000,
+        })
+      }}
+    >
       {chip}
     </a>
   )
