@@ -117,8 +117,8 @@ def parse_kobold_response(payload: dict) -> dict:
             candidates.insert(0, "\n".join(lines[1:-1]).strip())
 
     # Reasoning tags or a short explanatory sentence can precede the object.
-    # Keep this deliberately narrow: only a substring bounded by the first and
-    # last braces is considered, and the normalized schema remains authoritative.
+    # Keep this deliberately narrow: only JSON objects are considered, and the
+    # normalized schema remains authoritative.
     start = content.find("{")
     end = content.rfind("}")
     if start >= 0 and end > start:
@@ -134,6 +134,23 @@ def parse_kobold_response(payload: dict) -> dict:
         except json.JSONDecodeError:
             continue
         return normalize_dossier_result(decoded)
+
+    # A reasoning block can contain its own object before the actual answer.
+    # Try each possible object start and let the decoder determine its boundary
+    # instead of trusting the first/last brace pair.
+    decoder = json.JSONDecoder()
+    schema_error = None
+    for match in re.finditer(r"\{", content):
+        try:
+            decoded, _ = decoder.raw_decode(content, match.start())
+        except json.JSONDecodeError:
+            continue
+        try:
+            return normalize_dossier_result(decoded)
+        except ValueError as exc:
+            schema_error = exc
+    if schema_error:
+        raise schema_error
 
     raise ValueError(f"KoboldCpp returned non-JSON content (response chars: {len(content)})")
 

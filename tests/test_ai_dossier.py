@@ -49,6 +49,13 @@ class AIDossierContractTests(unittest.TestCase):
 
         self.assertEqual(result["confidence"], "high")
 
+    def test_kobold_response_skips_braces_inside_reasoning(self):
+        payload = {"choices": [{"message": {"content": f"<think>Пример структуры: {{\"not\": \"the answer\"}}</think>\n{self._valid_response_content()}"}}]}
+
+        result = parse_kobold_response(payload)
+
+        self.assertEqual(result["summary"], "OK")
+
     def test_kobold_response_parse_error_contains_only_safe_size_diagnostic(self):
         secret_like_text = "Player private detail that must never be persisted"
         payload = {"choices": [{"message": {"content": secret_like_text}}]}
