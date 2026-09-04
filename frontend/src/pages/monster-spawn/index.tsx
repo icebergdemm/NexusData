@@ -265,7 +265,7 @@ function LLMPanel({ server }: { server: string }) {
   const history = r?.history ?? []
 
   return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3">
-    <CardTitle className="flex items-center gap-2 text-sm"><Bot className="size-4 text-primary" /> LLM-ассистент (Qwen 3 4B, локальный)</CardTitle>
+    <CardTitle className="flex items-center gap-2 text-sm"><Bot className="size-4 text-primary" /> LLM-ассистент</CardTitle>
     <CardDescription className="text-xs">{deployment?.has_base_url ? `endpoint: ${deployment.base_url} · модель: ${deployment.model} · t=${deployment.temperature}` : "Не настроен — задайте MONSTER_LLM_BASE_URL в .env (см. docs/MONSTER_LLM_SETUP.md)"}</CardDescription>
   </CardHeader>
     <CardContent className="space-y-4 p-4">
@@ -278,7 +278,7 @@ function LLMPanel({ server }: { server: string }) {
         <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Команда оператора (необязательно)</span><Textarea rows={2} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Например: экипаж скучает, добавь давления впереди по курсу" /></Label>
         <div className="flex flex-wrap gap-2">
           <Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent>
-            <SelectItem value="analyze">analyze · только разбор</SelectItem>
+            <SelectItem value="analyze">analyze · разбор и рекомендации</SelectItem>
             <SelectItem value="apply">apply · применить настройки</SelectItem>
             <SelectItem value="spawn">spawn · настройки + спавн</SelectItem>
           </SelectContent></Select>
@@ -288,7 +288,8 @@ function LLMPanel({ server }: { server: string }) {
       {last && <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
         <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{last.at}</Badge><Badge variant="secondary">{last.mode}</Badge><span className="text-muted-foreground">уверенность {Math.round((last.confidence ?? 0) * 100)}% · {last.duration_ms}мс</span></div>
         <div className="text-foreground">{last.situation}</div>
-        {last.applied_changes?.length > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.applied_changes.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
+        {last.crew_summary && <div className="rounded-lg bg-background/60 p-3"><div className="mb-1 font-medium text-foreground">Эффективность экипажа</div><div className="text-muted-foreground">{last.crew_summary}</div></div>}
+        {last.recommendations?.length > 0 && <div><div className="font-medium">Рекомендации оператору:</div><ul className="mt-1 space-y-1">{last.recommendations.map((rec, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-medium text-foreground">{rec.title}</span>{rec.detail && <span className="text-muted-foreground"> — {rec.detail}</span>}</li>)}</ul></div>}        {last.applied_changes?.length > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.applied_changes.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
         {last.spawn_requests?.length > 0 && <div><div className="font-medium">Спавн:</div><ul className="mt-1 space-y-1">{last.spawn_requests.map((request, index) => <li key={index} className="font-mono text-[11px] text-info">{request.species} x{request.count} ({request.position_hint}) {request.reason ? `— ${request.reason}` : ""}</li>)}</ul></div>}
         {last.rejected?.length > 0 && <div><div className="font-medium text-warning">Отклонено валидатором:</div><ul className="mt-1 space-y-1">{last.rejected.map((reason, index) => <li key={index} className="font-mono text-[11px] text-warning">{reason}</li>)}</ul></div>}
       </div>}
@@ -421,7 +422,6 @@ export function MonsterSpawnPage() {
 
       <TabsContent value="llm" className="space-y-4 pt-2">
         <LLMPanel server={server} />
-        <Card className="py-0"><CardContent className="p-4 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-2 text-sm font-medium text-foreground"><Info className="size-4 text-info" /> Как защищаемся от галлюцинаций</div>Модель отвечает строго JSON-схемой; сайт проверяет каждый параметр против whitelist, жёстких границ и лимита шага, виды монстров — только из уже известных. Полная инструкция: <span className="font-mono">docs/MONSTER_LLM_SETUP.md</span>.</CardContent></Card>
       </TabsContent>
 
       <TabsContent value="control" className="space-y-4 pt-2">

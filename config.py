@@ -99,9 +99,11 @@ class Settings(BaseSettings):
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
 
-    # Local LLM (Qwen 3 4B) assistant for MonsterSpawnController. The site
-    # talks to any OpenAI-compatible endpoint (llama.cpp llama-server,
+    # LLM assistant for MonsterSpawnController. The site talks to a REMOTE
+    # OpenAI-compatible API endpoint (remote service, llama.cpp llama-server,
     # LM Studio, Ollama with OpenAI shim). Empty base_url disables it.
+    # For remote endpoints set MONSTER_LLM_BASE_URL to the https URL and
+    # MONSTER_LLM_API_KEY to the service key (sent as Bearer token).
     # Per-server runtime state (enabled/auto_apply/last run) lives in
     # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
     # admin UI; these fields are just the deployment defaults.

@@ -1105,7 +1105,7 @@ def task_check_db_health() -> dict:
 
 
 def task_llm_monster_auto_cycle() -> dict:
-    """Local-LLM auto-cycle for MonsterSpawnController: for every server with
+    """LLM-assistant auto-cycle for MonsterSpawnController: for every server with
     the assistant enabled and its per-server interval elapsed, runs one
     validated apply-cycle. The scheduler calls this every 5 min at BACKGROUND
     priority; the service itself decides per server whether a run is due and
@@ -1404,7 +1404,7 @@ def _start_scheduler():
         task_id="db_health_check",
     )
 
-    # Local-LLM auto-cycle for MonsterSpawnController: BACKGROUND priority,
+    # LLM-assistant auto-cycle for MonsterSpawnController: BACKGROUND priority,
     # every 5 min; the service self-gates per server on its configured
     # interval (0 = manual runs only), so this stays a cheap no-op until the
     # operator enables the assistant.

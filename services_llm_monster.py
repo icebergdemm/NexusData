@@ -1,12 +1,17 @@
-"""Local LLM (Qwen 3 4B) assistant for MonsterSpawnController.
+"""LLM assistant for MonsterSpawnController (remote API).
 
-The site-side assistant reads the controller's live state (config, memory,
-telemetry posted by the game plugin) and produces STRICT JSON decisions:
+The site-side assistant connects to a REMOTE OpenAI-compatible API endpoint
+(configured via MONSTER_LLM_BASE_URL + MONSTER_LLM_API_KEY, Bearer auth) and
+reads the controller's live state (config, memory, telemetry posted by the
+game plugin). It produces STRICT JSON decisions plus a human-readable
+analysis for the operator:
 
   1. Config corrections — small bounded adjustments of a whitelist of
      difficulty parameters.
   2. Manual spawns — wave plans the plugin picks up through the existing
      revision system (source "llm").
+  3. Analyzer text — crew efficiency summary + operator recommendations in
+     plain Russian text (always returned, even in analyze mode).
 
 Anti-hallucination design (do not weaken these guarantees):
   * The model never returns free-form config. It returns an array of
@@ -165,7 +170,7 @@ def save_llm_runtime(db, server: str, runtime: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# LLM client (OpenAI-compatible /chat/completions)
+# LLM client (remote OpenAI-compatible /chat/completions, Bearer auth)
 # ---------------------------------------------------------------------------
 
 class LLMError(Exception):
@@ -175,6 +180,8 @@ class LLMError(Exception):
 def _chat_completions(messages: List[Dict[str, str]], base_url: str, api_key: str,
                       model: str, timeout: float, temperature: float,
                       top_p: float) -> str:
+    """POST to a remote OpenAI-compatible API. Works with https remote
+    endpoints (API key via Bearer) and local shims (key may be empty)."""
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
         "model": model,
@@ -182,7 +189,7 @@ def _chat_completions(messages: List[Dict[str, str]], base_url: str, api_key: st
         "temperature": temperature,
         "top_p": top_p,
         "max_tokens": 2048,
-        # Qwen 3 thinking mode: disable for deterministic JSON output.
+        # Thinking mode: disable for deterministic JSON output.
         "chat_template_kwargs": {"enable_thinking": False},
     }
     body = json.dumps(payload).encode("utf-8")
@@ -194,7 +201,9 @@ def _chat_completions(messages: List[Dict[str, str]], base_url: str, api_key: st
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
-        raise LLMError(f"LLM endpoint недоступен ({base_url}): {exc}") from exc
+        raise LLMError(f"Удалённый LLM API недоступен ({base_url}): {exc}") from exc
+    except urllib.error.HTTPError as exc:
+        raise LLMError(f"Удалённый LLM API вернул HTTP {exc.code}: {exc.reason}") from exc
     except (ValueError, KeyError) as exc:
         raise LLMError(f"Некорректный ответ LLM endpoint: {exc}") from exc
 
@@ -212,7 +221,7 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _extract_json(content: str) -> Dict[str, Any]:
-    """Strip Qwen thinking tags and pull out the outermost JSON object."""
+    """Strip thinking tags and pull out the outermost JSON object."""
     cleaned = _THINK_RE.sub("", content or "").strip()
     match = _JSON_RE.search(cleaned)
     if not match:
@@ -238,6 +247,11 @@ SYSTEM_PROMPT = """Ты — ассистент оператора игровог
 Твоя задача — вернуть СТРОГО ОДИН JSON-объект без какого-либо текста вне JSON, со схемой:
 {
   "situation": "краткое описание обстановки по-русски, 1-2 предложения",
+  "crew_summary": "текстовая сводка эффективности экипажа по-русски, 2-4 предложения: как экипаж справляется, потери, темп, проблемные волны",
+  "recommendations": [
+    {"title": "короткий заголовок совета по-русски",
+     "detail": "текстовое пояснение для оператора по-русски, 1-3 предложения"}
+  ],
   "config_changes": [
     {"key": "<имя параметра из списка разрешённых>", "new_value": <число или true/false>,
      "reason": "краткая причина по-русски"}
@@ -256,9 +270,12 @@ SYSTEM_PROMPT = """Ты — ассистент оператора игровог
 3. spawn_requests используй только если обстановка явно требует вмешательства: экипаж бездействует, \
 корабль продвигается слишком быстро или оператор дал прямую команду. Виды бери только из \
 known_species. count не больше 6, hp_multiplier в пределах 0.5-2.0.
-4. Никогда не выдумывай данные, которых нет в JSON. Если состояние неполное — верни пустые списки \
+4. crew_summary и recommendations возвращай ВСЕГДА, даже в режиме анализа без изменений: это \
+текстовый разбор для оператора. Не выдумывай цифры — опирайся только на memory_brief, telemetry \
+и dashboard из JSON. Если данных мало — так и напиши, дай не более 3 осторожных рекомендаций.
+5. Никогда не выдумывай данные, которых нет в JSON. Если состояние неполное — верни пустые списки \
 и опиши, чего не хватает, в "situation".
-5. Ничего кроме JSON. Никакого markdown, никаких комментариев."""
+6. Ничего кроме JSON. Никакого markdown, никаких комментариев."""
 
 
 def _build_user_prompt(state: dict, instruction: Optional[str], known_species: List[str]) -> str:
@@ -298,10 +315,30 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
                     if isinstance(entry.get("recent_performance"), list) and entry["recent_performance"]
                     else None
                 ),
+                "avg_crew_deaths": (
+                    round(float(entry.get("total_crew_deaths", 0)) / float(entry.get("times_spawned") or 1), 2)
+                    if isinstance(entry.get("times_spawned"), (int, float)) and entry.get("times_spawned")
+                    else None
+                ),
+                "avg_sub_health_loss": (
+                    round(float(entry.get("total_sub_health_loss", 0)) / float(entry.get("times_spawned") or 1), 2)
+                    if isinstance(entry.get("times_spawned"), (int, float)) and entry.get("times_spawned")
+                    else None
+                ),
             }
             for name, entry in (memory.get("waves") or {}).items()
             if isinstance(entry, dict) and (entry.get("times_spawned") or 0) > 0
         },
+        "ships": [
+            {
+                "name": entry.get("name") or name,
+                "rounds_played": entry.get("rounds_played"),
+                "times_spawned": entry.get("times_spawned"),
+                "performance_ema": entry.get("performance_ema"),
+            }
+            for name, entry in (memory.get("submarines") or {}).items()
+            if isinstance(entry, dict)
+        ][:12],
     }
 
     payload = {
@@ -441,6 +478,26 @@ def _validate_spawn_requests(state: dict, requests: Any) -> Tuple[List[dict], Li
     return applied, rejected
 
 
+def _validate_recommendations(decision: Dict[str, Any]) -> Tuple[str, List[dict]]:
+    """Analyzer text: crew efficiency summary + operator recommendations.
+
+    Purely informational — never applied to config/plans, only shown in UI.
+    Truncated defensively so a verbose model cannot overflow AppSetting."""
+    crew_summary = str(decision.get("crew_summary") or "").strip()[:1000]
+    raw = decision.get("recommendations")
+    recommendations: List[dict] = []
+    if isinstance(raw, list):
+        for entry in raw[:5]:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "").strip()[:120]
+            detail = str(entry.get("detail") or "").strip()[:500]
+            if not title and not detail:
+                continue
+            recommendations.append({"title": title or "Рекомендация", "detail": detail})
+    return crew_summary, recommendations
+
+
 def _spawn_requests_to_plans(state: dict, requests: List[dict], run_at: datetime) -> List[dict]:
     """Build plugin SpawnPlan entries. X/Y are filled by the plugin-relative
     hint system: the plugin spawns 'planned' plans at the exact coordinates,
@@ -524,12 +581,13 @@ def _record_history(runtime: dict, entry: dict) -> None:
 
 def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
                   instruction: Optional[str] = None) -> Dict[str, Any]:
-    """mode: analyze (read-only), apply (config changes applied by bumping
-    desired_revision), spawn (also add spawn plans)."""
+    """mode: analyze (read-only analyzer: situation + crew summary +
+    recommendations, no config writes), apply (config changes applied by
+    bumping desired_revision), spawn (also add spawn plans)."""
     settings = get_settings()
-    base_url = settings.monster_llm_base_url
+    base_url = (settings.monster_llm_base_url or "").strip()
     if not base_url:
-        raise LLMError("LLM не настроен: monster_llm_base_url пуст")
+        raise LLMError("LLM не настроен: задайте MONSTER_LLM_BASE_URL (remote API endpoint)")
 
     runtime = get_llm_runtime(db, server)
     known_species = _collect_known_species(state)
@@ -580,8 +638,11 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
 
     config_applied, config_rejected = _validate_config_changes(state, decision.get("config_changes"))
     spawn_applied, spawn_rejected = _validate_spawn_requests(state, decision.get("spawn_requests"))
+    crew_summary, recommendations = _validate_recommendations(decision)
 
-    # In analyze mode nothing is written back.
+    # In analyze mode nothing is written back to config/plans, but the
+    # analyzer text (situation + crew summary + recommendations) is still
+    # returned and persisted so the operator can read it in the UI.
     applied_changes: List[dict] = config_applied if mode in ("apply", "spawn") else []
     spawn_plans: List[dict] = []
     if mode == "spawn" and spawn_applied:
@@ -592,6 +653,8 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         "mode": mode,
         "duration_ms": duration_ms,
         "situation": situation,
+        "crew_summary": crew_summary,
+        "recommendations": recommendations,
         "confidence": round(confidence, 2),
         "applied_changes": applied_changes,
         "rejected": config_rejected + spawn_rejected,
@@ -601,18 +664,17 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         "raw_decision_keys": list(decision.keys()),
     }
 
-    if mode in ("apply", "spawn"):
-        runtime["last_result"] = result
-        _record_history(runtime, {
-            "at": result["at"],
-            "mode": mode,
-            "summary": situation,
-            "applied": len(applied_changes),
-            "rejected": len(result["rejected"]),
-            "confidence": result["confidence"],
-        })
-        runtime["last_run_at"] = result["at"]
-        save_llm_runtime(db, server, runtime)
+    runtime["last_result"] = result
+    _record_history(runtime, {
+        "at": result["at"],
+        "mode": mode,
+        "summary": situation,
+        "applied": len(applied_changes),
+        "rejected": len(result["rejected"]),
+        "confidence": result["confidence"],
+    })
+    runtime["last_run_at"] = result["at"]
+    save_llm_runtime(db, server, runtime)
 
     return result
 

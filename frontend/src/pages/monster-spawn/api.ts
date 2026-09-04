@@ -222,6 +222,8 @@ export interface LLMRuntime {
     mode: string
     duration_ms: number
     situation: string
+    crew_summary: string
+    recommendations: { title: string; detail: string }[]
     confidence: number
     applied_changes: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
     rejected: string[]

@@ -388,7 +388,7 @@ def admin_analysis(
 
 
 # ---------------------------------------------------------------------------
-# Local LLM assistant (Qwen 3 4B via OpenAI-compatible endpoint)
+# LLM assistant (remote OpenAI-compatible API endpoint)
 # ---------------------------------------------------------------------------
 
 class LLMRuntimeUpdate(BaseModel):
@@ -454,7 +454,8 @@ def admin_llm_run(
     admin: AdminUser = Depends(_current_admin),
     db: Session = Depends(get_game_db),
 ):
-    """Run one LLM cycle. analyze = read-only; apply = validated config
+    """Run one LLM cycle. analyze = analyzer text only (situation + crew
+    summary + recommendations, no config writes); apply = validated config
     changes bump desired_revision; spawn = also queues spawn plans."""
     _require(admin, "edit")
     from services_llm_monster import run_llm_cycle, LLMError
