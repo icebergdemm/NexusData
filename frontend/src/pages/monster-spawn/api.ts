@@ -195,6 +195,8 @@ export interface RecentWaveTelemetry {
   wave_name: string
   spawn_reason: string
   outcome: "repelled" | "bypassed" | "afk" | "timeout_engaged" | "unresolved" | string
+  /** 7: destroyed — уничтожена; tracking_stopped — отслеживание прекращено (монстры живы) */
+  fate?: "destroyed" | "tracking_stopped" | string | null
   repel_seconds: number
   expected_repel_seconds: number
   performance: number
