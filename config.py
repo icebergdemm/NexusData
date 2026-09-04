@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     ai_dispatcher_url: str = Field("")
     ai_dispatcher_api_key: str = Field("")
     ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
+    # Dedicated player-dossier bridge. It deliberately has its own endpoint
+    # and credential: the radio dispatcher and moderator dossier have
+    # different data sensitivity and failure domains.
+    ai_dossier_url: str = Field("")
+    ai_dossier_api_key: str = Field("")
+    ai_dossier_tls_ca_file: str = Field("")
+    ai_dossier_timeout_seconds: float = Field(180.0, gt=0, le=600)
+    ai_dossier_model: str = Field("qwen2.5-3b-instruct", min_length=1, max_length=255)
+    ai_dossier_active_days: int = Field(30, ge=1, le=365)
+    ai_dossier_daily_limit: int = Field(10, ge=1, le=10)
+    ai_dossier_schedule_hour: int = Field(4, ge=0, le=23)
+    ai_dossier_max_log_events: int = Field(120, ge=1, le=500)
+    ai_dossier_max_input_chars: int = Field(30000, ge=4000, le=100000)
     # Legacy WorldStateStreamer builds may omit server_name and even race
     # snapshot ahead of world/init. Used only when neither the payload nor the
     # existing round row identifies the source server.

@@ -159,6 +159,33 @@ export interface PlayerDetailResponse {
   punishment_type_labels: Record<string, string>
 }
 
+export interface AIDossierEvidence {
+  kind: string
+  id: string
+}
+
+export interface AIDossierResult {
+  summary: string
+  facts: Array<Record<string, string>>
+  signals: Array<Record<string, string>>
+  caveats: string[]
+  confidence: "low" | "medium" | "high"
+  evidence: AIDossierEvidence[]
+}
+
+export interface AIDossierResponse {
+  status: "none" | "queued" | "running" | "succeeded" | "failed"
+  result: AIDossierResult | null
+  summary: string | null
+  model: string | null
+  requested_at: string | null
+  started_at: string | null
+  generated_at: string | null
+  finished_at: string | null
+  error: string | null
+  requested_by_admin_id: number | null
+}
+
 export interface PlayerServerPrivilege {
   id: number
   server_group_id: number | null

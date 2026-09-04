@@ -1068,6 +1068,26 @@ class AppSetting(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class AIPlayerDossier(Base):
+    """Latest AI dossier and its durable generation state for one player."""
+    __tablename__ = "ai_player_dossiers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=False, unique=True, index=True)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    result_json = Column(JSON, nullable=True)
+    summary_text = Column(Text, nullable=True)
+    input_hash = Column(String(64), nullable=True, index=True)
+    model = Column(String(255), nullable=True)
+    requested_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    generated_at = Column(DateTime, nullable=True, index=True)
+    finished_at = Column(DateTime, nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    error_message = Column(String(2000), nullable=True)
+    requested_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+
+
 class OnlineSnapshot(Base):
     """Snapshot of online player count, recorded each time game server reports players."""
     __tablename__ = "online_snapshots"

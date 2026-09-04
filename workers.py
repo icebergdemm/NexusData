@@ -1139,6 +1139,28 @@ def task_process_ai_dispatcher_reminders() -> dict:
     return _queue_due_ai_dispatcher_reminders()
 
 
+def task_process_ai_dossier() -> dict:
+    """Process at most one durable dossier request; KoboldCpp is serial by design."""
+    from services_ai_dossier import process_one_dossier
+    return process_one_dossier()
+
+
+def task_enqueue_daily_ai_dossiers() -> dict:
+    """Queue active profiles once during the configured quiet hour."""
+    from zoneinfo import ZoneInfo
+    from config import get_settings
+    from services_ai_dossier import get_dossier_config, run_daily_dossier_batch
+    db = SessionLocal()
+    try:
+        cfg = get_dossier_config(db)
+        local_now = datetime.now(ZoneInfo(get_settings().logs_default_timezone))
+        if cfg["test_mode"] or not cfg["enabled"] or not cfg["daily_enabled"] or local_now.hour != get_settings().ai_dossier_schedule_hour:
+            return {"status": "outside_schedule"}
+        return run_daily_dossier_batch()
+    finally:
+        db.close()
+
+
 def task_create_encrypted_backup() -> dict:
     """Create and upload one encrypted off-site backup.
 
@@ -1195,6 +1217,8 @@ def _start_simple_workers():
         (task_sample_perf_resources, 30),
         (task_memory_maintenance, 5 * 60),
         (task_process_ai_dispatcher_reminders, 5),
+        (task_process_ai_dossier, 5),
+        (task_enqueue_daily_ai_dossiers, 15 * 60),
         (task_cleanup_broken_sessions, 60 * 60),
     ]
     from config import get_settings
@@ -1417,6 +1441,23 @@ def _start_scheduler():
         interval_secs=5,
         priority=Priority.NORMAL,
         task_id="ai_dispatcher_reminders",
+    )
+
+    # One task id plus a single durable claim keeps KoboldCpp from receiving
+    # concurrent prompts even when a previous generation is slow.
+    scheduler.register_periodic(
+        task_process_ai_dossier,
+        interval_secs=5,
+        priority=Priority.NORMAL,
+        task_id="ai_dossier_worker",
+        timeout=None,
+    )
+    scheduler.register_periodic(
+        task_enqueue_daily_ai_dossiers,
+        interval_secs=15 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="ai_dossier_daily_batch",
+        timeout=120,
     )
 
     # Broken sessions (>8h) cleanup + play_time recalc: BACKGROUND priority
