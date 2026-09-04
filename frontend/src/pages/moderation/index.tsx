@@ -22,10 +22,10 @@ import { PlayerSummaryDialog } from "@/components/layout/PlayerSummaryDialog"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
-import { PlayerFiltersSheet, type PlayerFilterSortOption } from "@/components/layout/PlayerFiltersSheet"
+import { PlayerFiltersToolbar, type PlayerFilterSortOption } from "@/components/layout/PlayerFiltersSheet"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
-import { filterAndSortPlayers, type DiscordLinkFilter, type PlayerSort } from "@/lib/player-filters"
+import { filterAndSortPlayers, resetPlayerFilters, type DiscordLinkFilter, type PlayerSort } from "@/lib/player-filters"
 import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
@@ -33,22 +33,18 @@ import { ConsoleTab } from "./ConsoleTab"
 function copyToClipboard(text: string, label: string) {
   navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
 }
-
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
 }
-
 function fmtPlayTime(hours: number | null | undefined): string {
   if (hours == null) return "-"
   const h = Math.floor(hours)
   const m = Math.round((hours - h) * 60)
   return `${h}ч ${m}м`
 }
-
 function onlineDisplayName(p: OnlinePlayer): string {
   return p.player_name || p.player_steamid
 }
-
 function offlineDisplayName(p: OfflinePlayer): string {
   return p.player_last_time_name
 }
@@ -134,7 +130,10 @@ export function ModerationPage() {
   const [actionReason, setActionReason] = useState("")
   const [actionServer, setActionServer] = useState("")
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
+  const [activeTab, setActiveTab] = useState("status")
   const [discordFilter, setDiscordFilter] = useState<DiscordLinkFilter>("all")
+  const [labelId, setLabelId] = useState("all")
+  const [rankId, setRankId] = useState("all")
   const [onlineSort, setOnlineSort] = useState<PlayerSort>(DEFAULT_ONLINE_SORT)
   const [offlineSort, setOfflineSort] = useState<PlayerSort>(DEFAULT_OFFLINE_SORT)
   // Быстрая выдача предупреждения прямо из списка онлайна: отдельно от
@@ -201,14 +200,23 @@ export function ModerationPage() {
   }
 
   const unreviewedCount = data.ac_events.filter((e) => !e.reviewed).length
-  const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, discordFilter, onlineSort)
-  const filteredOfflineRows = filterAndSortPlayers(offlineRows, discordFilter, offlineSort)
+  const playerFilters = { discordFilter, labelId, rankId }
+  const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, playerFilters, onlineSort)
+  const filteredOfflineRows = filterAndSortPlayers(offlineRows, playerFilters, offlineSort)
+  const labelOptions = [
+    { value: "all", label: "Все метки" },
+    ...data.label_categories.map((category) => ({ value: String(category.id), label: category.name })),
+  ]
+  const rankOptions = [
+    { value: "all", label: "Все звания" },
+    ...Object.entries(data.ranks).map(([id, name]) => ({ value: id, label: name })),
+  ]
 
   return (
     <div>
       <PageHeader title="Модерирование" description="Онлайн-статус серверов, поиск игроков и события античита" icon={ShieldAlert} />
 
-      <Tabs defaultValue="status">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="status" className="gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-success" /> Онлайн ({filteredOnlinePlayers.length})
@@ -224,6 +232,43 @@ export function ModerationPage() {
             <Terminal className="size-3.5" /> Консоль
           </TabsTrigger>
         </TabsList>
+
+        {activeTab === "status" && (
+          <PlayerFiltersToolbar
+            tabLabel="Онлайн"
+            discordFilter={discordFilter}
+            labelId={labelId}
+            labelOptions={labelOptions}
+            rankId={rankId}
+            rankOptions={rankOptions}
+            sort={onlineSort}
+            defaultSort={DEFAULT_ONLINE_SORT}
+            sortOptions={ONLINE_SORT_OPTIONS}
+            onDiscordFilterChange={setDiscordFilter}
+            onLabelIdChange={setLabelId}
+            onRankIdChange={setRankId}
+            onSortChange={setOnlineSort}
+            onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setOnlineSort(DEFAULT_ONLINE_SORT) }}
+          />
+        )}
+        {activeTab === "banhammer" && (
+          <PlayerFiltersToolbar
+            tabLabel="Вышедшие игроки"
+            discordFilter={discordFilter}
+            labelId={labelId}
+            labelOptions={labelOptions}
+            rankId={rankId}
+            rankOptions={rankOptions}
+            sort={offlineSort}
+            defaultSort={DEFAULT_OFFLINE_SORT}
+            sortOptions={OFFLINE_SORT_OPTIONS}
+            onDiscordFilterChange={setDiscordFilter}
+            onLabelIdChange={setLabelId}
+            onRankIdChange={setRankId}
+            onSortChange={setOfflineSort}
+            onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setOfflineSort(DEFAULT_OFFLINE_SORT) }}
+          />
+        )}
 
         <TabsContent value="status" className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
@@ -253,17 +298,6 @@ export function ModerationPage() {
               </Card>
             ))}
           </div>
-
-          <PlayerFilterToolbar
-            tabLabel="Онлайн"
-            discordFilter={discordFilter}
-            sort={onlineSort}
-            defaultSort={DEFAULT_ONLINE_SORT}
-            sortOptions={ONLINE_SORT_OPTIONS}
-            onDiscordFilterChange={setDiscordFilter}
-            onSortChange={setOnlineSort}
-            onReset={() => { setDiscordFilter("all"); setOnlineSort(DEFAULT_ONLINE_SORT) }}
-          />
 
           <Card className="overflow-hidden py-0">
             <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Игроки онлайн</CardTitle></CardHeader>
@@ -353,16 +387,6 @@ export function ModerationPage() {
               className="max-w-xs"
             />
             <Button variant="secondary" onClick={submitSearch}>Найти</Button>
-            <PlayerFilterToolbar
-              tabLabel="Вышедшие игроки"
-              discordFilter={discordFilter}
-              sort={offlineSort}
-              defaultSort={DEFAULT_OFFLINE_SORT}
-              sortOptions={OFFLINE_SORT_OPTIONS}
-              onDiscordFilterChange={setDiscordFilter}
-              onSortChange={setOfflineSort}
-              onReset={() => { setDiscordFilter("all"); setOfflineSort(DEFAULT_OFFLINE_SORT) }}
-            />
           </div>
           <Card className="overflow-hidden py-0">
             <CardContent className="p-0">
@@ -552,78 +576,6 @@ function InfoRow({ icon: Icon, label, value }: { icon: typeof MapPin; label: str
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className="font-medium">{value}</div>
       </div>
-    </div>
-  )
-}
-
-function sortDirectionLabel(key: PlayerSort["key"], direction: PlayerSort["direction"]): string {
-  if (key === "name" || key === "server") return direction === "asc" ? "А — Я" : "Я — А"
-  if (key === "play_time") return direction === "asc" ? "Меньше сначала" : "Больше сначала"
-  return direction === "asc" ? "Сначала старые" : "Сначала новые"
-}
-
-function PlayerFilterToolbar({
-  tabLabel,
-  discordFilter,
-  sort,
-  defaultSort,
-  sortOptions,
-  onDiscordFilterChange,
-  onSortChange,
-  onReset,
-}: {
-  tabLabel: string
-  discordFilter: DiscordLinkFilter
-  sort: PlayerSort
-  defaultSort: PlayerSort
-  sortOptions: readonly PlayerFilterSortOption[]
-  onDiscordFilterChange: (value: DiscordLinkFilter) => void
-  onSortChange: (value: PlayerSort) => void
-  onReset: () => void
-}) {
-  const sortOption = sortOptions.find((option) => option.key === sort.key) ?? sortOptions[0]
-  const sortChanged = sort.key !== defaultSort.key || sort.direction !== defaultSort.direction
-  const activeCount = (discordFilter !== "all" ? 1 : 0) + (sortChanged ? 1 : 0)
-  const discordLabel = discordFilter === "linked" ? "Есть привязка" : "Нет привязки"
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <PlayerFiltersSheet
-        tabLabel={tabLabel}
-        discordFilter={discordFilter}
-        sort={sort}
-        sortOptions={sortOptions}
-        activeCount={activeCount}
-        onDiscordFilterChange={onDiscordFilterChange}
-        onSortChange={onSortChange}
-        onReset={onReset}
-      />
-      {discordFilter !== "all" && (
-        <Badge variant="secondary" className="gap-1 pl-2">
-          Discord: {discordLabel}
-          <button
-            type="button"
-            className="ml-0.5 rounded-sm px-0.5 text-muted-foreground hover:text-foreground"
-            onClick={() => onDiscordFilterChange("all")}
-            aria-label="Убрать фильтр Discord"
-          >
-            ×
-          </button>
-        </Badge>
-      )}
-      {sortChanged && sortOption && (
-        <Badge variant="secondary" className="gap-1 pl-2">
-          Сортировка: {sortOption.label} · {sortDirectionLabel(sort.key, sort.direction)}
-          <button
-            type="button"
-            className="ml-0.5 rounded-sm px-0.5 text-muted-foreground hover:text-foreground"
-            onClick={() => onSortChange(defaultSort)}
-            aria-label="Сбросить сортировку"
-          >
-            ×
-          </button>
-        </Badge>
-      )}
     </div>
   )
 }

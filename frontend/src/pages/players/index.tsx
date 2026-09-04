@@ -11,19 +11,17 @@ import { Badge } from "@/components/ui/badge"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table"
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
-import { PlatformIcon } from "@/components/layout/PlatformIcon"
+import { PlayerFiltersToolbar, type PlayerFilterSortOption } from "@/components/layout/PlayerFiltersSheet"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { formatBrowserDate } from "@/lib/format-date"
 import type { PlayersListResponse } from "./types"
+import { resetPlayerFilters, type DiscordLinkFilter, type PlayerSort } from "@/lib/player-filters"
 
 /** Superuser-only popover — lets them tweak the background color shown
  * behind each rank badge in the table below. Persisted server-side
@@ -101,6 +99,20 @@ function playerDisplayName(p: { player_last_time_name: string; forced_display_na
   return p.forced_display_name || p.player_last_time_name
 }
 
+const PLAYER_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
+  { key: "none", label: "По умолчанию" },
+  { key: "play_time", label: "Наиграно" },
+  { key: "last_login", label: "Последний вход" },
+]
+
+const DEFAULT_PLAYER_SORT: PlayerSort = { key: "none", direction: "desc" }
+
+function playerSortToApi(sort: PlayerSort): string | undefined {
+  if (sort.key === "play_time") return `playtime_${sort.direction}`
+  if (sort.key === "last_login") return `last_login_${sort.direction}`
+  return undefined
+}
+
 export function PlayersListPage() {
   const navigate = useNavigate()
   const { data: admin } = useCurrentAdmin()
@@ -109,7 +121,8 @@ export function PlayersListPage() {
   const [search, setSearch] = useState<string | undefined>(undefined)
   const [labelId, setLabelId] = useState<string>("all")
   const [rankId, setRankId] = useState<string>("all")
-  const [sort, setSort] = useState<string>("none")
+  const [discordFilter, setDiscordFilter] = useState<DiscordLinkFilter>("all")
+  const [sort, setSort] = useState<PlayerSort>(DEFAULT_PLAYER_SORT)
   const [debouncedInput, setDebouncedInput] = useState("")
   const [suggestOpen, setSuggestOpen] = useState(false)
   const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -121,13 +134,15 @@ export function PlayersListPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["players", search, labelId, rankId, sort],
+    queryKey: ["players", search, labelId, rankId, discordFilter, playerSortToApi(sort)],
     queryFn: ({ pageParam = 1 }) => {
       const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
       if (search) params.set("search", search)
       if (labelId !== "all") params.set("label_id", labelId)
       if (rankId !== "all") params.set("rank_id", rankId)
-      if (sort !== "none") params.set("sort", sort)
+      if (discordFilter !== "all") params.set("discord_link", discordFilter)
+      const apiSort = playerSortToApi(sort)
+      if (apiSort) params.set("sort", apiSort)
       return api.get<PlayersListResponse>(`/api/v1/admin/players?${params.toString()}`)
     },
     initialPageParam: 1,
@@ -206,40 +221,28 @@ export function PlayersListPage() {
             </div>
           )}
         </div>
-        <Select value={labelId} onValueChange={(v) => setLabelId(v)}>
-          <SelectTrigger className="w-56">
-            <SelectValue placeholder="Все метки" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Все метки</SelectItem>
-            {data?.label_categories.map((c) => (
-              <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><PlatformIcon value={c.icon} />{c.name}</span></SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={rankId} onValueChange={(v) => setRankId(v)}>
-          <SelectTrigger className="w-44">
-            <SelectValue placeholder="Все звания" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Все звания</SelectItem>
-            {Object.entries(data?.ranks ?? {}).map(([id, name]) => (
-              <SelectItem key={id} value={id}>{name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={sort} onValueChange={(v) => setSort(v)}>
-          <SelectTrigger className="w-56">
-            <SelectValue placeholder="Сортировка" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">По умолчанию</SelectItem>
-            <SelectItem value="playtime_desc">Наиграно: больше - меньше</SelectItem>
-            <SelectItem value="playtime_asc">Наиграно: меньше - больше</SelectItem>
-            <SelectItem value="last_login_desc">Последний вход: сначала недавние</SelectItem>
-            <SelectItem value="last_login_asc">Последний вход: сначала давние</SelectItem>
-          </SelectContent>
-        </Select>
+        <PlayerFiltersToolbar
+          tabLabel="Игроки"
+          discordFilter={discordFilter}
+          labelId={labelId}
+          labelOptions={[
+            { value: "all", label: "Все метки" },
+            ...(data?.label_categories.map((category) => ({ value: String(category.id), label: category.name })) ?? []),
+          ]}
+          rankId={rankId}
+          rankOptions={[
+            { value: "all", label: "Все звания" },
+            ...Object.entries(data?.ranks ?? {}).map(([id, name]) => ({ value: id, label: name })),
+          ]}
+          sort={sort}
+          defaultSort={DEFAULT_PLAYER_SORT}
+          sortOptions={PLAYER_SORT_OPTIONS}
+          onDiscordFilterChange={setDiscordFilter}
+          onLabelIdChange={setLabelId}
+          onRankIdChange={setRankId}
+          onSortChange={setSort}
+          onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setSort(DEFAULT_PLAYER_SORT) }}
+        />
         <Button variant="secondary" onClick={submitSearch}>Найти</Button>
         <div className="ml-auto flex items-center gap-2">
           {admin?.is_superuser && (

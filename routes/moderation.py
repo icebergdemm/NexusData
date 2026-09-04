@@ -467,6 +467,17 @@ async def review_anticheat_event(
 # MODERATION JSON API (for the React SPA — mirrors moderation_page/enqueue_moderation_action)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _serialize_label_ids(player) -> list[int]:
+    raw_labels = player.get("label_ids", []) if isinstance(player, dict) else getattr(player, "labels", [])
+    result = []
+    for value in raw_labels or []:
+        try:
+            result.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def _serialize_online_player(info: dict) -> dict:
     return {
         "player_steamid": info.get("player_steamid"),
@@ -483,6 +494,7 @@ def _serialize_online_player(info: dict) -> dict:
         "total_play_time": info.get("total_play_time"),
         "is_new_player": info.get("is_new_player"),
         "has_discord_link": bool(info.get("has_discord_link")),
+        "label_ids": _serialize_label_ids(info),
     }
 
 
@@ -498,6 +510,7 @@ def _serialize_offline_player(p) -> dict:
         "last_session_logout": p.last_session_logout.isoformat() if getattr(p, "last_session_logout", None) else None,
         "play_time_hours": p.play_time_hours,
         "has_discord_link": bool(getattr(p, "discord_id", None)),
+        "label_ids": _serialize_label_ids(p),
         # Same "under 2 hours total playtime" threshold as the online-players
         # is_new_player flag (services.py) — kept in sync so a player looks
         # equally "new" whether they're currently online or not.
@@ -519,6 +532,7 @@ def _serialize_search_player(p) -> dict:
         "play_time_hours": p.play_time_hours,
         "is_new_player": p.play_time_hours < 2,
         "has_discord_link": bool(getattr(p, "discord_id", None)),
+        "label_ids": _serialize_label_ids(p),
     }
 
 
@@ -583,6 +597,9 @@ async def api_moderation_overview(
         raw_results = PlayerService(db).search_players(search, limit=50)
         search_results = [_serialize_search_player(p) for p in raw_results]
 
+    from services import LabelCategoryService
+    label_categories = LabelCategoryService(db).get_all()
+
     ac_events = svc.get_anticheat_events(limit=200, reviewed=None)
     ac_enriched = [
         {
@@ -604,6 +621,7 @@ async def api_moderation_overview(
         "search_query": search,
         "ac_events": ac_enriched,
         "ranks": settings.ranks_mapping,
+        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
         "can_edit": check_permission(current_admin, "moderation", "edit"),
         "can_delete": check_permission(current_admin, "moderation", "delete"),
         # Быстрая выдача предупреждения прямо из списка онлайна — право то же,

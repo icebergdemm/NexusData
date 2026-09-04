@@ -12,6 +12,14 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _apply_discord_link_filter(query, discord_link: Optional[str]):
+    if discord_link == "linked":
+        return query.filter(PlayerData.discord_id.isnot(None), PlayerData.discord_id != "")
+    if discord_link == "unlinked":
+        return query.filter((PlayerData.discord_id.is_(None)) | (PlayerData.discord_id == ""))
+    return query
+
+
 class BaseRepository:
     """Base repository with common CRUD operations"""
     
@@ -67,11 +75,13 @@ class PlayerRepository(BaseRepository):
     def get_all(
         self, page: int = 1, page_size: int = 50,
         rank_id: Optional[int] = None, sort: Optional[str] = None,
+        discord_link: Optional[str] = None,
     ) -> Tuple[List[PlayerData], int]:
         """Get all players with pagination, optional rank filter and sort order."""
         query = self.db.query(PlayerData)
         if rank_id is not None:
             query = query.filter(PlayerData.rank_id == rank_id)
+        query = _apply_discord_link_filter(query, discord_link)
 
         sort_spec = self.SORT_COLUMNS.get(sort or "")
         if sort_spec:
@@ -114,7 +124,7 @@ class PlayerRepository(BaseRepository):
         logger.info(f"Updated player: {player_id}")
         return player
     
-    def search(self, query: str, limit: int = 10) -> List[PlayerData]:
+    def search(self, query: str, limit: int = 10, discord_link: Optional[str] = None) -> List[PlayerData]:
         """
         Search players by:
         - Current nickname (player_last_time_name)
@@ -127,13 +137,14 @@ class PlayerRepository(BaseRepository):
         query_lower = f"%{query.lower()}%"
         
         # Search by current nickname, steamid, Discord ID
-        direct_search = self.db.query(PlayerData).filter(
+        direct_search_query = self.db.query(PlayerData).filter(
             or_(
                 PlayerData.player_last_time_name.ilike(query_lower),
                 PlayerData.player_steamid.ilike(query_lower),
                 PlayerData.discord_id.ilike(query_lower),
             )
-        ).limit(limit).all()
+        )
+        direct_search = _apply_discord_link_filter(direct_search_query, discord_link).limit(limit).all()
         
         if len(direct_search) >= limit:
             return direct_search[:limit]
@@ -147,6 +158,7 @@ class PlayerRepository(BaseRepository):
             nick_q = self.db.query(PlayerData).join(
                 PlayerName, PlayerData.player_id == PlayerName.player_id
             ).filter(PlayerName.nickname.ilike(query_lower))
+            nick_q = _apply_discord_link_filter(nick_q, discord_link)
             if player_ids:
                 nick_q = nick_q.filter(PlayerData.player_id.notin_(player_ids))
             nickname_results = nick_q.distinct().limit(remaining_limit).all()
@@ -166,6 +178,7 @@ class PlayerRepository(BaseRepository):
                     PlayerIP.subnet.ilike(query_lower),
                 )
             )
+            ip_q = _apply_discord_link_filter(ip_q, discord_link)
             if player_ids:
                 ip_q = ip_q.filter(PlayerData.player_id.notin_(player_ids))
             ip_results = ip_q.distinct().limit(remaining_limit).all()

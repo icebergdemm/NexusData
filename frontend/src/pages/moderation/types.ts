@@ -13,6 +13,7 @@ export interface OnlinePlayer {
   total_play_time: number | null
   is_new_player: boolean | null
   has_discord_link: boolean
+  label_ids: number[]
 }
 
 export interface OfflinePlayer {
@@ -27,6 +28,7 @@ export interface OfflinePlayer {
   play_time_hours: number
   is_new_player: boolean
   has_discord_link: boolean
+  label_ids: number[]
 }
 
 export interface RoundState {
@@ -62,6 +64,7 @@ export interface ModerationOverview {
   search_query: string | null
   ac_events: AnticheatEvent[]
   ranks: Record<string, string>
+  label_categories: { id: number; name: string; color: string; icon: string }[]
   can_edit: boolean
   can_delete: boolean
   can_issue_punishment: boolean

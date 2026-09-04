@@ -348,12 +348,13 @@ class PlayerService:
     def get_all_players(
         self, page: int = 1, page_size: int = 50,
         rank_id: Optional[int] = None, sort: Optional[str] = None,
+        discord_link: Optional[str] = None,
     ) -> Tuple[List[PlayerDataOut], int]:
         """Get all players with pagination, optional rank filter and sort order."""
         if page < 1:
             raise HTTPException(status_code=400, detail="Page must be >= 1")
 
-        players, total = self.player_repo.get_all(page, page_size, rank_id=rank_id, sort=sort)
+        players, total = self.player_repo.get_all(page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link)
         player_outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in players]
         return player_outs, total
     
@@ -504,9 +505,9 @@ class PlayerService:
                 return PlayerDataOut.from_orm_with_mappings(existing, settings.ranks_mapping, settings.kits_mapping)
             raise
     
-    def search_players(self, query: str, limit: int = 10) -> List[PlayerData]:
+    def search_players(self, query: str, limit: int = 10, discord_link: Optional[str] = None) -> List[PlayerData]:
         """Search players by name or SteamID"""
-        return self.player_repo.search(query, limit)
+        return self.player_repo.search(query, limit, discord_link=discord_link)
     
     def get_or_create_player_by_steamid(self, steamid: str, player_name: str = None) -> PlayerData:
         """Get existing player or create new one by steamid"""
@@ -1204,6 +1205,7 @@ class ServerModerationService:
                     "player_id": player_id,
                     "rank_id": pd.rank_id if pd else None,
                     "has_discord_link": bool(pd and pd.discord_id),
+                    "label_ids": [int(label_id) for label_id in (pd.labels or []) if str(label_id).isdigit()] if pd else [],
                     "last_seen": now,
                     "join_time": join_time,
                     "total_play_time": play_time,

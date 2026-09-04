@@ -121,6 +121,8 @@ class PlayerDataOut(PlayerDataBase):
     steam_avatar_url: Optional[str] = None
     forced_display_name: Optional[str] = Field(default=None, description="Admin-assigned display name — takes precedence over player_last_time_name wherever the player's name is shown")
     discord_id: Optional[str] = Field(default=None, description="Linked Discord user ID, if known")
+    has_discord_link: bool = False
+    label_ids: List[int] = Field(default_factory=list)
     profile_hash: Optional[str] = Field(default=None, description="Change-detection hash for the game-server cache sync API (see cache_versioning.py) — unchanged hash means the plugin's local cache is still fresh")
 
     @computed_field
@@ -134,6 +136,13 @@ class PlayerDataOut(PlayerDataBase):
     @classmethod
     def from_orm_with_mappings(cls, obj, ranks_mapping: dict, kits_mapping: dict):
         data = cls.from_orm(obj)
+        data.has_discord_link = bool(obj.discord_id)
+        data.label_ids = []
+        for label_id in obj.labels or []:
+            try:
+                data.label_ids.append(int(label_id))
+            except (TypeError, ValueError):
+                continue
         data.rank_name = ranks_mapping.get(str(obj.rank_id), "N/A") if obj.rank_id is not None else "N/A"
         data.kit_name = kits_mapping.get(str(obj.kit_level), "N/A") if obj.kit_level is not None else "N/A"
         # Include raw achievements data (dict structure from DB)

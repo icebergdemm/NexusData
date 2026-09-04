@@ -1577,6 +1577,7 @@ async def api_players_list(
     search: Optional[str] = Query(None, min_length=2),
     label_id: Optional[int] = Query(None),
     rank_id: Optional[int] = Query(None),
+    discord_link: Optional[str] = Query(None, pattern="^(all|linked|unlinked)$"),
     sort: Optional[str] = Query(None, pattern="^(playtime_desc|playtime_asc|last_login_desc|last_login_asc)$"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -1598,6 +1599,10 @@ async def api_players_list(
         )
         if rank_id is not None:
             q = q.filter(PlayerData.rank_id == rank_id)
+        if discord_link == "linked":
+            q = q.filter(PlayerData.discord_id.isnot(None), PlayerData.discord_id != "")
+        elif discord_link == "unlinked":
+            q = q.filter((PlayerData.discord_id.is_(None)) | (PlayerData.discord_id == ""))
         if search:
             q = q.filter(or_(
                 PlayerData.player_last_time_name.ilike(f"%{search}%"),
@@ -1615,7 +1620,7 @@ async def api_players_list(
     elif search:
         # Normalize to PlayerDataOut here (unlike the Jinja page, which leaves this
         # branch as raw ORM rows with no computed rank/kit/play_time_hours fields).
-        player_results = player_service.search_players(search, limit=1000)
+        player_results = player_service.search_players(search, limit=1000, discord_link=discord_link)
         if rank_id is not None:
             player_results = [p for p in player_results if p.rank_id == rank_id]
         total = len(player_results)
@@ -1624,7 +1629,7 @@ async def api_players_list(
         start = (page - 1) * page_size
         players = outs[start:start + page_size]
     else:
-        raw, total = player_service.get_all_players(page, page_size, rank_id=rank_id, sort=sort)
+        raw, total = player_service.get_all_players(page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link)
         players = raw  # already List[PlayerDataOut]
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
@@ -1638,6 +1643,7 @@ async def api_players_list(
         "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
         "selected_label_id": label_id,
         "selected_rank_id": rank_id,
+        "selected_discord_link": discord_link or "all",
         "selected_sort": sort,
         "ranks": settings.ranks_mapping,
         "rank_colors": _get_rank_colors(db),

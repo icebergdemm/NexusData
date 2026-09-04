@@ -45,11 +45,13 @@ class ModerationDiscordLinkSerializationTests(unittest.TestCase):
                 "total_play_time": 3600,
                 "is_new_player": True,
                 "has_discord_link": True,
+                "label_ids": [7, 8],
                 "discord_id": "do-not-leak-this-id",
             }
         )
 
         self.assertTrue(payload["has_discord_link"])
+        self.assertEqual(payload["label_ids"], [7, 8])
         self.assertNotIn("discord_id", payload)
 
     def test_offline_player_without_discord_id_is_unlinked(self):
@@ -64,11 +66,13 @@ class ModerationDiscordLinkSerializationTests(unittest.TestCase):
             last_session_logout=datetime(2026, 9, 4, 11, 59),
             play_time_hours=3.5,
             discord_id=None,
+            labels=[7],
         )
 
         payload = _serialize_offline_player(player)
 
         self.assertFalse(payload["has_discord_link"])
+        self.assertEqual(payload["label_ids"], [7])
         self.assertNotIn("discord_id", payload)
 
     def test_online_player_without_database_record_is_unlinked(self):

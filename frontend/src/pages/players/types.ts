@@ -4,6 +4,8 @@ export interface PlayerRow {
   forced_display_name?: string | null
   player_steamid: string
   discord_id?: string | null
+  has_discord_link: boolean
+  label_ids: number[]
   rank_id: number
   kit_level: number
   play_time: number
