@@ -433,6 +433,88 @@ def test_discord_archiver_marks_quota_failure_without_downloading(tmp_path, monk
     assert result[0]["storage_key"] is None
 
 
+def test_discord_archiver_does_not_trust_declared_cdn_size(tmp_path, monkeypatch):
+    from discord_bot import bot as bot_module
+
+    requested_sizes = []
+
+    class Reservation:
+        def grow_to(self, _target):
+            return None
+
+        def commit(self, _actual):
+            return None
+
+        def release(self):
+            return None
+
+    def reserve(_ticket_id, requested_bytes):
+        requested_sizes.append(requested_bytes)
+        return Reservation()
+
+    async def download(_session, _attachment, destination, _limit, _reservation):
+        destination.write_bytes(b"archived body is larger than Discord metadata")
+        return 48, "digest"
+
+    monkeypatch.setattr(bot_module, "reserve_ticket_media", reserve)
+    monkeypatch.setattr(bot_module, "_download_ticket_attachment", download)
+    monkeypatch.setattr(
+        bot_module,
+        "settings",
+        SimpleNamespace(
+            ticket_attachment_max_bytes=100,
+            ticket_attachment_message_max_bytes=100,
+            ticket_attachment_download_timeout_seconds=5,
+        ),
+    )
+    monkeypatch.setattr(
+        bot_module,
+        "storage_path",
+        lambda _ticket_id, namespace, key: tmp_path / namespace / key,
+    )
+
+    result = asyncio.run(bot_module._archive_ticket_attachments(
+        11,
+        "msg-100",
+        [SimpleNamespace(
+            id="56",
+            filename="proof.png",
+            content_type="image/png",
+            size=10,
+            url="https://example.invalid/proof.png",
+            proxy_url="",
+        )],
+        {"used": 0},
+    ))
+
+    assert requested_sizes == [0]
+    assert result[0]["archive_status"] == "stored"
+    assert result[0]["file_size"] == 48
+
+
+def test_reference_snapshot_supports_discord_without_reference_type_enum(monkeypatch):
+    from discord_bot import bot as bot_module
+
+    monkeypatch.delattr(bot_module.discord, "MessageReferenceType", raising=False)
+    reference = SimpleNamespace(
+        type=SimpleNamespace(name="default", value=0),
+        message_id=123,
+        channel_id=None,
+        guild_id=456,
+    )
+    message = SimpleNamespace(id=789, reference=reference, message_snapshots=[])
+
+    result = asyncio.run(bot_module._build_ticket_reference_snapshot(
+        11,
+        message,
+        {"used": 0},
+        None,
+    ))
+
+    assert result["kind"] == "reply"
+    assert result["source"]["message_id"] == "123"
+
+
 def test_web_upload_returns_413_when_ticket_quota_is_full(tmp_path, monkeypatch):
     import config
     from fastapi import HTTPException

@@ -3150,7 +3150,12 @@ async def _archive_ticket_attachments(
                 quota_reservation = await asyncio.to_thread(
                     reserve_ticket_media,
                     ticket_id,
-                    declared_size,
+                    # Discord's attachment ``size`` is metadata, not a
+                    # trustworthy Content-Length. In practice the CDN body
+                    # can be larger (notably for snapshots/forwarded media).
+                    # Reserve an unknown-length stream so the lease may grow
+                    # up to the configured per-file and remaining disk quota.
+                    0,
                 )
                 destination = storage_path(ticket_id, namespace, key)
                 destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3307,7 +3312,21 @@ async def _build_ticket_reference_snapshot(
         return None
 
     reference_type = getattr(reference, "type", None)
-    is_forward = bool(snapshots) or reference_type is discord.MessageReferenceType.forward
+    # MessageReferenceType was added after discord.py 2.3. Older deployed
+    # environments still need to archive ordinary replies without crashing
+    # the entire history backfill. Snapshot presence remains the authoritative
+    # forward signal; enum name/value checks cover newer and partially updated
+    # clients without importing a missing module attribute.
+    reference_type_enum = getattr(discord, "MessageReferenceType", None)
+    forward_type = getattr(reference_type_enum, "forward", None)
+    is_forward = bool(snapshots) or (
+        reference_type is not None
+        and (
+            (forward_type is not None and reference_type == forward_type)
+            or getattr(reference_type, "name", None) == "forward"
+            or getattr(reference_type, "value", None) == 1
+        )
+    )
     source = _reference_source(reference) if reference is not None else {
         "message_id": None, "channel_id": None, "guild_id": None, "jump_url": None,
     }
