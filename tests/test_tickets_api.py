@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 import config
 from database import Base, get_db
-from models import PlayerData, Ticket, TicketMessage
+from models import AdminUser, DiscordMember, PlayerData, Ticket, TicketMessage
 from routes import tickets_api
 from routes.tickets_api import (
     _archive_summary,
@@ -25,6 +25,8 @@ from routes.tickets_api import (
     _serialize_message,
     _serialize_player,
     _serialize_ticket,
+    _ticket_mention_profiles,
+    _ticket_participants,
     panel_router,
 )
 from services_ticket_media import storage_path
@@ -254,6 +256,121 @@ def test_ticket_serializer_redacts_secret_player_foreign_key():
     serialized = _serialize_ticket(ticket, can_view_player=False)
 
     assert serialized["player_id"] is None
+
+
+def test_ticket_mention_profiles_resolve_linked_player_and_nested_forward():
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=[AdminUser.__table__, PlayerData.__table__, DiscordMember.__table__],
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as db:
+        db.add_all([
+            DiscordMember(
+                discord_id="987047045498011658",
+                username="volkov",
+                display_name="Мичман Дмитрий Волков",
+                avatar="https://cdn.discordapp.com/avatar.png",
+            ),
+            DiscordMember(
+                discord_id="123456789012345678",
+                username="witness",
+                display_name="Свидетель",
+            ),
+            PlayerData(
+                player_id=17,
+                player_last_time_name="Дмитрий Волков",
+                player_steamid="76561198000000017",
+                discord_id="987047045498011658",
+            ),
+        ])
+        db.commit()
+
+        profiles = _ticket_mention_profiles(
+            db,
+            SimpleNamespace(is_superuser=True),
+            [
+                _message(
+                    content="<@987047045498011658> проверьте доказательства",
+                    reference_snapshot={
+                        "message_snapshots": [{
+                            "message": {"content": "Ответил <@!123456789012345678>"}
+                        }],
+                    },
+                )
+            ],
+        )
+
+    assert list(profiles) == ["987047045498011658", "123456789012345678"]
+    assert profiles["987047045498011658"] == {
+        "discord_id": "987047045498011658",
+        "username": "volkov",
+        "display_name": "Мичман Дмитрий Волков",
+        "avatar_url": "https://cdn.discordapp.com/avatar.png",
+        "player_id": 17,
+        "profile_url": "/players/17",
+        "is_staff": False,
+    }
+    assert profiles["123456789012345678"]["display_name"] == "Свидетель"
+    assert profiles["123456789012345678"]["player_id"] is None
+
+
+def test_ticket_participants_use_synced_discord_avatar_as_fallback():
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            AdminUser.__table__,
+            PlayerData.__table__,
+            DiscordMember.__table__,
+            Ticket.__table__,
+            TicketMessage.__table__,
+        ],
+    )
+    session_factory = sessionmaker(bind=engine)
+    ticket = Ticket(
+        id=7,
+        ticket_type="appeal",
+        title="Appeal",
+        status="open",
+        creator_discord_id="987047045498011658",
+    )
+    message = TicketMessage(
+        id=19,
+        ticket_id=7,
+        author_discord_id="987047045498011658",
+        content="Evidence",
+    )
+
+    with session_factory() as db:
+        db.add(
+            DiscordMember(
+                discord_id="987047045498011658",
+                username="volkov",
+                display_name="Мичман Дмитрий Волков",
+                avatar="https://cdn.discordapp.com/avatar.png",
+            )
+        )
+        db.commit()
+        participants = _ticket_participants(
+            db,
+            SimpleNamespace(is_superuser=True),
+            ticket,
+            [message],
+        )
+
+    assert participants[0]["display_name"] == "Мичман Дмитрий Волков"
+    assert participants[0]["avatar_url"] == "https://cdn.discordapp.com/avatar.png"
 
 
 def test_content_disposition_supports_inline_unicode_without_header_injection():

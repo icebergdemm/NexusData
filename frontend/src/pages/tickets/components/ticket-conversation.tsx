@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils"
 import type {
   TicketAttachment,
   TicketEmbed,
+  TicketMentionProfile,
   TicketMessageRow,
   TicketParticipant,
   TicketReferenceSnapshot,
@@ -185,13 +186,49 @@ export function AttachmentGallery({ attachments, compact = false }: { attachment
   )
 }
 
-function RichText({ content, className }: { content: string; className?: string }) {
-  const parts = content.split(/(https?:\/\/[^\s]+)/g)
+function MentionChip({ discordId, profile }: { discordId: string; profile?: TicketMentionProfile }) {
+  const label = `@${profile?.display_name || profile?.username || discordId}`
+  const chip = (
+    <span
+      className="mx-0.5 inline-flex max-w-full items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 align-baseline font-medium leading-none text-primary transition-colors hover:border-primary/60 hover:bg-primary/15"
+      title={profile?.player_id ? `Открыть профиль NexusData · Discord ${discordId}` : `Открыть профиль Discord · ${discordId}`}
+    >
+      <PersonAvatar name={profile?.display_name || discordId} url={profile?.avatar_url} size="sm" className="!size-4" />
+      <span className="truncate">{label}</span>
+      {profile?.is_staff ? <ShieldCheck className="size-3 shrink-0" aria-label="Команда" /> : null}
+    </span>
+  )
+
+  if (profile?.player_id) {
+    return <PlayerHoverLink playerId={profile.player_id} className="inline-flex max-w-full no-underline">{chip}</PlayerHoverLink>
+  }
+  return (
+    <a href={`https://discord.com/users/${discordId}`} target="_blank" rel="noreferrer" className="inline-flex max-w-full no-underline">
+      {chip}
+    </a>
+  )
+}
+
+function RichText({
+  content,
+  className,
+  mentionProfiles = {},
+}: {
+  content: string
+  className?: string
+  mentionProfiles?: Record<string, TicketMentionProfile>
+}) {
+  const parts = content.split(/(<@!?\d{5,25}>|https?:\/\/[^\s]+)/g)
   return (
     <div className={cn("whitespace-pre-wrap break-words", className)}>
-      {parts.map((part, index) => part.startsWith("http://") || part.startsWith("https://") ? (
-        <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">{part}</a>
-      ) : <span key={index}>{part}</span>)}
+      {parts.map((part, index) => {
+        const mention = /^<@!?(\d{5,25})>$/.exec(part)
+        if (mention) return <MentionChip key={`${mention[1]}-${index}`} discordId={mention[1]} profile={mentionProfiles[mention[1]]} />
+        if (part.startsWith("http://") || part.startsWith("https://")) {
+          return <a key={`${part}-${index}`} href={part} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">{part}</a>
+        }
+        return <span key={index}>{part}</span>
+      })}
     </div>
   )
 }
@@ -222,7 +259,7 @@ function snapshotSourceLabel(snapshot: TicketReferenceSnapshot): string | null {
   return snapshot.source.channel_name ? `#${snapshot.source.channel_name}` : snapshot.source.message_id ? `Сообщение ${snapshot.source.message_id}` : null
 }
 
-function ReferenceSnapshot({ snapshot }: { snapshot: TicketReferenceSnapshot }) {
+function ReferenceSnapshot({ snapshot, mentionProfiles }: { snapshot: TicketReferenceSnapshot; mentionProfiles: Record<string, TicketMentionProfile> }) {
   const isForward = snapshot.kind === "forward"
   const sourceLabel = snapshotSourceLabel(snapshot)
   const jumpUrl = typeof snapshot.source === "object" && snapshot.source ? snapshot.source.jump_url : null
@@ -240,7 +277,7 @@ function ReferenceSnapshot({ snapshot }: { snapshot: TicketReferenceSnapshot }) 
         <span className="text-xs font-semibold">{authorName}</span>
         {snapshot.created_at ? <time dateTime={snapshot.created_at} className="ml-auto text-[10px] text-muted-foreground">{formatBrowserDate(snapshot.created_at)}</time> : null}
       </div>
-      {snapshot.content ? <RichText content={snapshot.content} className="mt-2 text-xs text-muted-foreground" /> : null}
+      {snapshot.content ? <RichText content={snapshot.content} mentionProfiles={mentionProfiles} className="mt-2 text-xs text-muted-foreground" /> : null}
       <EmbedList embeds={snapshot.embeds ?? []} />
       <AttachmentGallery attachments={snapshot.attachments ?? []} compact />
     </blockquote>
@@ -289,7 +326,15 @@ function MessageAuthor({ message, participant }: { message: TicketMessageRow; pa
   )
 }
 
-export function TicketConversation({ messages, participants }: { messages: TicketMessageRow[]; participants: TicketParticipant[] }) {
+export function TicketConversation({
+  messages,
+  participants,
+  mentionProfiles = {},
+}: {
+  messages: TicketMessageRow[]
+  participants: TicketParticipant[]
+  mentionProfiles?: Record<string, TicketMentionProfile>
+}) {
   if (!messages.length) {
     return (
       <div className="flex min-h-72 flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
@@ -330,8 +375,8 @@ export function TicketConversation({ messages, participants }: { messages: Ticke
                   <span className="ml-auto text-[10px]"><MessageDeliveryState status={message.delivery_status} error={message.delivery_error} /></span>
                 </header>
                 <div className="mt-2 text-sm leading-relaxed">
-                  {message.reference_snapshot ? <ReferenceSnapshot snapshot={message.reference_snapshot} /> : null}
-                  {message.content ? <RichText content={message.content} /> : null}
+                  {message.reference_snapshot ? <ReferenceSnapshot snapshot={message.reference_snapshot} mentionProfiles={mentionProfiles} /> : null}
+                  {message.content ? <RichText content={message.content} mentionProfiles={mentionProfiles} /> : null}
                   <EmbedList embeds={message.embeds ?? []} />
                   <AttachmentGallery attachments={message.attachments ?? []} />
                   {!message.content && !message.reference_snapshot && !(message.attachments?.length) && !(message.embeds?.length) ? (

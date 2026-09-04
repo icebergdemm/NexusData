@@ -94,11 +94,21 @@ export function PersonAvatar({
   className?: string
 }) {
   const showPresence = status === "online" || status === "in_game"
+  const avatarKey = (name || "?").trim()
+  let hue = 214
+  for (let index = 0; index < avatarKey.length; index += 1) {
+    hue = (hue * 31 + avatarKey.charCodeAt(index)) % 360
+  }
   return (
-    <div className="relative shrink-0">
-      <Avatar size={size} className={className}>
-        <AvatarImage src={url ?? undefined} alt="" />
-        <AvatarFallback>{initials(name)}</AvatarFallback>
+    <span className="relative inline-flex shrink-0">
+      <Avatar size={size} className={cn("ring-1 ring-border", className)}>
+        {url ? <AvatarImage src={url} alt="" loading="lazy" className="object-cover" /> : null}
+        <AvatarFallback
+          className="font-semibold"
+          style={{ backgroundColor: `hsl(${hue} 65% 50% / 0.18)`, color: `hsl(${hue} 72% 68%)` }}
+        >
+          {initials(name)}
+        </AvatarFallback>
       </Avatar>
       {showPresence ? (
         <span
@@ -109,7 +119,7 @@ export function PersonAvatar({
           title={status === "in_game" ? "В игре" : "Онлайн"}
         />
       ) : null}
-    </div>
+    </span>
   )
 }
 

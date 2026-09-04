@@ -15,6 +15,7 @@ import hashlib
 import secrets
 import json
 import os
+import re
 
 import aiofiles
 
@@ -538,8 +539,10 @@ def _ticket_participants(
         return []
     players = db.query(PlayerData).filter(PlayerData.discord_id.in_(ordered_ids)).all()
     admins = db.query(AdminUser).filter(AdminUser.discord_id.in_(ordered_ids), AdminUser.is_deleted == 0).all()
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(ordered_ids)).all()
     player_by_id = {str(row.discord_id): row for row in players if row.discord_id}
     admin_by_id = {str(row.discord_id): row for row in admins if row.discord_id}
+    member_by_id = {str(row.discord_id): row for row in discord_members if row.discord_id}
     player_ids = [row.player_id for row in players]
     online_ids = set()
     if player_ids:
@@ -555,13 +558,20 @@ def _ticket_participants(
         data = identity[discord_id]
         linked_player = player_by_id.get(discord_id)
         linked_admin = admin_by_id.get(discord_id)
+        discord_member = member_by_id.get(discord_id)
         player_visible = not linked_player or _can_view_player(admin, linked_player)
         role = "creator" if discord_id == str(ticket.creator_discord_id) else ("staff" if linked_admin else "participant")
         result.append({
             "discord_id": discord_id,
-            "username": data["username"],
-            "display_name": data["display_name"] or data["username"] or discord_id,
-            "avatar_url": data["avatar_url"] or _admin_avatar(linked_admin) or (
+            "username": data["username"] or (discord_member.username if discord_member else None),
+            "display_name": data["display_name"] or (
+                discord_member.display_name if discord_member else None
+            ) or data["username"] or (
+                discord_member.username if discord_member else None
+            ) or discord_id,
+            "avatar_url": data["avatar_url"] or (
+                discord_member.avatar if discord_member else None
+            ) or _admin_avatar(linked_admin) or (
                 linked_player.steam_avatar_url if linked_player and player_visible else None
             ),
             "role": role,
@@ -572,6 +582,78 @@ def _ticket_participants(
             "player": _serialize_player(admin, linked_player, bool(linked_player and linked_player.player_id in online_ids)),
         })
     return result
+
+
+_DISCORD_USER_MENTION_RE = re.compile(r"<@!?(\d{5,25})>")
+
+
+def _ticket_mention_profiles(
+    db: Session,
+    admin: AdminUser,
+    messages: list[TicketMessage],
+) -> dict[str, dict]:
+    """Resolve Discord mention tokens for safe, useful rendering in the UI."""
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+
+    def collect(value) -> None:
+        if isinstance(value, str):
+            for discord_id in _DISCORD_USER_MENTION_RE.findall(value):
+                if discord_id not in seen:
+                    seen.add(discord_id)
+                    ordered_ids.append(discord_id)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                collect(nested)
+
+    for message in messages:
+        collect(message.content)
+        collect(getattr(message, "reference_snapshot", None))
+
+    if not ordered_ids:
+        return {}
+
+    members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(ordered_ids)).all()
+    players = db.query(PlayerData).filter(PlayerData.discord_id.in_(ordered_ids)).all()
+    admins = db.query(AdminUser).filter(
+        AdminUser.discord_id.in_(ordered_ids),
+        AdminUser.is_deleted == 0,
+    ).all()
+    member_by_id = {str(row.discord_id): row for row in members if row.discord_id}
+    player_by_id = {str(row.discord_id): row for row in players if row.discord_id}
+    admin_by_id = {str(row.discord_id): row for row in admins if row.discord_id}
+
+    profiles: dict[str, dict] = {}
+    for discord_id in ordered_ids:
+        member = member_by_id.get(discord_id)
+        player = player_by_id.get(discord_id)
+        linked_admin = admin_by_id.get(discord_id)
+        player_visible = bool(player and _can_view_player(admin, player))
+        display_name = (
+            (member.display_name if member else None)
+            or (linked_admin.discord_username if linked_admin else None)
+            or (member.username if member else None)
+            or (player.forced_display_name if player and player_visible else None)
+            or (player.player_last_time_name if player and player_visible else None)
+            or discord_id
+        )
+        profiles[discord_id] = {
+            "discord_id": discord_id,
+            "username": member.username if member else None,
+            "display_name": display_name,
+            "avatar_url": (
+                (member.avatar if member else None)
+                or _admin_avatar(linked_admin)
+                or (player.steam_avatar_url if player and player_visible else None)
+            ),
+            "player_id": player.player_id if player and player_visible else None,
+            "profile_url": f"/players/{player.player_id}" if player and player_visible else None,
+            "is_staff": bool(linked_admin),
+        }
+    return profiles
 
 
 @panel_router.get("/api/v1/admin/tickets")
@@ -705,6 +787,7 @@ def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depends(ge
         "player": _serialize_player(admin, player, online),
         "messages": [_serialize_message(message) for message in messages],
         "participants": _ticket_participants(db, admin, ticket, messages),
+        "mention_profiles": _ticket_mention_profiles(db, admin, messages),
         "archive": _archive_summary(messages),
         "permissions": {
             "can_reply": can_reply,

@@ -172,6 +172,16 @@ export interface TicketMessagePollResponse {
   has_more: boolean
 }
 
+export interface TicketMentionProfile {
+  discord_id: string
+  username: string | null
+  display_name: string
+  avatar_url: string | null
+  player_id: number | null
+  profile_url: string | null
+  is_staff: boolean
+}
+
 export interface TicketPlayerSummary {
   player_id: number
   player_last_time_name: string
@@ -188,6 +198,7 @@ export interface TicketDetailResponse {
   player: TicketPlayerSummary | null
   messages: TicketMessageRow[]
   participants?: TicketParticipant[]
+  mention_profiles?: Record<string, TicketMentionProfile>
   archive?: TicketArchiveSummary | null
   permissions?: Partial<TicketPermissions>
   ticket_config: { types: Record<string, TicketTypeMeta> }
