@@ -123,6 +123,11 @@ class PlayerDataOut(PlayerDataBase):
     discord_id: Optional[str] = Field(default=None, description="Linked Discord user ID, if known")
     has_discord_link: bool = False
     label_ids: List[int] = Field(default_factory=list)
+    has_labels: bool = False
+    has_notes: bool = False
+    has_active_punishments: bool = False
+    has_open_anomalies: bool = False
+    has_previous_names: bool = False
     profile_hash: Optional[str] = Field(default=None, description="Change-detection hash for the game-server cache sync API (see cache_versioning.py) — unchanged hash means the plugin's local cache is still fresh")
 
     @computed_field

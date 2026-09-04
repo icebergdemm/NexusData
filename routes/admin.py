@@ -1457,7 +1457,13 @@ async def admin_player_detail(
 # above exactly, same permission checks, same service calls, JSON in/out)
 # ══════════════════════════════════════════════════════════════════════════════
 
-PLAYER_SORTS = ("playtime_desc", "playtime_asc", "last_login_desc", "last_login_asc")
+PLAYER_SORTS = (
+    "playtime_desc", "playtime_asc", "last_login_desc", "last_login_asc",
+    "last_activity_desc", "last_activity_asc",
+    "active_sanctions_desc", "active_sanctions_asc",
+    "open_anomalies_desc", "open_anomalies_asc",
+    "discord_link_desc", "discord_link_asc",
+)
 
 
 def _sort_player_outs(items: list, sort: Optional[str]) -> list:
@@ -1472,7 +1478,29 @@ def _sort_player_outs(items: list, sort: Optional[str]) -> list:
         return sorted(items, key=lambda p: p.last_login_time or datetime.min, reverse=True)
     if sort == "last_login_asc":
         return sorted(items, key=lambda p: p.last_login_time or datetime.min)
+    if sort == "last_activity_desc":
+        return sorted(items, key=lambda p: p.last_login_time or datetime.min, reverse=True)
+    if sort == "last_activity_asc":
+        return sorted(items, key=lambda p: p.last_login_time or datetime.min)
+    if sort in ("active_sanctions_desc", "active_sanctions_asc"):
+        return sorted(items, key=lambda p: bool(p.has_active_punishments), reverse=sort.endswith("_desc"))
+    if sort in ("open_anomalies_desc", "open_anomalies_asc"):
+        return sorted(items, key=lambda p: bool(p.has_open_anomalies), reverse=sort.endswith("_desc"))
+    if sort in ("discord_link_desc", "discord_link_asc"):
+        return sorted(items, key=lambda p: bool(p.has_discord_link), reverse=sort.endswith("_desc"))
     return items
+
+
+def _parse_label_ids(raw: Optional[str], fallback: Optional[int] = None) -> list[int]:
+    values = [raw] if raw else []
+    if fallback is not None:
+        values.append(str(fallback))
+    result = []
+    for value in values:
+        for item in value.split(","):
+            if item.strip().isdigit():
+                result.append(int(item.strip()))
+    return list(dict.fromkeys(result))
 
 
 @router.get("/api/v1/admin/players/search-suggestions")
@@ -1576,9 +1604,16 @@ async def api_players_list(
     page_size: int = Query(50, ge=1, le=200),
     search: Optional[str] = Query(None, min_length=2),
     label_id: Optional[int] = Query(None),
+    label_ids: Optional[str] = Query(None, description="Comma-separated label category IDs"),
+    label_mode: Optional[str] = Query(None, pattern="^(all|with|without|any)$"),
     rank_id: Optional[int] = Query(None),
     discord_link: Optional[str] = Query(None, pattern="^(all|linked|unlinked)$"),
-    sort: Optional[str] = Query(None, pattern="^(playtime_desc|playtime_asc|last_login_desc|last_login_asc)$"),
+    notes: Optional[str] = Query(None, pattern="^(all|with|without)$"),
+    sanctions: Optional[str] = Query(None, pattern="^(all|with|without)$"),
+    anomalies: Optional[str] = Query(None, pattern="^(all|with|without)$"),
+    name_history: Optional[str] = Query(None, pattern="^(all|with|without)$"),
+    activity: Optional[str] = Query(None, pattern="^(all|new|inactive_7|inactive_30|inactive_90)$"),
+    sort: Optional[str] = Query(None, pattern="^(playtime_desc|playtime_asc|last_login_desc|last_login_asc|last_activity_desc|last_activity_asc|active_sanctions_desc|active_sanctions_asc|open_anomalies_desc|open_anomalies_asc|discord_link_desc|discord_link_asc)$"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -1590,47 +1625,29 @@ async def api_players_list(
 
     player_service = PlayerService(db)
     label_categories = LabelCategoryService(db).get_all()
-    selected_label = db.query(LabelCategory).filter(LabelCategory.id == label_id).first() if label_id else None
-
-    if label_id:
-        from sqlalchemy import or_
-        q = db.query(PlayerData).join(PlayerLabel, PlayerLabel.player_id == PlayerData.player_id).filter(
-            PlayerLabel.category_id == label_id
+    selected_label_ids = _parse_label_ids(label_ids, label_id)
+    effective_label_mode = "any" if selected_label_ids else label_mode
+    if search:
+        raw_players, total = player_service.player_repo.search_paginated(
+            search, page=page, page_size=page_size, rank_id=rank_id, sort=sort,
+            discord_link=discord_link,
+            label_mode=effective_label_mode, label_ids=selected_label_ids,
+            notes=notes, sanctions=sanctions, anomalies=anomalies,
+            name_history=name_history, activity=activity,
         )
-        if rank_id is not None:
-            q = q.filter(PlayerData.rank_id == rank_id)
-        if discord_link == "linked":
-            q = q.filter(PlayerData.discord_id.isnot(None), PlayerData.discord_id != "")
-        elif discord_link == "unlinked":
-            q = q.filter((PlayerData.discord_id.is_(None)) | (PlayerData.discord_id == ""))
-        if search:
-            q = q.filter(or_(
-                PlayerData.player_last_time_name.ilike(f"%{search}%"),
-                PlayerData.player_steamid.ilike(f"%{search}%"),
-                PlayerData.discord_id.ilike(f"%{search}%"),
-            ))
-        from repositories import PlayerRepository
-        sort_spec = PlayerRepository.SORT_COLUMNS.get(sort or "")
-        if sort_spec:
-            column, descending = sort_spec
-            q = q.order_by(column.desc() if descending else column.asc())
-        total = q.count()
-        raw = q.offset((page - 1) * page_size).limit(page_size).all()
-        players = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw]
-    elif search:
-        # Normalize to PlayerDataOut here (unlike the Jinja page, which leaves this
-        # branch as raw ORM rows with no computed rank/kit/play_time_hours fields).
-        player_results = player_service.search_players(search, limit=1000, discord_link=discord_link)
-        if rank_id is not None:
-            player_results = [p for p in player_results if p.rank_id == rank_id]
-        total = len(player_results)
-        outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in player_results]
-        outs = _sort_player_outs(outs, sort)
-        start = (page - 1) * page_size
-        players = outs[start:start + page_size]
+        outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw_players]
+        flags = player_service.player_repo.get_player_flags([player.player_id for player in raw_players])
+        for player_out in outs:
+            for key, value in flags.get(player_out.player_id, {}).items():
+                setattr(player_out, key, value)
+        players = outs
     else:
-        raw, total = player_service.get_all_players(page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link)
-        players = raw  # already List[PlayerDataOut]
+        players, total = player_service.get_all_players(
+            page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link,
+            label_mode=effective_label_mode, label_ids=selected_label_ids,
+            notes=notes, sanctions=sanctions, anomalies=anomalies,
+            name_history=name_history, activity=activity,
+        )
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
@@ -1642,6 +1659,8 @@ async def api_players_list(
         "total_pages": total_pages,
         "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
         "selected_label_id": label_id,
+        "selected_label_ids": selected_label_ids,
+        "selected_label_mode": effective_label_mode or "all",
         "selected_rank_id": rank_id,
         "selected_discord_link": discord_link or "all",
         "selected_sort": sort,

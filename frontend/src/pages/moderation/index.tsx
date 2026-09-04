@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Terminal, Circle } from "lucide-react"
@@ -25,7 +25,8 @@ import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerFiltersToolbar, type PlayerFilterSortOption } from "@/components/layout/PlayerFiltersSheet"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
-import { filterAndSortPlayers, resetPlayerFilters, type DiscordLinkFilter, type PlayerSort } from "@/lib/player-filters"
+import { filterAndSortPlayers, resetPlayerFilters, type PlayerSort } from "@/lib/player-filters"
+import { clearPlayerFilterState, loadPlayerFilterState, loadPlayerSort, savePlayerFilterState, savePlayerSort } from "@/lib/player-filter-storage"
 import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
@@ -107,17 +108,21 @@ function RankMismatchBadge({ nickname, rankId, ranks }: { nickname: string | nul
 type ActionType = "kick" | "ban" | "message"
 
 const ONLINE_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
-  { key: "name", label: "Имя" },
   { key: "server", label: "Сервер" },
   { key: "join_time", label: "Дата входа" },
   { key: "play_time", label: "Наиграно" },
+  { key: "active_sanctions", label: "Действующие взыскания" },
+  { key: "open_anomalies", label: "Открытые сигналы" },
+  { key: "discord_link", label: "Привязка Discord" },
 ]
 
 const OFFLINE_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
-  { key: "name", label: "Имя" },
   { key: "first_login", label: "Первый вход" },
   { key: "last_login", label: "Последний вход" },
   { key: "play_time", label: "Наиграно" },
+  { key: "active_sanctions", label: "Действующие взыскания" },
+  { key: "open_anomalies", label: "Открытые сигналы" },
+  { key: "discord_link", label: "Привязка Discord" },
 ]
 
 const DEFAULT_ONLINE_SORT: PlayerSort = { key: "join_time", direction: "desc" }
@@ -131,11 +136,9 @@ export function ModerationPage() {
   const [actionServer, setActionServer] = useState("")
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState("status")
-  const [discordFilter, setDiscordFilter] = useState<DiscordLinkFilter>("all")
-  const [labelId, setLabelId] = useState("all")
-  const [rankId, setRankId] = useState("all")
-  const [onlineSort, setOnlineSort] = useState<PlayerSort>(DEFAULT_ONLINE_SORT)
-  const [offlineSort, setOfflineSort] = useState<PlayerSort>(DEFAULT_OFFLINE_SORT)
+  const [filters, setFilters] = useState(loadPlayerFilterState)
+  const [onlineSort, setOnlineSort] = useState(() => loadPlayerSort("moderation-online", DEFAULT_ONLINE_SORT, ONLINE_SORT_OPTIONS.map((option) => option.key)))
+  const [offlineSort, setOfflineSort] = useState(() => loadPlayerSort("moderation-offline", DEFAULT_OFFLINE_SORT, OFFLINE_SORT_OPTIONS.map((option) => option.key)))
   // Быстрая выдача предупреждения прямо из списка онлайна: отдельно от
   // actionTarget, потому что это НЕ действие на сервере, а запись наказания
   // (сервер получит из неё окно с причиной автоматически).
@@ -193,6 +196,10 @@ export function ModerationPage() {
 
   const submitSearch = () => setSearchQuery(search.trim().length >= 2 ? search.trim() : undefined)
 
+  useEffect(() => savePlayerFilterState(filters), [filters])
+  useEffect(() => savePlayerSort("moderation-online", onlineSort), [onlineSort])
+  useEffect(() => savePlayerSort("moderation-offline", offlineSort), [offlineSort])
+
   const offlineRows: OfflinePlayer[] = searchQuery ? (data?.search_results ?? []) : (data?.recent_offline ?? [])
 
   if (isLoading || !data) {
@@ -200,12 +207,10 @@ export function ModerationPage() {
   }
 
   const unreviewedCount = data.ac_events.filter((e) => !e.reviewed).length
-  const playerFilters = { discordFilter, labelId, rankId }
-  const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, playerFilters, onlineSort)
-  const filteredOfflineRows = filterAndSortPlayers(offlineRows, playerFilters, offlineSort)
+  const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, filters, onlineSort)
+  const filteredOfflineRows = filterAndSortPlayers(offlineRows, filters, offlineSort)
   const labelOptions = [
-    { value: "all", label: "Все метки" },
-    ...data.label_categories.map((category) => ({ value: String(category.id), label: category.name })),
+    ...data.label_categories.map((category) => ({ value: String(category.id), label: category.name, icon: category.icon })),
   ]
   const rankOptions = [
     { value: "all", label: "Все звания" },
@@ -236,37 +241,29 @@ export function ModerationPage() {
         {activeTab === "status" && (
           <PlayerFiltersToolbar
             tabLabel="Онлайн"
-            discordFilter={discordFilter}
-            labelId={labelId}
+            filters={filters}
             labelOptions={labelOptions}
-            rankId={rankId}
             rankOptions={rankOptions}
             sort={onlineSort}
             defaultSort={DEFAULT_ONLINE_SORT}
             sortOptions={ONLINE_SORT_OPTIONS}
-            onDiscordFilterChange={setDiscordFilter}
-            onLabelIdChange={setLabelId}
-            onRankIdChange={setRankId}
+            onFiltersChange={setFilters}
             onSortChange={setOnlineSort}
-            onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setOnlineSort(DEFAULT_ONLINE_SORT) }}
+            onReset={() => { clearPlayerFilterState(); setFilters(resetPlayerFilters()); setOnlineSort(DEFAULT_ONLINE_SORT) }}
           />
         )}
         {activeTab === "banhammer" && (
           <PlayerFiltersToolbar
             tabLabel="Вышедшие игроки"
-            discordFilter={discordFilter}
-            labelId={labelId}
+            filters={filters}
             labelOptions={labelOptions}
-            rankId={rankId}
             rankOptions={rankOptions}
             sort={offlineSort}
             defaultSort={DEFAULT_OFFLINE_SORT}
             sortOptions={OFFLINE_SORT_OPTIONS}
-            onDiscordFilterChange={setDiscordFilter}
-            onLabelIdChange={setLabelId}
-            onRankIdChange={setRankId}
+            onFiltersChange={setFilters}
             onSortChange={setOfflineSort}
-            onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setOfflineSort(DEFAULT_OFFLINE_SORT) }}
+            onReset={() => { clearPlayerFilterState(); setFilters(resetPlayerFilters()); setOfflineSort(DEFAULT_OFFLINE_SORT) }}
           />
         )}
 

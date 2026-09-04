@@ -21,7 +21,8 @@ import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { formatBrowserDate } from "@/lib/format-date"
 import type { PlayersListResponse } from "./types"
-import { resetPlayerFilters, type DiscordLinkFilter, type PlayerSort } from "@/lib/player-filters"
+import { resetPlayerFilters, type PlayerSort } from "@/lib/player-filters"
+import { clearPlayerFilterState, loadPlayerFilterState, loadPlayerSort, savePlayerFilterState, savePlayerSort } from "@/lib/player-filter-storage"
 
 /** Superuser-only popover — lets them tweak the background color shown
  * behind each rank badge in the table below. Persisted server-side
@@ -103,6 +104,10 @@ const PLAYER_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
   { key: "none", label: "По умолчанию" },
   { key: "play_time", label: "Наиграно" },
   { key: "last_login", label: "Последний вход" },
+  { key: "last_activity", label: "Последняя активность" },
+  { key: "active_sanctions", label: "Действующие взыскания" },
+  { key: "open_anomalies", label: "Открытые сигналы" },
+  { key: "discord_link", label: "Привязка Discord" },
 ]
 
 const DEFAULT_PLAYER_SORT: PlayerSort = { key: "none", direction: "desc" }
@@ -110,6 +115,10 @@ const DEFAULT_PLAYER_SORT: PlayerSort = { key: "none", direction: "desc" }
 function playerSortToApi(sort: PlayerSort): string | undefined {
   if (sort.key === "play_time") return `playtime_${sort.direction}`
   if (sort.key === "last_login") return `last_login_${sort.direction}`
+  if (sort.key === "last_activity") return `last_activity_${sort.direction}`
+  if (sort.key === "active_sanctions") return `active_sanctions_${sort.direction}`
+  if (sort.key === "open_anomalies") return `open_anomalies_${sort.direction}`
+  if (sort.key === "discord_link") return `discord_link_${sort.direction}`
   return undefined
 }
 
@@ -119,10 +128,8 @@ export function PlayersListPage() {
   const queryClient = useQueryClient()
   const [searchInput, setSearchInput] = useState("")
   const [search, setSearch] = useState<string | undefined>(undefined)
-  const [labelId, setLabelId] = useState<string>("all")
-  const [rankId, setRankId] = useState<string>("all")
-  const [discordFilter, setDiscordFilter] = useState<DiscordLinkFilter>("all")
-  const [sort, setSort] = useState<PlayerSort>(DEFAULT_PLAYER_SORT)
+  const [filters, setFilters] = useState(loadPlayerFilterState)
+  const [sort, setSort] = useState(() => loadPlayerSort("players", DEFAULT_PLAYER_SORT, PLAYER_SORT_OPTIONS.map((option) => option.key)))
   const [debouncedInput, setDebouncedInput] = useState("")
   const [suggestOpen, setSuggestOpen] = useState(false)
   const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -134,13 +141,19 @@ export function PlayersListPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["players", search, labelId, rankId, discordFilter, playerSortToApi(sort)],
+    queryKey: ["players", search, filters, playerSortToApi(sort)],
     queryFn: ({ pageParam = 1 }) => {
       const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
       if (search) params.set("search", search)
-      if (labelId !== "all") params.set("label_id", labelId)
-      if (rankId !== "all") params.set("rank_id", rankId)
-      if (discordFilter !== "all") params.set("discord_link", discordFilter)
+      if (filters.labelIds.length > 0) params.set("label_ids", filters.labelIds.join(","))
+      if (filters.labelMode !== "all" && filters.labelIds.length === 0) params.set("label_mode", filters.labelMode)
+      if (filters.rankId !== "all") params.set("rank_id", filters.rankId)
+      if (filters.discordFilter !== "all") params.set("discord_link", filters.discordFilter)
+      if (filters.notesMode !== "all") params.set("notes", filters.notesMode)
+      if (filters.sanctionsMode !== "all") params.set("sanctions", filters.sanctionsMode)
+      if (filters.anomaliesMode !== "all") params.set("anomalies", filters.anomaliesMode)
+      if (filters.nameHistoryMode !== "all") params.set("name_history", filters.nameHistoryMode)
+      if (filters.activityMode !== "all") params.set("activity", filters.activityMode)
       const apiSort = playerSortToApi(sort)
       if (apiSort) params.set("sort", apiSort)
       return api.get<PlayersListResponse>(`/api/v1/admin/players?${params.toString()}`)
@@ -156,6 +169,9 @@ export function PlayersListPage() {
     const t = setTimeout(() => setDebouncedInput(searchInput.trim()), 300)
     return () => clearTimeout(t)
   }, [searchInput])
+
+  useEffect(() => savePlayerFilterState(filters), [filters])
+  useEffect(() => savePlayerSort("players", sort), [sort])
 
   const { data: suggestData } = useQuery({
     queryKey: ["player-suggestions", debouncedInput],
@@ -223,13 +239,10 @@ export function PlayersListPage() {
         </div>
         <PlayerFiltersToolbar
           tabLabel="Игроки"
-          discordFilter={discordFilter}
-          labelId={labelId}
+          filters={filters}
           labelOptions={[
-            { value: "all", label: "Все метки" },
-            ...(data?.label_categories.map((category) => ({ value: String(category.id), label: category.name })) ?? []),
+            ...(data?.label_categories.map((category) => ({ value: String(category.id), label: category.name, icon: category.icon })) ?? []),
           ]}
-          rankId={rankId}
           rankOptions={[
             { value: "all", label: "Все звания" },
             ...Object.entries(data?.ranks ?? {}).map(([id, name]) => ({ value: id, label: name })),
@@ -237,11 +250,9 @@ export function PlayersListPage() {
           sort={sort}
           defaultSort={DEFAULT_PLAYER_SORT}
           sortOptions={PLAYER_SORT_OPTIONS}
-          onDiscordFilterChange={setDiscordFilter}
-          onLabelIdChange={setLabelId}
-          onRankIdChange={setRankId}
+          onFiltersChange={setFilters}
           onSortChange={setSort}
-          onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setSort(DEFAULT_PLAYER_SORT) }}
+          onReset={() => { clearPlayerFilterState(); setFilters(resetPlayerFilters()); setSort(DEFAULT_PLAYER_SORT) }}
         />
         <Button variant="secondary" onClick={submitSearch}>Найти</Button>
         <div className="ml-auto flex items-center gap-2">

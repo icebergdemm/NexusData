@@ -349,13 +349,27 @@ class PlayerService:
         self, page: int = 1, page_size: int = 50,
         rank_id: Optional[int] = None, sort: Optional[str] = None,
         discord_link: Optional[str] = None,
+        label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
+        notes: Optional[str] = None, sanctions: Optional[str] = None,
+        anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        activity: Optional[str] = None,
     ) -> Tuple[List[PlayerDataOut], int]:
         """Get all players with pagination, optional rank filter and sort order."""
         if page < 1:
             raise HTTPException(status_code=400, detail="Page must be >= 1")
 
-        players, total = self.player_repo.get_all(page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link)
+        players, total = self.player_repo.get_all(
+            page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link,
+            label_mode=label_mode, label_ids=label_ids, notes=notes, sanctions=sanctions,
+            anomalies=anomalies, name_history=name_history, activity=activity,
+        )
         player_outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in players]
+        flags = self.player_repo.get_player_flags([player.player_id for player in players])
+        for player_out in player_outs:
+            for key, value in flags.get(player_out.player_id, {}).items():
+                if key != "label_ids":
+                    setattr(player_out, key, value)
+            player_out.label_ids = flags.get(player_out.player_id, {}).get("label_ids", player_out.label_ids)
         return player_outs, total
     
     def get_player_by_id(self, player_id: int) -> Optional[PlayerDataOut]:
@@ -505,9 +519,19 @@ class PlayerService:
                 return PlayerDataOut.from_orm_with_mappings(existing, settings.ranks_mapping, settings.kits_mapping)
             raise
     
-    def search_players(self, query: str, limit: int = 10, discord_link: Optional[str] = None) -> List[PlayerData]:
+    def search_players(
+        self, query: str, limit: int = 10, discord_link: Optional[str] = None,
+        label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
+        notes: Optional[str] = None, sanctions: Optional[str] = None,
+        anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        activity: Optional[str] = None,
+    ) -> List[PlayerData]:
         """Search players by name or SteamID"""
-        return self.player_repo.search(query, limit, discord_link=discord_link)
+        return self.player_repo.search(
+            query, limit, discord_link=discord_link, label_mode=label_mode, label_ids=label_ids,
+            notes=notes, sanctions=sanctions, anomalies=anomalies,
+            name_history=name_history, activity=activity,
+        )
     
     def get_or_create_player_by_steamid(self, steamid: str, player_name: str = None) -> PlayerData:
         """Get existing player or create new one by steamid"""

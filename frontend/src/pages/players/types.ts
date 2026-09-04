@@ -6,6 +6,11 @@ export interface PlayerRow {
   discord_id?: string | null
   has_discord_link: boolean
   label_ids: number[]
+  has_labels: boolean
+  has_notes: boolean
+  has_active_punishments: boolean
+  has_open_anomalies: boolean
+  has_previous_names: boolean
   rank_id: number
   kit_level: number
   play_time: number
@@ -31,6 +36,7 @@ export interface PlayersListResponse {
   label_categories: LabelCategory[]
   selected_label_id: number | null
   selected_rank_id: number | null
+  selected_discord_link?: string
   selected_sort: string | null
   ranks: Record<string, string>
   rank_colors: Record<string, string>
