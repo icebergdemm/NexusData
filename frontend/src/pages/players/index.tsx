@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
@@ -309,11 +309,15 @@ export function PlayersListPage() {
                   >
                     <TableRow
                       className="cursor-pointer"
-                      onClick={() => navigate(`/players/${p.player_id}`)}
-                      onAuxClick={(e) => { if (e.button === 1) window.open(`/players/${p.player_id}`, "_blank") }}
+                      onClick={(e) => {
+                        if (e.target instanceof Element && e.target.closest("a")) return
+                        navigate(`/players/${p.player_id}`)
+                      }}
                     >
                       <TableCell className="font-medium">
-                        <span>{p.player_last_time_name}</span>
+                        <Link to={`/players/${p.player_id}`}>
+                          <span>{p.player_last_time_name}</span>
+                        </Link>
                         {p.forced_display_name && (
                           <span className="ml-1 text-[11px] text-muted-foreground" title={`Закреплённое имя: ${p.forced_display_name}`}>🔗</span>
                         )}
