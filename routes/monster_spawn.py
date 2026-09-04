@@ -76,6 +76,11 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "max_simultaneous_waves": None,
         # Схемы позиционирования спавна (перед/сверху/снизу, не сзади).
         "spawn_scheme_enabled": True,
+        # 3.1: волны с этими подстроками не удерживаются hold_seconds.
+        "hold_ignore_names": ["abyss", "moloch", "cave"],
+        # 3.5: волны с этими подстроками не используют схемы спавна
+        # (пещеры/бездна спавнятся на структурных точках уровня).
+        "spawn_scheme_ignore_names": ["cave", "abyss"],
     }
     config["global"] = {**defaults, **global_config}
     # null = derive from single_wave_mode on the plugin side; materialize the
