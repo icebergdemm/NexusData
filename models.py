@@ -545,7 +545,7 @@ class DiscordBotConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     key = Column(String(100), unique=True, nullable=False)
-    value = Column(String(2000), nullable=True)
+    value = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 

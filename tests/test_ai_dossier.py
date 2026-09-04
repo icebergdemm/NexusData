@@ -12,7 +12,9 @@ from services_ai_dossier import (
     build_kobold_request,
     dossier_evidence_link,
     dossier_run_public_dict,
+    dossier_response_with_run,
     get_dossier_config,
+    get_dossier_prompt,
     normalize_dossier_result,
     should_queue_dossier,
     select_active_player_ids,
@@ -181,6 +183,17 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertNotIn("result", public)
         self.assertNotIn("raw_response", public)
 
+    def test_empty_dossier_response_does_not_require_a_report_row(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AIPlayerDossierRun.__table__])
+        db = Session(engine)
+        try:
+            response = dossier_response_with_run(db, None)
+            self.assertEqual(response, {"status": "none", "result": None, "run": None})
+        finally:
+            db.close()
+            engine.dispose()
+
     def test_runtime_config_reads_safe_operational_overrides(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")
         Base.metadata.create_all(engine, tables=[AppSetting.__table__])
@@ -203,6 +216,18 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertEqual(config["schedule_hour"], 6)
             self.assertEqual(config["active_days"], 14)
             self.assertEqual(config["max_log_events"], 40)
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_prompt_can_be_overridden_by_superuser_setting(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__])
+        db = Session(engine)
+        try:
+            db.add(AppSetting(key="ai_dossier_prompt", value="custom prompt"))
+            db.commit()
+            self.assertEqual(get_dossier_prompt(db), "custom prompt")
         finally:
             db.close()
             engine.dispose()

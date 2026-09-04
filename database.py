@@ -307,6 +307,22 @@ def _apply_migrations():
         except Exception:
             pass
 
+        # AI system prompts are intentionally editable by superusers and the
+        # Git default is already longer than the old generic setting limit.
+        # Widen the existing production column before the first prompt save.
+        try:
+            value_type = conn.execute(__import__('sqlalchemy').text(
+                "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=:db AND TABLE_NAME='app_settings' AND COLUMN_NAME='value'"
+            ), {"db": db_name}).scalar()
+            if value_type and str(value_type).lower() not in {"text", "mediumtext", "longtext"}:
+                conn.execute(__import__('sqlalchemy').text(
+                    "ALTER TABLE `app_settings` MODIFY COLUMN `value` TEXT NULL"
+                ))
+                conn.commit()
+        except Exception:
+            pass
+
 
 def _relax_server_player_privileges_unique_steamid():
     """server_player_privileges used to have UNIQUE(steamid), allowing exactly

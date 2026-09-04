@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import re
-import subprocess
 from threading import Lock
 import time
 from datetime import datetime, timedelta
@@ -32,7 +31,6 @@ CONFIDENCE_VALUES = {"low", "medium", "high"}
 MAX_OUTPUT_TOKENS = 650
 DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
-REPO_ROOT = Path(__file__).resolve().parent
 ALLOWED_RUN_SOURCES = {"manual", "daily", "test", "health"}
 AI_REQUEST_LOCK = Lock()
 
@@ -384,7 +382,12 @@ def process_one_dossier() -> dict:
             request_hash = dossier_input_hash(payload)
             if not settings.ai_dossier_url or not settings.ai_dossier_api_key:
                 raise RuntimeError("AI dossier endpoint is not configured")
-            request = build_kobold_request(payload, api_key=settings.ai_dossier_api_key, model=settings.ai_dossier_model)
+            request = build_kobold_request(
+                payload,
+                api_key=settings.ai_dossier_api_key,
+                model=settings.ai_dossier_model,
+                prompt=get_dossier_prompt(db),
+            )
             verify: bool | str = settings.ai_dossier_tls_ca_file or True
             started = time.monotonic()
             with AI_REQUEST_LOCK:
@@ -449,7 +452,7 @@ def run_daily_dossier_batch() -> dict:
         db.close()
 
 
-def get_dossier_config(db: Session) -> dict:
+def get_dossier_config(db: Session, include_prompt: bool = False) -> dict:
     settings = get_settings()
 
     def _value(key: str, default: str) -> str:
@@ -470,7 +473,7 @@ def get_dossier_config(db: Session) -> dict:
         return _value(key, str(default).lower()).lower() in {"true", "1", "yes", "on"}
 
     endpoint = settings.ai_dossier_url or ""
-    return {
+    config = {
         "enabled": _bool("ai_dossier_enabled", False),
         "daily_enabled": _bool("ai_dossier_daily_enabled", True),
         "test_mode": _bool("ai_dossier_test_mode", False),
@@ -484,6 +487,21 @@ def get_dossier_config(db: Session) -> dict:
         "model": settings.ai_dossier_model,
         "timeout_seconds": settings.ai_dossier_timeout_seconds,
     }
+    if include_prompt:
+        config["prompt"] = get_dossier_prompt(db)
+    return config
+
+
+def get_dossier_prompt(db: Session) -> str:
+    """Return the superuser-configurable prompt, falling back to the Git file."""
+    default_prompt = PROMPT_PATH.read_text(encoding="utf-8")
+    try:
+        row = db.query(AppSetting).filter(AppSetting.key == "ai_dossier_prompt").first()
+    except Exception:
+        db.rollback()
+        return default_prompt
+    value = row.value.strip() if row and row.value else ""
+    return value[:20000] if value else default_prompt
 
 
 def dossier_public_dict(report: Optional[AIPlayerDossier]) -> dict:
@@ -511,6 +529,18 @@ def dossier_public_dict(report: Optional[AIPlayerDossier]) -> dict:
         "error": report.error_message,
         "requested_by_admin_id": report.requested_by_admin_id,
     }
+
+
+def dossier_response_with_run(db: Session, report: Optional[AIPlayerDossier]) -> dict:
+    """Serialize an optional report without dereferencing a missing row."""
+    if report is None:
+        return {"status": "none", "result": None, "run": None}
+    run = db.query(AIPlayerDossierRun).filter(
+        AIPlayerDossierRun.dossier_id == report.id,
+    ).order_by(AIPlayerDossierRun.id.desc()).first()
+    response = dossier_public_dict(report)
+    response["run"] = dossier_run_public_dict(run) if run else None
+    return response
 
 
 def dossier_evidence_link(kind: Any, source_id: Any, player_id: Optional[int]) -> Optional[str]:
@@ -625,7 +655,15 @@ def run_ai_health_check() -> dict:
         if not settings.ai_dossier_url or not settings.ai_dossier_api_key:
             raise RuntimeError("AI dossier endpoint is not configured")
         payload = {"health_check": True, "instruction": "Return the required JSON schema with summary 'OK'. No player data is present."}
-        request = build_kobold_request(payload, api_key=settings.ai_dossier_api_key, model=settings.ai_dossier_model)
+        request = build_kobold_request(
+            payload,
+            api_key=settings.ai_dossier_api_key,
+            model=settings.ai_dossier_model,
+            prompt=(
+                "You are a transport health check. Return only valid JSON using the dossier schema. "
+                "Set summary to 'OK', confidence to 'high', and use empty arrays for all other fields."
+            ),
+        )
         verify: bool | str = settings.ai_dossier_tls_ca_file or True
         with AI_REQUEST_LOCK:
             with httpx.Client(timeout=settings.ai_dossier_timeout_seconds, verify=verify) as client:
@@ -653,24 +691,9 @@ def run_ai_health_check() -> dict:
         db.close()
 
 
-def get_dossier_overview(db: Session, include_agents: bool = False, include_secret: bool = False) -> dict:
+def get_dossier_overview(db: Session, include_secret: bool = False) -> dict:
     config = get_dossier_config(db)
     counts = {status: db.query(AIPlayerDossier).filter(AIPlayerDossier.status == status).count() for status in DOSSIER_STATUSES}
-    agents_path = REPO_ROOT / "AGENTS.md"
-    agents = {"present": agents_path.is_file(), "sha256": None, "commit": None}
-    content = None
-    if agents_path.is_file():
-        raw = agents_path.read_bytes()
-        agents["sha256"] = hashlib.sha256(raw).hexdigest()
-        if include_agents:
-            content = raw.decode("utf-8", errors="replace")
-        try:
-            agents["commit"] = subprocess.run(
-                ["git", "log", "-1", "--format=%H", "--", "AGENTS.md"],
-                cwd=REPO_ROOT, capture_output=True, text=True, timeout=2, check=False,
-            ).stdout.strip() or None
-        except (OSError, subprocess.SubprocessError):
-            pass
     last_run_query = db.query(AIPlayerDossierRun).outerjoin(
         PlayerData, PlayerData.player_id == AIPlayerDossierRun.player_id,
     )
@@ -691,5 +714,4 @@ def get_dossier_overview(db: Session, include_agents: bool = False, include_secr
         "queue": counts,
         "last_run": dossier_run_public_dict(last_run) if last_run else None,
         "last_health_check": dossier_run_public_dict(health) if health else None,
-        "agents_md": {**agents, **({"content": content} if include_agents else {})},
     }
