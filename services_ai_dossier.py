@@ -48,6 +48,55 @@ NON-NEGOTIABLE OUTPUT CONTRACT:
 Example of the complete response shape:
 {"summary":"Короткая сводка","facts":[],"signals":[],"caveats":[],"confidence":"low","evidence":[]}
 """.strip()
+DOSSIER_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string", "maxLength": 500},
+        "facts": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "text": {"type": "string", "maxLength": 500},
+                    "source": {"type": "string", "enum": ["stats", "session", "punishment", "note", "label", "trap", "log", "profile"]},
+                },
+                "required": ["text", "source"],
+            },
+        },
+        "signals": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "text": {"type": "string", "maxLength": 500},
+                    "reason": {"type": "string", "maxLength": 500},
+                },
+                "required": ["text", "reason"],
+            },
+        },
+        "caveats": {"type": "array", "maxItems": 4, "items": {"type": "string", "maxLength": 500}},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "evidence": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "kind": {"type": "string", "enum": ["log", "session", "punishment", "note", "profile", "stats"]},
+                    "id": {"type": "string", "maxLength": 100},
+                },
+                "required": ["kind", "id"],
+            },
+        },
+    },
+    "required": ["summary", "facts", "signals", "caveats", "confidence", "evidence"],
+}
 
 
 def validate_dossier_ca_pem(content: bytes) -> bytes:
@@ -223,7 +272,14 @@ def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFA
             ],
             "temperature": 0.2,
             "max_tokens": MAX_OUTPUT_TOKENS,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "player_dossier",
+                    "strict": True,
+                    "schema": DOSSIER_RESPONSE_SCHEMA,
+                },
+            },
             "stream": False,
         },
     }

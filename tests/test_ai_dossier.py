@@ -99,7 +99,11 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual(request["headers"]["Authorization"], "Bearer secret")
         self.assertFalse(request["json"]["stream"])
         self.assertEqual(request["json"]["max_tokens"], 650)
-        self.assertEqual(request["json"]["response_format"], {"type": "json_object"})
+        response_format = request["json"]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(response_format["json_schema"]["name"], "player_dossier")
+        self.assertEqual(response_format["json_schema"]["schema"]["type"], "object")
+        self.assertEqual(response_format["json_schema"]["schema"]["required"], ["summary", "facts", "signals", "caveats", "confidence", "evidence"])
         self.assertIn("player_id", request["json"]["messages"][1]["content"])
         self.assertIn("Return the compact JSON dossier now", request["json"]["messages"][1]["content"])
         self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", request["json"]["messages"][0]["content"])
