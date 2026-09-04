@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import ssl
 from threading import Lock
 import time
 from datetime import datetime, timedelta
@@ -33,6 +34,32 @@ DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
 ALLOWED_RUN_SOURCES = {"manual", "daily", "test", "health"}
 AI_REQUEST_LOCK = Lock()
+
+
+def validate_dossier_ca_pem(content: bytes) -> bytes:
+    """Validate an uploaded public PEM certificate and return normalized bytes.
+
+    This endpoint accepts a CA certificate only. In particular, never let a
+    browser upload turn the app's config directory into a private-key drawer.
+    Full trust validation still happens when httpx loads the CA bundle.
+    """
+    if len(content) > 64 * 1024:
+        raise ValueError("CA certificate is too large")
+    try:
+        text = content.decode("ascii").strip() + "\n"
+    except UnicodeDecodeError as exc:
+        raise ValueError("CA certificate must be ASCII PEM") from exc
+    if "PRIVATE KEY" in text or "BEGIN RSA" in text:
+        raise ValueError("Private keys are not accepted")
+    begin = "-----BEGIN CERTIFICATE-----"
+    end = "-----END CERTIFICATE-----"
+    if text.count(begin) != 1 or text.count(end) != 1:
+        raise ValueError("Upload exactly one PEM certificate")
+    try:
+        ssl.PEM_cert_to_DER_cert(text)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Invalid PEM certificate") from exc
+    return text.encode("ascii")
 
 
 def _iso(value: Any) -> Optional[str]:

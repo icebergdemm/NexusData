@@ -12,8 +12,11 @@
    `KOBOLD_PASSWORD=<случайный секрет>` с правами `0600`.
 3. Положить TLS certificate/key в `/etc/koboldcpp/player-dossier.crt` и
    `/etc/koboldcpp/player-dossier.key` (сертификат `0640`, ключ `0640`, владелец
-   `root:koboldcpp`). В NexusData указать CA-файл сертификата
-   через `AI_DOSSIER_TLS_CA_FILE`; отключать проверку TLS нельзя.
+   `root:koboldcpp`). Публичная копия сертификата для NexusData лежит рядом
+   с этим README: `deploy/qwen/koboldcpp-player-dossier.crt`. Её можно указать
+   в AI-центре как `deploy/qwen/koboldcpp-player-dossier.crt` или загрузить
+   через форму CA. Приватный ключ в NexusData не нужен; отключать проверку TLS
+   нельзя.
 4. Скопировать unit в `/etc/systemd/system/`, выполнить
    `systemctl daemon-reload && systemctl enable --now koboldcpp-player-dossier`.
 5. В UFW открыть `8000/tcp` только для `144.31.195.171`; временный доступ

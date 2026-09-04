@@ -1,8 +1,11 @@
 """Moderator-facing AI player dossiers."""
 
 from datetime import datetime
+import os
+import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
@@ -20,6 +23,7 @@ from services_ai_dossier import (
     run_ai_health_check,
     search_dossier_players,
     select_active_player_ids,
+    validate_dossier_ca_pem,
 )
 
 router = APIRouter()
@@ -204,3 +208,35 @@ async def set_ai_dossier_config(
     db.commit()
     log_admin_action(db, current_admin.id, "ai_dossier_config_update", body)
     return get_dossier_config(db, include_prompt=True)
+
+
+@router.post("/api/v1/admin/ai-dossiers/connection-ca")
+async def upload_ai_dossier_ca(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Store the public CA certificate used to verify the Qwen TLS endpoint."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    content = await file.read(64 * 1024 + 1)
+    try:
+        content = validate_dossier_ca_pem(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    target_dir = Path("config") / "ai_dossier"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "koboldcpp-ca.pem"
+    fd, temp_name = tempfile.mkstemp(prefix=".koboldcpp-ca.", suffix=".pem", dir=target_dir)
+    try:
+        with os.fdopen(fd, "wb") as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fchmod(temp_file.fileno(), 0o644)
+        os.replace(temp_name, target)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    log_admin_action(db, current_admin.id, "ai_dossier_ca_upload", {"path": str(target)})
+    return {"status": "ok", "path": str(target)}

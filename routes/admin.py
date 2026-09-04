@@ -5382,6 +5382,10 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     "git_update_build_frontend", "git_update_restart_backend",
     "git_update_token", "git_update_token_username", "git_update_npm_path",
     "git_update_frontend_dist_branch",
+    # The dossier bridge is a server-side credential and transport setting.
+    # Keep it superuser-only even though the AI center itself is visible to
+    # ordinary moderators.
+    "ai_dossier_url", "ai_dossier_api_key", "ai_dossier_tls_ca_file",
 }
 
 # Любой секрет с этой страницы отдаётся наружу ЗАГЛУШКОЙ, а не значением:
@@ -5400,6 +5404,7 @@ MASKED_CFG_FIELDS = {
     "onlyoffice_jwt_secret",
     "pterodactyl_api_key",
     "git_update_token",
+    "ai_dossier_api_key",
 }
 
 
@@ -5488,6 +5493,9 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "git_update_restart_backend": s.git_update_restart_backend,
             "git_update_npm_path": s.git_update_npm_path,
             "git_update_frontend_dist_branch": s.git_update_frontend_dist_branch,
+            "ai_dossier_url": s.ai_dossier_url,
+            "ai_dossier_api_key": _mask("ai_dossier_api_key", s.ai_dossier_api_key),
+            "ai_dossier_tls_ca_file": s.ai_dossier_tls_ca_file,
         })
     return cfg
 
@@ -5571,6 +5579,9 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "git_update_restart_backend": "GIT_UPDATE_RESTART_BACKEND",
         "git_update_npm_path": "GIT_UPDATE_NPM_PATH",
         "git_update_frontend_dist_branch": "GIT_UPDATE_FRONTEND_DIST_BRANCH",
+        "ai_dossier_url": "AI_DOSSIER_URL",
+        "ai_dossier_api_key": "AI_DOSSIER_API_KEY",
+        "ai_dossier_tls_ca_file": "AI_DOSSIER_TLS_CA_FILE",
     }
 
     for field, env_key in field_map.items():

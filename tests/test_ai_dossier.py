@@ -15,6 +15,7 @@ from services_ai_dossier import (
     dossier_response_with_run,
     get_dossier_config,
     get_dossier_prompt,
+    validate_dossier_ca_pem,
     normalize_dossier_result,
     should_queue_dossier,
     select_active_player_ids,
@@ -231,6 +232,13 @@ class AIDossierContractTests(unittest.TestCase):
         finally:
             db.close()
             engine.dispose()
+
+    def test_ca_upload_accepts_certificate_and_rejects_private_key(self):
+        self.assertTrue(validate_dossier_ca_pem(
+            b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+        ))
+        with self.assertRaises(ValueError):
+            validate_dossier_ca_pem(b"-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n")
 
 
 if __name__ == "__main__":

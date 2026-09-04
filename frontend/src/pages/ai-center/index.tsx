@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Link } from "react-router-dom"
-import { Bot, ExternalLink, FileText, HeartPulse, Play, RefreshCw, Search } from "lucide-react"
+import { Bot, ExternalLink, FileText, HeartPulse, Play, RefreshCw, Search, Upload } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,7 @@ type Config = {
   configured: boolean; endpoint_host: string | null; tls_ca_configured: boolean; model: string
   prompt: string
 }
+type ConnectionDraft = { url: string; apiKey: string; tlsCaFile: string }
 type Overview = { config: Config; queue: Record<string, number>; last_run: Run | null; last_health_check: Run | null }
 type Player = { player_id: number; name: string; last_login_time: string | null; status: string; generated_at: string | null }
 type Run = { id: number; player_id: number | null; player_name: string | null; source: string; status: string; requested_by_admin_id: number | null; requested_at: string | null; started_at: string | null; finished_at: string | null; latency_ms: number | null; prompt_tokens: number | null; completion_tokens: number | null; model: string | null; error: string | null }
@@ -50,6 +51,7 @@ export function AICenterPage() {
   const [selected, setSelected] = useState<Player | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [draft, setDraft] = useState<Config | null>(null)
+  const [connection, setConnection] = useState<ConnectionDraft | null>(null)
   const debouncedSearch = useDebouncedValue(search, 350)
   const { data: overview, isLoading: overviewLoading, refetch: refetchOverview } = useQuery({
     queryKey: ["ai-center-overview"], queryFn: () => api.get<Overview>("/api/v1/admin/ai-dossiers/overview"), refetchInterval: 5000,
@@ -69,7 +71,20 @@ export function AICenterPage() {
   const { data: config } = useQuery({
     queryKey: ["ai-center-config"], queryFn: () => api.get<Config>("/api/v1/admin/ai-dossiers/config"), enabled: isSuperuser,
   })
+  const { data: administration } = useQuery({
+    queryKey: ["ai-center-administration-config"],
+    queryFn: () => api.get<{ editable_cfg: Record<string, string | number | boolean> }>("/api/v1/admin/administration"),
+    enabled: isSuperuser,
+  })
   useEffect(() => { if (config) setDraft(config) }, [config])
+  useEffect(() => {
+    const cfg = administration?.editable_cfg
+    if (cfg) setConnection({
+      url: String(cfg.ai_dossier_url ?? ""),
+      apiKey: String(cfg.ai_dossier_api_key ?? ""),
+      tlsCaFile: String(cfg.ai_dossier_tls_ca_file ?? ""),
+    })
+  }, [administration])
 
   const requestDossier = useMutation({
     mutationFn: () => api.post(`/api/v1/admin/players/${selected!.player_id}/ai-dossier`, { force: true }),
@@ -90,6 +105,33 @@ export function AICenterPage() {
     onSuccess: () => { toast.success("Операционные настройки сохранены"); queryClient.invalidateQueries({ queryKey: ["ai-center-config"] }); refetchOverview() },
     onError: (error: Error) => toast.error(error.message),
   })
+  const saveConnection = useMutation({
+    mutationFn: () => {
+      if (!connection) throw new Error("Настройки подключения ещё не загружены")
+      const payload: Record<string, string> = {
+        ai_dossier_url: connection.url,
+        ai_dossier_tls_ca_file: connection.tlsCaFile,
+      }
+      // The administration API returns a mask for an existing key. Never
+      // send that mask back as a real credential.
+      if (connection.apiKey && connection.apiKey !== "••••••••") payload.ai_dossier_api_key = connection.apiKey
+      return api.post("/api/v1/admin/administration/config", payload)
+    },
+    onSuccess: () => { toast.success("Подключение сохранено. Выполните update restart для применения."); queryClient.invalidateQueries({ queryKey: ["ai-center-administration-config"] }); refetchOverview() },
+    onError: (error: Error) => toast.error(error.message),
+  })
+  const uploadCa = useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData()
+      form.append("file", file)
+      return api.postForm<{ path: string }>("/api/v1/admin/ai-dossiers/connection-ca", form)
+    },
+    onSuccess: (result) => {
+      setConnection((current) => current ? { ...current, tlsCaFile: result.path } : current)
+      toast.success("CA-файл загружен. Сохраните подключение и выполните update restart.")
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
   const batchTest = useMutation({
     mutationFn: () => api.post<{ selected: number; queued: number }>("/api/v1/admin/ai-dossiers/test-run", {}),
     onSuccess: (result) => { toast.success(`В очередь поставлено ${result.queued} из ${result.selected}`); refetchOverview() },
@@ -108,6 +150,7 @@ export function AICenterPage() {
     </div>
 
     {isSuperuser && draft && <Card><CardHeader><CardTitle className="text-sm">Операционные настройки AI-досье</CardTitle></CardHeader><CardContent className="space-y-4"><div className="grid gap-3 sm:grid-cols-3"><label className="flex gap-2 text-sm"><Checkbox checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: !!v })} /> Включено</label><label className="flex gap-2 text-sm"><Checkbox checked={draft.daily_enabled} onCheckedChange={(v) => setDraft({ ...draft, daily_enabled: !!v })} /> Ежедневный запуск</label><label className="flex gap-2 text-sm"><Checkbox checked={draft.test_mode} onCheckedChange={(v) => setDraft({ ...draft, test_mode: !!v })} /> Тестовый режим</label><div><Label className="text-xs">Час запуска (0–23)</Label><Input type="number" min={0} max={23} value={draft.schedule_hour} onChange={(e) => setDraft({ ...draft, schedule_hour: Number(e.target.value) })} /></div><div><Label className="text-xs">Профилей за сутки (1–10)</Label><Input type="number" min={1} max={10} value={draft.daily_limit} onChange={(e) => setDraft({ ...draft, daily_limit: Number(e.target.value) })} /></div><div><Label className="text-xs">Активность, дней</Label><Input type="number" min={1} max={365} value={draft.active_days} onChange={(e) => setDraft({ ...draft, active_days: Number(e.target.value) })} /></div><div><Label className="text-xs">Лимит логов</Label><Input type="number" min={1} max={500} value={draft.max_log_events} onChange={(e) => setDraft({ ...draft, max_log_events: Number(e.target.value) })} /></div></div><div><Label className="text-xs">System prompt Qwen</Label><Textarea className="mt-1 min-h-48 font-mono text-xs" value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} /><p className="mt-1 text-xs text-muted-foreground">Редактируется только суперпользователем, хранится в app_settings, максимум 20 000 символов. Endpoint, ключ, CA и параметры модели остаются в окружении.</p></div><div className="flex flex-wrap gap-2"><Button onClick={() => saveConfig.mutate()} disabled={saveConfig.isPending}>Сохранить</Button><Button variant="outline" onClick={() => batchTest.mutate()} disabled={batchTest.isPending}>Тест первых 10</Button></div></CardContent></Card>}
+    {isSuperuser && connection && <Card><CardHeader><CardTitle className="text-sm">Подключение к Qwen</CardTitle></CardHeader><CardContent className="space-y-4"><div className="rounded border border-warning/30 bg-warning/10 p-3 text-sm text-warning">Здесь задаётся адрес моста и секрет. Ключ показывается маской; пустое поле сохраняет уже установленный ключ. После сохранения выполните <code className="font-mono">update restart</code> в консоли Pterodactyl — без рестарта уже запущенный Python продолжит жить в прошлом.</div><div className="grid gap-3 sm:grid-cols-3"><div><Label className="text-xs">OpenAI-compatible endpoint</Label><Input className="mt-1 font-mono text-xs" value={connection.url} onChange={(e) => setConnection({ ...connection, url: e.target.value })} placeholder="https://host:8000/v1/chat/completions" /></div><div><Label className="text-xs">API key</Label><Input className="mt-1 font-mono text-xs" type="password" autoComplete="new-password" value={connection.apiKey} onChange={(e) => setConnection({ ...connection, apiKey: e.target.value })} placeholder="Введите ключ KoboldCpp" /></div><div><Label className="text-xs">CA-файл в контейнере</Label><Input className="mt-1 font-mono text-xs" value={connection.tlsCaFile} onChange={(e) => setConnection({ ...connection, tlsCaFile: e.target.value })} placeholder="/home/container/.../koboldcpp-ca.pem" /></div></div><div className="flex flex-wrap items-end gap-2"><div><Label className="text-xs">Или загрузить публичный CA</Label><Input className="mt-1 w-72" type="file" accept=".pem,.crt,.cer,application/x-pem-file" onChange={(e) => { const file = e.target.files?.[0]; if (file) uploadCa.mutate(file); e.currentTarget.value = "" }} disabled={uploadCa.isPending} /></div><Button variant="outline" onClick={() => saveConnection.mutate()} disabled={saveConnection.isPending}><Upload className="mr-1.5 size-3.5" /> Сохранить подключение</Button></div><p className="text-xs text-muted-foreground">Загрузится только один публичный PEM-сертификат, максимум 64 КБ. Приватные ключи отклоняются. После загрузки сохраните подключение: путь подставится автоматически. TLS-проверка не отключается.</p></CardContent></Card>}
 
     <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,2fr)]">
       <Card><CardHeader><CardTitle className="text-sm">Игрок для проверки</CardTitle></CardHeader><CardContent className="space-y-3"><div className="relative"><Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" /><Input className="pl-8" placeholder="Имя или SteamID" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="max-h-80 space-y-1 overflow-auto">{players?.players.map((player) => <button key={player.player_id} onClick={() => setSelected(player)} className={`w-full rounded border p-2 text-left text-sm hover:bg-accent ${selected?.player_id === player.player_id ? "border-primary bg-accent" : ""}`}><div className="flex items-center justify-between gap-2"><span className="truncate">{player.name}</span><Status value={player.status} /></div><div className="text-xs text-muted-foreground">#{player.player_id} · вход: {fmt(player.last_login_time)}</div></button>)}{players && !players.players.length && <p className="text-sm text-muted-foreground">Ничего не найдено.</p>}</div>{selected && <Button className="w-full" onClick={() => setConfirmOpen(true)} disabled={dossier?.status === "queued" || dossier?.status === "running"}><Play className="mr-1.5 size-3.5" /> Запустить для {selected.name}</Button>}</CardContent></Card>
