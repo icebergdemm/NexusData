@@ -1,21 +1,31 @@
 import { useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router-dom"
 import { AlertCircle, Inbox, RefreshCw, Search, Ticket } from "lucide-react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
-import type { TicketsListResponse } from "./types"
+import type { TicketRow, TicketsListResponse } from "./types"
 import { TicketInboxList, TicketInboxSkeleton } from "./components/ticket-inbox"
 import { filterTickets, normalizeTicketListStatus } from "./components/ticket-utils"
+import { TicketActionsMenu } from "./TicketActionsMenu"
+import { TicketMemberDialog } from "./TicketMemberDialog"
+import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
 
 export function TicketsListPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const status = normalizeTicketListStatus(searchParams.get("status"))
   const [search, setSearch] = useState("")
+  const [deleteTicket, setDeleteTicket] = useState<TicketRow | null>(null)
+  const [restoreTicket, setRestoreTicket] = useState<TicketRow | null>(null)
+  const [memberTicketId, setMemberTicketId] = useState<number | null>(null)
+  const [removeMemberTicketId, setRemoveMemberTicketId] = useState<number | null>(null)
+  const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ["tickets", status],
     queryFn: () => api.get<TicketsListResponse>(`/api/v1/admin/tickets?status=${status}`),
@@ -26,6 +36,39 @@ export function TicketsListPage() {
   const tickets = query.data?.tickets
   const filteredTickets = useMemo(() => filterTickets(tickets ?? [], search, "all"), [tickets, search])
   const waitingCount = tickets?.filter((ticket) => ticket.awaiting_admin && ticket.status !== "closed").length ?? 0
+  const canAssign = query.data?.permissions?.can_assign ?? query.data?.can_assign ?? false
+  const canClose = query.data?.permissions?.can_close ?? query.data?.can_edit ?? false
+  const canDelete = query.data?.permissions?.can_delete ?? query.data?.can_delete ?? false
+  const hasTicketActions = canAssign || canClose || canDelete
+
+  const closeMutation = useMutation({
+    mutationFn: (ticket: TicketRow) => api.post(`/api/v1/admin/tickets/${ticket.id}/close`),
+    onSuccess: () => {
+      toast.success("Тикет закрыт")
+      void queryClient.invalidateQueries({ queryKey: ["tickets"] })
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (ticket: TicketRow) => api.post(`/api/v1/admin/tickets/${ticket.id}/delete`),
+    onSuccess: () => {
+      toast.success("Тикет перемещён в удалённые")
+      setDeleteTicket(null)
+      void queryClient.invalidateQueries({ queryKey: ["tickets"] })
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
+
+  const restoreMutation = useMutation({
+    mutationFn: (ticket: TicketRow) => api.post(`/api/v1/admin/tickets/${ticket.id}/restore`),
+    onSuccess: () => {
+      toast.success("Тикет восстановлен")
+      setRestoreTicket(null)
+      void queryClient.invalidateQueries({ queryKey: ["tickets"] })
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
 
   const handleStatusChange = (value: string) => {
     const nextStatus = normalizeTicketListStatus(value)
@@ -83,9 +126,65 @@ export function TicketsListPage() {
             <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()}>Повторить</Button>
           </div>
         ) : (
-          <TicketInboxList tickets={filteredTickets} ticketTypes={query.data?.ticket_config.types ?? {}} returnStatus={status} />
+          <TicketInboxList
+            tickets={filteredTickets}
+            ticketTypes={query.data?.ticket_config.types ?? {}}
+            returnStatus={status}
+            renderActions={hasTicketActions ? (ticket) => {
+              const isDeleted = ticket.deleted_at !== null
+              const isOpen = !isDeleted && ticket.status !== "closed"
+              const hasActions = (isOpen && (canAssign || canClose)) || (!isOpen && canDelete)
+              if (!hasActions) return null
+              return (
+                <TicketActionsMenu
+                  ticket={ticket}
+                  canAssign={canAssign}
+                  canEdit={canClose}
+                  canDelete={canDelete}
+                  disabled={closeMutation.isPending || deleteMutation.isPending || restoreMutation.isPending}
+                  onAddMember={() => setMemberTicketId(ticket.id)}
+                  onRemoveMember={() => setRemoveMemberTicketId(ticket.id)}
+                  onClose={() => closeMutation.mutate(ticket)}
+                  onDelete={() => setDeleteTicket(ticket)}
+                  onRestore={() => setRestoreTicket(ticket)}
+                />
+              )
+            } : undefined}
+          />
         )}
       </section>
+
+      <ConfirmDialog
+        open={deleteTicket !== null}
+        onOpenChange={(open) => !deleteMutation.isPending && !open && setDeleteTicket(null)}
+        title={`Удалить тикет #${deleteTicket?.id ?? ""}?`}
+        description={deleteTicket ? `«${deleteTicket.title}» будет убран из обычных списков. История сохранится на 30 дней, после чего тикет и сообщения будут удалены окончательно.` : undefined}
+        confirmLabel={deleteMutation.isPending ? "Удаление..." : "Удалить тикет"}
+        confirmDisabled={deleteMutation.isPending}
+        onConfirm={() => deleteTicket && deleteMutation.mutate(deleteTicket)}
+      />
+
+      <ConfirmDialog
+        open={restoreTicket !== null}
+        onOpenChange={(open) => !restoreMutation.isPending && !open && setRestoreTicket(null)}
+        title={`Восстановить тикет #${restoreTicket?.id ?? ""}?`}
+        description={restoreTicket ? `«${restoreTicket.title}» снова появится в списке закрытых тикетов. Discord-канал не восстанавливается.` : undefined}
+        confirmLabel={restoreMutation.isPending ? "Восстановление..." : "Восстановить тикет"}
+        confirmDisabled={restoreMutation.isPending}
+        onConfirm={() => restoreTicket && restoreMutation.mutate(restoreTicket)}
+      />
+
+      <TicketMemberDialog
+        open={memberTicketId !== null}
+        ticketId={memberTicketId}
+        onOpenChange={(open) => !open && setMemberTicketId(null)}
+      />
+
+      <TicketMemberRemoveDialog
+        open={removeMemberTicketId !== null}
+        ticketId={removeMemberTicketId}
+        onOpenChange={(open) => !open && setRemoveMemberTicketId(null)}
+      />
     </div>
   )
 }
