@@ -65,8 +65,23 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "respect_server_monster_settings": True,
         "use_swarm_behavior": True,
         "submarine_adaptive_influence": 0.25,
+        # Политика столкновения с волной: волна в бою, если монстрам нанесён
+        # урон; без боя блокирует только unengaged_block_timeout_seconds;
+        # корабль дальше bypass_distance_meters => волна обойдена.
+        "unengaged_block_timeout_seconds": 60,
+        "bypass_distance_meters": 200,
+        # Минимальная дистанция спавна от корабля, метров.
+        "spawn_min_distance_meters": 100,
+        # 0 = без ограничений; null = по single_wave_mode.
+        "max_simultaneous_waves": None,
+        # Схемы позиционирования спавна (перед/сверху/снизу, не сзади).
+        "spawn_scheme_enabled": True,
     }
     config["global"] = {**defaults, **global_config}
+    # null = derive from single_wave_mode on the plugin side; materialize the
+    # effective value here so the UI/LLM can edit it as a plain number.
+    if config["global"].get("max_simultaneous_waves") is None:
+        config["global"]["max_simultaneous_waves"] = 1 if config["global"].get("single_wave_mode", True) else 0
     waves = config.get("waves") if isinstance(config.get("waves"), list) else []
     normalized_waves = []
     for raw_wave in waves:
@@ -80,6 +95,8 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
             "spawn_distance": 0,
             "reset_time": 0,
             "play_dead_probability": -1,
+            # null = авто: abyss/moloch/cave в названии => неблокирующая.
+            "non_blocking": None,
             **raw_wave,
         }
         monsters = wave.get("monsters") if isinstance(wave.get("monsters"), list) else []
@@ -123,6 +140,11 @@ def _serialize(row: MonsterSpawnControl) -> dict:
             "event_threshold": telemetry.get("event_threshold", 0.2),
             "pending_waves": telemetry.get("pending_waves", 0),
             "known_submarines": len(submarines),
+            # Политика столкновения и одновременные волны.
+            "blocking_wave_count": telemetry.get("blocking_wave_count", 0),
+            "max_simultaneous_waves": telemetry.get("max_simultaneous_waves", 1),
+            "last_spawn_scheme": telemetry.get("last_spawn_scheme"),
+            "last_spawn_zone": telemetry.get("last_spawn_zone"),
         },
         "desired_revision": row.desired_revision or 0,
         "applied_revision": row.applied_revision or 0,

@@ -62,11 +62,17 @@ EDITABLE_FLOAT_KEYS: Dict[str, Tuple[float, float, float]] = {
     "bypass_difficulty_escalation": (0.0, 1.0, 0.2),
     "struggle_delay_max_factor": (1.0, 4.0, 0.5),
     "pace_intercept_cooldown_seconds": (30.0, 900.0, 180.0),
+    # Политика столкновения с волной и спавн-схемы.
+    "unengaged_block_timeout_seconds": (15.0, 300.0, 30.0),
+    "bypass_distance_meters": (100.0, 400.0, 50.0),
+    "spawn_min_distance_meters": (50.0, 400.0, 50.0),
 }
 
 EDITABLE_INT_KEYS: Dict[str, Tuple[int, int, int]] = {
     "pace_intercept_max_per_round": (1, 10, 3),
     "learned_waves_max": (5, 80, 20),
+    # 0 = без ограничений по одновременным волнам.
+    "max_simultaneous_waves": (0, 4, 1),
 }
 
 EDITABLE_BOOL_KEYS = {
@@ -75,6 +81,7 @@ EDITABLE_BOOL_KEYS = {
     "intensity_gate_enabled",
     "learned_waves_enabled",
     "pace_intercept_prefer_learned",
+    "spawn_scheme_enabled",
 }
 
 VANILLA_FLOAT_KEYS: Dict[str, Tuple[float, float, float]] = {
