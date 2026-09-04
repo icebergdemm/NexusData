@@ -30,7 +30,7 @@ import { ArchiveLegend, TicketConversation } from "./components/ticket-conversat
 import { TicketContextPanel } from "./components/ticket-context"
 import { TicketInboxList, TicketInboxSkeleton } from "./components/ticket-inbox"
 import { ArchiveStatusBadge, TicketStatusBadge } from "./components/ticket-shared"
-import { filterTickets, normalizeTicketListStatus, ticketListHref } from "./components/ticket-utils"
+import { filterTickets, identityName, normalizeTicketListStatus, ticketListHref } from "./components/ticket-utils"
 import { TicketActionsMenu } from "./TicketActionsMenu"
 import { TicketMemberDialog } from "./TicketMemberDialog"
 import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
@@ -370,7 +370,11 @@ export function TicketDetailPage() {
   const canAssign = !isDeleted && (data.permissions?.can_assign ?? data.can_assign ?? data.can_edit)
   const canDelete = data.permissions?.can_delete ?? data.can_delete ?? false
   const archiveRisk = isArchiveIncomplete || data.archive?.state === "failed" || data.archive?.state === "partial" || data.archive?.state === "pending" || Boolean(data.archive?.failed_count)
-  const creatorName = ticket.creator_display_name || ticket.creator_username || "Неизвестный пользователь"
+  const creatorName = identityName(
+    data.player?.forced_display_name || data.player?.player_last_time_name,
+    ticket.creator_display_name || ticket.creator_username,
+    "Неизвестный пользователь",
+  )
   const participants = data.participants ?? []
 
   const inboxPane = (

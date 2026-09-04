@@ -178,6 +178,7 @@ export interface TicketMentionProfile {
   discord_id: string
   username: string | null
   display_name: string
+  platform_display_name?: string | null
   avatar_url: string | null
   player_id: number | null
   profile_url: string | null

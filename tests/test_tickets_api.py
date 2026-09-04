@@ -314,12 +314,14 @@ def test_ticket_mention_profiles_resolve_linked_player_and_nested_forward():
         "discord_id": "987047045498011658",
         "username": "volkov",
         "display_name": "Мичман Дмитрий Волков",
+        "platform_display_name": "Дмитрий Волков",
         "avatar_url": "https://cdn.discordapp.com/avatar.png",
         "player_id": 17,
         "profile_url": "/players/17",
         "is_staff": False,
     }
     assert profiles["123456789012345678"]["display_name"] == "Свидетель"
+    assert profiles["123456789012345678"]["platform_display_name"] is None
     assert profiles["123456789012345678"]["player_id"] is None
 
 
@@ -361,6 +363,7 @@ def test_ticket_mention_profiles_resolve_player_linked_through_nexus_account():
         )
 
     assert profiles["987047045498011658"]["player_id"] == 71
+    assert profiles["987047045498011658"]["platform_display_name"] == "Сергей Аверин"
     assert profiles["987047045498011658"]["profile_url"] == "/players/71"
     assert profiles["987047045498011658"]["is_staff"] is True
     engine.dispose()

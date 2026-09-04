@@ -24,8 +24,28 @@ export function initials(name: string | null | undefined): string {
   return clean.slice(0, 2).toUpperCase()
 }
 
-export function participantName(participant: TicketParticipant | null | undefined): string {
-  return participant?.display_name || participant?.username || participant?.admin?.display_name || participant?.player?.forced_display_name || participant?.player?.player_last_time_name || "Неизвестный участник"
+export function identityName(
+  platformName: string | null | undefined,
+  discordName: string | null | undefined,
+  fallback = "Неизвестный участник",
+): string {
+  const platform = platformName?.trim()
+  const discord = discordName?.trim()
+  if (!platform) return discord || fallback
+  if (!discord || platform.localeCompare(discord, undefined, { sensitivity: "accent" }) === 0) return platform
+  return `${platform} (${discord})`
+}
+
+export function participantName(
+  participant: TicketParticipant | null | undefined,
+  discordOverride?: string | null,
+): string {
+  const platformName = participant?.player?.forced_display_name || participant?.player?.player_last_time_name
+  const discordName = discordOverride
+    || participant?.display_name
+    || participant?.username
+    || participant?.admin?.display_name
+  return identityName(platformName, discordName)
 }
 
 export function participantRoleLabel(participant: TicketParticipant): string {

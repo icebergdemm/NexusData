@@ -31,7 +31,7 @@ import type {
   TicketReferenceSnapshot,
 } from "../types"
 import { PersonAvatar } from "./ticket-shared"
-import { formatBytes, participantName } from "./ticket-utils"
+import { formatBytes, identityName, participantName } from "./ticket-utils"
 
 const IMAGE_EXTENSIONS = /\.(avif|bmp|gif|jpe?g|png|webp)$/i
 const VIDEO_EXTENSIONS = /\.(m4v|mov|mp4|webm)$/i
@@ -301,7 +301,7 @@ export function AttachmentGallery({ attachments, compact = false }: { attachment
 }
 
 function MentionChip({ discordId, profile }: { discordId: string; profile?: TicketMentionProfile }) {
-  const label = `@${profile?.display_name || profile?.username || discordId}`
+  const label = `@${identityName(profile?.platform_display_name, profile?.display_name || profile?.username, discordId)}`
   const discordAppUrl = `discord://-/users/${encodeURIComponent(discordId)}`
   const discordWebUrl = `https://discord.com/users/${encodeURIComponent(discordId)}`
   const chip = (
@@ -471,7 +471,8 @@ function findParticipant(message: TicketMessageRow, participants: TicketParticip
 }
 
 function MessageAuthor({ message, participant }: { message: TicketMessageRow; participant?: TicketParticipant }) {
-  const name = message.author_display_name || message.author_username || participantName(participant)
+  const discordName = message.author_display_name || message.author_username
+  const name = participantName(participant, discordName)
   const playerId = participant?.player?.player_id ?? participant?.player_id
   const nameNode = playerId ? (
     <PlayerHoverLink playerId={playerId} className="font-semibold text-foreground underline-offset-2 hover:underline">{name}</PlayerHoverLink>
@@ -523,7 +524,7 @@ export function TicketConversation({
         const showDay = day !== previousDay
         previousDay = day
         const participant = findParticipant(message, participants)
-        const authorName = message.author_display_name || message.author_username || participantName(participant)
+        const authorName = participantName(participant, message.author_display_name || message.author_username)
         return (
           <div key={message.id}>
             {showDay ? (

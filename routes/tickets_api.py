@@ -673,6 +673,10 @@ def _ticket_mention_profiles(
             "discord_id": discord_id,
             "username": member.username if member else None,
             "display_name": display_name,
+            "platform_display_name": (
+                (player.forced_display_name or player.player_last_time_name)
+                if player and player_visible else None
+            ),
             "avatar_url": (
                 (member.avatar if member else None)
                 or _admin_avatar(linked_admin)

@@ -11,13 +11,12 @@ import {
   PersonAvatar,
   TicketStatusBadge,
 } from "./ticket-shared"
-import { formatBytes, participantName, participantRoleLabel } from "./ticket-utils"
+import { formatBytes, identityName, participantName, participantRoleLabel } from "./ticket-utils"
 
 function ParticipantRow({ participant }: { participant: TicketParticipant }) {
   const player = participant.player
   const playerId = player?.player_id ?? participant.player_id
   const name = participantName(participant)
-  const playerName = player?.forced_display_name || player?.player_last_time_name
   return (
     <div className="flex gap-3 py-2.5">
       <PersonAvatar
@@ -37,8 +36,8 @@ function ParticipantRow({ participant }: { participant: TicketParticipant }) {
           <span>{participantRoleLabel(participant)}</span>
           {participant.message_count != null ? <span>· {participant.message_count} сообщ.</span> : null}
         </div>
-        {playerName ? (
-          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">Игрок: {playerName}{player?.online ? " · в игре" : ""}</p>
+        {player?.online ? (
+          <p className="mt-0.5 truncate text-[10px] text-success">В игре</p>
         ) : participant.status_label ? <p className="mt-0.5 text-[10px] text-muted-foreground">{participant.status_label}</p> : null}
       </div>
     </div>
@@ -60,6 +59,7 @@ export function TicketContextPanel({
   const participants = data.participants ?? []
   const assigned = ticket.assigned_admin
   const playerName = data.player?.forced_display_name || data.player?.player_last_time_name
+  const creatorName = identityName(playerName, ticket.creator_display_name || ticket.creator_username, "Автор тикета")
 
   return (
     <aside aria-label="Контекст тикета" className="flex h-full min-h-0 flex-col bg-background">
@@ -148,15 +148,15 @@ export function TicketContextPanel({
           ) : (
             <div className="flex items-center gap-3 py-2.5">
               <PersonAvatar
-                name={ticket.creator_display_name || ticket.creator_username}
+                name={creatorName}
                 url={ticket.creator_avatar_url || data.player?.avatar_url || data.player?.steam_avatar_url}
                 status={(data.player?.online ?? data.player?.is_online) ? "in_game" : undefined}
               />
               <div className="min-w-0">
                 {data.player ? (
-                  <PlayerHoverLink playerId={data.player.player_id} className="block truncate text-sm font-medium underline-offset-2 hover:underline">{ticket.creator_display_name || ticket.creator_username || playerName || "Автор тикета"}</PlayerHoverLink>
-                ) : <p className="truncate text-sm font-medium">{ticket.creator_display_name || ticket.creator_username || "Автор тикета"}</p>}
-                <p className="mt-0.5 text-[10px] text-muted-foreground">Автор тикета{playerName ? ` · ${playerName}` : ""}</p>
+                  <PlayerHoverLink playerId={data.player.player_id} className="block truncate text-sm font-medium underline-offset-2 hover:underline">{creatorName}</PlayerHoverLink>
+                ) : <p className="truncate text-sm font-medium">{creatorName}</p>}
+                <p className="mt-0.5 text-[10px] text-muted-foreground">Автор тикета</p>
               </div>
             </div>
           )}
