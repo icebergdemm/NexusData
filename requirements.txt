@@ -32,4 +32,4 @@ python-docx==1.1.2
 openpyxl==3.1.2
 
 # Discord bot (discord_bot/bot.py) — runs in-process, see discord_bot.supervise_bot()
-discord.py==2.3.2
+discord.py==2.6.4

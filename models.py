@@ -529,7 +529,7 @@ class DiscordBotAction(Base):
     payload = Column(JSON, default=lambda: {})
     queued_by_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True)
     queued_at = Column(DateTime, default=func.now())
-    executed = Column(Integer, default=0)  # 0=pending, 1=done, 2=failed
+    executed = Column(Integer, default=0)  # 0=pending, 1=done, 2=failed, 3=running
     executed_at = Column(DateTime, nullable=True)
     error_message = Column(String(500), nullable=True)
     # Structured response data for request/response-style actions (e.g.
@@ -570,12 +570,18 @@ class Ticket(Base):
     ticket_type = Column(String(50), nullable=False)  # help, player_report, bug, admin_report, department_report
     title = Column(String(255), nullable=False)
     status = Column(String(20), nullable=False, default="open", index=True)  # open, waiting, closed
+    # Evidence state is deliberately separate from the workflow status.  A
+    # Discord channel can disappear outside NexusData before its history and
+    # attachments have been archived; that must remain an explicit exception,
+    # never look like a successfully closed ticket.
+    archive_state = Column(String(20), nullable=True, index=True)
     discord_channel_id = Column(String(25), nullable=True, index=True)
     creator_discord_id = Column(String(25), nullable=False)
     creator_username = Column(String(255), nullable=True)
     creator_display_name = Column(String(255), nullable=True)
     player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
     assigned_role_ids = Column(JSON, default=lambda: [])  # Discord role IDs with access
+    assigned_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
     closed_by = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=func.now())
     closed_at = Column(DateTime, nullable=True)
@@ -598,7 +604,13 @@ class TicketMessage(Base):
     author_avatar_url = Column(String(500), nullable=True)
     content = Column(String(4000), nullable=True)
     attachments = Column(JSON, default=lambda: [])  # [{url, filename, content_type}]
+    # Immutable snapshot for a Discord reply/forward. Native forwards keep
+    # their content, embeds and locally archived media here because Discord's
+    # outer message is normally empty and the source can later disappear.
+    reference_snapshot = Column(JSON, nullable=True)
     is_bot = Column(Integer, default=0)  # 1 = sent from web panel via bot
+    delivery_status = Column(String(20), nullable=False, default="received")
+    delivery_error = Column(String(1000), nullable=True)
     created_at = Column(DateTime, default=func.now())
 
 

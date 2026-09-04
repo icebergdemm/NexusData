@@ -45,7 +45,12 @@ export function ImageLightbox({
   if (!current) return null
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-sm animate-in fade-in-0">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Просмотр изображения ${current.filename}`}
+      className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-sm animate-in fade-in-0"
+    >
       {/* Top bar */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 text-white/90 shrink-0">
         <div className="min-w-0 flex-1 truncate text-sm">
@@ -53,13 +58,13 @@ export function ImageLightbox({
           {total > 1 && <span className="ml-2 text-white/60 text-xs">{index + 1} / {total}</span>}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <Button size="icon-sm" variant="ghost" className="text-white hover:bg-white/10 hover:text-white" onClick={() => window.open(current.url, "_blank")} title="Открыть в новой вкладке">
+          <Button size="icon-sm" variant="ghost" className="text-white hover:bg-white/10 hover:text-white" onClick={() => window.open(current.url, "_blank")} title="Открыть в новой вкладке" aria-label="Открыть изображение в новой вкладке">
             <ExternalLink className="size-4" />
           </Button>
-          <a href={current.url} download={current.filename} className="inline-flex size-7 items-center justify-center rounded-md text-white hover:bg-white/10" title="Скачать">
+          <a href={current.url} download={current.filename} className="inline-flex size-7 items-center justify-center rounded-md text-white hover:bg-white/10" title="Скачать" aria-label={`Скачать ${current.filename}`}>
             <Download className="size-4" />
           </a>
-          <Button size="icon-sm" variant="ghost" className="text-white hover:bg-white/10 hover:text-white" onClick={onClose} title="Закрыть (Esc)">
+          <Button size="icon-sm" variant="ghost" className="text-white hover:bg-white/10 hover:text-white" onClick={onClose} title="Закрыть (Esc)" aria-label="Закрыть просмотр изображения">
             <X className="size-5" />
           </Button>
         </div>
@@ -113,6 +118,7 @@ export function ImageLightbox({
               onClick={() => onIndexChange(i)}
               className={`relative h-12 w-16 shrink-0 overflow-hidden rounded border-2 transition-all ${i === index ? "border-white scale-105" : "border-white/20 opacity-60 hover:opacity-100 hover:border-white/40"}`}
               title={img.filename}
+              aria-label={`Показать изображение ${i + 1}: ${img.filename}`}
             >
               <img src={img.url} alt="" className="h-full w-full object-cover" />
             </button>

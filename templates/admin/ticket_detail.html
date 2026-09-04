@@ -19,6 +19,8 @@
 .chat-time { font-size:10px; color:var(--gray-dark); margin-top:4px; }
 .chat-attachments { margin-top:6px; display:flex; flex-wrap:wrap; gap:6px; }
 .chat-attachment { font-size:11px; color:var(--primary-blue); text-decoration:none; padding:3px 8px; background:rgba(26,104,222,.1); border-radius:4px; border:1px solid rgba(26,104,222,.3); }
+.chat-reference { margin:8px 0; padding:8px 10px; border-left:2px solid var(--primary-blue); background:rgba(26,104,222,.07); }
+.chat-reference-label { color:var(--gray-dark); font-size:10px; margin-bottom:4px; text-transform:uppercase; }
 .chat-input-area { border-top:1px solid var(--stroke-01); padding:14px 20px; display:flex; gap:10px; align-items:center; }
 .chat-input { flex:1; background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:8px; padding:10px 14px; color:var(--white); font-size:13px; font-family:inherit; resize:none; min-height:40px; max-height:120px; }
 .chat-input:focus { outline:none; border-color:var(--primary-blue); }
@@ -35,7 +37,7 @@
 
 <div class="ticket-header">
   <h2>🎫 #{{ ticket.id }} - {{ ticket.title }}</h2>
-  {% if ticket.status != 'closed' and check_permission(admin, 'tickets', 'edit') %}
+  {% if ticket.status != 'closed' and ticket.archive_state != 'incomplete' and check_permission(admin, 'tickets', 'close') %}
   <form method="post" action="/adminold/tickets/{{ ticket.id }}/close" style="margin-left:auto;"
         onsubmit="return confirm('Закрыть тикет?');">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
@@ -43,6 +45,12 @@
   </form>
   {% endif %}
 </div>
+
+{% if ticket.archive_state == 'incomplete' %}
+<div style="margin-bottom:16px; border:1px solid rgba(255,80,80,.45); background:rgba(255,80,80,.1); color:#ff9a9a; padding:12px 14px; font-size:13px;">
+  ⚠ Discord-канал удалён вне NexusData. Архив может быть неполным; тикет оставлен только для проверки и восстановления доказательств.
+</div>
+{% endif %}
 
 <!-- Sidebar info -->
 <div class="ticket-sidebar" style="margin-bottom:16px;">
@@ -80,6 +88,7 @@
 <div class="chat-container">
   <div class="chat-messages" id="chat-messages">
     {% for msg in messages %}
+    {% set rendered = serialized_messages.get(msg.id) %}
     <div class="chat-msg">
       {% if msg.author_avatar_url %}
       <img class="chat-avatar" src="{{ msg.author_avatar_url }}" alt="">
@@ -94,10 +103,25 @@
         {% if msg.content %}
         <div class="chat-text">{{ msg.content }}</div>
         {% endif %}
-        {% if msg.attachments %}
+        {% if rendered and rendered.reference_snapshot %}
+        {% set reference = rendered.reference_snapshot %}
+        <div class="chat-reference">
+          <div class="chat-reference-label">{{ 'Пересланное сообщение' if reference.kind == 'forward' else 'Ответ на сообщение' }}</div>
+          {% if reference.author %}<div class="chat-author">{{ reference.author.display_name or reference.author.username or 'Автор не сохранён' }}</div>{% endif %}
+          {% if reference.content %}<div class="chat-text">{{ reference.content }}</div>{% endif %}
+          {% if reference.attachments %}
+          <div class="chat-attachments">
+            {% for att in reference.attachments %}
+            {% if att.url %}<a href="{{ att.download_url or att.url }}" target="_blank" rel="noreferrer" class="chat-attachment">📎 {{ att.filename or 'Файл' }}</a>{% endif %}
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% if rendered and rendered.attachments %}
         <div class="chat-attachments">
-          {% for att in msg.attachments %}
-          <a href="{{ att.url if att.url is defined else att }}" target="_blank" class="chat-attachment">📎 {{ att.filename if att.filename is defined else 'Файл' }}</a>
+          {% for att in rendered.attachments %}
+          {% if att.url %}<a href="{{ att.download_url or att.url }}" target="_blank" rel="noreferrer" class="chat-attachment">📎 {{ att.filename or 'Файл' }}</a>{% endif %}
           {% endfor %}
         </div>
         {% endif %}
@@ -110,12 +134,16 @@
     {% endif %}
   </div>
 
-  {% if ticket.status != 'closed' and check_permission(admin, 'tickets', 'edit') %}
+  {% if ticket.status != 'closed' and ticket.archive_state != 'incomplete' and check_permission(admin, 'tickets', 'reply') %}
   <form method="post" action="/adminold/tickets/{{ ticket.id }}/send" class="chat-input-area">
     <input type="hidden" name="csrf_token" value="{{ request.session.get('csrf_token','') }}">
     <textarea name="content" class="chat-input" placeholder="Написать сообщение..." rows="1"></textarea>
     <button type="submit" class="chat-send">Отправить</button>
   </form>
+  {% elif ticket.archive_state == 'incomplete' %}
+  <div style="padding:14px 20px; border-top:1px solid rgba(255,80,80,.45); text-align:center; color:#ff9a9a; font-size:13px;">
+    Discord-канал недоступен — режим только для чтения, архив требует проверки.
+  </div>
   {% elif ticket.status == 'closed' %}
   <div style="padding:14px 20px; border-top:1px solid var(--stroke-01); text-align:center; color:var(--gray); font-size:13px;">
     Тикет закрыт {{ ticket.closed_by or '' }} {{ ticket.closed_at|msk if ticket.closed_at else '' }}
@@ -140,10 +168,37 @@ if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
     return d.innerHTML;
   }
 
+  function escapeAttr(text) {
+    return escapeHtml(String(text || '')).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function renderAttachments(attachments) {
+    if (!attachments || attachments.length === 0) return '';
+    var html = '<div class="chat-attachments">';
+    attachments.forEach(function(att) {
+      var fname = att.filename || 'Файл';
+      var url = att.download_url || att.url;
+      if (!url) return;
+      html += '<a href="' + escapeAttr(url) + '" target="_blank" rel="noreferrer" class="chat-attachment">📎 ' + escapeHtml(fname) + '</a>';
+    });
+    return html + '</div>';
+  }
+
+  function renderReference(reference) {
+    if (!reference) return '';
+    var label = reference.kind === 'forward' ? 'Пересланное сообщение' : 'Ответ на сообщение';
+    var author = reference.author && (reference.author.display_name || reference.author.username);
+    return '<div class="chat-reference">' +
+      '<div class="chat-reference-label">' + label + '</div>' +
+      (author ? '<div class="chat-author">' + escapeHtml(author) + '</div>' : '') +
+      (reference.content ? '<div class="chat-text">' + escapeHtml(reference.content) + '</div>' : '') +
+      renderAttachments(reference.attachments) + '</div>';
+  }
+
   function renderMessage(msg) {
     var avatarHtml;
     if (msg.author_avatar_url) {
-      avatarHtml = '<img class="chat-avatar" src="' + msg.author_avatar_url + '" alt="">';
+      avatarHtml = '<img class="chat-avatar" src="' + escapeAttr(msg.author_avatar_url) + '" alt="">';
     } else {
       var initial = (msg.author_display_name || msg.author_username || '?')[0].toUpperCase();
       avatarHtml = '<div class="chat-avatar-placeholder">' + initial + '</div>';
@@ -153,20 +208,12 @@ if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
     var authorName = escapeHtml(msg.author_display_name || msg.author_username || msg.author_discord_id);
     var content = msg.content ? '<div class="chat-text">' + escapeHtml(msg.content) + '</div>' : '';
 
-    var attachHtml = '';
-    if (msg.attachments && msg.attachments.length > 0) {
-      attachHtml = '<div class="chat-attachments">';
-      msg.attachments.forEach(function(att) {
-        var fname = att.filename || 'Файл';
-        var url = att.url || att;
-        attachHtml += '<a href="' + url + '" target="_blank" class="chat-attachment">📎 ' + escapeHtml(fname) + '</a>';
-      });
-      attachHtml += '</div>';
-    }
+    var referenceHtml = renderReference(msg.reference_snapshot);
+    var attachHtml = renderAttachments(msg.attachments);
 
     return '<div class="chat-msg">' + avatarHtml +
       '<div class="chat-bubble"><div class="chat-author">' + authorName + botBadge + '</div>' +
-      content + attachHtml +
+      referenceHtml + content + attachHtml +
       '<div class="chat-time">' + msg.created_at + '</div></div></div>';
   }
 

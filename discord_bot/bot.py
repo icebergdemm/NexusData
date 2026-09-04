@@ -14,19 +14,29 @@ bottom of this file for how the rest of the app drives this bot.
 """
 
 import asyncio
+import hashlib
 import logging
 import json
 import os
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, Tuple
 
+import aiofiles
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
 from config import get_settings
 from discord_bot import data as bot_data
+from services_ticket_media import (
+    TicketMediaQuotaExceeded,
+    new_storage_key,
+    reserve_ticket_media,
+    storage_path,
+)
 
 settings = get_settings()
 
@@ -118,7 +128,7 @@ _rating_message_ids = _load_rating_ids()
 
 @bot.event
 async def on_ready():
-    global FORWARD_CHANNEL_ID, RATING_CHANNEL_ID
+    global FORWARD_CHANNEL_ID, RATING_CHANNEL_ID, _ticket_ipc_recovery_done
     logger.info(f"Bot ready: {bot.user} (guilds: {len(bot.guilds)})")
 
     # Проверяем GUILD_ID сразу при подключении, а не при первой попытке выдать
@@ -157,6 +167,24 @@ async def on_ready():
     publish_department_ratings_task.start()
     round_status_task.start()
     reconcile_ticket_channels_task.start()
+    if not _ticket_ipc_recovery_done:
+        try:
+            recovered = await asyncio.to_thread(bot_data.recover_interrupted_ticket_bot_actions)
+            _ticket_ipc_recovery_done = True
+            if recovered:
+                logger.warning("Recovered %s interrupted ticket Discord action(s)", recovered)
+        except Exception:
+            logger.exception("Could not recover interrupted ticket Discord actions on ready")
+    if not ticket_bot_action_task.is_running():
+        ticket_bot_action_task.start()
+    if settings.ticket_history_backfill_enabled:
+        ticket_history_backfill_task.change_interval(
+            seconds=float(settings.ticket_history_backfill_interval_seconds)
+        )
+        if not ticket_history_backfill_task.is_running():
+            # discord.ext.tasks executes its first iteration immediately, so
+            # old CDN-only ticket evidence starts migrating on bot startup.
+            ticket_history_backfill_task.start()
     mute_voice_cleanup_task.start()
 
     # Initial ticket status refresh
@@ -673,22 +701,17 @@ async def round_status_task():
 
 @tasks.loop(minutes=30)
 async def reconcile_ticket_channels_task():
-    """Закрывает на сайте тикеты, чей канал в Discord уже не существует.
+    """Marks tickets incomplete when their Discord channel vanished out of band.
 
     Раньше единственный способ закрыть тикет — кнопка «Закрыть обращение» —
     почти всегда падал с ошибкой из-за бага с ticket_id=None у переживших
-    рестарт кнопок (см. close_button). Сотрудники в ответ просто удаляли
-    канал руками через Discord, не трогая сайт: канал пропадал, а запись
-    Ticket оставалась status="open" НАВСЕГДА — сайт показывал такие
-    обращения как открытые сколь угодно долго после того, как их фактически
-    закрыли. Кнопка теперь чинится (self.ticket_id разрешается по каналу),
-    но эта задача разгребает уже накопившиеся зависшие записи и страхует
-    на случай, если канал всё-таки удалят не через бота.
+    рестарт кнопок (см. close_button). Ручное удаление канала через Discord не
+    является доказательством завершённой архивации, поэтому такие записи
+    остаются открытыми и получают явный статус incomplete для проверки.
 
-    Существование канала проверяется через guild.get_channel: в отличие от
-    участников гильдии (см. sync_members_task), кэш каналов не урезается
-    настройками intents/chunking и надёжно отражает реальность без лишнего
-    HTTP-запроса на каждый тикет.
+    Кэш используется как быстрый положительный ответ. Его отсутствие не
+    считается удалением: перед SQL-закрытием это подтверждается Discord API,
+    иначе кратковременный cache miss мог закрыть живой тикет.
     """
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -700,29 +723,333 @@ async def reconcile_ticket_channels_task():
 
     closed_any = False
     for t in tickets:
+        # A manual Discord deletion is an evidence exception.  Keep it open
+        # for review; this reconciliation loop must not overwrite that state
+        # with a false SQL closure after the Gateway event has been handled.
+        if t.get("archive_state") == "incomplete":
+            continue
         channel_id = t.get("discord_channel_id")
         if not channel_id:
             continue
         try:
-            channel_exists = guild.get_channel(int(channel_id)) is not None
+            numeric_channel_id = int(channel_id)
         except (ValueError, TypeError):
             continue
-        if channel_exists:
+        if guild.get_channel(numeric_channel_id) is not None:
+            continue
+        try:
+            await bot.fetch_channel(numeric_channel_id)
+            continue
+        except discord.NotFound:
+            pass
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning(
+                "Не удалось проверить Discord-канал %s тикета #%s: %s",
+                channel_id,
+                t["id"],
+                type(exc).__name__,
+            )
             continue
 
         try:
             ok = await asyncio.to_thread(
-                bot_data.close_ticket, t["id"], "Авто-закрытие (канал в Discord удалён)",
+                bot_data.mark_ticket_archive_incomplete, t["id"],
             )
         except Exception as e:
-            logger.warning(f"Не удалось авто-закрыть тикет #{t['id']} с удалённым каналом: {e}")
+            logger.warning(f"Не удалось пометить тикет #{t['id']} как incomplete после удаления канала: {e}")
             continue
         if ok:
             closed_any = True
-            logger.info(f"Тикет #{t['id']} авто-закрыт: канал {channel_id} в Discord больше не существует")
+            logger.warning(
+                "Тикет #%s помечен как incomplete: канал %s удалён в Discord "
+                "до подтверждения архива",
+                t["id"],
+                channel_id,
+            )
 
     if closed_any:
         await refresh_ticket_status()
+
+
+_ticket_history_backfill_offset = 0
+_ticket_history_backfill_after: dict[int, int] = {}
+_ticket_history_backfill_retry: set[int] = set()
+
+
+@tasks.loop(minutes=15)
+async def ticket_history_backfill_task():
+    """Incrementally mirror evidence from every still-open ticket channel.
+
+    This is intentionally independent from channel reconciliation/closing:
+    it never changes ticket status, channel permissions, or deletes anything.
+    A bounded round-robin page lets large installations converge over several
+    iterations without monopolising the Discord connection.
+    """
+    global _ticket_history_backfill_offset
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        logger.warning("Ticket history backfill skipped: configured guild is unavailable")
+        return
+
+    tickets = [
+        item for item in await asyncio.to_thread(bot_data.get_open_tickets)
+        if item.get("discord_channel_id")
+    ]
+    if not tickets:
+        _ticket_history_backfill_offset = 0
+        _ticket_history_backfill_after.clear()
+        _ticket_history_backfill_retry.clear()
+        return
+
+    tickets.sort(key=lambda item: int(item["id"]))
+    valid_ids = {int(item["id"]) for item in tickets}
+    for stale_id in set(_ticket_history_backfill_after) - valid_ids:
+        _ticket_history_backfill_after.pop(stale_id, None)
+    _ticket_history_backfill_retry.intersection_update(valid_ids)
+
+    channel_limit = min(
+        len(tickets),
+        int(settings.ticket_history_backfill_channels_per_run),
+    )
+    start = _ticket_history_backfill_offset % len(tickets)
+    selected = [tickets[(start + index) % len(tickets)] for index in range(channel_limit)]
+    _ticket_history_backfill_offset = (start + channel_limit) % len(tickets)
+
+    page_limit = int(settings.ticket_history_backfill_messages_per_channel)
+    pause_seconds = float(settings.ticket_history_backfill_pause_seconds)
+    fetched_total = 0
+    captured_total = 0
+    failed_total = 0
+
+    for ticket in selected:
+        ticket_id = int(ticket["id"])
+        try:
+            channel_id = int(ticket["discord_channel_id"])
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ticket #%s history backfill skipped: invalid Discord channel id",
+                ticket_id,
+            )
+            continue
+
+        channel = guild.get_channel(channel_id)
+        if channel is None or not hasattr(channel, "history"):
+            # The separate reconciliation task owns missing-channel status.
+            logger.info(
+                "Ticket #%s history backfill skipped: Discord channel %s is not cached",
+                ticket_id,
+                channel_id,
+            )
+            continue
+
+        after_id = _ticket_history_backfill_after.get(ticket_id)
+        if not after_id:
+            # A fresh audit cycle gets one chance to clear a previous
+            # transient failure. A new failure below will add it back.
+            _ticket_history_backfill_retry.discard(ticket_id)
+        history_options = {"limit": page_limit, "oldest_first": True}
+        if after_id:
+            history_options["after"] = discord.Object(id=after_id)
+
+        fetched_for_ticket = 0
+        last_seen_id = after_id
+        page_completed = False
+        try:
+            async for historical in channel.history(**history_options):
+                fetched_for_ticket += 1
+                fetched_total += 1
+                last_seen_id = int(historical.id)
+                try:
+                    await _capture_ticket_message(ticket_id, historical, strict=False)
+                    captured_total += 1
+                    persisted = await asyncio.to_thread(
+                        bot_data.get_ticket_message_by_discord_id,
+                        ticket_id,
+                        str(historical.id),
+                    )
+                    if (
+                        not persisted
+                        or _attachment_collection_has_failure(
+                            ticket_id, (persisted or {}).get("attachments")
+                        )
+                        or _archive_has_failure(
+                            ticket_id, (persisted or {}).get("reference_snapshot")
+                        )
+                    ):
+                        failed_total += 1
+                        _ticket_history_backfill_retry.add(ticket_id)
+                        logger.warning(
+                            "Ticket #%s background history message %s still has "
+                            "incomplete media; it will be retried on the next audit cycle",
+                            ticket_id,
+                            historical.id,
+                        )
+                except Exception as exc:
+                    failed_total += 1
+                    _ticket_history_backfill_retry.add(ticket_id)
+                    logger.exception(
+                        "Ticket #%s background history message %s failed: %s",
+                        ticket_id,
+                        historical.id,
+                        type(exc).__name__,
+                    )
+                if pause_seconds:
+                    await asyncio.sleep(pause_seconds)
+            page_completed = True
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+            failed_total += 1
+            _ticket_history_backfill_retry.add(ticket_id)
+            logger.warning(
+                "Ticket #%s history page could not be read: %s",
+                ticket_id,
+                type(exc).__name__,
+            )
+        except Exception as exc:
+            failed_total += 1
+            _ticket_history_backfill_retry.add(ticket_id)
+            logger.exception(
+                "Ticket #%s unexpected history backfill error: %s",
+                ticket_id,
+                type(exc).__name__,
+            )
+
+        if last_seen_id:
+            _ticket_history_backfill_after[ticket_id] = last_seen_id
+        # Fewer than a full page means this pass reached the current end. Keep
+        # the high-water mark for cheap incremental scans; only restart from
+        # the beginning when this audit observed incomplete evidence.
+        if (
+            page_completed
+            and fetched_for_ticket < page_limit
+            and ticket_id in _ticket_history_backfill_retry
+        ):
+            _ticket_history_backfill_after.pop(ticket_id, None)
+
+    logger.info(
+        "Ticket history backfill page: channels=%s fetched=%s captured=%s failed=%s",
+        len(selected),
+        fetched_total,
+        captured_total,
+        failed_total,
+    )
+
+
+_ticket_ipc_tasks: set[asyncio.Task] = set()
+_ticket_ipc_active_ticket_ids: set[int] = set()
+_TICKET_IPC_CONCURRENCY = 2
+
+
+async def _run_ticket_ipc_action(action: dict) -> None:
+    action_id = int(action["id"])
+    payload = dict(action.get("payload") or {})
+    ticket_id = int(payload.get("ticket_id", 0) or 0)
+    try:
+        success, error = await execute_bot_action(action["action_type"], payload)
+        if action["action_type"] == "ticket_send_message" and payload.get("message_id"):
+            await asyncio.to_thread(
+                bot_data.set_ticket_message_delivery,
+                int(payload.get("ticket_id", 0)),
+                int(payload["message_id"]),
+                "sent" if success else "failed",
+                None if success else error,
+            )
+        if not success and action["action_type"] == "ticket_close_channel":
+            attempt = int(payload.get("_attempt", 0) or 0)
+            if attempt < 8:
+                delay = min(300, 5 * (2 ** attempt))
+                await asyncio.to_thread(
+                    bot_data.requeue_ticket_bot_action,
+                    action_id,
+                    error or "Evidence-first close will be retried",
+                    delay_seconds=delay,
+                    increment_attempt=True,
+                )
+                logger.warning(
+                    "Ticket close IPC action %s deferred for retry %s in %ss: %s",
+                    action_id,
+                    attempt + 1,
+                    delay,
+                    error,
+                )
+                return
+        await asyncio.to_thread(
+            bot_data.finish_ticket_bot_action,
+            action_id,
+            bool(success),
+            error,
+        )
+    except asyncio.CancelledError:
+        await asyncio.to_thread(
+            bot_data.requeue_ticket_bot_action,
+            action_id,
+            "Discord worker stopped during execution",
+            delay_seconds=2,
+        )
+        raise
+    except Exception as exc:
+        logger.exception("Ticket IPC action %s failed unexpectedly", action_id)
+        if action["action_type"] == "ticket_send_message" and payload.get("message_id"):
+            await asyncio.to_thread(
+                bot_data.set_ticket_message_delivery,
+                ticket_id,
+                int(payload["message_id"]),
+                "failed",
+                f"{type(exc).__name__}: {exc}",
+            )
+        if action["action_type"] == "ticket_close_channel":
+            attempt = int(payload.get("_attempt", 0) or 0)
+            if attempt < 8:
+                delay = min(300, 5 * (2 ** attempt))
+                await asyncio.to_thread(
+                    bot_data.requeue_ticket_bot_action,
+                    action_id,
+                    f"{type(exc).__name__}: {exc}",
+                    delay_seconds=delay,
+                    increment_attempt=True,
+                )
+                return
+        await asyncio.to_thread(
+            bot_data.finish_ticket_bot_action,
+            action_id,
+            False,
+            f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        if ticket_id:
+            _ticket_ipc_active_ticket_ids.discard(ticket_id)
+
+
+@tasks.loop(seconds=0.5)
+async def ticket_bot_action_task():
+    """Consume the durable ticket IPC queue owned by the Discord process."""
+    if not bot.is_ready():
+        return
+    available = _TICKET_IPC_CONCURRENCY - len(_ticket_ipc_tasks)
+    for _ in range(max(0, available)):
+        action = await asyncio.to_thread(bot_data.claim_next_ticket_bot_action)
+        if not action:
+            break
+        ticket_id = int((action.get("payload") or {}).get("ticket_id", 0) or 0)
+        if ticket_id and ticket_id in _ticket_ipc_active_ticket_ids:
+            # Preserve send-before-close ordering for one ticket. Requeueing the
+            # head is cheap and the next loop iteration runs after 500 ms.
+            await asyncio.to_thread(
+                bot_data.requeue_ticket_bot_action,
+                int(action["id"]),
+                "Waiting for an earlier action on the same ticket",
+            )
+            break
+        if ticket_id:
+            _ticket_ipc_active_ticket_ids.add(ticket_id)
+        task = asyncio.create_task(_run_ticket_ipc_action(action))
+        _ticket_ipc_tasks.add(task)
+        def _release_ticket_action(done_task, *, claimed_ticket_id=ticket_id):
+            _ticket_ipc_tasks.discard(done_task)
+            if claimed_ticket_id:
+                _ticket_ipc_active_ticket_ids.discard(claimed_ticket_id)
+
+        task.add_done_callback(_release_ticket_action)
 
 
 @tasks.loop(minutes=5)
@@ -1175,23 +1502,173 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
 
         elif action_type == "ticket_send_message":
             channel_id = int(payload.get("channel_id", 0))
+            ticket_id = int(payload.get("ticket_id", 0))
+            local_message_id = int(payload.get("message_id", 0) or 0)
             content = payload.get("content", "")
+            attachment_paths = list(payload.get("attachment_paths") or [])
+            ticket = await asyncio.to_thread(
+                bot_data.get_ticket_by_channel, str(channel_id), True
+            )
+            if not ticket_id or not ticket or int(ticket["id"]) != ticket_id:
+                return False, "Ticket/channel binding could not be verified"
+            if ticket.get("status") == "closed":
+                return False, "Ticket is already closed"
+            if local_message_id:
+                delivery = await asyncio.to_thread(
+                    bot_data.get_ticket_message_delivery,
+                    ticket_id,
+                    local_message_id,
+                )
+                if delivery and delivery.get("status") == "sent" and delivery.get("discord_message_id"):
+                    return True, None
             channel = bot.get_channel(channel_id)
-            if channel and content:
-                await channel.send(content[:2000])
-                return True, None
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(channel_id)
+                except discord.NotFound:
+                    return False, "Ticket channel no longer exists"
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    return False, f"Ticket channel could not be fetched: {type(exc).__name__}"
+            if channel and (content or attachment_paths):
+                nonce = f"ndt{local_message_id}" if local_message_id else None
+                if (
+                    nonce
+                    and int(payload.get("_execution_count", 0) or 0) > 1
+                    and hasattr(channel, "history")
+                ):
+                    try:
+                        async for recent in channel.history(limit=100):
+                            if str(getattr(recent, "nonce", "")) != nonce:
+                                continue
+                            await asyncio.to_thread(
+                                bot_data.set_ticket_message_delivery,
+                                ticket_id,
+                                local_message_id,
+                                "sent",
+                                None,
+                                str(recent.id),
+                            )
+                            return True, None
+                    except (discord.Forbidden, discord.HTTPException):
+                        # Sending below remains the authoritative operation; a
+                        # missing history permission will produce its own clear
+                        # Discord failure if it also prevents delivery.
+                        pass
+                if len(attachment_paths) > 10:
+                    return False, "Discord permits at most 10 attachments per message"
+                files = []
+                try:
+                    ticket_media_root = (
+                        Path(settings.ticket_attachments_dir).expanduser().resolve(strict=False)
+                        / str(ticket_id)
+                    ).resolve(strict=False)
+                    for item in attachment_paths:
+                        if isinstance(item, dict):
+                            path = str(item.get("path") or "")
+                            filename = str(item.get("filename") or os.path.basename(path))
+                        else:
+                            path = str(item or "")
+                            filename = os.path.basename(path)
+                        try:
+                            resolved_path = Path(path).expanduser().resolve(strict=True)
+                        except (OSError, RuntimeError, ValueError):
+                            return False, "A local ticket attachment is unavailable"
+                        if (
+                            not path
+                            or not resolved_path.is_file()
+                            or not resolved_path.is_relative_to(ticket_media_root)
+                        ):
+                            return False, "A local ticket attachment is unavailable"
+                        # discord.File ultimately sends this as a multipart
+                        # filename. Strip directories/control path tricks from
+                        # caller-provided metadata even after the local path
+                        # itself has been securely constrained above.
+                        safe_filename = Path(filename.replace("\\", "/")).name or "file"
+                        files.append(discord.File(resolved_path, filename=safe_filename))
+                    sent_message = await channel.send(
+                        content=content[:2000] if content else None,
+                        files=files,
+                        nonce=nonce,
+                    )
+                    if local_message_id:
+                        await asyncio.to_thread(
+                            bot_data.set_ticket_message_delivery,
+                            ticket_id,
+                            local_message_id,
+                            "sent",
+                            None,
+                            str(sent_message.id),
+                        )
+                    return True, None
+                finally:
+                    for file in files:
+                        file.close()
 
         elif action_type == "ticket_close_channel":
             channel_id = int(payload.get("channel_id", 0))
+            ticket_id = int(payload.get("ticket_id", 0))
+            closed_by = str(payload.get("closed_by") or "NexusData")[:255]
+            if not ticket_id:
+                return False, "ticket_id is required before deleting a ticket channel"
+            ticket = await asyncio.to_thread(
+                bot_data.get_ticket_by_channel, str(channel_id), True
+            )
+            if not ticket or int(ticket["id"]) != ticket_id:
+                return False, "Ticket/channel binding could not be verified"
+            auto_close_before = payload.get("auto_close_before")
+            if auto_close_before and not await asyncio.to_thread(
+                bot_data.ticket_is_stale_unanswered,
+                ticket_id,
+                auto_close_before,
+            ):
+                # The queued job outlived its premise (for example an admin
+                # answered while Discord was offline). This is a successful
+                # no-op, not a retryable transport failure.
+                return True, None
             channel = bot.get_channel(channel_id)
+            channel_missing = False
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(channel_id)
+                except discord.NotFound:
+                    channel_missing = True
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    return False, f"Ticket channel could not be fetched: {type(exc).__name__}"
             if channel:
                 try:
-                    await channel.send("🔒 Обращение закрыто. Канал будет удалён через 5 секунд.")
-                    await asyncio.sleep(5)
-                    await channel.delete(reason="Ticket closed")
+                    await _freeze_reconcile_and_delete_ticket_channel(
+                        ticket_id,
+                        channel,
+                        reason="Ticket closed from NexusData",
+                        closed_by=closed_by,
+                        auto_close_before=auto_close_before,
+                    )
+                except _TicketAutoCloseNoLongerEligible:
+                    return True, None
                 except Exception as e:
                     logger.warning(f"Failed to delete ticket channel: {e}")
+                    return False, f"Ticket channel retained: {type(e).__name__}"
                 return True, None
+            if not channel_missing:
+                return False, "Ticket channel is unavailable"
+            # Missing is ambiguous: a moderator may have deleted the channel
+            # manually while this queued action was waiting. Only a recovery
+            # job emitted *after* our final history sweep and successful
+            # channel.delete() is allowed to finish SQL closure. Otherwise
+            # preserve a visible evidence exception instead of falsely
+            # claiming that the archive is complete.
+            if payload.get("evidence_archive_confirmed") is True:
+                if await _close_ticket_with_retry(ticket_id, closed_by):
+                    return True, None
+                return False, "Ticket channel is gone but SQL close could not be recorded"
+            if await asyncio.to_thread(bot_data.mark_ticket_archive_incomplete, ticket_id):
+                return True, None
+            current = await asyncio.to_thread(
+                bot_data.get_ticket_by_channel, str(channel_id), True
+            )
+            if current and current.get("archive_state") == "incomplete":
+                return True, None
+            return False, "Ticket channel disappeared before evidence archive confirmation"
 
         elif action_type == "send_sub_project_embed":
             # Send a new sub-project embed to the configured channel
@@ -1411,8 +1888,51 @@ TICKET_TYPES = {
     "construction_bureau": {"name": "Обращение в конструкторское бюро", "emoji": "🔧", "color": 0x4a9eff},
 }
 
-# pending_close[channel_id] = asyncio.Task — задача закрытия тикета
-_pending_close: dict = {}
+class _PendingTicketClose:
+    """Ownership token for one delayed close operation.
+
+    The token is inserted into ``_pending_close`` before the command performs
+    its first await.  That makes the check/reserve step atomic on the bot event
+    loop, while still allowing a second ``/close`` (or a staff reply) to cancel
+    an operation whose asyncio task has not been created yet.
+    """
+
+    __slots__ = ("task", "cancelled")
+
+    def __init__(self):
+        self.task: Optional[asyncio.Task] = None
+        self.cancelled = False
+
+
+# pending_close[channel_id] = _PendingTicketClose
+_pending_close: dict[str, _PendingTicketClose] = {}
+
+
+def _reserve_pending_ticket_close(channel_id: str) -> Optional[_PendingTicketClose]:
+    """Reserve a channel synchronously, or toggle/cancel its current close."""
+    existing = _pending_close.pop(channel_id, None)
+    if existing is not None:
+        existing.cancelled = True
+        if existing.task is not None and not existing.task.done():
+            existing.task.cancel()
+        return None
+
+    state = _PendingTicketClose()
+    _pending_close[channel_id] = state
+    return state
+
+
+def _release_pending_ticket_close(channel_id: str, state: _PendingTicketClose) -> None:
+    """Release only our own reservation; never remove a newer close request."""
+    if _pending_close.get(channel_id) is state:
+        _pending_close.pop(channel_id, None)
+
+
+def _pending_ticket_close_is_active(channel_id: str, state: _PendingTicketClose) -> bool:
+    return not state.cancelled and _pending_close.get(channel_id) is state
+# Suppresses the manual-delete handler while an evidence-first close owns the
+# channel. The helper records SQL closure before removing the marker.
+_ticket_channels_closing: set[int] = set()
 
 
 def _parse_mute_duration(value: str) -> timedelta:
@@ -1602,8 +2122,22 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
             discord_channel_id=str(channel.id),
         )
     except Exception as e:
-        logger.error(f"Failed to create ticket record: {e}")
-        ticket_id = "?"
+        logger.exception("Failed to create ticket record for Discord channel %s", channel.id)
+        # A channel without its SQL owner can never be archived or shown on
+        # the site. Remove it immediately instead of creating a misleading
+        # untracked ticket whose evidence will later disappear.
+        try:
+            await channel.delete(reason="NexusData ticket DB registration failed")
+        except Exception:
+            logger.exception(
+                "Could not remove untracked ticket channel %s after DB failure",
+                channel.id,
+            )
+        await interaction.followup.send(
+            "❌ Не удалось зарегистрировать обращение. Канал не был открыт; попробуйте ещё раз позже.",
+            ephemeral=True,
+        )
+        return
 
     tinfo = TICKET_TYPES.get(ticket_type, {})
     silent_pings = " ".join(f"||<@&{rid}>||" for rid in ping_roles if rid)
@@ -1634,7 +2168,12 @@ async def _close_ticket_with_retry(ticket_id, closed_by: str) -> bool:
     not."""
     for _ in range(2):
         try:
-            if await asyncio.to_thread(bot_data.close_ticket, ticket_id, closed_by):
+            if await asyncio.to_thread(
+                bot_data.close_ticket,
+                ticket_id,
+                closed_by,
+                evidence_archive_confirmed=True,
+            ):
                 return True
         except Exception as e:
             logger.warning(f"close_ticket({ticket_id}) failed: {e}")
@@ -1663,20 +2202,35 @@ class TicketCloseView(discord.ui.View):
             ticket = await asyncio.to_thread(bot_data.get_ticket_by_channel, str(channel.id))
             ticket_id = ticket["id"] if ticket else None
 
-        if not ticket_id or not await _close_ticket_with_retry(ticket_id, interaction.user.display_name):
+        if not ticket_id:
             await interaction.followup.send(
                 "⚠️ Не удалось закрыть обращение на сайте — канал НЕ удалён, попробуйте ещё раз позже.",
                 ephemeral=True,
             )
             return
 
-        await interaction.followup.send("🔒 Тикет закрывается...", ephemeral=True)
-        await refresh_ticket_status()
-        await asyncio.sleep(3)
         try:
-            await channel.delete(reason=f"Ticket closed by {interaction.user}")
-        except Exception as e:
-            logger.warning(f"Failed to delete ticket channel: {e}")
+            await _freeze_reconcile_and_delete_ticket_channel(
+                ticket_id,
+                channel,
+                reason=f"Ticket closed by {interaction.user}",
+                closed_by=interaction.user.display_name,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Ticket #%s channel retained because evidence-first close failed: %s",
+                ticket_id,
+                type(exc).__name__,
+            )
+            await interaction.followup.send(
+                "⚠️ Не удалось надёжно сохранить историю и вложения — канал НЕ удалён. "
+                "Повторите закрытие позже.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send("🔒 Тикет закрыт, история и файлы сохранены.", ephemeral=True)
+        await refresh_ticket_status()
 
 
 class TicketPanelView(discord.ui.View):
@@ -2153,17 +2707,6 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
 
     channel_id_str = str(channel.id)
 
-    # If there's already a pending close — cancel it (toggle behaviour)
-    if channel_id_str in _pending_close:
-        task = _pending_close.pop(channel_id_str)
-        if not task.done():
-            task.cancel()
-        await interaction.response.send_message(
-            "⏸️ Закрытие тикета приостановлено.",
-            ephemeral=False
-        )
-        return
-
     # Determine delay
     delay_seconds = 15 if minutes == 0 else minutes * 60
     if minutes == 0:
@@ -2181,36 +2724,64 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
     ticket_title = (ticket or {}).get("title", "Обращение")
     creator_discord_id = (ticket or {}).get("creator_discord_id")
 
-    await interaction.response.send_message(
-        f"🔒 Администратор закрыл тикет, он будет удалён через **{time_str}**...\n"
-        f"💬 Ответ: {answer}",
-        ephemeral=False
-    )
-
-    # На сайт этот ответ иначе никогда не попадает: канал (и все его
-    # сообщения) удаляется через delay_seconds, а само сообщение бота
-    # on_message пропускает целиком (message.author.bot). Без этого
-    # финальное слово модератора терялось — в архиве тикета видно только
-    # переписку ДО закрытия, а решение приходится искать в логах Discord,
-    # которых для удалённого канала уже не существует. Пишем от имени
-    # РЕАЛЬНОГО админа (не "бот"/"system") — это его ответ, бот лишь
-    # передаёт его в канал.
-    if ticket_id:
-        await asyncio.to_thread(
-            bot_data.add_ticket_message,
-            ticket_id=ticket_id,
-            author_discord_id=str(user.id),
-            author_username=str(user),
-            author_display_name=user.display_name,
-            author_avatar_url=str(user.display_avatar.url) if user.display_avatar else None,
-            content=f"🔒 Тикет закрыт. Ответ: {answer}",
+    # Reserve synchronously before the next await. Two concurrent commands can
+    # therefore never both schedule a close for the same channel. A second
+    # command preserves the established toggle behaviour and cancels even the
+    # short setup phase before the first asyncio task exists.
+    pending_state = _reserve_pending_ticket_close(channel_id_str)
+    if pending_state is None:
+        await interaction.response.send_message(
+            "⏸️ Закрытие тикета приостановлено.",
+            ephemeral=False,
         )
+        return
+
+    close_notice = (
+        f"🔒 Администратор закрыл тикет, он будет удалён через **{time_str}**...\n"
+        f"💬 Ответ: {answer}"
+    )
+    try:
+        await interaction.response.send_message(close_notice, ephemeral=False)
+    except BaseException:
+        _release_pending_ticket_close(channel_id_str, pending_state)
+        raise
+
+    # Persist the closing answer under the real moderator profile. Bot
+    # messages are now archived too, so bind this row to Discord's response
+    # ID: whichever arrives first (Gateway event or this write) enriches the
+    # same row instead of duplicating the final decision in the transcript.
+    if ticket_id:
+        try:
+            response_message = None
+            try:
+                response_message = await interaction.original_response()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                pass
+            await asyncio.to_thread(
+                bot_data.add_ticket_message,
+                ticket_id=ticket_id,
+                author_discord_id=str(user.id),
+                author_username=str(user),
+                author_display_name=user.display_name,
+                author_avatar_url=str(user.display_avatar.url) if user.display_avatar else None,
+                content=close_notice,
+                discord_message_id=(
+                    str(response_message.id) if response_message is not None else None
+                ),
+                created_at=(
+                    response_message.created_at if response_message is not None else None
+                ),
+                is_bot=True,
+            )
+        except BaseException:
+            _release_pending_ticket_close(channel_id_str, pending_state)
+            raise
 
     async def _do_close():
         await asyncio.sleep(delay_seconds)
 
-        if not ticket_id or not await _close_ticket_with_retry(ticket_id, user.display_name):
-            _pending_close.pop(channel_id_str, None)
+        if not ticket_id:
+            _release_pending_ticket_close(channel_id_str, pending_state)
             try:
                 await channel.send(
                     "⚠️ Не удалось закрыть обращение на сайте — канал НЕ будет удалён автоматически. "
@@ -2218,6 +2789,30 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
                 )
             except Exception as e:
                 logger.warning(f"Failed to warn about failed ticket close in {channel_id_str}: {e}")
+            await refresh_ticket_status()
+            return
+
+        try:
+            await _freeze_reconcile_and_delete_ticket_channel(
+                ticket_id,
+                channel,
+                reason=f"Ticket closed by {user}",
+                closed_by=user.display_name,
+            )
+        except Exception as exc:
+            _release_pending_ticket_close(channel_id_str, pending_state)
+            logger.exception(
+                "Ticket #%s channel retained because evidence-first close failed: %s",
+                ticket_id,
+                type(exc).__name__,
+            )
+            try:
+                await channel.send(
+                    "⚠️ Закрытие отменено: не удалось надёжно сохранить историю или вложения. "
+                    "Канал оставлен на месте; повторите `/close` позже."
+                )
+            except Exception:
+                pass
             await refresh_ticket_status()
             return
 
@@ -2250,17 +2845,13 @@ async def slash_close_ticket(interaction: discord.Interaction, minutes: int, ans
             except Exception as e:
                 logger.warning(f"Failed to send DM to ticket creator {creator_discord_id}: {e}")
 
-        # Delete channel
-        try:
-            await channel.delete(reason=f"Ticket closed by {user}")
-        except Exception as e:
-            logger.warning(f"Failed to delete ticket channel: {e}")
-
-        _pending_close.pop(channel_id_str, None)
+        _release_pending_ticket_close(channel_id_str, pending_state)
         await refresh_ticket_status()
 
+    if not _pending_ticket_close_is_active(channel_id_str, pending_state):
+        return
     task = asyncio.create_task(_do_close())
-    _pending_close[channel_id_str] = task
+    pending_state.task = task
 
 
 @bot.tree.command(name="ticket_add", description="Добавить участника в текущий тикет (только для персонала)")
@@ -2376,19 +2967,765 @@ async def cmd_set_ticket_status(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Статус тикетов будет в {channel.mention}")
 
 
+_TICKET_ATTACHMENT_CHUNK_SIZE = 256 * 1024
+_ticket_attachment_downloads = asyncio.Semaphore(2)
+
+
+def _attachment_value(attachment, name: str, default=None):
+    if isinstance(attachment, dict):
+        return attachment.get(name, default)
+    return getattr(attachment, name, default)
+
+
+def _ticket_attachment_base(attachment) -> dict:
+    """Serialize public Discord attachment metadata without trusting its name."""
+    return {
+        "id": str(_attachment_value(attachment, "id", "") or ""),
+        "filename": str(_attachment_value(attachment, "filename") or "file"),
+        "content_type": _attachment_value(attachment, "content_type"),
+        "file_size": int(
+            _attachment_value(attachment, "size", _attachment_value(attachment, "file_size", 0)) or 0
+        ),
+        "width": _attachment_value(attachment, "width"),
+        "height": _attachment_value(attachment, "height"),
+        "source_url": str(
+            _attachment_value(attachment, "url", _attachment_value(attachment, "source_url", "")) or ""
+        ),
+        "proxy_url": str(_attachment_value(attachment, "proxy_url", "") or ""),
+        "storage_key": None,
+        "storage_namespace": None,
+        "archive_status": "failed",
+        "archive_error": None,
+        "sha256": None,
+        "archived_at": None,
+    }
+
+
+def _existing_attachment(existing: list, attachment):
+    attachment_id = str(_attachment_value(attachment, "id", "") or "")
+    for candidate in existing or []:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_id = str(candidate.get("id") or candidate.get("discord_attachment_id") or "")
+        if attachment_id and candidate_id == attachment_id:
+            return candidate
+    return None
+
+
+def _archived_attachment_is_reusable(ticket_id: int, attachment: Optional[dict]) -> bool:
+    if not attachment:
+        return False
+    if attachment.get("archive_status") != "stored":
+        return False
+    key = attachment.get("storage_key")
+    namespace = attachment.get("storage_namespace")
+    if not key or not namespace:
+        return False
+    try:
+        return storage_path(ticket_id, namespace, key).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+class _TicketAttachmentTooLarge(Exception):
+    pass
+
+
+async def _download_ticket_attachment(
+    session,
+    attachment,
+    destination: Path,
+    byte_limit: int,
+    quota_reservation,
+) -> tuple[int, str]:
+    """Download one Discord CDN object incrementally and return size/hash."""
+    urls = []
+    for candidate in (
+        _attachment_value(attachment, "url", _attachment_value(attachment, "source_url")),
+        _attachment_value(attachment, "proxy_url"),
+    ):
+        value = str(candidate or "")
+        if value and value not in urls:
+            urls.append(value)
+    if not urls:
+        raise RuntimeError("attachment URL is missing")
+
+    last_error = "download failed"
+    part_path = destination.with_name(f".{destination.name}.part")
+    for url in urls:
+        try:
+            part_path.unlink(missing_ok=True)
+            digest = hashlib.sha256()
+            written = 0
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status != 200:
+                    last_error = f"Discord CDN returned HTTP {response.status}"
+                    continue
+                if response.content_length is not None and response.content_length > byte_limit:
+                    raise _TicketAttachmentTooLarge()
+                async with aiofiles.open(part_path, "wb") as output:
+                    async for chunk in response.content.iter_chunked(_TICKET_ATTACHMENT_CHUNK_SIZE):
+                        next_written = written + len(chunk)
+                        if next_written > byte_limit:
+                            raise _TicketAttachmentTooLarge()
+                        # Capacity is reserved before bytes reach disk. This
+                        # also covers Discord responses without a trustworthy
+                        # Content-Length header.
+                        quota_reservation.grow_to(next_written)
+                        written = next_written
+                        digest.update(chunk)
+                        await output.write(chunk)
+            os.chmod(part_path, 0o600)
+            os.replace(part_path, destination)
+            return written, digest.hexdigest()
+        except _TicketAttachmentTooLarge:
+            part_path.unlink(missing_ok=True)
+            raise
+        except TicketMediaQuotaExceeded:
+            part_path.unlink(missing_ok=True)
+            raise
+        except asyncio.CancelledError:
+            # Cancellation during shutdown must not leave a quota-consuming
+            # partial which has no corresponding TicketMessage record.
+            part_path.unlink(missing_ok=True)
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            part_path.unlink(missing_ok=True)
+            last_error = f"{type(exc).__name__}: download failed"
+    raise RuntimeError(last_error)
+
+
+async def _archive_ticket_attachments(
+    ticket_id: int,
+    namespace: str,
+    discord_attachments,
+    budget: dict,
+    existing: Optional[list] = None,
+) -> list[dict]:
+    """Mirror attachments with per-file/message caps and bounded concurrency."""
+    attachments = list(discord_attachments or [])
+    if not attachments:
+        return []
+
+    per_file_limit = int(settings.ticket_attachment_max_bytes)
+    message_limit = int(settings.ticket_attachment_message_max_bytes)
+    timeout_seconds = float(settings.ticket_attachment_download_timeout_seconds)
+    result = []
+    timeout = aiohttp.ClientTimeout(
+        total=timeout_seconds,
+        connect=min(15.0, timeout_seconds),
+        sock_read=timeout_seconds,
+    )
+    connector = aiohttp.TCPConnector(limit=2)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        for attachment in attachments:
+            previous = _existing_attachment(existing or [], attachment)
+            if _archived_attachment_is_reusable(ticket_id, previous):
+                result.append(previous)
+                if previous.get("archive_status") == "stored":
+                    budget["used"] += int(previous.get("file_size") or 0)
+                continue
+
+            metadata = _ticket_attachment_base(attachment)
+            declared_size = max(0, int(metadata["file_size"] or 0))
+            remaining = message_limit - int(budget.get("used", 0))
+            if declared_size > per_file_limit:
+                metadata["archive_status"] = "too_large"
+                metadata["archive_error"] = "per_file_limit"
+                result.append(metadata)
+                continue
+            if remaining <= 0 or (declared_size and declared_size > remaining):
+                metadata["archive_status"] = "too_large"
+                metadata["archive_error"] = "message_limit"
+                result.append(metadata)
+                continue
+
+            key = new_storage_key(metadata["filename"])
+            metadata["storage_key"] = key
+            metadata["storage_namespace"] = namespace
+            quota_reservation = None
+            try:
+                # The first reservation may scan an existing multi-gigabyte
+                # archive; keep that filesystem walk off Discord's event loop.
+                quota_reservation = await asyncio.to_thread(
+                    reserve_ticket_media,
+                    ticket_id,
+                    declared_size,
+                )
+                destination = storage_path(ticket_id, namespace, key)
+                destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # Re-resolve after mkdir so a pre-existing symlink below the
+                # configured media root cannot redirect the final write.
+                destination = storage_path(ticket_id, namespace, key)
+                async with _ticket_attachment_downloads:
+                    written, digest = await _download_ticket_attachment(
+                        session,
+                        attachment,
+                        destination,
+                        min(per_file_limit, remaining),
+                        quota_reservation,
+                    )
+                quota_reservation.commit(written)
+                metadata["file_size"] = written
+                metadata["archive_status"] = "stored"
+                metadata["archive_error"] = None
+                metadata["sha256"] = digest
+                metadata["archived_at"] = datetime.now(timezone.utc).isoformat()
+                budget["used"] += written
+            except _TicketAttachmentTooLarge:
+                metadata["storage_key"] = None
+                metadata["storage_namespace"] = None
+                metadata["archive_status"] = "too_large"
+                metadata["archive_error"] = "size_limit_exceeded_while_downloading"
+            except TicketMediaQuotaExceeded as exc:
+                metadata["storage_key"] = None
+                metadata["storage_namespace"] = None
+                metadata["archive_status"] = "quota_exceeded"
+                metadata["archive_error"] = f"{exc.scope}_quota"
+                logger.warning(
+                    "Ticket #%s attachment %s not archived: %s quota "
+                    "(%s used + %s requested > %s bytes)",
+                    ticket_id,
+                    metadata.get("id") or metadata.get("filename"),
+                    exc.scope,
+                    exc.used_bytes,
+                    exc.requested_bytes,
+                    exc.limit_bytes,
+                )
+            except Exception as exc:
+                metadata["storage_key"] = None
+                metadata["storage_namespace"] = None
+                metadata["archive_status"] = "failed"
+                metadata["archive_error"] = f"{type(exc).__name__}: archive failed"[:200]
+                logger.warning(
+                    "Ticket #%s attachment %s archive failed: %s",
+                    ticket_id,
+                    metadata.get("id") or metadata.get("filename"),
+                    type(exc).__name__,
+                )
+            finally:
+                if quota_reservation is not None:
+                    quota_reservation.release()
+            result.append(metadata)
+    return result
+
+
+def _serialize_ticket_sticker(sticker) -> dict:
+    sticker_format = getattr(sticker, "format", None)
+    return {
+        "id": str(getattr(sticker, "id", "") or ""),
+        "name": str(getattr(sticker, "name", "") or ""),
+        "url": str(getattr(sticker, "url", "") or ""),
+        "format": getattr(sticker_format, "value", sticker_format),
+    }
+
+
+def _serialize_ticket_author(user) -> dict:
+    serialized = _serialize_author(user)
+    return {
+        "discord_id": serialized.get("id"),
+        "username": serialized.get("username"),
+        "display_name": serialized.get("display_name"),
+        "avatar_url": serialized.get("avatar_url"),
+    }
+
+
+def _reference_source(reference) -> dict:
+    source = {
+        "message_id": str(reference.message_id) if getattr(reference, "message_id", None) else None,
+        "channel_id": str(reference.channel_id) if getattr(reference, "channel_id", None) else None,
+        "guild_id": str(reference.guild_id) if getattr(reference, "guild_id", None) else None,
+    }
+    try:
+        source["jump_url"] = str(reference.jump_url)
+    except (AttributeError, TypeError, ValueError):
+        source["jump_url"] = None
+    return source
+
+
+async def _resolve_ticket_reference(reference):
+    """Best-effort resolution; inaccessible forwards deliberately stay anonymous."""
+    resolved = getattr(reference, "resolved", None)
+    if isinstance(resolved, discord.Message):
+        return resolved, resolved.channel
+
+    channel_id = getattr(reference, "channel_id", None)
+    message_id = getattr(reference, "message_id", None)
+    if not channel_id:
+        return None, None
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException, TypeError, ValueError):
+            return None, None
+    if not message_id or not hasattr(channel, "fetch_message"):
+        return None, channel
+    try:
+        return await channel.fetch_message(int(message_id)), channel
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException, TypeError, ValueError):
+        return None, channel
+
+
+def _existing_forward_attachments(existing_reference: Optional[dict], index: int) -> list:
+    if not isinstance(existing_reference, dict):
+        return []
+    # New rows use the application's normalized top-level contract. Keep the
+    # nested fallback so a partially deployed instance can enrich rows written
+    # by an older bot revision without downloading duplicate files.
+    direct = existing_reference.get("attachments") or []
+    if direct:
+        return direct
+    snapshots = existing_reference.get("message_snapshots") or []
+    if index >= len(snapshots) or not isinstance(snapshots[index], dict):
+        return []
+    wrapped = snapshots[index].get("message") or {}
+    return wrapped.get("attachments") or [] if isinstance(wrapped, dict) else []
+
+
+def _existing_reference_payload(existing_reference: Optional[dict]) -> dict:
+    if not isinstance(existing_reference, dict):
+        return {}
+    snapshots = existing_reference.get("message_snapshots") or []
+    for item in snapshots:
+        if isinstance(item, dict) and isinstance(item.get("message"), dict):
+            return item["message"]
+    if isinstance(existing_reference.get("message"), dict):
+        return existing_reference["message"]
+    return existing_reference
+
+
+async def _build_ticket_reference_snapshot(
+    ticket_id: int,
+    message: discord.Message,
+    budget: dict,
+    existing_reference: Optional[dict],
+) -> Optional[dict]:
+    reference = getattr(message, "reference", None)
+    snapshots = list(getattr(message, "message_snapshots", []) or [])
+    if reference is None and not snapshots:
+        return None
+
+    reference_type = getattr(reference, "type", None)
+    is_forward = bool(snapshots) or reference_type is discord.MessageReferenceType.forward
+    source = _reference_source(reference) if reference is not None else {
+        "message_id": None, "channel_id": None, "guild_id": None, "jump_url": None,
+    }
+    resolved, channel = await _resolve_ticket_reference(reference) if reference is not None else (None, None)
+    existing_source = existing_reference.get("source") if isinstance(existing_reference, dict) else None
+    if isinstance(existing_source, dict):
+        source = {**existing_source, **{key: value for key, value in source.items() if value is not None}}
+    if channel is not None:
+        source["channel_name"] = getattr(channel, "name", None)
+    # Discord intentionally omits the original author from a native forward.
+    # It is legal to retain a previously resolved author, but never infer one
+    # from the user who performed the forward.
+    author = _serialize_ticket_author(resolved.author) if resolved is not None else None
+    if author is None and isinstance(existing_reference, dict):
+        author = existing_reference.get("author")
+        if author is None and isinstance(existing_source, dict):
+            author = existing_source.get("author")
+
+    if is_forward:
+        archived_attachments = []
+        contents = []
+        embeds = []
+        stickers = []
+        created_at = None
+        edited_at = None
+        for index, snapshot in enumerate(snapshots):
+            namespace = f"msg-{message.id}-fwd-{index}"
+            archived = await _archive_ticket_attachments(
+                ticket_id,
+                namespace,
+                getattr(snapshot, "attachments", []),
+                budget,
+                _existing_forward_attachments(existing_reference, index),
+            )
+            content = getattr(snapshot, "content", "") or ""
+            if content:
+                contents.append(content)
+            if created_at is None and getattr(snapshot, "created_at", None):
+                created_at = snapshot.created_at.isoformat()
+            if edited_at is None and getattr(snapshot, "edited_at", None):
+                edited_at = snapshot.edited_at.isoformat()
+            archived_attachments.extend(archived)
+            embeds.extend(embed.to_dict() for embed in getattr(snapshot, "embeds", []))
+            stickers.extend(_serialize_ticket_sticker(item) for item in getattr(snapshot, "stickers", []))
+
+        # An empty re-fetch must not erase evidence saved by the Gateway event.
+        if not snapshots and isinstance(existing_reference, dict):
+            previous = _existing_reference_payload(existing_reference)
+            archived_attachments = list(previous.get("attachments") or [])
+            contents = [previous.get("content")] if previous.get("content") else []
+            embeds = list(previous.get("embeds") or [])
+            stickers = list(previous.get("stickers") or [])
+            created_at = previous.get("created_at")
+            edited_at = previous.get("edited_at")
+
+        return {
+            "kind": "forward",
+            "source": source,
+            "author": author,
+            "content": "\n\n".join(contents) or None,
+            "created_at": created_at,
+            "edited_at": edited_at,
+            "attachments": archived_attachments,
+            "embeds": embeds,
+            "stickers": stickers,
+        }
+
+    if resolved is not None:
+        archived = await _archive_ticket_attachments(
+            ticket_id,
+            f"msg-{message.id}-reply",
+            getattr(resolved, "attachments", []),
+            budget,
+            _existing_reference_payload(existing_reference).get("attachments") or [],
+        )
+        return {
+            "kind": "reply",
+            "source": source,
+            "author": author,
+            "content": getattr(resolved, "content", "") or "",
+            "created_at": resolved.created_at.isoformat() if getattr(resolved, "created_at", None) else None,
+            "edited_at": resolved.edited_at.isoformat() if getattr(resolved, "edited_at", None) else None,
+            "attachments": archived,
+            "embeds": [embed.to_dict() for embed in getattr(resolved, "embeds", [])],
+            "stickers": [_serialize_ticket_sticker(item) for item in getattr(resolved, "stickers", [])],
+        }
+
+    # Replies can point at an inaccessible or already deleted message. Retain
+    # an earlier resolved snapshot if one exists; otherwise preserve the IDs
+    # and explicitly leave the unknown author empty.
+    if isinstance(existing_reference, dict):
+        previous = _existing_reference_payload(existing_reference)
+        archived = await _archive_ticket_attachments(
+            ticket_id,
+            f"msg-{message.id}-reply",
+            previous.get("attachments") or [],
+            budget,
+            previous.get("attachments") or [],
+        )
+        return {
+            "kind": "reply",
+            "source": source,
+            "author": author or previous.get("author"),
+            "content": previous.get("content"),
+            "created_at": previous.get("created_at"),
+            "edited_at": previous.get("edited_at"),
+            "attachments": archived,
+            "embeds": list(previous.get("embeds") or []),
+            "stickers": list(previous.get("stickers") or []),
+        }
+    return {
+        "kind": "reply",
+        "source": source,
+        "author": None,
+        "content": None,
+        "created_at": None,
+        "attachments": [],
+        "embeds": [],
+    }
+
+
+def _attachment_collection_has_failure(ticket_id: int, attachments) -> bool:
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict):
+            return True
+        if (
+            attachment.get("archive_status") != "stored"
+            or not _archived_attachment_is_reusable(ticket_id, attachment)
+        ):
+            return True
+    return False
+
+
+def _archive_has_failure(ticket_id: int, value) -> bool:
+    if isinstance(value, dict):
+        # Attachment dictionaries are recognizable by filename; source and
+        # author dictionaries can also contain an ``id`` and must not be
+        # mistaken for media. Closing is safe only with a verified local file.
+        if "filename" in value or "archive_status" in value or "storage_key" in value:
+            return (
+                value.get("archive_status") != "stored"
+                or not _archived_attachment_is_reusable(ticket_id, value)
+            )
+        for key, item in value.items():
+            if key == "attachments" and _attachment_collection_has_failure(ticket_id, item):
+                return True
+            if key != "attachments" and _archive_has_failure(ticket_id, item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_archive_has_failure(ticket_id, item) for item in value)
+    return False
+
+
+async def _capture_ticket_message(ticket_id: int, message: discord.Message, *, strict: bool = False) -> int:
+    # A reply sent from NexusData is persisted before Discord delivery.  Link
+    # the Gateway/history echo to that row before doing any archive work so the
+    # moderator identity and already-stored upload are retained without a
+    # duplicate message. Other bots and webhooks intentionally continue below:
+    # their messages are third-party evidence, not site-authored echoes.
+    own_bot_id = getattr(getattr(bot, "user", None), "id", None)
+    if (
+        own_bot_id is not None
+        and bool(getattr(message.author, "bot", False))
+        and int(message.author.id) == int(own_bot_id)
+    ):
+        linked_id = await asyncio.to_thread(
+            bot_data.link_site_ticket_message,
+            ticket_id,
+            str(message.id),
+            message.content,
+            message.attachments,
+            message.created_at,
+        )
+        if linked_id:
+            return linked_id
+
+    existing = await asyncio.to_thread(
+        bot_data.get_ticket_message_by_discord_id,
+        ticket_id,
+        str(message.id),
+    )
+    budget = {"used": 0}
+    attachments = await _archive_ticket_attachments(
+        ticket_id,
+        f"msg-{message.id}",
+        message.attachments,
+        budget,
+        (existing or {}).get("attachments") or [],
+    )
+    reference_snapshot = await _build_ticket_reference_snapshot(
+        ticket_id,
+        message,
+        budget,
+        (existing or {}).get("reference_snapshot"),
+    )
+    outer_embeds = [embed.to_dict() for embed in getattr(message, "embeds", [])]
+    outer_stickers = [
+        _serialize_ticket_sticker(item) for item in getattr(message, "stickers", [])
+    ]
+    if outer_embeds or outer_stickers:
+        reference_snapshot = dict(reference_snapshot or {"kind": "message_content"})
+        reference_snapshot["outer_embeds"] = outer_embeds
+        reference_snapshot["outer_stickers"] = outer_stickers
+    local_id = await asyncio.to_thread(
+        bot_data.add_ticket_message,
+        ticket_id=ticket_id,
+        author_discord_id=str(message.author.id),
+        author_username=str(message.author),
+        author_display_name=message.author.display_name,
+        author_avatar_url=str(message.author.display_avatar.url) if message.author.display_avatar else None,
+        content=message.content,
+        attachments=attachments,
+        discord_message_id=str(message.id),
+        reference_snapshot=reference_snapshot,
+        created_at=message.created_at,
+        is_bot=bool(getattr(message.author, "bot", False)),
+    )
+    if not local_id:
+        raise RuntimeError(f"ticket {ticket_id} no longer exists")
+    if strict:
+        # Validate the post-merge database row, not only today's Discord
+        # payload. The durable upsert deliberately retains evidence which a
+        # user later deleted from Discord, including an earlier failed item.
+        persisted = await asyncio.to_thread(
+            bot_data.get_ticket_message_by_discord_id,
+            ticket_id,
+            str(message.id),
+        )
+        if not persisted:
+            raise RuntimeError(f"ticket {ticket_id} message {message.id} was not persisted")
+        if (
+            _attachment_collection_has_failure(ticket_id, persisted.get("attachments"))
+            or _archive_has_failure(ticket_id, persisted.get("reference_snapshot"))
+        ):
+            raise RuntimeError(f"ticket {ticket_id} contains media that could not be archived")
+    return local_id
+
+
+async def _reconcile_ticket_channel_history(ticket_id: int, channel) -> int:
+    """Upsert every message before a ticket channel is destroyed."""
+    reconciled = 0
+    async for historical in channel.history(limit=None, oldest_first=True):
+        await _capture_ticket_message(ticket_id, historical, strict=True)
+        reconciled += 1
+
+    # A deleted Discord message no longer appears in history, but its archived
+    # row remains evidence. Validate all retained rows before allowing the
+    # irreversible channel deletion, including failed/oversized old media.
+    archived_rows = await asyncio.to_thread(bot_data.get_ticket_message_archives, ticket_id)
+    for row in archived_rows:
+        if (
+            _attachment_collection_has_failure(ticket_id, row.get("attachments"))
+            or _archive_has_failure(ticket_id, row.get("reference_snapshot"))
+        ):
+            raise RuntimeError(
+                f"ticket {ticket_id} message {row.get('id')} has incomplete archived media"
+            )
+    logger.info("Ticket #%s final Discord history reconciliation: %s message(s)", ticket_id, reconciled)
+    return reconciled
+
+
+def _clone_permission_overwrite(overwrite: discord.PermissionOverwrite) -> discord.PermissionOverwrite:
+    allow, deny = overwrite.pair()
+    return discord.PermissionOverwrite.from_pair(allow, deny)
+
+
+class _TicketAutoCloseNoLongerEligible(RuntimeError):
+    """A queued stale-close became obsolete while the channel was frozen."""
+
+
+async def _freeze_reconcile_and_delete_ticket_channel(
+    ticket_id: int,
+    channel,
+    *,
+    reason: str,
+    closed_by: str,
+    auto_close_before=None,
+) -> int:
+    """Make a ticket read-only, persist its final history, then delete it.
+
+    The permission edit is a Discord-side acknowledgement barrier: once it
+    succeeds, ordinary participants cannot race a new attachment into the gap
+    between ``history()`` and deletion.  If either reconciliation or deletion
+    fails, the exact original overwrites are restored so the recoverable
+    channel does not remain accidentally locked.
+    """
+    original_overwrites = {
+        target: _clone_permission_overwrite(overwrite)
+        for target, overwrite in channel.overwrites.items()
+    }
+    frozen_overwrites = {
+        target: _clone_permission_overwrite(overwrite)
+        for target, overwrite in original_overwrites.items()
+    }
+
+    default_role = channel.guild.default_role
+    everyone = frozen_overwrites.get(default_role, discord.PermissionOverwrite())
+    everyone.send_messages = False
+    everyone.send_messages_in_threads = False
+    frozen_overwrites[default_role] = everyone
+
+    # An explicit participant/role allow wins over @everyone's deny, so every
+    # existing overwrite must be denied as well. Keep the bot writable while
+    # it finishes moderation work on the frozen channel.
+    bot_member = channel.guild.me
+    for target, overwrite in frozen_overwrites.items():
+        if bot_member is not None and target == bot_member:
+            continue
+        overwrite.send_messages = False
+        overwrite.send_messages_in_threads = False
+    if bot_member is not None:
+        bot_overwrite = frozen_overwrites.get(bot_member, discord.PermissionOverwrite())
+        bot_overwrite.view_channel = True
+        bot_overwrite.read_message_history = True
+        bot_overwrite.send_messages = True
+        bot_overwrite.send_messages_in_threads = True
+        frozen_overwrites[bot_member] = bot_overwrite
+
+    channel_id = int(channel.id)
+    _ticket_channels_closing.add(channel_id)
+    delete_completed = False
+    try:
+        await channel.edit(
+            overwrites=frozen_overwrites,
+            reason=f"Freeze before evidence archive: ticket #{ticket_id}",
+        )
+        reconciled = await _reconcile_ticket_channel_history(ticket_id, channel)
+        if auto_close_before and not await asyncio.to_thread(
+            bot_data.ticket_is_stale_unanswered,
+            ticket_id,
+            auto_close_before,
+        ):
+            raise _TicketAutoCloseNoLongerEligible(
+                f"ticket {ticket_id} was answered while its history was reconciled"
+            )
+        await channel.delete(reason=reason)
+        delete_completed = True
+        if not await _close_ticket_with_retry(ticket_id, closed_by):
+            # The irreversible Discord operation already succeeded. Persist a
+            # recovery job before surfacing the error so a transient SQL outage
+            # cannot leave an uncloseable phantom ticket after process restart.
+            try:
+                await asyncio.to_thread(
+                    bot_data.enqueue_ticket_bot_action,
+                    "ticket_close_channel",
+                    {
+                        "ticket_id": ticket_id,
+                        "channel_id": channel_id,
+                        "closed_by": closed_by,
+                        "evidence_archive_confirmed": True,
+                        **(
+                            {"auto_close_before": auto_close_before}
+                            if auto_close_before
+                            else {}
+                        ),
+                    },
+                    dedupe_key=f"ticket-close:{ticket_id}",
+                )
+            except Exception:
+                logger.exception(
+                    "Ticket #%s was deleted but its SQL-close recovery action could not be persisted",
+                    ticket_id,
+                )
+            raise RuntimeError(f"ticket {ticket_id} channel deleted but SQL close failed")
+        return reconciled
+    except BaseException:
+        if not delete_completed:
+            restore_task = None
+            try:
+                restore_task = asyncio.create_task(
+                    channel.edit(
+                        overwrites=original_overwrites,
+                        reason=f"Restore after failed ticket close: #{ticket_id}",
+                    )
+                )
+                # Do not let an HTTP request timeout cancel the compensating
+                # permission write after Discord already accepted the freeze.
+                await asyncio.shield(restore_task)
+            except discord.NotFound:
+                # Deleted out-of-band while closing: nothing remains to restore.
+                pass
+            except BaseException as restore_exc:
+                if restore_task is not None and not restore_task.done():
+                    try:
+                        await restore_task
+                    except discord.NotFound:
+                        pass
+                    except BaseException:
+                        pass
+                logger.exception(
+                    "Ticket #%s permission restore failed after close error: %s",
+                    ticket_id,
+                    type(restore_exc).__name__,
+                )
+        raise
+    finally:
+        _ticket_channels_closing.discard(channel_id)
+
+
 # Sync messages from ticket channels to NexusData
 @bot.event
 async def on_message(message: discord.Message):
     global FORWARD_CHANNEL_ID
-    if message.author.bot:
+    channel_name = getattr(message.channel, "name", "") or ""
+    is_bot_author = bool(getattr(message.author, "bot", False))
+    if is_bot_author and not channel_name.startswith("ticket-"):
         await bot.process_commands(message)
         return
 
     # A mute is intentionally enforced by deleting messages instead of changing
     # every channel's permissions. This covers channels created after the mute
     # and leaves every ticket channel available for appeals/support.
-    channel_name = getattr(message.channel, "name", "") or ""
-    active_mutes = await asyncio.to_thread(bot_data.get_active_mutes)
+    active_mutes = (
+        {}
+        if is_bot_author
+        else await asyncio.to_thread(bot_data.get_active_mutes)
+    )
     if str(message.author.id) in active_mutes and not channel_name.startswith("ticket-"):
         # п.6: логируем удалённое сообщение замьюченного в канал логирования особым embed
         content_copy = message.content
@@ -2436,42 +3773,47 @@ async def on_message(message: discord.Message):
         return
 
     # Check if this is a ticket channel
-    if message.channel.name and message.channel.name.startswith("ticket-"):
-        # Sync message to NexusData - find ticket by channel_id
+    if channel_name.startswith("ticket-"):
         channel_id = str(message.channel.id)
-        attachments = [{"url": a.url, "filename": a.filename, "content_type": a.content_type} for a in message.attachments]
-
-        # First find ticket_id by channel
-        open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
-        ticket_id = None
-        matched_ticket = None
-        if open_tickets:
-            for t in open_tickets:
-                if t.get("discord_channel_id") == channel_id:
-                    ticket_id = t["id"]
-                    matched_ticket = t
-                    break
+        # Direct lookup avoids scanning every open ticket for every message.
+        # include_closed also closes the small race where the site has marked
+        # a ticket closed but the last Gateway event arrives before deletion.
+        matched_ticket = await asyncio.to_thread(
+            bot_data.get_ticket_by_channel,
+            channel_id,
+            True,
+        )
+        ticket_id = matched_ticket["id"] if matched_ticket else None
 
         if ticket_id:
-            await asyncio.to_thread(
-                bot_data.add_ticket_message,
-                ticket_id=ticket_id,
-                author_discord_id=str(message.author.id),
-                author_username=str(message.author),
-                author_display_name=message.author.display_name,
-                author_avatar_url=str(message.author.display_avatar.url) if message.author.display_avatar else None,
-                content=message.content,
-                attachments=attachments,
-                discord_message_id=str(message.id),
-            )
-            # Update status embed
-            await refresh_ticket_status()
+            try:
+                await _capture_ticket_message(ticket_id, message)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to archive ticket #%s message %s: %s",
+                    ticket_id,
+                    message.id,
+                    type(exc).__name__,
+                )
+            else:
+                await refresh_ticket_status()
 
             # Деактивация кнопки "Закрыть обращение" после ответа админа (п.8): как только
             # в тикете пишет сотрудник с ролью ответчика — кнопка становится неинтерактивной.
+            is_ticket_staff = False
             if not message.author.bot and ticket_id:
                 config_for_staff = await asyncio.to_thread(bot_data.get_tickets_config)
-                if await _user_has_ticket_staff_permission(message.author, message.guild, config_for_staff):
+                is_ticket_staff = await _user_has_ticket_staff_permission(
+                    message.author,
+                    message.guild,
+                    config_for_staff,
+                )
+                if is_ticket_staff:
+                    await asyncio.to_thread(
+                        bot_data.mark_ticket_answered,
+                        ticket_id,
+                        message.created_at,
+                    )
                     try:
                         async for msg in message.channel.history(limit=20):
                             if msg.author.id == bot.user.id and msg.components:
@@ -2494,24 +3836,28 @@ async def on_message(message: discord.Message):
             # одной из ping_roles ЭТОГО типа обращения — тех же ролей, что
             # были потегованы при создании тикета (см. _create_ticket_channel).
             # Сообщения от автора обращения или посторонних закрытие не отменяют.
-            if channel_id in _pending_close and not message.author.bot:
-                ticket_type = (matched_ticket or {}).get("type")
-                config = await asyncio.to_thread(bot_data.get_tickets_config)
-                if await _user_has_ticket_staff_permission(message.author, message.guild, config):
-                    task = _pending_close.pop(channel_id, None)
-                    if task and not task.done():
-                        task.cancel()
-                        try:
-                            await message.channel.send(
-                                f"⏸️ Закрытие тикета автоматически отменено — {message.author.mention} ответил(а) в обращении."
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to announce auto-cancel close in {channel_id}: {e}")
+            if channel_id in _pending_close and is_ticket_staff:
+                pending_state = _pending_close.pop(channel_id, None)
+                if pending_state is not None:
+                    pending_state.cancelled = True
+                    if pending_state.task is not None and not pending_state.task.done():
+                        pending_state.task.cancel()
+                    try:
+                        await message.channel.send(
+                            f"⏸️ Закрытие тикета автоматически отменено — {message.author.mention} ответил(а) в обращении."
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to announce auto-cancel close in {channel_id}: {e}")
+
+    # Third-party bots and webhooks inside ticket channels are evidence and
+    # were captured above. Stop here to avoid mirroring/forwarding automated
+    # messages into other channels and creating feedback loops.
+    if is_bot_author:
+        await bot.process_commands(message)
+        return
 
     # Department chat channels (item 6): mirror messages from any linked
-    # channel into NexusData. The bot's own sent messages (site → Discord,
-    # via the "send_message" action) never reach here — message.author.bot
-    # already short-circuited this handler above.
+    # channel into NexusData.
     if str(message.channel.id) in _department_chat_channel_ids:
         await asyncio.to_thread(
             bot_data.ingest_department_chat_message,
@@ -2568,21 +3914,39 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    """Reverse half of the ticket phantom-row fix: if a ticket channel gets
-    deleted OUT OF BAND (manually in Discord, bypassing the close button/
-    /close command entirely), nothing else ever tells the site — the
-    Ticket row would otherwise stay "open" forever with no channel left to
-    act on. Best-effort: only touches tickets that are still open."""
+    """Record an evidence exception for an out-of-band ticket deletion.
+
+    A Gateway delete event arrives after Discord has removed the channel, so
+    it cannot prove that the final history and attachments were archived.  Do
+    not close the SQL row; preserve it as an explicit incomplete archive for
+    moderator recovery/review.  The evidence-first close helper is guarded by
+    ``_ticket_channels_closing`` and owns successful closure attribution.
+    """
+    if int(channel.id) in _ticket_channels_closing:
+        # The evidence-first close helper owns SQL attribution and any retry.
+        # Treating its Gateway event as a manual deletion races closed_by.
+        return
     if not (channel.name and channel.name.startswith("ticket-")):
         return
+    channel_id = str(channel.id)
     open_tickets = await asyncio.to_thread(bot_data.get_open_tickets)
     if not open_tickets:
         return
-    channel_id = str(channel.id)
     for t in open_tickets:
         if t.get("discord_channel_id") == channel_id:
-            await asyncio.to_thread(bot_data.close_ticket, t["id"], "Discord (канал удалён вручную)")
-            await refresh_ticket_status()
+            try:
+                marked = await asyncio.to_thread(
+                    bot_data.mark_ticket_archive_incomplete,
+                    t["id"],
+                )
+            except Exception:
+                logger.exception(
+                    "Не удалось пометить тикет #%s как incomplete после удаления канала",
+                    t["id"],
+                )
+                return
+            if marked:
+                await refresh_ticket_status()
             break
 
 
@@ -2605,6 +3969,53 @@ async def setup_hook():
 # ═══════════════════════════════════════════════════════════
 
 _bot_loop: Optional[asyncio.AbstractEventLoop] = None
+_ticket_ipc_recovery_done = False
+
+
+async def dispatch_ticket_bot_action(
+    action_type: str,
+    payload: dict,
+    *,
+    timeout: float,
+    queued_by_admin_id: int | None = None,
+    dedupe_key: str | None = None,
+) -> tuple[Optional[bool], Optional[str], int]:
+    """Durably deliver a ticket action across single or multi-worker setups.
+
+    The database row is the ownership boundary: request cancellation or a
+    reverse-proxy timeout only stops this status poll, never the Discord work.
+    ``None`` means accepted/still processing, while ``True``/``False`` are
+    terminal outcomes observed before the caller's deadline.
+    """
+    action_id = await asyncio.to_thread(
+        bot_data.enqueue_ticket_bot_action,
+        action_type,
+        payload,
+        queued_by_admin_id=queued_by_admin_id,
+        dedupe_key=dedupe_key,
+    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, float(timeout))
+    last_poll_error = None
+    while True:
+        try:
+            status = await asyncio.to_thread(bot_data.get_ticket_bot_action_status, action_id)
+            last_poll_error = None
+        except Exception as exc:
+            status = None
+            last_poll_error = f"{type(exc).__name__}: {exc}"
+        if status:
+            if status.get("state") == "done":
+                return True, None, action_id
+            if status.get("state") == "failed":
+                return False, status.get("error") or "Discord action failed", action_id
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            detail = "Действие принято и продолжает выполняться в фоне"
+            if last_poll_error:
+                detail += f"; статус временно недоступен ({last_poll_error})"
+            return None, detail, action_id
+        await asyncio.sleep(min(0.25, remaining))
 
 
 def schedule(coro, description: str = ""):
@@ -2657,13 +4068,22 @@ async def supervise_bot():
     the app's startup (main.py's startup hook in single-process mode, or
     scheduler_process.py in multi-worker mode) instead of needing its own
     dedicated process."""
-    global _bot_loop
+    global _bot_loop, _ticket_ipc_recovery_done
 
     if not settings.discord_bot_token:
         logger.warning("discord_bot_token not configured — Discord bot will not start")
         return
 
     _bot_loop = asyncio.get_running_loop()
+    try:
+        recovered = await asyncio.to_thread(bot_data.recover_interrupted_ticket_bot_actions)
+        _ticket_ipc_recovery_done = True
+        if recovered:
+            logger.warning("Recovered %s interrupted ticket Discord action(s)", recovered)
+    except Exception:
+        # on_ready retries this once Discord is connected; bot availability
+        # must not depend on the database being healthy at process bootstrap.
+        logger.exception("Could not recover interrupted ticket Discord actions at startup")
     backoff = 5
     while True:
         try:

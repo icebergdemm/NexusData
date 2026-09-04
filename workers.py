@@ -807,43 +807,63 @@ def task_sync_auto_server_privileges() -> dict:
 
 
 def task_auto_close_stale_tickets() -> dict:
-    """Auto-close tickets that have been waiting on an admin reply for too
-    long (item 13) — mirrors the site panel's own close flow exactly
-    (routes/tickets_api.py's api_ticket_close: mark closed + queue
-    "ticket_close_channel", inheriting that action's existing tolerance for
-    a channel that's already gone). Only tickets still flagged
-    awaiting_admin=1 (genuinely unanswered, never engaged) are eligible —
-    a ticket an admin already replied to is left alone even if quiet since,
-    since it may just be waiting on the reporter. Threshold is a fixed 72h
-    of no reply; tune STALE_HOURS below if that's too aggressive/lax. Runs
-    every 30 min.
+    """Queue evidence-first closure for unanswered tickets older than 72h.
+
+    A ticket with a Discord channel stays open in SQL until the bot freezes the
+    channel, archives its final history and confirms deletion. Failed actions
+    remain retryable, and the bot revalidates the cutoff immediately before
+    closing so a reply received while it was offline cancels the stale close.
     """
     STALE_HOURS = 72
     db = SessionLocal()
     try:
         from models import Ticket
-        from discord_bot import bot as discord_bot
+        from discord_bot import data as bot_data
 
         cutoff = datetime.utcnow() - timedelta(hours=STALE_HOURS)
         candidates = db.query(Ticket).filter(Ticket.status != "closed", Ticket.awaiting_admin == 1).all()
 
-        closed = 0
+        eligible = []
         for ticket in candidates:
+            # A manually deleted Discord channel is an evidence exception,
+            # not an unanswered ticket eligible for destructive auto-close.
+            if getattr(ticket, "archive_state", None) == "incomplete":
+                continue
             reference = ticket.last_message_at or ticket.created_at
             if not reference or reference > cutoff:
                 continue
-            ticket.status = "closed"
-            ticket.closed_by = "Авто-закрытие (нет ответа администрации)"
-            ticket.closed_at = datetime.utcnow()
-            if ticket.discord_channel_id:
-                discord_bot.schedule(discord_bot.execute_bot_action(
-                    "ticket_close_channel",
-                    {"ticket_id": ticket.id, "channel_id": ticket.discord_channel_id},
-                ))
-            closed += 1
+            eligible.append((int(ticket.id), str(ticket.discord_channel_id or "")))
 
-        db.commit()
-        return {"status": "ok", "closed": closed}
+        # Release this task's connection before the queue helpers open their
+        # short independent transactions.
+        db.rollback()
+        closed = queued = failed = 0
+        closed_by = "Авто-закрытие (нет ответа администрации)"
+        cutoff_iso = cutoff.isoformat()
+        for ticket_id, channel_id in eligible:
+            try:
+                if not channel_id:
+                    if bot_data.close_ticket(ticket_id, closed_by):
+                        closed += 1
+                    else:
+                        failed += 1
+                    continue
+                bot_data.enqueue_ticket_bot_action(
+                    "ticket_close_channel",
+                    {
+                        "ticket_id": ticket_id,
+                        "channel_id": channel_id,
+                        "closed_by": closed_by,
+                        "auto_close_before": cutoff_iso,
+                    },
+                    dedupe_key=f"ticket-close:{ticket_id}",
+                )
+                queued += 1
+            except Exception:
+                failed += 1
+                logger.exception("Не удалось поставить авто-закрытие тикета #%s в очередь", ticket_id)
+
+        return {"status": "ok", "closed": closed, "queued": queued, "failed": failed}
     except Exception as e:
         db.rollback()
         return {"status": "error", "error": str(e)}
@@ -863,6 +883,56 @@ def task_cleanup_deleted_tickets() -> dict:
         return {"status": "error", "error": str(exc)}
     finally:
         db.close()
+
+
+def _collect_ticket_media_references(ticket_id: int, value, output: set) -> None:
+    """Collect storage identities from direct and nested reply/forward JSON."""
+    if isinstance(value, dict):
+        namespace = value.get("storage_namespace")
+        storage_key = value.get("storage_key")
+        if namespace and storage_key:
+            output.add((int(ticket_id), str(namespace), str(storage_key)))
+        for nested in value.values():
+            _collect_ticket_media_references(ticket_id, nested, output)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _collect_ticket_media_references(ticket_id, nested, output)
+
+
+def task_cleanup_ticket_media_orphans() -> dict:
+    """Reclaim crash leftovers without touching live or referenced evidence."""
+    from config import get_settings
+    from models import TicketMessage
+    from services_ticket_media import cleanup_orphaned_ticket_media
+
+    settings = get_settings()
+    db = SessionLocal()
+    references: set[tuple[int, str, str]] = set()
+    try:
+        rows = db.query(
+            TicketMessage.ticket_id,
+            TicketMessage.attachments,
+            TicketMessage.reference_snapshot,
+        ).yield_per(500)
+        for ticket_id, attachments, reference_snapshot in rows:
+            _collect_ticket_media_references(ticket_id, attachments, references)
+            _collect_ticket_media_references(ticket_id, reference_snapshot, references)
+    finally:
+        db.close()
+
+    result = cleanup_orphaned_ticket_media(
+        references,
+        root=settings.ticket_attachments_dir,
+        min_age_seconds=settings.ticket_attachment_orphan_grace_seconds,
+    )
+    if result.get("deleted_files") or result.get("deleted_partials"):
+        logger.info(
+            "Ticket media cleanup: files=%s partials=%s reclaimed=%s bytes",
+            result.get("deleted_files", 0),
+            result.get("deleted_partials", 0),
+            result.get("reclaimed_bytes", 0),
+        )
+    return result
 
 
 def task_fetch_steam_avatars() -> dict:
@@ -1102,6 +1172,7 @@ def _start_simple_workers():
         (task_fetch_steam_avatars, 15 * 60),
         (task_auto_close_stale_tickets, 30 * 60),
         (task_cleanup_deleted_tickets, 30 * 60),
+        (task_cleanup_ticket_media_orphans, 6 * 60 * 60),
         (task_sync_auto_server_privileges, 5 * 60),
         (task_reconcile_department_discord_roles, 30 * 60),
         (task_cleanup_online_snapshots, 6 * 60 * 60),
@@ -1240,6 +1311,16 @@ def _start_scheduler():
         interval_secs=30 * 60,
         priority=Priority.BACKGROUND,
         task_id="ticket_deleted_cleanup",
+    )
+
+    # Reclaim interrupted `.part` files and files atomically written just
+    # before a process crash prevented the TicketMessage commit. A 24-hour
+    # grace (configurable) prevents races with live requests.
+    scheduler.register_periodic(
+        task_cleanup_ticket_media_orphans,
+        interval_secs=6 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="ticket_media_cleanup",
     )
 
     # Auto server-privilege-group sync from department roles: BACKGROUND

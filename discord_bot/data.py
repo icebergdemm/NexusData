@@ -11,10 +11,224 @@ blocking DB work never stalls the bot's asyncio event loop (same reasoning as
 the rest of this app's run_in_threadpool usage).
 """
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from database import SessionLocal
+
+
+_TICKET_IPC_ACTION_TYPES = frozenset({"ticket_send_message", "ticket_close_channel"})
+_TICKET_IPC_MARKER = "nexus-ticket-ipc-v1"
+
+
+def enqueue_ticket_bot_action(
+    action_type: str,
+    payload: dict,
+    *,
+    queued_by_admin_id: int | None = None,
+    dedupe_key: str | None = None,
+) -> int:
+    """Persist a ticket-only action for the process which owns the Discord bot.
+
+    ``UVICORN_WORKERS>1`` deliberately runs HTTP and Discord in different OS
+    processes.  The marker prevents old rows left by the removed generic bot
+    queue from being replayed when this narrow IPC path is enabled again.
+    """
+    from models import DiscordBotAction
+
+    if action_type not in _TICKET_IPC_ACTION_TYPES:
+        raise ValueError("unsupported ticket IPC action")
+    body = dict(payload or {})
+    body["_nexus_ipc"] = _TICKET_IPC_MARKER
+    if dedupe_key:
+        body["_dedupe_key"] = str(dedupe_key)
+
+    db = SessionLocal()
+    try:
+        if dedupe_key:
+            candidates = db.query(DiscordBotAction).filter(
+                DiscordBotAction.action_type == action_type,
+                DiscordBotAction.executed.in_((0, 3)),
+            ).with_for_update().all()
+            for candidate in candidates:
+                candidate_payload = candidate.payload if isinstance(candidate.payload, dict) else {}
+                if (
+                    candidate_payload.get("_nexus_ipc") == _TICKET_IPC_MARKER
+                    and candidate_payload.get("_dedupe_key") == str(dedupe_key)
+                ):
+                    # The evidence-first closer may reach this same running
+                    # row after Discord has accepted channel.delete() but the
+                    # SQL Ticket close fails. Persist that irreversible phase
+                    # transition on the existing action so its retry can
+                    # distinguish our proven deletion from an unrelated
+                    # manual channel removal.
+                    if (
+                        action_type == "ticket_close_channel"
+                        and body.get("evidence_archive_confirmed") is True
+                        and candidate_payload.get("evidence_archive_confirmed") is not True
+                    ):
+                        upgraded_payload = dict(candidate_payload)
+                        upgraded_payload["evidence_archive_confirmed"] = True
+                        candidate.payload = upgraded_payload
+                        db.commit()
+                    return int(candidate.id)
+
+        action = DiscordBotAction(
+            action_type=action_type,
+            payload=body,
+            queued_by_admin_id=queued_by_admin_id,
+            executed=0,
+        )
+        db.add(action)
+        db.commit()
+        db.refresh(action)
+        return int(action.id)
+    finally:
+        db.close()
+
+
+def claim_next_ticket_bot_action() -> Optional[dict]:
+    """Claim one marked ticket IPC action; never execute legacy queue rows."""
+    from models import DiscordBotAction
+
+    db = SessionLocal()
+    try:
+        while True:
+            action = db.query(DiscordBotAction).filter(
+                DiscordBotAction.action_type.in_(_TICKET_IPC_ACTION_TYPES),
+                DiscordBotAction.executed == 0,
+                (
+                    (DiscordBotAction.executed_at.is_(None))
+                    | (DiscordBotAction.executed_at <= datetime.utcnow())
+                ),
+            ).order_by(DiscordBotAction.id).with_for_update().first()
+            if not action:
+                return None
+            payload = action.payload if isinstance(action.payload, dict) else {}
+            if payload.get("_nexus_ipc") != _TICKET_IPC_MARKER:
+                action.executed = 2
+                action.executed_at = datetime.utcnow()
+                action.error_message = "Ignored unmarked legacy bot action"
+                db.commit()
+                continue
+            payload = dict(payload)
+            payload["_execution_count"] = int(payload.get("_execution_count", 0) or 0) + 1
+            action.payload = payload
+            action.executed = 3
+            action.executed_at = datetime.utcnow()
+            action.error_message = None
+            db.commit()
+            return {
+                "id": int(action.id),
+                "action_type": action.action_type,
+                "payload": dict(payload),
+            }
+    finally:
+        db.close()
+
+
+def finish_ticket_bot_action(action_id: int, success: bool, error: str | None = None) -> None:
+    from models import DiscordBotAction
+
+    db = SessionLocal()
+    try:
+        action = db.query(DiscordBotAction).filter(DiscordBotAction.id == int(action_id)).first()
+        if not action:
+            return
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if payload.get("_nexus_ipc") != _TICKET_IPC_MARKER:
+            return
+        action.executed = 1 if success else 2
+        action.executed_at = datetime.utcnow()
+        action.error_message = None if success else str(error or "Discord action failed")[:500]
+        action.result = {"success": bool(success)}
+        db.commit()
+    finally:
+        db.close()
+
+
+def requeue_ticket_bot_action(
+    action_id: int,
+    error: str | None = None,
+    *,
+    delay_seconds: float = 0,
+    increment_attempt: bool = False,
+) -> None:
+    """Return an interrupted in-flight action to the durable queue."""
+    from models import DiscordBotAction
+
+    db = SessionLocal()
+    try:
+        action = db.query(DiscordBotAction).filter(DiscordBotAction.id == int(action_id)).first()
+        if not action:
+            return
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if payload.get("_nexus_ipc") != _TICKET_IPC_MARKER:
+            return
+        if increment_attempt:
+            updated_payload = dict(payload)
+            updated_payload["_attempt"] = int(updated_payload.get("_attempt", 0) or 0) + 1
+            action.payload = updated_payload
+        action.executed = 0
+        action.executed_at = (
+            datetime.utcnow() + timedelta(seconds=max(0.0, float(delay_seconds)))
+            if delay_seconds
+            else None
+        )
+        action.error_message = str(error or "Interrupted; queued for retry")[:500]
+        action.result = None
+        db.commit()
+    finally:
+        db.close()
+
+
+def recover_interrupted_ticket_bot_actions() -> int:
+    """Requeue marked actions left in ``running`` state by a process crash."""
+    from models import DiscordBotAction
+
+    db = SessionLocal()
+    recovered = 0
+    try:
+        actions = db.query(DiscordBotAction).filter(
+            DiscordBotAction.action_type.in_(_TICKET_IPC_ACTION_TYPES),
+            DiscordBotAction.executed == 3,
+        ).all()
+        for action in actions:
+            payload = action.payload if isinstance(action.payload, dict) else {}
+            if payload.get("_nexus_ipc") != _TICKET_IPC_MARKER:
+                continue
+            action.executed = 0
+            action.executed_at = None
+            action.error_message = "Recovered after Discord worker restart"
+            action.result = None
+            recovered += 1
+        db.commit()
+        return recovered
+    finally:
+        db.close()
+
+
+def get_ticket_bot_action_status(action_id: int) -> Optional[dict]:
+    from models import DiscordBotAction
+
+    db = SessionLocal()
+    try:
+        action = db.query(DiscordBotAction).filter(DiscordBotAction.id == int(action_id)).first()
+        if not action:
+            return None
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if payload.get("_nexus_ipc") != _TICKET_IPC_MARKER:
+            return None
+        return {
+            "id": int(action.id),
+            "state": {0: "queued", 1: "done", 2: "failed", 3: "running"}.get(
+                int(action.executed or 0), "failed"
+            ),
+            "success": bool((action.result or {}).get("success")) if action.executed == 1 else False,
+            "error": action.error_message,
+        }
+    finally:
+        db.close()
 
 
 # ── Members sync ─────────────────────────────────────────────────────────
@@ -444,24 +658,27 @@ def set_tickets_config(config: dict) -> None:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
-def get_ticket_by_channel(channel_id: str) -> Optional[dict]:
-    """Активный (не закрытый) тикет по ID канала — источник истины для всего,
-    что должно работать по каналу, а не по значению, сохранённому в объекте
-    вида (кнопке/View), которое переживает рестарт бота хуже, чем БД."""
+def get_ticket_by_channel(channel_id: str, include_closed: bool = False) -> Optional[dict]:
+    """Return the newest ticket bound to a Discord channel.
+
+    Normal event ingestion uses ``include_closed=True`` so a last Gateway
+    event racing with site-side closure is still archived. Interactive close
+    flows keep the default and therefore cannot close an already closed row.
+    """
     from models import Ticket
 
     db = SessionLocal()
     try:
-        ticket = (
-            db.query(Ticket)
-            .filter(Ticket.discord_channel_id == str(channel_id), Ticket.status != "closed")
-            .first()
-        )
+        query = db.query(Ticket).filter(Ticket.discord_channel_id == str(channel_id))
+        if not include_closed:
+            query = query.filter(Ticket.status != "closed")
+        ticket = query.order_by(Ticket.id.desc()).first()
         if not ticket:
             return None
         return {
             "id": ticket.id, "title": ticket.title, "ticket_type": ticket.ticket_type,
             "creator_discord_id": ticket.creator_discord_id,
+            "status": ticket.status,
         }
     finally:
         db.close()
@@ -484,6 +701,7 @@ def get_open_tickets() -> list:
                 "creator_username": t.creator_username,
                 "creator_display_name": t.creator_display_name,
                 "discord_channel_id": t.discord_channel_id,
+                "archive_state": getattr(t, "archive_state", None),
                 "awaiting_admin": t.awaiting_admin,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
                 "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None,
@@ -520,29 +738,438 @@ def create_ticket(ticket_type: str, title: str, creator_discord_id: str, creator
         db.close()
 
 
-def add_ticket_message(ticket_id: int, author_discord_id: str, author_username: str = None,
-                        author_display_name: str = None, author_avatar_url: str = None,
-                        content: str = None, attachments: list = None, discord_message_id: str = None) -> bool:
-    from models import Ticket, TicketMessage
+def get_ticket_message_by_discord_id(ticket_id: int, discord_message_id: str) -> Optional[dict]:
+    """Return the locally archived pieces used to make Discord replay safe.
+
+    Gateway reconnects and the final pre-delete history sweep can present the
+    same Discord message more than once.  The bot uses this lightweight lookup
+    to reuse already archived files instead of downloading them under fresh
+    storage keys and leaving orphaned copies behind.
+    """
+    if not discord_message_id:
+        return None
+
+    from models import TicketMessage
 
     db = SessionLocal()
     try:
-        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+        message = db.query(TicketMessage).filter(
+            TicketMessage.ticket_id == ticket_id,
+            TicketMessage.discord_message_id == str(discord_message_id),
+        ).first()
+        if not message:
+            return None
+        return {
+            "id": message.id,
+            "attachments": message.attachments or [],
+            "reference_snapshot": getattr(message, "reference_snapshot", None),
+        }
+    finally:
+        db.close()
+
+
+def get_ticket_message_archives(ticket_id: int) -> list[dict]:
+    """Return every persisted media envelope for final close validation."""
+    from models import TicketMessage
+
+    db = SessionLocal()
+    try:
+        messages = db.query(TicketMessage).filter(TicketMessage.ticket_id == ticket_id).all()
+        return [
+            {
+                "id": message.id,
+                "discord_message_id": message.discord_message_id,
+                "attachments": message.attachments or [],
+                "reference_snapshot": getattr(message, "reference_snapshot", None),
+            }
+            for message in messages
+        ]
+    finally:
+        db.close()
+
+
+def _ticket_attachment_signature(values) -> tuple:
+    signature = []
+    for value in values or []:
+        if isinstance(value, dict):
+            filename = str(value.get("filename") or "")
+            size = value.get("file_size", value.get("size", 0))
+        else:
+            filename = str(getattr(value, "filename", "") or "")
+            size = getattr(value, "size", getattr(value, "file_size", 0))
+        try:
+            normalized_size = max(0, int(size or 0))
+        except (TypeError, ValueError):
+            normalized_size = 0
+        signature.append((filename, normalized_size))
+    return tuple(sorted(signature))
+
+
+def link_site_ticket_message(
+    ticket_id: int,
+    discord_message_id: str,
+    content: str | None,
+    attachments,
+    created_at=None,
+) -> Optional[int]:
+    """Attach an own-bot Discord echo to its pre-existing site message row.
+
+    Site replies are written locally before Discord delivery. Gateway delivery
+    and history backfill must therefore enrich that row, not create a second
+    message authored by the bot. A tight timestamp plus exact text/file
+    signature makes the legacy fallback deterministic enough for rows created
+    before Discord IDs were persisted.
+    """
+    from models import Ticket, TicketMessage
+
+    if not discord_message_id:
+        return None
+    db = SessionLocal()
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).with_for_update().first()
+        if not ticket:
+            return None
+        existing = db.query(TicketMessage).filter(
+            TicketMessage.ticket_id == ticket_id,
+            TicketMessage.discord_message_id == str(discord_message_id),
+        ).first()
+        if existing:
+            return int(existing.id)
+
+        timestamp = _discord_timestamp(created_at) or datetime.utcnow()
+        lower = timestamp - timedelta(minutes=5)
+        upper = timestamp + timedelta(minutes=5)
+        candidates = db.query(TicketMessage).filter(
+            TicketMessage.ticket_id == ticket_id,
+            TicketMessage.is_bot == 1,
+            TicketMessage.discord_message_id.is_(None),
+            TicketMessage.created_at >= lower,
+            TicketMessage.created_at <= upper,
+        ).order_by(TicketMessage.created_at.desc(), TicketMessage.id.desc()).all()
+        wanted_content = str(content or "")
+        wanted_files = _ticket_attachment_signature(attachments)
+        matching = [
+            candidate for candidate in candidates
+            if str(candidate.content or "") == wanted_content
+            and _ticket_attachment_signature(candidate.attachments) == wanted_files
+        ]
+        if not matching:
+            return None
+        message = min(
+            matching,
+            key=lambda candidate: abs((candidate.created_at - timestamp).total_seconds()),
+        )
+        message.discord_message_id = str(discord_message_id)
+        message.delivery_status = "sent"
+        message.delivery_error = None
+        db.commit()
+        return int(message.id)
+    finally:
+        db.close()
+
+
+def set_ticket_message_delivery(
+    ticket_id: int,
+    message_id: int,
+    status: str,
+    error: str | None = None,
+    discord_message_id: str | None = None,
+) -> bool:
+    from models import TicketMessage
+
+    db = SessionLocal()
+    try:
+        message = db.query(TicketMessage).filter(
+            TicketMessage.id == int(message_id),
+            TicketMessage.ticket_id == int(ticket_id),
+        ).first()
+        if not message:
+            return False
+        message.delivery_status = str(status)[:20]
+        message.delivery_error = str(error)[:1000] if error else None
+        if discord_message_id:
+            message.discord_message_id = str(discord_message_id)
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+def get_ticket_message_delivery(ticket_id: int, message_id: int) -> Optional[dict]:
+    """Return the durable delivery identity for an idempotent queued send."""
+    from models import TicketMessage
+
+    db = SessionLocal()
+    try:
+        message = db.query(TicketMessage).filter(
+            TicketMessage.id == int(message_id),
+            TicketMessage.ticket_id == int(ticket_id),
+        ).first()
+        if not message:
+            return None
+        return {
+            "status": str(message.delivery_status or "received"),
+            "discord_message_id": (
+                str(message.discord_message_id) if message.discord_message_id else None
+            ),
+        }
+    finally:
+        db.close()
+
+
+def ticket_is_stale_unanswered(ticket_id: int, cutoff) -> bool:
+    """Revalidate a delayed auto-close immediately before touching Discord.
+
+    A durable action can remain queued while the bot is disconnected.  In that
+    time a moderator may answer the ticket, so eligibility must not be frozen
+    at the scheduler's original scan.
+    """
+    from models import Ticket
+
+    normalized_cutoff = _discord_timestamp(cutoff)
+    if normalized_cutoff is None:
+        return False
+    db = SessionLocal()
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == int(ticket_id)).first()
+        if not ticket or ticket.status == "closed" or int(ticket.awaiting_admin or 0) != 1:
+            return False
+        reference = _discord_timestamp(ticket.last_message_at or ticket.created_at)
+        return bool(reference and reference <= normalized_cutoff)
+    finally:
+        db.close()
+
+
+def _discord_timestamp(value):
+    """Normalize Discord's aware UTC datetime for MySQL's naive DATETIME."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _attachment_identities(value) -> set[tuple]:
+    """Return every stable alias so legacy URL rows can become rich records."""
+    if isinstance(value, str):
+        return {("url", value)} if value else set()
+    if not isinstance(value, dict):
+        return set()
+
+    identities: set[tuple] = set()
+    attachment_id = str(value.get("id") or value.get("discord_attachment_id") or "")
+    if attachment_id:
+        identities.add(("discord", attachment_id))
+    storage_key = str(value.get("storage_key") or "")
+    if storage_key:
+        identities.add(("stored", storage_key))
+    for key in ("url", "source_url", "proxy_url", "legacy_url"):
+        url = str(value.get(key) or "")
+        if url:
+            identities.add(("url", url))
+    return identities
+
+
+def _merge_ticket_attachments(existing, incoming) -> list:
+    """Union evidence while allowing a retry to enrich a failed record."""
+    result = []
+    positions: dict[tuple, int] = {}
+    for raw in [*(existing or []), *(incoming or [])]:
+        item = dict(raw) if isinstance(raw, dict) else raw
+        identities = _attachment_identities(item)
+        matching_positions = {positions[identity] for identity in identities if identity in positions}
+        if not matching_positions:
+            index = len(result)
+            result.append(item)
+            for identity in identities:
+                positions[identity] = index
+            continue
+
+        index = min(matching_positions)
+        previous = result[index]
+        if not isinstance(previous, dict) or not isinstance(item, dict):
+            # Prefer the structured version when upgrading a historical bare
+            # CDN URL; never downgrade a rich archived record back to a string.
+            result[index] = item if isinstance(item, dict) else previous
+            for identity in _attachment_identities(result[index]):
+                positions[identity] = index
+            continue
+        merged = {**previous, **item}
+        # A Discord history replay must never downgrade a file which is
+        # already safely archived (e.g. the attachment was later removed).
+        incoming_is_stored = item.get("archive_status") == "stored" and item.get("storage_key")
+        if (
+            previous.get("archive_status") == "stored"
+            and previous.get("storage_key")
+            and not incoming_is_stored
+        ):
+            for key in (
+                "storage_key", "storage_namespace", "archive_status",
+                "archive_error", "sha256", "archived_at", "file_size",
+            ):
+                merged[key] = previous.get(key)
+        result[index] = merged
+        for identity in _attachment_identities(merged):
+            positions[identity] = index
+    return result
+
+
+def _reference_payloads(snapshot) -> list[dict]:
+    if not isinstance(snapshot, dict):
+        return []
+    wrapped = snapshot.get("message_snapshots") or []
+    payloads = [
+        item.get("message")
+        for item in wrapped
+        if isinstance(item, dict) and isinstance(item.get("message"), dict)
+    ]
+    if payloads:
+        return payloads
+    if isinstance(snapshot.get("message"), dict):
+        return [snapshot["message"]]
+    return [snapshot]
+
+
+def _merge_reference_snapshot(existing, incoming):
+    """Normalize and merge reply/forward evidence without destructive sync."""
+    if not isinstance(existing, dict):
+        return incoming
+    if not isinstance(incoming, dict):
+        return existing
+
+    old_payloads = _reference_payloads(existing)
+    new_payloads = _reference_payloads(incoming)
+    old_attachments = [raw for payload in old_payloads for raw in (payload.get("attachments") or [])]
+    new_attachments = [raw for payload in new_payloads for raw in (payload.get("attachments") or [])]
+
+    merged = {**existing, **incoming}
+    # Store the stable application contract going forward. Values from legacy
+    # Discord wrappers have already been lifted before the wrappers are dropped.
+    merged.pop("message", None)
+    merged.pop("message_snapshots", None)
+    merged.pop("type", None)
+    merged["kind"] = incoming.get("kind") or existing.get("kind") or existing.get("type") or "reply"
+    merged["attachments"] = _merge_ticket_attachments(old_attachments, new_attachments)
+
+    old_source = existing.get("source")
+    new_source = incoming.get("source")
+    if isinstance(old_source, dict) and isinstance(new_source, dict):
+        merged["source"] = {**old_source, **{key: value for key, value in new_source.items() if value is not None}}
+
+    for key in ("author", "content", "created_at", "edited_at", "embeds", "stickers"):
+        if merged.get(key) not in (None, "", []):
+            continue
+        old_value = existing.get(key)
+        if old_value in (None, "", []):
+            old_value = next((payload.get(key) for payload in old_payloads if payload.get(key) not in (None, "", [])), None)
+        if old_value not in (None, "", []):
+            merged[key] = old_value
+    return merged
+
+
+def add_ticket_message(ticket_id: int, author_discord_id: str, author_username: str = None,
+                        author_display_name: str = None, author_avatar_url: str = None,
+                        content: str = None, attachments: list = None, discord_message_id: str = None,
+                        reference_snapshot: dict = None, created_at=None,
+                        is_bot: bool = False) -> Optional[int]:
+    """Insert or enrich one Discord ticket message and return its local ID.
+
+    ``discord_message_id`` is the idempotency key.  This matters both for
+    reconnect-delivered gateway events and for the mandatory final channel
+    history reconciliation before deletion.  Site-authored rows have no
+    Discord ID and therefore retain the historical append-only behaviour.
+    """
+    from models import AdminUser, Ticket, TicketMessage
+
+    db = SessionLocal()
+    try:
+        # Serialize concurrent Gateway/history upserts for the same ticket so
+        # two workers cannot both miss the same Discord id and insert it.
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).with_for_update().first()
+        if not ticket:
+            return None
+        message = None
+        if discord_message_id:
+            message = db.query(TicketMessage).filter(
+                TicketMessage.ticket_id == ticket_id,
+                TicketMessage.discord_message_id == str(discord_message_id),
+            ).first()
+
+        normalized_created_at = _discord_timestamp(created_at)
+        if message:
+            # A final history sweep can recover richer data than the original
+            # event (for example after a transient attachment download error).
+            message.author_discord_id = str(author_discord_id)
+            message.author_username = author_username
+            message.author_display_name = author_display_name
+            message.author_avatar_url = author_avatar_url
+            message.content = content
+            message.is_bot = int(bool(is_bot))
+            # A history fetch can occasionally omit attachment/snapshot data
+            # that was present on the Gateway event. Never turn an already
+            # durable archive into an empty one during an idempotent replay.
+            if attachments is not None:
+                message.attachments = _merge_ticket_attachments(message.attachments, attachments)
+            message.reference_snapshot = _merge_reference_snapshot(
+                message.reference_snapshot,
+                reference_snapshot,
+            )
+            if normalized_created_at is not None:
+                message.created_at = normalized_created_at
+        else:
+            message = TicketMessage(
+                ticket_id=ticket_id,
+                discord_message_id=str(discord_message_id) if discord_message_id else None,
+                author_discord_id=str(author_discord_id),
+                author_username=author_username,
+                author_display_name=author_display_name,
+                author_avatar_url=author_avatar_url,
+                content=content,
+                attachments=attachments or [],
+                reference_snapshot=reference_snapshot,
+                is_bot=int(bool(is_bot)),
+            )
+            if normalized_created_at is not None:
+                message.created_at = normalized_created_at
+            db.add(message)
+
+        message_time = normalized_created_at or getattr(message, "created_at", None) or datetime.utcnow()
+        current_last = _discord_timestamp(ticket.last_message_at)
+        is_latest = current_last is None or message_time >= current_last
+        if current_last is None or message_time > current_last:
+            ticket.last_message_at = message_time
+
+        # Reconciliation walks old history too. Only the chronologically
+        # newest message may change the inbox's "awaiting admin" state.
+        if is_latest:
+            author_id = str(author_discord_id)
+            if author_id == str(ticket.creator_discord_id):
+                ticket.awaiting_admin = 1
+            elif db.query(AdminUser.id).filter(
+                AdminUser.discord_id == author_id,
+                AdminUser.is_deleted == 0,
+            ).first():
+                ticket.awaiting_admin = 0
+        db.commit()
+        return message.id
+    finally:
+        db.close()
+
+
+def mark_ticket_answered(ticket_id: int, created_at=None) -> bool:
+    """Mark a ticket answered after Discord role-based staff verification."""
+    from models import Ticket
+
+    db = SessionLocal()
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).with_for_update().first()
         if not ticket:
             return False
-        db.add(TicketMessage(
-            ticket_id=ticket_id,
-            discord_message_id=discord_message_id,
-            author_discord_id=author_discord_id,
-            author_username=author_username,
-            author_display_name=author_display_name,
-            author_avatar_url=author_avatar_url,
-            content=content,
-            attachments=attachments or [],
-            is_bot=0,
-        ))
-        ticket.last_message_at = datetime.utcnow()
-        if author_discord_id != ticket.creator_discord_id:
+        staff_message_time = _discord_timestamp(created_at) or datetime.utcnow()
+        current_last = _discord_timestamp(ticket.last_message_at)
+        if current_last is None or staff_message_time >= current_last:
             ticket.awaiting_admin = 0
         db.commit()
         return True
@@ -550,7 +1177,12 @@ def add_ticket_message(ticket_id: int, author_discord_id: str, author_username: 
         db.close()
 
 
-def close_ticket(ticket_id: int, closed_by: str) -> bool:
+def close_ticket(
+    ticket_id: int,
+    closed_by: str,
+    *,
+    evidence_archive_confirmed: bool = False,
+) -> bool:
     from models import Ticket
 
     db = SessionLocal()
@@ -558,9 +1190,40 @@ def close_ticket(ticket_id: int, closed_by: str) -> bool:
         ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
         if not ticket:
             return False
+        # An out-of-band Discord deletion has no remaining channel history to
+        # reconcile.  Keep the ticket open and visible as an exception rather
+        # than allowing a generic caller to claim a complete closure.
+        if (
+            getattr(ticket, "archive_state", None) == "incomplete"
+            and not evidence_archive_confirmed
+        ):
+            return False
         ticket.status = "closed"
+        if evidence_archive_confirmed:
+            ticket.archive_state = "complete"
         ticket.closed_by = closed_by
         ticket.closed_at = datetime.utcnow()
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
+def mark_ticket_archive_incomplete(ticket_id: int) -> bool:
+    """Persist a conservative exception for a channel deleted outside ND.
+
+    The row remains open so moderators can see and recover it.  In particular,
+    this helper never changes ``status`` to ``closed``: the Discord Gateway
+    delete event cannot prove that history or attachments were archived.
+    """
+    from models import Ticket
+
+    db = SessionLocal()
+    try:
+        ticket = db.query(Ticket).filter(Ticket.id == ticket_id).with_for_update().first()
+        if not ticket or ticket.status == "closed":
+            return False
+        ticket.archive_state = "incomplete"
         db.commit()
         return True
     finally:

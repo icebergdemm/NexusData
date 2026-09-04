@@ -10,12 +10,12 @@ this themselves (see main.py's startup() hook).
 
 The Discord bot (discord_bot/bot.py) also lives here in multi-worker mode,
 since it needs its own live asyncio event loop and this is the one process
-guaranteed to run exactly once. Accepted limitation: WORKER_ROLE=web
-processes are separate OS processes and can't call discord_bot.schedule(...)
-directly (different process, different memory) — no IPC is built for this,
-since multi-worker mode isn't actually used in production today. In
-single-process mode (the current default), the bot instead runs inside
-main.py's own startup hook, where every route CAN call schedule() directly.
+    guaranteed to run exactly once. Ticket send/close requests from separate
+    WORKER_ROLE=web processes cross this boundary through the marked durable
+    DiscordBotAction queue; the bot process is its sole consumer. Other legacy
+    schedule(...) call sites remain in-process only. In single-process mode the
+    bot instead runs inside main.py's startup hook and consumes the same ticket
+    queue there.
 """
 
 import asyncio

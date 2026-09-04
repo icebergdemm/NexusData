@@ -106,8 +106,6 @@
           <select name="action_type" style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:9px 12px; color:var(--white); font-size:13px; font-family:inherit; width:100%;">
             <option value="send_message">Отправить сообщение</option>
             <option value="send_embed">Отправить embed</option>
-            <option value="kick_member">Кикнуть участника</option>
-            <option value="ban_member">Забанить участника</option>
           </select>
         </div>
       </div>
@@ -117,8 +115,7 @@
                   style="background:var(--dark-blue-bg); border:1px solid var(--stroke-01); border-radius:6px; padding:9px 12px; color:var(--white); font-size:12px; font-family:monospace; width:100%; box-sizing:border-box; resize:vertical;"></textarea>
         <span style="font-size:10px; color:var(--gray-dark);">
           send_message: {"channel_id": "...", "content": "текст"}<br>
-          kick_member: {"discord_id": "...", "reason": "причина"}<br>
-          ban_member: {"discord_id": "...", "reason": "причина"}
+          send_embed: {"channel_id": "...", "embed": {"title": "..."}}
         </span>
       </div>
       <button type="submit" style="align-self:flex-start; background:var(--primary-blue); color:#fff; border:none; border-radius:6px; padding:9px 18px; font-size:13px; font-weight:600; cursor:pointer;">Отправить</button>

@@ -217,6 +217,31 @@ class Settings(BaseSettings):
     # Document library file storage (real .docx/.xlsx files edited via ONLYOFFICE)
     documents_upload_dir: str = "uploads/documents"
 
+    # Ticket evidence is mirrored locally before a Discord ticket channel is
+    # deleted.  `uploads` is part of the default encrypted SFTP backup set, so
+    # closed complaints keep their screenshots/videos without relying on
+    # expiring Discord CDN URLs.  Limits are deliberately configurable: large
+    # video evidence is useful, but one message must not exhaust the server.
+    ticket_attachments_dir: str = "uploads/ticket_attachments"
+    ticket_attachment_max_bytes: int = Field(200 * 1024 * 1024, ge=1)
+    ticket_attachment_message_max_bytes: int = Field(400 * 1024 * 1024, ge=1)
+    # Hard storage budgets cover both Discord mirroring and files uploaded
+    # from the web panel. Set a scope to 0 only when an external filesystem
+    # quota is intentionally responsible for that limit.
+    ticket_attachment_ticket_quota_bytes: int = Field(2 * 1024 * 1024 * 1024, ge=0)
+    ticket_attachment_global_quota_bytes: int = Field(50 * 1024 * 1024 * 1024, ge=0)
+    ticket_attachment_download_timeout_seconds: float = Field(120.0, gt=0, le=900)
+    ticket_attachment_orphan_grace_seconds: int = Field(24 * 60 * 60, ge=300, le=30 * 86400)
+    ticket_web_upload_max_bytes: int = Field(25 * 1024 * 1024, ge=1)
+    ticket_web_upload_max_files: int = Field(10, ge=1, le=25)
+    # Open ticket channels are incrementally re-read so pre-existing CDN-only
+    # rows become durable before a moderator ever attempts to close them.
+    ticket_history_backfill_enabled: bool = True
+    ticket_history_backfill_interval_seconds: int = Field(15 * 60, ge=60, le=86400)
+    ticket_history_backfill_channels_per_run: int = Field(4, ge=1, le=100)
+    ticket_history_backfill_messages_per_channel: int = Field(250, ge=1, le=5000)
+    ticket_history_backfill_pause_seconds: float = Field(0.10, ge=0, le=5)
+
     # ONLYOFFICE Document Server integration
     onlyoffice_document_server_url: str = "https://nd.rp-asper.ru/onlyoffice"  # public browser-facing URL, e.g. https://nd.rp-asper.ru:8082
     onlyoffice_callback_base_url: str = "https://nd.rp-asper.ru"    # our own base URL, reachable BY the Document Server (fetch + callback)

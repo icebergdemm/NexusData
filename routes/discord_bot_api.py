@@ -24,6 +24,12 @@ from models import DiscordMember, DiscordBotConfig, DiscordAntiRaidLog, PlayerDa
 
 panel_router = APIRouter()
 
+# This endpoint is intentionally much narrower than execute_bot_action().
+# Most action types are internal service-to-bot contracts with their own
+# permission checks (tickets, documents, roles, etc.).  Exposing them through
+# the broadcast console would let a broadcaster bypass those checks.
+_BROADCAST_ACTION_TYPES = frozenset({"send_message", "send_embed"})
+
 _templates = Jinja2Templates(directory="templates")
 _templates.env.globals.update(check_permission=check_permission)
 
@@ -403,6 +409,8 @@ async def api_admin_discord_bot_send_action(request: Request, db: Session = Depe
     payload = body.get("payload") or {}
     if not action_type:
         raise HTTPException(status_code=400, detail="action_type required")
+    if action_type not in _BROADCAST_ACTION_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported broadcast action_type")
 
     from discord_bot import bot as discord_bot
     discord_bot.schedule(discord_bot.execute_bot_action(action_type, payload))
@@ -419,6 +427,9 @@ async def admin_discord_bot_send_action(
     admin = _get_admin(request, db)
     if not check_permission(admin, "discord_bot", "broadcast"):
         raise HTTPException(status_code=403)
+
+    if action_type not in _BROADCAST_ACTION_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported broadcast action_type")
 
     try:
         payload = _json.loads(payload_json)

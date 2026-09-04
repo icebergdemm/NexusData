@@ -248,6 +248,14 @@ def _apply_migrations():
         ("tasks", "is_hidden", "TINYINT NOT NULL DEFAULT 0"),
         ("tasks", "rejection_reason", "VARCHAR(1000)"),
         ("tasks", "preview_attachment_id", "INT"),
+        # tickets — durable evidence/forward snapshots and a real assignee.
+        ("tickets", "assigned_admin_id", "INT"),
+        # tickets — manual Discord deletion is an explicit incomplete-archive
+        # exception and must not be treated as evidence-complete closure.
+        ("tickets", "archive_state", "VARCHAR(20)"),
+        ("ticket_messages", "reference_snapshot", "JSON"),
+        ("ticket_messages", "delivery_status", 'VARCHAR(20) NOT NULL DEFAULT "received"'),
+        ("ticket_messages", "delivery_error", "VARCHAR(1000)"),
         # label folders/sorting + department access level sorting/description + superuser bind flag
         ("label_categories", "folder_id", "INT"),
         ("label_categories", "sort_order", "INT NOT NULL DEFAULT 0"),
