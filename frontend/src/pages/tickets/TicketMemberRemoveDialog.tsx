@@ -56,7 +56,7 @@ export function TicketMemberRemoveDialog({
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><UserMinus className="size-4" /> Удалить участника</DialogTitle>
-            <DialogDescription>Выберите участника, которому сейчас выдан персональный доступ к этому тикету.</DialogDescription>
+            <DialogDescription>Выберите любого участника, который сейчас имеет доступ к Discord-каналу этого тикета.</DialogDescription>
           </DialogHeader>
 
           <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-1">

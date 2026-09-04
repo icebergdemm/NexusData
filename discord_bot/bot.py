@@ -1769,22 +1769,12 @@ async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
     return False
 
 
-def _has_ticket_member_overwrite(overwrite) -> bool:
-    is_empty = getattr(overwrite, "is_empty", None)
-    if callable(is_empty):
-        return not is_empty()
-    return any(
-        getattr(overwrite, attribute, None) is not None
-        for attribute in ("view_channel", "send_messages", "read_message_history")
-    )
-
-
 async def list_ticket_members(channel_id: str) -> dict:
-    """Return members with a member-specific overwrite in the ticket channel.
+    """Return current non-bot members who can view the ticket channel.
 
-    The channel overwrites are the source of truth here.  The guild member
-    cache is not guaranteed to contain every member who has a channel
-    permission, especially after a restart or with limited member intents.
+    Effective channel permissions are the source of truth.  The guild member
+    cache is intentionally not populated at startup, so members are streamed
+    from Discord and checked against the channel's role and member overwrites.
     """
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -1806,26 +1796,14 @@ async def list_ticket_members(channel_id: str) -> dict:
             return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
 
     members = []
-    for target, overwrite in getattr(channel, "overwrites", {}).items():
-        if isinstance(target, discord.Role):
-            continue
-        if getattr(target, "id", None) == getattr(guild, "id", None):
-            continue
-        if not _has_ticket_member_overwrite(overwrite):
-            continue
+    seen_ids = set()
 
-        member = target if getattr(target, "display_name", None) is not None else guild.get_member(target.id)
-        if not member:
-            try:
-                member = await guild.fetch_member(target.id)
-            except (discord.NotFound, discord.Forbidden):
-                continue
-            except Exception as exc:
-                logger.warning("Failed to resolve ticket member %s: %s", target.id, exc)
-                continue
-        if getattr(member, "bot", False):
-            continue
-
+    def add_member(member) -> None:
+        if getattr(member, "bot", False) or member.id in seen_ids:
+            return
+        if not channel.permissions_for(member).view_channel:
+            return
+        seen_ids.add(member.id)
         display_avatar = getattr(member, "display_avatar", None)
         avatar_url = str(display_avatar.url) if display_avatar and getattr(display_avatar, "url", None) else None
         members.append({
@@ -1834,6 +1812,44 @@ async def list_ticket_members(channel_id: str) -> dict:
             "display_name": getattr(member, "display_name", None),
             "avatar_url": avatar_url,
         })
+
+    fetch_members = getattr(guild, "fetch_members", None)
+    try:
+        if fetch_members is not None:
+            async for member in fetch_members(limit=None):
+                add_member(member)
+        else:
+            for member in getattr(guild, "members", []):
+                add_member(member)
+    except discord.Forbidden:
+        return {"status": "error", "code": "members_forbidden", "detail": "Бот не может получить участников Discord-сервера"}
+    except discord.HTTPException as exc:
+        logger.warning("Failed to fetch guild members for ticket %s: %s", channel_id, exc)
+        return {"status": "error", "code": "members_lookup_failed", "detail": "Discord не ответил при получении участников тикета"}
+    except Exception as exc:
+        logger.warning("Failed to list effective ticket members %s: %s", channel_id, exc)
+        return {"status": "error", "code": "members_lookup_failed", "detail": "Не удалось проверить участников тикета в Discord"}
+
+    # chunk_guilds_at_startup=False means a direct member overwrite may be
+    # represented by discord.Object instead of a cached Member. Resolve those
+    # explicit targets as a fallback; role-based access was handled above.
+    for target in getattr(channel, "overwrites", {}):
+        if isinstance(target, discord.Role) or getattr(target, "id", None) == getattr(guild, "id", None):
+            continue
+        target_id = getattr(target, "id", None)
+        if target_id is None or target_id in seen_ids:
+            continue
+        member = target if getattr(target, "display_name", None) is not None else guild.get_member(target_id)
+        if not member:
+            try:
+                member = await guild.fetch_member(target_id)
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except Exception as exc:
+                logger.warning("Failed to resolve direct ticket member %s: %s", target_id, exc)
+                continue
+        add_member(member)
+
     return {"status": "ok", "members": members}
 
 
@@ -1972,6 +1988,10 @@ async def remove_ticket_member(
 
     if getattr(member, "bot", False):
         return {"status": "error", "code": "member_is_bot", "detail": "Ботов нельзя удалять из тикетов"}
+    if getattr(guild, "owner_id", None) == member.id:
+        return {"status": "error", "code": "member_unremovable", "detail": "Нельзя убрать доступ у владельца Discord-сервера"}
+    if getattr(getattr(member, "guild_permissions", None), "administrator", False):
+        return {"status": "error", "code": "member_unremovable", "detail": "Нельзя убрать доступ у администратора Discord-сервера"}
 
     channel = bot.get_channel(int(channel_id))
     if not channel:
@@ -1985,15 +2005,21 @@ async def remove_ticket_member(
             logger.warning("Failed to fetch ticket channel %s for removal: %s", channel_id, exc)
             return {"status": "error", "code": "channel_lookup_failed", "detail": "Discord не ответил при проверке канала"}
 
-    overwrite = channel.overwrites_for(member)
-    has_member_overwrite = _has_ticket_member_overwrite(overwrite)
-    if not has_member_overwrite:
+    try:
+        has_access = channel.permissions_for(member).view_channel
+    except Exception as exc:
+        logger.warning("Failed to check ticket access for %s: %s", member_id, exc)
+        return {"status": "error", "code": "permission_lookup_failed", "detail": "Не удалось проверить доступ участника к тикету"}
+    if not has_access:
         return {"status": "already_absent", "member_id": str(member.id)}
 
     try:
         await channel.set_permissions(
             member,
-            overwrite=None,
+            view_channel=False,
+            send_messages=False,
+            read_message_history=False,
+            attach_files=False,
             reason=f"Ticket #{ticket_id}: removed from NexusData by {removed_by}",
         )
     except discord.Forbidden:

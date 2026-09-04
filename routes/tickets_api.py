@@ -394,7 +394,7 @@ async def api_ticket_remove_member(request: Request, ticket_id: int, discord_id:
         raise HTTPException(status_code=502, detail=result.get("detail", "Доступ убран, но сообщение не отправлено"))
     if result_status not in {"ok", "already_absent"}:
         code = result.get("code") if isinstance(result, dict) else None
-        status_code = 404 if code in {"member_not_found", "channel_not_found"} else 502
+        status_code = 409 if code == "member_unremovable" else 404 if code in {"member_not_found", "channel_not_found"} else 502
         raise HTTPException(status_code=status_code, detail=result.get("detail", "Не удалось убрать доступ в Discord"))
 
     from routes.admin import log_admin_action

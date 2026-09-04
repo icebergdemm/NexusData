@@ -32,6 +32,18 @@ class _FakeMember:
     mention = "<@200>"
 
 
+class _FakeRoleMember:
+    id = 201
+    bot = False
+    display_name = "Staff Member"
+    mention = "<@201>"
+
+
+class _FakePermissions:
+    def __init__(self, *, view_channel):
+        self.view_channel = view_channel
+
+
 class _FakeMessage:
     id = 987
 
@@ -39,8 +51,9 @@ class _FakeMessage:
 class _FakeChannel:
     id = 555
 
-    def __init__(self, overwrite=None):
+    def __init__(self, overwrite=None, visible_member_ids=None):
         self.overwrite = overwrite or _FakeOverwrite()
+        self.visible_member_ids = set(visible_member_ids or [])
         self.set_permissions = AsyncMock()
         self.send = AsyncMock(return_value=_FakeMessage())
 
@@ -51,15 +64,25 @@ class _FakeChannel:
     def overwrites(self):
         return {_FakeMember(): self.overwrite}
 
+    def permissions_for(self, member):
+        return _FakePermissions(
+            view_channel=(member.id in self.visible_member_ids or self.overwrite.view_channel is True)
+        )
+
 
 class _FakeGuild:
-    members = [_FakeMember()]
+    def __init__(self, members=None):
+        self.members = members or [_FakeMember()]
 
     def get_member(self, member_id):
-        return _FakeMember() if member_id == 200 else None
+        return next((member for member in self.members if member.id == member_id), None)
 
     async def fetch_member(self, member_id):
-        return _FakeMember()
+        return self.get_member(member_id)
+
+    async def fetch_members(self, limit=None):
+        for member in self.members:
+            yield member
 
 
 class TicketManagementTests(unittest.TestCase):
@@ -180,6 +203,16 @@ class TicketManagementTests(unittest.TestCase):
 
 
 class TicketDiscordOperationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_ticket_members_includes_role_access(self):
+        channel = _FakeChannel(visible_member_ids={201})
+        guild = _FakeGuild([_FakeMember(), _FakeRoleMember()])
+        with patch.object(discord_bot.bot, "get_guild", return_value=guild), \
+             patch.object(discord_bot.bot, "get_channel", return_value=channel):
+            result = await discord_bot.list_ticket_members("555")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([member["discord_id"] for member in result["members"]], ["201"])
+
     async def test_list_ticket_members_reads_channel_overwrites_not_member_cache(self):
         channel = _FakeChannel(_FakeOverwrite(view_channel=True, send_messages=True, read_message_history=True))
         guild = _FakeGuild()
@@ -232,9 +265,24 @@ class TicketDiscordOperationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "ok")
         channel.set_permissions.assert_awaited_once()
-        self.assertIsNone(channel.set_permissions.await_args.kwargs["overwrite"])
+        self.assertFalse(channel.set_permissions.await_args.kwargs["view_channel"])
+        self.assertFalse(channel.set_permissions.await_args.kwargs["send_messages"])
+        self.assertFalse(channel.set_permissions.await_args.kwargs["read_message_history"])
         channel.send.assert_awaited_once()
         save_message.assert_called_once()
+
+    async def test_remove_member_denies_role_inherited_access(self):
+        channel = _FakeChannel(visible_member_ids={201})
+        guild = _FakeGuild([_FakeMember(), _FakeRoleMember()])
+        with patch.object(discord_bot.bot, "get_guild", return_value=guild), \
+             patch.object(discord_bot.bot, "get_channel", return_value=channel), \
+             patch.object(discord_bot.bot_data, "add_ticket_message", return_value=True):
+            result = await discord_bot.remove_ticket_member("555", "201", "admin", 1)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(channel.set_permissions.await_args.kwargs["view_channel"])
+        self.assertFalse(channel.set_permissions.await_args.kwargs["send_messages"])
+        self.assertFalse(channel.set_permissions.await_args.kwargs["read_message_history"])
 
     async def test_remove_member_is_idempotent_when_access_is_absent(self):
         channel = _FakeChannel()
