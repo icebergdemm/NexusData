@@ -3,6 +3,9 @@ import { api } from "@/lib/api"
 export interface MonsterEntry {
   species: string
   count: number
+  amount_min: number
+  amount_max: number
+  max_amount_per_level: number
   scale_with_players: number
   hp_multiplier: number
   hp_scale_with_progress: number
@@ -18,7 +21,15 @@ export interface SpawnWave {
   max_sub_health: number
   max_crew_health: number
   chance: number
+  commonness: number
   spawn_type: string
+  delay_between_spawns: number
+  scatter: number
+  offset: number
+  spawn_distance: number
+  spawn_point_tag?: string
+  reset_time: number
+  play_dead_probability: number
   difficulty: number
   monsters: MonsterEntry[]
 }
@@ -45,6 +56,88 @@ export interface MonsterSpawnState {
   pending: boolean
   updated_at: string | null
   last_seen_at: string | null
+  dashboard?: MonsterSpawnDashboard
+}
+
+export interface MonsterSpawnDashboard {
+  round_active: boolean
+  round_seconds: number
+  submarine_key: string | null
+  submarine_name: string | null
+  submarine: SubmarineMemory | null
+  intensity: number
+  event_threshold: number
+  pending_waves: number
+  known_submarines: number
+}
+
+export interface MonsterSpawnWaveLog {
+  name: string
+  times_spawned: number
+  times_unresolved: number
+  avg_repel_seconds: number
+  avg_performance: number
+  avg_crew_deaths: number
+  avg_sub_health_loss: number
+  last_played_utc?: string | null
+}
+
+export interface MonsterSpawnShipLog {
+  key: string
+  name: string
+  type: string
+  rounds_played: number
+  times_spawned: number
+  avg_repel_seconds: number
+  performance_ema: number
+  avg_crew_deaths: number
+  avg_sub_health_loss: number
+  recent_performance: number[]
+  last_played_utc?: string | null
+}
+
+export interface MonsterSpawnRecommendation {
+  id: string
+  severity: "info" | "warning" | "success"
+  title: string
+  reason: string
+  evidence: Record<string, unknown>
+  suggested_adjustment: string
+  confidence: number
+  read_only: true
+}
+
+export interface MonsterSpawnAnalysis {
+  generated_at: string
+  read_only: true
+  global_performance_ema: number
+  wave_logs: MonsterSpawnWaveLog[]
+  ship_logs: MonsterSpawnShipLog[]
+  recommendations: MonsterSpawnRecommendation[]
+}
+
+export interface SubmarineMemory {
+  name?: string
+  type?: string
+  rounds_played?: number
+  times_spawned?: number
+  total_repel_seconds?: number
+  total_crew_deaths?: number
+  total_sub_health_loss?: number
+  performance_ema?: number
+  recent_performance?: number[]
+  last_played_utc?: string
+}
+
+export interface MonsterSpawnTelemetry {
+  round_active?: boolean
+  round_seconds?: number
+  submarine?: string
+  submarine_name?: string
+  intensity?: number
+  event_threshold?: number
+  pending_waves?: number
+  [key: string]: unknown
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -52,9 +145,22 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const normalizeWave = (value: unknown): SpawnWave | null => {
   if (!isRecord(value)) return null
+  const monsters = Array.isArray(value.monsters) ? value.monsters : []
   return {
     ...value,
-    monsters: Array.isArray(value.monsters) ? value.monsters.filter(isRecord) : [],
+    commonness: typeof value.commonness === "number" ? value.commonness : 1,
+    delay_between_spawns: typeof value.delay_between_spawns === "number" ? value.delay_between_spawns : 0.1,
+    scatter: typeof value.scatter === "number" ? value.scatter : 500,
+    offset: typeof value.offset === "number" ? value.offset : 0,
+    spawn_distance: typeof value.spawn_distance === "number" ? value.spawn_distance : 0,
+    reset_time: typeof value.reset_time === "number" ? value.reset_time : 0,
+    play_dead_probability: typeof value.play_dead_probability === "number" ? value.play_dead_probability : -1,
+    monsters: monsters.filter(isRecord).map((monster) => ({
+      ...monster,
+      amount_min: typeof monster.amount_min === "number" ? monster.amount_min : 0,
+      amount_max: typeof monster.amount_max === "number" ? monster.amount_max : 0,
+      max_amount_per_level: typeof monster.max_amount_per_level === "number" ? monster.max_amount_per_level : 0,
+    })),
   } as unknown as SpawnWave
 }
 
@@ -71,6 +177,11 @@ export const normalizeMonsterSpawnState = (value: MonsterSpawnState): MonsterSpa
   const plans = Array.isArray(value.plans)
     ? value.plans.map(normalizeWave).filter((plan): plan is SpawnWave => plan !== null) as SpawnPlan[]
     : []
+  const telemetry = isRecord(value.telemetry) ? value.telemetry as MonsterSpawnTelemetry : {}
+  const memory = isRecord(value.memory) ? value.memory : {}
+  const submarines = isRecord(memory.submarines) ? memory.submarines : {}
+  const currentKey = typeof telemetry.submarine === "string" ? telemetry.submarine : null
+  const currentSubmarine = currentKey && isRecord(submarines[currentKey]) ? submarines[currentKey] as SubmarineMemory : null
 
   return {
     ...value,
@@ -79,9 +190,20 @@ export const normalizeMonsterSpawnState = (value: MonsterSpawnState): MonsterSpa
       global: isRecord(config.global) ? config.global : {},
       waves,
     },
-    memory: isRecord(value.memory) ? value.memory : {},
+    memory,
     plans,
-    telemetry: isRecord(value.telemetry) ? value.telemetry : {},
+    telemetry,
+    dashboard: value.dashboard ?? {
+      round_active: telemetry.round_active === true,
+      round_seconds: typeof telemetry.round_seconds === "number" ? telemetry.round_seconds : 0,
+      submarine_key: currentKey,
+      submarine_name: typeof telemetry.submarine_name === "string" ? telemetry.submarine_name : currentSubmarine?.name ?? null,
+      submarine: currentSubmarine,
+      intensity: typeof telemetry.intensity === "number" ? telemetry.intensity : 0,
+      event_threshold: typeof telemetry.event_threshold === "number" ? telemetry.event_threshold : 0.2,
+      pending_waves: typeof telemetry.pending_waves === "number" ? telemetry.pending_waves : 0,
+      known_submarines: Object.keys(submarines).length,
+    },
   }
 }
 
@@ -89,4 +211,5 @@ export const monsterSpawnApi = {
   get: (server: string) => api.get<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`).then(normalizeMonsterSpawnState),
   update: (server: string, body: Partial<Pick<MonsterSpawnState, "config" | "memory" | "plans">>) =>
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
+  analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
 }

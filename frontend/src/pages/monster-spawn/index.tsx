@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Crosshair, Plus, Save, Skull, Trash2, X, Search, Copy, MapPin, Layers, Eye, EyeOff, Filter, Clipboard, Files, LocateFixed } from "lucide-react"
+import { Bar, Line } from "react-chartjs-2"
+import {
+  Activity, AlertTriangle, Anchor, BrainCircuit, Check, ChevronRight, CircleGauge,
+  Copy, Crosshair, Eye, EyeOff, Files, Filter, Gauge, Info, Layers, LocateFixed,
+  MapPin, Plus, Save, Search, ShipWheel, Skull, SlidersHorizontal, Sparkles,
+  Target, Trash2, TrendingDown, TrendingUp, X,
+} from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -13,48 +20,112 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { canDo, useCurrentAdmin } from "@/lib/auth"
+import { baseChartOptions, barDatasetDefaults, CHART_COLORS, lineDatasetDefaults } from "@/lib/chart-theme"
 import { formatBrowserDate } from "@/lib/format-date"
 import { worldStateApi } from "@/pages/world-overview/api"
 import { WorldCanvas, type WorldMarker } from "@/pages/world-overview/WorldCanvas"
-import { monsterSpawnApi, type MonsterSpawnState, type SpawnPlan, type SpawnWave } from "./api"
+import {
+  monsterSpawnApi,
+  type MonsterSpawnAnalysis,
+  type MonsterSpawnRecommendation,
+  type MonsterSpawnShipLog,
+  type MonsterSpawnState,
+  type MonsterSpawnWaveLog,
+  type SpawnPlan,
+  type SpawnWave,
+} from "./api"
 
-const emptyWave = (): SpawnWave => ({
-  name: "Новая волна", min_progress: 0, max_progress: 0, min_round_time: 0,
-  min_players: 0, max_sub_health: 0, max_crew_health: 0, chance: 1,
-  spawn_type: "around", difficulty: -1,
-  monsters: [{ species: "crawler", count: 1, scale_with_players: 0, hp_multiplier: 1, hp_scale_with_progress: 0, mobility: 1 }],
-})
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
 const number = (value: string) => Number.isFinite(Number(value)) ? Number(value) : 0
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
 
-function NumberField({ label, value, onChange, step = "any" }: { label: string; value: number; onChange: (v: number) => void; step?: string }) {
-  return <Label className="space-y-1 text-xs"><span className="text-muted-foreground">{label}</span><Input type="number" step={step} value={value} onChange={(e) => onChange(number(e.target.value))} /></Label>
+const emptyWave = (): SpawnWave => ({
+  name: "Новая волна", min_progress: 0, max_progress: 0, min_round_time: 0, min_players: 0,
+  max_sub_health: 0, max_crew_health: 0, chance: 1, commonness: 1, spawn_type: "around",
+  difficulty: -1, delay_between_spawns: 0.1, scatter: 500, offset: 0, spawn_distance: 0,
+  spawn_point_tag: "", reset_time: 0, play_dead_probability: -1,
+  monsters: [{ species: "crawler", count: 1, amount_min: 0, amount_max: 0, max_amount_per_level: 0,
+    scale_with_players: 0, hp_multiplier: 1, hp_scale_with_progress: 0, mobility: 1 }],
+})
+
+function Metric({ icon: Icon, label, value, detail, tone = "primary" }: { icon: LucideIcon; label: string; value: string; detail: string; tone?: string }) {
+  const toneClasses: Record<string, { bar: string; icon: string }> = { primary: { bar: "bg-primary", icon: "bg-primary/15 text-primary" }, warning: { bar: "bg-warning", icon: "bg-warning/15 text-warning" }, success: { bar: "bg-success", icon: "bg-success/15 text-success" }, info: { bar: "bg-info", icon: "bg-info/15 text-info" } }
+  const colors = toneClasses[tone] ?? toneClasses.primary
+  return <Card className="relative overflow-hidden py-0">
+    <div className={`absolute inset-y-0 left-0 w-1 ${colors.bar}`} />
+    <CardContent className="flex min-h-28 items-center gap-3 p-4 pl-5">
+      <div className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${colors.icon}`}><Icon className="size-5" /></div>
+      <div className="min-w-0"><div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</div><div className="mt-1 truncate text-2xl font-semibold tracking-tight">{value}</div><div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div></div>
+    </CardContent>
+  </Card>
+}
+
+function ChartCard({ title, description, children, className = "" }: { title: string; description?: string; children: React.ReactNode; className?: string }) {
+  return <Card className={`overflow-hidden py-0 ${className}`}>
+    <CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">{title}</CardTitle>{description && <CardDescription className="text-xs">{description}</CardDescription>}</CardHeader>
+    <CardContent className="h-72 p-4">{children}</CardContent>
+  </Card>
+}
+
+function SliderField({ label, value, min, max, step, suffix = "", onChange }: { label: string; value: number; min: number; max: number; step: number; suffix?: string; onChange: (value: number) => void }) {
+  const safe = Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
+  const percent = ((safe - min) / (max - min)) * 100
+  return <div className="space-y-2 rounded-xl border bg-muted/10 p-3">
+    <div className="flex items-center justify-between gap-3"><Label className="text-xs font-medium">{label}</Label><span className="rounded-md bg-background px-2 py-1 font-mono text-xs text-primary">{safe.toFixed(step < 1 ? 2 : 0)}{suffix}</span></div>
+    <input aria-label={label} type="range" min={min} max={max} step={step} value={safe} onChange={(event) => onChange(number(event.target.value))} className="h-2 w-full cursor-pointer accent-primary" style={{ background: `linear-gradient(to right, hsl(var(--primary)) ${percent}%, hsl(var(--muted)) ${percent}%)` }} />
+    <div className="flex justify-between text-[10px] text-muted-foreground"><span>{min}{suffix}</span><span>{max}{suffix}</span></div>
+  </div>
+}
+
+function NumberField({ label, value, onChange, step = "any" }: { label: string; value: number; onChange: (value: number) => void; step?: string }) {
+  return <Label className="space-y-1 text-xs"><span className="text-muted-foreground">{label}</span><Input type="number" step={step} value={value} onChange={(event) => onChange(number(event.target.value))} /></Label>
 }
 
 function WaveEditor({ wave, onChange }: { wave: SpawnWave; onChange: (wave: SpawnWave) => void }) {
   const set = <K extends keyof SpawnWave>(key: K, value: SpawnWave[K]) => onChange({ ...wave, [key]: value })
   return <div className="space-y-4">
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <Label className="col-span-2 space-y-1 text-xs"><span className="text-muted-foreground">Название</span><Input value={wave.name} onChange={(e) => set("name", e.target.value)} /></Label>
-      <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Позиция</span><Select value={wave.spawn_type} onValueChange={(v) => set("spawn_type", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="around">Вокруг</SelectItem><SelectItem value="ahead">Впереди</SelectItem><SelectItem value="below">Снизу</SelectItem></SelectContent></Select></Label>
-      <NumberField label="Сложность (-1 = авто)" value={wave.difficulty} onChange={(v) => set("difficulty", v)} />
-      <NumberField label="Прогресс от" value={wave.min_progress} onChange={(v) => set("min_progress", v)} step="0.05" />
-      <NumberField label="Прогресс до" value={wave.max_progress} onChange={(v) => set("max_progress", v)} step="0.05" />
-      <NumberField label="Время раунда от, с" value={wave.min_round_time} onChange={(v) => set("min_round_time", v)} />
-      <NumberField label="Игроков от" value={wave.min_players} onChange={(v) => set("min_players", v)} />
-      <NumberField label="Здоровье субмарины до, %" value={wave.max_sub_health} onChange={(v) => set("max_sub_health", v)} />
-      <NumberField label="Здоровье экипажа до, %" value={wave.max_crew_health} onChange={(v) => set("max_crew_health", v)} />
-      <NumberField label="Шанс 0..1" value={wave.chance} onChange={(v) => set("chance", v)} step="0.05" />
+      <Label className="col-span-2 space-y-1 text-xs"><span className="text-muted-foreground">Название</span><Input value={wave.name} onChange={(event) => set("name", event.target.value)} /></Label>
+      <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Тип позиции</span><Select value={wave.spawn_type} onValueChange={(value) => set("spawn_type", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{[["around", "Вокруг"], ["ahead", "Впереди"], ["below", "Снизу"], ["mainpath", "Main path"], ["sidepath", "Side path"], ["cave", "Пещера"], ["ruin", "Руина"], ["wreck", "Затонувший корабль"], ["beaconstation", "Маяк"], ["abyss", "Бездна"], ["abysscave", "Пещера бездны"]].map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Label>
+      <NumberField label="Сложность (-1 = авто)" value={wave.difficulty} onChange={(value) => set("difficulty", value)} />
+      <NumberField label="Commonness" value={wave.commonness} onChange={(value) => set("commonness", value)} />
+      <NumberField label="Прогресс от" value={wave.min_progress} onChange={(value) => set("min_progress", value)} step="0.05" />
+      <NumberField label="Прогресс до" value={wave.max_progress} onChange={(value) => set("max_progress", value)} step="0.05" />
+      <NumberField label="Время раунда от, с" value={wave.min_round_time} onChange={(value) => set("min_round_time", value)} />
+      <NumberField label="Игроков от" value={wave.min_players} onChange={(value) => set("min_players", value)} />
+      <NumberField label="Здоровье субмарины до, %" value={wave.max_sub_health} onChange={(value) => set("max_sub_health", value)} />
+      <NumberField label="Здоровье экипажа до, %" value={wave.max_crew_health} onChange={(value) => set("max_crew_health", value)} />
+      <NumberField label="Шанс 0..1" value={wave.chance} onChange={(value) => set("chance", value)} step="0.05" />
+      <NumberField label="Задержка между монстрами, с" value={wave.delay_between_spawns} onChange={(value) => set("delay_between_spawns", value)} />
+      <NumberField label="Scatter, px" value={wave.scatter} onChange={(value) => set("scatter", value)} />
+      <NumberField label="Offset вперёд, px" value={wave.offset} onChange={(value) => set("offset", value)} />
+      <NumberField label="Дистанция триггера, px" value={wave.spawn_distance} onChange={(value) => set("spawn_distance", value)} />
+      <NumberField label="Reset time, с" value={wave.reset_time} onChange={(value) => set("reset_time", value)} />
+      <NumberField label="Play dead (-1 = авто)" value={wave.play_dead_probability} onChange={(value) => set("play_dead_probability", value)} step="0.05" />
+      <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Тег spawn point</span><Input value={wave.spawn_point_tag ?? ""} onChange={(event) => set("spawn_point_tag", event.target.value)} placeholder="не задан" /></Label>
     </div>
-    <div className="space-y-2">
-      <div className="flex items-center justify-between"><h4 className="text-sm font-medium">Состав волны</h4><Button size="sm" variant="outline" onClick={() => set("monsters", [...wave.monsters, emptyWave().monsters[0]])}><Plus className="size-3.5" /> Существо</Button></div>
-      {wave.monsters.map((monster, index) => <div key={index} className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/20 p-3 lg:grid-cols-6">
-        <Label className="space-y-1 text-xs"><span>Вид</span><Input value={monster.species} onChange={(e) => { const monsters = [...wave.monsters]; monsters[index] = { ...monster, species: e.target.value }; set("monsters", monsters) }} /></Label>
-        {(["count", "scale_with_players", "hp_multiplier", "hp_scale_with_progress", "mobility"] as const).map((key) => <NumberField key={key} label={key.replaceAll("_", " ")} value={monster[key]} onChange={(v) => { const monsters = [...wave.monsters]; monsters[index] = { ...monster, [key]: v }; set("monsters", monsters) }} />)}
-        <Button className="lg:col-start-6" size="sm" variant="ghost" disabled={wave.monsters.length === 1} onClick={() => set("monsters", wave.monsters.filter((_, i) => i !== index))}><Trash2 className="size-3.5" /> Удалить</Button>
+    <div className="space-y-2"><div className="flex items-center justify-between"><h4 className="text-sm font-medium">Состав волны</h4><Button size="sm" variant="outline" onClick={() => set("monsters", [...wave.monsters, clone(emptyWave().monsters[0])])}><Plus className="size-3.5" /> Существо</Button></div>
+      {wave.monsters.map((monster, index) => <div key={index} className="grid grid-cols-2 gap-2 rounded-xl border bg-muted/20 p-3 lg:grid-cols-5">
+        <Label className="space-y-1 text-xs"><span>Вид</span><Input value={monster.species} onChange={(event) => { const monsters = [...wave.monsters]; monsters[index] = { ...monster, species: event.target.value }; set("monsters", monsters) }} /></Label>
+        {(["count", "amount_min", "amount_max", "max_amount_per_level", "scale_with_players", "hp_multiplier", "hp_scale_with_progress", "mobility"] as const).map((key) => <NumberField key={key} label={key.replaceAll("_", " ")} value={monster[key]} onChange={(value) => { const monsters = [...wave.monsters]; monsters[index] = { ...monster, [key]: value }; set("monsters", monsters) }} />)}
+        <Button className="lg:col-start-5" size="sm" variant="ghost" disabled={wave.monsters.length === 1} onClick={() => set("monsters", wave.monsters.filter((_, itemIndex) => itemIndex !== index))}><Trash2 className="size-3.5" /> Удалить</Button>
       </div>)}
     </div>
   </div>
+}
+
+function Recommendation({ item }: { item: MonsterSpawnRecommendation }) {
+  const Icon = item.severity === "warning" ? AlertTriangle : item.severity === "success" ? Check : Info
+  const tone = item.severity === "warning" ? "text-warning border-warning/30 bg-warning/5" : item.severity === "success" ? "text-success border-success/30 bg-success/5" : "text-info border-info/30 bg-info/5"
+  return <div className={`rounded-xl border p-4 ${tone}`}><div className="flex items-start gap-3"><Icon className="mt-0.5 size-4 shrink-0" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold text-foreground">{item.title}</div><Badge variant="outline" className="text-[10px]">уверенность {Math.round(item.confidence * 100)}%</Badge></div><p className="mt-1 text-xs text-muted-foreground">{item.reason}</p><div className="mt-3 rounded-lg bg-background/60 p-3 text-xs text-foreground"><span className="font-medium">Предложение:</span> {item.suggested_adjustment}</div><div className="mt-2 font-mono text-[10px] text-muted-foreground">Данные: {Object.entries(item.evidence).map(([key, value]) => `${key}=${String(value)}`).join(" · ")}</div></div></div></div>
+}
+
+function WaveLogs({ logs }: { logs: MonsterSpawnWaveLog[] }) {
+  return <div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[680px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Волна</th><th className="px-3 py-2 font-medium">Наблюдений</th><th className="px-3 py-2 font-medium">Среднее время</th><th className="px-3 py-2 font-medium">Эффективность</th><th className="px-3 py-2 font-medium">Потери экипажа</th><th className="px-3 py-2 font-medium">Урон субмарине</th></tr></thead><tbody>{logs.map((log) => <tr key={log.name} className="border-t"><td className="max-w-56 truncate px-3 py-3 font-medium">{log.name}</td><td className="px-3 py-3">{log.times_spawned}<span className="ml-1 text-warning">{log.times_unresolved ? `(${log.times_unresolved} незав.)` : ""}</span></td><td className="px-3 py-3 font-mono">{log.avg_repel_seconds ? `${Math.round(log.avg_repel_seconds)} с` : "—"}</td><td className={`px-3 py-3 font-mono ${log.avg_performance >= 1.2 ? "text-success" : log.avg_performance > 0 && log.avg_performance < .8 ? "text-warning" : ""}`}>{log.avg_performance ? log.avg_performance.toFixed(2) : "—"}</td><td className="px-3 py-3">{log.avg_crew_deaths.toFixed(2)}</td><td className="px-3 py-3">{log.avg_sub_health_loss.toFixed(1)}%</td></tr>)}{!logs.length && <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">Завершённых волн пока нет</td></tr>}</tbody></table></div>
+}
+
+function ShipLogs({ logs }: { logs: MonsterSpawnShipLog[] }) {
+  return <div className="grid gap-2 md:grid-cols-2">{logs.map((log) => <div key={log.key} className="rounded-xl border bg-muted/10 p-4"><div className="flex items-start gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary"><ShipWheel className="size-4" /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className="truncate text-sm font-semibold">{log.name}</span><Badge variant="secondary" className="ml-auto font-mono">{log.performance_ema.toFixed(2)}</Badge></div><div className="mt-1 text-xs text-muted-foreground">{log.type} · {log.rounds_played} раундов · {log.times_spawned} волн</div></div></div><div className="mt-4 grid grid-cols-3 gap-2 text-center"><div><div className="font-mono text-sm">{log.avg_repel_seconds ? `${Math.round(log.avg_repel_seconds)}с` : "—"}</div><div className="text-[10px] text-muted-foreground">зачистка</div></div><div><div className="font-mono text-sm">{log.avg_crew_deaths.toFixed(2)}</div><div className="text-[10px] text-muted-foreground">потери</div></div><div><div className="font-mono text-sm">{log.avg_sub_health_loss.toFixed(1)}%</div><div className="text-[10px] text-muted-foreground">урон</div></div></div><div className="mt-3 truncate font-mono text-[10px] text-muted-foreground/60">{log.key}</div></div>)}{!logs.length && <div className="rounded-xl border border-dashed p-8 text-center text-xs text-muted-foreground md:col-span-2">Память по кораблям появится после завершённых наблюдений.</div>}</div>
 }
 
 type PlanStatus = SpawnPlan["status"] | "all"
@@ -74,149 +145,75 @@ export function MonsterSpawnPage() {
   const [contextMenu, setContextMenu] = useState<{ screenX: number; screenY: number; wx: number; wy: number; markerId: string | null } | null>(null)
 
   const rounds = useQuery({ queryKey: ["world-rounds"], queryFn: worldStateApi.listRounds, refetchInterval: 5000 })
-  const round = rounds.data?.rounds.find((r) => r.server_name?.toUpperCase() === server) ?? null
+  const round = rounds.data?.rounds.find((item) => item.server_name?.toUpperCase() === server) ?? null
   const geometry = useQuery({ queryKey: ["world-geometry", round?.round_id], queryFn: () => worldStateApi.getGeometry(round!.round_id), enabled: !!round, staleTime: Infinity })
   const world = useQuery({ queryKey: ["world-state", round?.round_id], queryFn: () => worldStateApi.getState(round!.round_id), enabled: !!round, refetchInterval: 3000 })
   const state = useQuery({ queryKey: ["monster-spawn", server], queryFn: () => monsterSpawnApi.get(server), refetchInterval: 5000 })
+  const analysis = useQuery({ queryKey: ["monster-spawn-analysis", server], queryFn: () => monsterSpawnApi.analysis(server), refetchInterval: 15000, staleTime: 5000 })
 
   useEffect(() => { if (state.data && !dirty) setDraft(clone(state.data)) }, [state.data, dirty])
   useEffect(() => { setDirty(false); setSelectedPlanId(null); setDraft(null) }, [server])
-  useEffect(() => {
-    const onDown = () => setContextMenu(null)
-    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && setContextMenu(null)
-    window.addEventListener("click", onDown)
-    window.addEventListener("keydown", onEsc)
-    return () => { window.removeEventListener("click", onDown); window.removeEventListener("keydown", onEsc) }
-  }, [])
+  useEffect(() => { const close = () => setContextMenu(null); const escape = (event: KeyboardEvent) => event.key === "Escape" && setContextMenu(null); window.addEventListener("click", close); window.addEventListener("keydown", escape); return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", escape) } }, [])
 
   const save = useMutation({
     mutationFn: () => monsterSpawnApi.update(server, { config: draft!.config, plans: draft!.plans, memory: draft!.memory }),
     onSuccess: (next) => { setDraft(clone(next)); setDirty(false); queryClient.setQueryData(["monster-spawn", server], next); toast.success("Изменения отправлены плагину") },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (error: Error) => toast.error(error.message),
   })
   const updateDraft = (fn: (next: MonsterSpawnState) => void) => { if (!draft) return; const next = clone(draft); fn(next); setDraft(next); setDirty(true) }
-  const markers: WorldMarker[] = (draft?.plans ?? []).map((p) => ({ id: p.id, x: p.x, y: p.y, label: p.wave_name || p.name, color: p.source === "manual" ? "#59D6C2" : "#F6C453", muted: p.status === "cancelled" }))
-  const selectedPlan = draft?.plans.find((p) => p.id === selectedPlanId) ?? null
-
-  const globalEntries = useMemo(() => Object.entries(draft?.config.global ?? {}), [draft?.config.global])
-
-  const filteredPlans = useMemo(() => {
-    if (!draft) return []
-    return draft.plans.filter((p) => {
-      if (planStatus !== "all" && p.status !== planStatus) return false
-      if (planSearch.trim()) {
-        const q = planSearch.toLowerCase()
-        const hay = `${p.wave_name} ${p.name} ${p.note ?? ""} ${p.x},${p.y} ${p.status}`.toLowerCase()
-        if (!hay.includes(q)) return false
-      }
-      return true
-    })
-  }, [draft, planSearch, planStatus])
+  const filteredPlans = useMemo(() => (draft?.plans ?? []).filter((plan) => {
+    if (planStatus !== "all" && plan.status !== planStatus) return false
+    const query = planSearch.trim().toLowerCase()
+    return !query || `${plan.wave_name} ${plan.name} ${plan.note ?? ""} ${plan.x},${plan.y} ${plan.status}`.toLowerCase().includes(query)
+  }), [draft?.plans, planSearch, planStatus])
 
   if (!draft) return <div><PageHeader title="Управление монстрами" description="Загрузка состояния плагина" icon={Skull} /><div className="h-64 animate-pulse rounded-xl bg-muted" /></div>
 
-  const createPlan = (x: number, y: number) => updateDraft((next) => {
-    const wave = clone(next.config.waves[selectedWave] ?? emptyWave())
-    const plan: SpawnPlan = { ...wave, id: crypto.randomUUID(), wave_name: wave.name, source: "manual", status: "planned", x, y, note: "" }
-    next.plans.push(plan); setSelectedPlanId(plan.id); setPlacing(false)
-  })
+  const dashboard = draft.dashboard ?? { round_active: false, round_seconds: 0, submarine_key: null, submarine_name: null, submarine: null, intensity: 0, event_threshold: 0.2, pending_waves: 0, known_submarines: 0 }
+  const telemetry = isRecord(draft.telemetry) ? draft.telemetry : {}
+  const global = isRecord(draft.config.global) ? draft.config.global : {}
+  const vanilla = isRecord(global.vanilla_events) ? global.vanilla_events : {}
+  const report: MonsterSpawnAnalysis = analysis.data ?? { generated_at: "", read_only: true, global_performance_ema: 1, wave_logs: [], ship_logs: [], recommendations: [{ id: "loading", severity: "info", title: "Собираю рекомендации", reason: "Анализ памяти контроллера выполняется автоматически.", evidence: {}, suggested_adjustment: "Не менять настройки до загрузки анализа.", confidence: 0, read_only: true }] }
+  const intensityPercent = Math.max(0, Math.min(100, dashboard.intensity * 100))
+  const thresholdPercent = Math.max(0, Math.min(100, dashboard.event_threshold * 100))
+  const waveLogs = report.wave_logs
+  const shipLogs = report.ship_logs
+  const selectedPlan = draft.plans.find((plan) => plan.id === selectedPlanId) ?? null
+  const markers: WorldMarker[] = draft.plans.map((plan) => ({ id: plan.id, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: plan.source === "manual" ? "#59D6C2" : "#F6C453", muted: plan.status === "cancelled" }))
+  const waveChart = { labels: waveLogs.slice(0, 8).map((item) => item.name.replace("vanilla:", "")), datasets: [{ label: "Среднее время зачистки, с", data: waveLogs.slice(0, 8).map((item) => Math.round(item.avg_repel_seconds)), backgroundColor: CHART_COLORS[0], ...barDatasetDefaults }] }
+  const shipChart = { labels: shipLogs.slice(0, 8).map((item) => item.name), datasets: [{ label: "Performance EMA", data: shipLogs.slice(0, 8).map((item) => item.performance_ema), backgroundColor: CHART_COLORS[1], ...barDatasetDefaults }] }
+  const trendValues = shipLogs.flatMap((item) => item.recent_performance).slice(-24)
+  const trendChart = { labels: trendValues.map((_, index) => `${index + 1}`), datasets: [{ label: "Последние наблюдения", data: trendValues, borderColor: CHART_COLORS[2], backgroundColor: `${CHART_COLORS[2]}28`, fill: true, ...lineDatasetDefaults }] }
 
-  const handleMapContextMenu = (info: { wx: number; wy: number; markerId: string | null; screenX: number; screenY: number }) => {
-    setContextMenu({ screenX: info.screenX, screenY: info.screenY, wx: info.wx, wy: info.wy, markerId: info.markerId })
-    if (info.markerId) setSelectedPlanId(info.markerId)
-  }
+  const setGlobal = (key: string, value: unknown) => updateDraft((next) => { next.config.global[key] = value })
+  const setVanilla = (key: string, value: unknown) => updateDraft((next) => { const current = isRecord(next.config.global.vanilla_events) ? next.config.global.vanilla_events : {}; next.config.global.vanilla_events = { ...current, [key]: value } })
+  const createPlan = (x: number, y: number) => updateDraft((next) => { const wave = clone(next.config.waves[selectedWave] ?? emptyWave()); const plan: SpawnPlan = { ...wave, id: crypto.randomUUID(), wave_name: wave.name, source: "manual", status: "planned", x, y, note: "" }; next.plans.push(plan); setSelectedPlanId(plan.id); setPlacing(false) })
+  const duplicatePlan = (id: string) => updateDraft((next) => { const source = next.plans.find((plan) => plan.id === id); if (!source) return; const duplicate: SpawnPlan = { ...clone(source), id: crypto.randomUUID(), note: source.note ? `${source.note} (копия)` : "" }; next.plans.push(duplicate); setSelectedPlanId(duplicate.id); toast.success("План продублирован") })
+  const copyCoords = (x: number, y: number) => navigator.clipboard.writeText(`${x}, ${y}`).then(() => toast.success(`Координаты ${x}, ${y} скопированы`)).catch(() => toast.error("Не удалось скопировать"))
 
-  const copyCoords = (x: number, y: number) => {
-    navigator.clipboard.writeText(`${x}, ${y}`).then(() => toast.success(`Координаты ${x}, ${y} скопированы`)).catch(() => toast.error("Не удалось скопировать"))
-  }
+  return <div className="flex min-h-[calc(100vh-6rem)] flex-col gap-4">
+    <PageHeader title="Управление монстрами" description="Ванильный pipeline под контролем MonsterSpawnController: наблюдай, корректируй, не применяй вслепую" icon={Skull} actions={<div className="flex gap-2"><Select value={server} onValueChange={setServer}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent>{["ASPER1", "ASPER2"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save className="size-4" /> Сохранить</Button></div>} />
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 text-xs"><Badge variant={dashboard.round_active ? "default" : "outline"}>{dashboard.round_active ? "Раунд активен" : "Ожидание раунда"}</Badge><Badge variant={draft.pending ? "destructive" : "secondary"}>{draft.pending ? `Ожидает применения r${draft.desired_revision}` : `Применено r${draft.applied_revision}`}</Badge><span className="text-muted-foreground">Vanilla pipeline: <b className="text-foreground">{String(vanilla.mode ?? "controller")}</b></span>{dirty && <Badge variant="outline">Есть несохранённые изменения</Badge>}<span className="ml-auto text-muted-foreground">Последний контакт: {draft.last_seen_at ? formatBrowserDate(draft.last_seen_at) : "нет данных"}</span></div>
 
-  const duplicatePlan = (id: string) => updateDraft((next) => {
-    const src = next.plans.find((p) => p.id === id)
-    if (!src) return
-    const dup: SpawnPlan = { ...clone(src), id: crypto.randomUUID(), note: src.note ? `${src.note} (копия)` : "" }
-    next.plans.push(dup); setSelectedPlanId(dup.id); toast.success("План продублирован")
-  })
+    <Tabs defaultValue="overview" className="min-h-0">
+      <TabsList className="grid h-auto w-full grid-cols-2 gap-1 bg-muted/60 p-1 sm:grid-cols-4"><TabsTrigger value="overview" className="gap-2 py-2"><Activity className="size-4" /> Обзор</TabsTrigger><TabsTrigger value="control" className="gap-2 py-2"><SlidersHorizontal className="size-4" /> Визуальное управление</TabsTrigger><TabsTrigger value="logs" className="gap-2 py-2"><TrendingUp className="size-4" /> Логи и анализ</TabsTrigger><TabsTrigger value="manual" className="gap-2 py-2"><Target className="size-4" /> Ручная настройка</TabsTrigger></TabsList>
 
-  return <div className="flex h-[calc(100vh-6rem)] flex-col">
-    <PageHeader title="Управление монстрами" description="Планы волн, сложность и память MonsterSpawnController — правый клик по карте для быстрого создания/управления" icon={Skull} actions={<div className="flex gap-2"><Select value={server} onValueChange={setServer}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent>{["ASPER1", "ASPER2"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent></Select><Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save className="size-4" /> Сохранить</Button></div>} />
-    <div className="mb-3 flex flex-wrap items-center gap-2 text-xs"><Badge variant={draft.pending ? "destructive" : "secondary"}>{draft.pending ? `Ожидает применения r${draft.desired_revision}` : `Применено r${draft.applied_revision}`}</Badge><span className="text-muted-foreground">Плагин: {draft.last_seen_at ? formatBrowserDate(draft.last_seen_at) : "ещё не подключался"} · Планов: {draft.plans.length} · Волн: {draft.config.waves.length}</span>{dirty && <Badge variant="outline">Есть несохранённые изменения</Badge>}<span className="ml-auto hidden items-center gap-1 text-muted-foreground xl:flex"><MapPin className="size-3" /> ПКМ по карте — меню · ЛКМ-перетаскивание — переместить · Колёсико — зум</span></div>
-    <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(420px,.65fr)]">
-      <div className="relative min-h-[430px]">
-        {geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={placing} onPickTarget={createPlan} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={setSelectedPlanId} onMoveMarker={(id, x, y) => updateDraft((next) => { const p = next.plans.find((item) => item.id === id); if (p) { p.x = x; p.y = y } })} onMapContextMenu={handleMapContextMenu} /> : <Card className="flex h-full items-center justify-center text-sm text-muted-foreground"><CardContent className="py-10 text-center">Для {server} нет активной карты раунда<br /><span className="text-xs">Планы можно редактировать в таблице справа — карта появится когда раунд запущен</span></CardContent></Card>}
-        <div className="absolute bottom-3 left-3 flex flex-wrap gap-2">
-          <Button variant={placing ? "destructive" : "secondary"} onClick={() => setPlacing(!placing)}>{placing ? <X className="size-4" /> : <Crosshair className="size-4" />}{placing ? "Отмена" : "Поставить точку (ЛКМ)"}</Button>
-          <Button variant="outline" size="icon" title={showLegend ? "Скрыть легенду" : "Показать легенду"} onClick={() => setShowLegend(!showLegend)}>{showLegend ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</Button>
-        </div>
-        {showLegend && <div className="absolute right-3 top-12 rounded-md border bg-background/90 p-2 text-[11px] shadow">
-          <div className="mb-1 flex items-center gap-1 font-medium"><Layers className="size-3" /> Легенда</div>
-          <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "#59D6C2" }} /> Ручной план</div>
-          <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "#F6C453" }} /> Автоматический</div>
-          <div className="flex items-center gap-1.5 opacity-60"><span className="h-2 w-2 rounded-full bg-foreground" /> Отменён</div>
-        </div>}
-        {contextMenu && (
-          <div
-            className="fixed z-50 min-w-52 rounded-md border bg-popover p-1 text-sm shadow-md"
-            style={{ left: Math.min(contextMenu.screenX, window.innerWidth - 220), top: Math.min(contextMenu.screenY, window.innerHeight - 260) }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-2 py-1 text-[11px] font-medium text-muted-foreground flex items-center gap-1"><MapPin className="size-3" /> {contextMenu.wx}, {contextMenu.wy} {contextMenu.markerId && <Badge variant="secondary" className="ml-auto text-[10px]">метка</Badge>}</div>
-            {contextMenu.markerId ? (
-              <>
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left" onClick={() => { setSelectedPlanId(contextMenu.markerId); setContextMenu(null) }}><LocateFixed className="size-3.5" /> Редактировать</button>
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left" onClick={() => { duplicatePlan(contextMenu.markerId!); setContextMenu(null) }}><Files className="size-3.5" /> Дублировать</button>
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left" onClick={() => { copyCoords(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Copy className="size-3.5" /> Копировать координаты</button>
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left" onClick={() => { updateDraft((next) => { const p = next.plans.find((x) => x.id === contextMenu.markerId); if (p) p.status = p.status === "cancelled" ? "planned" : "cancelled" }); setContextMenu(null) }}>
-                  {draft.plans.find((p) => p.id === contextMenu.markerId)?.status === "cancelled" ? <><Eye className="size-3.5" /> Вернуть план</> : <><EyeOff className="size-3.5" /> Отменить спавн</>}
-                </button>
-                <div className="my-1 h-px bg-border" />
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left text-destructive" onClick={() => { updateDraft((next) => { next.plans = next.plans.filter((p) => p.id !== contextMenu.markerId); }); setSelectedPlanId(null); setContextMenu(null); toast.success("План удалён") }}><Trash2 className="size-3.5" /> Удалить</button>
-              </>
-            ) : (
-              <>
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left" onClick={() => { createPlan(contextMenu.wx, contextMenu.wy); setContextMenu(null); toast.success(`План создан: ${contextMenu.wx}, ${contextMenu.wy}`) }}><Plus className="size-3.5" /> Создать план здесь</button>
-                <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 hover:bg-accent text-left" onClick={() => { copyCoords(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Clipboard className="size-3.5" /> Копировать координаты</button>
-                <div className="px-2 py-1 text-[11px] text-muted-foreground">Волна: {draft.config.waves[selectedWave]?.name ?? "—"}</div>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-      <Card className="min-h-0 overflow-hidden"><CardContent className="h-full overflow-y-auto p-4">
-        <Tabs defaultValue="plans">
-          <TabsList className="grid w-full grid-cols-5"><TabsTrigger value="plans">Планы {draft.plans.length ? `· ${draft.plans.length}` : ""}</TabsTrigger><TabsTrigger value="waves">Волны</TabsTrigger><TabsTrigger value="difficulty">Сложность</TabsTrigger><TabsTrigger value="memory">Память</TabsTrigger><TabsTrigger value="json">JSON</TabsTrigger></TabsList>
-          <TabsContent value="plans" className="space-y-3">
-            <div className="flex gap-2">
-              <Select value={String(selectedWave)} onValueChange={(v) => setSelectedWave(Number(v))}><SelectTrigger className="w-36"><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((w, i) => <SelectItem key={i} value={String(i)}>{w.name}</SelectItem>)}</SelectContent></Select>
-              <Button variant="outline" size="sm" onClick={() => { if (!draft) return; const wx = 0, wy = 0; createPlan(wx, wy); toast.info("План создан в 0,0 — перетащите на карте или ПКМ") }} title="Быстро создать без карты"><Plus className="size-3.5" /> Создать</Button>
-            </div>
-            <div className="flex gap-2">
-              <div className="relative flex-1"><Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-7 h-8 text-sm" placeholder="Поиск по имени/координатам/заметке" value={planSearch} onChange={(e) => setPlanSearch(e.target.value)} /></div>
-              <Select value={planStatus} onValueChange={(v) => setPlanStatus(v as PlanStatus)}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все</SelectItem><SelectItem value="planned">Запланированы</SelectItem><SelectItem value="cancelled">Отменены</SelectItem><SelectItem value="spawned">Заспавнены</SelectItem></SelectContent></Select>
-            </div>
-            <div className="flex flex-wrap gap-1 text-xs">
-              <Badge variant="secondary">{filteredPlans.length} показано</Badge>
-              {draft.plans.some((p) => p.status === "cancelled") && <Button size="xs" variant="ghost" onClick={() => updateDraft((next) => { next.plans = next.plans.filter((p) => p.status !== "cancelled") })}><Trash2 className="size-3" /> Удалить отменённые</Button>}
-              {planSearch && <Button size="xs" variant="ghost" onClick={() => setPlanSearch("")}><X className="size-3" /> Сброс</Button>}
-            </div>
-            <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
-              {filteredPlans.map((p) => <button key={p.id} className={`flex w-full items-center gap-2 rounded-lg border p-2.5 text-left transition ${p.id === selectedPlanId ? "border-primary bg-accent" : "hover:bg-muted/50"}`} onClick={() => setSelectedPlanId(p.id)} onContextMenu={(e) => { e.preventDefault(); setContextMenu({ screenX: e.clientX, screenY: e.clientY, wx: p.x, wy: p.y, markerId: p.id }) }}>
-                <div className="h-2 w-2 rounded-full shrink-0" style={{ background: p.source === "manual" ? "#59D6C2" : "#F6C453", opacity: p.status === "cancelled" ? 0.35 : 1 }} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5"><span className="truncate font-medium text-sm">{p.wave_name || p.name}</span>{p.status === "cancelled" && <Badge variant="outline" className="text-[10px]">отменён</Badge>}</div>
-                  <div className="truncate text-xs text-muted-foreground">{Math.round(p.x)}, {Math.round(p.y)} · {p.source === "manual" ? "ручная" : "авто"} · {p.status} {p.note && `· ${p.note.slice(0, 30)}`}</div>
-                </div>
-                <Badge variant={p.status === "cancelled" ? "outline" : "secondary"} className="shrink-0 text-[10px]">{p.monsters.length} мобов</Badge>
-              </button>)}
-              {!filteredPlans.length && <div className="py-6 text-center text-sm text-muted-foreground flex flex-col items-center gap-1"><Filter className="size-4" /> Ничего не найдено — измените фильтр или ПКМ по карте</div>}
-            </div>
-            {selectedPlan && <div className="space-y-3 rounded-lg border p-3"><WaveEditor wave={selectedPlan} onChange={(wave) => updateDraft((next) => { const i = next.plans.findIndex((p) => p.id === selectedPlan.id); next.plans[i] = { ...next.plans[i], ...wave, wave_name: wave.name } })} /><Label className="space-y-1 text-xs"><span>Заметка оператора</span><Textarea value={selectedPlan.note || ""} onChange={(e) => updateDraft((next) => { next.plans.find((p) => p.id === selectedPlan.id)!.note = e.target.value })} /></Label><div className="flex gap-2"><Button variant={selectedPlan.status === "cancelled" ? "secondary" : "destructive"} onClick={() => updateDraft((next) => { const p = next.plans.find((item) => item.id === selectedPlan.id)!; p.status = p.status === "cancelled" ? "planned" : "cancelled" })}>{selectedPlan.status === "cancelled" ? "Вернуть план" : "Отменить спавн"}</Button>{selectedPlan.source === "manual" && <Button variant="ghost" onClick={() => updateDraft((next) => { next.plans = next.plans.filter((p) => p.id !== selectedPlan.id); setSelectedPlanId(null) })}><Trash2 className="size-4" /> Удалить</Button>}<Button variant="outline" onClick={() => duplicatePlan(selectedPlan.id)}>Дублировать</Button><Button variant="outline" onClick={() => copyCoords(selectedPlan.x, selectedPlan.y)}><Copy className="size-3.5" /> Коорд.</Button></div></div>}
-          </TabsContent>
-          <TabsContent value="waves" className="space-y-3"><div className="flex gap-2"><Select value={String(selectedWave)} onValueChange={(v) => setSelectedWave(Number(v))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((w, i) => <SelectItem key={i} value={String(i)}>{w.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => updateDraft((next) => { next.config.waves.push(emptyWave()); setSelectedWave(next.config.waves.length - 1) })}><Plus className="size-4" /></Button><Button variant="ghost" disabled={draft.config.waves.length < 2} onClick={() => updateDraft((next) => { next.config.waves.splice(selectedWave, 1); setSelectedWave(0) })}><Trash2 className="size-4" /></Button></div>{draft.config.waves[selectedWave] && <WaveEditor wave={draft.config.waves[selectedWave]} onChange={(wave) => updateDraft((next) => { next.config.waves[selectedWave] = wave })} />}</TabsContent>
-          <TabsContent value="difficulty" className="space-y-3"><p className="text-xs text-muted-foreground">Все глобальные параметры плагина. Логические значения переключаются, числовые редактируются напрямую.</p><div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{globalEntries.map(([key, value]) => <Label key={key} className="space-y-1 text-xs"><span className="text-muted-foreground">{key.replaceAll("_", " ")}</span>{typeof value === "boolean" ? <div className="flex h-9 items-center"><Switch checked={value} onCheckedChange={(v) => updateDraft((next) => { next.config.global[key] = v })} /></div> : typeof value === "number" ? <Input type="number" step="any" value={value} onChange={(e) => updateDraft((next) => { next.config.global[key] = number(e.target.value) })} /> : <Input value={Array.isArray(value) ? value.join(", ") : typeof value === "object" ? JSON.stringify(value) : String(value ?? "")} onChange={(e) => updateDraft((next) => { next.config.global[key] = Array.isArray(value) ? e.target.value.split(",").map((s) => s.trim()).filter(Boolean) : e.target.value })} />}</Label>)}</div></TabsContent>
-          <TabsContent value="memory" className="space-y-2"><p className="text-xs text-muted-foreground">Долговременная адаптивная память. Доступ защищён отдельным правом.</p><Textarea className="min-h-[520px] font-mono text-xs" disabled={!canDo(admin, "monster_spawn", "manage_memory")} value={JSON.stringify(draft.memory, null, 2)} onChange={(e) => { try { const parsed = JSON.parse(e.target.value); updateDraft((next) => { next.memory = parsed }) } catch { /* keep the last valid document */ } }} /></TabsContent>
-          <TabsContent value="json" className="space-y-3"><p className="text-xs text-muted-foreground">Полный конфиг для редких и новых параметров, которые ещё не получили отдельное поле.</p><Textarea className="min-h-[560px] font-mono text-xs" value={JSON.stringify(draft.config, null, 2)} onChange={(e) => { try { const parsed = JSON.parse(e.target.value); updateDraft((next) => { next.config = parsed }) } catch { /* keep the last valid document */ } }} /></TabsContent>
-        </Tabs>
-      </CardContent></Card>
-    </div>
+      <TabsContent value="overview" className="space-y-4 pt-2">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric icon={ShipWheel} label="Корабль раунда" value={dashboard.submarine_name || "Нет активного раунда"} detail={`${Math.floor((dashboard.round_seconds || 0) / 60)} мин · ${dashboard.known_submarines} кораблей в памяти`} tone="primary" /><Metric icon={Gauge} label="Текущее давление" value={`${intensityPercent.toFixed(0)}%`} detail={`Порог vanilla event ${thresholdPercent.toFixed(0)}%`} tone="warning" /><Metric icon={BrainCircuit} label="Global performance EMA" value={report.global_performance_ema.toFixed(2)} detail="Больше 1.0: экипаж справляется быстрее ожиданий" tone="success" /><Metric icon={Anchor} label="Ожидают триггера" value={String(dashboard.pending_waves)} detail={`${telemetry.vanilla_events ?? 0} vanilla events · ${draft.config.waves.length} ручных волн`} tone="info" /></div>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]"><ChartCard title="Наблюдаемая интенсивность" description="Текущая интенсивность и порог, полученные от плагина"><Line options={baseChartOptions} data={{ labels: ["Сейчас"], datasets: [{ label: "Интенсивность", data: [dashboard.intensity], borderColor: CHART_COLORS[0], backgroundColor: `${CHART_COLORS[0]}28`, fill: true, ...lineDatasetDefaults }, { label: "Порог события", data: [dashboard.event_threshold], borderColor: CHART_COLORS[3], ...lineDatasetDefaults }] }} /></ChartCard><Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Sparkles className="size-4 text-warning" /> Предложения анализатора</CardTitle><CardDescription className="text-xs">Только рекомендации, автоприменения нет</CardDescription></CardHeader><CardContent className="space-y-2 p-4">{report.recommendations.slice(0, 3).map((item) => <Recommendation key={item.id} item={item} />)}<Button variant="ghost" className="w-full justify-between" onClick={() => document.querySelector<HTMLElement>('[data-state="inactive"][data-value="logs"]')?.click()}>Открыть полный анализ <ChevronRight className="size-4" /></Button></CardContent></Card></div>
+        <div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Самые долгие волны" description="Среднее время от спавна до разрешения"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={waveChart} /></ChartCard><ChartCard title="Корабли по эффективности" description="Ниже 1.0 означает более тяжёлое прохождение"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div>
+      </TabsContent>
+
+      <TabsContent value="control" className="space-y-4 pt-2">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]"><Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><CircleGauge className="size-4 text-primary" /> Базовая модель сложности</CardTitle><CardDescription className="text-xs">Ползунки меняют только конфиг. Нажми «Сохранить», чтобы отправить новую revision.</CardDescription></CardHeader><CardContent className="grid gap-3 p-4 sm:grid-cols-2"><SliderField label="Количество vanilla монстров" value={Number(vanilla.amount_multiplier ?? 1)} min={0} max={3} step={0.05} suffix="x" onChange={(value) => setVanilla("amount_multiplier", value)} /><SliderField label="Сила vanilla события" value={Number(vanilla.difficulty_multiplier ?? 1)} min={0.5} max={2.5} step={0.05} suffix="x" onChange={(value) => setVanilla("difficulty_multiplier", value)} /><SliderField label="Влияние adaptive-memory на HP" value={Number(vanilla.adaptive_influence ?? 1)} min={0} max={1} step={0.05} suffix="" onChange={(value) => setVanilla("adaptive_influence", value)} /><SliderField label="Влияние adaptive-memory на amount" value={Number(vanilla.adaptive_amount_influence ?? 0)} min={0} max={1} step={0.05} suffix="" onChange={(value) => setVanilla("adaptive_amount_influence", value)} /><SliderField label="Порог интенсивности" value={Number(global.intensity_threshold ?? 0.2)} min={0} max={1} step={0.01} onChange={(value) => setGlobal("intensity_threshold", value)} /><SliderField label="Минимальная пауза между спавнами" value={Number(global.min_seconds_between_spawns ?? 90)} min={0} max={600} step={5} suffix="с" onChange={(value) => setGlobal("min_seconds_between_spawns", value)} /><SliderField label="Целевая сложность в минуту" value={Number(global.target_difficulty_per_minute ?? 0.8)} min={0} max={3} step={0.05} onChange={(value) => setGlobal("target_difficulty_per_minute", value)} /><SliderField label="Порог орды простоя" value={Number(global.idle_spawn_after_seconds ?? 240)} min={0} max={1200} step={30} suffix="с" onChange={(value) => setGlobal("idle_spawn_after_seconds", value)} /></CardContent></Card>
+          <div className="space-y-4"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Режим vanilla pipeline</CardTitle><CardDescription className="text-xs">События выбирает игра, фактический спавн контролирует режим.</CardDescription></CardHeader><CardContent className="space-y-3"><Select value={String(vanilla.mode ?? "controller")} onValueChange={(value) => setVanilla("mode", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="controller">controller · анализ и корреляция</SelectItem><SelectItem value="native">native · штатный спавн</SelectItem><SelectItem value="disabled">disabled · заблокировать</SelectItem></SelectContent></Select><div className="rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-2 text-foreground"><Info className="size-3.5 text-info" /> Безопасный принцип</div>Анализатор не меняет параметры сам. Все предложения остаются на этой странице до ручного подтверждения оператором.</div></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Предохранители</CardTitle></CardHeader><CardContent className="space-y-3"><div className="flex items-center justify-between gap-3 text-xs"><span>Intensity gate</span><Switch checked={global.intensity_gate_enabled !== false} onCheckedChange={(value) => setGlobal("intensity_gate_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Adaptive-memory</span><Switch checked={global.adaptive_memory_enabled !== false} onCheckedChange={(value) => setGlobal("adaptive_memory_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Уважать server monster settings</span><Switch checked={global.respect_server_monster_settings !== false} onCheckedChange={(value) => setGlobal("respect_server_monster_settings", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Swarm behavior</span><Switch checked={global.use_swarm_behavior !== false} onCheckedChange={(value) => setGlobal("use_swarm_behavior", value)} /></div></CardContent></Card></div></div>
+        <Card><CardHeader className="pb-3"><CardTitle className="text-sm">Как читать регуляторы</CardTitle></CardHeader><CardContent className="grid gap-3 text-xs text-muted-foreground md:grid-cols-3"><div><b className="text-foreground">Amount</b><br />Масштабирует ванильное количество. Значение 1.0 сохраняет исходное поведение.</div><div><b className="text-foreground">Difficulty</b><br />Масштабирует HP и difficulty наблюдаемой волны, не меняя vanilla event selection.</div><div><b className="text-foreground">Adaptive</b><br />Подмешивает накопленную эффективность экипажей и кораблей в будущие vanilla события.</div></CardContent></Card>
+      </TabsContent>
+
+      <TabsContent value="logs" className="space-y-4 pt-2"><div className="grid gap-4 sm:grid-cols-3"><Metric icon={TrendingUp} label="Завершено волн" value={String(waveLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail={`${waveLogs.length} типа событий`} tone="primary" /><Metric icon={TrendingDown} label="Средняя скорость" value={waveLogs.length ? `${Math.round(waveLogs.filter((item) => item.avg_repel_seconds).reduce((sum, item) => sum + item.avg_repel_seconds, 0) / Math.max(1, waveLogs.filter((item) => item.avg_repel_seconds).length))} с` : "—"} detail="Среднее по типам волн" tone="warning" /><Metric icon={BrainCircuit} label="Наблюдений по кораблям" value={String(shipLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail="Используются в корреляции" tone="success" /></div><div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Performance trajectory" description="Последние доступные значения из adaptive-memory"><Line options={baseChartOptions} data={trendChart} /></ChartCard><ChartCard title="Efficiency by ship" description="Сравнение кораблей по performance EMA"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Лог разрешения волн</CardTitle><CardDescription className="text-xs">Как быстро экипажи закрывали волны и какой ущерб получили</CardDescription></CardHeader><CardContent><WaveLogs logs={waveLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Эффективность по кораблям</CardTitle><CardDescription className="text-xs">Детализация для сравнения дизайна субмарин</CardDescription></CardHeader><CardContent><ShipLogs logs={shipLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="flex items-center gap-2 text-sm"><Sparkles className="size-4 text-warning" /> Автоматический анализ и предложения</CardTitle><CardDescription className="text-xs">Сгенерировано {report.generated_at ? formatBrowserDate(report.generated_at) : "сейчас"}. Рекомендации информационные и не применяются автоматически.</CardDescription></CardHeader><CardContent className="grid gap-3 lg:grid-cols-2">{report.recommendations.map((item) => <Recommendation key={item.id} item={item} />)}</CardContent></Card></TabsContent>
+
+      <TabsContent value="manual" className="space-y-4 pt-2"><div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground"><div className="flex items-center gap-2 font-medium text-foreground"><Target className="size-4 text-primary" /> Полная ручная настройка</div><p className="mt-1">Здесь доступны планы, волны и сырой JSON без ограничений визуального режима. Изменения не попадут на сервер до нажатия «Сохранить».</p></div><Tabs defaultValue="plans"><TabsList className="grid w-full grid-cols-3"><TabsTrigger value="plans">Планы · {draft.plans.length}</TabsTrigger><TabsTrigger value="waves">Волны · {draft.config.waves.length}</TabsTrigger><TabsTrigger value="json">Raw JSON</TabsTrigger></TabsList><TabsContent value="plans" className="space-y-4 pt-3"><div className="grid min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(380px,.75fr)]"><div className="relative min-h-[480px] overflow-hidden rounded-xl border">{geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={placing} onPickTarget={createPlan} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={setSelectedPlanId} onMoveMarker={(id, x, y) => updateDraft((next) => { const plan = next.plans.find((item) => item.id === id); if (plan) { plan.x = x; plan.y = y } })} onMapContextMenu={(info) => { setContextMenu({ ...info }); if (info.markerId) setSelectedPlanId(info.markerId) }} /> : <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">Для {server} нет активной карты раунда<br /><span className="text-xs">Планы можно редактировать справа</span></div>}<div className="absolute bottom-3 left-3 flex flex-wrap gap-2"><Button variant={placing ? "destructive" : "secondary"} onClick={() => setPlacing(!placing)}>{placing ? <X className="size-4" /> : <Crosshair className="size-4" />}{placing ? "Отмена" : "Поставить точку"}</Button><Button variant="outline" size="icon" title={showLegend ? "Скрыть легенду" : "Показать легенду"} onClick={() => setShowLegend(!showLegend)}>{showLegend ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</Button></div>{showLegend && <div className="absolute right-3 top-3 rounded-lg border bg-background/90 p-2 text-[11px] shadow"><div className="mb-1 flex items-center gap-1 font-medium"><Layers className="size-3" /> Легенда</div><div><span className="mr-1 inline-block size-2 rounded-full bg-[#59D6C2]" />Ручной</div><div><span className="mr-1 inline-block size-2 rounded-full bg-[#F6C453]" />Авто</div></div>}</div><Card className="min-h-0 overflow-hidden py-0"><CardContent className="h-full overflow-y-auto p-4"><div className="flex gap-2"><div className="relative flex-1"><Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-7" placeholder="Поиск по планам" value={planSearch} onChange={(event) => setPlanSearch(event.target.value)} /></div><Select value={planStatus} onValueChange={(value) => setPlanStatus(value as PlanStatus)}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все</SelectItem><SelectItem value="planned">Запланированы</SelectItem><SelectItem value="cancelled">Отменены</SelectItem><SelectItem value="spawned">Заспавнены</SelectItem></SelectContent></Select></div><div className="mt-3 flex gap-2"><Select value={String(selectedWave)} onValueChange={(value) => setSelectedWave(Number(value))}><SelectTrigger className="flex-1"><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((wave, index) => <SelectItem key={index} value={String(index)}>{wave.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => createPlan(0, 0)}><Plus className="size-4" /> Создать</Button></div><div className="mt-3 max-h-64 space-y-1 overflow-y-auto pr-1">{filteredPlans.map((plan) => <button key={plan.id} className={`flex w-full items-center gap-2 rounded-lg border p-2.5 text-left transition ${plan.id === selectedPlanId ? "border-primary bg-accent" : "hover:bg-muted/50"}`} onClick={() => setSelectedPlanId(plan.id)}><span className={`size-2 shrink-0 rounded-full ${plan.status === "cancelled" ? "bg-muted-foreground/40" : plan.source === "manual" ? "bg-[#59D6C2]" : "bg-[#F6C453]"}`} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{plan.wave_name || plan.name}</span><span className="block truncate text-xs text-muted-foreground">{Math.round(plan.x)}, {Math.round(plan.y)} · {plan.status}</span></span><Badge variant="secondary" className="text-[10px]">{plan.monsters.length} мобов</Badge></button>)}{!filteredPlans.length && <div className="py-6 text-center text-xs text-muted-foreground"><Filter className="mx-auto mb-2 size-4" />Планов не найдено</div>}</div>{selectedPlan && <div className="mt-4 space-y-3 rounded-xl border p-3"><WaveEditor wave={selectedPlan} onChange={(wave) => updateDraft((next) => { const index = next.plans.findIndex((plan) => plan.id === selectedPlan.id); next.plans[index] = { ...next.plans[index], ...wave, wave_name: wave.name } })} /><div className="flex flex-wrap gap-2"><Button variant={selectedPlan.status === "cancelled" ? "secondary" : "destructive"} onClick={() => updateDraft((next) => { const plan = next.plans.find((item) => item.id === selectedPlan.id)!; plan.status = plan.status === "cancelled" ? "planned" : "cancelled" })}>{selectedPlan.status === "cancelled" ? "Вернуть план" : "Отменить спавн"}</Button><Button variant="outline" onClick={() => duplicatePlan(selectedPlan.id)}><Copy className="size-3.5" /> Дублировать</Button><Button variant="ghost" onClick={() => updateDraft((next) => { next.plans = next.plans.filter((plan) => plan.id !== selectedPlan.id); setSelectedPlanId(null) })}><Trash2 className="size-3.5" /> Удалить</Button><Button variant="outline" onClick={() => copyCoords(selectedPlan.x, selectedPlan.y)}><MapPin className="size-3.5" /> Коорд.</Button></div></div>}</CardContent></Card></div></TabsContent><TabsContent value="waves" className="space-y-3 pt-3"><div className="flex gap-2"><Select value={String(selectedWave)} onValueChange={(value) => setSelectedWave(Number(value))}><SelectTrigger className="max-w-sm flex-1"><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((wave, index) => <SelectItem key={index} value={String(index)}>{wave.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => updateDraft((next) => { next.config.waves.push(emptyWave()); setSelectedWave(next.config.waves.length - 1) })}><Plus className="size-4" /></Button><Button variant="ghost" disabled={draft.config.waves.length < 2} onClick={() => updateDraft((next) => { next.config.waves.splice(selectedWave, 1); setSelectedWave(0) })}><Trash2 className="size-4" /></Button></div>{draft.config.waves[selectedWave] && <Card><CardContent className="p-4"><WaveEditor wave={draft.config.waves[selectedWave]} onChange={(wave) => updateDraft((next) => { next.config.waves[selectedWave] = wave })} /></CardContent></Card>}</TabsContent><TabsContent value="json" className="space-y-3 pt-3"><div className="grid gap-4 xl:grid-cols-2"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Полный config</CardTitle></CardHeader><CardContent><Textarea className="min-h-[620px] font-mono text-xs" value={JSON.stringify(draft.config, null, 2)} onChange={(event) => { try { const parsed = JSON.parse(event.target.value); updateDraft((next) => { next.config = parsed }) } catch { /* keep last valid JSON */ } }} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Memory</CardTitle><CardDescription className="text-xs">Редактирование защищено отдельным permission.</CardDescription></CardHeader><CardContent><Textarea className="min-h-[620px] font-mono text-xs" disabled={!canDo(admin, "monster_spawn", "manage_memory")} value={JSON.stringify(draft.memory, null, 2)} onChange={(event) => { try { const parsed = JSON.parse(event.target.value); updateDraft((next) => { next.memory = parsed }) } catch { /* keep last valid JSON */ } }} /></CardContent></Card></div></TabsContent></Tabs></TabsContent>
+    </Tabs>
+    {contextMenu && <div className="fixed z-50 min-w-52 rounded-xl border bg-popover p-1 text-sm shadow-xl" style={{ left: Math.min(contextMenu.screenX, window.innerWidth - 230), top: Math.min(contextMenu.screenY, window.innerHeight - 240) }} onClick={(event) => event.stopPropagation()}><div className="px-2 py-1 text-[11px] text-muted-foreground">{contextMenu.wx}, {contextMenu.wy}</div>{contextMenu.markerId ? <><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { setSelectedPlanId(contextMenu.markerId); setContextMenu(null) }}><LocateFixed className="size-3.5" /> Редактировать</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { duplicatePlan(contextMenu.markerId!); setContextMenu(null) }}><Files className="size-3.5" /> Дублировать</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { copyCoords(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Copy className="size-3.5" /> Копировать координаты</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { updateDraft((next) => { const plan = next.plans.find((item) => item.id === contextMenu.markerId); if (plan) plan.status = plan.status === "cancelled" ? "planned" : "cancelled" }); setContextMenu(null) }}>{draft.plans.find((plan) => plan.id === contextMenu.markerId)?.status === "cancelled" ? <><Eye className="size-3.5" /> Вернуть</> : <><EyeOff className="size-3.5" /> Отменить</>}</button></> : <><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { createPlan(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Plus className="size-3.5" /> Создать план здесь</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { copyCoords(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Copy className="size-3.5" /> Копировать координаты</button></>}</div>}
   </div>
 }
