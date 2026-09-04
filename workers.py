@@ -1104,6 +1104,20 @@ def task_check_db_health() -> dict:
         db.close()
 
 
+def task_llm_monster_auto_cycle() -> dict:
+    """Local-LLM auto-cycle for MonsterSpawnController: for every server with
+    the assistant enabled and its per-server interval elapsed, runs one
+    validated apply-cycle. The scheduler calls this every 5 min at BACKGROUND
+    priority; the service itself decides per server whether a run is due and
+    never raises (all failures are captured per server)."""
+    import services_llm_monster
+    try:
+        results = services_llm_monster.run_auto_cycle_for_all_servers()
+        return {"status": "ok", "servers": results}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
 def task_refresh_analytics() -> dict:
     """Recompute the analytics dashboard's default-view snapshot. Runs every 5 min.
 
@@ -1364,6 +1378,17 @@ def _start_scheduler():
         interval_secs=30,
         priority=Priority.CRITICAL,
         task_id="db_health_check",
+    )
+
+    # Local-LLM auto-cycle for MonsterSpawnController: BACKGROUND priority,
+    # every 5 min; the service self-gates per server on its configured
+    # interval (0 = manual runs only), so this stays a cheap no-op until the
+    # operator enables the assistant.
+    scheduler.register_periodic(
+        task_llm_monster_auto_cycle,
+        interval_secs=5 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="llm_monster_auto_cycle",
     )
 
     # Мониторинг производительности: BACKGROUND priority — сам по себе не

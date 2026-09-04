@@ -85,6 +85,24 @@ class Settings(BaseSettings):
     ai_creature_alert_tracking_distance_meters: int = Field(300, ge=0, le=5000)
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
+
+    # Local LLM (Qwen 3 4B) assistant for MonsterSpawnController. The site
+    # talks to any OpenAI-compatible endpoint (llama.cpp llama-server,
+    # LM Studio, Ollama with OpenAI shim). Empty base_url disables it.
+    # Per-server runtime state (enabled/auto_apply/last run) lives in
+    # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
+    # admin UI; these fields are just the deployment defaults.
+    monster_llm_base_url: str = Field("http://127.0.0.1:8080/v1")
+    monster_llm_api_key: str = Field("")
+    monster_llm_model: str = Field("qwen3-4b-instruct")
+    monster_llm_timeout_seconds: float = Field(90.0, gt=0, le=300)
+    # Anti-hallucination defaults: low temperature, small top_p and a hard
+    # JSON-schema validation on every response (see services_llm_monster.py).
+    monster_llm_temperature: float = Field(0.15, ge=0.0, le=2.0)
+    monster_llm_top_p: float = Field(0.8, gt=0.0, le=1.0)
+    # Auto-cycle interval in minutes (0 = manual runs only).
+    monster_llm_auto_interval_minutes: int = Field(0, ge=0, le=1440)
+
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"

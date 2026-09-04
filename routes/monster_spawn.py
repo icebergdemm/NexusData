@@ -385,3 +385,109 @@ def admin_analysis(
     db.commit()
     db.refresh(row)
     return _build_spawn_analysis(row)
+
+
+# ---------------------------------------------------------------------------
+# Local LLM assistant (Qwen 3 4B via OpenAI-compatible endpoint)
+# ---------------------------------------------------------------------------
+
+class LLMRuntimeUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    auto_apply: Optional[bool] = None
+    auto_interval_minutes: Optional[int] = Field(None, ge=0, le=1440)
+
+
+class LLMRunRequest(BaseModel):
+    mode: str = Field("analyze", pattern="^(analyze|apply|spawn)$")
+    instruction: Optional[str] = Field(None, max_length=2000)
+
+
+def _get_main_db() -> Session:
+    """AppSetting lives in the main database."""
+    from database import SessionLocal
+    return SessionLocal()
+
+
+@admin_router.get("/llm/runtime")
+def admin_llm_runtime(
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    _require(admin, "view")
+    from services_llm_monster import get_llm_runtime, get_llm_deployment_info
+    settings = get_settings()
+    runtime = get_llm_runtime(_get_main_db(), _normalize_server(server))
+    return {
+        "runtime": runtime,
+        "deployment": get_llm_deployment_info(),
+        "endpoint_configured": bool(settings.monster_llm_base_url),
+    }
+
+
+@admin_router.put("/llm/runtime")
+def admin_llm_runtime_update(
+    payload: LLMRuntimeUpdate,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+):
+    _require(admin, "edit")
+    from services_llm_monster import get_llm_runtime, save_llm_runtime
+
+    main_db = _get_main_db()
+    server_key = _normalize_server(server)
+    runtime = get_llm_runtime(main_db, server_key)
+    if payload.enabled is not None:
+        runtime["enabled"] = payload.enabled
+    if payload.auto_apply is not None:
+        runtime["auto_apply"] = payload.auto_apply
+    if payload.auto_interval_minutes is not None:
+        runtime["auto_interval_minutes"] = payload.auto_interval_minutes
+    save_llm_runtime(main_db, server_key, runtime)
+    return {"status": "ok", "runtime": runtime}
+
+
+@admin_router.post("/llm/run")
+def admin_llm_run(
+    payload: LLMRunRequest,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    """Run one LLM cycle. analyze = read-only; apply = validated config
+    changes bump desired_revision; spawn = also queues spawn plans."""
+    _require(admin, "edit")
+    from services_llm_monster import run_llm_cycle, LLMError
+
+    server_key = _normalize_server(server)
+    row = _get_or_create(db, server_key)
+    db.commit()
+    db.refresh(row)
+    state = _serialize(row)
+
+    try:
+        result = run_llm_cycle(_get_main_db(), server_key, state,
+                               mode=payload.mode, instruction=payload.instruction)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Ошибка LLM-цикла: {exc}")
+
+    # Apply validated changes through the same revision channel as the admin UI.
+    changed = False
+    if result.get("applied_changes"):
+        row.config = state["config"]
+        changed = True
+    if result.get("spawn_plans"):
+        plans = row.plans if isinstance(row.plans, list) else []
+        plans.extend(result["spawn_plans"])
+        row.plans = plans
+        changed = True
+    if changed:
+        row.desired_revision = (row.desired_revision or 0) + 1
+        row.updated_by_admin_id = admin.id
+        row.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(row)
+    return {"status": "ok", "result": result, "desired_revision": row.desired_revision}
