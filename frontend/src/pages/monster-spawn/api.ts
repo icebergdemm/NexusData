@@ -290,6 +290,10 @@ const normalizeWave = (value: unknown): SpawnWave | null => {
   const monsters = Array.isArray(value.monsters) ? value.monsters : []
   return {
     ...value,
+    // Регистронезависимость особых волн: spawn_type приводим к каноническим
+    // алиасам в нижнем регистре ("Cave"/"AbyssCave" из PosType.ToString() и
+    // т.п.), чтобы селекты и фильтры работали одинаково.
+    spawn_type: typeof value.spawn_type === "string" ? value.spawn_type.trim().toLowerCase() : value.spawn_type,
     commonness: typeof value.commonness === "number" ? value.commonness : 1,
     delay_between_spawns: typeof value.delay_between_spawns === "number" ? value.delay_between_spawns : 0.1,
     scatter: typeof value.scatter === "number" ? value.scatter : 500,

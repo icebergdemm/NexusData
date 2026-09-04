@@ -692,12 +692,22 @@ export function MonsterSpawnPage() {
   const copyCoords = (x: number, y: number) => navigator.clipboard.writeText(`${x}, ${y}`).then(() => toast.success(`Координаты ${x}, ${y} скопированы`)).catch(() => toast.error("Не удалось скопировать"))
 
   // 1: постоянные пометки типов волн хранятся в memory.wave_overrides —
-  // плагин применяет их к активным, конфиг- и изученным волнам.
+  // плагин применяет их к активным, конфиг- и изученным волнам. Ключи
+  // сопоставляются без учёта регистра (названия ванильных волн бывают
+  // в разном регистре, например "vanilla:AbyssCreature").
+  const findOverrideKey = (overrides: Record<string, unknown>, name: string): string | null => {
+    const lower = name.toLowerCase()
+    for (const key of Object.keys(overrides)) {
+      if (key.toLowerCase() === lower) return key
+    }
+    return null
+  }
   const getWaveOverride = (name?: string | null): WaveOverride | undefined => {
     if (!draft || !name) return undefined
     const memory = isRecord(draft.memory) ? draft.memory : {}
     const overrides = isRecord(memory.wave_overrides) ? memory.wave_overrides : {}
-    const entry = isRecord(overrides[name]) ? overrides[name] : null
+    const key = findOverrideKey(overrides, name)
+    const entry = key && isRecord(overrides[key]) ? overrides[key] : null
     if (!entry) return undefined
     return {
       difficulty_mode: typeof entry.difficulty_mode === "string" ? entry.difficulty_mode : "adjust",
@@ -710,7 +720,9 @@ export function MonsterSpawnPage() {
   const setWaveOverride = (name: string, patch: Partial<WaveOverride>) => updateDraft((next) => {
     const memory = next.memory as Record<string, unknown>
     const overrides = isRecord(memory.wave_overrides) ? { ...memory.wave_overrides } : {}
-    const existing = isRecord(overrides[name]) ? overrides[name] : {}
+    const existingKey = findOverrideKey(overrides, name)
+    const existing = existingKey && isRecord(overrides[existingKey]) ? overrides[existingKey] : {}
+    if (existingKey && existingKey !== name) delete overrides[existingKey]
     overrides[name] = { ...existing, ...patch, updated_utc: new Date().toISOString() }
     memory.wave_overrides = overrides
   })
@@ -738,7 +750,11 @@ export function MonsterSpawnPage() {
     const memoryRecord = isRecord(draft.memory) ? draft.memory : {}
     const learnedMap = isRecord(memoryRecord.learned_waves) ? memoryRecord.learned_waves : {}
     const entry = isRecord(learnedMap[name]) ? learnedMap[name] : null
-    return entry && isRecord(entry.wave) ? clone(entry.wave) as unknown as SpawnWave : null
+    if (!entry || !isRecord(entry.wave)) return null
+    const template = clone(entry.wave) as unknown as SpawnWave
+    // spawn_type в нижний регистр ("Cave"/"AbyssCave" из PosType.ToString()).
+    if (typeof template.spawn_type === "string") template.spawn_type = template.spawn_type.trim().toLowerCase()
+    return template
   }
   const updateLearnedTemplate = (name: string, fn: (template: SpawnWave) => void) => updateDraft((next) => {
     const memory = next.memory as Record<string, unknown>
