@@ -72,7 +72,7 @@ test("combined filters keep only players matching Discord, label, and rank", () 
 test("shared filter helpers count, label, and reset filters consistently", () => {
   const filters = { ...resetPlayerFilters(), discordFilter: "linked", labelMode: "any", labelIds: ["7"], rankId: "2" }
   assert.equal(countActivePlayerFilters(filters, { key: "play_time", direction: "asc" }, { key: "none", direction: "desc" }), 4)
-  assert.equal(getDiscordFilterLabel("unlinked"), "Нет привязки")
+  assert.equal(getDiscordFilterLabel("unlinked"), "Без Discord")
   assert.deepEqual(resetPlayerFilters(), getPlayerFilterDefaults())
 })
 

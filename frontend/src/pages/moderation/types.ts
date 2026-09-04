@@ -19,6 +19,7 @@ export interface OnlinePlayer {
   has_active_punishments: boolean
   has_open_anomalies: boolean
   has_previous_names: boolean
+  has_ip_history: boolean
   last_activity: string | null
 }
 
@@ -40,6 +41,7 @@ export interface OfflinePlayer {
   has_active_punishments: boolean
   has_open_anomalies: boolean
   has_previous_names: boolean
+  has_ip_history: boolean
   last_activity: string | null
 }
 

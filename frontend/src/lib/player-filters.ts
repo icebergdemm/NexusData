@@ -32,6 +32,7 @@ export interface PlayerFilterState {
   sanctionsMode: FilterMode
   anomaliesMode: FilterMode
   nameHistoryMode: FilterMode
+  ipHistoryMode: FilterMode
   activityMode: ActivityFilter
 }
 
@@ -42,6 +43,7 @@ export interface FilterablePlayer {
   has_active_punishments?: boolean
   has_open_anomalies?: boolean
   has_previous_names?: boolean
+  has_ip_history?: boolean
   label_ids?: readonly number[]
   rank_id?: number | null
   player_steamid?: string
@@ -68,6 +70,7 @@ export function getPlayerFilterDefaults(): PlayerFilterState {
     sanctionsMode: "all",
     anomaliesMode: "all",
     nameHistoryMode: "all",
+    ipHistoryMode: "all",
     activityMode: "all",
   }
 }
@@ -84,14 +87,15 @@ export function countActivePlayerFilters(filters: PlayerFilterState, sort: Playe
     + (filters.sanctionsMode !== "all" ? 1 : 0)
     + (filters.anomaliesMode !== "all" ? 1 : 0)
     + (filters.nameHistoryMode !== "all" ? 1 : 0)
+    + (filters.ipHistoryMode !== "all" ? 1 : 0)
     + (filters.activityMode !== "all" ? 1 : 0)
     + (sort.key !== defaultSort.key || sort.direction !== defaultSort.direction ? 1 : 0)
 }
 
 export function getDiscordFilterLabel(filter: DiscordLinkFilter): string {
-  if (filter === "linked") return "Есть привязка"
-  if (filter === "unlinked") return "Нет привязки"
-  return "Все"
+  if (filter === "linked") return "С Discord"
+  if (filter === "unlinked") return "Без Discord"
+  return "Любые"
 }
 
 export function getSortDirectionLabel(key: PlayerSortKey, direction: SortDirection): string {
@@ -169,6 +173,7 @@ function matchesFilters(player: FilterablePlayer, filters: PlayerFilterState): b
     && matchesMode(player.has_active_punishments, filters.sanctionsMode)
     && matchesMode(player.has_open_anomalies, filters.anomaliesMode)
     && matchesMode(player.has_previous_names, filters.nameHistoryMode)
+    && matchesMode(player.has_ip_history, filters.ipHistoryMode)
     && matchesActivity(player, filters.activityMode)
   )
 }

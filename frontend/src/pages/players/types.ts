@@ -11,6 +11,7 @@ export interface PlayerRow {
   has_active_punishments: boolean
   has_open_anomalies: boolean
   has_previous_names: boolean
+  has_ip_history: boolean
   rank_id: number
   kit_level: number
   play_time: number

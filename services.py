@@ -352,6 +352,7 @@ class PlayerService:
         label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
         notes: Optional[str] = None, sanctions: Optional[str] = None,
         anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
         activity: Optional[str] = None,
     ) -> Tuple[List[PlayerDataOut], int]:
         """Get all players with pagination, optional rank filter and sort order."""
@@ -361,7 +362,8 @@ class PlayerService:
         players, total = self.player_repo.get_all(
             page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link,
             label_mode=label_mode, label_ids=label_ids, notes=notes, sanctions=sanctions,
-            anomalies=anomalies, name_history=name_history, activity=activity,
+            anomalies=anomalies, name_history=name_history, ip_history=ip_history,
+            activity=activity,
         )
         player_outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in players]
         flags = self.player_repo.get_player_flags([player.player_id for player in players])
@@ -524,13 +526,14 @@ class PlayerService:
         label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
         notes: Optional[str] = None, sanctions: Optional[str] = None,
         anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
         activity: Optional[str] = None,
     ) -> List[PlayerData]:
         """Search players by name or SteamID"""
         return self.player_repo.search(
             query, limit, discord_link=discord_link, label_mode=label_mode, label_ids=label_ids,
             notes=notes, sanctions=sanctions, anomalies=anomalies,
-            name_history=name_history, activity=activity,
+            name_history=name_history, ip_history=ip_history, activity=activity,
         )
     
     def get_or_create_player_by_steamid(self, steamid: str, player_name: str = None) -> PlayerData:

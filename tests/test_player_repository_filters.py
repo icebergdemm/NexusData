@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models import LabelCategory, PlayerAnomaly, PlayerData, PlayerLabel, PlayerName, PlayerNote, PlayerPunishment
+from models import LabelCategory, PlayerAnomaly, PlayerData, PlayerIP, PlayerLabel, PlayerName, PlayerNote, PlayerPunishment
 from repositories import PlayerRepository
 
 
@@ -21,13 +21,16 @@ class PlayerRepositoryDiscordFilterTests(unittest.TestCase):
         ])
         self.session.commit()
 
-        first, second, _ = self.session.query(PlayerData).order_by(PlayerData.player_id).all()
+        first, second, third = self.session.query(PlayerData).order_by(PlayerData.player_id).all()
         category = LabelCategory(name="Проверка", icon="⚠️")
         self.session.add(category)
         self.session.flush()
         self.category_id = category.id
         self.session.add_all([
             PlayerLabel(player_id=first.player_id, category_id=category.id),
+            PlayerIP(player_id=first.player_id, ip="10.0.0.1", subnet="10.0.0.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=first.player_id, ip="10.0.0.2", subnet="10.0.0.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=second.player_id, ip="10.0.1.1", subnet="10.0.1.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
             PlayerNote(player_id=first.player_id, content="Есть заметка"),
             PlayerName(
                 player_id=first.player_id,
@@ -49,6 +52,13 @@ class PlayerRepositoryDiscordFilterTests(unittest.TestCase):
                 related_player_id=second.player_id,
                 score=50,
                 status="new",
+            ),
+            PlayerAnomaly(
+                category="behavior",
+                subtype="dismissed_test",
+                player_id=third.player_id,
+                score=10,
+                status="dismissed",
             ),
         ])
         self.session.commit()
@@ -94,9 +104,12 @@ class PlayerRepositoryDiscordFilterTests(unittest.TestCase):
         self.assertTrue(first_flags["has_labels"])
         self.assertEqual(first_flags["label_ids"], [self.category_id])
         self.assertTrue(all(first_flags[key] for key in (
-            "has_notes", "has_active_punishments", "has_open_anomalies", "has_previous_names",
+            "has_notes", "has_active_punishments", "has_open_anomalies", "has_previous_names", "has_ip_history",
         )))
         self.assertTrue(flags[players[1].player_id]["has_open_anomalies"])
+        self.assertFalse(flags[players[2].player_id]["has_open_anomalies"])
+        self.assertFalse(flags[players[2].player_id]["has_ip_history"])
+        self.assertFalse(flags[players[1].player_id]["has_ip_history"])
         self.assertFalse(flags[players[2].player_id]["has_active_punishments"])
 
         _, labels_total = repository.get_all(page=1, page_size=50, label_mode="with")
@@ -104,12 +117,14 @@ class PlayerRepositoryDiscordFilterTests(unittest.TestCase):
         _, sanctions_total = repository.get_all(page=1, page_size=50, sanctions="with")
         _, anomalies_total = repository.get_all(page=1, page_size=50, anomalies="with")
         _, names_total = repository.get_all(page=1, page_size=50, name_history="with")
+        _, ips_total = repository.get_all(page=1, page_size=50, ip_history="with")
 
         self.assertEqual(labels_total, 1)
         self.assertEqual(notes_total, 1)
         self.assertEqual(sanctions_total, 1)
         self.assertEqual(anomalies_total, 2)
         self.assertEqual(names_total, 1)
+        self.assertEqual(ips_total, 1)
 
 
 if __name__ == "__main__":

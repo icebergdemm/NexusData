@@ -28,6 +28,7 @@ export function parsePlayerFilterState(raw: string | null): PlayerFilterState {
       sanctionsMode: oneOf(value.sanctionsMode, FILTER_MODES, defaults.sanctionsMode),
       anomaliesMode: oneOf(value.anomaliesMode, FILTER_MODES, defaults.anomaliesMode),
       nameHistoryMode: oneOf(value.nameHistoryMode, FILTER_MODES, defaults.nameHistoryMode),
+      ipHistoryMode: oneOf(value.ipHistoryMode, FILTER_MODES, defaults.ipHistoryMode),
       activityMode: oneOf(value.activityMode, ACTIVITY_MODES, defaults.activityMode),
     }
   } catch {

@@ -1,4 +1,4 @@
-from sqlalchemy import and_, exists, or_
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Tuple
@@ -44,8 +44,14 @@ def _open_anomaly_exists():
             PlayerAnomaly.player_id == PlayerData.player_id,
             PlayerAnomaly.related_player_id == PlayerData.player_id,
         ),
-        PlayerAnomaly.status == "new",
+        PlayerAnomaly.status != "dismissed",
     )
+
+
+def _ip_history_exists():
+    return select(PlayerIP.player_id).where(
+        PlayerIP.player_id == PlayerData.player_id,
+    ).group_by(PlayerIP.player_id).having(func.count(PlayerIP.id) >= 2).exists()
 
 
 def _apply_player_facets(
@@ -57,6 +63,7 @@ def _apply_player_facets(
     sanctions: Optional[str] = None,
     anomalies: Optional[str] = None,
     name_history: Optional[str] = None,
+    ip_history: Optional[str] = None,
     activity: Optional[str] = None,
 ):
     labels = exists().where(PlayerLabel.player_id == PlayerData.player_id)
@@ -75,12 +82,14 @@ def _apply_player_facets(
         "sanctions": _active_punishment_exists(),
         "anomalies": _open_anomaly_exists(),
         "name_history": _player_exists(PlayerName, PlayerName.nickname != PlayerData.player_last_time_name),
+        "ip_history": _ip_history_exists(),
     }
     for value, mode in (
         (facet_exists["notes"], notes),
         (facet_exists["sanctions"], sanctions),
         (facet_exists["anomalies"], anomalies),
         (facet_exists["name_history"], name_history),
+        (facet_exists["ip_history"], ip_history),
     ):
         if mode == "with":
             query = query.filter(value)
@@ -180,6 +189,7 @@ class PlayerRepository(BaseRepository):
         label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
         notes: Optional[str] = None, sanctions: Optional[str] = None,
         anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
         activity: Optional[str] = None,
     ) -> Tuple[List[PlayerData], int]:
         """Get all players with pagination, optional rank filter and sort order."""
@@ -190,6 +200,7 @@ class PlayerRepository(BaseRepository):
         query = _apply_player_facets(
             query, label_mode=label_mode, label_ids=label_ids, notes=notes,
             sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+            ip_history=ip_history,
             activity=activity,
         )
         query = apply_player_sort(query, sort)
@@ -235,6 +246,7 @@ class PlayerRepository(BaseRepository):
         label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
         notes: Optional[str] = None, sanctions: Optional[str] = None,
         anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
         activity: Optional[str] = None,
     ) -> List[PlayerData]:
         """
@@ -260,6 +272,7 @@ class PlayerRepository(BaseRepository):
         direct_search_query = _apply_player_facets(
             direct_search_query, label_mode=label_mode, label_ids=label_ids, notes=notes,
             sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+            ip_history=ip_history,
             activity=activity,
         )
         direct_search = direct_search_query.limit(limit).all()
@@ -280,6 +293,7 @@ class PlayerRepository(BaseRepository):
             nick_q = _apply_player_facets(
                 nick_q, label_mode=label_mode, label_ids=label_ids, notes=notes,
                 sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+                ip_history=ip_history,
                 activity=activity,
             )
             if player_ids:
@@ -305,6 +319,7 @@ class PlayerRepository(BaseRepository):
             ip_q = _apply_player_facets(
                 ip_q, label_mode=label_mode, label_ids=label_ids, notes=notes,
                 sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+                ip_history=ip_history,
                 activity=activity,
             )
             if player_ids:
@@ -322,6 +337,7 @@ class PlayerRepository(BaseRepository):
         label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
         notes: Optional[str] = None, sanctions: Optional[str] = None,
         anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
         activity: Optional[str] = None,
     ) -> Tuple[List[PlayerData], int]:
         """Search all supported identifiers before applying pagination."""
@@ -347,6 +363,7 @@ class PlayerRepository(BaseRepository):
         search_query = _apply_player_facets(
             search_query, label_mode=label_mode, label_ids=label_ids, notes=notes,
             sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+            ip_history=ip_history,
             activity=activity,
         )
         search_query = apply_player_sort(search_query, sort)
@@ -366,6 +383,7 @@ class PlayerRepository(BaseRepository):
                 "has_active_punishments": False,
                 "has_open_anomalies": False,
                 "has_previous_names": False,
+                "has_ip_history": False,
             }
             for player_id in player_ids
         }
@@ -383,6 +401,10 @@ class PlayerRepository(BaseRepository):
             PlayerName.nickname != PlayerData.player_last_time_name,
         ).distinct():
             flags[player_id]["has_previous_names"] = True
+        for player_id, in self.db.query(PlayerIP.player_id).filter(
+            PlayerIP.player_id.in_(player_ids)
+        ).group_by(PlayerIP.player_id).having(func.count(PlayerIP.id) >= 2):
+            flags[player_id]["has_ip_history"] = True
         for player_id, in self.db.query(PlayerPunishment.player_id).filter(
             PlayerPunishment.player_id.in_(player_ids),
             PlayerPunishment.is_active == 1,
@@ -390,11 +412,11 @@ class PlayerRepository(BaseRepository):
         ).distinct():
             flags[player_id]["has_active_punishments"] = True
         for player_id, in self.db.query(PlayerAnomaly.player_id).filter(
-            PlayerAnomaly.player_id.in_(player_ids), PlayerAnomaly.status == "new",
+            PlayerAnomaly.player_id.in_(player_ids), PlayerAnomaly.status != "dismissed",
         ).distinct():
             flags[player_id]["has_open_anomalies"] = True
         for player_id, in self.db.query(PlayerAnomaly.related_player_id).filter(
-            PlayerAnomaly.related_player_id.in_(player_ids), PlayerAnomaly.status == "new",
+            PlayerAnomaly.related_player_id.in_(player_ids), PlayerAnomaly.status != "dismissed",
         ).distinct():
             if player_id in flags:
                 flags[player_id]["has_open_anomalies"] = True

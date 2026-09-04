@@ -128,6 +128,7 @@ class PlayerDataOut(PlayerDataBase):
     has_active_punishments: bool = False
     has_open_anomalies: bool = False
     has_previous_names: bool = False
+    has_ip_history: bool = False
     profile_hash: Optional[str] = Field(default=None, description="Change-detection hash for the game-server cache sync API (see cache_versioning.py) — unchanged hash means the plugin's local cache is still fresh")
 
     @computed_field

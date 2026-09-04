@@ -501,6 +501,7 @@ def _serialize_online_player(info: dict) -> dict:
         "has_active_punishments": bool(flags.get("has_active_punishments")),
         "has_open_anomalies": bool(flags.get("has_open_anomalies")),
         "has_previous_names": bool(flags.get("has_previous_names")),
+        "has_ip_history": bool(flags.get("has_ip_history")),
         "last_activity": info.get("last_activity") or (info["last_seen"].isoformat() if info.get("last_seen") else None) or (info["join_time"].isoformat() if info.get("join_time") else None),
     }
 
@@ -524,6 +525,7 @@ def _serialize_offline_player(p, flags: Optional[dict] = None) -> dict:
         "has_active_punishments": bool(flags.get("has_active_punishments")),
         "has_open_anomalies": bool(flags.get("has_open_anomalies")),
         "has_previous_names": bool(flags.get("has_previous_names")),
+        "has_ip_history": bool(flags.get("has_ip_history")),
         "last_activity": p.last_login_time.isoformat() if p.last_login_time else None,
         # Same "under 2 hours total playtime" threshold as the online-players
         # is_new_player flag (services.py) — kept in sync so a player looks
@@ -553,6 +555,7 @@ def _serialize_search_player(p, flags: Optional[dict] = None) -> dict:
         "has_active_punishments": bool(flags.get("has_active_punishments")),
         "has_open_anomalies": bool(flags.get("has_open_anomalies")),
         "has_previous_names": bool(flags.get("has_previous_names")),
+        "has_ip_history": bool(flags.get("has_ip_history")),
         "last_activity": p.last_login_time.isoformat() if p.last_login_time else None,
     }
 

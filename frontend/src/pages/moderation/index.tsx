@@ -112,7 +112,7 @@ const ONLINE_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
   { key: "join_time", label: "Дата входа" },
   { key: "play_time", label: "Наиграно" },
   { key: "active_sanctions", label: "Действующие взыскания" },
-  { key: "open_anomalies", label: "Открытые сигналы" },
+  { key: "open_anomalies", label: "Аномалии" },
   { key: "discord_link", label: "Привязка Discord" },
 ]
 
@@ -121,7 +121,7 @@ const OFFLINE_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
   { key: "last_login", label: "Последний вход" },
   { key: "play_time", label: "Наиграно" },
   { key: "active_sanctions", label: "Действующие взыскания" },
-  { key: "open_anomalies", label: "Открытые сигналы" },
+  { key: "open_anomalies", label: "Аномалии" },
   { key: "discord_link", label: "Привязка Discord" },
 ]
 

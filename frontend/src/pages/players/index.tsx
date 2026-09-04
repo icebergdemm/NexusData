@@ -106,7 +106,7 @@ const PLAYER_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
   { key: "last_login", label: "Последний вход" },
   { key: "last_activity", label: "Последняя активность" },
   { key: "active_sanctions", label: "Действующие взыскания" },
-  { key: "open_anomalies", label: "Открытые сигналы" },
+  { key: "open_anomalies", label: "Аномалии" },
   { key: "discord_link", label: "Привязка Discord" },
 ]
 
@@ -153,6 +153,7 @@ export function PlayersListPage() {
       if (filters.sanctionsMode !== "all") params.set("sanctions", filters.sanctionsMode)
       if (filters.anomaliesMode !== "all") params.set("anomalies", filters.anomaliesMode)
       if (filters.nameHistoryMode !== "all") params.set("name_history", filters.nameHistoryMode)
+      if (filters.ipHistoryMode !== "all") params.set("ip_history", filters.ipHistoryMode)
       if (filters.activityMode !== "all") params.set("activity", filters.activityMode)
       const apiSort = playerSortToApi(sort)
       if (apiSort) params.set("sort", apiSort)

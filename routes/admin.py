@@ -1612,6 +1612,7 @@ async def api_players_list(
     sanctions: Optional[str] = Query(None, pattern="^(all|with|without)$"),
     anomalies: Optional[str] = Query(None, pattern="^(all|with|without)$"),
     name_history: Optional[str] = Query(None, pattern="^(all|with|without)$"),
+    ip_history: Optional[str] = Query(None, pattern="^(all|with|without)$"),
     activity: Optional[str] = Query(None, pattern="^(all|new|inactive_7|inactive_30|inactive_90)$"),
     sort: Optional[str] = Query(None, pattern="^(playtime_desc|playtime_asc|last_login_desc|last_login_asc|last_activity_desc|last_activity_asc|active_sanctions_desc|active_sanctions_asc|open_anomalies_desc|open_anomalies_asc|discord_link_desc|discord_link_asc)$"),
     db: Session = Depends(get_db),
@@ -1633,7 +1634,7 @@ async def api_players_list(
             discord_link=discord_link,
             label_mode=effective_label_mode, label_ids=selected_label_ids,
             notes=notes, sanctions=sanctions, anomalies=anomalies,
-            name_history=name_history, activity=activity,
+            name_history=name_history, ip_history=ip_history, activity=activity,
         )
         outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw_players]
         flags = player_service.player_repo.get_player_flags([player.player_id for player in raw_players])
@@ -1646,7 +1647,7 @@ async def api_players_list(
             page, page_size, rank_id=rank_id, sort=sort, discord_link=discord_link,
             label_mode=effective_label_mode, label_ids=selected_label_ids,
             notes=notes, sanctions=sanctions, anomalies=anomalies,
-            name_history=name_history, activity=activity,
+            name_history=name_history, ip_history=ip_history, activity=activity,
         )
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
