@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Bar, Line } from "react-chartjs-2"
 import {
-  Activity, AlertTriangle, Anchor, Bot, BrainCircuit, Check, ChevronRight, CircleGauge,
+  Activity, AlertTriangle, Anchor, Ban, Bot, BrainCircuit, Check, ChevronRight, CircleGauge,
   Copy, Crosshair, Eye, EyeOff, Files, Filter, FlaskConical, Gauge, Info, Layers, LocateFixed,
-  MapPin, Plus, Radar, Save, Search, ShipWheel, Skull, SlidersHorizontal, Sparkles,
+  MapPin, Pencil, Plus, Radar, Save, Search, ShipWheel, Skull, SlidersHorizontal, Sparkles,
   Target, Trash2, TrendingDown, TrendingUp, Wand2, X, Zap,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
@@ -12,6 +12,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -76,6 +77,11 @@ function ChartCard({ title, description, children, className = "" }: { title: st
     <CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">{title}</CardTitle>{description && <CardDescription className="text-xs">{description}</CardDescription>}</CardHeader>
     <CardContent className="h-72 p-4">{children}</CardContent>
   </Card>
+}
+
+/** 5: понятные состояния карты раунда (ошибки, нет раунда, загрузка). */
+function MapPlaceholder({ children, height = "380px" }: { children: React.ReactNode; height?: string }) {
+  return <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground" style={{ minHeight: height }}>{children}</div>
 }
 
 function SliderField({ label, value, min, max, step, suffix = "", onChange }: { label: string; value: number; min: number; max: number; step: number; suffix?: string; onChange: (value: number) => void }) {
@@ -173,6 +179,131 @@ function WaveEditor({ wave, onChange, override, onOverrideChange }: {
   </div>
 }
 
+/** 5: универсальный диалог редактирования — всё правится во всплывающем окне. */
+function EditorDialog({ open, onOpenChange, title, icon: Icon, description, children, footer }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: React.ReactNode
+  icon?: LucideIcon
+  description?: React.ReactNode
+  children: React.ReactNode
+  footer?: React.ReactNode
+}) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2">{Icon && <span className="flex size-8 items-center justify-center rounded-xl bg-primary/15 text-primary"><Icon className="size-4" /></span>}{title}</DialogTitle>
+        {description && <DialogDescription>{description}</DialogDescription>}
+      </DialogHeader>
+      <div className="min-w-0">{children}</div>
+      <DialogFooter className="items-center gap-2 sm:justify-between">
+        <span className="text-[11px] text-muted-foreground">Изменения попадут на сервер после «Сохранить» на странице</span>
+        {footer ?? <Button variant="outline" onClick={() => onOpenChange(false)}>Готово</Button>}
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+}
+
+/** 2: диалог правки сложности активной волны — абсолют или корректировка,
+ *  с предпросмотром итоговой сложности и управлением пометками. */
+function WaveOverrideDialog({ open, onOpenChange, waveName, currentDifficulty, monstersAlive, engaged, initial, onApply, onRemove }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  waveName: string
+  currentDifficulty: number
+  monstersAlive: number
+  engaged: boolean
+  initial: WaveOverride | null
+  onApply: (override: WaveOverride) => void
+  onRemove: () => void
+}) {
+  const [local, setLocal] = useState<WaveOverride>(initial ?? { difficulty_mode: "adjust", difficulty_value: 1, non_blocking: null, enabled: true })
+  useEffect(() => {
+    if (open) setLocal(initial ?? { difficulty_mode: "adjust", difficulty_value: 1, non_blocking: null, enabled: true })
+  }, [open, initial])
+  const absolute = local.difficulty_mode === "absolute"
+  const set = <K extends keyof WaveOverride>(key: K, value: WaveOverride[K]) => setLocal({ ...local, [key]: value })
+  const preview = absolute
+    ? local.difficulty_value
+    : Math.round(currentDifficulty * (local.difficulty_value || 1) * 100) / 100
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-lg">
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2"><span className="flex size-8 items-center justify-center rounded-xl bg-warning/15 text-warning"><Wand2 className="size-4" /></span>Правка волны</DialogTitle>
+        <DialogDescription><span className="font-mono">{waveName}</span> — пометка применится к этой волне сейчас и ко всем будущим волнам этого типа</DialogDescription>
+      </DialogHeader>
+      <div className="grid grid-cols-3 gap-2 text-center text-xs">
+        <div className="rounded-xl border bg-muted/10 p-2.5"><div className="font-mono text-sm">{currentDifficulty.toFixed(1)}</div><div className="text-[10px] text-muted-foreground">текущая сложность</div></div>
+        <div className="rounded-xl border bg-muted/10 p-2.5"><div className="font-mono text-sm">{monstersAlive}</div><div className="text-[10px] text-muted-foreground">живых монстров</div></div>
+        <div className="rounded-xl border bg-muted/10 p-2.5"><div className={`font-mono text-sm ${engaged ? "text-success" : "text-warning"}`}>{engaged ? "да" : "нет"}</div><div className="text-[10px] text-muted-foreground">в бою</div></div>
+      </div>
+      <div className="space-y-3">
+        <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Режим изменения сложности</span>
+          <Select value={local.difficulty_mode} onValueChange={(value) => set("difficulty_mode", value)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="adjust">Корректировка — множитель к текущей (×)</SelectItem>
+              <SelectItem value="absolute">Абсолютная — задать значение</SelectItem>
+            </SelectContent>
+          </Select></Label>
+        {absolute
+          ? <NumberField label="Целевая сложность волны" value={local.difficulty_value} onChange={(value) => set("difficulty_value", value)} step="0.1" />
+          : <SliderField label="Множитель сложности" value={local.difficulty_value || 1} min={0.1} max={5} step={0.05} suffix="x" onChange={(value) => set("difficulty_value", value)} />}
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs"><span className="text-muted-foreground">Итоговая сложность: </span><span className="font-mono text-base font-semibold text-primary">{Number.isFinite(preview) ? preview.toFixed(1) : "—"}</span><span className="text-muted-foreground"> · HP живых монстров масштабируется в момент применения</span></div>
+        <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Блокирует другие волны</span>
+          <Select value={local.non_blocking == null ? "auto" : local.non_blocking ? "no" : "yes"} onValueChange={(value) => set("non_blocking", value === "auto" ? null : value === "no")}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Авто (abyss/moloch/cave в названии)</SelectItem>
+              <SelectItem value="yes">Да, блокирует следующие</SelectItem>
+              <SelectItem value="no">Нет, неблокирующая</SelectItem>
+            </SelectContent>
+          </Select></Label>
+        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Пометка активна</span><Switch checked={local.enabled !== false} onCheckedChange={(value) => set("enabled", value)} /></div>
+      </div>
+      <DialogFooter className="flex-row items-center gap-2 sm:justify-between">
+        {initial
+          ? <Button variant="ghost" onClick={() => { onRemove(); onOpenChange(false) }}><Trash2 className="size-3.5" /> Убрать пометку</Button>
+          : <span />}
+        <span className="flex gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
+          <Button onClick={() => { onApply(local); onOpenChange(false) }}><Check className="size-3.5" /> Применить</Button>
+        </span>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+}
+
+/** 3.1/3.5: редактор списков исключений (подстроки в названиях волн). */
+function TagListEditor({ label, description, tags, onChange, addPlaceholder }: {
+  label: string
+  description: string
+  tags: string[]
+  onChange: (tags: string[]) => void
+  addPlaceholder: string
+}) {
+  const [value, setValue] = useState("")
+  const add = () => {
+    const trimmed = value.trim()
+    if (!trimmed) return
+    if (tags.some((t) => t.toLowerCase() === trimmed.toLowerCase())) { setValue(""); return }
+    onChange([...tags, trimmed])
+    setValue("")
+  }
+  return <div className="flex h-full flex-col gap-2 rounded-xl border bg-muted/10 p-3 text-xs">
+    <div className="flex items-center gap-2 font-medium"><Ban className="size-3.5 text-warning" /> {label}</div>
+    <p className="text-muted-foreground">{description}</p>
+    <div className="flex min-h-8 flex-wrap gap-1">
+      {tags.map((tag, index) => <Badge key={index} variant="secondary" className="gap-1 font-mono text-[10px]">{tag}<button className="rounded-full p-0.5 hover:bg-destructive/20" onClick={() => onChange(tags.filter((_, itemIndex) => itemIndex !== index))}><X className="size-3" /></button></Badge>)}
+      {!tags.length && <span className="text-muted-foreground">список пуст</span>}
+    </div>
+    <div className="mt-auto flex gap-2">
+      <Input className="h-8 text-xs" value={value} placeholder={addPlaceholder} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add() } }} />
+      <Button size="sm" variant="outline" className="h-8" onClick={add}><Plus className="size-3.5" /> Добавить</Button>
+    </div>
+  </div>
+}
+
 function Recommendation({ item }: { item: MonsterSpawnRecommendation }) {
   const Icon = item.severity === "warning" ? AlertTriangle : item.severity === "success" ? Check : Info
   const tone = item.severity === "warning" ? "text-warning border-warning/30 bg-warning/5" : item.severity === "success" ? "text-success border-success/30 bg-success/5" : "text-info border-info/30 bg-info/5"
@@ -215,10 +346,11 @@ function ModificationsList({ modifications }: { modifications: string[] | string
   return <ul className="space-y-1">{list.map((item, index) => <li key={index} className="font-mono text-[11px] text-warning">{item}</li>)}</ul>
 }
 
-function ActiveWaveCard({ wave, override, onOverride }: {
+function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }: {
   wave: ActiveWaveTelemetry
   override?: WaveOverride
-  onOverride?: (patch: Partial<WaveOverride>) => void
+  onToggleNonBlocking?: () => void
+  onOpenOverride?: () => void
 }) {
   const modified = wave.modifications?.length > 0
   const engaged = wave.engaged === true
@@ -233,6 +365,7 @@ function ActiveWaveCard({ wave, override, onOverride }: {
       {wave.non_blocking ? <Badge variant="outline" className="text-[10px] text-muted-foreground">неблокирующая</Badge>
         : blocking ? <Badge variant="outline" className="text-[10px] text-success border-success/40">блокирует спавн</Badge>
         : <Badge variant="outline" className="text-[10px] text-warning">не блокирует (афк)</Badge>}
+      {wave.monsters_alive > 0 && <Badge variant="outline" className="text-[10px] text-success border-success/40">жива</Badge>}
       {engaged && wave.damage_taken != null && wave.damage_taken > 0 && <Badge variant="outline" className="text-[10px] text-info">урон монстрам {wave.damage_taken.toFixed(0)}</Badge>}
     </div>
     <div className="text-muted-foreground">Состав: <span className="text-foreground">{monsterCountsText(wave.monster_counts)}</span>{wave.spawn_scheme && <span> · схема <b className="text-foreground">{wave.spawn_scheme}</b>{wave.spawn_zone ? ` (${wave.spawn_zone})` : ""}</span>}</div>
@@ -243,17 +376,10 @@ function ActiveWaveCard({ wave, override, onOverride }: {
       <div><div className="font-mono text-sm">{wave.effective_difficulty.toFixed(1)}</div><div className="text-[10px] text-muted-foreground">сложность</div></div>
     </div>
     {wave.distance_to_sub_meters != null && <div className="text-[11px] text-muted-foreground">Дистанция до корабля: <span className="font-mono text-foreground">{wave.distance_to_sub_meters.toFixed(0)} м</span>{wave.min_distance_meters != null && <> (минимум {wave.min_distance_meters.toFixed(0)} м)</>}</div>}
-    {onOverride && <div className="flex flex-wrap items-center gap-2 border-t pt-2">
-      <Button size="sm" variant={override?.non_blocking ? "secondary" : "outline"} onClick={() => onOverride({ non_blocking: !override?.non_blocking })}>
-        {override?.non_blocking ? <><EyeOff className="size-3.5" /> Неблокирующая: вкл</> : <><EyeOff className="size-3.5" /> Пометить неблокирующей</>}
-      </Button>
-      <Button size="sm" variant="outline" onClick={() => onOverride({ difficulty_mode: "adjust", difficulty_value: Math.round((override?.difficulty_mode === "adjust" ? (override?.difficulty_value ?? 1) : 1) * 0.5 * 100) / 100 })}>
-        <TrendingDown className="size-3.5" /> ×0.5 сложность
-      </Button>
-      <Button size="sm" variant="outline" onClick={() => onOverride({ difficulty_mode: "adjust", difficulty_value: Math.round((override?.difficulty_mode === "adjust" ? (override?.difficulty_value ?? 1) : 1) * 2 * 100) / 100 })}>
-        <TrendingUp className="size-3.5" /> ×2 сложность
-      </Button>
-      {override && <span className="font-mono text-[10px] text-muted-foreground">{override.difficulty_mode === "absolute" ? `абс=${override.difficulty_value}` : `×${override.difficulty_value}`}{override.non_blocking != null ? ` · ${override.non_blocking ? "неблок." : "блок."}` : ""}</span>}
+    {(onOpenOverride || onToggleNonBlocking) && <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+      {onOpenOverride && <Button size="sm" variant="outline" onClick={onOpenOverride}><Wand2 className="size-3.5" /> Изменить сложность</Button>}
+      {onToggleNonBlocking && <Button size="sm" variant={override?.non_blocking === true ? "secondary" : "outline"} onClick={onToggleNonBlocking}><EyeOff className="size-3.5" /> Неблокирующая</Button>}
+      {override && <span className="font-mono text-[10px] text-muted-foreground">пометка: {override.enabled === false ? "выкл" : "вкл"} · {override.difficulty_mode === "absolute" ? `абс=${override.difficulty_value}` : `×${override.difficulty_value}`}{override.non_blocking != null ? ` · ${override.non_blocking ? "неблок." : "блок."}` : ""}</span>}
     </div>}
     {modified && <ModificationsList modifications={wave.modifications} />}
   </div>
@@ -261,11 +387,18 @@ function ActiveWaveCard({ wave, override, onOverride }: {
 
 function RecentWaveCard({ wave }: { wave: RecentWaveTelemetry }) {
   const outcome = OUTCOME_LABELS[wave.outcome] ?? { label: wave.outcome, tone: "text-muted-foreground border-border bg-muted/30" }
+  // 7: статус судьбы волны — уничтожена или отслеживание прекращено.
+  const FATE_LABELS: Record<string, { label: string; tone: string }> = {
+    destroyed: { label: "Уничтожена", tone: "text-success border-success/30 bg-success/5" },
+    tracking_stopped: { label: "Отслеживание прекращено", tone: "text-muted-foreground border-border bg-muted/20" },
+  }
+  const fate = wave.fate ? FATE_LABELS[wave.fate] ?? null : null
   const modified = wave.modifications && wave.modifications.length > 0
   return <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
     <div className="flex flex-wrap items-center gap-2">
       <span className="font-semibold">{wave.wave_name}</span>
       <Badge variant="outline" className="text-[10px]">ID {wave.wave_id}</Badge>
+      {fate && <Badge variant="outline" className={`text-[10px] ${fate.tone}`}>{fate.label}</Badge>}
       <Badge variant="outline" className={`text-[10px] ${outcome.tone}`}>{outcome.label}</Badge>
       <Badge variant="secondary" className="text-[10px]">{REASON_LABELS[wave.spawn_reason] ?? wave.spawn_reason}</Badge>
     </div>
@@ -362,32 +495,54 @@ function SchemeDiagram({ scheme, minMeters }: { scheme: SpawnScheme; minMeters: 
   </svg>
 }
 
-function SchemeEditor({ scheme, index, onChange, onDelete, minMeters, canDelete }: {
+/** 6: тело редактора схемы (используется в диалоге). */
+function SchemeEditor({ scheme, onChange, minMeters }: {
   scheme: SpawnScheme
-  index: number
   onChange: (scheme: SpawnScheme) => void
-  onDelete: () => void
   minMeters: number
-  canDelete: boolean
 }) {
   const set = <K extends keyof SpawnScheme>(key: K, value: SpawnScheme[K]) => onChange({ ...scheme, [key]: value })
   const setZone = (zone: string, value: number) => onChange({ ...scheme, zones: { ...(scheme.zones ?? {}), [zone]: value } })
-  return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Layers className="size-4 text-primary" /> Схема #{index + 1}<Badge variant="outline" className="text-[10px]">вес {scheme.weight}</Badge></CardTitle><Button size="sm" variant="ghost" disabled={!canDelete} onClick={onDelete}><Trash2 className="size-3.5" /> Удалить</Button></CardHeader>
-    <CardContent className="space-y-3 p-4">
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Название</span><Input value={scheme.name} onChange={(event) => set("name", event.target.value)} /></Label>
-        <NumberField label="Вес выбора (0..5)" value={scheme.weight} onChange={(value) => set("weight", value)} step="0.1" />
-        <NumberField label="Дистанция от, м" value={scheme.distance_min_meters} onChange={(value) => set("distance_min_meters", value)} />
-        <NumberField label="Дистанция до, м" value={scheme.distance_max_meters} onChange={(value) => set("distance_max_meters", value)} />
+  return <div className="space-y-3">
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Название</span><Input value={scheme.name} onChange={(event) => set("name", event.target.value)} /></Label>
+      <NumberField label="Вес выбора (0..5)" value={scheme.weight} onChange={(value) => set("weight", value)} step="0.1" />
+      <NumberField label="Дистанция от, м" value={scheme.distance_min_meters} onChange={(value) => set("distance_min_meters", value)} />
+      <NumberField label="Дистанция до, м" value={scheme.distance_max_meters} onChange={(value) => set("distance_max_meters", value)} />
+    </div>
+    <div className="grid gap-3 md:grid-cols-[minmax(260px,340px)_1fr]">
+      <div className="rounded-xl border bg-muted/10 p-2"><SchemeDiagram scheme={scheme} minMeters={minMeters} /></div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {["front", "top", "bottom"].map((zone) => <SliderField key={zone} label={SCHEME_ZONE_LABELS[zone]} value={Math.max(scheme.zones?.[zone] ?? (zone === "front" ? 1 : 0.25), 0)} min={0} max={2} step={0.05} onChange={(value) => setZone(zone, value)} />)}
+        <div className="rounded-xl border border-dashed p-3 text-[11px] text-muted-foreground sm:col-span-3">Сектор «сзади» жёстко запрещён: волны никогда не спавнятся позади корабля. Дистанции в схеме не могут быть меньше минимальной дистанции спавна ({Math.round(minMeters)} м).</div>
       </div>
-      <div className="grid gap-3 md:grid-cols-[minmax(260px,320px)_1fr]">
-        <div className="rounded-xl border bg-muted/10 p-2"><SchemeDiagram scheme={scheme} minMeters={minMeters} /></div>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {["front", "top", "bottom"].map((zone) => <SliderField key={zone} label={SCHEME_ZONE_LABELS[zone]} value={Math.max(scheme.zones?.[zone] ?? (zone === "front" ? 1 : 0.25), 0)} min={0} max={2} step={0.05} onChange={(value) => setZone(zone, value)} />)}
-          <div className="rounded-xl border border-dashed p-3 text-[11px] text-muted-foreground sm:col-span-3">Сектор «сзади» жёстко запрещён: волны никогда не спавнятся позади корабля. Дистанции в схеме не могут быть меньше минимальной дистанции спавна ({Math.round(minMeters)} м).</div>
-        </div>
-      </div>
-    </CardContent></Card>
+    </div>
+  </div>
+}
+
+/** 6: компактная строка схемы в списке. */
+function SchemeRow({ scheme, index, onEdit, onDelete, overrideTag }: {
+  scheme: SpawnScheme
+  index: number
+  onEdit: () => void
+  onDelete: () => void
+  overrideTag?: React.ReactNode
+}) {
+  const zones = ["front", "top", "bottom"].map((zone) => {
+    const value = Math.max(scheme.zones?.[zone] ?? (zone === "front" ? 1 : 0.25), 0)
+    const labels: Record<string, string> = { front: "перед", top: "сверху", bottom: "снизу" }
+    return `${labels[zone]} ${value.toFixed(2)}`
+  }).join(" · ")
+  return <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-xs">
+    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary"><Layers className="size-4" /></span>
+    <span className="min-w-0 flex-1">
+      <span className="flex items-center gap-2"><span className="truncate text-sm font-medium">{scheme.name || `Схема #${index + 1}`}</span><Badge variant="secondary" className="text-[10px]">вес {scheme.weight}</Badge></span>
+      <span className="block truncate text-muted-foreground">{Math.round(scheme.distance_min_meters)}–{Math.round(scheme.distance_max_meters)} м · {zones}</span>
+    </span>
+    {overrideTag}
+    <Button size="sm" variant="outline" onClick={onEdit}><Pencil className="size-3.5" /> Править</Button>
+    <Button size="sm" variant="ghost" onClick={onDelete}><Trash2 className="size-3.5" /> Удалить</Button>
+  </div>
 }
 
 function LLMPanel({ server }: { server: string }) {
@@ -462,9 +617,17 @@ export function MonsterSpawnPage() {
   const [contextMenu, setContextMenu] = useState<{ screenX: number; screenY: number; wx: number; wy: number; markerId: string | null } | null>(null)
   const [activeTab, setActiveTab] = useState("overview")
   const [selectedLearned, setSelectedLearned] = useState<string | null>(null)
+  // 5: все правки — во всплывающих окнах.
+  const [waveDialogIndex, setWaveDialogIndex] = useState<number | null>(null)
+  const [planDialogOpen, setPlanDialogOpen] = useState(false)
+  const [learnedDialogOpen, setLearnedDialogOpen] = useState(false)
+  const [overrideDialogWave, setOverrideDialogWave] = useState<{ name: string; difficulty: number; alive: number; engaged: boolean } | null>(null)
+  const [schemeDialog, setSchemeDialog] = useState<{ index: number; isNew?: boolean } | null>(null)
 
-  const rounds = useQuery({ queryKey: ["world-rounds"], queryFn: worldStateApi.listRounds, refetchInterval: 5000 })
-  const round = rounds.data?.rounds.find((item) => item.server_name?.toUpperCase() === server) ?? null
+  // 5: обзор мира — активный раунд выбранного сервера берём напрямую с
+  // серверной фильтрацией (самый свежий), без ручного сопоставления имён.
+  const rounds = useQuery({ queryKey: ["world-rounds", server], queryFn: () => worldStateApi.listRounds(server), refetchInterval: 5000 })
+  const round = rounds.data?.rounds[0] ?? null
   const geometry = useQuery({ queryKey: ["world-geometry", round?.round_id], queryFn: () => worldStateApi.getGeometry(round!.round_id), enabled: !!round, staleTime: Infinity })
   const world = useQuery({ queryKey: ["world-state", round?.round_id], queryFn: () => worldStateApi.getState(round!.round_id), enabled: !!round, refetchInterval: 3000 })
   const state = useQuery({ queryKey: ["monster-spawn", server], queryFn: () => monsterSpawnApi.get(server), refetchInterval: 5000 })
@@ -522,6 +685,8 @@ export function MonsterSpawnPage() {
 
   const setGlobal = (key: string, value: unknown) => updateDraft((next) => { next.config.global[key] = value })
   const setVanilla = (key: string, value: unknown) => updateDraft((next) => { const current = isRecord(next.config.global.vanilla_events) ? next.config.global.vanilla_events : {}; next.config.global.vanilla_events = { ...current, [key]: value } })
+  // 3.1/3.5: списки исключений (подстроки в названиях волн).
+  const ignoreList = (key: string): string[] => Array.isArray(global[key]) ? (global[key] as string[]) : []
   const createPlan = (x: number, y: number) => updateDraft((next) => { const wave = clone(next.config.waves[selectedWave] ?? emptyWave()); const plan: SpawnPlan = { ...wave, id: crypto.randomUUID(), wave_name: wave.name, source: "manual", status: "planned", x, y, note: "" }; next.plans.push(plan); setSelectedPlanId(plan.id); setPlacing(false) })
   const duplicatePlan = (id: string) => updateDraft((next) => { const source = next.plans.find((plan) => plan.id === id); if (!source) return; const duplicate: SpawnPlan = { ...clone(source), id: crypto.randomUUID(), note: source.note ? `${source.note} (копия)` : "" }; next.plans.push(duplicate); setSelectedPlanId(duplicate.id); toast.success("План продублирован") })
   const copyCoords = (x: number, y: number) => navigator.clipboard.writeText(`${x}, ${y}`).then(() => toast.success(`Координаты ${x}, ${y} скопированы`)).catch(() => toast.error("Не удалось скопировать"))
@@ -556,6 +721,40 @@ export function MonsterSpawnPage() {
     fn(schemes)
     globalConfig.spawn_schemes = schemes
   })
+  // 2: убрать постоянную пометку типа волны целиком.
+  const removeWaveOverride = (name: string) => updateDraft((next) => {
+    const memory = next.memory as Record<string, unknown>
+    const overrides = isRecord(memory.wave_overrides) ? { ...memory.wave_overrides } : {}
+    for (const key of Object.keys(overrides)) {
+      if (key.toLowerCase() === name.toLowerCase()) delete overrides[key]
+    }
+    memory.wave_overrides = overrides
+  })
+  // 1: авто-признак «неблокирующая» по названию (на клиенте — для бейджей).
+  const autoNonBlockByName = (name?: string | null) => !!name && /abyss|moloch|cave/i.test(name)
+  // 1: шаблон изученной волны и его правка в памяти.
+  const learnedTemplateFor = (name: string | null): SpawnWave | null => {
+    if (!draft || !name) return null
+    const memoryRecord = isRecord(draft.memory) ? draft.memory : {}
+    const learnedMap = isRecord(memoryRecord.learned_waves) ? memoryRecord.learned_waves : {}
+    const entry = isRecord(learnedMap[name]) ? learnedMap[name] : null
+    return entry && isRecord(entry.wave) ? clone(entry.wave) as unknown as SpawnWave : null
+  }
+  const updateLearnedTemplate = (name: string, fn: (template: SpawnWave) => void) => updateDraft((next) => {
+    const memory = next.memory as Record<string, unknown>
+    const learned = isRecord(memory.learned_waves) ? { ...memory.learned_waves } : {}
+    const item = isRecord(learned[name]) ? { ...learned[name] } : {}
+    const template = isRecord(item.wave) ? clone(item.wave) as unknown as SpawnWave : null
+    if (!template) return
+    fn(template)
+    item.wave = template
+    learned[name] = item
+    memory.learned_waves = learned
+  })
+  const scaleLearnedTemplate = (name: string, field: "count" | "hp_multiplier", factor: number) => updateLearnedTemplate(name, (template) => {
+    template.monsters = (template.monsters ?? []).map((m) => ({ ...m, [field]: Math.round(m[field] * factor * 100) / 100 }))
+    if (field === "hp_multiplier" && template.difficulty > 0) template.difficulty = Math.round(template.difficulty * factor * 100) / 100
+  })
 
   return <div className="flex min-h-[calc(100vh-6rem)] flex-col gap-4">
     <PageHeader title="Управление монстрами" description="Ванильный pipeline под контролем MonsterSpawnController: наблюдай, корректируй, не применяй вслепую" icon={Skull} actions={<div className="flex gap-2"><Select value={server} onValueChange={setServer}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent>{["ASPER1", "ASPER2"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save className="size-4" /> Сохранить</Button></div>} />
@@ -567,69 +766,36 @@ export function MonsterSpawnPage() {
       <TabsContent value="overview" className="space-y-4 pt-2">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric icon={ShipWheel} label="Корабль раунда" value={dashboard.submarine_name || "Нет активного раунда"} detail={`${Math.floor((dashboard.round_seconds || 0) / 60)} мин · ${dashboard.known_submarines} кораблей в памяти`} tone="primary" /><Metric icon={Gauge} label="Текущее давление" value={`${intensityPercent.toFixed(0)}%`} detail={`Порог vanilla event ${thresholdPercent.toFixed(0)}%`} tone="warning" /><Metric icon={BrainCircuit} label="Global performance EMA" value={report.global_performance_ema.toFixed(2)} detail="Больше 1.0: экипаж справляется быстрее ожиданий" tone="success" /><Metric icon={Anchor} label="Ожидают триггера" value={String(dashboard.pending_waves)} detail={`${telemetry.vanilla_events ?? 0} vanilla events · ${draft.config.waves.length} волн в пуле`} tone="info" /></div>
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]"><ChartCard title="Наблюдаемая интенсивность" description="Текущая интенсивность и порог, полученные от плагина"><Line options={baseChartOptions} data={{ labels: ["Сейчас"], datasets: [{ label: "Интенсивность", data: [dashboard.intensity], borderColor: CHART_COLORS[0], backgroundColor: `${CHART_COLORS[0]}28`, fill: true, ...lineDatasetDefaults }, { label: "Порог события", data: [dashboard.event_threshold], borderColor: CHART_COLORS[3], ...lineDatasetDefaults }] }} /></ChartCard>
-          <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Radar className="size-4 text-destructive" /> Волны под атакой и недавние</CardTitle><CardDescription className="text-xs">Активные и недавно побеждённые волны вместо статических предложений</CardDescription></CardHeader><CardContent className="max-h-96 space-y-2 overflow-y-auto p-4">
-            {activeWaves.length > 0 ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onOverride={(patch) => setWaveOverride(wave.wave_name, patch)} />) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Активных волн нет — корабль вне боя</div>}
+          <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Radar className="size-4 text-destructive" /> Волны под атакой и недавние</CardTitle><CardDescription className="text-xs">Живые волны, их статусы и исходы последних столкновений</CardDescription></CardHeader><CardContent className="max-h-96 space-y-2 overflow-y-auto p-4">
+            {activeWaves.length > 0 ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Активных волн нет — корабль вне боя</div>}
             {recentWaves.slice(0, 4).map((wave) => <RecentWaveCard key={wave.wave_id + String(wave.resolved_at_seconds)} wave={wave} />)}
             {!activeWaves.length && !recentWaves.length && <Button variant="ghost" className="w-full justify-between" onClick={() => setActiveTab("logs")}>Открыть полный анализ <ChevronRight className="size-4" /></Button>}
           </CardContent></Card></div>
         <div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Самые долгие волны" description="Среднее время от спавна до разрешения"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={waveChart} /></ChartCard><ChartCard title="Корабли по эффективности" description="Ниже 1.0 означает более тяжёлое прохождение"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div>
-        <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="size-4 text-primary" /> Карта раунда</CardTitle><CardDescription className="text-xs">Карта текущего раунда с планами спавна из ручной настройки</CardDescription></CardHeader><CardContent className="p-4"><div className="relative min-h-[380px] overflow-hidden rounded-xl border">{geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={false} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={(id) => { setSelectedPlanId(id); setActiveTab("manual") }} onMoveMarker={() => {}} /> : <div className="flex h-full min-h-[380px] items-center justify-center p-8 text-center text-sm text-muted-foreground">Для {server} нет активной карты раунда</div>}</div></CardContent></Card>
+        <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="size-4 text-primary" /> Карта раунда</CardTitle><CardDescription className="text-xs">Карта текущего раунда с планами спавна из ручной настройки</CardDescription></CardHeader><CardContent className="p-4"><div className="relative h-[380px] overflow-hidden rounded-xl border">
+          {rounds.isError ? <MapPlaceholder>Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>
+            : !round ? <MapPlaceholder>Для {server} сейчас нет активного раунда — мир не транслируется</MapPlaceholder>
+              : geometry.isError || world.isError ? <MapPlaceholder>Ошибка загрузки карты: {((geometry.error ?? world.error) as Error | null)?.message ?? "нет данных"}</MapPlaceholder>
+                : geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={false} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={(id) => { setSelectedPlanId(id); setActiveTab("manual") }} onMoveMarker={() => {}} />
+                  : <MapPlaceholder>Загрузка карты раунда…</MapPlaceholder>}
+        </div></CardContent></Card>
         <ExpressTuning global={global} vanilla={vanilla} setGlobal={setGlobal} setVanilla={setVanilla} />
       </TabsContent>
 
       <TabsContent value="monitoring" className="space-y-4 pt-2">
         <PlannedActionCard planned={plannedAction} />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <Metric icon={MapPin} label="Прохождение" value={`${Number(telemetry.progress_percent ?? 0).toFixed(0)}%`} detail="уровня пройдено кораблём" tone="primary" />
           <Metric icon={TrendingUp} label="Темп продвижения" value={`${Number(telemetry.pace_ratio ?? 1).toFixed(2)}x`} detail={telemetry.pace_anomalous ? "Аномальный — перехват возможен" : "Нормальный"} tone={telemetry.pace_anomalous ? "warning" : "success"} />
           <Metric icon={SlidersHorizontal} label="Задержка спавна" value={`${Number(telemetry.struggle_delay_factor ?? 1).toFixed(2)}x`} detail={`волн в бою: ${Number(telemetry.blocking_wave_count ?? 0)}/${Number(telemetry.max_simultaneous_waves ?? 1)}`} tone={Number(telemetry.struggle_delay_factor ?? 1) > 1.2 ? "warning" : "primary"} />
           <Metric icon={BrainCircuit} label="Изучено волн" value={String(telemetry.learned_waves_count ?? 0)} detail={`${telemetry.pace_intercepts_this_round ?? 0}/${telemetry.pace_intercept_max ?? 0} перехватов за раунд`} tone="info" />
           <Metric icon={Radar} label="Ванильные события" value={String(telemetry.vanilla_events ?? 0)} detail={`${telemetry.pending_waves ?? 0} волн ждут триггера · режим ${telemetry.vanilla_event_mode ?? "controller"}`} tone="primary" />
         </div>
-        <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Активные волны</CardTitle><CardDescription className="text-xs">Пометки и правки применяются к волне сразу после сохранения (пометка типа — навсегда)</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
-          {activeWaves.length ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onOverride={(patch) => setWaveOverride(wave.wave_name, patch)} />) : <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Нет активных волн</div>}
+        <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Активные волны</CardTitle><CardDescription className="text-xs">Правка сложности и пометки — во всплывающем окне, применяются сразу после сохранения</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
+          {activeWaves.length ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Нет активных волн</div>}
         </CardContent></Card>
         <div className="grid gap-4 lg:grid-cols-2">
-          <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Изученные ванильные волны</CardTitle><CardDescription className="text-xs">Клик по волне — редактирование шаблона и пометок (сохраняется в памяти)</CardDescription></CardHeader><CardContent className="p-4"><div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[520px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Волна</th><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Наблюдений</th><th className="px-3 py-2 font-medium">В пуле</th></tr></thead><tbody>{learnedWaves.map((wave) => <tr key={wave.wave_name} className={`cursor-pointer border-t transition hover:bg-muted/40 ${selectedLearned === wave.wave_name ? "bg-accent" : ""}`} onClick={() => setSelectedLearned(selectedLearned === wave.wave_name ? null : wave.wave_name)}><td className="px-3 py-2 font-mono">{wave.wave_name}{wave.non_blocking && <Badge variant="outline" className="ml-2 text-[9px] text-muted-foreground">неблок.</Badge>}</td><td className="px-3 py-2">{wave.species}</td><td className="px-3 py-2">{wave.times_seen}</td><td className="px-3 py-2">{wave.registered_in_pool ? <Check className="size-3.5 text-success" /> : <X className="size-3.5 text-muted-foreground" />}</td></tr>)}{!learnedWaves.length && <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">Пока ничего не изучено</td></tr>}</tbody></table></div>
-            {selectedLearned && (() => {
-              const memoryRecord = isRecord(draft.memory) ? draft.memory : {}
-              const learnedMap = isRecord(memoryRecord.learned_waves) ? memoryRecord.learned_waves : {}
-              const entry = isRecord(learnedMap[selectedLearned]) ? learnedMap[selectedLearned] : null
-              const template = entry && isRecord(entry.wave) ? entry.wave as unknown as SpawnWave : null
-              if (!template) return <div className="mt-3 rounded-xl border border-dashed p-3 text-center text-xs text-muted-foreground">Шаблон волны недоступен</div>
-              const updateTemplate = (wave: SpawnWave) => updateDraft((next) => {
-                const memory = next.memory as Record<string, unknown>
-                const learned = isRecord(memory.learned_waves) ? { ...memory.learned_waves } : {}
-                const item = isRecord(learned[selectedLearned]) ? { ...learned[selectedLearned] } : {}
-                item.wave = wave
-                learned[selectedLearned] = item
-                memory.learned_waves = learned
-              })
-              const scaleLearned = (field: "count" | "hp_multiplier", factor: number) => updateTemplate({
-                ...template,
-                monsters: (template.monsters ?? []).map((m) => ({ ...m, [field]: Math.round(m[field] * factor * 100) / 100 })),
-                difficulty: field === "hp_multiplier" && template.difficulty > 0 ? Math.round(template.difficulty * factor * 100) / 100 : template.difficulty,
-              })
-              return <div className="mt-3 space-y-3 rounded-xl border p-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="font-medium">Шаблон изученной волны</span>
-                  <Badge variant="outline" className="font-mono text-[10px]">{selectedLearned}</Badge>
-                  <span className="text-muted-foreground">абсолютные значения сохраняются в памяти навсегда</span>
-                  <span className="ml-auto flex gap-1">
-                    <Button size="sm" variant="outline" onClick={() => scaleLearned("count", 0.5)}>×0.5 состав</Button>
-                    <Button size="sm" variant="outline" onClick={() => scaleLearned("count", 2)}>×2 состав</Button>
-                    <Button size="sm" variant="outline" onClick={() => scaleLearned("hp_multiplier", 0.5)}>×0.5 HP</Button>
-                    <Button size="sm" variant="outline" onClick={() => scaleLearned("hp_multiplier", 2)}>×2 HP</Button>
-                  </span>
-                </div>
-                <WaveEditor
-                  wave={template}
-                  onChange={updateTemplate}
-                  override={getWaveOverride(selectedLearned)}
-                  onOverrideChange={(override) => setWaveOverride(selectedLearned, override)}
-                />
-              </div>
-            })()}
-          </CardContent></Card>
+          <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Изученные ванильные волны</CardTitle><CardDescription className="text-xs">Клик по волне — всплывающее окно с правкой шаблона и пометок (сохраняется в памяти)</CardDescription></CardHeader><CardContent className="p-4"><div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[520px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Волна</th><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Наблюдений</th><th className="px-3 py-2 font-medium">В пуле</th><th className="w-8 px-2" /></tr></thead><tbody>{learnedWaves.map((wave) => <tr key={wave.wave_name} className="cursor-pointer border-t transition hover:bg-muted/40" onClick={() => { setSelectedLearned(wave.wave_name); setLearnedDialogOpen(true) }}><td className="px-3 py-2 font-mono">{wave.wave_name}{wave.non_blocking && <Badge variant="outline" className="ml-2 text-[9px] text-muted-foreground">неблок.</Badge>}</td><td className="px-3 py-2">{wave.species}</td><td className="px-3 py-2">{wave.times_seen}</td><td className="px-3 py-2">{wave.registered_in_pool ? <Check className="size-3.5 text-success" /> : <X className="size-3.5 text-muted-foreground" />}</td><td className="px-2 py-2"><Button size="sm" variant="ghost" className="size-7 p-0" onClick={(event) => { event.stopPropagation(); setSelectedLearned(wave.wave_name); setLearnedDialogOpen(true) }}><Pencil className="size-3.5" /></Button></td></tr>)}{!learnedWaves.length && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">Пока ничего не изучено</td></tr>}</tbody></table></div></CardContent></Card>
           <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Оценка угрозы видов</CardTitle><CardDescription className="text-xs">&gt;1.0 — вид опасен для экипажа, частота спавна повышается</CardDescription></CardHeader><CardContent className="p-4"><div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[420px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Угроза</th><th className="px-3 py-2 font-medium">Наблюдений</th></tr></thead><tbody>{speciesThreats.map((threat) => <tr key={threat.species} className="border-t"><td className="px-3 py-2 font-medium">{threat.species}</td><td className={`px-3 py-2 font-mono ${threat.threat_ema >= 1.2 ? "text-warning" : threat.threat_ema <= 0.8 ? "text-success" : ""}`}>{threat.threat_ema.toFixed(2)}</td><td className="px-3 py-2">{threat.samples}</td></tr>)}{!speciesThreats.length && <tr><td colSpan={3} className="px-3 py-8 text-center text-muted-foreground">Данных ещё нет</td></tr>}</tbody></table></div></CardContent></Card>
         </div>
         <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Удержанные ванильные спавны и волны в ожидании</CardTitle><CardDescription className="text-xs">Пойманные события держатся hold_seconds перед спавном — идёт корректировка</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
@@ -658,18 +824,109 @@ export function MonsterSpawnPage() {
           <Metric icon={MapPin} label="Последняя схема" value={dashboard.last_spawn_scheme || "—"} detail={dashboard.last_spawn_zone ? `зона: ${dashboard.last_spawn_zone}` : "нет данных за раунд"} tone="info" />
           <div className="flex flex-col justify-center gap-2 rounded-xl border bg-muted/10 p-3 text-xs"><div className="flex items-center justify-between"><span>Схемы включены</span><Switch checked={global.spawn_scheme_enabled !== false} onCheckedChange={(value) => setGlobal("spawn_scheme_enabled", value)} /></div><span className="text-muted-foreground">выключено — позиции берутся из spawn_type волн (MainPath и т.п.)</span></div>
         </div>
-        <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground">Для волн с позициями MainPath/SidePath и пойманных ванильных событий схема заменяет фиксированные точки интереса уровня: монстры спавнятся относительно корабля — перед ним, сверху или снизу, не ближе минимальной дистанции и никогда не сзади. Руины, крейт-затонувшие и бездна по-прежнему используют структурные точки уровня.</div>
-        <div className="space-y-3">
-          {schemeList.map((scheme, index) => <SchemeEditor key={index} scheme={scheme} index={index} minMeters={Number(global.spawn_min_distance_meters ?? 100)} canDelete={schemeList.length > 1} onChange={(next) => updateSchemes((schemes) => { schemes[index] = next })} onDelete={() => updateSchemes((schemes) => { schemes.splice(index, 1) })} />)}
-          {!schemeList.length && <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Схем нет — плагин использует встроенные дефолты при следующем применении конфига</div>}
-          <Button variant="outline" onClick={() => updateSchemes((schemes) => { schemes.push(newScheme()) })}><Plus className="size-4" /> Добавить схему</Button>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground">Для волн с позициями MainPath/SidePath и пойманных ванильных событий схема заменяет фиксированные точки интереса уровня: монстры спавнятся относительно корабля — перед ним, сверху или снизу, не ближе минимальной дистанции и никогда не сзади. Руины, крейт-затонувшие и волны из списка исключений ниже по-прежнему используют структурные точки уровня.</div>
+        <div className="space-y-2">
+          {schemeList.map((scheme, index) => <SchemeRow key={index} scheme={scheme} index={index} onEdit={() => setSchemeDialog({ index })} onDelete={() => updateSchemes((schemes) => { schemes.splice(index, 1) })} />)}
+          {!schemeList.length && <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Список пуст — плагин будет ставить волны на точках уровня (mainpath и т.п.), пока не появится хотя бы одна схема</div>}
+          <Button variant="outline" onClick={() => { updateSchemes((schemes) => { schemes.push(newScheme()) }); setSchemeDialog({ index: schemeList.length, isNew: true }) }}><Plus className="size-4" /> Добавить схему</Button>
         </div>
+        <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Ban className="size-4 text-warning" /> Списки исключений</CardTitle><CardDescription className="text-xs">Подстроки в названиях волн — списки можно пополнять и чистить динамически</CardDescription></CardHeader>
+          <CardContent className="grid gap-3 p-4 lg:grid-cols-2">
+            <TagListEditor label="Не удерживать перед спавном" description="Волны с этими подстроками запускаются сразу, без hold_seconds (по умолчанию: abyss, moloch, cave)." tags={ignoreList("hold_ignore_names")} onChange={(tags) => setGlobal("hold_ignore_names", tags)} addPlaceholder="например: moloch" />
+            <TagListEditor label="Без схем спавна" description="Волны с этими подстроками спавнятся на структурных точках уровня вместо схем (по умолчанию: cave, abyss)." tags={ignoreList("spawn_scheme_ignore_names")} onChange={(tags) => setGlobal("spawn_scheme_ignore_names", tags)} addPlaceholder="например: cave" />
+          </CardContent></Card>
       </TabsContent>
 
       <TabsContent value="logs" className="space-y-4 pt-2"><div className="grid gap-4 sm:grid-cols-3"><Metric icon={TrendingUp} label="Завершено волн" value={String(waveLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail={`${waveLogs.length} типа событий`} tone="primary" /><Metric icon={TrendingDown} label="Средняя скорость" value={waveLogs.length ? `${Math.round(waveLogs.filter((item) => item.avg_repel_seconds).reduce((sum, item) => sum + item.avg_repel_seconds, 0) / Math.max(1, waveLogs.filter((item) => item.avg_repel_seconds).length))} с` : "—"} detail="Среднее по типам волн" tone="warning" /><Metric icon={BrainCircuit} label="Наблюдений по кораблям" value={String(shipLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail="Используются в корреляции" tone="success" /></div><div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Performance trajectory" description="Последние доступные значения из adaptive-memory"><Line options={baseChartOptions} data={trendChart} /></ChartCard><ChartCard title="Efficiency by ship" description="Сравнение кораблей по performance EMA"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Лог разрешения волн</CardTitle><CardDescription className="text-xs">Как быстро экипажи закрывали волны и какой ущерб получили</CardDescription></CardHeader><CardContent><WaveLogs logs={waveLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Эффективность по кораблям</CardTitle><CardDescription className="text-xs">Детализация для сравнения дизайна субмарин</CardDescription></CardHeader><CardContent><ShipLogs logs={shipLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="flex items-center gap-2 text-sm"><Sparkles className="size-4 text-warning" /> Автоматический анализ и предложения</CardTitle><CardDescription className="text-xs">Сгенерировано {report.generated_at ? formatBrowserDate(report.generated_at) : "сейчас"}. Рекомендации информационные и не применяются автоматически.</CardDescription></CardHeader><CardContent className="grid gap-3 lg:grid-cols-2">{report.recommendations.map((item) => <Recommendation key={item.id} item={item} />)}</CardContent></Card></TabsContent>
 
-      <TabsContent value="manual" className="space-y-4 pt-2"><div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground"><div className="flex items-center gap-2 font-medium text-foreground"><Target className="size-4 text-primary" /> Полная ручная настройка</div><p className="mt-1">Здесь доступны планы, волны и сырой JSON без ограничений визуального режима. Изменения не попадут на сервер до нажатия «Сохранить».</p></div><Tabs defaultValue="plans"><TabsList className="grid w-full grid-cols-3"><TabsTrigger value="plans">Планы · {draft.plans.length}</TabsTrigger><TabsTrigger value="waves">Волны · {draft.config.waves.length}</TabsTrigger><TabsTrigger value="json">Raw JSON</TabsTrigger></TabsList><TabsContent value="plans" className="space-y-4 pt-3"><div className="grid min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(380px,.75fr)]"><div className="relative min-h-[480px] overflow-hidden rounded-xl border">{geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={placing} onPickTarget={createPlan} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={setSelectedPlanId} onMoveMarker={(id, x, y) => updateDraft((next) => { const plan = next.plans.find((item) => item.id === id); if (plan) { plan.x = x; plan.y = y } })} onMapContextMenu={(info) => { setContextMenu({ ...info }); if (info.markerId) setSelectedPlanId(info.markerId) }} /> : <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">Для {server} нет активной карты раунда<br /><span className="text-xs">Планы можно редактировать справа</span></div>}<div className="absolute bottom-3 left-3 flex flex-wrap gap-2"><Button variant={placing ? "destructive" : "secondary"} onClick={() => setPlacing(!placing)}>{placing ? <X className="size-4" /> : <Crosshair className="size-4" />}{placing ? "Отмена" : "Поставить точку"}</Button><Button variant="outline" size="icon" title={showLegend ? "Скрыть легенду" : "Показать легенду"} onClick={() => setShowLegend(!showLegend)}>{showLegend ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</Button></div>{showLegend && <div className="absolute right-3 top-3 rounded-lg border bg-background/90 p-2 text-[11px] shadow"><div className="mb-1 flex items-center gap-1 font-medium"><Layers className="size-3" /> Легенда</div><div><span className="mr-1 inline-block size-2 rounded-full bg-[#59D6C2]" />Ручной</div><div><span className="mr-1 inline-block size-2 rounded-full bg-[#F6C453]" />Авто</div></div>}</div><Card className="min-h-0 overflow-hidden py-0"><CardContent className="h-full overflow-y-auto p-4"><div className="flex gap-2"><div className="relative flex-1"><Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-7" placeholder="Поиск по планам" value={planSearch} onChange={(event) => setPlanSearch(event.target.value)} /></div><Select value={planStatus} onValueChange={(value) => setPlanStatus(value as PlanStatus)}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все</SelectItem><SelectItem value="planned">Запланированы</SelectItem><SelectItem value="cancelled">Отменены</SelectItem><SelectItem value="spawned">Заспавнены</SelectItem></SelectContent></Select></div><div className="mt-3 flex gap-2"><Select value={String(selectedWave)} onValueChange={(value) => setSelectedWave(Number(value))}><SelectTrigger className="flex-1"><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((wave, index) => <SelectItem key={index} value={String(index)}>{wave.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => createPlan(0, 0)}><Plus className="size-4" /> Создать</Button></div><div className="mt-3 max-h-64 space-y-1 overflow-y-auto pr-1">{filteredPlans.map((plan) => <button key={plan.id} className={`flex w-full items-center gap-2 rounded-lg border p-2.5 text-left transition ${plan.id === selectedPlanId ? "border-primary bg-accent" : "hover:bg-muted/50"}`} onClick={() => setSelectedPlanId(plan.id)}><span className={`size-2 shrink-0 rounded-full ${plan.status === "cancelled" ? "bg-muted-foreground/40" : plan.source === "manual" ? "bg-[#59D6C2]" : "bg-[#F6C453]"}`} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{plan.wave_name || plan.name}</span><span className="block truncate text-xs text-muted-foreground">{Math.round(plan.x)}, {Math.round(plan.y)} · {plan.status}</span></span><Badge variant="secondary" className="text-[10px]">{plan.monsters.length} мобов</Badge></button>)}{!filteredPlans.length && <div className="py-6 text-center text-xs text-muted-foreground"><Filter className="mx-auto mb-2 size-4" />Планов не найдено</div>}</div>{selectedPlan && <div className="mt-4 space-y-3 rounded-xl border p-3"><WaveEditor wave={selectedPlan} onChange={(wave) => updateDraft((next) => { const index = next.plans.findIndex((plan) => plan.id === selectedPlan.id); next.plans[index] = { ...next.plans[index], ...wave, wave_name: wave.name } })} override={getWaveOverride(selectedPlan.wave_name || selectedPlan.name)} onOverrideChange={(override) => setWaveOverride(selectedPlan.wave_name || selectedPlan.name, override)} /><div className="flex flex-wrap gap-2"><Button variant={selectedPlan.status === "cancelled" ? "secondary" : "destructive"} onClick={() => updateDraft((next) => { const plan = next.plans.find((item) => item.id === selectedPlan.id)!; plan.status = plan.status === "cancelled" ? "planned" : "cancelled" })}>{selectedPlan.status === "cancelled" ? "Вернуть план" : "Отменить спавн"}</Button><Button variant="outline" onClick={() => duplicatePlan(selectedPlan.id)}><Copy className="size-3.5" /> Дублировать</Button><Button variant="ghost" onClick={() => updateDraft((next) => { next.plans = next.plans.filter((plan) => plan.id !== selectedPlan.id); setSelectedPlanId(null) })}><Trash2 className="size-3.5" /> Удалить</Button><Button variant="outline" onClick={() => copyCoords(selectedPlan.x, selectedPlan.y)}><MapPin className="size-3.5" /> Коорд.</Button></div></div>}</CardContent></Card></div></TabsContent><TabsContent value="waves" className="space-y-3 pt-3"><div className="flex gap-2"><Select value={String(selectedWave)} onValueChange={(value) => setSelectedWave(Number(value))}><SelectTrigger className="max-w-sm flex-1"><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((wave, index) => <SelectItem key={index} value={String(index)}>{wave.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => updateDraft((next) => { next.config.waves.push(emptyWave()); setSelectedWave(next.config.waves.length - 1) })}><Plus className="size-4" /></Button><Button variant="ghost" disabled={draft.config.waves.length < 2} onClick={() => updateDraft((next) => { next.config.waves.splice(selectedWave, 1); setSelectedWave(0) })}><Trash2 className="size-4" /></Button></div>{draft.config.waves[selectedWave] && <Card><CardContent className="p-4"><WaveEditor wave={draft.config.waves[selectedWave]} onChange={(wave) => updateDraft((next) => { next.config.waves[selectedWave] = wave })} override={getWaveOverride(draft.config.waves[selectedWave]?.name)} onOverrideChange={(override) => setWaveOverride(draft.config.waves[selectedWave].name, override)} /></CardContent></Card>}</TabsContent><TabsContent value="json" className="space-y-3 pt-3"><div className="grid gap-4 xl:grid-cols-2"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Полный config</CardTitle></CardHeader><CardContent><Textarea className="min-h-[620px] font-mono text-xs" value={JSON.stringify(draft.config, null, 2)} onChange={(event) => { try { const parsed = JSON.parse(event.target.value); updateDraft((next) => { next.config = parsed }) } catch { /* keep last valid JSON */ } }} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Memory</CardTitle><CardDescription className="text-xs">Редактирование защищено отдельным permission.</CardDescription></CardHeader><CardContent><Textarea className="min-h-[620px] font-mono text-xs" disabled={!canDo(admin, "monster_spawn", "manage_memory")} value={JSON.stringify(draft.memory, null, 2)} onChange={(event) => { try { const parsed = JSON.parse(event.target.value); updateDraft((next) => { next.memory = parsed }) } catch { /* keep last valid JSON */ } }} /></CardContent></Card></div></TabsContent></Tabs></TabsContent>
+      <TabsContent value="manual" className="space-y-4 pt-2"><div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground"><div className="flex items-center gap-2 font-medium text-foreground"><Target className="size-4 text-primary" /> Полная ручная настройка</div><p className="mt-1">Здесь доступны планы, волны и сырой JSON без ограничений визуального режима. Изменения не попадут на сервер до нажатия «Сохранить».</p></div><Tabs defaultValue="plans"><TabsList className="grid w-full grid-cols-3"><TabsTrigger value="plans">Планы · {draft.plans.length}</TabsTrigger><TabsTrigger value="waves">Волны · {draft.config.waves.length}</TabsTrigger><TabsTrigger value="json">Raw JSON</TabsTrigger></TabsList><TabsContent value="plans" className="space-y-4 pt-3"><div className="grid min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(380px,.75fr)]"><div className="relative h-[480px] overflow-hidden rounded-xl border">
+  {rounds.isError ? <MapPlaceholder height="480px">Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>
+    : !round ? <MapPlaceholder height="480px">Для {server} сейчас нет активного раунда<br /><span className="text-xs">Планы можно редактировать справа</span></MapPlaceholder>
+      : geometry.isError || world.isError ? <MapPlaceholder height="480px">Ошибка загрузки карты: {((geometry.error ?? world.error) as Error | null)?.message ?? "нет данных"}</MapPlaceholder>
+        : geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={placing} onPickTarget={createPlan} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={setSelectedPlanId} onMoveMarker={(id, x, y) => updateDraft((next) => { const plan = next.plans.find((item) => item.id === id); if (plan) { plan.x = x; plan.y = y } })} onMapContextMenu={(info) => { setContextMenu({ ...info }); if (info.markerId) setSelectedPlanId(info.markerId) }} />
+          : <MapPlaceholder height="480px">Загрузка карты раунда…</MapPlaceholder>}
+<div className="absolute bottom-3 left-3 flex flex-wrap gap-2"><Button variant={placing ? "destructive" : "secondary"} onClick={() => setPlacing(!placing)}>{placing ? <X className="size-4" /> : <Crosshair className="size-4" />}{placing ? "Отмена" : "Поставить точку"}</Button><Button variant="outline" size="icon" title={showLegend ? "Скрыть легенду" : "Показать легенду"} onClick={() => setShowLegend(!showLegend)}>{showLegend ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</Button></div>{showLegend && <div className="absolute right-3 top-3 rounded-lg border bg-background/90 p-2 text-[11px] shadow"><div className="mb-1 flex items-center gap-1 font-medium"><Layers className="size-3" /> Легенда</div><div><span className="mr-1 inline-block size-2 rounded-full bg-[#59D6C2]" />Ручной</div><div><span className="mr-1 inline-block size-2 rounded-full bg-[#F6C453]" />Авто</div></div>}</div><Card className="min-h-0 overflow-hidden py-0"><CardContent className="h-full overflow-y-auto p-4"><div className="flex gap-2"><div className="relative flex-1"><Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-7" placeholder="Поиск по планам" value={planSearch} onChange={(event) => setPlanSearch(event.target.value)} /></div><Select value={planStatus} onValueChange={(value) => setPlanStatus(value as PlanStatus)}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все</SelectItem><SelectItem value="planned">Запланированы</SelectItem><SelectItem value="cancelled">Отменены</SelectItem><SelectItem value="spawned">Заспавнены</SelectItem></SelectContent></Select></div><div className="mt-3 flex gap-2"><Select value={String(selectedWave)} onValueChange={(value) => setSelectedWave(Number(value))}><SelectTrigger className="flex-1"><SelectValue /></SelectTrigger><SelectContent>{draft.config.waves.map((wave, index) => <SelectItem key={index} value={String(index)}>{wave.name}</SelectItem>)}</SelectContent></Select><Button variant="outline" onClick={() => createPlan(0, 0)}><Plus className="size-4" /> Создать</Button></div><div className="mt-3 max-h-64 space-y-1 overflow-y-auto pr-1">{filteredPlans.map((plan) => <button key={plan.id} className={`flex w-full items-center gap-2 rounded-lg border p-2.5 text-left transition ${plan.id === selectedPlanId ? "border-primary bg-accent" : "hover:bg-muted/50"}`} onClick={() => setSelectedPlanId(plan.id)}><span className={`size-2 shrink-0 rounded-full ${plan.status === "cancelled" ? "bg-muted-foreground/40" : plan.source === "manual" ? "bg-[#59D6C2]" : "bg-[#F6C453]"}`} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{plan.wave_name || plan.name}</span><span className="block truncate text-xs text-muted-foreground">{Math.round(plan.x)}, {Math.round(plan.y)} · {plan.status}</span></span><Badge variant="secondary" className="text-[10px]">{plan.monsters.length} мобов</Badge></button>)}{!filteredPlans.length && <div className="py-6 text-center text-xs text-muted-foreground"><Filter className="mx-auto mb-2 size-4" />Планов не найдено</div>}</div>{selectedPlan && <div className="mt-4 space-y-3 rounded-xl border p-3"><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className="font-mono text-[10px]">{selectedPlan.wave_name || selectedPlan.name}</Badge>{getWaveOverride(selectedPlan.wave_name || selectedPlan.name) && <Badge variant="outline" className="text-[10px] text-warning">есть пометка</Badge>}<Button size="sm" variant="outline" onClick={() => setPlanDialogOpen(true)}><Pencil className="size-3.5" /> Редактировать план</Button></div><div className="flex flex-wrap gap-2"><Button variant={selectedPlan.status === "cancelled" ? "secondary" : "destructive"} onClick={() => updateDraft((next) => { const plan = next.plans.find((item) => item.id === selectedPlan.id)!; plan.status = plan.status === "cancelled" ? "planned" : "cancelled" })}>{selectedPlan.status === "cancelled" ? "Вернуть план" : "Отменить спавн"}</Button><Button variant="outline" onClick={() => duplicatePlan(selectedPlan.id)}><Copy className="size-3.5" /> Дублировать</Button><Button variant="ghost" onClick={() => { updateDraft((next) => { next.plans = next.plans.filter((plan) => plan.id !== selectedPlan.id); setSelectedPlanId(null) }); setPlanDialogOpen(false) }}><Trash2 className="size-3.5" /> Удалить</Button><Button variant="outline" onClick={() => copyCoords(selectedPlan.x, selectedPlan.y)}><MapPin className="size-3.5" /> Коорд.</Button></div></div>}</CardContent></Card></div></TabsContent><TabsContent value="waves" className="space-y-3 pt-3"><div className="space-y-1">{draft.config.waves.map((wave, index) => <div key={index} className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-2.5 text-xs"><span className={`size-2 shrink-0 rounded-full ${autoNonBlockByName(wave.name) ? "bg-info" : "bg-[#F6C453]"}`} /><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium">{wave.name}</span>{wave.non_blocking === true && <Badge variant="outline" className="text-[10px] text-muted-foreground">неблок.</Badge>}{wave.non_blocking == null && autoNonBlockByName(wave.name) && <Badge variant="outline" className="text-[10px] text-info">авто неблок.</Badge>}{getWaveOverride(wave.name) && <Badge variant="outline" className="text-[10px] text-warning">есть пометка</Badge>}{wave.learned && <Badge variant="secondary" className="text-[10px]">изученная</Badge>}</span><span className="block truncate text-muted-foreground">{wave.spawn_type} · сложность {wave.difficulty > 0 ? wave.difficulty : "авто"} · {wave.monsters.length} видов</span></span><Button size="sm" variant="outline" onClick={() => { setSelectedWave(index); setWaveDialogIndex(index) }}><Pencil className="size-3.5" /> Править</Button><Button size="sm" variant="ghost" disabled={draft.config.waves.length < 2} onClick={() => { updateDraft((next) => { next.config.waves.splice(index, 1) }); setWaveDialogIndex(null) }}><Trash2 className="size-3.5" /> Удалить</Button></div>)}{!draft.config.waves.length && <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Волн в конфиге нет</div>}</div><Button variant="outline" onClick={() => { updateDraft((next) => { next.config.waves.push(emptyWave()) }); setWaveDialogIndex(draft.config.waves.length) }}><Plus className="size-4" /> Добавить волну</Button></TabsContent><TabsContent value="json" className="space-y-3 pt-3"><div className="grid gap-4 xl:grid-cols-2"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Полный config</CardTitle></CardHeader><CardContent><Textarea className="min-h-[620px] font-mono text-xs" value={JSON.stringify(draft.config, null, 2)} onChange={(event) => { try { const parsed = JSON.parse(event.target.value); updateDraft((next) => { next.config = parsed }) } catch { /* keep last valid JSON */ } }} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Memory</CardTitle><CardDescription className="text-xs">Редактирование защищено отдельным permission.</CardDescription></CardHeader><CardContent><Textarea className="min-h-[620px] font-mono text-xs" disabled={!canDo(admin, "monster_spawn", "manage_memory")} value={JSON.stringify(draft.memory, null, 2)} onChange={(event) => { try { const parsed = JSON.parse(event.target.value); updateDraft((next) => { next.memory = parsed }) } catch { /* keep last valid JSON */ } }} /></CardContent></Card></div></TabsContent></Tabs></TabsContent>
     </Tabs>
     {contextMenu && <div className="fixed z-50 min-w-52 rounded-xl border bg-popover p-1 text-sm shadow-xl" style={{ left: Math.min(contextMenu.screenX, window.innerWidth - 230), top: Math.min(contextMenu.screenY, window.innerHeight - 240) }} onClick={(event) => event.stopPropagation()}><div className="px-2 py-1 text-[11px] text-muted-foreground">{contextMenu.wx}, {contextMenu.wy}</div>{contextMenu.markerId ? <><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { setSelectedPlanId(contextMenu.markerId); setContextMenu(null) }}><LocateFixed className="size-3.5" /> Редактировать</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { duplicatePlan(contextMenu.markerId!); setContextMenu(null) }}><Files className="size-3.5" /> Дублировать</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { copyCoords(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Copy className="size-3.5" /> Копировать координаты</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { updateDraft((next) => { const plan = next.plans.find((item) => item.id === contextMenu.markerId); if (plan) plan.status = plan.status === "cancelled" ? "planned" : "cancelled" }); setContextMenu(null) }}>{draft.plans.find((plan) => plan.id === contextMenu.markerId)?.status === "cancelled" ? <><Eye className="size-3.5" /> Вернуть</> : <><EyeOff className="size-3.5" /> Отменить</>}</button></> : <><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { createPlan(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Plus className="size-3.5" /> Создать план здесь</button><button className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent" onClick={() => { copyCoords(contextMenu.wx, contextMenu.wy); setContextMenu(null) }}><Copy className="size-3.5" /> Копировать координаты</button></>}</div>}
+
+    {/* 5: всплывающие окна правки */}
+    {overrideDialogWave && <WaveOverrideDialog
+      open
+      onOpenChange={(open) => { if (!open) setOverrideDialogWave(null) }}
+      waveName={overrideDialogWave.name}
+      currentDifficulty={overrideDialogWave.difficulty}
+      monstersAlive={overrideDialogWave.alive}
+      engaged={overrideDialogWave.engaged}
+      initial={getWaveOverride(overrideDialogWave.name) ?? null}
+      onApply={(override) => setWaveOverride(overrideDialogWave.name, override)}
+      onRemove={() => { removeWaveOverride(overrideDialogWave.name); toast.success("Пометка волны убрана") }}
+    />}
+    {waveDialogIndex != null && draft.config.waves[waveDialogIndex] && <EditorDialog
+      open
+      onOpenChange={(open) => { if (!open) setWaveDialogIndex(null) }}
+      title={waveDialogIndex >= draft.config.waves.length ? "Новая волна" : `Волна «${draft.config.waves[waveDialogIndex].name}»`}
+      icon={Target}
+      description="Настройки срабатывания, состав и постоянные пометки волны"
+    >
+      <WaveEditor
+        wave={draft.config.waves[waveDialogIndex]}
+        onChange={(wave) => updateDraft((next) => { next.config.waves[waveDialogIndex] = wave })}
+        override={getWaveOverride(draft.config.waves[waveDialogIndex].name)}
+        onOverrideChange={(override) => setWaveOverride(draft.config.waves[waveDialogIndex].name, override)}
+      />
+    </EditorDialog>}
+    {selectedPlan && planDialogOpen && <EditorDialog
+      open
+      onOpenChange={setPlanDialogOpen}
+      title={`План «${selectedPlan.wave_name || selectedPlan.name}»`}
+      icon={MapPin}
+      description={`Точка ${Math.round(selectedPlan.x)}, ${Math.round(selectedPlan.y)} · статус: ${selectedPlan.status}`}
+    >
+      <WaveEditor
+        wave={selectedPlan}
+        onChange={(wave) => updateDraft((next) => { const index = next.plans.findIndex((plan) => plan.id === selectedPlan.id); next.plans[index] = { ...next.plans[index], ...wave, wave_name: wave.name } })}
+        override={getWaveOverride(selectedPlan.wave_name || selectedPlan.name)}
+        onOverrideChange={(override) => setWaveOverride(selectedPlan.wave_name || selectedPlan.name, override)}
+      />
+    </EditorDialog>}
+    {learnedDialogOpen && selectedLearned && learnedTemplateFor(selectedLearned) && <EditorDialog
+      open
+      onOpenChange={setLearnedDialogOpen}
+      title={`Изученная волна «${selectedLearned}»`}
+      icon={Sparkles}
+      description="Абсолютные значения сохраняются в памяти навсегда; кнопки масштабирования правят состав и HP шаблона, пометка — работает и для активных волн"
+    >
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={() => scaleLearnedTemplate(selectedLearned, "count", 0.5)}>×0.5 состав</Button>
+          <Button size="sm" variant="outline" onClick={() => scaleLearnedTemplate(selectedLearned, "count", 2)}>×2 состав</Button>
+          <Button size="sm" variant="outline" onClick={() => scaleLearnedTemplate(selectedLearned, "hp_multiplier", 0.5)}>×0.5 HP</Button>
+          <Button size="sm" variant="outline" onClick={() => scaleLearnedTemplate(selectedLearned, "hp_multiplier", 2)}>×2 HP</Button>
+        </div>
+        <WaveEditor
+          wave={learnedTemplateFor(selectedLearned)!}
+          onChange={(wave) => updateLearnedTemplate(selectedLearned, (template) => { Object.assign(template, wave) })}
+          override={getWaveOverride(selectedLearned)}
+          onOverrideChange={(override) => setWaveOverride(selectedLearned, override)}
+        />
+      </div>
+    </EditorDialog>}
+    {schemeDialog && schemeList[schemeDialog.index] && <EditorDialog
+      open
+      onOpenChange={(open) => { if (!open) setSchemeDialog(null) }}
+      title={schemeDialog.isNew ? "Новая схема спавна" : `Схема «${schemeList[schemeDialog.index].name || `#${schemeDialog.index + 1}`}»`}
+      icon={Layers}
+      description="Веса секторов задают, куда относительно корабля попадут монстры; «сзади» запрещён всегда"
+      footer={<span className="flex gap-2">
+        <Button variant="ghost" onClick={() => { updateSchemes((schemes) => { schemes.splice(schemeDialog.index, 1) }); setSchemeDialog(null) }}><Trash2 className="size-3.5" /> Удалить</Button>
+        <Button variant="outline" onClick={() => setSchemeDialog(null)}>Готово</Button>
+      </span>}
+    >
+      <SchemeEditor
+        scheme={schemeList[schemeDialog.index]}
+        minMeters={Number(global.spawn_min_distance_meters ?? 100)}
+        onChange={(next) => updateSchemes((schemes) => { schemes[schemeDialog.index] = next })}
+      />
+    </EditorDialog>}
   </div>
 }
