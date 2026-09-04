@@ -1,5 +1,8 @@
 import unittest
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -7,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from config import Settings
+from config import Settings, snapshot_env_file
 from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerSession
 from services_ai_dossier import (
     build_kobold_request,
@@ -250,6 +253,16 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual(settings.rate_limit_window, 60)
         self.assertEqual(settings.sftp_server_1_port, 22)
         self.assertEqual(settings.sftp_server_2_port, 22)
+
+    def test_env_snapshot_is_private_and_contains_previous_content(self):
+        with TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            env_path.write_text("SECRET_VALUE=do-not-print\n", encoding="utf-8")
+            snapshot = snapshot_env_file(env_path)
+            self.assertIsNotNone(snapshot)
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), "SECRET_VALUE=do-not-print\n")
+            if os.name != "nt":
+                self.assertEqual(snapshot.stat().st_mode & 0o077, 0)
 
 
 if __name__ == "__main__":

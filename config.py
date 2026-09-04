@@ -5,6 +5,10 @@ from functools import lru_cache
 from typing import List, Dict, Any
 import json
 import os
+import secrets
+import shutil
+from datetime import datetime
+from pathlib import Path
 
 
 def _str_to_list(value: Any, default: List[str]) -> List[str]:
@@ -22,6 +26,18 @@ def _str_to_list(value: Any, default: List[str]) -> List[str]:
         except json.JSONDecodeError:
             pass
     return [x.strip() for x in v.split(",") if x.strip()]
+
+
+def snapshot_env_file(path: str | os.PathLike) -> Path | None:
+    """Make a private point-in-time copy before an in-place config write."""
+    source = Path(path)
+    if not source.is_file():
+        return None
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+    snapshot = source.with_name(f"{source.name}.backup-{timestamp}-{secrets.token_hex(4)}")
+    shutil.copyfile(source, snapshot)
+    os.chmod(snapshot, 0o600)
+    return snapshot
 
 
 class Settings(BaseSettings):

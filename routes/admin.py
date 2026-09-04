@@ -23,7 +23,7 @@ from models import (
     LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
     PlayerPunishment,
 )
-from config import get_settings
+from config import get_settings, snapshot_env_file
 import logging
 
 router = APIRouter()
@@ -5435,6 +5435,7 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
                         continue
                 lines.append(line if line.endswith("\n") else line + "\n")
         if changed:
+            snapshot_env_file(env_path)
             with open(env_path, "w", encoding="utf-8") as f:
                 f.writelines(lines)
             from config import reset_settings_cache
@@ -5619,6 +5620,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         else:
             existing[env_key] = str(val) if val is not None else ""
 
+    snapshot_env_file(env_path)
     with open(env_path, "w", encoding="utf-8") as f:
         for k, v in existing.items():
             f.write(f"{k}={v}\n")
@@ -5723,6 +5725,7 @@ async def admin_administration_config_save(
 
     # Write back
     try:
+        snapshot_env_file(env_path)
         with open(env_path, "w", encoding="utf-8") as f:
             for k, v in existing.items():
                 f.write(f"{k}={v}\n")
