@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { formatBrowserDate } from "@/lib/format-date"
 import { cn } from "@/lib/utils"
-import type { TicketRow, TicketTypeMeta } from "../types"
+import type { TicketListStatus, TicketRow, TicketTypeMeta } from "../types"
 import { ArchiveStatusBadge, ArchiveStatusIndicator, TicketStatusBadge } from "./ticket-shared"
 
 function displayName(ticket: TicketRow): string {
@@ -18,12 +18,14 @@ export function TicketInboxList({
   activeId,
   compact = false,
   onNavigate,
+  returnStatus,
 }: {
   tickets: TicketRow[]
   ticketTypes: Record<string, TicketTypeMeta>
   activeId?: number
   compact?: boolean
   onNavigate?: () => void
+  returnStatus?: TicketListStatus | null
 }) {
   if (!tickets.length) {
     return (
@@ -45,7 +47,7 @@ export function TicketInboxList({
         return (
           <Link
             key={ticket.id}
-            to={`/tickets/${ticket.id}`}
+            to={`/tickets/${ticket.id}${returnStatus ? `?from=${encodeURIComponent(returnStatus)}` : ""}`}
             onClick={onNavigate}
             aria-current={selected ? "page" : undefined}
             className={cn(

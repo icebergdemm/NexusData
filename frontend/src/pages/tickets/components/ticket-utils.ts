@@ -1,4 +1,14 @@
-import type { TicketParticipant, TicketRow, TicketStatus } from "../types"
+import type { TicketListStatus, TicketParticipant, TicketRow, TicketStatus } from "../types"
+
+const TICKET_LIST_STATUSES = new Set<TicketListStatus>(["open", "closed", "deleted", "all"])
+
+export function normalizeTicketListStatus(value: string | null | undefined): TicketListStatus {
+  return TICKET_LIST_STATUSES.has(value as TicketListStatus) ? value as TicketListStatus : "open"
+}
+
+export function ticketListHref(status: TicketListStatus | null | undefined): string {
+  return status ? `/tickets?status=${encodeURIComponent(status)}` : "/tickets"
+}
 
 export function ticketStatusLabel(status: TicketStatus): string {
   if (status === "open") return "Открыт"

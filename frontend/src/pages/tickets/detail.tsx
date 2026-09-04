@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link, useParams, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { AlertTriangle, ArrowDown, ArrowLeft, Inbox, PanelRight, RefreshCw, Search, Ticket, UsersRound } from "lucide-react"
@@ -24,13 +24,13 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
-import type { TicketDetailResponse, TicketMessagePollResponse, TicketsListResponse } from "./types"
+import type { TicketDetailResponse, TicketListStatus, TicketMessagePollResponse, TicketsListResponse } from "./types"
 import { TicketComposer } from "./components/ticket-composer"
 import { ArchiveLegend, TicketConversation } from "./components/ticket-conversation"
 import { TicketContextPanel } from "./components/ticket-context"
 import { TicketInboxList, TicketInboxSkeleton } from "./components/ticket-inbox"
 import { ArchiveStatusBadge, TicketStatusBadge } from "./components/ticket-shared"
-import { filterTickets } from "./components/ticket-utils"
+import { filterTickets, normalizeTicketListStatus, ticketListHref } from "./components/ticket-utils"
 import { TicketActionsMenu } from "./TicketActionsMenu"
 import { TicketMemberDialog } from "./TicketMemberDialog"
 import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
@@ -46,6 +46,7 @@ function TicketInboxPane({
   refreshing,
   onRefresh,
   onNavigate,
+  returnStatus,
 }: {
   data?: TicketsListResponse
   activeId: number
@@ -54,6 +55,7 @@ function TicketInboxPane({
   refreshing: boolean
   onRefresh: () => void
   onNavigate?: () => void
+  returnStatus?: TicketListStatus | null
 }) {
   const [search, setSearch] = useState("")
   const [status, setStatus] = useState("open")
@@ -93,11 +95,11 @@ function TicketInboxPane({
             <p className="text-xs text-muted-foreground">{error.message}</p>
             <Button type="button" variant="outline" size="sm" onClick={onRefresh}>Повторить</Button>
           </div>
-        ) : <TicketInboxList tickets={filteredTickets} ticketTypes={data?.ticket_config.types ?? {}} activeId={activeId} compact onNavigate={onNavigate} />}
+        ) : <TicketInboxList tickets={filteredTickets} ticketTypes={data?.ticket_config.types ?? {}} activeId={activeId} compact onNavigate={onNavigate} returnStatus={returnStatus} />}
       </div>
       <div className="border-t p-2">
         <Button asChild variant="ghost" size="sm" className="w-full justify-start">
-          <Link to="/tickets" onClick={onNavigate}><Inbox data-icon="inline-start" />Открыть полный список</Link>
+          <Link to={ticketListHref(returnStatus)} onClick={onNavigate}><Inbox data-icon="inline-start" />Открыть полный список</Link>
         </Button>
       </div>
     </div>
@@ -122,6 +124,10 @@ function DetailLoading() {
 
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>()
+  const [searchParams] = useSearchParams()
+  const rawReturnStatus = searchParams.get("from")
+  const returnStatus = rawReturnStatus ? normalizeTicketListStatus(rawReturnStatus) : null
+  const returnHref = ticketListHref(returnStatus)
   const numericTicketId = Number(ticketId)
   const queryClient = useQueryClient()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -346,7 +352,7 @@ export function TicketDetailPage() {
           <p className="mt-1 text-sm text-muted-foreground">{message}</p>
         </div>
         <div className="flex gap-2">
-          <Button asChild variant="outline"><Link to="/tickets"><ArrowLeft data-icon="inline-start" />К списку</Link></Button>
+          <Button asChild variant="outline"><Link to={returnHref}><ArrowLeft data-icon="inline-start" />К списку</Link></Button>
           <Button type="button" onClick={() => detailQuery.refetch()}><RefreshCw data-icon="inline-start" />Повторить</Button>
         </div>
       </div>
@@ -376,6 +382,7 @@ export function TicketDetailPage() {
       refreshing={inboxQuery.isFetching}
       onRefresh={() => { void inboxQuery.refetch() }}
       onNavigate={() => setInboxOpen(false)}
+      returnStatus={returnStatus}
     />
   )
 
@@ -390,7 +397,7 @@ export function TicketDetailPage() {
       <main className="flex min-h-0 min-w-0 flex-col bg-background">
         <header className="flex min-h-[4.75rem] shrink-0 items-center gap-2 border-b px-3 py-2 sm:px-4">
           <Button asChild variant="ghost" size="icon-sm" title="Назад к списку" aria-label="Назад к списку тикетов">
-            <Link to="/tickets"><ArrowLeft /></Link>
+            <Link to={returnHref}><ArrowLeft /></Link>
           </Button>
           <Sheet open={inboxOpen} onOpenChange={setInboxOpen}>
             <SheetTrigger asChild>

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { useSearchParams } from "react-router-dom"
 import { AlertCircle, Inbox, RefreshCw, Search, Ticket } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -9,10 +10,11 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 import type { TicketsListResponse } from "./types"
 import { TicketInboxList, TicketInboxSkeleton } from "./components/ticket-inbox"
-import { filterTickets } from "./components/ticket-utils"
+import { filterTickets, normalizeTicketListStatus } from "./components/ticket-utils"
 
 export function TicketsListPage() {
-  const [status, setStatus] = useState("open")
+  const [searchParams, setSearchParams] = useSearchParams()
+  const status = normalizeTicketListStatus(searchParams.get("status"))
   const [search, setSearch] = useState("")
   const query = useQuery({
     queryKey: ["tickets", status],
@@ -24,6 +26,15 @@ export function TicketsListPage() {
   const tickets = query.data?.tickets
   const filteredTickets = useMemo(() => filterTickets(tickets ?? [], search, "all"), [tickets, search])
   const waitingCount = tickets?.filter((ticket) => ticket.awaiting_admin && ticket.status !== "closed").length ?? 0
+
+  const handleStatusChange = (value: string) => {
+    const nextStatus = normalizeTicketListStatus(value)
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set("status", nextStatus)
+      return next
+    })
+  }
 
   return (
     <div className="min-w-0">
@@ -42,7 +53,7 @@ export function TicketsListPage() {
       <section aria-label="Список тикетов" className="overflow-hidden border bg-background">
         <div className="flex flex-col gap-3 border-b p-3 sm:p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <Tabs value={status} onValueChange={setStatus}>
+            <Tabs value={status} onValueChange={handleStatusChange}>
               <TabsList variant="line" className="grid w-full grid-cols-4 sm:w-auto">
                 <TabsTrigger value="open">Открытые</TabsTrigger>
                 <TabsTrigger value="closed">Архив</TabsTrigger>
@@ -72,7 +83,7 @@ export function TicketsListPage() {
             <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()}>Повторить</Button>
           </div>
         ) : (
-          <TicketInboxList tickets={filteredTickets} ticketTypes={query.data?.ticket_config.types ?? {}} />
+          <TicketInboxList tickets={filteredTickets} ticketTypes={query.data?.ticket_config.types ?? {}} returnStatus={status} />
         )}
       </section>
     </div>

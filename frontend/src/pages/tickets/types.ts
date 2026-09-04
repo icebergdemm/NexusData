@@ -1,5 +1,7 @@
 export type TicketStatus = "open" | "waiting" | "closed" | (string & {})
 
+export type TicketListStatus = "open" | "closed" | "deleted" | "all"
+
 export type TicketArchiveState = "pending" | "complete" | "partial" | "failed" | "legacy" | "incomplete" | (string & {})
 
 export interface TicketAdminSummary {
