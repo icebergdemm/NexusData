@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { useNavigate } from "react-router-dom"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
@@ -16,6 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { AppContextMenu } from "@/components/layout/AppContextMenu"
+import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { PlayerFiltersToolbar, type PlayerFilterSortOption } from "@/components/layout/PlayerFiltersSheet"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
@@ -315,9 +316,9 @@ export function PlayersListPage() {
                       }}
                     >
                       <TableCell className="font-medium">
-                        <Link to={`/players/${p.player_id}`}>
+                        <PlayerHoverLink playerId={p.player_id}>
                           <span>{p.player_last_time_name}</span>
-                        </Link>
+                        </PlayerHoverLink>
                         {p.forced_display_name && (
                           <span className="ml-1 text-[11px] text-muted-foreground" title={`Закреплённое имя: ${p.forced_display_name}`}>🔗</span>
                         )}
