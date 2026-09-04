@@ -99,7 +99,10 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual(request["headers"]["Authorization"], "Bearer secret")
         self.assertFalse(request["json"]["stream"])
         self.assertEqual(request["json"]["max_tokens"], 650)
+        self.assertEqual(request["json"]["response_format"], {"type": "json_object"})
         self.assertIn("player_id", request["json"]["messages"][1]["content"])
+        self.assertIn("Return the compact JSON dossier now", request["json"]["messages"][1]["content"])
+        self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", request["json"]["messages"][0]["content"])
 
     def test_should_queue_only_when_changed_or_stale_unless_forced(self):
         now = datetime(2026, 9, 4, 12, 0)
@@ -238,7 +241,10 @@ class AIDossierContractTests(unittest.TestCase):
             raw_response = "not-json model output" + ("x" * 15000)
             fake_response = SimpleNamespace(
                 raise_for_status=lambda: None,
-                json=lambda: {"choices": [{"message": {"content": raw_response}}]},
+                json=lambda: {
+                    "choices": [{"message": {"content": raw_response}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 812, "completion_tokens": 650},
+                },
             )
             fake_settings = SimpleNamespace(
                 ai_dossier_url="https://qwen.test/v1/chat/completions",
@@ -261,6 +267,9 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             stored = db.query(AIPlayerDossierRun).one()
             self.assertEqual(stored.raw_response, raw_response[:12000])
+            self.assertEqual(stored.prompt_tokens, 812)
+            self.assertEqual(stored.completion_tokens, 650)
+            self.assertIn("finish_reason: length", stored.error_message)
         finally:
             db.close()
             engine.dispose()

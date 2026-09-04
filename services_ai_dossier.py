@@ -35,6 +35,19 @@ DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
 ALLOWED_RUN_SOURCES = {"manual", "daily", "test", "health"}
 AI_REQUEST_LOCK = Lock()
+OUTPUT_CONTRACT = """
+NON-NEGOTIABLE OUTPUT CONTRACT:
+- Return exactly one compact JSON object and nothing else.
+- Never return Markdown, headings, bullet lists, explanations, or a session-by-session report.
+- Aggregate the input into a short moderator dossier. Use at most 5 facts, 3 signals,
+  4 caveats, and 5 evidence items. Do not enumerate all sessions or logs.
+- Use exactly these top-level keys: summary, facts, signals, caveats, confidence, evidence.
+- facts items must contain text and source; signals items must contain text and reason;
+  evidence items must contain kind and id.
+- If the data is missing, say so in caveats. Never invent facts.
+Example of the complete response shape:
+{"summary":"Короткая сводка","facts":[],"signals":[],"caveats":[],"confidence":"low","evidence":[]}
+""".strip()
 
 
 def validate_dossier_ca_pem(content: bytes) -> bytes:
@@ -158,7 +171,13 @@ def parse_kobold_response(payload: dict) -> dict:
     if schema_error:
         raise schema_error
 
-    raise ValueError(f"KoboldCpp returned non-JSON content (response chars: {len(content)})")
+    finish_reason = None
+    try:
+        finish_reason = payload["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, AttributeError, TypeError):
+        pass
+    suffix = f" (finish_reason: {finish_reason})" if finish_reason else ""
+    raise ValueError(f"KoboldCpp returned non-JSON content (response chars: {len(content)}){suffix}")
 
 
 def sanitize_dossier_result(result: dict, input_payload: dict) -> dict:
@@ -189,6 +208,8 @@ def sanitize_dossier_result(result: dict, input_payload: dict) -> dict:
 
 
 def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFAULT_MODEL, prompt: Optional[str] = None) -> dict:
+    system_prompt = (prompt or PROMPT_PATH.read_text(encoding="utf-8")).rstrip() + "\n\n" + OUTPUT_CONTRACT
+    input_text = json.dumps(input_payload, ensure_ascii=False, sort_keys=True)
     return {
         "headers": {
             "Authorization": f"Bearer {api_key}",
@@ -197,11 +218,12 @@ def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFA
         "json": {
             "model": model,
             "messages": [
-                {"role": "system", "content": prompt or PROMPT_PATH.read_text(encoding="utf-8")},
-                {"role": "user", "content": json.dumps(input_payload, ensure_ascii=False, sort_keys=True)},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "Return the compact JSON dossier now. Do not summarize this data as prose.\nINPUT_DATA:\n" + input_text},
             ],
             "temperature": 0.2,
             "max_tokens": MAX_OUTPUT_TOKENS,
+            "response_format": {"type": "json_object"},
             "stream": False,
         },
     }
@@ -443,6 +465,8 @@ def process_one_dossier() -> dict:
             return {"status": "idle"}
         settings = get_settings()
         raw_response = None
+        usage = {}
+        elapsed_ms = None
         run = db.query(AIPlayerDossierRun).filter(
             AIPlayerDossierRun.dossier_id == report.id,
             AIPlayerDossierRun.status == "running",
@@ -466,10 +490,15 @@ def process_one_dossier() -> dict:
                     response.raise_for_status()
                     response_payload = response.json()
                     raw_response = _kobold_chat_content(response_payload)
+                    usage = response_payload.get("usage") or {}
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    completion_tokens = usage.get("completion_tokens")
+                    if run:
+                        run.latency_ms = elapsed_ms
+                        run.prompt_tokens = usage.get("prompt_tokens")
+                        run.completion_tokens = completion_tokens
+                        run.model = settings.ai_dossier_model
                     result = sanitize_dossier_result(parse_kobold_response(response_payload), payload)
-            usage = response_payload.get("usage") or {}
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            completion_tokens = usage.get("completion_tokens")
             logger.info("AI dossier request complete player=%s latency_ms=%s prompt_tokens=%s completion_tokens=%s", report.player_id, elapsed_ms, usage.get("prompt_tokens"), completion_tokens)
             report.status = "succeeded"
             report.result_json = result
@@ -504,6 +533,9 @@ def process_one_dossier() -> dict:
                 run.finished_at = report.finished_at
                 run.error_message = report.error_message
                 run.model = settings.ai_dossier_model
+                run.latency_ms = elapsed_ms
+                run.prompt_tokens = usage.get("prompt_tokens")
+                run.completion_tokens = usage.get("completion_tokens")
                 run.raw_response = raw_response[:MAX_RAW_RESPONSE_CHARS] if isinstance(raw_response, str) else None
             db.commit()
             return {"status": "failed", "player_id": report.player_id, "error": report.error_message}
