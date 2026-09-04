@@ -31,7 +31,26 @@ export interface SpawnWave {
   reset_time: number
   play_dead_probability: number
   difficulty: number
+  /** null = авто (abyss/moloch/cave в названии), true/false — явная пометка */
+  non_blocking?: boolean | null
+  learned?: boolean
   monsters: MonsterEntry[]
+}
+
+export interface WaveOverride {
+  difficulty_mode: "absolute" | "adjust" | string
+  difficulty_value: number
+  non_blocking?: boolean | null
+  enabled?: boolean
+  updated_utc?: string
+}
+
+export interface SpawnScheme {
+  name: string
+  weight: number
+  distance_min_meters: number
+  distance_max_meters: number
+  zones?: Record<string, number>
 }
 
 export interface SpawnPlan extends SpawnWave {
@@ -69,6 +88,10 @@ export interface MonsterSpawnDashboard {
   event_threshold: number
   pending_waves: number
   known_submarines: number
+  blocking_wave_count?: number
+  max_simultaneous_waves?: number
+  last_spawn_scheme?: string | null
+  last_spawn_zone?: string | null
 }
 
 export interface MonsterSpawnWaveLog {
@@ -154,13 +177,24 @@ export interface ActiveWaveTelemetry {
   monster_counts: Record<string, number>
   effective_difficulty: number
   modifications: string[]
+  blocking?: boolean
+  engaged?: boolean
+  damage_taken?: number
+  last_damage_seconds_ago?: number | null
+  non_blocking?: boolean
+  distance_to_sub_meters?: number | null
+  min_distance_meters?: number | null
+  max_distance_meters?: number
+  unengaged_seconds?: number
+  spawn_scheme?: string | null
+  spawn_zone?: string | null
 }
 
 export interface RecentWaveTelemetry {
   wave_id: string
   wave_name: string
   spawn_reason: string
-  outcome: "repelled" | "bypassed" | "timeout_engaged" | "unresolved" | string
+  outcome: "repelled" | "bypassed" | "afk" | "timeout_engaged" | "unresolved" | string
   repel_seconds: number
   expected_repel_seconds: number
   performance: number
@@ -183,6 +217,7 @@ export interface LearnedWaveTelemetry {
   last_seen_utc?: string
   registered_in_pool: boolean
   spawn_type?: string
+  non_blocking?: boolean
 }
 
 export interface SpeciesThreatTelemetry {
@@ -308,6 +343,10 @@ export const normalizeMonsterSpawnState = (value: MonsterSpawnState): MonsterSpa
       event_threshold: typeof telemetry.event_threshold === "number" ? telemetry.event_threshold : 0.2,
       pending_waves: typeof telemetry.pending_waves === "number" ? telemetry.pending_waves : 0,
       known_submarines: Object.keys(submarines).length,
+      blocking_wave_count: typeof telemetry.blocking_wave_count === "number" ? telemetry.blocking_wave_count : 0,
+      max_simultaneous_waves: typeof telemetry.max_simultaneous_waves === "number" ? telemetry.max_simultaneous_waves : 1,
+      last_spawn_scheme: typeof telemetry.last_spawn_scheme === "string" ? telemetry.last_spawn_scheme : null,
+      last_spawn_zone: typeof telemetry.last_spawn_zone === "string" ? telemetry.last_spawn_zone : null,
     },
   }
 }
