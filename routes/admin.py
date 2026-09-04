@@ -5585,12 +5585,18 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
     }
 
     for field, env_key in field_map.items():
+        if field not in body:
+            # This endpoint is also used for small, focused settings cards
+            # (for example the AI center). Missing fields must remain
+            # untouched; writing them as empty strings corrupts numeric
+            # settings and turns a partial save into a site-wide outage.
+            continue
         if field in SUPERUSER_ONLY_CFG_FIELDS and not current_admin.is_superuser:
             # Настройки ONLYOFFICE/Pterodactyl (секреты и серверные UUID)
             # меняют только суперпользователи — молча пропускаем поле, даже
             # если оно затесалось в тело запроса.
             continue
-        val = body.get(field)
+        val = body[field]
         if field in MASKED_CFG_FIELDS and (val is None or str(val) == SECRET_PLACEHOLDER):
             # Пришла заглушка (поле не трогали) или поля нет в запросе вовсе —
             # оставляем то, что уже лежит в .env. Иначе обычное сохранение

@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
+from config import Settings
 from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerSession
 from services_ai_dossier import (
     build_kobold_request,
@@ -239,6 +240,16 @@ class AIDossierContractTests(unittest.TestCase):
         ))
         with self.assertRaises(ValueError):
             validate_dossier_ca_pem(b"-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n")
+
+    def test_empty_numeric_env_values_fall_back_to_defaults(self):
+        settings = Settings(
+            rate_limit_requests="", rate_limit_window="",
+            sftp_server_1_port="", sftp_server_2_port="",
+        )
+        self.assertEqual(settings.rate_limit_requests, 100)
+        self.assertEqual(settings.rate_limit_window, 60)
+        self.assertEqual(settings.sftp_server_1_port, 22)
+        self.assertEqual(settings.sftp_server_2_port, 22)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic_core import PydanticUseDefault
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Dict, Any
@@ -372,6 +373,20 @@ class Settings(BaseSettings):
     kits_mapping: Dict[str, str] = {}
     roles_mapping: Dict[str, List[str]] = {}
     rank_discord_roles: Dict[str, str] = {}  # rank_id -> discord_role_id
+
+    @field_validator(
+        "rate_limit_requests", "rate_limit_window",
+        "sftp_server_1_port", "sftp_server_2_port",
+        mode="before",
+    )
+    @classmethod
+    def _empty_numeric_env_uses_default(cls, value):
+        # The administration API used to turn omitted fields into empty
+        # strings. Keep an already damaged .env bootable while the API fix is
+        # deployed and prevent new damage in the updated handler.
+        if value == "":
+            raise PydanticUseDefault
+        return value
 
     # Server permissions configuration
     server_permissions_mapping: Dict[str, Dict] = Field(default_factory=lambda: {
