@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { AlertTriangle, Sparkles } from "lucide-react"
+import { AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 
@@ -18,15 +18,6 @@ import { useCurrentAdmin } from "@/lib/auth"
 // целиком. См. routes/admin.py::api_admin_administration.
 interface AdministrationResponse {
   editable_cfg: Record<string, string | number | boolean>
-}
-
-interface AIDossierConfig {
-  enabled: boolean
-  daily_enabled: boolean
-  test_mode: boolean
-  daily_limit: number
-  configured: boolean
-  model: string
 }
 
 const CFG_FIELDS: { key: string; label: string; type?: "checkbox" | "password" }[] = [
@@ -129,7 +120,6 @@ const GIT_UPDATE_TOGGLES: { key: string; label: string; hint: string }[] = [
 
 export function AdministrationPage() {
   const [cfg, setCfg] = useState<Record<string, string>>({})
-  const [aiCfg, setAiCfg] = useState<AIDossierConfig | null>(null)
   const queryClient = useQueryClient()
   const { data: me } = useCurrentAdmin()
 
@@ -137,14 +127,6 @@ export function AdministrationPage() {
     queryKey: ["administration"],
     queryFn: () => api.get<AdministrationResponse>("/api/v1/admin/administration"),
   })
-  const { data: loadedAiCfg } = useQuery({
-    queryKey: ["ai-dossier-config"],
-    queryFn: () => api.get<AIDossierConfig>("/api/v1/admin/ai-dossiers/config"),
-    enabled: !!me?.is_superuser,
-  })
-
-  useEffect(() => { if (loadedAiCfg) setAiCfg(loadedAiCfg) }, [loadedAiCfg])
-
   useEffect(() => {
     if (data?.editable_cfg) {
       setCfg(Object.fromEntries(Object.entries(data.editable_cfg).map(([k, v]) => [k, String(v ?? "")])))
@@ -154,23 +136,6 @@ export function AdministrationPage() {
   const saveConfig = useMutation({
     mutationFn: () => api.post("/api/v1/admin/administration/config", cfg),
     onSuccess: () => { toast.success("Конфигурация сохранена. Перезапустите сервер для применения части настроек."); queryClient.invalidateQueries({ queryKey: ["administration"] }) },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const saveAiConfig = useMutation({
-    mutationFn: () => api.patch("/api/v1/admin/ai-dossiers/config", {
-      enabled: aiCfg?.enabled,
-      daily_enabled: aiCfg?.daily_enabled,
-      test_mode: aiCfg?.test_mode,
-      daily_limit: aiCfg?.daily_limit,
-    }),
-    onSuccess: () => { toast.success("Настройки ИИ-досье сохранены"); queryClient.invalidateQueries({ queryKey: ["ai-dossier-config"] }) },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const runAiTest = useMutation({
-    mutationFn: () => api.post<{ selected: number; queued: number }>("/api/v1/admin/ai-dossiers/test-run", {}),
-    onSuccess: (result: { selected: number; queued: number }) => toast.success(`Тестовая очередь: ${result.queued} из ${result.selected}`),
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -194,24 +159,6 @@ export function AdministrationPage() {
           <Button onClick={() => saveConfig.mutate()}>Сохранить конфигурацию</Button>
         </CardContent>
       </Card>
-
-      {me?.is_superuser && (
-        <Card className="overflow-hidden py-0">
-          <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="flex items-center gap-2 text-sm font-semibold"><Sparkles className="size-4" /> AI-досье</CardTitle></CardHeader>
-          <CardContent className="space-y-4 py-4">
-            <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
-              Сводка справочная и ничего сама не банит. Prompt хранится в Git и через браузер не редактируется — хотя бы одна поверхность для случайного prompt injection останется вне админки.
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="flex items-start gap-2.5 text-sm"><Checkbox checked={!!aiCfg?.enabled} onCheckedChange={(v) => setAiCfg((c) => c && ({ ...c, enabled: !!v }))} /><span>Разрешить AI-досье<span className="block text-xs text-muted-foreground">Ручной запуск доступен при наличии права просмотра игроков.</span></span></label>
-              <label className="flex items-start gap-2.5 text-sm"><Checkbox checked={!!aiCfg?.daily_enabled} onCheckedChange={(v) => setAiCfg((c) => c && ({ ...c, daily_enabled: !!v }))} /><span>Ежедневное обновление<span className="block text-xs text-muted-foreground">Активные профили, тихий час по настройке сервера.</span></span></label>
-              <label className="flex items-start gap-2.5 text-sm"><Checkbox checked={!!aiCfg?.test_mode} onCheckedChange={(v) => setAiCfg((c) => c && ({ ...c, test_mode: !!v }))} /><span>Тестовый режим<span className="block text-xs text-muted-foreground">Не меняет формат данных; нужен для контролируемого прогона.</span></span></label>
-              <div><Label className="text-xs text-muted-foreground">Лимит профилей за сутки (1–10)</Label><Input className="mt-1" type="number" min={1} max={10} value={aiCfg?.daily_limit ?? 10} onChange={(e) => setAiCfg((c) => c && ({ ...c, daily_limit: Number(e.target.value) }))} /></div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2"><Button disabled={!aiCfg || saveAiConfig.isPending} onClick={() => saveAiConfig.mutate()}>Сохранить настройки</Button><Button variant="outline" disabled={runAiTest.isPending} onClick={() => runAiTest.mutate()}><Sparkles className="size-3.5" /> Запустить тест первых 10</Button><span className="text-xs text-muted-foreground">{aiCfg?.configured ? `Подключено: ${aiCfg.model}` : "Endpoint/ключ не настроены"}</span></div>
-          </CardContent>
-        </Card>
-      )}
 
       {me?.is_superuser && (
         <Card className="overflow-hidden py-0">

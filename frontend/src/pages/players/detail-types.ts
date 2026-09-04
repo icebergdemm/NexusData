@@ -161,7 +161,8 @@ export interface PlayerDetailResponse {
 
 export interface AIDossierEvidence {
   kind: string
-  id: string
+  id: string | number
+  href?: string
 }
 
 export interface AIDossierResult {
@@ -184,6 +185,14 @@ export interface AIDossierResponse {
   finished_at: string | null
   error: string | null
   requested_by_admin_id: number | null
+  run?: {
+    source: string
+    status: string
+    latency_ms: number | null
+    prompt_tokens: number | null
+    completion_tokens: number | null
+    requested_by_admin_id: number | null
+  } | null
 }
 
 export interface PlayerServerPrivilege {

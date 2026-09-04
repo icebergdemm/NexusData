@@ -7,9 +7,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import AIPlayerDossier, PlayerData, PlayerSession
+from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerSession
 from services_ai_dossier import (
     build_kobold_request,
+    dossier_evidence_link,
+    dossier_run_public_dict,
+    get_dossier_config,
     normalize_dossier_result,
     should_queue_dossier,
     select_active_player_ids,
@@ -102,7 +105,7 @@ class AIDossierContractTests(unittest.TestCase):
 
     def test_enqueue_is_idempotent_for_running_player(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__])
+        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__, AIPlayerDossierRun.__table__])
         db = Session(engine)
         try:
             first, created = services_ai_dossier.enqueue_dossier(db, 7, 11, force=True)
@@ -111,13 +114,15 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertFalse(created_again)
             self.assertEqual(first.id, second.id)
             self.assertEqual(second.requested_by_admin_id, 11)
+            self.assertEqual(db.query(AIPlayerDossierRun).count(), 1)
+            self.assertEqual(db.query(AIPlayerDossierRun).one().source, "manual")
         finally:
             db.close()
             engine.dispose()
 
     def test_generation_failure_keeps_previous_successful_result(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__])
+        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__, AIPlayerDossierRun.__table__])
         db = Session(engine)
         try:
             report = AIPlayerDossier(
@@ -156,6 +161,48 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertEqual(stored.summary_text, "старый")
             self.assertEqual(stored.result_json["summary"], "старый")
             self.assertIn("qwen offline", stored.error_message)
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_evidence_links_are_derived_from_whitelisted_source_ids(self):
+        self.assertEqual(dossier_evidence_link("log", 42, 7), "/logs?event_id=42")
+        self.assertEqual(dossier_evidence_link("note", 3, 7), "/players/7?tab=notes&source_id=3")
+        self.assertIsNone(dossier_evidence_link("note", 999, None))
+
+    def test_run_public_dict_contains_metadata_but_no_response_body(self):
+        run = AIPlayerDossierRun(
+            id=4, player_id=7, source="manual", status="succeeded", model="qwen",
+            latency_ms=1200, prompt_tokens=100, completion_tokens=20,
+        )
+        public = dossier_run_public_dict(run, player_name="Alice")
+        self.assertEqual(public["player_name"], "Alice")
+        self.assertEqual(public["latency_ms"], 1200)
+        self.assertNotIn("result", public)
+        self.assertNotIn("raw_response", public)
+
+    def test_runtime_config_reads_safe_operational_overrides(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__])
+        db = Session(engine)
+        try:
+            db.add_all([
+                AppSetting(key="ai_dossier_schedule_hour", value="6"),
+                AppSetting(key="ai_dossier_active_days", value="14"),
+                AppSetting(key="ai_dossier_max_log_events", value="40"),
+            ])
+            db.commit()
+            with patch.object(services_ai_dossier, "get_settings", return_value=SimpleNamespace(
+                ai_dossier_url="", ai_dossier_api_key="", ai_dossier_model="qwen",
+                ai_dossier_daily_limit=10, ai_dossier_schedule_hour=4,
+                ai_dossier_active_days=30, ai_dossier_max_log_events=120,
+                ai_dossier_timeout_seconds=180, ai_dossier_tls_ca_file="",
+                ai_dossier_max_input_chars=30000,
+            )):
+                config = get_dossier_config(db)
+            self.assertEqual(config["schedule_hour"], 6)
+            self.assertEqual(config["active_days"], 14)
+            self.assertEqual(config["max_log_events"], 40)
         finally:
             db.close()
             engine.dispose()

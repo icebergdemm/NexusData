@@ -6,18 +6,21 @@ import hashlib
 import json
 import logging
 import re
+import subprocess
+from threading import Lock
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import or_
+from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session
 
 from config import get_settings
 from models import (
-    AIPlayerDossier, AppSetting, AnticheatEvent, PlayerData, PlayerIP, PlayerKill,
+    AIPlayerDossier, AIPlayerDossierRun, AdminUser, AppSetting, AnticheatEvent, PlayerData, PlayerIP, PlayerKill,
     PlayerLabel, PlayerName, PlayerNote, PlayerPunishment, PlayerRoleAction,
     PlayerRoleStat, PlayerSession, PlayerStats, PlayerTrap,
 )
@@ -29,6 +32,9 @@ CONFIDENCE_VALUES = {"low", "medium", "high"}
 MAX_OUTPUT_TOKENS = 650
 DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
+REPO_ROOT = Path(__file__).resolve().parent
+ALLOWED_RUN_SOURCES = {"manual", "daily", "test", "health"}
+AI_REQUEST_LOCK = Lock()
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -157,7 +163,7 @@ def should_queue_dossier(report: Optional[AIPlayerDossier], input_hash: str, for
 
 
 def select_active_player_ids(db: Session, now: datetime, limit: int) -> list[int]:
-    cutoff = now - timedelta(days=get_settings().ai_dossier_active_days)
+    cutoff = now - timedelta(days=get_dossier_config(db)["active_days"])
     rows = db.query(PlayerData.player_id).outerjoin(
         PlayerSession, PlayerSession.player_id == PlayerData.player_id,
     ).filter(or_(
@@ -178,7 +184,10 @@ def _safe_rows(query, serializer):
 def build_player_dossier_payload(db: Session, player_id: int, now: Optional[datetime] = None) -> dict:
     now = now or datetime.utcnow()
     settings = get_settings()
-    since = now - timedelta(days=settings.ai_dossier_active_days)
+    runtime_config = get_dossier_config(db)
+    active_days = runtime_config["active_days"]
+    max_log_events = runtime_config["max_log_events"]
+    since = now - timedelta(days=active_days)
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
     if not player:
         raise ValueError("Player not found")
@@ -229,12 +238,12 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
         "anticheat_events": [{"id": row.id, "event_type": row.event_type, "details": _bounded_text(row.details, 500), "occurred_at": _iso(row.occurred_at)} for row in anticheat],
         "logs": [],
         "missing": [],
-        "window": {"from": since.isoformat(), "to": now.isoformat(), "days": settings.ai_dossier_active_days},
+        "window": {"from": since.isoformat(), "to": now.isoformat(), "days": active_days},
     }
 
     try:
         from services_logs import search_logs
-        result = search_logs(names_list=known_names, time_from=since, time_to=now, player_scope="related", limit=settings.ai_dossier_max_log_events, count_total=False)
+        result = search_logs(names_list=known_names, time_from=since, time_to=now, player_scope="related", limit=max_log_events, count_total=False)
         payload["logs"] = [{"id": event.row_id, "timestamp": _iso(event.timestamp), "player_name": event.player_name, "action": event.action_type, "details": _bounded_text(event.details, 500), "server": event.server_name, "source": event.source_file} for event in result.events]
     except Exception as exc:
         logger.warning("AI dossier logs unavailable for player %s: %s", player_id, exc)
@@ -263,25 +272,44 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     return payload
 
 
-def enqueue_dossier(db: Session, player_id: int, requested_by_admin_id: Optional[int], force: bool = False, now: Optional[datetime] = None) -> tuple[AIPlayerDossier, bool]:
+def enqueue_dossier(
+    db: Session,
+    player_id: int,
+    requested_by_admin_id: Optional[int],
+    force: bool = False,
+    now: Optional[datetime] = None,
+    source: str = "manual",
+) -> tuple[AIPlayerDossier, bool]:
+    if source not in ALLOWED_RUN_SOURCES - {"health"}:
+        raise ValueError("Invalid AI dossier run source")
     now = now or datetime.utcnow()
     report = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id).first()
     if report is None:
         report = AIPlayerDossier(player_id=player_id, status="queued", requested_at=now, requested_by_admin_id=requested_by_admin_id)
         db.add(report)
-        db.commit()
-        db.refresh(report)
-        return report, True
-    if report.status in {"queued", "running"}:
+        db.flush()
+    elif report.status in {"queued", "running"}:
         return report, False
-    report.status = "queued"
-    report.requested_at = now
-    report.requested_by_admin_id = requested_by_admin_id
-    report.started_at = None
-    report.finished_at = None
-    report.lease_expires_at = None
-    report.error_message = None
+    else:
+        report.status = "queued"
+        report.requested_at = now
+        report.requested_by_admin_id = requested_by_admin_id
+        report.started_at = None
+        report.finished_at = None
+        report.lease_expires_at = None
+        report.error_message = None
+
+    db.add(AIPlayerDossierRun(
+        dossier_id=report.id,
+        player_id=player_id,
+        source=source,
+        status="queued",
+        requested_by_admin_id=requested_by_admin_id,
+        requested_at=now,
+        model=get_settings().ai_dossier_model,
+    ))
     db.commit()
+    db.refresh(report)
     return report, True
 
 
@@ -293,7 +321,7 @@ def enqueue_dossier_if_needed(db: Session, player_id: int, requested_by_admin_id
     payload = build_player_dossier_payload(db, player_id, now)
     if not should_queue_dossier(report, dossier_input_hash(payload), False, now, 7):
         return report, False
-    return enqueue_dossier(db, player_id, requested_by_admin_id, force=False, now=now)
+    return enqueue_dossier(db, player_id, requested_by_admin_id, force=False, now=now, source="daily")
 
 
 def _claim_next(db: Session, now: datetime) -> Optional[AIPlayerDossier]:
@@ -305,12 +333,36 @@ def _claim_next(db: Session, now: datetime) -> Optional[AIPlayerDossier]:
         if report and report.status == "running":
             report.status = "queued"
             report.lease_expires_at = None
+            running = db.query(AIPlayerDossierRun).filter(
+                AIPlayerDossierRun.dossier_id == report.id,
+                AIPlayerDossierRun.status == "running",
+            ).order_by(AIPlayerDossierRun.id.desc()).first()
+            if running:
+                running.status = "queued"
+                running.started_at = None
             db.commit()
         return None
     report.status = "running"
     report.started_at = now
     report.lease_expires_at = now + timedelta(seconds=get_settings().ai_dossier_timeout_seconds + 60)
     report.error_message = None
+    run = db.query(AIPlayerDossierRun).filter(
+        AIPlayerDossierRun.dossier_id == report.id,
+        AIPlayerDossierRun.status == "queued",
+    ).order_by(AIPlayerDossierRun.id.desc()).first()
+    if run is None:
+        run = AIPlayerDossierRun(
+            dossier_id=report.id,
+            player_id=report.player_id,
+            source="manual",
+            status="queued",
+            requested_by_admin_id=report.requested_by_admin_id,
+            requested_at=report.requested_at or now,
+            model=get_settings().ai_dossier_model,
+        )
+        db.add(run)
+    run.status = "running"
+    run.started_at = now
     db.commit()
     return report
 
@@ -323,6 +375,10 @@ def process_one_dossier() -> dict:
         if not report:
             return {"status": "idle"}
         settings = get_settings()
+        run = db.query(AIPlayerDossierRun).filter(
+            AIPlayerDossierRun.dossier_id == report.id,
+            AIPlayerDossierRun.status == "running",
+        ).order_by(AIPlayerDossierRun.id.desc()).first()
         try:
             payload = build_player_dossier_payload(db, report.player_id)
             request_hash = dossier_input_hash(payload)
@@ -331,11 +387,12 @@ def process_one_dossier() -> dict:
             request = build_kobold_request(payload, api_key=settings.ai_dossier_api_key, model=settings.ai_dossier_model)
             verify: bool | str = settings.ai_dossier_tls_ca_file or True
             started = time.monotonic()
-            with httpx.Client(timeout=settings.ai_dossier_timeout_seconds, verify=verify) as client:
-                response = client.post(settings.ai_dossier_url, **request)
-                response.raise_for_status()
-                response_payload = response.json()
-                result = sanitize_dossier_result(parse_kobold_response(response_payload), payload)
+            with AI_REQUEST_LOCK:
+                with httpx.Client(timeout=settings.ai_dossier_timeout_seconds, verify=verify) as client:
+                    response = client.post(settings.ai_dossier_url, **request)
+                    response.raise_for_status()
+                    response_payload = response.json()
+                    result = sanitize_dossier_result(parse_kobold_response(response_payload), payload)
             usage = response_payload.get("usage") or {}
             elapsed_ms = int((time.monotonic() - started) * 1000)
             completion_tokens = usage.get("completion_tokens")
@@ -349,6 +406,14 @@ def process_one_dossier() -> dict:
             report.finished_at = report.generated_at
             report.lease_expires_at = None
             report.error_message = None
+            if run:
+                run.status = "succeeded"
+                run.finished_at = report.finished_at
+                run.latency_ms = elapsed_ms
+                run.prompt_tokens = usage.get("prompt_tokens")
+                run.completion_tokens = usage.get("completion_tokens")
+                run.model = settings.ai_dossier_model
+                run.input_hash = request_hash
             db.commit()
             return {"status": "succeeded", "player_id": report.player_id}
         except Exception as exc:
@@ -359,6 +424,11 @@ def process_one_dossier() -> dict:
             report.finished_at = datetime.utcnow()
             report.lease_expires_at = None
             report.error_message = f"{type(exc).__name__}: {exc}"[:2000]
+            if run:
+                run.status = "failed"
+                run.finished_at = report.finished_at
+                run.error_message = report.error_message
+                run.model = settings.ai_dossier_model
             db.commit()
             return {"status": "failed", "player_id": report.player_id, "error": report.error_message}
     finally:
@@ -380,30 +450,57 @@ def run_daily_dossier_batch() -> dict:
 
 
 def get_dossier_config(db: Session) -> dict:
+    settings = get_settings()
+
     def _value(key: str, default: str) -> str:
-        row = db.query(AppSetting).filter(AppSetting.key == key).first()
+        try:
+            row = db.query(AppSetting).filter(AppSetting.key == key).first()
+        except Exception:
+            db.rollback()
+            return default
         return row.value if row and row.value is not None else default
 
-    try:
-        daily_limit = min(10, max(1, int(_value("ai_dossier_daily_limit", str(get_settings().ai_dossier_daily_limit)))))
-    except (TypeError, ValueError):
-        daily_limit = get_settings().ai_dossier_daily_limit
+    def _int(key: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            return min(maximum, max(minimum, int(_value(key, str(default)))))
+        except (TypeError, ValueError):
+            return default
+
+    def _bool(key: str, default: bool) -> bool:
+        return _value(key, str(default).lower()).lower() in {"true", "1", "yes", "on"}
+
+    endpoint = settings.ai_dossier_url or ""
     return {
-        "enabled": _value("ai_dossier_enabled", "false").lower() == "true",
-        "daily_enabled": _value("ai_dossier_daily_enabled", "true").lower() == "true",
-        "test_mode": _value("ai_dossier_test_mode", "false").lower() == "true",
-        "daily_limit": daily_limit,
-        "configured": bool(get_settings().ai_dossier_url and get_settings().ai_dossier_api_key),
-        "model": get_settings().ai_dossier_model,
+        "enabled": _bool("ai_dossier_enabled", False),
+        "daily_enabled": _bool("ai_dossier_daily_enabled", True),
+        "test_mode": _bool("ai_dossier_test_mode", False),
+        "daily_limit": _int("ai_dossier_daily_limit", settings.ai_dossier_daily_limit, 1, 10),
+        "schedule_hour": _int("ai_dossier_schedule_hour", settings.ai_dossier_schedule_hour, 0, 23),
+        "active_days": _int("ai_dossier_active_days", settings.ai_dossier_active_days, 1, 365),
+        "max_log_events": _int("ai_dossier_max_log_events", settings.ai_dossier_max_log_events, 1, 500),
+        "configured": bool(endpoint and settings.ai_dossier_api_key),
+        "endpoint_host": urlsplit(endpoint).hostname if endpoint else None,
+        "tls_ca_configured": bool(settings.ai_dossier_tls_ca_file),
+        "model": settings.ai_dossier_model,
+        "timeout_seconds": settings.ai_dossier_timeout_seconds,
     }
 
 
 def dossier_public_dict(report: Optional[AIPlayerDossier]) -> dict:
     if not report:
         return {"status": "none", "result": None}
+    result = report.result_json
+    if isinstance(result, dict):
+        result = dict(result)
+        result["evidence"] = [
+            dict(item, href=dossier_evidence_link(item.get("kind"), item.get("id"), report.player_id))
+            if isinstance(item, dict) and dossier_evidence_link(item.get("kind"), item.get("id"), report.player_id)
+            else item
+            for item in result.get("evidence", [])
+        ]
     return {
         "status": report.status,
-        "result": report.result_json,
+        "result": result,
         "summary": report.summary_text,
         "input_hash": report.input_hash,
         "model": report.model,
@@ -413,4 +510,186 @@ def dossier_public_dict(report: Optional[AIPlayerDossier]) -> dict:
         "finished_at": _iso(report.finished_at),
         "error": report.error_message,
         "requested_by_admin_id": report.requested_by_admin_id,
+    }
+
+
+def dossier_evidence_link(kind: Any, source_id: Any, player_id: Optional[int]) -> Optional[str]:
+    """Build links only for source types the dossier payload explicitly allows."""
+    if source_id is None:
+        return None
+    try:
+        source_id = int(source_id)
+    except (TypeError, ValueError):
+        return None
+    if source_id < 1:
+        return None
+    if kind == "log":
+        return f"/logs?event_id={source_id}"
+    if player_id is None:
+        return None
+    tabs = {
+        "note": "notes",
+        "label": "labels",
+        "trap": "traps",
+        "punishment": "punishments",
+        "session": "history",
+        "anticheat": "history",
+    }
+    tab = tabs.get(kind)
+    return f"/players/{int(player_id)}?tab={tab}&source_id={source_id}" if tab else None
+
+
+def dossier_run_public_dict(run: AIPlayerDossierRun, player_name: Optional[str] = None) -> dict:
+    return {
+        "id": run.id,
+        "player_id": run.player_id,
+        "player_name": player_name,
+        "source": run.source,
+        "status": run.status,
+        "requested_by_admin_id": run.requested_by_admin_id,
+        "requested_at": _iso(run.requested_at),
+        "started_at": _iso(run.started_at),
+        "finished_at": _iso(run.finished_at),
+        "latency_ms": run.latency_ms,
+        "prompt_tokens": run.prompt_tokens,
+        "completion_tokens": run.completion_tokens,
+        "model": run.model,
+        "input_hash": run.input_hash,
+        "error": run.error_message,
+    }
+
+
+def list_dossier_runs(db: Session, limit: int, include_secret: bool) -> list[dict]:
+    query = db.query(AIPlayerDossierRun, PlayerData.player_last_time_name).outerjoin(
+        PlayerData, PlayerData.player_id == AIPlayerDossierRun.player_id,
+    )
+    if not include_secret:
+        query = query.filter(
+            PlayerData.is_secret.is_(False),
+            ~exists().where(and_(
+                AdminUser.discord_id == PlayerData.discord_id,
+                AdminUser.is_superuser.is_(True),
+            )),
+        )
+    rows = query.order_by(AIPlayerDossierRun.id.desc()).limit(min(max(limit, 1), 100)).all()
+    return [dossier_run_public_dict(run, name) for run, name in rows]
+
+
+def search_dossier_players(db: Session, query_text: str, limit: int, include_secret: bool) -> list[dict]:
+    query = db.query(PlayerData)
+    if not include_secret:
+        query = query.filter(
+            PlayerData.is_secret.is_(False),
+            ~exists().where(and_(
+                AdminUser.discord_id == PlayerData.discord_id,
+                AdminUser.is_superuser.is_(True),
+            )),
+        )
+    text = (query_text or "").strip()
+    if text:
+        pattern = f"%{text}%"
+        query = query.filter(or_(
+            PlayerData.player_last_time_name.ilike(pattern),
+            PlayerData.forced_display_name.ilike(pattern),
+            PlayerData.player_steamid.ilike(pattern),
+        ))
+    rows = query.order_by(PlayerData.last_login_time.desc(), PlayerData.player_id.asc()).limit(min(max(limit, 1), 50)).all()
+    report_by_player = {
+        report.player_id: report for report in db.query(AIPlayerDossier).filter(
+            AIPlayerDossier.player_id.in_([row.player_id for row in rows])
+        ).all()
+    } if rows else {}
+    return [{
+        "player_id": row.player_id,
+        "name": row.forced_display_name or row.player_last_time_name or f"Player {row.player_id}",
+        "last_login_time": _iso(row.last_login_time),
+        "status": report_by_player[row.player_id].status if row.player_id in report_by_player else "none",
+        "generated_at": _iso(report_by_player[row.player_id].generated_at) if row.player_id in report_by_player else None,
+    } for row in rows]
+
+
+def run_ai_health_check() -> dict:
+    """Check authentication/transport with a fixed, non-personal prompt."""
+    from database import SessionLocal
+
+    db = SessionLocal()
+    run = AIPlayerDossierRun(
+        source="health", status="running", requested_at=datetime.utcnow(),
+        started_at=datetime.utcnow(), model=get_settings().ai_dossier_model,
+    )
+    db.add(run)
+    db.commit()
+    started = time.monotonic()
+    settings = get_settings()
+    try:
+        if not settings.ai_dossier_url or not settings.ai_dossier_api_key:
+            raise RuntimeError("AI dossier endpoint is not configured")
+        payload = {"health_check": True, "instruction": "Return the required JSON schema with summary 'OK'. No player data is present."}
+        request = build_kobold_request(payload, api_key=settings.ai_dossier_api_key, model=settings.ai_dossier_model)
+        verify: bool | str = settings.ai_dossier_tls_ca_file or True
+        with AI_REQUEST_LOCK:
+            with httpx.Client(timeout=settings.ai_dossier_timeout_seconds, verify=verify) as client:
+                response = client.post(settings.ai_dossier_url, **request)
+                response.raise_for_status()
+                response_payload = response.json()
+                result = normalize_dossier_result(parse_kobold_response(response_payload))
+        usage = response_payload.get("usage") or {}
+        run.status = "succeeded"
+        run.finished_at = datetime.utcnow()
+        run.latency_ms = int((time.monotonic() - started) * 1000)
+        run.prompt_tokens = usage.get("prompt_tokens")
+        run.completion_tokens = usage.get("completion_tokens")
+        run.model = settings.ai_dossier_model
+        db.commit()
+        return {"status": "succeeded", "result": result, "run": dossier_run_public_dict(run)}
+    except Exception as exc:
+        run.status = "failed"
+        run.finished_at = datetime.utcnow()
+        run.latency_ms = int((time.monotonic() - started) * 1000)
+        run.error_message = f"{type(exc).__name__}: {exc}"[:2000]
+        db.commit()
+        return {"status": "failed", "result": None, "run": dossier_run_public_dict(run)}
+    finally:
+        db.close()
+
+
+def get_dossier_overview(db: Session, include_agents: bool = False, include_secret: bool = False) -> dict:
+    config = get_dossier_config(db)
+    counts = {status: db.query(AIPlayerDossier).filter(AIPlayerDossier.status == status).count() for status in DOSSIER_STATUSES}
+    agents_path = REPO_ROOT / "AGENTS.md"
+    agents = {"present": agents_path.is_file(), "sha256": None, "commit": None}
+    content = None
+    if agents_path.is_file():
+        raw = agents_path.read_bytes()
+        agents["sha256"] = hashlib.sha256(raw).hexdigest()
+        if include_agents:
+            content = raw.decode("utf-8", errors="replace")
+        try:
+            agents["commit"] = subprocess.run(
+                ["git", "log", "-1", "--format=%H", "--", "AGENTS.md"],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=2, check=False,
+            ).stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    last_run_query = db.query(AIPlayerDossierRun).outerjoin(
+        PlayerData, PlayerData.player_id == AIPlayerDossierRun.player_id,
+    )
+    if not include_secret:
+        last_run_query = last_run_query.filter(
+            or_(AIPlayerDossierRun.player_id.is_(None), and_(
+                PlayerData.is_secret.is_(False),
+                ~exists().where(and_(
+                    AdminUser.discord_id == PlayerData.discord_id,
+                    AdminUser.is_superuser.is_(True),
+                )),
+            )),
+        )
+    last_run = last_run_query.order_by(AIPlayerDossierRun.id.desc()).first()
+    health = db.query(AIPlayerDossierRun).filter(AIPlayerDossierRun.source == "health").order_by(AIPlayerDossierRun.id.desc()).first()
+    return {
+        "config": config,
+        "queue": counts,
+        "last_run": dossier_run_public_dict(last_run) if last_run else None,
+        "last_health_check": dossier_run_public_dict(health) if health else None,
+        "agents_md": {**agents, **({"content": content} if include_agents else {})},
     }

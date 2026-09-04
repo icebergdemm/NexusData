@@ -1088,6 +1088,27 @@ class AIPlayerDossier(Base):
     requested_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
 
 
+class AIPlayerDossierRun(Base):
+    """Metadata for one AI dossier/health run; never stores the model response."""
+    __tablename__ = "ai_player_dossier_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dossier_id = Column(Integer, ForeignKey("ai_player_dossiers.id"), nullable=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=True, index=True)
+    source = Column(String(20), nullable=False, index=True)  # manual | daily | test | health
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    requested_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    requested_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    model = Column(String(255), nullable=True)
+    input_hash = Column(String(64), nullable=True, index=True)
+    error_message = Column(String(2000), nullable=True)
+
+
 class OnlineSnapshot(Base):
     """Snapshot of online player count, recorded each time game server reports players."""
     __tablename__ = "online_snapshots"

@@ -821,8 +821,8 @@ export function PlayerDetailPage() {
                         <div className="space-y-2 text-sm">
                           <div className="font-medium">Источники</div>
                           <div className="flex flex-wrap gap-2">
-                            {dossier.result.evidence.map((item, index) => item.kind === "log" ? (
-                              <a key={index} className="text-primary underline" href="/logs">Лог {item.id}</a>
+                            {dossier.result.evidence.map((item, index) => item.href ? (
+                              <a key={index} className="text-primary underline" href={item.href}>{item.kind === "log" ? "Лог" : item.kind} {item.id}</a>
                             ) : (
                               <span key={index} className="rounded border px-2 py-1 text-xs text-muted-foreground">{item.kind}: {item.id}</span>
                             ))}

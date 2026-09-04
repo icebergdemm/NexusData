@@ -1154,7 +1154,7 @@ def task_enqueue_daily_ai_dossiers() -> dict:
     try:
         cfg = get_dossier_config(db)
         local_now = datetime.now(ZoneInfo(get_settings().logs_default_timezone))
-        if cfg["test_mode"] or not cfg["enabled"] or not cfg["daily_enabled"] or local_now.hour != get_settings().ai_dossier_schedule_hour:
+        if cfg["test_mode"] or not cfg["enabled"] or not cfg["daily_enabled"] or local_now.hour != cfg["schedule_hour"]:
             return {"status": "outside_schedule"}
         return run_daily_dossier_batch()
     finally:

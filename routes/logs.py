@@ -87,6 +87,7 @@ async def api_logs_events(
     action_type: Optional[str] = Query(None),
     category: Optional[str] = Query(None, description="player or technical"),
     search: Optional[str] = Query(None),
+    event_id: Optional[int] = Query(None, ge=1),
     time_from: Optional[str] = Query(None),
     time_to: Optional[str] = Query(None),
     pagination: Literal["offset", "cursor"] = Query(
@@ -148,6 +149,7 @@ async def api_logs_events(
             player_scope=player_scope,
             cursor=cursor,
             count_total=not cursor_mode,
+            event_id=event_id,
         )
     except InvalidLogCursor as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

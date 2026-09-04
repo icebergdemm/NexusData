@@ -40,6 +40,7 @@ import { KitsPage } from "@/pages/kits"
 import { ServerPrivilegesPage } from "@/pages/server-privileges"
 import { DiscordBotPage } from "@/pages/discord-bot"
 import { AdministrationPage } from "@/pages/administration"
+import { AICenterPage } from "@/pages/ai-center"
 import { LogsPage } from "@/pages/logs"
 import { SoundsPage } from "@/pages/sounds"
 import { RespawnDollsPage } from "@/pages/respawn-dolls"
@@ -131,6 +132,7 @@ export default function App() {
           <Route path="tickets/:ticketId" element={<TicketDetailPage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="administration" element={<AdministrationPage />} />
+          <Route path="ai-center" element={<AICenterPage />} />
           <Route path="server-privileges" element={<ServerPrivilegesPage />} />
           <Route path="kits" element={<KitsPage />} />
           <Route path="sessions" element={<SessionsPage />} />
