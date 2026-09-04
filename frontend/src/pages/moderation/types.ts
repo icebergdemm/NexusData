@@ -12,6 +12,7 @@ export interface OnlinePlayer {
   last_seen: string | null
   total_play_time: number | null
   is_new_player: boolean | null
+  has_discord_link: boolean
 }
 
 export interface OfflinePlayer {
@@ -25,6 +26,7 @@ export interface OfflinePlayer {
   last_session_logout: string | null
   play_time_hours: number
   is_new_player: boolean
+  has_discord_link: boolean
 }
 
 export interface RoundState {

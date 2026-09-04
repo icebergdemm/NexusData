@@ -482,6 +482,7 @@ def _serialize_online_player(info: dict) -> dict:
         "last_seen": info["last_seen"].isoformat() if info.get("last_seen") else None,
         "total_play_time": info.get("total_play_time"),
         "is_new_player": info.get("is_new_player"),
+        "has_discord_link": bool(info.get("has_discord_link")),
     }
 
 
@@ -496,10 +497,28 @@ def _serialize_offline_player(p) -> dict:
         "last_login_time": p.last_login_time.isoformat() if p.last_login_time else None,
         "last_session_logout": p.last_session_logout.isoformat() if getattr(p, "last_session_logout", None) else None,
         "play_time_hours": p.play_time_hours,
+        "has_discord_link": bool(getattr(p, "discord_id", None)),
         # Same "under 2 hours total playtime" threshold as the online-players
         # is_new_player flag (services.py) — kept in sync so a player looks
         # equally "new" whether they're currently online or not.
         "is_new_player": p.play_time_hours < 2,
+    }
+
+
+def _serialize_search_player(p) -> dict:
+    """Serialize a player search result using the moderation table contract."""
+    return {
+        "player_id": p.player_id,
+        "player_steamid": p.player_steamid,
+        "player_last_time_name": p.player_last_time_name,
+        "forced_display_name": p.forced_display_name,
+        "rank_id": p.rank_id,
+        "first_login": p.first_login.isoformat() if p.first_login else None,
+        "last_login_time": p.last_login_time.isoformat() if p.last_login_time else None,
+        "last_session_logout": None,
+        "play_time_hours": p.play_time_hours,
+        "is_new_player": p.play_time_hours < 2,
+        "has_discord_link": bool(getattr(p, "discord_id", None)),
     }
 
 
@@ -561,9 +580,8 @@ async def api_moderation_overview(
 
     search_results = []
     if search:
-        from schemas import PlayerDataOut
         raw_results = PlayerService(db).search_players(search, limit=50)
-        search_results = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw_results]
+        search_results = [_serialize_search_player(p) for p in raw_results]
 
     ac_events = svc.get_anticheat_events(limit=200, reviewed=None)
     ac_enriched = [

@@ -1203,6 +1203,7 @@ class ServerModerationService:
                     "ping": ping,
                     "player_id": player_id,
                     "rank_id": pd.rank_id if pd else None,
+                    "has_discord_link": bool(pd and pd.discord_id),
                     "last_seen": now,
                     "join_time": join_time,
                     "total_play_time": play_time,
