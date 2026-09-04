@@ -21,6 +21,7 @@ from services_ai_dossier import (
     get_dossier_prompt,
     validate_dossier_ca_pem,
     normalize_dossier_result,
+    parse_kobold_response,
     should_queue_dossier,
     select_active_player_ids,
     dossier_input_hash,
@@ -30,6 +31,33 @@ import services_ai_dossier
 
 
 class AIDossierContractTests(unittest.TestCase):
+    @staticmethod
+    def _valid_response_content():
+        return '{"summary":"OK","facts":[],"signals":[],"caveats":[],"confidence":"high","evidence":[]}'
+
+    def test_kobold_response_accepts_json_fence(self):
+        payload = {"choices": [{"message": {"content": f"```json\n{self._valid_response_content()}\n```"}}]}
+
+        result = parse_kobold_response(payload)
+
+        self.assertEqual(result["summary"], "OK")
+
+    def test_kobold_response_accepts_thinking_or_prose_before_json(self):
+        payload = {"choices": [{"message": {"content": f"<think>Проверяю входные данные.</think>\n{self._valid_response_content()}"}}]}
+
+        result = parse_kobold_response(payload)
+
+        self.assertEqual(result["confidence"], "high")
+
+    def test_kobold_response_parse_error_contains_only_safe_size_diagnostic(self):
+        secret_like_text = "Player private detail that must never be persisted"
+        payload = {"choices": [{"message": {"content": secret_like_text}}]}
+
+        with self.assertRaisesRegex(ValueError, r"KoboldCpp returned non-JSON content \(response chars: \d+\)") as context:
+            parse_kobold_response(payload)
+
+        self.assertNotIn(secret_like_text, str(context.exception))
+
     def test_normalize_result_requires_schema_and_does_not_invent_fields(self):
         result = normalize_dossier_result({
             "summary": "Опытный игрок; подтверждённых нарушений нет.",

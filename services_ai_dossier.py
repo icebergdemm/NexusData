@@ -110,13 +110,32 @@ def parse_kobold_response(payload: dict) -> dict:
     if not isinstance(content, str):
         raise ValueError("KoboldCpp chat content is not text")
     content = content.strip()
-    if content.startswith("```") and content.endswith("```"):
-        content = content.split("\n", 1)[1] if "\n" in content else content[3:-3]
-        content = content.rsplit("```", 1)[0].strip()
-    try:
-        return normalize_dossier_result(json.loads(content))
-    except json.JSONDecodeError as exc:
-        raise ValueError("KoboldCpp returned non-JSON content") from exc
+    candidates = [content]
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
+            candidates.insert(0, "\n".join(lines[1:-1]).strip())
+
+    # Reasoning tags or a short explanatory sentence can precede the object.
+    # Keep this deliberately narrow: only a substring bounded by the first and
+    # last braces is considered, and the normalized schema remains authoritative.
+    start = content.find("{")
+    end = content.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(content[start:end + 1])
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        return normalize_dossier_result(decoded)
+
+    raise ValueError(f"KoboldCpp returned non-JSON content (response chars: {len(content)})")
 
 
 def sanitize_dossier_result(result: dict, input_payload: dict) -> dict:
