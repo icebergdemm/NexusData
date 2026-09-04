@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+import discord
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -13,6 +14,22 @@ from database import Base
 from discord_bot import bot as ticket_bot
 from discord_bot import data as ticket_data
 from models import DiscordBotAction, Ticket
+
+
+def test_discord_profile_asset_keeps_animated_avatar_format():
+    asset = discord.Asset._from_avatar(None, 987047045498011658, "a_animatedhash")
+
+    url = ticket_bot._discord_asset_url(asset, size=256)
+
+    assert url.endswith("/a_animatedhash.gif?size=256")
+
+
+def test_discord_profile_asset_keeps_animated_banner_format():
+    asset = discord.Asset._from_user_banner(None, 987047045498011658, "a_bannerhash")
+
+    url = ticket_bot._discord_asset_url(asset, size=1024)
+
+    assert url.endswith("/a_bannerhash.gif?size=1024")
 
 
 @pytest.fixture()

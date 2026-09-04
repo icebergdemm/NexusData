@@ -484,7 +484,13 @@ export function TicketDetailPage() {
             }}
             className="size-full overflow-y-auto overscroll-contain px-3 pb-5 sm:px-5"
           >
-            <TicketConversation messages={data.messages} participants={participants} mentionProfiles={data.mention_profiles} />
+            <TicketConversation
+              messages={data.messages}
+              participants={participants}
+              mentionProfiles={data.mention_profiles}
+              discordGuildId={data.discord_guild_id}
+              discordChannelId={ticket.discord_channel_id}
+            />
           </div>
           {showNewMessages ? (
             <Button type="button" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2" onClick={scrollToBottom}>

@@ -226,6 +226,40 @@ function MentionChip({ discordId, profile }: { discordId: string; profile?: Tick
   )
 }
 
+function DiscordMessageLink({
+  guildId,
+  channelId,
+  messageId,
+}: {
+  guildId: string
+  channelId: string
+  messageId: string
+}) {
+  const path = `${encodeURIComponent(guildId)}/${encodeURIComponent(channelId)}/${encodeURIComponent(messageId)}`
+  const discordAppUrl = `discord://-/channels/${path}`
+  const discordWebUrl = `https://discord.com/channels/${path}`
+  return (
+    <a
+      href={discordAppUrl}
+      className="inline-flex items-center gap-1 font-sans text-[10px] text-primary hover:underline"
+      title="Перейти к этому сообщению в Discord"
+      aria-label={`Открыть сообщение ${messageId} в Discord`}
+      onClick={() => {
+        toast.info("Открываем сообщение в Discord", {
+          description: "Если приложение не открылось, используйте веб-версию.",
+          action: {
+            label: "Веб-версия",
+            onClick: () => window.open(discordWebUrl, "_blank", "noopener,noreferrer"),
+          },
+          duration: 6000,
+        })
+      }}
+    >
+      <ExternalLink className="size-3" />Discord
+    </a>
+  )
+}
+
 function RichText({
   content,
   className,
@@ -347,10 +381,14 @@ export function TicketConversation({
   messages,
   participants,
   mentionProfiles = {},
+  discordGuildId,
+  discordChannelId,
 }: {
   messages: TicketMessageRow[]
   participants: TicketParticipant[]
   mentionProfiles?: Record<string, TicketMentionProfile>
+  discordGuildId?: string | null
+  discordChannelId?: string | null
 }) {
   if (!messages.length) {
     return (
@@ -400,8 +438,15 @@ export function TicketConversation({
                     <p className="italic text-muted-foreground">Содержимое сообщения недоступно.</p>
                   ) : null}
                 </div>
-                <div className="mt-2 flex items-center gap-2 font-mono text-[9px] text-muted-foreground opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                <div className="mt-2 flex items-center gap-2 font-mono text-[9px] text-muted-foreground opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
                   <span>MSG {message.discord_message_id || message.id}</span>
+                  {discordGuildId && discordChannelId && message.discord_message_id ? (
+                    <DiscordMessageLink
+                      guildId={discordGuildId}
+                      channelId={discordChannelId}
+                      messageId={message.discord_message_id}
+                    />
+                  ) : null}
                   {message.attachments?.some((item) => item.archived) ? <span className="inline-flex items-center gap-1"><ArchiveRestore className="size-3" />Материалы в архиве</span> : null}
                 </div>
               </div>

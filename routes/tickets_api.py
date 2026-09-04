@@ -254,7 +254,8 @@ def _admin_avatar(admin: AdminUser | None) -> str | None:
     if value.startswith(("http://", "https://")):
         return value
     if admin.discord_id:
-        return f"https://cdn.discordapp.com/avatars/{admin.discord_id}/{value}.png?size=128"
+        extension = "gif" if value.startswith("a_") else "png"
+        return f"https://cdn.discordapp.com/avatars/{admin.discord_id}/{value}.{extension}?size=128"
     return None
 
 
@@ -509,6 +510,42 @@ def _serialize_player(admin: AdminUser, player: PlayerData | None, online: bool 
     }
 
 
+def _ticket_identity_links(
+    db: Session,
+    discord_ids: list[str],
+) -> tuple[dict[str, PlayerData], dict[str, AdminUser]]:
+    """Resolve Discord IDs both directly and through NexusData accounts.
+
+    A platform player may be linked to an ``AdminUser`` while its historical
+    ``PlayerData.discord_id`` is empty.  Ticket mentions must still lead to
+    that player's platform profile.
+    """
+    admins = db.query(AdminUser).filter(
+        AdminUser.discord_id.in_(discord_ids),
+        AdminUser.is_deleted == 0,
+    ).all()
+    admin_by_discord = {str(row.discord_id): row for row in admins if row.discord_id}
+
+    direct_players = db.query(PlayerData).filter(PlayerData.discord_id.in_(discord_ids)).all()
+    player_by_discord = {
+        str(row.discord_id): row for row in direct_players if row.discord_id
+    }
+    admin_ids = [row.id for row in admins]
+    if admin_ids:
+        linked_players = db.query(PlayerData).filter(
+            PlayerData.linked_admin_id.in_(admin_ids)
+        ).all()
+        discord_by_admin = {
+            row.id: discord_id for discord_id, row in admin_by_discord.items()
+        }
+        for player in linked_players:
+            discord_id = discord_by_admin.get(player.linked_admin_id)
+            if discord_id:
+                player_by_discord.setdefault(discord_id, player)
+
+    return player_by_discord, admin_by_discord
+
+
 def _ticket_participants(
     db: Session, admin: AdminUser, ticket: Ticket, messages: list[TicketMessage]
 ) -> list[dict]:
@@ -537,13 +574,10 @@ def _ticket_participants(
 
     if not ordered_ids:
         return []
-    players = db.query(PlayerData).filter(PlayerData.discord_id.in_(ordered_ids)).all()
-    admins = db.query(AdminUser).filter(AdminUser.discord_id.in_(ordered_ids), AdminUser.is_deleted == 0).all()
+    player_by_id, admin_by_id = _ticket_identity_links(db, ordered_ids)
     discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(ordered_ids)).all()
-    player_by_id = {str(row.discord_id): row for row in players if row.discord_id}
-    admin_by_id = {str(row.discord_id): row for row in admins if row.discord_id}
     member_by_id = {str(row.discord_id): row for row in discord_members if row.discord_id}
-    player_ids = [row.player_id for row in players]
+    player_ids = list({row.player_id for row in player_by_id.values()})
     online_ids = set()
     if player_ids:
         online_ids = {
@@ -617,14 +651,8 @@ def _ticket_mention_profiles(
         return {}
 
     members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(ordered_ids)).all()
-    players = db.query(PlayerData).filter(PlayerData.discord_id.in_(ordered_ids)).all()
-    admins = db.query(AdminUser).filter(
-        AdminUser.discord_id.in_(ordered_ids),
-        AdminUser.is_deleted == 0,
-    ).all()
+    player_by_id, admin_by_id = _ticket_identity_links(db, ordered_ids)
     member_by_id = {str(row.discord_id): row for row in members if row.discord_id}
-    player_by_id = {str(row.discord_id): row for row in players if row.discord_id}
-    admin_by_id = {str(row.discord_id): row for row in admins if row.discord_id}
 
     profiles: dict[str, dict] = {}
     for discord_id in ordered_ids:
@@ -779,6 +807,7 @@ def api_ticket_detail(request: Request, ticket_id: int, db: Session = Depends(ge
     can_delete = check_permission(admin, "tickets", "delete")
 
     return {
+        "discord_guild_id": str(settings.discord_guild_id or "") or None,
         "ticket": _serialize_ticket(
             ticket,
             assigned_admin,

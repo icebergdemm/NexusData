@@ -9,6 +9,7 @@ import { formatBrowserDate } from "@/lib/format-date"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import type { PlayerDetailResponse } from "@/pages/players/detail-types"
+import { useDiscordProfile } from "@/lib/use-discord-profile"
 
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
@@ -31,6 +32,7 @@ function TooltipInner({ playerId }: { playerId: number }) {
     queryFn: () => api.get<PlayerDetailResponse>(`/api/v1/admin/players/${playerId}`),
     staleTime: 2 * 60 * 1000,
   })
+  const { data: discordProfile } = useDiscordProfile(data?.player?.discord_profile_id)
 
   if (isLoading) {
     return <div className="w-64 space-y-2"><Skeleton className="h-10 w-full" /><Skeleton className="h-16 w-full" /></div>
@@ -48,8 +50,17 @@ function TooltipInner({ playerId }: { playerId: number }) {
 
   return (
     <div className="w-80 space-y-2.5 text-left">
+      {discordProfile?.banner_url ? (
+        <div className="-mx-3 -mt-3 h-16 overflow-hidden border-b bg-muted">
+          <img
+            src={discordProfile.banner_url}
+            alt=""
+            className="size-full object-cover"
+          />
+        </div>
+      ) : null}
       <div className="flex items-center gap-2.5">
-        <PlayerAvatar url={data.player.steam_avatar_url} name={actualName} size={36} online={data.is_online} />
+        <PlayerAvatar url={discordProfile?.avatar_url || data.player.steam_avatar_url} name={actualName} size={36} online={data.is_online} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold leading-tight">{actualName}</div>
           {forcedName && (

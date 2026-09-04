@@ -18,6 +18,7 @@ from database import Base, get_db
 from models import AdminUser, DiscordMember, PlayerData, Ticket, TicketMessage
 from routes import tickets_api
 from routes.tickets_api import (
+    _admin_avatar,
     _archive_summary,
     _close_uploads,
     _content_disposition,
@@ -319,6 +320,70 @@ def test_ticket_mention_profiles_resolve_linked_player_and_nested_forward():
     }
     assert profiles["123456789012345678"]["display_name"] == "Свидетель"
     assert profiles["123456789012345678"]["player_id"] is None
+
+
+def test_ticket_mention_profiles_resolve_player_linked_through_nexus_account():
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=[AdminUser.__table__, PlayerData.__table__, DiscordMember.__table__],
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as db:
+        account = AdminUser(
+            id=44,
+            discord_id="987047045498011658",
+            discord_username="Сергей Аверин",
+            is_deleted=0,
+            is_superuser=0,
+        )
+        db.add(account)
+        db.flush()
+        db.add(PlayerData(
+            player_id=71,
+            player_last_time_name="Сергей Аверин",
+            player_steamid="76561198000000071",
+            discord_id=None,
+            linked_admin_id=account.id,
+        ))
+        db.commit()
+
+        profiles = _ticket_mention_profiles(
+            db,
+            SimpleNamespace(is_superuser=True),
+            [_message(content="Покажите <@987047045498011658> профиль")],
+        )
+
+    assert profiles["987047045498011658"]["player_id"] == 71
+    assert profiles["987047045498011658"]["profile_url"] == "/players/71"
+    assert profiles["987047045498011658"]["is_staff"] is True
+    engine.dispose()
+
+
+def test_admin_avatar_preserves_animated_discord_hash():
+    admin = SimpleNamespace(
+        discord_id="987047045498011658",
+        discord_avatar="a_animatedhash",
+    )
+
+    assert _admin_avatar(admin) == (
+        "https://cdn.discordapp.com/avatars/987047045498011658/"
+        "a_animatedhash.gif?size=128"
+    )
+
+
+def test_admin_avatar_uses_png_for_static_discord_hash():
+    admin = SimpleNamespace(
+        discord_id="987047045498011658",
+        discord_avatar="statichash",
+    )
+
+    assert _admin_avatar(admin).endswith("/statichash.png?size=128")
 
 
 def test_ticket_participants_use_synced_discord_avatar_as_fallback():

@@ -77,6 +77,71 @@ bot = commands.Bot(
     max_messages=100,
 )
 
+# Full Discord profiles (notably banners) require REST lookups and are not
+# present in the lightweight member rows synchronized to SQL.  Keep them in
+# memory for a short period so opening several ticket mentions does not turn
+# into repeated Discord API calls.
+_DISCORD_PROFILE_CACHE_TTL_SECONDS = 10 * 60
+_DISCORD_PROFILE_CACHE_MAX_ENTRIES = 512
+_discord_profile_cache: dict[int, tuple[float, dict]] = {}
+
+
+def _discord_asset_url(asset, *, size: int) -> str | None:
+    """Serialize an Asset without changing its animated format to PNG."""
+    if not asset:
+        return None
+    try:
+        return str(asset.with_size(size))
+    except (AttributeError, TypeError, ValueError):
+        return str(getattr(asset, "url", asset))
+
+
+async def get_discord_user_profile(discord_id: int) -> dict:
+    """Return the live Discord avatar/banner used by NexusData profiles.
+
+    ``fetch_user`` supplies the global banner while ``fetch_member`` supplies
+    guild-specific avatar/banner overrides.  The latter intentionally wins,
+    matching what staff see for the same person inside this Discord server.
+    """
+    user_id = int(discord_id)
+    now = asyncio.get_running_loop().time()
+    cached = _discord_profile_cache.get(user_id)
+    if cached and now - cached[0] < _DISCORD_PROFILE_CACHE_TTL_SECONDS:
+        return dict(cached[1])
+
+    user = await bot.fetch_user(user_id)
+    member = None
+    guild = bot.get_guild(GUILD_ID) if GUILD_ID else None
+    if guild:
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+
+    avatar = getattr(member, "display_avatar", None) or getattr(user, "display_avatar", None)
+    banner = getattr(member, "banner", None) or getattr(user, "banner", None)
+    profile = {
+        "discord_id": str(user_id),
+        "username": str(user),
+        "display_name": (
+            getattr(member, "display_name", None)
+            or getattr(user, "global_name", None)
+            or getattr(user, "display_name", None)
+            or getattr(user, "name", None)
+            or str(user_id)
+        ),
+        "avatar_url": _discord_asset_url(avatar, size=256),
+        "banner_url": _discord_asset_url(banner, size=1024),
+        "accent_color": str(getattr(user, "accent_color", None) or "") or None,
+    }
+    if len(_discord_profile_cache) >= _DISCORD_PROFILE_CACHE_MAX_ENTRIES:
+        oldest_id = min(_discord_profile_cache, key=lambda key: _discord_profile_cache[key][0])
+        _discord_profile_cache.pop(oldest_id, None)
+    _discord_profile_cache[user_id] = (now, profile)
+    return dict(profile)
+
 # Anti-raid tracking
 _join_timestamps = []  # list of join times in last 60 seconds
 RAID_THRESHOLD = 5  # joins per minute to trigger alert

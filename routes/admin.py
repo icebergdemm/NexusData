@@ -1824,6 +1824,10 @@ async def api_player_detail(
                 "auto_source_department_name": auto_department_name,
             })
 
+    discord_profile_id = player.discord_id or (
+        player.linked_admin_user.discord_id if player.linked_admin_user else None
+    )
+
     return {
         "player": {
             "player_id": player.player_id,
@@ -1836,6 +1840,7 @@ async def api_player_detail(
             "kit_level": player.kit_level,
             "last_ip": player.last_ip,
             "discord_id": player.discord_id,
+            "discord_profile_id": discord_profile_id,
             "discord_id_confirmed": bool(player.discord_id_confirmed),
             "is_secret": bool(player.is_secret),
             "linked_admin_id": player.linked_admin_id,
@@ -1901,6 +1906,35 @@ async def api_player_detail(
         "punishment_types": PUNISHMENT_TYPES,
         "punishment_type_labels": PUNISHMENT_TYPE_LABELS,
     }
+
+
+@router.get("/api/v1/admin/discord-profiles/{discord_id}")
+async def api_discord_profile(
+    discord_id: int,
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Return live Discord profile media without persisting CDN files in SQL."""
+    can_view = any((
+        check_permission(current_admin, "players", "view"),
+        check_permission(current_admin, "players_special", "view"),
+        check_permission(current_admin, "tickets", "view"),
+        check_permission(current_admin, "discord_bot", "view"),
+    ))
+    if not can_view:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    from discord_bot import bot as discord_bot
+    from routes.discord_viewer_api import _call_bot
+
+    try:
+        return await _call_bot(
+            discord_bot.get_discord_user_profile(discord_id),
+            timeout=12.0,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 502 and "NotFound" in str(exc.detail):
+            raise HTTPException(status_code=404, detail="Discord user not found") from exc
+        raise
 
 
 @router.post("/api/v1/admin/players/{player_id}/sync")

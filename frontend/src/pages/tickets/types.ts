@@ -196,6 +196,7 @@ export interface TicketPlayerSummary {
 }
 
 export interface TicketDetailResponse {
+  discord_guild_id?: string | null
   ticket: TicketRow
   player: TicketPlayerSummary | null
   messages: TicketMessageRow[]

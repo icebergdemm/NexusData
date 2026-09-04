@@ -9,6 +9,8 @@ export interface PlayerDetailPlayer {
   kit_level: number
   last_ip: string | null
   discord_id: string | null
+  /** Direct Discord ID or the Discord ID of the linked NexusData account. */
+  discord_profile_id: string | null
   discord_id_confirmed: boolean
   is_secret: boolean
   linked_admin_id: number | null

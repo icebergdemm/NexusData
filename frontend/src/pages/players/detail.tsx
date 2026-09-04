@@ -35,6 +35,8 @@ import { useCurrentAdmin } from "@/lib/auth"
 import type { PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
 import { RewardsSection } from "./rewards-section"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import { useDiscordProfile } from "@/lib/use-discord-profile"
 
 interface AdminOption { id: number; discord_username: string | null }
 
@@ -90,6 +92,7 @@ export function PlayerDetailPage() {
     queryKey,
     queryFn: () => api.get<PlayerDetailResponse>(`/api/v1/admin/players/${playerId}`),
   })
+  const { data: discordProfile } = useDiscordProfile(data?.player?.discord_profile_id)
 
   useEffect(() => {
     setDiscordIdDraft(data?.player.discord_id ?? "")
@@ -265,9 +268,20 @@ export function PlayerDetailPage() {
     <div className="space-y-4">
       {/* ── Header ── */}
       <Card className="overflow-hidden py-0">
-        <div className="bg-gradient-to-r from-primary/15 via-card to-card px-6 py-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
+        <div className="relative bg-gradient-to-r from-primary/15 via-card to-card px-6 py-5">
+          {discordProfile?.banner_url ? (
+            <img src={discordProfile.banner_url} alt="" className="absolute inset-0 size-full object-cover" />
+          ) : null}
+          {discordProfile?.banner_url ? <div className="absolute inset-0 bg-gradient-to-r from-background/95 via-background/85 to-background/65" /> : null}
+          <div className="relative flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-4">
+              <PlayerAvatar
+                url={discordProfile?.avatar_url || player.steam_avatar_url}
+                name={player.player_last_time_name}
+                size={64}
+                online={data.is_online}
+              />
+              <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold">{player.player_last_time_name}</h1>
                 {player.forced_display_name && (
@@ -324,20 +338,22 @@ export function PlayerDetailPage() {
                   <Copy className="size-3" />
                 </Button>
               </div>
-              {player.discord_id && (
+              {player.discord_profile_id && (
                 <div className="mt-0.5 flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-                  Discord: {player.discord_id}
+                  Discord: {player.discord_profile_id}
                   <Button
                     size="icon-xs"
                     variant="ghost"
                     className="size-4"
-                    onClick={() => copyToClipboard(player.discord_id!, "Discord ID")}
+                    onClick={() => copyToClipboard(player.discord_profile_id!, "Discord ID")}
                     title="Скопировать Discord ID"
                   >
                     <Copy className="size-3" />
                   </Button>
-                  {player.discord_id_confirmed ? (
+                  {player.discord_id && player.discord_id_confirmed ? (
                     <Badge variant="outline" className="border-success/40 text-[10px] text-success">Подтверждён</Badge>
+                  ) : player.linked_admin_id ? (
+                    <Badge variant="outline" className="border-info/40 text-[10px] text-info">Аккаунт NexusData</Badge>
                   ) : (
                     <Badge variant="outline" className="border-warning/40 text-[10px] text-warning">Не точный</Badge>
                   )}
@@ -361,6 +377,7 @@ export function PlayerDetailPage() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
             <div className="flex gap-4 text-left text-sm">
               <div><div className="text-lg font-bold">{fmtPlayTime(player.play_time_hours)}</div><div className="text-xs text-muted-foreground">наиграно</div></div>
@@ -370,7 +387,7 @@ export function PlayerDetailPage() {
               <div><div className={`text-lg font-bold ${activePunishments ? "text-destructive" : ""}`}>{activePunishments}</div><div className="text-xs text-muted-foreground">активных наказаний</div></div>
             </div>
           </div>
-          <div className="mt-2 text-xs text-muted-foreground">Последний вход: {fmtDate(player.last_login_time)}{player.last_ip && ` · IP ${player.last_ip}`}</div>
+          <div className="relative mt-2 text-xs text-muted-foreground">Последний вход: {fmtDate(player.last_login_time)}{player.last_ip && ` · IP ${player.last_ip}`}</div>
         </div>
 
         {data.has_edit && (
