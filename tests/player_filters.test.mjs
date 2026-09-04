@@ -9,6 +9,7 @@ import {
   resetPlayerFilters,
 } from "../frontend/src/lib/player-filters.ts"
 import { parsePlayerFilterState } from "../frontend/src/lib/player-filter-storage.ts"
+import { formatDossierRow } from "../frontend/src/pages/ai-center/format.ts"
 
 const players = [
   {
@@ -28,6 +29,17 @@ const players = [
     has_discord_link: true,
   },
 ]
+
+test("dossier rows show human text with source metadata separately", () => {
+  assert.deepEqual(
+    formatDossierRow({ text: "Есть активное наказание", source: "punishment" }),
+    { text: "Есть активное наказание", metadata: "Источник: наказание" },
+  )
+  assert.deepEqual(
+    formatDossierRow({ text: "Проверить лог", reason: "Повторяющееся событие" }),
+    { text: "Проверить лог", metadata: "Почему: Повторяющееся событие" },
+  )
+})
 
 test("linked filter removes players without a Discord link", () => {
   const result = filterAndSortPlayers(players, { ...resetPlayerFilters(), discordFilter: "linked" }, { key: "name", direction: "asc" })

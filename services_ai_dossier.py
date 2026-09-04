@@ -39,8 +39,18 @@ OUTPUT_CONTRACT = """
 NON-NEGOTIABLE OUTPUT CONTRACT:
 - Return exactly one compact JSON object and nothing else.
 - Never return Markdown, headings, bullet lists, explanations, or a session-by-session report.
+- Write every human-readable value in Russian. Do not translate field names; return the JSON keys exactly as requested.
+- The `analytics` block is a precomputed concentrate for the moderator. Use it to answer
+  what is important about this player; never describe the structure of the input data.
 - Aggregate the input into a short moderator dossier. Use at most 5 facts, 3 signals,
   4 caveats, and 5 evidence items. Do not enumerate all sessions or logs.
+- A fact must contain a concrete player-specific value, date, count, or recorded event.
+  Do not write facts such as "the data contains sessions" or "there are no traps"
+  unless that absence is relevant to the moderator.
+- A signal is only a bounded question for follow-up, supported by a concrete fact.
+  Do not create a signal merely because activity exists, the analysis window is 30 days,
+  or a count is non-zero. If there is no meaningful anomaly, return an empty signals array.
+  Never recommend a punishment and never invent intent or misconduct.
 - Use exactly these top-level keys: summary, facts, signals, caveats, confidence, evidence.
 - facts items must contain text and source; signals items must contain text and reason;
   evidence items must contain kind and id.
@@ -61,7 +71,7 @@ DOSSIER_RESPONSE_SCHEMA = {
                 "additionalProperties": False,
                 "properties": {
                     "text": {"type": "string", "maxLength": 500},
-                    "source": {"type": "string", "enum": ["stats", "session", "punishment", "note", "label", "trap", "log", "profile"]},
+                    "source": {"type": "string", "enum": ["stats", "session", "punishment", "note", "label", "trap", "log", "anticheat", "profile"]},
                 },
                 "required": ["text", "source"],
             },
@@ -88,7 +98,7 @@ DOSSIER_RESPONSE_SCHEMA = {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "kind": {"type": "string", "enum": ["log", "session", "punishment", "note", "profile", "stats"]},
+                    "kind": {"type": "string", "enum": ["log", "session", "punishment", "note", "profile", "stats", "anticheat"]},
                     "id": {"type": "string", "maxLength": 100},
                 },
                 "required": ["kind", "id"],
@@ -252,8 +262,148 @@ def sanitize_dossier_result(result: dict, input_payload: dict) -> dict:
     for kind, source_key, field in (("session", "sessions", "id"), ("note", "notes", "id"), ("label", "labels", "id"), ("trap", "traps", "id"), ("punishment", "punishments", "id"), ("log", "logs", "id"), ("anticheat", "anticheat_events", "id")):
         known_ids.update(f"{kind}:{row[field]}" for row in input_payload.get(source_key, []) if isinstance(row, dict) and row.get(field) is not None)
     clean = _redact(result)
+    for key in ("facts", "signals"):
+        unique = []
+        seen = set()
+        for item in clean[key]:
+            marker = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if marker not in seen:
+                seen.add(marker)
+                unique.append(item)
+        clean[key] = unique
+    baseline_facts = build_dossier_baseline_facts(input_payload)
+    generic_markers = (
+        "данные содерж", "data contain", "data includes", "the data", "список сесс",
+        "window of time", "временное окно", "there are no", "нет ловушек",
+        "краткий обзор данных", "summary of the", "here's a summary",
+    )
+    model_facts = [
+        item for item in clean["facts"]
+        if not any(marker in str(item.get("text", "")).casefold() for marker in generic_markers)
+        and (
+            item.get("source") == "profile"
+            or (item.get("source") == "stats" and input_payload.get("stats"))
+            or bool(input_payload.get({
+                "session": "sessions",
+                "punishment": "punishments",
+                "note": "notes",
+                "label": "labels",
+                "trap": "traps",
+                "log": "logs",
+                "anticheat": "anticheat_events",
+            }.get(item.get("source"), "")))
+        )
+    ]
+    baseline_markers = {json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")) for item in baseline_facts}
+    clean["facts"] = (baseline_facts + [
+        item for item in model_facts
+        if json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")) not in baseline_markers
+    ])[:5]
+    known_fact_texts = {str(item.get("text", "")).strip().casefold() for item in clean["facts"]}
+    risk_data_present = any(input_payload.get(key) for key in ("punishments", "notes", "labels", "traps", "anticheat_events", "logs"))
+    meaningful_reason_markers = (
+        "наказ", "античит", "чит", "ловуш", "наруш", "оскорб", "спам", "гриф",
+        "жалоб", "мут", "бан", "санкц", "подозр", "конфликт", "угроз", "cheat", "exploit",
+    )
+    clean["signals"] = [
+        item for item in clean["signals"]
+        if risk_data_present
+        and str(item.get("reason", "")).strip().casefold() not in {"profile", "stats", "session", "есть сессии", "activity"}
+        and any(marker in str(item.get("reason", "")).casefold() for marker in meaningful_reason_markers)
+        and str(item.get("text", "")).strip().casefold() not in known_fact_texts
+    ]
+    summary_is_vague = len(clean["summary"].split()) <= 4
+    if (any(marker in clean["summary"].casefold() for marker in generic_markers) or summary_is_vague) and clean["facts"]:
+        clean["summary"] = "Ключевое: " + "; ".join(item["text"] for item in clean["facts"][:3]) + "."
     clean["evidence"] = [item for item in clean["evidence"] if isinstance(item, dict) and (item.get("id") in known_ids or f"{item.get('kind')}:{item.get('id')}" in known_ids)]
     return clean
+
+
+def build_dossier_analytics(input_payload: dict) -> dict:
+    """Build deterministic, moderator-oriented aggregates for the small model."""
+    sessions = [row for row in input_payload.get("sessions", []) if isinstance(row, dict)]
+    durations = []
+    for row in sessions:
+        try:
+            duration = int(row.get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        if duration > 0:
+            durations.append(duration)
+
+    punishments = [row for row in input_payload.get("punishments", []) if isinstance(row, dict)]
+    traps = [row for row in input_payload.get("traps", []) if isinstance(row, dict)]
+    return {
+        "window_days": input_payload.get("window", {}).get("days"),
+        "activity": {
+            "sessions": len(sessions),
+            "completed_sessions": sum(1 for row in sessions if row.get("logout_time")),
+            "sessions_with_duration": len(durations),
+            "total_duration_seconds": sum(durations),
+            "average_duration_seconds": round(sum(durations) / len(durations)) if durations else 0,
+            "longest_duration_seconds": max(durations, default=0),
+            "last_login_time": sessions[0].get("login_time") if sessions else None,
+        },
+        "moderation": {
+            "punishments_total": len(punishments),
+            "active_punishments": sum(1 for row in punishments if row.get("active")),
+            "notes": len(input_payload.get("notes", [])),
+            "labels": len(input_payload.get("labels", [])),
+            "traps_total": len(traps),
+            "active_traps": sum(1 for row in traps if row.get("active")),
+            "triggered_traps": sum(1 for row in traps if row.get("triggered_at")),
+            "anticheat_events": len(input_payload.get("anticheat_events", [])),
+            "logs": len(input_payload.get("logs", [])),
+        },
+        "game_stats": input_payload.get("stats"),
+        "missing": list(input_payload.get("missing", [])),
+    }
+
+
+def build_dossier_baseline_facts(input_payload: dict) -> list[dict]:
+    """Return concrete facts so a weak model cannot replace the dossier with field descriptions."""
+
+    def _session_word(count: int) -> str:
+        if count % 10 == 1 and count % 100 != 11:
+            return "сессия"
+        if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+            return "сессии"
+        return "сессий"
+
+    def _format_duration(seconds: int) -> str:
+        minutes, remainder = divmod(max(0, int(seconds)), 60)
+        if minutes < 1:
+            return f"{remainder} сек"
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours} ч {minutes} мин" if minutes else f"{hours} ч"
+        return f"{minutes} мин"
+
+    analytics = build_dossier_analytics(input_payload)
+    activity = analytics["activity"]
+    moderation = analytics["moderation"]
+    facts = []
+    if activity["sessions"]:
+        facts.append({"text": f"За последние {analytics['window_days']} дней: {activity['sessions']} {_session_word(activity['sessions'])}, завершено {activity['completed_sessions']}", "source": "session"})
+    if activity["total_duration_seconds"]:
+        facts.append({"text": f"Суммарная длительность сессий: {_format_duration(activity['total_duration_seconds'])}", "source": "session"})
+    stats = analytics.get("game_stats") or {}
+    for key, label in (("killed_players", "убийств игроков"), ("killed_monsters", "убийств монстров"), ("saved_players", "спасённых игроков")):
+        if key in stats and stats[key] is not None:
+            facts.append({"text": f"{label.capitalize()}: {stats[key]}", "source": "stats"})
+    if moderation["punishments_total"]:
+        facts.append({"text": f"Зарегистрировано наказаний: {moderation['punishments_total']}, активных: {moderation['active_punishments']}", "source": "punishment"})
+    if moderation["anticheat_events"]:
+        facts.append({"text": f"Античит-событий за период: {moderation['anticheat_events']}", "source": "anticheat"})
+    if moderation["notes"]:
+        facts.append({"text": f"Заметок модераторов: {moderation['notes']}", "source": "note"})
+    if moderation["labels"]:
+        facts.append({"text": f"Меток: {moderation['labels']}", "source": "label"})
+    if moderation["traps_total"]:
+        facts.append({"text": f"Ловушек: {moderation['traps_total']}, активных: {moderation['active_traps']}", "source": "trap"})
+    if moderation["logs"]:
+        facts.append({"text": f"Связанных игровых логов: {moderation['logs']}", "source": "log"})
+    return facts[:5]
 
 
 def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFAULT_MODEL, prompt: Optional[str] = None) -> dict:
@@ -268,7 +418,7 @@ def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFA
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Return the compact JSON dossier now. Do not summarize this data as prose.\nINPUT_DATA:\n" + input_text},
+                {"role": "user", "content": "Составь короткое досье игрока для модератора на русском языке. Начни сразу с JSON-объекта. Не пересказывай поля и структуру входных данных, не перечисляй сессии. Используй конкретные факты и источники.\nINPUT_DATA:\n" + input_text},
             ],
             "temperature": 0.2,
             "max_tokens": MAX_OUTPUT_TOKENS,
@@ -414,6 +564,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
             payload["missing"].append("payload_truncated")
     if not payload["logs"] and "server_logs" not in payload["missing"]:
         payload["missing"].append("no_matching_server_logs")
+    payload["analytics"] = build_dossier_analytics(payload)
     return payload
 
 

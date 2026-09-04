@@ -14,6 +14,7 @@ from config import Settings, snapshot_env_file
 from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerSession
 from services_ai_dossier import (
     build_kobold_request,
+    build_dossier_analytics,
     dossier_evidence_link,
     dossier_run_public_dict,
     dossier_response_with_run,
@@ -105,8 +106,38 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual(response_format["json_schema"]["schema"]["type"], "object")
         self.assertEqual(response_format["json_schema"]["schema"]["required"], ["summary", "facts", "signals", "caveats", "confidence", "evidence"])
         self.assertIn("player_id", request["json"]["messages"][1]["content"])
-        self.assertIn("Return the compact JSON dossier now", request["json"]["messages"][1]["content"])
+        self.assertIn("короткое досье игрока для модератора", request["json"]["messages"][1]["content"])
         self.assertIn("NON-NEGOTIABLE OUTPUT CONTRACT", request["json"]["messages"][0]["content"])
+        self.assertIn("every human-readable value in Russian", request["json"]["messages"][0]["content"])
+        self.assertIn("Do not create a signal merely because activity exists", request["json"]["messages"][0]["content"])
+
+    def test_dossier_analytics_is_a_moderator_focused_concentrate(self):
+        analytics = build_dossier_analytics({
+            "stats": {"killed_players": 2, "killed_monsters": 41},
+            "sessions": [
+                {"id": 10, "login_time": "2026-09-04T10:00:00", "logout_time": "2026-09-04T11:00:00", "duration": 3600, "avg_ping": 80},
+                {"id": 11, "login_time": "2026-09-03T10:00:00", "logout_time": None, "duration": 0, "avg_ping": None},
+            ],
+            "punishments": [{"id": 5, "active": True}, {"id": 4, "active": False}],
+            "notes": [{"id": 8}],
+            "labels": [{"id": 9}],
+            "traps": [{"id": 7, "active": True, "triggered_at": None}],
+            "anticheat_events": [{"id": 6}],
+            "logs": [{"id": 12}, {"id": 13}],
+            "missing": ["server_logs"],
+            "window": {"days": 30},
+        })
+
+        self.assertEqual(analytics["activity"]["sessions"], 2)
+        self.assertEqual(analytics["activity"]["completed_sessions"], 1)
+        self.assertEqual(analytics["activity"]["total_duration_seconds"], 3600)
+        self.assertEqual(analytics["activity"]["average_duration_seconds"], 3600)
+        self.assertEqual(analytics["moderation"]["punishments_total"], 2)
+        self.assertEqual(analytics["moderation"]["active_punishments"], 1)
+        self.assertEqual(analytics["moderation"]["notes"], 1)
+        self.assertEqual(analytics["moderation"]["anticheat_events"], 1)
+        self.assertEqual(analytics["moderation"]["logs"], 2)
+        self.assertEqual(analytics["missing"], ["server_logs"])
 
     def test_should_queue_only_when_changed_or_stale_unless_forced(self):
         now = datetime(2026, 9, 4, 12, 0)
@@ -135,6 +166,118 @@ class AIDossierContractTests(unittest.TestCase):
         }, payload)
         self.assertNotIn("10.0.0.1", result["summary"])
         self.assertEqual(result["evidence"], [{"kind": "log", "id": 42}])
+
+    def test_sanitize_removes_duplicate_facts_and_signals(self):
+        result = sanitize_dossier_result({
+            "summary": "Игрок активен.",
+            "facts": [
+                {"text": "Игрок активен.", "source": "session"},
+                {"text": "Игрок активен.", "source": "session"},
+            ],
+            "signals": [
+                {"text": "Проверить наказание.", "reason": "Есть активное наказание."},
+                {"text": "Проверить наказание.", "reason": "Есть активное наказание."},
+            ],
+            "caveats": [],
+            "confidence": "low",
+            "evidence": [],
+        }, {"profile": {"player_id": 7}, "sessions": [{"id": 9}], "punishments": [{"id": 1}]})
+
+        self.assertEqual(sum(item["text"] == "Игрок активен." for item in result["facts"]), 1)
+        self.assertEqual(len(result["signals"]), 1)
+
+    def test_sanitize_prefers_concrete_aggregates_and_drops_activity_only_signals(self):
+        payload = {
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": {"killed_players": 0, "killed_monsters": 12},
+            "sessions": [
+                {"login_time": "2026-09-04T10:00:00", "logout_time": "2026-09-04T11:00:00", "duration": 3600},
+                {"login_time": "2026-09-03T10:00:00", "logout_time": "2026-09-03T10:30:00", "duration": 1800},
+            ],
+            "punishments": [], "notes": [], "labels": [], "traps": [],
+            "anticheat_events": [], "logs": [], "missing": [],
+            "window": {"days": 30},
+        }
+        result = sanitize_dossier_result({
+            "summary": "Вот краткий обзор данных.",
+            "facts": [{"text": "Данные содержат список сессий игрока.", "source": "profile"}],
+            "signals": [{"text": "Проверить активность игрока.", "reason": "Есть сессии."}],
+            "caveats": [],
+            "confidence": "high",
+            "evidence": [],
+        }, payload)
+
+        self.assertTrue(any("2 сесс" in item["text"] for item in result["facts"]))
+        self.assertTrue(any("12" in item["text"] for item in result["facts"]))
+        self.assertIn("2 сесс", result["summary"])
+        self.assertEqual(result["signals"], [])
+
+    def test_sanitize_drops_model_fact_when_declared_source_has_no_records(self):
+        payload = {
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": None,
+            "sessions": [], "punishments": [], "notes": [], "labels": [],
+            "traps": [], "anticheat_events": [], "logs": [], "missing": [],
+            "window": {"days": 30},
+        }
+        result = sanitize_dossier_result({
+            "summary": "Нарушений не зафиксировано.",
+            "facts": [{"text": "Игрок получил бан за нарушение правил.", "source": "punishment"}],
+            "signals": [], "caveats": [], "confidence": "low", "evidence": [],
+        }, payload)
+
+        self.assertFalse(any("получил бан" in item["text"] for item in result["facts"]))
+
+    def test_sanitize_drops_signal_without_moderation_reason(self):
+        payload = {
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": None,
+            "sessions": [], "punishments": [], "notes": [], "labels": [],
+            "traps": [], "anticheat_events": [], "logs": [{"id": 42}], "missing": [],
+            "window": {"days": 30},
+        }
+        result = sanitize_dossier_result({
+            "summary": "Есть данные для проверки.", "facts": [],
+            "signals": [{"text": "Игрок подозрительный.", "reason": "В профиле есть логи."}],
+            "caveats": [], "confidence": "low", "evidence": [],
+        }, payload)
+
+        self.assertEqual(result["signals"], [])
+
+    def test_baseline_duration_is_readable_for_moderators(self):
+        payload = {
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": None,
+            "sessions": [{"login_time": "2026-09-04T10:00:00", "duration": 5400}],
+            "punishments": [], "notes": [], "labels": [], "traps": [],
+            "anticheat_events": [], "logs": [], "missing": [],
+            "window": {"days": 30},
+        }
+
+        result = sanitize_dossier_result({
+            "summary": "Короткая сводка.", "facts": [], "signals": [],
+            "caveats": [], "confidence": "high", "evidence": [],
+        }, payload)
+
+        self.assertTrue(any("1 ч 30 мин" in item["text"] for item in result["facts"]))
+
+    def test_sanitize_replaces_vague_summary_with_concrete_facts(self):
+        payload = {
+            "profile": {"player_id": 7, "name": "Тест"},
+            "stats": {"killed_players": 2},
+            "sessions": [{"login_time": "2026-09-04T10:00:00", "duration": 3600}],
+            "punishments": [], "notes": [], "labels": [], "traps": [],
+            "anticheat_events": [], "logs": [], "missing": [],
+            "window": {"days": 30},
+        }
+
+        result = sanitize_dossier_result({
+            "summary": "Игрок активен.", "facts": [], "signals": [],
+            "caveats": [], "confidence": "medium", "evidence": [],
+        }, payload)
+
+        self.assertIn("сесс", result["summary"])
+        self.assertIn("убийств игроков", result["summary"].casefold())
 
     def test_active_player_selection_is_recent_login_desc_then_id(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")

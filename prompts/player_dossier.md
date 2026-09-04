@@ -19,9 +19,9 @@
 Схема:
 {
   "summary": "Короткая сводка до 500 символов",
-  "facts": [{"text": "наблюдаемый факт", "source": "stats|session|punishment|note|label|trap|log|profile"}],
+  "facts": [{"text": "наблюдаемый факт", "source": "stats|session|punishment|note|label|trap|log|anticheat|profile"}],
   "signals": [{"text": "что стоит проверить", "reason": "только связь с фактами"}],
   "caveats": ["ограничение или недоступный источник"],
   "confidence": "low|medium|high",
-  "evidence": [{"kind": "log|session|punishment|note|profile|stats", "id": "стабильный идентификатор"}]
+  "evidence": [{"kind": "log|session|punishment|note|profile|stats|anticheat", "id": "стабильный идентификатор"}]
 }

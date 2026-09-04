@@ -19,6 +19,7 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import type { AIDossierResponse } from "@/pages/players/detail-types"
+import { formatDossierRow } from "./format"
 
 type Config = {
   enabled: boolean; daily_enabled: boolean; test_mode: boolean; daily_limit: number
@@ -40,7 +41,7 @@ function Status({ value }: { value: string }) {
 }
 
 function DataList({ title, rows }: { title: string; rows: Array<Record<string, unknown>> }) {
-  return <div><h3 className="mb-2 text-sm font-medium">{title}</h3>{rows.length ? <div className="space-y-2">{rows.map((row, index) => <div key={index} className="rounded border p-2 text-sm">{Object.entries(row).map(([key, value]) => <div key={key}><span className="text-muted-foreground">{key}: </span>{typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div>)}</div> : <p className="text-sm text-muted-foreground">Нет данных</p>}</div>
+  return <div><h3 className="mb-2 text-sm font-medium">{title}</h3>{rows.length ? <div className="space-y-2">{rows.map((row, index) => { const formatted = formatDossierRow(row); return <div key={index} className="rounded border p-2 text-sm"><div>{formatted.text}</div>{formatted.metadata && <div className="mt-1 text-xs text-muted-foreground">{formatted.metadata}</div>}</div> })}</div> : <p className="text-sm text-muted-foreground">Нет данных</p>}</div>
 }
 
 function RawResponsePanel({ value }: { value: string }) {
