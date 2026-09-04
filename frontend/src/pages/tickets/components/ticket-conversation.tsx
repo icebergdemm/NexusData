@@ -12,6 +12,7 @@ import {
   FileArchive,
   FileImage,
   Forward,
+  ImageOff,
   Link2,
   MessageSquareReply,
   ShieldCheck,
@@ -35,6 +36,20 @@ import { formatBytes, participantName } from "./ticket-utils"
 const IMAGE_EXTENSIONS = /\.(avif|bmp|gif|jpe?g|png|webp)$/i
 const VIDEO_EXTENSIONS = /\.(m4v|mov|mp4|webm)$/i
 const AUDIO_EXTENSIONS = /\.(aac|flac|m4a|mp3|ogg|opus|wav)$/i
+
+const MEDIA_TYPES_BY_EXTENSION: Record<string, string> = {
+  aac: "audio/aac",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  mov: "video/quicktime",
+  mp3: "audio/mpeg",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  wav: "audio/wav",
+  webm: "video/webm",
+}
 
 function downloadUrl(attachment: TicketAttachment): string {
   return attachment.download_url || attachment.url || ""
@@ -60,6 +75,13 @@ function isAudio(attachment: TicketAttachment): boolean {
   return attachment.content_type?.startsWith("audio/") || AUDIO_EXTENSIONS.test(attachment.filename)
 }
 
+function mediaType(attachment: TicketAttachment, kind: "audio" | "video"): string | undefined {
+  const declared = attachment.content_type?.split(";", 1)[0].trim().toLowerCase()
+  if (declared?.startsWith(`${kind}/`)) return declared
+  const extension = attachment.filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
+  return extension ? MEDIA_TYPES_BY_EXTENSION[extension] : undefined
+}
+
 function AttachmentArchiveState({ attachment }: { attachment: TicketAttachment }) {
   const state = attachment.archive_status
   if (attachment.archived || state === "archived" || state === "complete") {
@@ -73,6 +95,108 @@ function AttachmentArchiveState({ attachment }: { attachment: TicketAttachment }
     return <span className="inline-flex items-center gap-1 text-[10px] text-warning" title="Файл сохраняется"><Clock3 className="size-3" />Сохраняется</span>
   }
   return <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground" title="Ссылка ведёт на исходный файл"><Link2 className="size-3" />Источник</span>
+}
+
+function MediaFailure({
+  attachment,
+  kind,
+}: {
+  attachment: TicketAttachment
+  kind: "image" | "video" | "audio"
+}) {
+  const fileUrl = downloadUrl(attachment)
+  const sourceOnly = !attachment.archived
+  const labels = {
+    image: "Предпросмотр изображения недоступен",
+    video: "Видео не удалось воспроизвести",
+    audio: "Аудио не удалось воспроизвести",
+  }
+  return (
+    <div className="flex min-h-28 flex-col items-center justify-center gap-2 border border-warning/40 bg-muted/40 p-5 text-center">
+      {kind === "image" ? <ImageOff className="size-6 text-muted-foreground" /> : <AlertTriangle className="size-6 text-warning" />}
+      <div>
+        <p className="text-xs font-medium text-foreground">{labels[kind]}</p>
+        <p className="mt-1 max-w-lg truncate font-mono text-[10px] text-foreground">{attachment.filename || "Вложение"}</p>
+        <p className="mt-1 max-w-lg text-[10px] text-muted-foreground">
+          {sourceOnly
+            ? "Исходная ссылка Discord могла истечь. Если канал ещё существует, архиватор повторит попытку."
+            : "Файл сохранён. Возможен неподдерживаемый браузером формат или кодек."}
+        </p>
+      </div>
+      {fileUrl ? (
+        <div className="flex flex-wrap items-center justify-center gap-3 text-xs">
+          <a href={fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
+            <ExternalLink className="size-3.5" />Открыть файл
+          </a>
+          <a href={fileUrl} download={attachment.filename} className="inline-flex items-center gap-1 text-primary hover:underline">
+            <Download className="size-3.5" />Скачать
+          </a>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ImageAttachmentPreview({
+  attachment,
+  image,
+  onOpen,
+  single,
+}: {
+  attachment: TicketAttachment
+  image: LightboxImage
+  onOpen: () => void
+  single: boolean
+}) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return <MediaFailure attachment={attachment} kind="image" />
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "group relative min-h-28 overflow-hidden border bg-muted text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        single ? "max-h-[30rem]" : "aspect-[4/3]",
+      )}
+      aria-label={`Открыть изображение ${image.filename}`}
+    >
+      <img
+        src={image.url}
+        alt={image.filename}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="size-full object-contain transition-opacity group-hover:opacity-90"
+      />
+      <span className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-background/85 px-2 py-1 text-[10px] backdrop-blur-sm">
+        <span className="truncate"><FileImage className="mr-1 inline size-3" />{image.filename}</span>
+        <AttachmentArchiveState attachment={attachment} />
+      </span>
+    </button>
+  )
+}
+
+function VideoAttachmentPreview({ attachment }: { attachment: TicketAttachment }) {
+  const [failed, setFailed] = useState(false)
+  const mediaUrl = previewUrl(attachment)
+  if (failed) return <MediaFailure attachment={attachment} kind="video" />
+  return (
+    <video controls preload="metadata" className="max-h-[30rem] w-full bg-black" onError={() => setFailed(true)}>
+      <source src={mediaUrl} type={mediaType(attachment, "video")} />
+      Ваш браузер не поддерживает воспроизведение видео.
+    </video>
+  )
+}
+
+function AudioAttachmentPreview({ attachment }: { attachment: TicketAttachment }) {
+  const [failed, setFailed] = useState(false)
+  const mediaUrl = previewUrl(attachment)
+  if (failed) return <MediaFailure attachment={attachment} kind="audio" />
+  return (
+    <audio controls preload="metadata" className="h-9 w-full" onError={() => setFailed(true)}>
+      <source src={mediaUrl} type={mediaType(attachment, "audio")} />
+      Ваш браузер не поддерживает аудио.
+    </audio>
+  )
 }
 
 export function AttachmentGallery({ attachments, compact = false }: { attachments: TicketAttachment[]; compact?: boolean }) {
@@ -97,22 +221,13 @@ export function AttachmentGallery({ attachments, compact = false }: { attachment
             {images.map((image, index) => {
               const sourceAttachment = imageAttachments[index]
               return (
-                <button
+                <ImageAttachmentPreview
                   key={`${image.url}-${index}`}
-                  type="button"
-                  onClick={() => setLightboxIndex(index)}
-                  className={cn(
-                    "group relative min-h-28 overflow-hidden border bg-muted text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    images.length === 1 ? "max-h-[30rem]" : "aspect-[4/3]",
-                  )}
-                  aria-label={`Открыть изображение ${image.filename}`}
-                >
-                  <img src={image.url} alt={image.filename} loading="lazy" className="size-full object-cover transition-opacity group-hover:opacity-90" />
-                  <span className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-background/85 px-2 py-1 text-[10px] backdrop-blur-sm">
-                    <span className="truncate"><FileImage className="mr-1 inline size-3" />{image.filename}</span>
-                    {sourceAttachment ? <AttachmentArchiveState attachment={sourceAttachment} /> : null}
-                  </span>
-                </button>
+                  attachment={sourceAttachment}
+                  image={image}
+                  single={images.length === 1}
+                  onOpen={() => setLightboxIndex(index)}
+                />
               )
             })}
           </div>
@@ -133,9 +248,7 @@ export function AttachmentGallery({ attachments, compact = false }: { attachment
           if (isVideo(attachment)) {
             return (
               <figure key={attachment.id ?? `${mediaUrl}-${index}`} className="overflow-hidden border bg-muted/40">
-                <video controls preload="metadata" className="max-h-[30rem] w-full bg-black" src={mediaUrl}>
-                  Ваш браузер не поддерживает воспроизведение видео.
-                </video>
+                <VideoAttachmentPreview attachment={attachment} />
                 <figcaption className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
                   <span className="min-w-0 truncate font-medium">{attachment.filename}</span>
                   <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
@@ -154,7 +267,7 @@ export function AttachmentGallery({ attachments, compact = false }: { attachment
                   <span className="min-w-0 truncate font-medium">{attachment.filename}</span>
                   <AttachmentArchiveState attachment={attachment} />
                 </div>
-                <audio controls preload="metadata" src={mediaUrl} className="h-9 w-full">Ваш браузер не поддерживает аудио.</audio>
+                <AudioAttachmentPreview attachment={attachment} />
               </div>
             )
           }

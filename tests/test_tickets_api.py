@@ -26,6 +26,7 @@ from routes.tickets_api import (
     _serialize_message,
     _serialize_player,
     _serialize_ticket,
+    _ticket_media_content_type,
     _ticket_mention_profiles,
     _ticket_participants,
     panel_router,
@@ -633,6 +634,28 @@ def test_api_ticket_media_serves_full_private_inline_file(ticket_media_api):
     assert response.headers["cache-control"] == "private, no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["content-disposition"].startswith("inline;")
+
+
+def test_api_ticket_media_infers_safe_inline_type_from_filename(ticket_media_api):
+    with ticket_media_api.session_factory() as db:
+        message = db.query(TicketMessage).filter(TicketMessage.id == 19).one()
+        message.attachments[0]["content_type"] = "application/octet-stream"
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(message, "attachments")
+        db.commit()
+
+    response = ticket_media_api.client.get(ticket_media_api.url)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "video/mp4"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+def test_ticket_media_content_type_uses_file_signature_without_extension(tmp_path):
+    media = tmp_path / "opaque-evidence"
+    media.write_bytes(b"GIF89a" + b"\0" * 10)
+
+    assert _ticket_media_content_type(media, "opaque-evidence", None) == "image/gif"
 
 
 @pytest.mark.parametrize(

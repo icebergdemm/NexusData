@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 import asyncio
 import hashlib
+import mimetypes
 import secrets
 import json
 import os
@@ -1482,10 +1483,61 @@ async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depen
 
 
 _SAFE_INLINE_TYPES = {
-    "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
-    "video/mp4", "video/webm", "video/ogg",
-    "audio/mpeg", "audio/ogg", "audio/wav", "audio/webm", "audio/mp4",
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp",
+    "video/mp4", "video/webm", "video/ogg", "video/quicktime",
+    "audio/aac", "audio/flac", "audio/mpeg", "audio/ogg", "audio/wav",
+    "audio/webm", "audio/mp4",
 }
+
+_MEDIA_TYPE_ALIASES = {
+    "image/jpg": "image/jpeg",
+    "audio/x-m4a": "audio/mp4",
+    "video/x-m4v": "video/mp4",
+}
+
+
+def _ticket_media_content_type(path: Path, filename: str, declared: object) -> str:
+    """Return a browser-safe media type for an already archived file.
+
+    Older Discord rows may have no MIME type (or ``application/octet-stream``),
+    which makes the authenticated media endpoint download an otherwise valid
+    image/video because it also sends ``nosniff``.  Prefer a known declared
+    type, then the original filename, and finally a small set of unambiguous
+    file signatures.  Unknown data remains a forced download.
+    """
+    normalized = str(declared or "").split(";", 1)[0].strip().lower()
+    normalized = _MEDIA_TYPE_ALIASES.get(normalized, normalized)
+    if normalized in _SAFE_INLINE_TYPES:
+        return normalized
+
+    guessed, _encoding = mimetypes.guess_type(filename, strict=False)
+    guessed = _MEDIA_TYPE_ALIASES.get(str(guessed or "").lower(), str(guessed or "").lower())
+    if guessed in _SAFE_INLINE_TYPES:
+        return guessed
+
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(16)
+    except OSError:
+        return "application/octet-stream"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if header.startswith(b"BM"):
+        return "image/bmp"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return "video/webm"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        brand = header[8:12]
+        if brand in {b"avif", b"avis"}:
+            return "image/avif"
+        return "video/mp4"
+    return "application/octet-stream"
 
 
 def _content_disposition(filename: str, download: bool) -> str:
@@ -1522,13 +1574,14 @@ def api_ticket_media(
         raise HTTPException(status_code=404, detail="Архивный файл отсутствует")
 
     size = path.stat().st_size
-    content_type = str(raw.get("content_type") or "application/octet-stream").lower()
+    filename = str(raw.get("filename") or storage_key or "file")
+    content_type = _ticket_media_content_type(path, filename, raw.get("content_type"))
     force_download = download or content_type not in _SAFE_INLINE_TYPES
     headers = {
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": _content_disposition(str(raw.get("filename") or "file"), force_download),
+        "Content-Disposition": _content_disposition(filename, force_download),
     }
     range_header = request.headers.get("range")
     if not range_header:
