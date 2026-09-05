@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
-  Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2,
+  Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2, Sparkles,
   Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -32,7 +32,8 @@ import {
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { useCurrentAdmin } from "@/lib/auth"
-import type { PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
+import type { AIDossierResponse, PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
+import { DossierResultView } from "../ai-center/dossier-result"
 import { RewardsSection } from "./rewards-section"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
@@ -91,6 +92,20 @@ export function PlayerDetailPage() {
   const { data, isLoading } = useQuery({
     queryKey,
     queryFn: () => api.get<PlayerDetailResponse>(`/api/v1/admin/players/${playerId}`),
+  })
+  const { data: dossier, isLoading: dossierLoading } = useQuery({
+    queryKey: ["player-ai-dossier", playerId],
+    queryFn: () => api.get<AIDossierResponse>(`/api/v1/admin/players/${playerId}/ai-dossier`),
+    enabled: !!playerId && data?.classified !== true,
+    refetchInterval: 5000,
+  })
+  const dossierMutation = useMutation({
+    mutationFn: () => api.post(`/api/v1/admin/players/${playerId}/ai-dossier`, { force: true }),
+    onSuccess: () => {
+      toast.success("Генерация сводки поставлена в очередь")
+      queryClient.invalidateQueries({ queryKey: ["player-ai-dossier", playerId] })
+    },
+    onError: (e: Error) => toast.error(e.message),
   })
   const { data: discordProfile } = useDiscordProfile(data?.player?.discord_profile_id)
 
@@ -456,6 +471,7 @@ export function PlayerDetailPage() {
           <TabsTrigger value="traps" className="flex-1 gap-1.5"><Radio className="h-3.5 w-3.5" /> Ловушки ({data.traps.length})</TabsTrigger>
           <TabsTrigger value="punishments" className="flex-1 gap-1.5"><Gavel className="h-3.5 w-3.5" /> Наказания ({data.punishments.length})</TabsTrigger>
           <TabsTrigger value="history" className="flex-1 gap-1.5"><HistoryIcon className="h-3.5 w-3.5" /> История</TabsTrigger>
+          <TabsTrigger value="ai" className="flex-1 gap-1.5"><Sparkles className="h-3.5 w-3.5" /> ИИ-сводка</TabsTrigger>
         </TabsList>
 
         <TabsContent value="stats" className="space-y-4">
@@ -758,6 +774,49 @@ export function PlayerDetailPage() {
               </Card>
             )}
           </div>
+        </TabsContent>
+
+        <TabsContent value="ai" className="space-y-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-sm">ИИ-досье игрока</CardTitle>
+                <p className="mt-1 text-xs text-muted-foreground">Справочный материал. Решение модератора остаётся решением модератора.</p>
+              </div>
+              {admin?.is_superuser && <Button
+                size="sm"
+                onClick={() => dossierMutation.mutate()}
+                disabled={dossierMutation.isPending || dossier?.status === "queued" || dossier?.status === "running"}
+              >
+                <Sparkles className="size-3.5" /> Сгенерировать
+              </Button>}
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {dossierLoading && <div className="text-sm text-muted-foreground">Загрузка состояния…</div>}
+              {dossier && (
+                <>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge variant={dossier.status === "succeeded" ? "default" : dossier.status === "failed" ? "destructive" : "secondary"}>
+                      {dossier.status === "none" ? "Нет отчёта" : dossier.status === "queued" ? "В очереди" : dossier.status === "running" ? "Генерируется" : dossier.status === "succeeded" ? "Готово" : "Ошибка"}
+                    </Badge>
+                    {dossier.generated_at && <span className="text-muted-foreground">Создано: {fmtDate(dossier.generated_at)}</span>}
+                    {dossier.model && <span className="font-mono text-muted-foreground">{dossier.model}</span>}
+                  </div>
+                  {dossier.status === "failed" && dossier.error && (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">Qwen не ответил: {dossier.error}. Показан последний валидный результат или серверный rules-only результат.</div>
+                  )}
+                  {dossier.stale && <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">Старый формат досье устарел и скрыт до перегенерации. История запусков сохранена.</div>}
+                  {dossier.result ? (
+                    <DossierResultView result={dossier.result} />
+                  ) : dossier.status === "none" ? (
+                    <div className="text-sm text-muted-foreground">Отчёта ещё нет. Запустите генерацию вручную.</div>
+                  ) : dossier.status === "queued" || dossier.status === "running" ? (
+                    <div className="text-sm text-muted-foreground">Qwen занят. Очередь последовательная, поэтому придётся подождать.</div>
+                  ) : null}
+                </>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
 

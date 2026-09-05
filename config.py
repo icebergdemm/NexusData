@@ -1,9 +1,14 @@
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic_core import PydanticUseDefault
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Dict, Any
 import json
 import os
+import secrets
+import shutil
+from datetime import datetime
+from pathlib import Path
 
 
 def _str_to_list(value: Any, default: List[str]) -> List[str]:
@@ -21,6 +26,18 @@ def _str_to_list(value: Any, default: List[str]) -> List[str]:
         except json.JSONDecodeError:
             pass
     return [x.strip() for x in v.split(",") if x.strip()]
+
+
+def snapshot_env_file(path: str | os.PathLike) -> Path | None:
+    """Make a private point-in-time copy before an in-place config write."""
+    source = Path(path)
+    if not source.is_file():
+        return None
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+    snapshot = source.with_name(f"{source.name}.backup-{timestamp}-{secrets.token_hex(4)}")
+    shutil.copyfile(source, snapshot)
+    os.chmod(snapshot, 0o600)
+    return snapshot
 
 
 class Settings(BaseSettings):
@@ -66,6 +83,19 @@ class Settings(BaseSettings):
     ai_dispatcher_url: str = Field("")
     ai_dispatcher_api_key: str = Field("")
     ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
+    # Dedicated player-dossier bridge. It deliberately has its own endpoint
+    # and credential: the radio dispatcher and moderator dossier have
+    # different data sensitivity and failure domains.
+    ai_dossier_url: str = Field("")
+    ai_dossier_api_key: str = Field("")
+    ai_dossier_tls_ca_file: str = Field("")
+    ai_dossier_timeout_seconds: float = Field(180.0, gt=0, le=600)
+    ai_dossier_model: str = Field("qwen2.5-3b-instruct", min_length=1, max_length=255)
+    ai_dossier_active_days: int = Field(30, ge=1, le=365)
+    ai_dossier_daily_limit: int = Field(10, ge=1, le=10)
+    ai_dossier_schedule_hour: int = Field(4, ge=0, le=23)
+    ai_dossier_max_log_events: int = Field(120, ge=1, le=500)
+    ai_dossier_max_input_chars: int = Field(30000, ge=4000, le=100000)
     # Legacy WorldStateStreamer builds may omit server_name and even race
     # snapshot ahead of world/init. Used only when neither the payload nor the
     # existing round row identifies the source server.
@@ -85,6 +115,26 @@ class Settings(BaseSettings):
     ai_creature_alert_tracking_distance_meters: int = Field(300, ge=0, le=5000)
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
+
+    # LLM assistant for MonsterSpawnController. The site talks to a REMOTE
+    # OpenAI-compatible API endpoint (remote service, llama.cpp llama-server,
+    # LM Studio, Ollama with OpenAI shim). Empty base_url disables it.
+    # For remote endpoints set MONSTER_LLM_BASE_URL to the https URL and
+    # MONSTER_LLM_API_KEY to the service key (sent as Bearer token).
+    # Per-server runtime state (enabled/auto_apply/last run) lives in
+    # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
+    # admin UI; these fields are just the deployment defaults.
+    monster_llm_base_url: str = Field("http://127.0.0.1:8080/v1")
+    monster_llm_api_key: str = Field("")
+    monster_llm_model: str = Field("qwen3-4b-instruct")
+    monster_llm_timeout_seconds: float = Field(90.0, gt=0, le=300)
+    # Anti-hallucination defaults: low temperature, small top_p and a hard
+    # JSON-schema validation on every response (see services_llm_monster.py).
+    monster_llm_temperature: float = Field(0.15, ge=0.0, le=2.0)
+    monster_llm_top_p: float = Field(0.8, gt=0.0, le=1.0)
+    # Auto-cycle interval in minutes (0 = manual runs only).
+    monster_llm_auto_interval_minutes: int = Field(0, ge=0, le=1440)
+
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"
@@ -339,6 +389,20 @@ class Settings(BaseSettings):
     kits_mapping: Dict[str, str] = {}
     roles_mapping: Dict[str, List[str]] = {}
     rank_discord_roles: Dict[str, str] = {}  # rank_id -> discord_role_id
+
+    @field_validator(
+        "rate_limit_requests", "rate_limit_window",
+        "sftp_server_1_port", "sftp_server_2_port",
+        mode="before",
+    )
+    @classmethod
+    def _empty_numeric_env_uses_default(cls, value):
+        # The administration API used to turn omitted fields into empty
+        # strings. Keep an already damaged .env bootable while the API fix is
+        # deployed and prevent new damage in the updated handler.
+        if value == "":
+            raise PydanticUseDefault
+        return value
 
     # Server permissions configuration
     server_permissions_mapping: Dict[str, Dict] = Field(default_factory=lambda: {

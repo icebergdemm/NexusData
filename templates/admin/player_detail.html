@@ -364,10 +364,10 @@ textarea { resize:vertical; min-height:80px; }
             </form>
             {% endif %}
           </div>
-          {% if player.last_ip and (has_edit or has_delete) %}
+          {% if display_last_ip and (has_edit or has_delete) %}
           <div class="info-row">
             <span class="info-label">Последний IP</span>
-            <span class="info-value mono">{{ player.last_ip }}</span>
+            <span class="info-value mono">{{ display_last_ip }}</span>
           </div>
           {% endif %}
           {% if player.first_login %}

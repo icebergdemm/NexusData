@@ -44,6 +44,7 @@ const KitsPage = lazy(() => import("@/pages/kits").then(({ KitsPage }) => ({ def
 const ServerPrivilegesPage = lazy(() => import("@/pages/server-privileges").then(({ ServerPrivilegesPage }) => ({ default: ServerPrivilegesPage })))
 const DiscordBotPage = lazy(() => import("@/pages/discord-bot").then(({ DiscordBotPage }) => ({ default: DiscordBotPage })))
 const AdministrationPage = lazy(() => import("@/pages/administration").then(({ AdministrationPage }) => ({ default: AdministrationPage })))
+const AICenterPage = lazy(() => import("@/pages/ai-center").then(({ AICenterPage }) => ({ default: AICenterPage })))
 const LogsPage = lazy(() => import("@/pages/logs").then(({ LogsPage }) => ({ default: LogsPage })))
 const SoundsPage = lazy(() => import("@/pages/sounds").then(({ SoundsPage }) => ({ default: SoundsPage })))
 const RespawnDollsPage = lazy(() => import("@/pages/respawn-dolls").then(({ RespawnDollsPage }) => ({ default: RespawnDollsPage })))
@@ -131,6 +132,7 @@ export default function App() {
           <Route path="tickets/:ticketId" element={<TicketDetailPage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="administration" element={<AdministrationPage />} />
+          <Route path="ai-center" element={<AICenterPage />} />
           <Route path="server-privileges" element={<ServerPrivilegesPage />} />
           <Route path="kits" element={<KitsPage />} />
           <Route path="sessions" element={<SessionsPage />} />

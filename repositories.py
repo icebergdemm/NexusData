@@ -1,13 +1,15 @@
+from sqlalchemy import and_, exists, func, not_, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Tuple
 from models import (
     Kit, PlayerData, PlayerStats, PlayerKill, PlayerRoleAction,
-    PlayerIP, PlayerName, PlayerRoleStat, PlayerSession
+    PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, PlayerLabel,
+    PlayerNote, PlayerPunishment, PlayerAnomaly
 )
 from fastapi import HTTPException
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,132 @@ def _apply_discord_link_filter(query, discord_link: Optional[str]):
     if discord_link == "unlinked":
         return query.filter((PlayerData.discord_id.is_(None)) | (PlayerData.discord_id == ""))
     return query
+
+
+def _player_exists(model, condition=None):
+    clauses = [model.player_id == PlayerData.player_id]
+    if condition is not None:
+        clauses.append(condition)
+    return exists().where(*clauses)
+
+
+def _active_punishment_exists():
+    now = datetime.utcnow()
+    return exists().where(
+        PlayerPunishment.player_id == PlayerData.player_id,
+        PlayerPunishment.is_active == 1,
+        or_(PlayerPunishment.expires_at.is_(None), PlayerPunishment.expires_at >= now),
+    )
+
+
+def _open_anomaly_exists():
+    return exists().where(
+        or_(
+            PlayerAnomaly.player_id == PlayerData.player_id,
+            PlayerAnomaly.related_player_id == PlayerData.player_id,
+        ),
+        PlayerAnomaly.status != "dismissed",
+    )
+
+
+def _ip_history_exists():
+    return select(PlayerIP.player_id).where(
+        PlayerIP.player_id == PlayerData.player_id,
+        _usable_ip_sql(PlayerIP.ip),
+    ).group_by(PlayerIP.player_id).having(func.count(PlayerIP.id) >= 2).exists()
+
+
+def _usable_ip_sql(column):
+    """Cheap SQL prefilter for legacy non-global IPv4 rows.
+
+    New writes are validated by ``is_bogon_ip``. This predicate keeps the
+    common container/LAN/reserved ranges out of list facets and joins; every
+    user-facing serializer still applies the complete Python check.
+    """
+    excluded = [
+        "0.%", "10.%", "127.%", "169.254.%", "192.0.2.%", "192.168.%",
+        "198.18.%", "198.19.%", "198.51.100.%", "203.0.113.%", "100.64.%",
+        "100.65.%", "100.66.%", "100.67.%", "100.68.%", "100.69.%",
+        "100.70.%", "100.71.%", "100.72.%", "100.73.%", "100.74.%",
+        "100.75.%", "100.76.%", "100.77.%", "100.78.%", "100.79.%",
+        "100.8%.%", "100.9%.%", "100.10%.%", "100.11%.%", "100.12%.%",
+        "100.127.%",
+    ] + [f"172.{value}.%" for value in range(16, 32)] + [f"{value}.%" for value in range(224, 240)]
+    return not_(or_(*(column.like(pattern) for pattern in excluded)))
+
+
+def _apply_player_facets(
+    query,
+    *,
+    label_mode: Optional[str] = None,
+    label_ids: Optional[List[int]] = None,
+    notes: Optional[str] = None,
+    sanctions: Optional[str] = None,
+    anomalies: Optional[str] = None,
+    name_history: Optional[str] = None,
+    ip_history: Optional[str] = None,
+    activity: Optional[str] = None,
+):
+    labels = exists().where(PlayerLabel.player_id == PlayerData.player_id)
+    if label_mode == "with":
+        query = query.filter(labels)
+    elif label_mode == "without":
+        query = query.filter(~labels)
+    if label_ids:
+        query = query.filter(exists().where(
+            PlayerLabel.player_id == PlayerData.player_id,
+            PlayerLabel.category_id.in_(label_ids),
+        ))
+
+    facet_exists = {
+        "notes": _player_exists(PlayerNote, PlayerNote.content != ""),
+        "sanctions": _active_punishment_exists(),
+        "anomalies": _open_anomaly_exists(),
+        "name_history": _player_exists(PlayerName, PlayerName.nickname != PlayerData.player_last_time_name),
+        "ip_history": _ip_history_exists(),
+    }
+    for value, mode in (
+        (facet_exists["notes"], notes),
+        (facet_exists["sanctions"], sanctions),
+        (facet_exists["anomalies"], anomalies),
+        (facet_exists["name_history"], name_history),
+        (facet_exists["ip_history"], ip_history),
+    ):
+        if mode == "with":
+            query = query.filter(value)
+        elif mode == "without":
+            query = query.filter(~value)
+
+    if activity == "new":
+        query = query.filter(PlayerData.play_time < 7200)
+    elif activity and activity.startswith("inactive_"):
+        try:
+            days = int(activity.split("_", 1)[1])
+        except (TypeError, ValueError):
+            days = 0
+        if days > 0:
+            query = query.filter(PlayerData.last_login_time <= datetime.utcnow() - timedelta(days=days))
+    return query
+
+
+def apply_player_sort(query, sort: Optional[str]):
+    sort_spec = PlayerRepository.SORT_COLUMNS.get(sort or "")
+    if sort_spec:
+        column, descending = sort_spec
+        return query.order_by(column.desc() if descending else column.asc())
+    expressions = {
+        "active_sanctions_desc": _active_punishment_exists(),
+        "active_sanctions_asc": _active_punishment_exists(),
+        "open_anomalies_desc": _open_anomaly_exists(),
+        "open_anomalies_asc": _open_anomaly_exists(),
+        "discord_link_desc": and_(PlayerData.discord_id.isnot(None), PlayerData.discord_id != ""),
+        "discord_link_asc": and_(PlayerData.discord_id.isnot(None), PlayerData.discord_id != ""),
+    }
+    expression = expressions.get(sort or "")
+    if expression is None:
+        return query
+    descending = sort.endswith("_desc")
+    return query.order_by(expression.desc() if descending else expression.asc())
 
 
 class BaseRepository:
@@ -70,23 +198,32 @@ class PlayerRepository(BaseRepository):
         "playtime_asc": (PlayerData.play_time, False),
         "last_login_desc": (PlayerData.last_login_time, True),
         "last_login_asc": (PlayerData.last_login_time, False),
+        "last_activity_desc": (PlayerData.last_login_time, True),
+        "last_activity_asc": (PlayerData.last_login_time, False),
     }
 
     def get_all(
         self, page: int = 1, page_size: int = 50,
         rank_id: Optional[int] = None, sort: Optional[str] = None,
         discord_link: Optional[str] = None,
+        label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
+        notes: Optional[str] = None, sanctions: Optional[str] = None,
+        anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
+        activity: Optional[str] = None,
     ) -> Tuple[List[PlayerData], int]:
         """Get all players with pagination, optional rank filter and sort order."""
         query = self.db.query(PlayerData)
         if rank_id is not None:
             query = query.filter(PlayerData.rank_id == rank_id)
         query = _apply_discord_link_filter(query, discord_link)
-
-        sort_spec = self.SORT_COLUMNS.get(sort or "")
-        if sort_spec:
-            column, descending = sort_spec
-            query = query.order_by(column.desc() if descending else column.asc())
+        query = _apply_player_facets(
+            query, label_mode=label_mode, label_ids=label_ids, notes=notes,
+            sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+            ip_history=ip_history,
+            activity=activity,
+        )
+        query = apply_player_sort(query, sort)
 
         total = query.count()
         players = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -124,7 +261,14 @@ class PlayerRepository(BaseRepository):
         logger.info(f"Updated player: {player_id}")
         return player
     
-    def search(self, query: str, limit: int = 10, discord_link: Optional[str] = None) -> List[PlayerData]:
+    def search(
+        self, query: str, limit: int = 10, discord_link: Optional[str] = None,
+        label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
+        notes: Optional[str] = None, sanctions: Optional[str] = None,
+        anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
+        activity: Optional[str] = None,
+    ) -> List[PlayerData]:
         """
         Search players by:
         - Current nickname (player_last_time_name)
@@ -144,7 +288,14 @@ class PlayerRepository(BaseRepository):
                 PlayerData.discord_id.ilike(query_lower),
             )
         )
-        direct_search = _apply_discord_link_filter(direct_search_query, discord_link).limit(limit).all()
+        direct_search_query = _apply_discord_link_filter(direct_search_query, discord_link)
+        direct_search_query = _apply_player_facets(
+            direct_search_query, label_mode=label_mode, label_ids=label_ids, notes=notes,
+            sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+            ip_history=ip_history,
+            activity=activity,
+        )
+        direct_search = direct_search_query.limit(limit).all()
         
         if len(direct_search) >= limit:
             return direct_search[:limit]
@@ -159,6 +310,12 @@ class PlayerRepository(BaseRepository):
                 PlayerName, PlayerData.player_id == PlayerName.player_id
             ).filter(PlayerName.nickname.ilike(query_lower))
             nick_q = _apply_discord_link_filter(nick_q, discord_link)
+            nick_q = _apply_player_facets(
+                nick_q, label_mode=label_mode, label_ids=label_ids, notes=notes,
+                sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+                ip_history=ip_history,
+                activity=activity,
+            )
             if player_ids:
                 nick_q = nick_q.filter(PlayerData.player_id.notin_(player_ids))
             nickname_results = nick_q.distinct().limit(remaining_limit).all()
@@ -173,12 +330,19 @@ class PlayerRepository(BaseRepository):
             ip_q = self.db.query(PlayerData).join(
                 PlayerIP, PlayerData.player_id == PlayerIP.player_id
             ).filter(
+                _usable_ip_sql(PlayerIP.ip),
                 or_(
                     PlayerIP.ip.ilike(query_lower),
                     PlayerIP.subnet.ilike(query_lower),
                 )
             )
             ip_q = _apply_discord_link_filter(ip_q, discord_link)
+            ip_q = _apply_player_facets(
+                ip_q, label_mode=label_mode, label_ids=label_ids, notes=notes,
+                sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+                ip_history=ip_history,
+                activity=activity,
+            )
             if player_ids:
                 ip_q = ip_q.filter(PlayerData.player_id.notin_(player_ids))
             ip_results = ip_q.distinct().limit(remaining_limit).all()
@@ -186,6 +350,100 @@ class PlayerRepository(BaseRepository):
             direct_search.extend(ip_results)
         
         return direct_search[:limit]
+
+    def search_paginated(
+        self, query: str, page: int = 1, page_size: int = 50,
+        rank_id: Optional[int] = None, sort: Optional[str] = None,
+        discord_link: Optional[str] = None,
+        label_mode: Optional[str] = None, label_ids: Optional[List[int]] = None,
+        notes: Optional[str] = None, sanctions: Optional[str] = None,
+        anomalies: Optional[str] = None, name_history: Optional[str] = None,
+        ip_history: Optional[str] = None,
+        activity: Optional[str] = None,
+    ) -> Tuple[List[PlayerData], int]:
+        """Search all supported identifiers before applying pagination."""
+        query_lower = f"%{query.lower()}%"
+        previous_name = exists().where(
+            PlayerName.player_id == PlayerData.player_id,
+            PlayerName.nickname.ilike(query_lower),
+        )
+        ip_match = exists().where(
+            PlayerIP.player_id == PlayerData.player_id,
+            _usable_ip_sql(PlayerIP.ip),
+            or_(PlayerIP.ip.ilike(query_lower), PlayerIP.subnet.ilike(query_lower)),
+        )
+        search_query = self.db.query(PlayerData).filter(or_(
+            PlayerData.player_last_time_name.ilike(query_lower),
+            PlayerData.player_steamid.ilike(query_lower),
+            PlayerData.discord_id.ilike(query_lower),
+            previous_name,
+            ip_match,
+        ))
+        if rank_id is not None:
+            search_query = search_query.filter(PlayerData.rank_id == rank_id)
+        search_query = _apply_discord_link_filter(search_query, discord_link)
+        search_query = _apply_player_facets(
+            search_query, label_mode=label_mode, label_ids=label_ids, notes=notes,
+            sanctions=sanctions, anomalies=anomalies, name_history=name_history,
+            ip_history=ip_history,
+            activity=activity,
+        )
+        search_query = apply_player_sort(search_query, sort)
+        total = search_query.count()
+        players = search_query.offset((page - 1) * page_size).limit(page_size).all()
+        return players, total
+
+    def get_player_flags(self, player_ids: List[int]) -> dict[int, dict[str, object]]:
+        """Bulk-load safe moderation flags without exposing note or punishment contents."""
+        if not player_ids:
+            return {}
+        flags = {
+            player_id: {
+                "label_ids": [],
+                "has_labels": False,
+                "has_notes": False,
+                "has_active_punishments": False,
+                "has_open_anomalies": False,
+                "has_previous_names": False,
+                "has_ip_history": False,
+            }
+            for player_id in player_ids
+        }
+        for label in self.db.query(PlayerLabel).filter(PlayerLabel.player_id.in_(player_ids)).all():
+            label_ids = flags[label.player_id]["label_ids"]
+            if label.category_id not in label_ids:
+                label_ids.append(label.category_id)
+            flags[label.player_id]["has_labels"] = True
+        for player_id, in self.db.query(PlayerNote.player_id).filter(PlayerNote.player_id.in_(player_ids), PlayerNote.content != "").distinct():
+            flags[player_id]["has_notes"] = True
+        for player_id, in self.db.query(PlayerName.player_id).join(
+            PlayerData, PlayerData.player_id == PlayerName.player_id
+        ).filter(
+            PlayerName.player_id.in_(player_ids),
+            PlayerName.nickname != PlayerData.player_last_time_name,
+        ).distinct():
+            flags[player_id]["has_previous_names"] = True
+        for player_id, in self.db.query(PlayerIP.player_id).filter(
+            PlayerIP.player_id.in_(player_ids),
+            _usable_ip_sql(PlayerIP.ip),
+        ).group_by(PlayerIP.player_id).having(func.count(PlayerIP.id) >= 2):
+            flags[player_id]["has_ip_history"] = True
+        for player_id, in self.db.query(PlayerPunishment.player_id).filter(
+            PlayerPunishment.player_id.in_(player_ids),
+            PlayerPunishment.is_active == 1,
+            or_(PlayerPunishment.expires_at.is_(None), PlayerPunishment.expires_at >= datetime.utcnow()),
+        ).distinct():
+            flags[player_id]["has_active_punishments"] = True
+        for player_id, in self.db.query(PlayerAnomaly.player_id).filter(
+            PlayerAnomaly.player_id.in_(player_ids), PlayerAnomaly.status != "dismissed",
+        ).distinct():
+            flags[player_id]["has_open_anomalies"] = True
+        for player_id, in self.db.query(PlayerAnomaly.related_player_id).filter(
+            PlayerAnomaly.related_player_id.in_(player_ids), PlayerAnomaly.status != "dismissed",
+        ).distinct():
+            if player_id in flags:
+                flags[player_id]["has_open_anomalies"] = True
+        return flags
 
 
 class PlayerStatsRepository(BaseRepository):

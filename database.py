@@ -153,6 +153,9 @@ def _apply_migrations():
         ("tickets", "deleted_by", "VARCHAR(255)"),
         # world_rounds: durable once-per-round claim for the automatic AI briefing
         ("world_rounds", "ai_briefing_queued_at", "DATETIME"),
+        # AI dossier diagnostics: bounded raw model content, exposed only to
+        # superusers by the AI-center API.
+        ("ai_player_dossier_runs", "raw_response", "TEXT"),
         # ai_creature_alerts: retryable outbox state. A detected contact must
         # not become permanently suppressed merely because an AI request or
         # game-server delivery failed once.
@@ -302,6 +305,22 @@ def _apply_migrations():
             if col_type and int(col_type) < 50:
                 conn.execute(__import__('sqlalchemy').text(
                     "ALTER TABLE `kits` MODIFY COLUMN `job_id` VARCHAR(50)"
+                ))
+                conn.commit()
+        except Exception:
+            pass
+
+        # AI system prompts are intentionally editable by superusers and the
+        # Git default is already longer than the old generic setting limit.
+        # Widen the existing production column before the first prompt save.
+        try:
+            value_type = conn.execute(__import__('sqlalchemy').text(
+                "SELECT DATA_TYPE FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=:db AND TABLE_NAME='app_settings' AND COLUMN_NAME='value'"
+            ), {"db": db_name}).scalar()
+            if value_type and str(value_type).lower() not in {"text", "mediumtext", "longtext"}:
+                conn.execute(__import__('sqlalchemy').text(
+                    "ALTER TABLE `app_settings` MODIFY COLUMN `value` TEXT NULL"
                 ))
                 conn.commit()
         except Exception:

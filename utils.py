@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+import ipaddress
 import re
 
 
@@ -106,6 +107,22 @@ def validate_player_name(name: str, min_len: int = 1, max_len: int = 255) -> boo
         return False
     
     return True
+
+
+def is_bogon_ip(value: object) -> bool:
+    """Return whether ``value`` is unusable as a public player IP.
+
+    Player connections are sometimes reported from the container network
+    (for example ``172.18.0.3``).  Non-global and malformed values must not
+    become profile history or account-link evidence.
+    """
+    try:
+        return not ipaddress.ip_address(str(value).strip()).is_global
+    except (ValueError, TypeError):
+        try:
+            return not ipaddress.ip_network(str(value).strip(), strict=False).is_global
+        except (ValueError, TypeError):
+            return True
 
 
 def validate_page_number(page: int, min_page: int = 1) -> bool:

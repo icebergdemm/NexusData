@@ -159,6 +159,81 @@ export interface PlayerDetailResponse {
   punishment_type_labels: Record<string, string>
 }
 
+export interface AIDossierEvidence {
+  kind: string
+  id: string | number
+  href?: string
+}
+
+export type AIDossierTriage = "none" | "review" | "urgent"
+export type AIDossierSeverity = "low" | "medium" | "high"
+
+export interface AIDossierFinding {
+  category: string
+  severity: AIDossierSeverity
+  title: string
+  details: string
+  reason: string
+  next_step: string
+  evidence: AIDossierEvidence[]
+  basis?: string[]
+}
+
+export interface AIDossierContext {
+  kind: string
+  text: string
+  source_id?: string | number
+  href?: string
+}
+
+export interface AIDossierCoverage {
+  checked: boolean
+  matches: number
+  status?: "matched" | "checked_empty" | "unavailable" | "stale"
+  messages?: number
+  cache_servers?: number
+  cache_last_refresh?: string | null
+  excluded_manual?: number
+  excluded_auto?: number
+  policy_fingerprint?: string
+}
+
+export interface AIDossierResult {
+  summary: string
+  schema_version: 2
+  rules_version?: number
+  triage: { level: AIDossierTriage; title: string; reason: string }
+  summary_source?: "rules" | "qwen"
+  findings: AIDossierFinding[]
+  context: AIDossierContext[]
+  coverage?: Record<string, AIDossierCoverage>
+  caveats: string[]
+  confidence: "low" | "medium" | "high"
+}
+
+export interface AIDossierResponse {
+  status: "none" | "queued" | "running" | "succeeded" | "failed"
+  result: AIDossierResult | null
+  stale: boolean
+  summary: string | null
+  model: string | null
+  requested_at: string | null
+  started_at: string | null
+  generated_at: string | null
+  finished_at: string | null
+  error: string | null
+  requested_by_admin_id: number | null
+  run?: {
+    source: string
+    status: string
+    latency_ms: number | null
+    prompt_tokens: number | null
+    completion_tokens: number | null
+    requested_by_admin_id: number | null
+    raw_response?: string | null
+  } | null
+}
+
 export interface PlayerServerPrivilege {
   id: number
   server_group_id: number | null

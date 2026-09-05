@@ -14,9 +14,6 @@ name: Build frontend dist
 on:
   push:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/frontend-dist.yml"
   workflow_dispatch: {}
 
 # Ветка перезаписывается целиком, поэтому две параллельные сборки бессмысленны:

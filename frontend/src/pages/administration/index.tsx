@@ -127,7 +127,6 @@ export function AdministrationPage() {
     queryKey: ["administration"],
     queryFn: () => api.get<AdministrationResponse>("/api/v1/admin/administration"),
   })
-
   useEffect(() => {
     if (data?.editable_cfg) {
       setCfg(Object.fromEntries(Object.entries(data.editable_cfg).map(([k, v]) => [k, String(v ?? "")])))

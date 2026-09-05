@@ -13,6 +13,7 @@ from schemas import (
 )
 from security import verify_api_key_dependency
 from config import get_settings
+from utils import is_bogon_ip
 import math
 
 settings = get_settings()
@@ -104,6 +105,8 @@ def search_players(
             PlayerIP.player_id.in_(player_ids),
             or_(PlayerIP.ip.ilike(f"%{q}%"), PlayerIP.subnet.ilike(f"%{q}%")),
         ).all():
+            if is_bogon_ip(ip.ip):
+                continue
             ips_by_pid.setdefault(ip.player_id, []).append(ip.ip)
 
     enriched_results = []

@@ -31,7 +31,26 @@ export interface SpawnWave {
   reset_time: number
   play_dead_probability: number
   difficulty: number
+  /** null = авто (abyss/moloch/cave в названии), true/false — явная пометка */
+  non_blocking?: boolean | null
+  learned?: boolean
   monsters: MonsterEntry[]
+}
+
+export interface WaveOverride {
+  difficulty_mode: "absolute" | "adjust" | string
+  difficulty_value: number
+  non_blocking?: boolean | null
+  enabled?: boolean
+  updated_utc?: string
+}
+
+export interface SpawnScheme {
+  name: string
+  weight: number
+  distance_min_meters: number
+  distance_max_meters: number
+  zones?: Record<string, number>
 }
 
 export interface SpawnPlan extends SpawnWave {
@@ -69,6 +88,10 @@ export interface MonsterSpawnDashboard {
   event_threshold: number
   pending_waves: number
   known_submarines: number
+  blocking_wave_count?: number
+  max_simultaneous_waves?: number
+  last_spawn_scheme?: string | null
+  last_spawn_zone?: string | null
 }
 
 export interface MonsterSpawnWaveLog {
@@ -140,6 +163,125 @@ export interface MonsterSpawnTelemetry {
   [key: string]: unknown
 }
 
+export interface ActiveWaveTelemetry {
+  wave_id: string
+  wave_name: string
+  spawn_reason: string
+  elapsed_seconds: number
+  expected_repel_seconds: number
+  struggling: boolean
+  engagement_seconds: number
+  in_sub_seconds: number
+  monsters_alive: number
+  monsters_total: number
+  monster_counts: Record<string, number>
+  effective_difficulty: number
+  modifications: string[]
+  blocking?: boolean
+  engaged?: boolean
+  damage_taken?: number
+  last_damage_seconds_ago?: number | null
+  non_blocking?: boolean
+  distance_to_sub_meters?: number | null
+  min_distance_meters?: number | null
+  max_distance_meters?: number
+  unengaged_seconds?: number
+  spawn_scheme?: string | null
+  spawn_zone?: string | null
+}
+
+export interface RecentWaveTelemetry {
+  wave_id: string
+  wave_name: string
+  spawn_reason: string
+  outcome: "repelled" | "bypassed" | "afk" | "timeout_engaged" | "unresolved" | string
+  /** 7: destroyed — уничтожена; tracking_stopped — отслеживание прекращено (монстры живы) */
+  fate?: "destroyed" | "tracking_stopped" | string | null
+  repel_seconds: number
+  expected_repel_seconds: number
+  performance: number
+  crew_deaths: number
+  sub_health_loss: number
+  effective_difficulty: number
+  engagement_seconds: number
+  progress_at_spawn: number
+  modifications: string
+  monster_counts: Record<string, number>
+  resolved_at_seconds: number
+}
+
+export interface LearnedWaveTelemetry {
+  wave_name: string
+  event_identifier?: string
+  species?: string
+  times_seen: number
+  first_seen_utc?: string
+  last_seen_utc?: string
+  registered_in_pool: boolean
+  spawn_type?: string
+  non_blocking?: boolean
+}
+
+export interface SpeciesThreatTelemetry {
+  species: string
+  threat_ema: number
+  samples: number
+}
+
+export interface PendingWaveTelemetry {
+  wave_name?: string
+  spawn_reason?: string
+  pos_type?: string
+  waiting_seconds?: number
+}
+
+export interface HeldVanillaTelemetry {
+  wave_name?: string
+  species?: string
+  hold_remaining_seconds?: number
+  original_amount?: number
+}
+
+export interface PlannedActionTelemetry {
+  action: string
+  probability: number
+  detail: string
+  next_spawn_possible_at?: number
+}
+
+export interface LLMRuntime {
+  enabled: boolean
+  auto_apply: boolean
+  auto_interval_minutes: number
+  last_run_at: string | null
+  last_result: {
+    at: string
+    mode: string
+    duration_ms: number
+    situation: string
+    crew_summary: string
+    recommendations: { title: string; detail: string }[]
+    confidence: number
+    applied_changes: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
+    rejected: string[]
+    spawn_requests: { species: string; count: number; hp_multiplier: number; position_hint: string; reason?: string }[]
+    plan_ids: string[]
+  } | null
+  history: { at: string; mode: string; summary: string; applied: number; rejected: number; confidence: number }[]
+}
+
+export interface LLMDeployment {
+  base_url: string
+  model: string
+  temperature: number
+  top_p: number
+  timeout_seconds: number
+  api_key_set: boolean
+  has_base_url: boolean
+}
+
+export const telemetryList = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
@@ -148,6 +290,10 @@ const normalizeWave = (value: unknown): SpawnWave | null => {
   const monsters = Array.isArray(value.monsters) ? value.monsters : []
   return {
     ...value,
+    // Регистронезависимость особых волн: spawn_type приводим к каноническим
+    // алиасам в нижнем регистре ("Cave"/"AbyssCave" из PosType.ToString() и
+    // т.п.), чтобы селекты и фильтры работали одинаково.
+    spawn_type: typeof value.spawn_type === "string" ? value.spawn_type.trim().toLowerCase() : value.spawn_type,
     commonness: typeof value.commonness === "number" ? value.commonness : 1,
     delay_between_spawns: typeof value.delay_between_spawns === "number" ? value.delay_between_spawns : 0.1,
     scatter: typeof value.scatter === "number" ? value.scatter : 500,
@@ -203,6 +349,10 @@ export const normalizeMonsterSpawnState = (value: MonsterSpawnState): MonsterSpa
       event_threshold: typeof telemetry.event_threshold === "number" ? telemetry.event_threshold : 0.2,
       pending_waves: typeof telemetry.pending_waves === "number" ? telemetry.pending_waves : 0,
       known_submarines: Object.keys(submarines).length,
+      blocking_wave_count: typeof telemetry.blocking_wave_count === "number" ? telemetry.blocking_wave_count : 0,
+      max_simultaneous_waves: typeof telemetry.max_simultaneous_waves === "number" ? telemetry.max_simultaneous_waves : 1,
+      last_spawn_scheme: typeof telemetry.last_spawn_scheme === "string" ? telemetry.last_spawn_scheme : null,
+      last_spawn_zone: typeof telemetry.last_spawn_zone === "string" ? telemetry.last_spawn_zone : null,
     },
   }
 }
@@ -212,4 +362,10 @@ export const monsterSpawnApi = {
   update: (server: string, body: Partial<Pick<MonsterSpawnState, "config" | "memory" | "plans">>) =>
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
   analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
+  llmRuntime: (server: string) =>
+    api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
+  updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) =>
+    api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
+  runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>
+    api.post<{ status: string; result: LLMRuntime["last_result"] & { spawn_plans?: SpawnPlan[] }; desired_revision: number }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
 }

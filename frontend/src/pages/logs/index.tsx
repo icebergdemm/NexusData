@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
@@ -140,6 +141,8 @@ function logSearchErrorMessage(error: unknown) {
 
 export function LogsPage() {
   const { data: admin } = useCurrentAdmin()
+  const [searchParams] = useSearchParams()
+  const eventId = searchParams.get("event_id")
   const [draftFilters, setDraftFilters] = useState<LogFilters>(makeDefaultFilters)
   const [appliedFilters, setAppliedFilters] = useState<LogFilters>(makeDefaultFilters)
   const [pageSize, setPageSize] = useState(100)
@@ -163,6 +166,7 @@ export function LogsPage() {
       appliedFilters.search,
       appliedFilters.timeFrom,
       appliedFilters.timeTo,
+      eventId,
       pageSize,
     ],
     queryFn: ({ pageParam = null as string | null }) => {
@@ -178,6 +182,7 @@ export function LogsPage() {
       if (appliedFilters.search) params.set("search", appliedFilters.search)
       if (appliedFilters.timeFrom) params.set("time_from", appliedFilters.timeFrom)
       if (appliedFilters.timeTo) params.set("time_to", appliedFilters.timeTo)
+      if (eventId) params.set("event_id", eventId)
       return api.get<LogsResponse>(`/api/v1/admin/logs/events?${params}`)
     },
     initialPageParam: null as string | null,

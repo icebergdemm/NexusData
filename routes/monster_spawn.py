@@ -65,8 +65,28 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "respect_server_monster_settings": True,
         "use_swarm_behavior": True,
         "submarine_adaptive_influence": 0.25,
+        # Политика столкновения с волной: волна в бою, если монстрам нанесён
+        # урон; без боя блокирует только unengaged_block_timeout_seconds;
+        # корабль дальше bypass_distance_meters => волна обойдена.
+        "unengaged_block_timeout_seconds": 60,
+        "bypass_distance_meters": 200,
+        # Минимальная дистанция спавна от корабля, метров.
+        "spawn_min_distance_meters": 100,
+        # 0 = без ограничений; null = по single_wave_mode.
+        "max_simultaneous_waves": None,
+        # Схемы позиционирования спавна (перед/сверху/снизу, не сзади).
+        "spawn_scheme_enabled": True,
+        # 3.1: волны с этими подстроками не удерживаются hold_seconds.
+        "hold_ignore_names": ["abyss", "moloch", "cave"],
+        # 3.5: волны с этими подстроками не используют схемы спавна
+        # (пещеры/бездна спавнятся на структурных точках уровня).
+        "spawn_scheme_ignore_names": ["cave", "abyss"],
     }
     config["global"] = {**defaults, **global_config}
+    # null = derive from single_wave_mode on the plugin side; materialize the
+    # effective value here so the UI/LLM can edit it as a plain number.
+    if config["global"].get("max_simultaneous_waves") is None:
+        config["global"]["max_simultaneous_waves"] = 1 if config["global"].get("single_wave_mode", True) else 0
     waves = config.get("waves") if isinstance(config.get("waves"), list) else []
     normalized_waves = []
     for raw_wave in waves:
@@ -80,6 +100,8 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
             "spawn_distance": 0,
             "reset_time": 0,
             "play_dead_probability": -1,
+            # null = авто: abyss/moloch/cave в названии => неблокирующая.
+            "non_blocking": None,
             **raw_wave,
         }
         monsters = wave.get("monsters") if isinstance(wave.get("monsters"), list) else []
@@ -123,6 +145,11 @@ def _serialize(row: MonsterSpawnControl) -> dict:
             "event_threshold": telemetry.get("event_threshold", 0.2),
             "pending_waves": telemetry.get("pending_waves", 0),
             "known_submarines": len(submarines),
+            # Политика столкновения и одновременные волны.
+            "blocking_wave_count": telemetry.get("blocking_wave_count", 0),
+            "max_simultaneous_waves": telemetry.get("max_simultaneous_waves", 1),
+            "last_spawn_scheme": telemetry.get("last_spawn_scheme"),
+            "last_spawn_zone": telemetry.get("last_spawn_zone"),
         },
         "desired_revision": row.desired_revision or 0,
         "applied_revision": row.applied_revision or 0,
@@ -385,3 +412,110 @@ def admin_analysis(
     db.commit()
     db.refresh(row)
     return _build_spawn_analysis(row)
+
+
+# ---------------------------------------------------------------------------
+# LLM assistant (remote OpenAI-compatible API endpoint)
+# ---------------------------------------------------------------------------
+
+class LLMRuntimeUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    auto_apply: Optional[bool] = None
+    auto_interval_minutes: Optional[int] = Field(None, ge=0, le=1440)
+
+
+class LLMRunRequest(BaseModel):
+    mode: str = Field("analyze", pattern="^(analyze|apply|spawn)$")
+    instruction: Optional[str] = Field(None, max_length=2000)
+
+
+def _get_main_db() -> Session:
+    """AppSetting lives in the main database."""
+    from database import SessionLocal
+    return SessionLocal()
+
+
+@admin_router.get("/llm/runtime")
+def admin_llm_runtime(
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    _require(admin, "view")
+    from services_llm_monster import get_llm_runtime, get_llm_deployment_info
+    settings = get_settings()
+    runtime = get_llm_runtime(_get_main_db(), _normalize_server(server))
+    return {
+        "runtime": runtime,
+        "deployment": get_llm_deployment_info(),
+        "endpoint_configured": bool(settings.monster_llm_base_url),
+    }
+
+
+@admin_router.put("/llm/runtime")
+def admin_llm_runtime_update(
+    payload: LLMRuntimeUpdate,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+):
+    _require(admin, "edit")
+    from services_llm_monster import get_llm_runtime, save_llm_runtime
+
+    main_db = _get_main_db()
+    server_key = _normalize_server(server)
+    runtime = get_llm_runtime(main_db, server_key)
+    if payload.enabled is not None:
+        runtime["enabled"] = payload.enabled
+    if payload.auto_apply is not None:
+        runtime["auto_apply"] = payload.auto_apply
+    if payload.auto_interval_minutes is not None:
+        runtime["auto_interval_minutes"] = payload.auto_interval_minutes
+    save_llm_runtime(main_db, server_key, runtime)
+    return {"status": "ok", "runtime": runtime}
+
+
+@admin_router.post("/llm/run")
+def admin_llm_run(
+    payload: LLMRunRequest,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    """Run one LLM cycle. analyze = analyzer text only (situation + crew
+    summary + recommendations, no config writes); apply = validated config
+    changes bump desired_revision; spawn = also queues spawn plans."""
+    _require(admin, "edit")
+    from services_llm_monster import run_llm_cycle, LLMError
+
+    server_key = _normalize_server(server)
+    row = _get_or_create(db, server_key)
+    db.commit()
+    db.refresh(row)
+    state = _serialize(row)
+
+    try:
+        result = run_llm_cycle(_get_main_db(), server_key, state,
+                               mode=payload.mode, instruction=payload.instruction)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Ошибка LLM-цикла: {exc}")
+
+    # Apply validated changes through the same revision channel as the admin UI.
+    changed = False
+    if result.get("applied_changes"):
+        row.config = state["config"]
+        changed = True
+    if result.get("spawn_plans"):
+        plans = row.plans if isinstance(row.plans, list) else []
+        plans.extend(result["spawn_plans"])
+        row.plans = plans
+        changed = True
+    if changed:
+        row.desired_revision = (row.desired_revision or 0) + 1
+        row.updated_by_admin_id = admin.id
+        row.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(row)
+    return {"status": "ok", "result": result, "desired_revision": row.desired_revision}

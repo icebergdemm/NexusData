@@ -1,9 +1,11 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Terminal, Circle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -25,8 +27,9 @@ import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerFiltersToolbar, type PlayerFilterSortOption } from "@/components/layout/PlayerFiltersSheet"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
-import { filterAndSortPlayers, resetPlayerFilters, type DiscordLinkFilter, type PlayerSort } from "@/lib/player-filters"
-import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
+import { filterAndSortPlayers, resetPlayerFilters, type PlayerSort } from "@/lib/player-filters"
+import { clearPlayerFilterState, loadPlayerFilterState, loadPlayerSort, savePlayerFilterState, savePlayerSort } from "@/lib/player-filter-storage"
+import type { DossierTriageMarker, ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
 
@@ -47,6 +50,13 @@ function onlineDisplayName(p: OnlinePlayer): string {
 }
 function offlineDisplayName(p: OfflinePlayer): string {
   return p.player_last_time_name
+}
+
+function DossierMarker({ triage }: { triage?: DossierTriageMarker | null }) {
+  if (!triage) return null
+  const urgent = triage.level === "urgent"
+  const icon = urgent ? "🔴" : "🟡"
+  return <Tooltip delayDuration={300}><TooltipTrigger asChild><span className="ml-1 inline-flex cursor-help items-center align-middle text-[12px]" aria-label={`${triage.title}: ${triage.summary}`}>{icon}</span></TooltipTrigger><TooltipContent side="top" sideOffset={6} className="max-w-sm border bg-popover p-3 text-popover-foreground shadow-md"><div className="space-y-1 text-left"><div className="font-medium">{triage.title}</div><div className="text-xs leading-snug text-muted-foreground">{triage.summary}</div><div className="text-[11px] text-muted-foreground">{triage.notice}</div></div></TooltipContent></Tooltip>
 }
 
 function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {
@@ -107,35 +117,42 @@ function RankMismatchBadge({ nickname, rankId, ranks }: { nickname: string | nul
 type ActionType = "kick" | "ban" | "message"
 
 const ONLINE_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
-  { key: "name", label: "Имя" },
   { key: "server", label: "Сервер" },
   { key: "join_time", label: "Дата входа" },
   { key: "play_time", label: "Наиграно" },
+  { key: "active_sanctions", label: "Действующие взыскания" },
+  { key: "open_anomalies", label: "Аномалии" },
+  { key: "discord_link", label: "Привязка Discord" },
 ]
 
 const OFFLINE_SORT_OPTIONS: readonly PlayerFilterSortOption[] = [
-  { key: "name", label: "Имя" },
   { key: "first_login", label: "Первый вход" },
   { key: "last_login", label: "Последний вход" },
   { key: "play_time", label: "Наиграно" },
+  { key: "active_sanctions", label: "Действующие взыскания" },
+  { key: "open_anomalies", label: "Аномалии" },
+  { key: "discord_link", label: "Привязка Discord" },
 ]
 
 const DEFAULT_ONLINE_SORT: PlayerSort = { key: "join_time", direction: "desc" }
 const DEFAULT_OFFLINE_SORT: PlayerSort = { key: "last_login", direction: "desc" }
 
 export function ModerationPage() {
+  const [searchParams] = useSearchParams()
+  const requestedTab = searchParams.get("tab")
+  const initialTab = requestedTab && ["status", "banhammer", "anticheat", "anomalies", "console"].includes(requestedTab)
+    ? requestedTab
+    : "status"
   const [search, setSearch] = useState("")
   const [searchQuery, setSearchQuery] = useState<string | undefined>()
   const [actionTarget, setActionTarget] = useState<{ steamid: string; name: string; type: ActionType } | null>(null)
   const [actionReason, setActionReason] = useState("")
   const [actionServer, setActionServer] = useState("")
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState("status")
-  const [discordFilter, setDiscordFilter] = useState<DiscordLinkFilter>("all")
-  const [labelId, setLabelId] = useState("all")
-  const [rankId, setRankId] = useState("all")
-  const [onlineSort, setOnlineSort] = useState<PlayerSort>(DEFAULT_ONLINE_SORT)
-  const [offlineSort, setOfflineSort] = useState<PlayerSort>(DEFAULT_OFFLINE_SORT)
+  const [activeTab, setActiveTab] = useState(initialTab)
+  const [filters, setFilters] = useState(loadPlayerFilterState)
+  const [onlineSort, setOnlineSort] = useState(() => loadPlayerSort("moderation-online", DEFAULT_ONLINE_SORT, ONLINE_SORT_OPTIONS.map((option) => option.key)))
+  const [offlineSort, setOfflineSort] = useState(() => loadPlayerSort("moderation-offline", DEFAULT_OFFLINE_SORT, OFFLINE_SORT_OPTIONS.map((option) => option.key)))
   // Быстрая выдача предупреждения прямо из списка онлайна: отдельно от
   // actionTarget, потому что это НЕ действие на сервере, а запись наказания
   // (сервер получит из неё окно с причиной автоматически).
@@ -193,6 +210,10 @@ export function ModerationPage() {
 
   const submitSearch = () => setSearchQuery(search.trim().length >= 2 ? search.trim() : undefined)
 
+  useEffect(() => savePlayerFilterState(filters), [filters])
+  useEffect(() => savePlayerSort("moderation-online", onlineSort), [onlineSort])
+  useEffect(() => savePlayerSort("moderation-offline", offlineSort), [offlineSort])
+
   const offlineRows: OfflinePlayer[] = searchQuery ? (data?.search_results ?? []) : (data?.recent_offline ?? [])
 
   if (isLoading || !data) {
@@ -200,12 +221,10 @@ export function ModerationPage() {
   }
 
   const unreviewedCount = data.ac_events.filter((e) => !e.reviewed).length
-  const playerFilters = { discordFilter, labelId, rankId }
-  const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, playerFilters, onlineSort)
-  const filteredOfflineRows = filterAndSortPlayers(offlineRows, playerFilters, offlineSort)
+  const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, filters, onlineSort)
+  const filteredOfflineRows = filterAndSortPlayers(offlineRows, filters, offlineSort)
   const labelOptions = [
-    { value: "all", label: "Все метки" },
-    ...data.label_categories.map((category) => ({ value: String(category.id), label: category.name })),
+    ...data.label_categories.map((category) => ({ value: String(category.id), label: category.name, icon: category.icon })),
   ]
   const rankOptions = [
     { value: "all", label: "Все звания" },
@@ -236,37 +255,29 @@ export function ModerationPage() {
         {activeTab === "status" && (
           <PlayerFiltersToolbar
             tabLabel="Онлайн"
-            discordFilter={discordFilter}
-            labelId={labelId}
+            filters={filters}
             labelOptions={labelOptions}
-            rankId={rankId}
             rankOptions={rankOptions}
             sort={onlineSort}
             defaultSort={DEFAULT_ONLINE_SORT}
             sortOptions={ONLINE_SORT_OPTIONS}
-            onDiscordFilterChange={setDiscordFilter}
-            onLabelIdChange={setLabelId}
-            onRankIdChange={setRankId}
+            onFiltersChange={setFilters}
             onSortChange={setOnlineSort}
-            onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setOnlineSort(DEFAULT_ONLINE_SORT) }}
+            onReset={() => { clearPlayerFilterState(); setFilters(resetPlayerFilters()); setOnlineSort(DEFAULT_ONLINE_SORT) }}
           />
         )}
         {activeTab === "banhammer" && (
           <PlayerFiltersToolbar
             tabLabel="Вышедшие игроки"
-            discordFilter={discordFilter}
-            labelId={labelId}
+            filters={filters}
             labelOptions={labelOptions}
-            rankId={rankId}
             rankOptions={rankOptions}
             sort={offlineSort}
             defaultSort={DEFAULT_OFFLINE_SORT}
             sortOptions={OFFLINE_SORT_OPTIONS}
-            onDiscordFilterChange={setDiscordFilter}
-            onLabelIdChange={setLabelId}
-            onRankIdChange={setRankId}
+            onFiltersChange={setFilters}
             onSortChange={setOfflineSort}
-            onReset={() => { const reset = resetPlayerFilters(); setDiscordFilter(reset.discordFilter); setLabelId(reset.labelId); setRankId(reset.rankId); setOfflineSort(DEFAULT_OFFLINE_SORT) }}
+            onReset={() => { clearPlayerFilterState(); setFilters(resetPlayerFilters()); setOfflineSort(DEFAULT_OFFLINE_SORT) }}
           />
         )}
 
@@ -340,6 +351,7 @@ export function ModerationPage() {
                             <PlayerHoverLink playerId={p.player_id}>{name}</PlayerHoverLink>
                           ) : name}
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
+                          <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
                           <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />
                         </TableCell>
@@ -424,6 +436,7 @@ export function ModerationPage() {
                         <TableCell>
                           <PlayerHoverLink playerId={p.player_id} className="font-medium text-primary underline-offset-2 hover:underline">{name}</PlayerHoverLink>
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
+                          <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
                           <RankMismatchBadge nickname={p.player_last_time_name} rankId={p.rank_id} ranks={data.ranks} />
                           <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>

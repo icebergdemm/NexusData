@@ -1681,6 +1681,7 @@ def search_logs(
     cursor: Optional[str] = None,
     count_total: bool = True,
     raise_on_unavailable: bool = False,
+    event_id: Optional[int] = None,
 ) -> LogSearchResult:
     """Search log events via indexed SQL.
 
@@ -1725,6 +1726,11 @@ def search_logs(
     )
     row_where = base_where
     row_params = list(base_params)
+    if event_id is not None:
+        row_where += (" AND " if row_where else " WHERE ") + "log_events.id = ?"
+        row_params.append(event_id)
+    count_where = row_where
+    count_params = list(row_params)
     effective_offset = offset
     if cursor:
         cursor_ts, cursor_id = _decode_log_cursor(cursor)
@@ -1784,8 +1790,8 @@ def search_logs(
     # итог того не стоит: вызывающий получает флаг и показывает "5000+".
     capped = _bounded_count(
         conn,
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_sql}{base_where} LIMIT {COUNT_CAP + 1})",
-        base_params,
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {from_sql}{count_where} LIMIT {COUNT_CAP + 1})",
+        count_params,
     ) if count_total else None
     if not count_total:
         total = None
