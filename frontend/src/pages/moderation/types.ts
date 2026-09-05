@@ -1,3 +1,11 @@
+export interface DossierTriageMarker {
+  level: "review" | "urgent"
+  title: string
+  summary: string
+  generated_at: string | null
+  notice: string
+}
+
 export interface OnlinePlayer {
   player_steamid: string
   player_name: string | null
@@ -21,6 +29,7 @@ export interface OnlinePlayer {
   has_previous_names: boolean
   has_ip_history: boolean
   last_activity: string | null
+  dossier_triage?: DossierTriageMarker | null
 }
 
 export interface OfflinePlayer {
@@ -43,6 +52,7 @@ export interface OfflinePlayer {
   has_previous_names: boolean
   has_ip_history: boolean
   last_activity: string | null
+  dossier_triage?: DossierTriageMarker | null
 }
 
 export interface RoundState {

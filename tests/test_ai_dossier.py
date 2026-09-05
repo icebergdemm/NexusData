@@ -14,6 +14,7 @@ from database import Base
 from config import Settings, snapshot_env_file
 from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerSession
 from services_ai_dossier import (
+    DOSSIER_RULES_VERSION,
     build_kobold_request,
     build_dossier_analytics,
     build_moderation_packet,
@@ -32,6 +33,7 @@ from services_ai_dossier import (
     select_active_player_ids,
     dossier_input_hash,
     sanitize_dossier_result,
+    get_dossier_triage_map,
 )
 import services_ai_dossier
 
@@ -169,7 +171,7 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual({finding["category"] for finding in packet["findings"]}, {"deviant_behavior", "anticheat"})
         self.assertNotIn("killed_monsters", json.dumps(packet, ensure_ascii=False))
         self.assertNotIn("picked_up", json.dumps(packet, ensure_ascii=False))
-        self.assertEqual([item["kind"] for item in packet["context"]], ["log_security", "punishment", "label", "note"])
+        self.assertEqual([item["kind"] for item in packet["context"]], ["punishment", "label", "note", "log_security"])
 
     def test_moderation_packet_detects_ip_ban_evasion_and_second_side_anomaly(self):
         packet = build_moderation_packet({
@@ -187,7 +189,7 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertTrue(any(item["kind"] == "player" and item["id"] == 9 for item in packet["findings"][0]["evidence"] + packet["findings"][1]["evidence"]))
         self.assertNotIn("10.0.0.1", json.dumps(packet, ensure_ascii=False))
 
-    def test_qwen_request_does_not_receive_context_or_source_coverage(self):
+    def test_qwen_request_receives_untrusted_context_without_source_coverage(self):
         request = build_kobold_request({
             "player": {"player_id": 7, "name": "Тест"},
             "findings": [{"category": "twink_link", "severity": "medium", "title": "Связь", "details": "Основание", "reason": "Проверить", "next_step": "Сверить", "evidence": []}],
@@ -199,7 +201,7 @@ class AIDossierContractTests(unittest.TestCase):
         model_input = request["json"]["messages"][1]["content"]
 
         self.assertIn("Связь", model_input)
-        self.assertNotIn("Метка Дитриха", model_input)
+        self.assertIn("Метка Дитриха", model_input)
         self.assertNotIn('"coverage"', model_input)
 
     def test_twink_finding_exposes_sauron_basis_without_raw_ip(self):
@@ -367,6 +369,80 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertNotIn("8.8.8.8", model_input)
         self.assertIn("ban_evasion", model_input)
 
+    def test_qwen_packet_contains_untrusted_moderation_context_without_exact_ip(self):
+        packet = {
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [{"category": "twink_link", "severity": "medium", "title": "Связь", "details": "Проверить", "reason": "Технический сигнал", "next_step": "Сверить", "basis": ["точное совпадение IP"]}],
+            "context": [
+                {"kind": "punishment", "text": "warning: оскорбления в чате"},
+                {"kind": "label", "text": "Метка (не доказательство): токсичность"},
+                {"kind": "note", "text": "Недоверенный текст заметки: проверить повторные жалобы"},
+                {"kind": "ticket", "text": "Тикет: open — сообщения (неподтверждённые сведения): жалоба на спам"},
+                {"kind": "ip_history", "text": "Глобальные IP: 8.8.8.8"},
+            ],
+            "missing": [],
+        }
+
+        model_packet = services_ai_dossier.build_qwen_packet(packet)
+        model_context = json.dumps(model_packet["model_context"], ensure_ascii=False)
+
+        self.assertIn("оскорбления", model_context)
+        self.assertIn("токсичность", model_context)
+        self.assertIn("неподтверждённые", model_context)
+        self.assertNotIn("8.8.8.8", model_context)
+        self.assertNotIn("source_id", model_context)
+
+    def test_qwen_context_keeps_punishment_labels_notes_and_tickets_after_log_noise(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [],
+            "logs": [{"id": index, "action": "kick", "details": "шум"} for index in range(20)],
+            "tickets": [{"id": 301, "type": "player_report", "status": "open", "title": "Жалоба", "messages": [{"content": "сообщение жалобы"}]}],
+            "punishments": [{"id": 401, "type": "warning", "status": "expired", "reason": "оскорбления", "recent": False}],
+            "labels": [{"id": 501, "name": "токсичность", "note": "контекст метки"}],
+            "notes": [{"id": 601, "content": "контекст заметки"}],
+            "missing": [],
+        })
+
+        model_context = json.dumps(services_ai_dossier.build_qwen_packet(packet)["model_context"], ensure_ascii=False)
+
+        self.assertIn("оскорбления", model_context)
+        self.assertIn("токсичность", model_context)
+        self.assertIn("контекст заметки", model_context)
+        self.assertIn("сообщение жалобы", model_context)
+
+    def test_old_rules_version_is_stale_even_when_schema_is_v2(self):
+        self.assertFalse(services_ai_dossier.is_current_dossier_result({
+            "schema_version": 2, "triage": {}, "rules_version": DOSSIER_RULES_VERSION - 1,
+        }))
+        self.assertFalse(services_ai_dossier.is_current_dossier_result({
+            "schema_version": 2, "triage": {},
+        }))
+
+    def test_moderation_triage_map_exposes_only_current_actionable_reports(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AIPlayerDossier.__table__])
+        db = Session(engine)
+        try:
+            db.add_all([
+                AIPlayerDossier(player_id=1, status="succeeded", result_json={"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION, "triage": {"level": "urgent", "title": "Срочно"}, "summary": "Проверить", "findings": [], "context": [], "coverage": {}, "caveats": [], "confidence": "high"}),
+                AIPlayerDossier(player_id=2, status="failed", result_json={"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION, "triage": {"level": "review", "title": "Проверить"}, "summary": "Rules-only", "findings": [], "context": [], "coverage": {}, "caveats": [], "confidence": "high"}),
+                AIPlayerDossier(player_id=3, status="succeeded", result_json={"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION, "triage": {"level": "none", "title": "Нет"}, "summary": "Нет", "findings": [], "context": [], "coverage": {}, "caveats": [], "confidence": "high"}),
+                AIPlayerDossier(player_id=4, status="succeeded", result_json={"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION - 1, "triage": {"level": "urgent", "title": "Старое"}, "summary": "Старое", "findings": [], "context": [], "coverage": {}, "caveats": [], "confidence": "high"}),
+            ])
+            db.commit()
+
+            markers = get_dossier_triage_map(db, [1, 2, 3, 4, 5])
+
+            self.assertEqual(markers[1]["level"], "urgent")
+            self.assertEqual(markers[2]["level"], "review")
+            self.assertNotIn(3, markers)
+            self.assertNotIn(4, markers)
+            self.assertNotIn(5, markers)
+        finally:
+            db.close()
+            engine.dispose()
+
     def test_non_superuser_cannot_request_manual_dossier_generation(self):
         from fastapi import HTTPException
         from services_ai_dossier import require_dossier_generation
@@ -492,7 +568,7 @@ class AIDossierContractTests(unittest.TestCase):
 
     def test_old_result_is_not_current_dossier(self):
         self.assertFalse(services_ai_dossier.is_current_dossier_result({"summary": "старый", "facts": []}))
-        self.assertTrue(services_ai_dossier.is_current_dossier_result({"schema_version": 2, "triage": {}}))
+        self.assertTrue(services_ai_dossier.is_current_dossier_result({"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION, "triage": {}}))
 
     def test_stale_result_is_hidden_but_not_deleted_from_report(self):
         report = SimpleNamespace(
@@ -513,7 +589,7 @@ class AIDossierContractTests(unittest.TestCase):
         successful = AIPlayerDossier(
             status="succeeded",
             input_hash="same",
-            result_json={"schema_version": 2},
+            result_json={"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION},
             generated_at=now - timedelta(days=2),
         )
         self.assertFalse(should_queue_dossier(successful, "same", False, now, 7))
@@ -729,7 +805,7 @@ class AIDossierContractTests(unittest.TestCase):
             report = AIPlayerDossier(
                 player_id=7,
                 status="queued",
-                result_json={"schema_version": 2, "triage": {"level": "none", "title": "Старый", "reason": ""}, "summary": "старый", "findings": [], "context": [], "caveats": [], "confidence": "high"},
+                result_json={"schema_version": 2, "rules_version": DOSSIER_RULES_VERSION, "triage": {"level": "none", "title": "Старый", "reason": ""}, "summary": "старый", "findings": [], "context": [], "caveats": [], "confidence": "high"},
                 summary_text="старый",
                 input_hash="old",
                 generated_at=datetime(2026, 9, 1),

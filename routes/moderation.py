@@ -26,6 +26,7 @@ from security import check_permission
 from config import get_settings
 from security import verify_external_api_key_dependency
 from services import PunishmentService, ServerModerationService, PlayerService
+from services_ai_dossier import get_dossier_triage_map
 from schemas import (
     ServerPlayersReport, ServerPlayersReportResult,
     AnticheatEventIn, AnticheatEventOut,
@@ -478,7 +479,7 @@ def _serialize_label_ids(player) -> list[int]:
     return result
 
 
-def _serialize_online_player(info: dict) -> dict:
+def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) -> dict:
     flags = info.get("player_flags", {})
     return {
         "player_steamid": info.get("player_steamid"),
@@ -503,10 +504,11 @@ def _serialize_online_player(info: dict) -> dict:
         "has_previous_names": bool(flags.get("has_previous_names")),
         "has_ip_history": bool(flags.get("has_ip_history")),
         "last_activity": info.get("last_activity") or (info["last_seen"].isoformat() if info.get("last_seen") else None) or (info["join_time"].isoformat() if info.get("join_time") else None),
+        "dossier_triage": dossier_triage,
     }
 
 
-def _serialize_offline_player(p, flags: Optional[dict] = None) -> dict:
+def _serialize_offline_player(p, flags: Optional[dict] = None, dossier_triage: Optional[dict] = None) -> dict:
     flags = flags or {}
     return {
         "player_id": p.player_id,
@@ -531,10 +533,11 @@ def _serialize_offline_player(p, flags: Optional[dict] = None) -> dict:
         # is_new_player flag (services.py) — kept in sync so a player looks
         # equally "new" whether they're currently online or not.
         "is_new_player": p.play_time_hours < 2,
+        "dossier_triage": dossier_triage,
     }
 
 
-def _serialize_search_player(p, flags: Optional[dict] = None) -> dict:
+def _serialize_search_player(p, flags: Optional[dict] = None, dossier_triage: Optional[dict] = None) -> dict:
     flags = flags or {}
     """Serialize a player search result using the moderation table contract."""
     return {
@@ -557,6 +560,7 @@ def _serialize_search_player(p, flags: Optional[dict] = None) -> dict:
         "has_previous_names": bool(flags.get("has_previous_names")),
         "has_ip_history": bool(flags.get("has_ip_history")),
         "last_activity": p.last_login_time.isoformat() if p.last_login_time else None,
+        "dossier_triage": dossier_triage,
     }
 
 
@@ -628,6 +632,7 @@ async def api_moderation_overview(
     all_player_ids.extend(p.player_id for p in recent_offline if p.player_id)
     all_player_ids.extend(p.player_id for p in search_results if p.player_id)
     player_flags = PlayerRepository(db).get_player_flags(list(dict.fromkeys(all_player_ids)))
+    dossier_triage = get_dossier_triage_map(db, list(dict.fromkeys(all_player_ids)))
     for info in online_players:
         flags = player_flags.get(info.get("player_id"), {})
         info["player_flags"] = flags
@@ -644,13 +649,13 @@ async def api_moderation_overview(
     ]
 
     return {
-        "online_players": [_serialize_online_player(p) for p in online_players],
+        "online_players": [_serialize_online_player(p, dossier_triage.get(p.get("player_id"))) for p in online_players],
         "online_count": len(online_players),
         "online_servers": online_servers,
         "selected_server": server,
         "round_states": round_states,
-        "recent_offline": [_serialize_offline_player(p, player_flags.get(p.player_id)) for p in recent_offline],
-        "search_results": [_serialize_search_player(p, player_flags.get(p.player_id)) for p in search_results],
+        "recent_offline": [_serialize_offline_player(p, player_flags.get(p.player_id), dossier_triage.get(p.player_id)) for p in recent_offline],
+        "search_results": [_serialize_search_player(p, player_flags.get(p.player_id), dossier_triage.get(p.player_id)) for p in search_results],
         "search_query": search,
         "ac_events": ac_enriched,
         "ranks": settings.ranks_mapping,

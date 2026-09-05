@@ -28,7 +28,7 @@ import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { filterAndSortPlayers, resetPlayerFilters, type PlayerSort } from "@/lib/player-filters"
 import { clearPlayerFilterState, loadPlayerFilterState, loadPlayerSort, savePlayerFilterState, savePlayerSort } from "@/lib/player-filter-storage"
-import type { ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
+import type { DossierTriageMarker, ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
 
@@ -49,6 +49,12 @@ function onlineDisplayName(p: OnlinePlayer): string {
 }
 function offlineDisplayName(p: OfflinePlayer): string {
   return p.player_last_time_name
+}
+
+function DossierMarker({ triage }: { triage?: DossierTriageMarker | null }) {
+  if (!triage) return null
+  const urgent = triage.level === "urgent"
+  return <Badge variant={urgent ? "destructive" : "outline"} className={!urgent ? "border-warning/40 bg-warning/10 text-warning" : undefined} title={`${triage.title}. ${triage.notice} ${triage.summary}`}>ИИ: {urgent ? "срочно" : "проверить"}</Badge>
 }
 
 function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {
@@ -343,6 +349,7 @@ export function ModerationPage() {
                             <PlayerHoverLink playerId={p.player_id}>{name}</PlayerHoverLink>
                           ) : name}
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
+                          <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
                           <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />
                         </TableCell>
@@ -427,6 +434,7 @@ export function ModerationPage() {
                         <TableCell>
                           <PlayerHoverLink playerId={p.player_id} className="font-medium text-primary underline-offset-2 hover:underline">{name}</PlayerHoverLink>
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
+                          <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
                           <RankMismatchBadge nickname={p.player_last_time_name} rankId={p.rank_id} ranks={data.ranks} />
                           <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
