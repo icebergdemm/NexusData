@@ -274,6 +274,20 @@ def task_cleanup_replays() -> dict:
         db.close()
 
 
+def task_cleanup_communications() -> dict:
+    """Delete expired chat/voice metadata using the admin-configured retention."""
+    from routes.communications import purge_expired_communications
+    db = SessionLocal()
+    try:
+        return {"deleted_communications": purge_expired_communications(db)}
+    except Exception:
+        db.rollback()
+        logger.exception("Communication retention cleanup failed")
+        raise
+    finally:
+        db.close()
+
+
 def task_refresh_logs() -> dict:
     """Refresh server log cache from SFTP. Runs every 30 min."""
     try:
@@ -1202,6 +1216,7 @@ def _start_simple_workers():
         (task_recalculate_ratings, 24 * 60 * 60),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
+        (task_cleanup_communications, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
         (task_sync_department_kits, 60),
@@ -1267,6 +1282,13 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="replay_cleanup",
+    )
+
+    scheduler.register_periodic(
+        task_cleanup_communications,
+        interval_secs=6 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="communications_cleanup",
     )
 
     # "Обзор мира" stale round cleanup: BACKGROUND priority, every 6 hours

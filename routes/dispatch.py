@@ -31,7 +31,7 @@ from database import GameSessionLocal, get_db, get_game_db
 from security import verify_external_api_key_dependency, verify_client_api_key_dependency, check_permission
 from config import get_settings
 from models import (
-    DispatchMessage, RoundEvent, AdminUser, AdminSession, AICreatureAlert,
+    DispatchMessage, RoundEvent, PlayerCommunication, AdminUser, AdminSession, AICreatureAlert,
     AIDispatcherReminder, ServerAction, PlayerPunishment, PlayerData, WarehouseItem,
     AppSetting, WorldRound,
 )
@@ -310,6 +310,8 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     event = RoundEvent(
         event_type="start",
         server_name=server_name,
+        server_session_id=body.server_session_id,
+        round_token=body.round_token,
         submarine_name=body.submarine_name,
         mission=body.mission,
         location=body.location,
@@ -318,6 +320,14 @@ def post_round_start(body: RoundStartIn, db: Session = Depends(get_game_db)):
     db.add(event)
     db.commit()
     db.refresh(event)
+    if body.server_session_id and body.round_token:
+        db.query(PlayerCommunication).filter(
+            PlayerCommunication.server_name == server_name,
+            PlayerCommunication.server_session_id == body.server_session_id,
+            PlayerCommunication.round_token == body.round_token,
+            PlayerCommunication.round_event_id.is_(None),
+        ).update({"round_event_id": event.id}, synchronize_session=False)
+        db.commit()
     logger.info(f"Round start: {server_name} | {body.submarine_name} | {len(body.players)} players")
     _queue_round_status_refresh(db, server_name)
     _queue_ai_round_briefing(event, db)
@@ -330,21 +340,23 @@ def post_round_end(body: RoundEndIn, db: Session = Depends(get_game_db)):
     server_name = (body.server_name or "").strip().upper() or None
     # Link back to the start event that opened this round (the most recent
     # unpaired "start" for this server) so past rounds can be listed in one query.
-    paired_start = (
-        db.query(RoundEvent)
-        .filter(
-            RoundEvent.server_name == server_name,
-            RoundEvent.event_type == "start",
-            ~RoundEvent.id.in_(
-                db.query(RoundEvent.paired_start_id).filter(RoundEvent.paired_start_id.isnot(None))
-            ),
-        )
-        .order_by(RoundEvent.created_at.desc())
-        .first()
+    paired_query = db.query(RoundEvent).filter(
+        RoundEvent.server_name == server_name,
+        RoundEvent.event_type == "start",
+        ~RoundEvent.id.in_(
+            db.query(RoundEvent.paired_start_id).filter(RoundEvent.paired_start_id.isnot(None))
+        ),
     )
+    if body.server_session_id:
+        paired_query = paired_query.filter(RoundEvent.server_session_id == body.server_session_id)
+    if body.round_token:
+        paired_query = paired_query.filter(RoundEvent.round_token == body.round_token)
+    paired_start = paired_query.order_by(RoundEvent.created_at.desc()).first()
     event = RoundEvent(
         event_type="end",
         server_name=server_name,
+        server_session_id=body.server_session_id,
+        round_token=body.round_token,
         mission_completed=1 if body.mission_completed else 0,
         reached_station=1 if body.reached_station else 0,
         players=body.players,
@@ -353,6 +365,16 @@ def post_round_end(body: RoundEndIn, db: Session = Depends(get_game_db)):
     db.add(event)
     db.commit()
     db.refresh(event)
+    # Communication batches may be delayed behind the lifecycle request (or
+    # arrive just before it). Resolve those rows by the stable identity, then
+    # point them at the finished round row used by the replay UI.
+    if body.server_session_id and body.round_token:
+        db.query(PlayerCommunication).filter(
+            PlayerCommunication.server_name == server_name,
+            PlayerCommunication.server_session_id == body.server_session_id,
+            PlayerCommunication.round_token == body.round_token,
+        ).update({"round_event_id": event.id}, synchronize_session=False)
+        db.commit()
     logger.info(f"Round end: {body.server_name} | mission={body.mission_completed} | station={body.reached_station}")
     _queue_round_status_refresh(db, server_name)
     return {"status": "ok", "round_id": event.id}

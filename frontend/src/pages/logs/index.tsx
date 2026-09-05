@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useSearchParams } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
@@ -44,6 +44,7 @@ import { useCurrentAdmin } from "@/lib/auth"
 import { IS_V2 } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
 import { formatBrowserDate } from "@/lib/format-date"
+import { CommunicationsView } from "./CommunicationsView"
 
 interface LogsResponse {
   events: LogEvent[]
@@ -143,6 +144,7 @@ export function LogsPage() {
   const { data: admin } = useCurrentAdmin()
   const [searchParams] = useSearchParams()
   const eventId = searchParams.get("event_id")
+  const communicationMode = searchParams.get("view") === "communications"
   const [draftFilters, setDraftFilters] = useState<LogFilters>(makeDefaultFilters)
   const [appliedFilters, setAppliedFilters] = useState<LogFilters>(makeDefaultFilters)
   const [pageSize, setPageSize] = useState(100)
@@ -271,6 +273,18 @@ export function LogsPage() {
       ? `${allEvents.length} загружено${hasNextPage ? " · есть ещё" : ""}`
       : ""
 
+  if (communicationMode) {
+    return (
+      <div className="-m-4 flex min-h-[calc(100dvh-3.5rem)] flex-col bg-background sm:-m-5 lg:h-[calc(100dvh-3.5rem)] lg:overflow-hidden">
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center border border-border"><ScrollText className="size-4" /></div><div><h1 className="text-sm font-semibold uppercase tracking-[0.08em]">Логи сервера</h1><p className="text-xs text-muted-foreground">Журнал событий и общение игроков</p></div></div>
+          <div className="ml-auto flex gap-1"><Button asChild variant="outline" size="sm"><Link to="/logs">Журнал событий</Link></Button><Button variant="secondary" size="sm" disabled>Общение игроков</Button></div>
+        </div>
+        <CommunicationsView />
+      </div>
+    )
+  }
+
   if (IS_V2) {
     const categoryLabel = appliedFilters.category === "player"
       ? "Игровые"
@@ -336,12 +350,11 @@ export function LogsPage() {
             </div>
             <div className="min-w-0">
               <h1 className="truncate text-sm font-semibold uppercase tracking-[0.08em]">Логи сервера</h1>
-              <p className="truncate text-xs text-muted-foreground">
-                Поиск действий игроков, игровых событий и технических записей
-              </p>
+              <p className="truncate text-xs text-muted-foreground">Поиск действий игроков, игровых событий и технических записей</p>
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <div className="hidden gap-1 sm:flex"><Button asChild variant="secondary" size="sm" disabled><Link to="/logs">Журнал событий</Link></Button><Button asChild variant="outline" size="sm"><Link to="/logs?view=communications">Общение игроков</Link></Button></div>
             <Button
               type="button"
               variant="outline"

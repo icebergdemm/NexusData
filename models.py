@@ -882,6 +882,10 @@ class RoundEvent(Base):
     # of pairing start/end rows in Python on every request.
     paired_start_id = Column(Integer, ForeignKey("round_events.id"), nullable=True)
     paired_start = relationship("RoundEvent", remote_side=[id], foreign_keys=[paired_start_id])
+    # Stable identifiers supplied by the game-server plugin.  Timestamp-only
+    # pairing is not safe when a lobby/round transition is retried or repeated.
+    server_session_id = Column(String(64), nullable=True, index=True)
+    round_token = Column(String(64), nullable=True, index=True)
 
 
 class RoundReplay(Base):
@@ -904,6 +908,80 @@ class RoundReplay(Base):
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.
     manual_round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True)
+
+
+class PlayerCommunication(Base):
+    """A chat message or one final voice utterance from a game server."""
+    __tablename__ = "player_communications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_uid = Column(String(96), nullable=False, unique=True, index=True)
+    source = Column(String(16), nullable=False, index=True)  # chat | voice
+    channel = Column(String(16), nullable=False, index=True)
+    server_name = Column(String(100), nullable=False, index=True)
+    server_session_id = Column(String(64), nullable=False, index=True)
+    round_token = Column(String(64), nullable=True, index=True)
+    round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    player_steamid = Column(String(50), nullable=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True, index=True)
+    player_name = Column(String(255), nullable=True, index=True)
+    role = Column(String(100), nullable=True)
+    submarine_name = Column(String(255), nullable=True)
+    hull_id = Column(String(100), nullable=True, index=True)
+    hull_name = Column(String(255), nullable=True)
+    position_x = Column(Float, nullable=True)
+    position_y = Column(Float, nullable=True)
+    original_text = Column(Text, nullable=True)
+    transcript_text = Column(Text, nullable=True)
+    asr_status = Column(String(20), nullable=False, default="not_applicable", index=True)
+    asr_confidence = Column(Float, nullable=True)
+    asr_duration_ms = Column(Integer, nullable=True)
+    asr_error = Column(String(1000), nullable=True)
+    occurred_at = Column(DateTime, nullable=False, index=True)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    recipients = relationship(
+        "PlayerCommunicationRecipient",
+        back_populates="communication",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    round_event = relationship("RoundEvent", foreign_keys=[round_event_id])
+
+
+class PlayerCommunicationRecipient(Base):
+    """Aggregated server-level delivery observation for one recipient."""
+    __tablename__ = "player_communication_recipients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    communication_id = Column(
+        Integer,
+        ForeignKey("player_communications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    player_steamid = Column(String(50), nullable=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True, index=True)
+    player_name = Column(String(255), nullable=True)
+    delivered_text = Column(Text, nullable=True)
+    server_queued = Column(Boolean, nullable=False, default=True)
+    delivery_allowed = Column(Boolean, nullable=False, default=True)
+    channel = Column(String(16), nullable=True)
+    is_radio = Column(Boolean, nullable=False, default=False)
+    is_dead = Column(Boolean, nullable=False, default=False)
+    distance_factor = Column(Float, nullable=True)
+    packet_count = Column(Integer, nullable=False, default=1)
+    first_observed_at = Column(DateTime, nullable=True)
+    last_observed_at = Column(DateTime, nullable=True)
+
+    communication = relationship("PlayerCommunication", back_populates="recipients")
+
+    __table_args__ = (
+        UniqueConstraint("communication_id", "player_steamid", name="uq_comm_recipient_player"),
+        Index("ix_comm_recipient_communication_player", "communication_id", "player_id"),
+    )
 
 
 class RespawnDoll(Base):

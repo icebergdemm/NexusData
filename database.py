@@ -148,6 +148,9 @@ def _apply_migrations():
         ("players_data", "steam_avatar_fetched_at", "DATETIME"),
         # round_events: link an "end" row back to the "start" row that opened it
         ("round_events", "paired_start_id", "INT"),
+        ("round_events", "server_session_id", "VARCHAR(64)"),
+        ("round_events", "round_token", "VARCHAR(64)"),
+        ("player_communication_recipients", "is_dead", "TINYINT NOT NULL DEFAULT 0"),
         # tickets: retain closed ticket history in a soft-deleted archive
         ("tickets", "deleted_at", "DATETIME"),
         ("tickets", "deleted_by", "VARCHAR(255)"),
@@ -406,6 +409,8 @@ _MISSING_INDEX_COLUMNS = [
     # compute_server_comparison — an index here lets MySQL pick the most
     # selective single-column index instead of guessing.
     ("round_events", "event_type"),
+    ("round_events", "server_session_id"),
+    ("round_events", "round_token"),
 ]
 
 _MISSING_COMPOSITE_INDEXES = [

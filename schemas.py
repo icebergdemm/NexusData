@@ -427,6 +427,8 @@ class RoundStartIn(BaseModel):
     mission: Optional[str] = None
     location: Optional[str] = None
     players: List[_RoundPlayer] = Field(default_factory=list)  # [{steamid, player_name, role?, ...}]
+    server_session_id: Optional[str] = Field(None, max_length=64)
+    round_token: Optional[str] = Field(None, max_length=64)
 
 
 class RoundEndIn(BaseModel):
@@ -435,6 +437,55 @@ class RoundEndIn(BaseModel):
     mission_completed: bool = False
     reached_station: bool = False
     players: List[_RoundPlayer] = Field(default_factory=list)  # [{steamid, player_name, role?, ...}]
+    server_session_id: Optional[str] = Field(None, max_length=64)
+    round_token: Optional[str] = Field(None, max_length=64)
+
+
+class CommunicationRecipientIn(BaseModel):
+    player_steamid: Optional[str] = Field(None, max_length=50)
+    player_name: Optional[str] = Field(None, max_length=255)
+    delivered_text: Optional[str] = Field(None, max_length=4000)
+    server_queued: bool = True
+    delivery_allowed: bool = True
+    channel: Optional[str] = Field(None, max_length=16)
+    is_radio: bool = False
+    is_dead: bool = False
+    distance_factor: Optional[float] = None
+    packet_count: int = Field(default=1, ge=0, le=100000)
+    first_observed_at: Optional[datetime] = None
+    last_observed_at: Optional[datetime] = None
+
+
+class CommunicationIn(BaseModel):
+    event_uid: str = Field(..., min_length=1, max_length=96)
+    source: Literal["chat", "voice"]
+    channel: str = Field(..., min_length=1, max_length=16)
+    server_name: str = Field(..., min_length=1, max_length=100)
+    server_session_id: str = Field(..., min_length=1, max_length=64)
+    round_token: Optional[str] = Field(None, max_length=64)
+    player_steamid: Optional[str] = Field(None, max_length=50)
+    player_name: Optional[str] = Field(None, max_length=255)
+    role: Optional[str] = Field(None, max_length=100)
+    submarine_name: Optional[str] = Field(None, max_length=255)
+    hull_id: Optional[str] = Field(None, max_length=100)
+    hull_name: Optional[str] = Field(None, max_length=255)
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
+    original_text: Optional[str] = Field(None, max_length=4000)
+    transcript_text: Optional[str] = Field(None, max_length=4000)
+    asr_status: Literal["not_applicable", "pending", "recognized", "failed"] = "not_applicable"
+    asr_confidence: Optional[float] = Field(None, ge=0, le=1)
+    asr_duration_ms: Optional[int] = Field(None, ge=0)
+    asr_error: Optional[str] = Field(None, max_length=1000)
+    occurred_at: datetime
+    ended_at: Optional[datetime] = None
+    recipients: List[CommunicationRecipientIn] = Field(default_factory=list, max_length=512)
+
+
+class CommunicationBatchIn(BaseModel):
+    server_name: str = Field(..., min_length=1, max_length=100)
+    server_session_id: str = Field(..., min_length=1, max_length=64)
+    events: List[CommunicationIn] = Field(..., min_length=1, max_length=100)
 
 
 class AnticheatEventIn(BaseModel):

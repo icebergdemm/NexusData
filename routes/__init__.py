@@ -32,6 +32,7 @@ from .error_log import router as error_log_router
 from .perf_monitor import router as perf_monitor_router
 from .monster_spawn import game_router as monster_spawn_game_router, admin_router as monster_spawn_admin_router
 from .ai_dossier import router as ai_dossier_router
+from .communications import router as communications_router
 
 __all__ = [
     "status_router",
@@ -79,4 +80,5 @@ __all__ = [
     "monster_spawn_game_router",
     "monster_spawn_admin_router",
     "ai_dossier_router",
+    "communications_router",
 ]

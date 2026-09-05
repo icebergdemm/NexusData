@@ -20,6 +20,8 @@ interface AdministrationResponse {
   editable_cfg: Record<string, string | number | boolean>
 }
 
+interface CommunicationRetentionResponse { retention_days: number; default_days: number; max_days: number }
+
 const CFG_FIELDS: { key: string; label: string; type?: "checkbox" | "password" }[] = [
   { key: "discord_client_id", label: "Discord Client ID" },
   { key: "discord_client_secret", label: "Discord Client Secret", type: "password" },
@@ -120,6 +122,7 @@ const GIT_UPDATE_TOGGLES: { key: string; label: string; hint: string }[] = [
 
 export function AdministrationPage() {
   const [cfg, setCfg] = useState<Record<string, string>>({})
+  const [retentionDays, setRetentionDays] = useState(90)
   const queryClient = useQueryClient()
   const { data: me } = useCurrentAdmin()
 
@@ -127,6 +130,13 @@ export function AdministrationPage() {
     queryKey: ["administration"],
     queryFn: () => api.get<AdministrationResponse>("/api/v1/admin/administration"),
   })
+  const { data: communicationConfig } = useQuery({
+    queryKey: ["communications-config"],
+    queryFn: () => api.get<CommunicationRetentionResponse>("/api/v1/admin/communications/config"),
+  })
+  useEffect(() => {
+    if (communicationConfig) setRetentionDays(communicationConfig.retention_days)
+  }, [communicationConfig])
   useEffect(() => {
     if (data?.editable_cfg) {
       setCfg(Object.fromEntries(Object.entries(data.editable_cfg).map(([k, v]) => [k, String(v ?? "")])))
@@ -136,6 +146,11 @@ export function AdministrationPage() {
   const saveConfig = useMutation({
     mutationFn: () => api.post("/api/v1/admin/administration/config", cfg),
     onSuccess: () => { toast.success("Конфигурация сохранена. Перезапустите сервер для применения части настроек."); queryClient.invalidateQueries({ queryKey: ["administration"] }) },
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const saveCommunicationConfig = useMutation({
+    mutationFn: () => api.patch("/api/v1/admin/communications/config", { retention_days: retentionDays }),
+    onSuccess: () => { toast.success("Срок хранения коммуникаций сохранён"); queryClient.invalidateQueries({ queryKey: ["communications-config"] }) },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -157,6 +172,15 @@ export function AdministrationPage() {
             ))}
           </div>
           <Button onClick={() => saveConfig.mutate()}>Сохранить конфигурацию</Button>
+        </CardContent>
+      </Card>
+
+      <Card className="overflow-hidden py-0">
+        <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Общение игроков</CardTitle></CardHeader>
+        <CardContent className="space-y-3 py-4">
+          <p className="text-xs text-muted-foreground">Текст чата и расшифровки голоса хранятся в MySQL. Аудио не сохраняется. Срок применяется фоновым очистителем.</p>
+          <div className="max-w-xs"><Label className="text-xs text-muted-foreground">Срок хранения, дней</Label><Input className="mt-1" type="number" min={1} max={communicationConfig?.max_days ?? 3650} value={retentionDays} onChange={(e) => setRetentionDays(Number(e.target.value))} /></div>
+          <Button onClick={() => saveCommunicationConfig.mutate()} disabled={saveCommunicationConfig.isPending}>Сохранить срок хранения</Button>
         </CardContent>
       </Card>
 
