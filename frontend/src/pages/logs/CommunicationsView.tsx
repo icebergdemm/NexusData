@@ -17,6 +17,7 @@ import {
   buildCommunicationQuery,
   communicationChannelLabels,
   communicationContextLabels,
+  communicationContextSummary,
   recipientTextVariant,
 } from "./communications-utils"
 
@@ -119,7 +120,7 @@ function contextFor(event: Communication) {
 }
 
 function contextLabel(event: Communication) {
-  return communicationContextLabels[contextFor(event)] ?? "контекст неизвестен"
+  return communicationContextSummary(contextFor(event))
 }
 
 function CopyButton({ value, label }: { value: string | null | undefined; label: string }) {
@@ -162,9 +163,9 @@ function RoundContext({ event }: { event: Communication }) {
       ) : context === "round" ? (
         <span className="block text-xs text-muted-foreground">раунд · идёт</span>
       ) : context === "unmatched" ? (
-        <span className="block text-xs text-warning" title={event.round_token ?? undefined}>раунд не сопоставлен</span>
+        <span className="block text-xs text-warning">раунд не сопоставлен</span>
       ) : (
-        <span className="block text-xs text-muted-foreground">лобби · сессия {event.server_session_id.slice(0, 8)}</span>
+        <span className="block text-xs text-muted-foreground">лобби</span>
       )}
     </div>
   )
@@ -210,7 +211,7 @@ function CommunicationDrawer({ event, communicationId, loading, onClose }: { eve
                   <div><div className="text-muted-foreground">Отсек</div><div>{event.hull_name ?? "-"}</div></div>
                   <div><div className="text-muted-foreground">Координаты</div><div>{event.position_x != null ? `${Math.round(event.position_x)}, ${Math.round(event.position_y ?? 0)}` : "неизвестны"}</div></div>
                 </div>
-                {event.round_token && <div className="break-all text-[11px] text-muted-foreground">round token: {event.round_token}</div>}
+                {event.round_token && <div className="text-[11px] text-muted-foreground">Есть токен раунда, но lifecycle-событие не найдено.</div>}
               </section>
 
               <section className="space-y-2">
@@ -225,15 +226,15 @@ function CommunicationDrawer({ event, communicationId, loading, onClose }: { eve
                 })}</div> : <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">Фактические получатели не зафиксированы.</div>}
               </section>
 
-              <section className="space-y-2">
-                <h3 className="text-sm font-semibold">Идентификаторы</h3>
-                <div className="divide-y rounded-md border text-xs">
+              <details className="rounded-md border">
+                <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Технические данные</summary>
+                <div className="divide-y border-t text-xs">
                   <div className="flex items-center justify-between gap-2 p-2"><span className="text-muted-foreground">event_uid</span><span className="flex min-w-0 items-center gap-1"><code className="truncate">{event.event_uid}</code><CopyButton value={event.event_uid} label="event_uid" /></span></div>
                   <div className="flex items-center justify-between gap-2 p-2"><span className="text-muted-foreground">SteamID</span><span className="flex min-w-0 items-center gap-1"><code className="truncate">{event.player_steamid ?? "-"}</code><CopyButton value={event.player_steamid} label="SteamID" /></span></div>
                   <div className="flex items-center justify-between gap-2 p-2"><span className="text-muted-foreground">Текст</span><span className="flex min-w-0 items-center gap-1"><span className="truncate">{event.transcript_text ?? event.original_text ?? "-"}</span><CopyButton value={event.transcript_text ?? event.original_text} label="текст" /></span></div>
                 </div>
                 {event.round_id != null && event.round_finished && <Link to={`/replays/rounds/${event.round_id}`} className="inline-flex items-center gap-1 text-xs text-primary hover:underline"><ExternalLink className="size-3.5" />Открыть раунд для анализа</Link>}
-              </section>
+              </details>
             </div>
           </>
         )}

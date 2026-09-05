@@ -5,6 +5,7 @@ import {
   buildCommunicationQuery,
   communicationChannelLabels,
   communicationContextLabels,
+  communicationContextSummary,
   recipientTextVariant,
 } from "../frontend/src/pages/logs/communications-utils.ts"
 
@@ -37,6 +38,12 @@ test("communication context labels distinguish lobby, round, and unresolved roun
   assert.equal(communicationContextLabels.lobby, "лобби")
   assert.equal(communicationContextLabels.round, "раунд")
   assert.equal(communicationContextLabels.unmatched, "раунд не сопоставлен")
+})
+
+test("communication context summary does not expose internal server session ids", () => {
+  assert.equal(communicationContextSummary("lobby"), "лобби")
+  assert.equal(communicationContextSummary("round"), "раунд")
+  assert.equal(communicationContextSummary("unmatched"), "раунд не сопоставлен")
 })
 
 test("recipient text is shown only when server delivery changed the message", () => {

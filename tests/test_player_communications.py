@@ -20,7 +20,8 @@ def _db():
     return sessionmaker(bind=engine)()
 
 
-def _batch(*, uid="chat-1", status="not_applicable", text="hello", token="round-1", source="chat"):
+def _batch(*, uid="chat-1", status="not_applicable", text="hello", token="round-1", source="chat",
+           player_steamid="76561198000000001", recipient_steamid="76561198000000002"):
     return CommunicationBatchIn.model_validate({
         "server_name": "ASPER1",
         "server_session_id": "session-1",
@@ -31,7 +32,7 @@ def _batch(*, uid="chat-1", status="not_applicable", text="hello", token="round-
             "server_name": "ASPER1",
             "server_session_id": "session-1",
             "round_token": token,
-            "player_steamid": "76561198000000001",
+            "player_steamid": player_steamid,
             "player_name": "Player",
             "role": "captain",
             "original_text": text if source == "chat" else None,
@@ -39,7 +40,7 @@ def _batch(*, uid="chat-1", status="not_applicable", text="hello", token="round-
             "asr_status": status,
             "occurred_at": datetime.utcnow().isoformat(),
             "recipients": [{
-                "player_steamid": "76561198000000002",
+                "player_steamid": recipient_steamid,
                 "player_name": "Listener",
                 "delivered_text": text,
                 "channel": "default",
@@ -112,6 +113,24 @@ def test_event_and_recipients_resolve_player_profiles_at_read_time():
     db.commit()
 
     ingest_communications(_batch(uid="dynamic-profile-1"), db)
+    row = db.query(PlayerCommunication).one()
+    payload = _event_dicts(db, [row], include_recipients=True)[0]
+
+    assert payload["player_id"] == 77
+    assert payload["recipients"][0]["player_id"] == 88
+
+
+def test_legacy_steam40_values_resolve_against_steamid64_profiles():
+    db = _db()
+    db.add(PlayerData(player_id=77, player_last_time_name="Player", player_steamid="76561198000000001"))
+    db.add(PlayerData(player_id=88, player_last_time_name="Listener", player_steamid="76561198000000002"))
+    db.commit()
+
+    ingest_communications(_batch(
+        uid="steam40-profile-1",
+        player_steamid="STEAM_1:1:19867136",
+        recipient_steamid="STEAM_1:0:19867137",
+    ), db)
     row = db.query(PlayerCommunication).one()
     payload = _event_dicts(db, [row], include_recipients=True)[0]
 

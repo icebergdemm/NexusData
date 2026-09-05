@@ -1,6 +1,7 @@
 """Player chat and voice communication ingest/admin APIs."""
 
 from datetime import datetime, timedelta
+import re
 from typing import Iterable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -75,10 +76,32 @@ def _round_event_for(db: Session, event: dict) -> Optional[RoundEvent]:
     return None
 
 
+_STEAM40_RE = re.compile(r"^STEAM_(\d+):([01]):(\d+)$", re.IGNORECASE)
+
+
+def _canonical_steamid(steamid: Optional[str]) -> Optional[str]:
+    value = str(steamid or "").strip()
+    if not value:
+        return None
+    if value.upper().startswith("STEAM64_"):
+        value = value[8:]
+    if value.isdigit() and len(value) == 17:
+        return value
+    match = _STEAM40_RE.fullmatch(value)
+    if match:
+        universe, y, account_number = (int(part) for part in match.groups())
+        steam64 = (universe << 56) | (1 << 52) | (1 << 32) | (account_number << 1) | y
+        return str(steam64)
+    return value
+
+
 def _player_id(db: Session, steamid: Optional[str]) -> Optional[int]:
     if not steamid:
         return None
-    return db.query(PlayerData.player_id).filter(PlayerData.player_steamid == steamid).scalar()
+    canonical = _canonical_steamid(steamid)
+    return db.query(PlayerData.player_id).filter(
+        PlayerData.player_steamid.in_({steamid, canonical})
+    ).scalar()
 
 
 def _upsert_recipient(db: Session, communication: PlayerCommunication, payload: dict) -> None:
@@ -193,13 +216,25 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
 
 
 def _player_ids_by_steamid(db: Session, steamids: Iterable[Optional[str]]) -> dict[str, int]:
-    values = {str(steamid) for steamid in steamids if steamid}
-    if not values:
+    originals = {str(steamid).strip() for steamid in steamids if steamid and str(steamid).strip()}
+    lookup_values = originals | {
+        canonical for canonical in (_canonical_steamid(steamid) for steamid in originals) if canonical
+    }
+    if not lookup_values:
         return {}
     rows = db.query(PlayerData.player_steamid, PlayerData.player_id).filter(
-        PlayerData.player_steamid.in_(values)
+        PlayerData.player_steamid.in_(lookup_values)
     ).all()
-    return {steamid: player_id for steamid, player_id in rows if steamid and player_id is not None}
+    by_canonical = {
+        _canonical_steamid(steamid): player_id
+        for steamid, player_id in rows
+        if steamid and player_id is not None
+    }
+    return {
+        steamid: by_canonical.get(_canonical_steamid(steamid))
+        for steamid in originals
+        if by_canonical.get(_canonical_steamid(steamid)) is not None
+    }
 
 
 def _round_context(event: PlayerCommunication) -> str:

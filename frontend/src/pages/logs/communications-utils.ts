@@ -13,6 +13,10 @@ export const communicationContextLabels: Record<string, string> = {
   unmatched: "раунд не сопоставлен",
 }
 
+export function communicationContextSummary(context: string): string {
+  return communicationContextLabels[context] ?? "контекст неизвестен"
+}
+
 export function recipientTextVariant(originalText: string | null, deliveredText: string | null): string | null {
   if (!deliveredText) return null
   if (originalText?.trim() === deliveredText.trim()) return null
