@@ -12,12 +12,13 @@ from sqlalchemy.orm import Session
 
 from database import Base
 from config import Settings, snapshot_env_file
-from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerIP, PlayerSession
+from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerIP, PlayerRoleAction, PlayerSession
 from services_ai_dossier import (
     DOSSIER_RULES_VERSION,
     build_kobold_request,
     build_dossier_analytics,
     build_moderation_packet,
+    build_negative_rating_actions,
     build_rules_result,
     dossier_evidence_link,
     dossier_public_dict,
@@ -477,7 +478,11 @@ class AIDossierContractTests(unittest.TestCase):
             player = PlayerData(player_id=7, player_steamid="76561198000000007", player_last_time_name="Тест")
             ticket = Ticket(id=301, ticket_type="player_report", title="Проверить", status="open", creator_discord_id="123", player_id=7, created_at=datetime(2026, 9, 4, 10, 0))
             message = TicketMessage(id=901, ticket_id=301, author_display_name="Жалобщик", author_discord_id="123", content="Игрок ломал реактор", created_at=datetime(2026, 9, 4, 10, 1))
-            db.add_all([player, ticket, message])
+            db.add_all([
+                player, ticket, message,
+                PlayerRoleAction(player_id=7, role="security", action_type="player_killed", value=2),
+                PlayerRoleAction(player_id=7, role="security", action_type="shoot_weapon", value=100),
+            ])
             db.commit()
             fake_event = SimpleNamespace(row_id=902, timestamp=datetime(2026, 9, 4, 10, 2), player_name="Тест", action_type="kick", details="кик", server_name="ASPER1", source_file="server.log")
             with (
@@ -489,6 +494,8 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertEqual(payload["tickets"][0]["messages"][0]["content"], "Игрок ломал реактор")
             self.assertEqual(payload["log_cache"]["ASPER1"]["event_count"], 10)
             self.assertEqual(payload["logs"][0]["action"], "kick")
+            self.assertEqual(payload["rating_negative_actions"][0]["action_type"], "player_killed")
+            self.assertEqual(payload["rating_negative_actions"][0]["count"], 1)
         finally:
             db.close()
             engine.dispose()
@@ -1120,6 +1127,62 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertEqual(snapshot.read_text(encoding="utf-8"), "SECRET_VALUE=do-not-print\n")
             if os.name != "nt":
                 self.assertEqual(snapshot.stat().st_mode & 0o077, 0)
+
+    def test_negative_rating_actions_are_aggregated_with_all_time_scope(self):
+        import rating_constants
+
+        with patch.object(rating_constants, "WEIGHT_MATRIX", {
+            "security": {"player_killed": -100.0, "self_death": -50.0, "shoot_weapon": 0.5},
+        }):
+            actions = build_negative_rating_actions([
+                {"role": "security", "action_type": "player_killed", "value": 2},
+                {"role": "security", "action_type": "player_killed", "value": 3},
+                {"role": "security", "action_type": "self_death", "value": 1},
+                {"role": "security", "action_type": "shoot_weapon", "value": 999},
+                {"role": "security", "action_type": "player_killed", "value": "bad"},
+                {"role": "security", "action_type": "player_killed", "value": -4},
+            ])
+
+        self.assertEqual(actions, [
+            {"role": "security", "action_type": "player_killed", "count": 2,
+             "total_value": 5.0, "penalty_points": 500.0, "all_time": True},
+            {"role": "security", "action_type": "self_death", "count": 1,
+             "total_value": 1.0, "penalty_points": 50.0, "all_time": True},
+        ])
+
+    def test_negative_rating_context_is_not_an_urgent_finding(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "rating_negative_actions": [{
+                "role": "security", "action_type": "player_killed", "count": 2,
+                "total_value": 5.0, "penalty_points": 500.0, "all_time": True,
+            }],
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [], "logs": [],
+            "tickets": [], "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        self.assertEqual(packet["findings"], [])
+        self.assertEqual(packet["coverage"]["rating"], {
+            "checked": True, "matches": 1, "status": "matched", "all_time": True,
+        })
+        rating_context = next(item for item in packet["context"] if item["kind"] == "rating_negative")
+        self.assertIn("за всю историю", rating_context["text"])
+        self.assertIn("убийство игрока/союзника", rating_context["text"])
+
+    def test_qwen_packet_contains_rating_context_without_rules_owned_fields(self):
+        packet = {
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [],
+            "context": [{"kind": "rating_negative", "text": "Отрицательные действия рейтинга за всю историю: security/player_killed ×2, штраф 500."}],
+            "coverage": {"rating": {"checked": True, "matches": 1, "status": "matched", "all_time": True}},
+            "missing": [],
+        }
+
+        model_packet = services_ai_dossier.build_qwen_packet(packet)
+
+        self.assertIn("rating_negative", json.dumps(model_packet, ensure_ascii=False))
+        self.assertNotIn("coverage", model_packet)
+        self.assertNotIn("all_time", json.dumps(model_packet, ensure_ascii=False))
 
 
 if __name__ == "__main__":
