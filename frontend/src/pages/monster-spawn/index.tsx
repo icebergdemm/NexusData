@@ -632,7 +632,11 @@ export function MonsterSpawnPage() {
   const world = useQuery({ queryKey: ["world-state", round?.round_id], queryFn: () => worldStateApi.getState(round!.round_id), enabled: !!round, refetchInterval: 3000 })
   const state = useQuery({ queryKey: ["monster-spawn", server], queryFn: () => monsterSpawnApi.get(server), refetchInterval: 5000 })
   const analysis = useQuery({ queryKey: ["monster-spawn-analysis", server], queryFn: () => monsterSpawnApi.analysis(server), refetchInterval: 15000, staleTime: 5000 })
-  const [intensityHistory, setIntensityHistory] = useState<Array<{ roundKey: string; seconds: number; intensity: number; threshold: number }>>([])
+  // История интенсивности за текущий раунд: точка на каждый свежий опрос
+  // плагина (~5 c, окно ~6 мин). last_seen_at меняется только когда плагин
+  // реально прислал телеметрию — по нему отсекаем дубли одного снапшота,
+  // а не по round_seconds (время раунда может стоять, а давление меняться).
+  const [intensityHistory, setIntensityHistory] = useState<Array<{ roundKey: string; seconds: number; intensity: number; threshold: number; seenAt: string }>>([])
 
   useEffect(() => { if (state.data && !dirty) setDraft(clone(state.data)) }, [state.data, dirty])
   useEffect(() => {
@@ -647,14 +651,18 @@ export function MonsterSpawnPage() {
       seconds: Number(dashboard.round_seconds) || 0,
       intensity: Number(dashboard.intensity) || 0,
       threshold: Number(dashboard.event_threshold) || 0,
+      seenAt: state.data?.last_seen_at ?? "",
     }
     setIntensityHistory((previous) => {
       const last = previous[previous.length - 1]
-      if (last?.roundKey !== point.roundKey || (last && point.seconds < last.seconds)) return [point]
-      if (last && last.seconds === point.seconds) return previous
-      return [...previous, point].slice(-60)
+      // Новый раунд/корабль или откат времени — начинаем историю заново.
+      if (!last || last.roundKey !== point.roundKey || point.seconds < last.seconds - 5) return [point]
+      // Тот же снапшот от плагина (опрос без свежих данных) — не плодим дубли.
+      if (last.seenAt && point.seenAt && last.seenAt === point.seenAt) return previous
+      if (last.seconds === point.seconds && last.intensity === point.intensity && last.threshold === point.threshold && last.seenAt === point.seenAt) return previous
+      return [...previous, point].slice(-72)
     })
-  }, [state.data?.dashboard, server])
+  }, [state.data?.dashboard, state.data?.last_seen_at, server])
   useEffect(() => { setDirty(false); setSelectedPlanId(null); setDraft(null) }, [server])
   useEffect(() => { const close = () => setContextMenu(null); const escape = (event: KeyboardEvent) => event.key === "Escape" && setContextMenu(null); window.addEventListener("click", close); window.addEventListener("keydown", escape); return () => { window.removeEventListener("click", close); window.removeEventListener("keydown", escape) } }, [])
 
@@ -703,12 +711,25 @@ export function MonsterSpawnPage() {
   const shipChart = { labels: shipLogs.slice(0, 8).map((item) => item.name), datasets: [{ label: "Performance EMA", data: shipLogs.slice(0, 8).map((item) => item.performance_ema), backgroundColor: CHART_COLORS[1], ...barDatasetDefaults }] }
   const trendValues = shipLogs.flatMap((item) => item.recent_performance).slice(-24)
   const trendChart = { labels: trendValues.map((_, index) => `${index + 1}`), datasets: [{ label: "Последние наблюдения", data: trendValues, borderColor: CHART_COLORS[2], backgroundColor: `${CHART_COLORS[2]}28`, fill: true, ...lineDatasetDefaults }] }
+  // Одиночная точка на категориальной оси прижимается к краю и с
+  // pointRadius: 0 вообще не видна — подсвечиваем её, пока история короткая.
+  const intensityPointRadius = intensityHistory.length < 3 ? 3 : 0
   const intensityChart = {
     labels: intensityHistory.map((point) => `${Math.floor(point.seconds / 60)}:${String(Math.floor(point.seconds % 60)).padStart(2, "0")}`),
     datasets: [
-      { label: "Интенсивность", data: intensityHistory.map((point) => point.intensity), borderColor: CHART_COLORS[0], backgroundColor: `${CHART_COLORS[0]}28`, fill: true, ...lineDatasetDefaults },
-      { label: "Порог события", data: intensityHistory.map((point) => point.threshold), borderColor: CHART_COLORS[3], ...lineDatasetDefaults },
+      { label: "Интенсивность", data: intensityHistory.map((point) => point.intensity), borderColor: CHART_COLORS[0], backgroundColor: `${CHART_COLORS[0]}28`, fill: true, ...lineDatasetDefaults, pointRadius: intensityPointRadius },
+      { label: "Порог события", data: intensityHistory.map((point) => point.threshold), borderColor: CHART_COLORS[3], ...lineDatasetDefaults, pointRadius: intensityPointRadius },
     ],
+  }
+  const intensityChartOptions = {
+    ...baseChartOptions,
+    scales: {
+      ...baseChartOptions.scales,
+      x: {
+        ...baseChartOptions.scales.x,
+        ticks: { ...baseChartOptions.scales.x.ticks, maxTicksLimit: 8, maxRotation: 0 },
+      },
+    },
   }
 
   const setGlobal = (key: string, value: unknown) => updateDraft((next) => { next.config.global[key] = value })
@@ -809,7 +830,7 @@ export function MonsterSpawnPage() {
 
       <TabsContent value="overview" className="space-y-4 pt-2">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric icon={ShipWheel} label="Корабль раунда" value={dashboard.submarine_name || "Нет активного раунда"} detail={`${Math.floor((dashboard.round_seconds || 0) / 60)} мин · ${dashboard.known_submarines} кораблей в памяти`} tone="primary" /><Metric icon={Gauge} label="Текущее давление" value={`${intensityPercent.toFixed(0)}%`} detail={`Порог vanilla event ${thresholdPercent.toFixed(0)}%`} tone="warning" /><Metric icon={BrainCircuit} label="Global performance EMA" value={report.global_performance_ema.toFixed(2)} detail="Больше 1.0: экипаж справляется быстрее ожиданий" tone="success" /><Metric icon={Anchor} label="Ожидают триггера" value={String(dashboard.pending_waves)} detail={`${telemetry.vanilla_events ?? 0} vanilla events · ${draft.config.waves.length} волн в пуле`} tone="info" /></div>
-         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]"><ChartCard title="Наблюдаемая интенсивность" description="История интенсивности и порога за текущий раунд"><Line options={baseChartOptions} data={intensityChart} /></ChartCard>
+         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]"><ChartCard title="Наблюдаемая интенсивность" description="История интенсивности и порога за текущий раунд">{intensityHistory.length ? <Line options={intensityChartOptions} data={intensityChart} /> : <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">{dashboard.round_active ? "Собираю историю — первые точки появятся через несколько секунд" : "Нет активного раунда — история начнёт собираться после старта раунда"}</div>}</ChartCard>
           <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Radar className="size-4 text-destructive" /> Волны под атакой и недавние</CardTitle><CardDescription className="text-xs">Живые волны, их статусы и исходы последних столкновений</CardDescription></CardHeader><CardContent className="max-h-96 space-y-2 overflow-y-auto p-4">
             {activeWaves.length > 0 ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Активных волн нет — корабль вне боя</div>}
             {recentWaves.slice(0, 4).map((wave) => <RecentWaveCard key={wave.wave_id + String(wave.resolved_at_seconds)} wave={wave} />)}
