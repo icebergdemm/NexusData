@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
+from utils import is_bogon_ip
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,8 @@ def _scan_ban_evasion(db: Session, deadline: float) -> dict:
     banned_ips = db.query(PlayerIP).filter(PlayerIP.player_id.in_(banned_player_ids)).all()
     ip_to_banned: dict = {}
     for row in banned_ips:
+        if is_bogon_ip(row.ip):
+            continue
         ip_to_banned.setdefault(row.ip, set()).add(row.player_id)
 
     for ip, banned_ids_here in ip_to_banned.items():

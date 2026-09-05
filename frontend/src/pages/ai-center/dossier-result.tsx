@@ -20,7 +20,7 @@ const sourceLabel: Record<string, string> = {
   note: "Заметка", label: "Метка", player: "Профиль игрока", ticket: "Тикет",
 }
 const coverageLabel: Record<string, string> = {
-  sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", security_logs: "Security-логи", tickets: "Тикеты",
+  sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", logs: "Логи", security_logs: "Security-логи", tickets: "Тикеты",
 }
 
 function EvidenceLinks({ items }: { items: AIDossierEvidence[] }) {
@@ -53,7 +53,7 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
 
     {result.coverage && <section>
       <h3 className="mb-2 text-sm font-medium">Что проверено</h3>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">{Object.entries(result.coverage).map(([key, item]) => <div key={key} className="rounded border p-2 text-xs">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">{Object.entries(result.coverage).map(([key, item]) => <div key={key} className="rounded border p-2 text-xs">
         <div className="font-medium">{coverageLabel[key] || key}</div>
         <div className="mt-1 text-muted-foreground">{item.checked ? `проверено · совпадений: ${item.matches}` : "не проверялось"}</div>
       </div>)}</div>

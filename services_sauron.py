@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from models import PlayerData
+from utils import is_bogon_ip
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,44 @@ RISK_HIGH   = "high"
 # Hard caps — keep memory bounded
 _MAX_TWINK_PAIRS = 200
 _MAX_DEVIANT     = 100
+
+# Keep the cheap SQL self-joins from filling their hard caps with container,
+# LAN, loopback, CGNAT, multicast, and documentation addresses.  The Python
+# check below remains the final guard for IPv6 and less common reserved ranges.
+_NON_GLOBAL_IPV4_SQL = """NOT (
+    {alias}.ip LIKE '0.%' OR {alias}.ip LIKE '10.%' OR {alias}.ip LIKE '127.%'
+    OR {alias}.ip LIKE '169.254.%' OR {alias}.ip LIKE '192.0.2.%'
+    OR {alias}.ip LIKE '192.168.%' OR {alias}.ip LIKE '198.18.%'
+    OR {alias}.ip LIKE '198.19.%' OR {alias}.ip LIKE '198.51.100.%'
+    OR {alias}.ip LIKE '203.0.113.%'
+    OR {alias}.ip LIKE '172.16.%' OR {alias}.ip LIKE '172.17.%'
+    OR {alias}.ip LIKE '172.18.%' OR {alias}.ip LIKE '172.19.%'
+    OR {alias}.ip LIKE '172.20.%' OR {alias}.ip LIKE '172.21.%'
+    OR {alias}.ip LIKE '172.22.%' OR {alias}.ip LIKE '172.23.%'
+    OR {alias}.ip LIKE '172.24.%' OR {alias}.ip LIKE '172.25.%'
+    OR {alias}.ip LIKE '172.26.%' OR {alias}.ip LIKE '172.27.%'
+    OR {alias}.ip LIKE '172.28.%' OR {alias}.ip LIKE '172.29.%'
+    OR {alias}.ip LIKE '172.30.%' OR {alias}.ip LIKE '172.31.%'
+    OR {alias}.ip LIKE '100.64.%' OR {alias}.ip LIKE '100.65.%'
+    OR {alias}.ip LIKE '100.66.%' OR {alias}.ip LIKE '100.67.%'
+    OR {alias}.ip LIKE '100.68.%' OR {alias}.ip LIKE '100.69.%'
+    OR {alias}.ip LIKE '100.70.%' OR {alias}.ip LIKE '100.71.%'
+    OR {alias}.ip LIKE '100.72.%' OR {alias}.ip LIKE '100.73.%'
+    OR {alias}.ip LIKE '100.74.%' OR {alias}.ip LIKE '100.75.%'
+    OR {alias}.ip LIKE '100.76.%' OR {alias}.ip LIKE '100.77.%'
+    OR {alias}.ip LIKE '100.78.%' OR {alias}.ip LIKE '100.79.%'
+    OR {alias}.ip LIKE '100.8%.%' OR {alias}.ip LIKE '100.9%.%'
+    OR {alias}.ip LIKE '100.10%.%' OR {alias}.ip LIKE '100.11%.%'
+    OR {alias}.ip LIKE '100.12%.%' OR {alias}.ip LIKE '100.127.%'
+    OR {alias}.ip LIKE '224.%' OR {alias}.ip LIKE '225.%'
+    OR {alias}.ip LIKE '226.%' OR {alias}.ip LIKE '227.%'
+    OR {alias}.ip LIKE '228.%' OR {alias}.ip LIKE '229.%'
+    OR {alias}.ip LIKE '230.%' OR {alias}.ip LIKE '231.%'
+    OR {alias}.ip LIKE '232.%' OR {alias}.ip LIKE '233.%'
+    OR {alias}.ip LIKE '234.%' OR {alias}.ip LIKE '235.%'
+    OR {alias}.ip LIKE '236.%' OR {alias}.ip LIKE '237.%'
+    OR {alias}.ip LIKE '238.%' OR {alias}.ip LIKE '239.%'
+)"""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -36,22 +75,26 @@ def detect_all_twink_pairs(db: Session, days: int = 90) -> List[dict]:
     Returns at most _MAX_TWINK_PAIRS results.
     """
     # Signal 1: shared exact IP (weight 3)
-    ip_pairs = db.execute(text("""
+    ip_pairs = db.execute(text(f"""
         SELECT a.player_id AS pid_a, b.player_id AS pid_b,
-               3 AS weight, CONCAT('IP: ', a.ip) AS reason
+               3 AS weight, CONCAT('IP: ', a.ip) AS reason, a.ip AS shared_ip
         FROM player_ips a
         JOIN player_ips b ON a.ip = b.ip AND a.player_id < b.player_id
+        WHERE {_NON_GLOBAL_IPV4_SQL.format(alias='a')}
         LIMIT 2000
     """)).fetchall()
 
     # Signal 2: shared subnet but different IPs (weight 2)
-    subnet_pairs = db.execute(text("""
+    subnet_pairs = db.execute(text(f"""
         SELECT a.player_id AS pid_a, b.player_id AS pid_b,
-               2 AS weight, CONCAT('Подсеть: ', a.subnet) AS reason
+               2 AS weight, CONCAT('Подсеть: ', a.subnet) AS reason,
+               a.ip AS ip_a, b.ip AS ip_b
         FROM player_ips a
         JOIN player_ips b ON a.subnet = b.subnet
                           AND a.player_id < b.player_id
                           AND a.ip != b.ip
+        WHERE {_NON_GLOBAL_IPV4_SQL.format(alias='a')}
+          AND {_NON_GLOBAL_IPV4_SQL.format(alias='b')}
         LIMIT 2000
     """)).fetchall()
 
@@ -68,9 +111,11 @@ def detect_all_twink_pairs(db: Session, days: int = 90) -> List[dict]:
             edges[key]["signals"].append({"type": sig_type, "label": reason, "weight": weight})
 
     for r in ip_pairs:
-        _add(r.pid_a, r.pid_b, r.weight, r.reason, "shared_ip")
+        if not is_bogon_ip(r.shared_ip):
+            _add(r.pid_a, r.pid_b, r.weight, r.reason, "shared_ip")
     for r in subnet_pairs:
-        _add(r.pid_a, r.pid_b, r.weight, r.reason, "shared_subnet")
+        if not is_bogon_ip(r.ip_a) and not is_bogon_ip(r.ip_b):
+            _add(r.pid_a, r.pid_b, r.weight, r.reason, "shared_subnet")
 
     # Signal 3: similar name prefix via SQL (weight 1)
     name_pairs = db.execute(text("""

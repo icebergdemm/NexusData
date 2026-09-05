@@ -57,7 +57,7 @@ from repositories import (
     PlayerRoleActionRepository, PlayerIPRepository, PlayerNameRepository,
     PlayerRoleStatRepository, PlayerSessionRepository
 )
-from utils import parse_iso_datetime, safe_get_int, safe_get_list, validate_steamid, validate_player_name
+from utils import is_bogon_ip, parse_iso_datetime, safe_get_int, safe_get_list, validate_steamid, validate_player_name
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,10 @@ class EventDispatcherService:
         if not all([player_id, ip, subnet]):
             raise HTTPException(status_code=400, detail="player_id, ip, subnet are required")
         
+        if is_bogon_ip(ip):
+            logger.info("Ignoring non-global IP for player %s", player_id)
+            return {"id": None, "player_id": player_id, "ip": None, "ignored": "bogon_ip"}
+
         ip_record = self.ip_service.upsert_ip(int(player_id), ip, subnet)
         return {"id": ip_record.id, "player_id": player_id, "ip": ip}
     
@@ -233,9 +237,9 @@ class EventDispatcherService:
             update_data = {}
             if player_name:
                 update_data["player_last_time_name"] = player_name
-            if ip:
+            if ip and not is_bogon_ip(ip):
                 update_data["last_ip"] = ip
-            if subnet:
+            if subnet and not is_bogon_ip(subnet) and (not ip or not is_bogon_ip(ip)):
                 update_data["last_subnet"] = subnet
             
             logger.debug(f"Updating player {player.player_id} with: {update_data}")
@@ -461,9 +465,9 @@ class PlayerService:
                     raise HTTPException(status_code=400, detail=str(e))
             
             # Add new optional fields
-            if player_data.last_ip:
+            if player_data.last_ip and not is_bogon_ip(player_data.last_ip):
                 update_data["last_ip"] = player_data.last_ip
-            if player_data.last_subnet:
+            if player_data.last_subnet and not is_bogon_ip(player_data.last_subnet) and (not player_data.last_ip or not is_bogon_ip(player_data.last_ip)):
                 update_data["last_subnet"] = player_data.last_subnet
             if player_data.first_login:
                 try:
@@ -486,8 +490,8 @@ class PlayerService:
             rank_id=player_data.rank_id if player_data.rank_id is not None else 0,
             kit_level=player_data.kit_level if player_data.kit_level is not None else 0,
             achievements=safe_get_list(player_data.achievements),
-            last_ip=player_data.last_ip,
-            last_subnet=player_data.last_subnet,
+            last_ip=player_data.last_ip if player_data.last_ip and not is_bogon_ip(player_data.last_ip) else None,
+            last_subnet=player_data.last_subnet if player_data.last_subnet and not is_bogon_ip(player_data.last_subnet) and (not player_data.last_ip or not is_bogon_ip(player_data.last_ip)) else None,
             avg_ping=player_data.avg_ping,
         )
         
@@ -737,6 +741,8 @@ class PlayerIPService:
     
     def upsert_ip(self, player_id: int, ip: str, subnet: str) -> PlayerIP:
         """Create or update IP record"""
+        if is_bogon_ip(ip):
+            raise HTTPException(status_code=422, detail="Non-global IP addresses are not stored")
         player = self.player_repo.get_by_id(player_id)
         if not player:
             raise HTTPException(status_code=404, detail="Player not found")
@@ -745,7 +751,7 @@ class PlayerIPService:
     
     def get_player_ips(self, player_id: int) -> List[PlayerIP]:
         """Get all IPs for a player"""
-        return self.ip_repo.get_all_by_player(player_id)
+        return [row for row in self.ip_repo.get_all_by_player(player_id) if not is_bogon_ip(row.ip)]
 
 
 class PlayerNameService:
@@ -1897,8 +1903,8 @@ class TwinkDetectionService:
         # Get target IPs and subnets
         target_ips_rows = (self.db.query(PlayerIP)
                            .filter(PlayerIP.player_id == player_id).all())
-        target_ips = {r.ip for r in target_ips_rows}
-        target_subnets = {r.subnet for r in target_ips_rows}
+        target_ips = {r.ip for r in target_ips_rows if not is_bogon_ip(r.ip)}
+        target_subnets = {r.subnet for r in target_ips_rows if not is_bogon_ip(r.ip)}
 
         # Get target names
         target_name_rows = (self.db.query(PlayerName)
@@ -1922,6 +1928,8 @@ class TwinkDetectionService:
                               .filter(PlayerIP.ip.in_(target_ips),
                                       PlayerIP.player_id != player_id).all())
             for r in shared_ip_rows:
+                if is_bogon_ip(r.ip):
+                    continue
                 _add(r.player_id, f"Одинаковый IP: {r.ip}")
 
         # 2. Shared subnets (weaker signal, only add if not already IP-matched)
@@ -1930,6 +1938,8 @@ class TwinkDetectionService:
                                   .filter(PlayerIP.subnet.in_(target_subnets),
                                           PlayerIP.player_id != player_id).all())
             for r in shared_subnet_rows:
+                if is_bogon_ip(r.ip):
+                    continue
                 already_ip = any("Одинаковый IP" in reason
                                   for reason in suspects.get(r.player_id, {}).get("reasons", []))
                 if not already_ip:
@@ -1986,7 +1996,8 @@ class TwinkDetectionService:
 
         # Self-join by subnet (weaker signal)
         subnet_pairs = self.db.execute(text(
-            "SELECT a.player_id AS pid_a, b.player_id AS pid_b, a.subnet AS shared_subnet "
+            "SELECT a.player_id AS pid_a, b.player_id AS pid_b, a.subnet AS shared_subnet, "
+            "a.ip AS ip_a, b.ip AS ip_b "
             "FROM player_ips a JOIN player_ips b "
             "ON a.subnet = b.subnet AND a.player_id < b.player_id"
         )).fetchall()
@@ -1994,9 +2005,13 @@ class TwinkDetectionService:
         # Build edge map: pair -> set of reasons
         edges: Dict[tuple, list] = {}
         for row in ip_pairs:
+            if is_bogon_ip(row.shared_ip):
+                continue
             key = (row.pid_a, row.pid_b)
             edges.setdefault(key, []).append(f"Одинаковый IP: {row.shared_ip}")
         for row in subnet_pairs:
+            if is_bogon_ip(row.ip_a) or is_bogon_ip(row.ip_b):
+                continue
             key = (row.pid_a, row.pid_b)
             # Skip if IP reason already added for this pair (subnet is weaker)
             if not any("Одинаковый IP" in r for r in edges.get(key, [])):

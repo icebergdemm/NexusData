@@ -24,6 +24,7 @@ from models import (
     PlayerData, PlayerIP, PlayerKill, PlayerLabel, PlayerName, PlayerNote, PlayerPunishment,
     PlayerRoleAction, PlayerRoleStat, PlayerSession, PlayerStats, PlayerTrap,
 )
+from utils import is_bogon_ip
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +417,10 @@ def build_moderation_packet(input_payload: dict) -> dict:
         row for row in input_payload.get("logs", [])
         if isinstance(row, dict) and row.get("action") == "command_denied"
     ]
+    relevant_logs = [
+        row for row in input_payload.get("logs", [])
+        if isinstance(row, dict) and row.get("action") in {"command_denied", "console", "ban", "kick"}
+    ]
     if len(security_logs) >= 2:
         findings.append(_finding(
             "log_security", "medium", "Повторяющиеся запрещённые команды",
@@ -427,6 +432,17 @@ def build_moderation_packet(input_payload: dict) -> dict:
         ))
     elif security_logs:
         add_context("log_security", "Одно запрещённое событие команды в серверном логе.", security_logs[0].get("id"))
+
+    for row in relevant_logs:
+        if row.get("action") == "command_denied":
+            continue
+        action = {
+            "console": "Выполнена серверная команда",
+            "ban": "В логе зафиксирован бан",
+            "kick": "В логе зафиксировано исключение",
+        }.get(row.get("action"), "Релевантное событие лога")
+        details = safe_text(row.get("details"), 360)
+        add_context("log", f"{action}: {details}" if details else action, row.get("id"))
 
     punishments = [row for row in input_payload.get("punishments", []) if isinstance(row, dict)]
     for row in punishments[:3]:
@@ -494,10 +510,15 @@ def build_moderation_packet(input_payload: dict) -> dict:
             unique_findings.append(row)
 
     missing = list(input_payload.get("missing", []))
+    public_ips = [
+        value for value in [profile.get("last_ip"), *(profile.get("known_ips") or [])]
+        if value and not is_bogon_ip(value)
+    ]
     coverage = {
         "sauron": {"checked": "anomalies" in input_payload, "matches": sum(1 for row in input_payload.get("anomalies", []) if isinstance(row, dict) and row.get("status") != "dismissed")},
-        "ip": {"checked": bool(profile.get("known_ips") or profile.get("last_ip")), "matches": len(input_payload.get("shared_accounts", []))},
+        "ip": {"checked": bool(public_ips), "matches": len(input_payload.get("shared_accounts", []))},
         "anticheat": {"checked": "anticheat_events" in input_payload, "matches": len(input_payload.get("anticheat_events", []))},
+        "logs": {"checked": "logs" in input_payload and "server_logs" not in missing, "matches": len(input_payload.get("logs", []))},
         "security_logs": {"checked": "logs" in input_payload and "server_logs" not in missing, "matches": len(security_logs)},
         "tickets": {"checked": "tickets" in input_payload, "matches": len(input_payload.get("tickets", []))},
     }
@@ -508,6 +529,25 @@ def build_moderation_packet(input_payload: dict) -> dict:
         "coverage": coverage,
         "missing": missing,
     }
+
+
+def _sauron_signal_is_bogon(signal: Any) -> bool:
+    if not isinstance(signal, dict) or signal.get("type") not in {"shared_ip", "shared_subnet"}:
+        return False
+    label = str(signal.get("label") or "")
+    if ":" not in label:
+        return False
+    value = label.split(":", 1)[1].strip().split("/", 1)[0]
+    return is_bogon_ip(value)
+
+
+def _anomaly_has_bogon_ip_evidence(row: PlayerAnomaly) -> bool:
+    evidence = row.evidence if isinstance(row.evidence, dict) else {}
+    if evidence.get("ip") and is_bogon_ip(evidence.get("ip")):
+        return True
+    signals = evidence.get("signals") or []
+    ip_signals = [signal for signal in signals if isinstance(signal, dict) and signal.get("type") in {"shared_ip", "shared_subnet"}]
+    return any(_sauron_signal_is_bogon(signal) for signal in ip_signals)
 
 
 def build_rules_result(packet: dict) -> dict:
@@ -780,10 +820,11 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     role_actions = db.query(PlayerRoleAction).filter(PlayerRoleAction.player_id == player_id).limit(100).all()
     role_stats = db.query(PlayerRoleStat).filter(PlayerRoleStat.player_id == player_id).limit(100).all()
     anticheat = db.query(AnticheatEvent).filter(AnticheatEvent.player_id == player_id, AnticheatEvent.occurred_at >= since).order_by(AnticheatEvent.occurred_at.desc()).limit(100).all()
-    ips = db.query(PlayerIP).filter(PlayerIP.player_id == player_id).all()
-    anomalies = db.query(PlayerAnomaly).filter(
+    ips = [row for row in db.query(PlayerIP).filter(PlayerIP.player_id == player_id).all() if not is_bogon_ip(row.ip)]
+    anomaly_rows = db.query(PlayerAnomaly).filter(
         or_(PlayerAnomaly.player_id == player_id, PlayerAnomaly.related_player_id == player_id)
     ).order_by(PlayerAnomaly.score.desc(), PlayerAnomaly.last_seen_at.desc()).limit(50).all()
+    anomalies = [row for row in anomaly_rows if not _anomaly_has_bogon_ip_evidence(row)]
     related_ids = {
         row.related_player_id if row.player_id == player_id else row.player_id
         for row in anomalies
@@ -841,7 +882,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
             "kit_level": player.kit_level,
             "discord_id": player.discord_id,
             "discord_id_confirmed": bool(player.discord_id_confirmed),
-            "last_ip": player.last_ip,
+            "last_ip": player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) else None,
             "known_ips": [ip.ip for ip in ips],
         },
         "stats": {key: getattr(stats, key) for key in (
@@ -884,7 +925,15 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
 
     try:
         from services_logs import search_logs
-        result = search_logs(names_list=known_names, time_from=since, time_to=now, player_scope="related", limit=max_log_events, count_total=False)
+        result = search_logs(
+            names_list=known_names,
+            time_from=since,
+            time_to=now,
+            player_scope="related",
+            limit=max_log_events,
+            count_total=False,
+            raise_on_unavailable=True,
+        )
         payload["logs"] = [{"id": event.row_id, "timestamp": _iso(event.timestamp), "player_name": event.player_name, "action": event.action_type, "details": _bounded_text(event.details, 500), "server": event.server_name, "source": event.source_file} for event in result.events]
     except Exception as exc:
         logger.warning("AI dossier logs unavailable for player %s: %s", player_id, exc)

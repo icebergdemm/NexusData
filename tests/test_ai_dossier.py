@@ -222,16 +222,22 @@ class AIDossierContractTests(unittest.TestCase):
         packet = build_moderation_packet({
             "profile": {"player_id": 7, "name": "Тест"},
             "anomalies": [], "shared_accounts": [], "anticheat_events": [],
-            "logs": [], "tickets": [{"id": 301, "type": "player_report", "title": "Проверить жалобу", "status": "open"}],
+            "logs": [
+                {"id": 401, "action": "picked_up", "details": "обычная игра"},
+                {"id": 402, "action": "command_denied", "details": "команда запрещена"},
+                {"id": 403, "action": "kick", "details": "Игрок исключен"},
+            ],
+            "tickets": [{"id": 301, "type": "player_report", "title": "Проверить жалобу", "status": "open"}],
             "punishments": [], "labels": [], "notes": [], "missing": [],
         })
 
         self.assertEqual(packet["coverage"]["tickets"], {"checked": True, "matches": 1})
-        self.assertEqual(packet["coverage"]["security_logs"], {"checked": True, "matches": 0})
+        self.assertEqual(packet["coverage"]["logs"], {"checked": True, "matches": 3})
+        self.assertEqual(packet["coverage"]["security_logs"], {"checked": True, "matches": 1})
         self.assertEqual(packet["coverage"]["sauron"], {"checked": True, "matches": 0})
         self.assertEqual(packet["findings"], [])
-        self.assertEqual(packet["context"][0]["kind"], "ticket")
-        self.assertEqual(packet["context"][0]["source_id"], 301)
+        self.assertTrue(any(item["kind"] == "ticket" and item["source_id"] == 301 for item in packet["context"]))
+        self.assertTrue(any(item["kind"] == "log" and item["source_id"] == 403 for item in packet["context"]))
 
     def test_dismissed_anomalies_and_ordinary_gameplay_create_no_findings(self):
         packet = build_moderation_packet({

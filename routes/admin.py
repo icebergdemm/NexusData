@@ -24,6 +24,7 @@ from models import (
     PlayerPunishment,
 )
 from config import get_settings, snapshot_env_file
+from utils import is_bogon_ip
 import logging
 
 router = APIRouter()
@@ -1418,11 +1419,13 @@ async def admin_player_detail(
     has_edit = check_permission(current_admin, "players", "edit")
     has_delete = check_permission(current_admin, "players", "delete")
     has_special = check_permission(current_admin, "players_special", "view")
+    display_last_ip = player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) else None
 
     return templates.TemplateResponse("admin/player_detail.html", {
         "request": request,
         "admin": current_admin,
         "player": player,
+        "display_last_ip": display_last_ip,
         "stats": stats,
         "kills": kills,
         "role_actions": role_actions,
@@ -1864,7 +1867,7 @@ async def api_player_detail(
             "play_time_hours": player.play_time_hours,
             "rank_id": player.rank_id,
             "kit_level": player.kit_level,
-            "last_ip": player.last_ip,
+            "last_ip": player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) else None,
             "discord_id": player.discord_id,
             "discord_profile_id": discord_profile_id,
             "discord_id_confirmed": bool(player.discord_id_confirmed),
