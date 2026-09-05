@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, UniqueConstraint, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, JSON, DateTime, func, Float, Boolean, Index, UniqueConstraint, Text
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -565,6 +565,15 @@ class DiscordAntiRaidLog(Base):
 class Ticket(Base):
     """Support ticket linked to a Discord channel."""
     __tablename__ = "tickets"
+    __table_args__ = (
+        Index(
+            "ix_tickets_status_deleted_activity",
+            "status",
+            "deleted_at",
+            "last_message_at",
+            "created_at",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     ticket_type = Column(String(50), nullable=False)  # help, player_report, bug, admin_report, department_report
@@ -594,6 +603,14 @@ class Ticket(Base):
 class TicketMessage(Base):
     """Message in a ticket (synced from Discord)."""
     __tablename__ = "ticket_messages"
+    __table_args__ = (
+        Index(
+            "ix_ticket_messages_ticket_created_id",
+            "ticket_id",
+            "created_at",
+            "id",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)

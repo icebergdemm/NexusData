@@ -362,6 +362,15 @@ def create_app() -> FastAPI:
                     response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
             return response
 
+    class ImmutableStaticFiles(_StaticFiles):
+        """Serve content-hashed Vite assets with a permanent browser cache."""
+
+        async def get_response(self, path, scope):
+            response = await super().get_response(path, scope)
+            if response.status_code == 200:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return response
+
     app.mount("/static", CachedStaticFiles(directory="static"), name="static")
 
     # Serve uploaded sub-project images at /sub_projects/images/
@@ -383,11 +392,13 @@ def create_app() -> FastAPI:
     _spa_index_file = os.path.join(_spa_dist_dir, "index.html")
 
     if os.path.isdir(_spa_assets_dir):
-        app.mount("/admin/assets", _StaticFiles(directory=_spa_assets_dir), name="spa-assets")
+        app.mount("/admin/assets", ImmutableStaticFiles(directory=_spa_assets_dir), name="spa-assets")
 
     async def _spa_index_response():
         if os.path.isfile(_spa_index_file):
-            return _FileResponse(_spa_index_file)
+            # The shell filename is stable and must be revalidated so it can
+            # point at the latest content-hashed immutable assets after deploy.
+            return _FileResponse(_spa_index_file, headers={"Cache-Control": "no-cache"})
         raise StarletteHTTPException(status_code=503, detail="Frontend not built yet — run `npm run build` in frontend/")
 
     @app.get("/healthz")

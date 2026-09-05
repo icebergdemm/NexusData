@@ -5,63 +5,61 @@ import { AppShell } from "@/components/layout/AppShell"
 import { OnboardingModal } from "@/components/layout/OnboardingModal"
 import { useCurrentAdmin } from "@/lib/auth"
 import { ApiError } from "@/lib/api"
-import { DashboardPage } from "@/pages/dashboard"
-import { RoundStatusPage } from "@/pages/round-status"
-import { DispatchPage } from "@/pages/dispatch"
-import { WorldOverviewPage } from "@/pages/world-overview"
-import { MonsterSpawnPage } from "@/pages/monster-spawn"
-import { PlayersListPage } from "@/pages/players"
-import { PlayerDetailPage } from "@/pages/players/detail"
-import { ModerationPage } from "@/pages/moderation"
-import { PunishmentsPage } from "@/pages/punishments"
-import { AnalyticsPage } from "@/pages/analytics"
 import { TicketsListPage } from "@/pages/tickets"
-import { TicketDetailPage } from "@/pages/tickets/detail"
-import { RatingsPage } from "@/pages/ratings"
-import { RatingSnapshotViewPage } from "@/pages/ratings/snapshot-view"
-import { RewardsConfigPage } from "@/pages/ratings/rewards"
-import { SubProjectsListPage } from "@/pages/sub-projects"
-import { SubProjectDetailPage } from "@/pages/sub-projects/detail"
-import { SubProjectFormPage } from "@/pages/sub-projects/form"
-import { SubProjectCategoriesPage } from "@/pages/sub-projects/categories"
-import { SubProjectsPolygonListPage } from "@/pages/sub-projects-polygon"
-import { SubProjectsPolygonDetailPage } from "@/pages/sub-projects-polygon/detail"
-import { SubCheckerPage } from "@/pages/sub-checker"
-import { ReplaysListPage } from "@/pages/replays"
-import { ReplayPlayerPage } from "@/pages/replays/player"
-import { RoundDetailPage } from "@/pages/replays/round-detail"
-import { SessionsPage } from "@/pages/sessions"
-import { AuditPage } from "@/pages/audit"
-import { ErrorLogPage } from "@/pages/error-log"
-import { PerfMonitorPage } from "@/pages/perf-monitor"
-import { LabelCategoriesPage } from "@/pages/label-categories"
-import { UsersPage } from "@/pages/users"
-import { KitsPage } from "@/pages/kits"
-import { ServerPrivilegesPage } from "@/pages/server-privileges"
-import { DiscordBotPage } from "@/pages/discord-bot"
-import { AdministrationPage } from "@/pages/administration"
-import { LogsPage } from "@/pages/logs"
-import { SoundsPage } from "@/pages/sounds"
-import { RespawnDollsPage } from "@/pages/respawn-dolls"
-import { AchievementsPage } from "@/pages/achievements"
-import { DocumentsPage } from "@/pages/documents"
-import { DepartmentsPage } from "@/pages/departments"
-import { DepartmentDetailPage } from "@/pages/departments/detail"
-import { TasksListPage } from "@/pages/tasks"
-import { TaskBoardPage } from "@/pages/tasks/board"
 
-// The ONLYOFFICE editor page dynamically loads Document Server's own script
-// — code-split it so every other page doesn't pay for that on first load.
+// Keep the ticket inbox on the critical path and split every unrelated route.
+// A direct /tickets visit now downloads the shell + inbox instead of the whole
+// admin application (charts, replay player, task board, document editor, etc.).
+const DashboardPage = lazy(() => import("@/pages/dashboard").then(({ DashboardPage }) => ({ default: DashboardPage })))
+const RoundStatusPage = lazy(() => import("@/pages/round-status").then(({ RoundStatusPage }) => ({ default: RoundStatusPage })))
+const DispatchPage = lazy(() => import("@/pages/dispatch").then(({ DispatchPage }) => ({ default: DispatchPage })))
+const WorldOverviewPage = lazy(() => import("@/pages/world-overview").then(({ WorldOverviewPage }) => ({ default: WorldOverviewPage })))
+const MonsterSpawnPage = lazy(() => import("@/pages/monster-spawn").then(({ MonsterSpawnPage }) => ({ default: MonsterSpawnPage })))
+const PlayersListPage = lazy(() => import("@/pages/players").then(({ PlayersListPage }) => ({ default: PlayersListPage })))
+const PlayerDetailPage = lazy(() => import("@/pages/players/detail").then(({ PlayerDetailPage }) => ({ default: PlayerDetailPage })))
+const ModerationPage = lazy(() => import("@/pages/moderation").then(({ ModerationPage }) => ({ default: ModerationPage })))
+const PunishmentsPage = lazy(() => import("@/pages/punishments").then(({ PunishmentsPage }) => ({ default: PunishmentsPage })))
+const AnalyticsPage = lazy(() => import("@/pages/analytics").then(({ AnalyticsPage }) => ({ default: AnalyticsPage })))
+const TicketDetailPage = lazy(() => import("@/pages/tickets/detail").then(({ TicketDetailPage }) => ({ default: TicketDetailPage })))
+const RatingsPage = lazy(() => import("@/pages/ratings").then(({ RatingsPage }) => ({ default: RatingsPage })))
+const RatingSnapshotViewPage = lazy(() => import("@/pages/ratings/snapshot-view").then(({ RatingSnapshotViewPage }) => ({ default: RatingSnapshotViewPage })))
+const RewardsConfigPage = lazy(() => import("@/pages/ratings/rewards").then(({ RewardsConfigPage }) => ({ default: RewardsConfigPage })))
+const SubProjectsListPage = lazy(() => import("@/pages/sub-projects").then(({ SubProjectsListPage }) => ({ default: SubProjectsListPage })))
+const SubProjectDetailPage = lazy(() => import("@/pages/sub-projects/detail").then(({ SubProjectDetailPage }) => ({ default: SubProjectDetailPage })))
+const SubProjectFormPage = lazy(() => import("@/pages/sub-projects/form").then(({ SubProjectFormPage }) => ({ default: SubProjectFormPage })))
+const SubProjectCategoriesPage = lazy(() => import("@/pages/sub-projects/categories").then(({ SubProjectCategoriesPage }) => ({ default: SubProjectCategoriesPage })))
+const SubProjectsPolygonListPage = lazy(() => import("@/pages/sub-projects-polygon").then(({ SubProjectsPolygonListPage }) => ({ default: SubProjectsPolygonListPage })))
+const SubProjectsPolygonDetailPage = lazy(() => import("@/pages/sub-projects-polygon/detail").then(({ SubProjectsPolygonDetailPage }) => ({ default: SubProjectsPolygonDetailPage })))
+const SubCheckerPage = lazy(() => import("@/pages/sub-checker").then(({ SubCheckerPage }) => ({ default: SubCheckerPage })))
+const ReplaysListPage = lazy(() => import("@/pages/replays").then(({ ReplaysListPage }) => ({ default: ReplaysListPage })))
+const ReplayPlayerPage = lazy(() => import("@/pages/replays/player").then(({ ReplayPlayerPage }) => ({ default: ReplayPlayerPage })))
+const RoundDetailPage = lazy(() => import("@/pages/replays/round-detail").then(({ RoundDetailPage }) => ({ default: RoundDetailPage })))
+const SessionsPage = lazy(() => import("@/pages/sessions").then(({ SessionsPage }) => ({ default: SessionsPage })))
+const AuditPage = lazy(() => import("@/pages/audit").then(({ AuditPage }) => ({ default: AuditPage })))
+const ErrorLogPage = lazy(() => import("@/pages/error-log").then(({ ErrorLogPage }) => ({ default: ErrorLogPage })))
+const PerfMonitorPage = lazy(() => import("@/pages/perf-monitor").then(({ PerfMonitorPage }) => ({ default: PerfMonitorPage })))
+const LabelCategoriesPage = lazy(() => import("@/pages/label-categories").then(({ LabelCategoriesPage }) => ({ default: LabelCategoriesPage })))
+const UsersPage = lazy(() => import("@/pages/users").then(({ UsersPage }) => ({ default: UsersPage })))
+const KitsPage = lazy(() => import("@/pages/kits").then(({ KitsPage }) => ({ default: KitsPage })))
+const ServerPrivilegesPage = lazy(() => import("@/pages/server-privileges").then(({ ServerPrivilegesPage }) => ({ default: ServerPrivilegesPage })))
+const DiscordBotPage = lazy(() => import("@/pages/discord-bot").then(({ DiscordBotPage }) => ({ default: DiscordBotPage })))
+const AdministrationPage = lazy(() => import("@/pages/administration").then(({ AdministrationPage }) => ({ default: AdministrationPage })))
+const LogsPage = lazy(() => import("@/pages/logs").then(({ LogsPage }) => ({ default: LogsPage })))
+const SoundsPage = lazy(() => import("@/pages/sounds").then(({ SoundsPage }) => ({ default: SoundsPage })))
+const RespawnDollsPage = lazy(() => import("@/pages/respawn-dolls").then(({ RespawnDollsPage }) => ({ default: RespawnDollsPage })))
+const AchievementsPage = lazy(() => import("@/pages/achievements").then(({ AchievementsPage }) => ({ default: AchievementsPage })))
+const DocumentsPage = lazy(() => import("@/pages/documents").then(({ DocumentsPage }) => ({ default: DocumentsPage })))
+const DepartmentsPage = lazy(() => import("@/pages/departments").then(({ DepartmentsPage }) => ({ default: DepartmentsPage })))
+const DepartmentDetailPage = lazy(() => import("@/pages/departments/detail").then(({ DepartmentDetailPage }) => ({ default: DepartmentDetailPage })))
+const TasksListPage = lazy(() => import("@/pages/tasks").then(({ TasksListPage }) => ({ default: TasksListPage })))
+const TaskBoardPage = lazy(() => import("@/pages/tasks/board").then(({ TaskBoardPage }) => ({ default: TaskBoardPage })))
 const DocumentEditorPage = lazy(() =>
   import("@/pages/documents/OnlyOfficeEditorPage").then((m) => ({ default: m.OnlyOfficeEditorPage }))
 )
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isLoading, isError, error, refetch } = useCurrentAdmin()
+  const { isError, error, refetch } = useCurrentAdmin()
 
-  if (isLoading) {
-    return <div className="flex h-screen items-center justify-center text-muted-foreground">Загрузка…</div>
-  }
   if (isError) {
     // The api client already hard-redirects to /login on 401 before this
     // ever renders — this only fires for network failures, 500s, or a 503
@@ -87,6 +85,8 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }
   return (
     <>
+      {/* Route queries start while /me is still loading, eliminating the
+          authentication -> page-data network waterfall. */}
       <OnboardingModal />
       {children}
     </>

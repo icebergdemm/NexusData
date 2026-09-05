@@ -30,7 +30,11 @@ export function TicketsListPage() {
     queryKey: ["tickets", status],
     queryFn: () => api.get<TicketsListResponse>(`/api/v1/admin/tickets?status=${status}`),
     placeholderData: (previous) => previous,
-    refetchInterval: 10_000,
+    // Closed/deleted tickets are immutable in normal operation. Polling the
+    // archive every 10 seconds kept rerunning its heaviest DB aggregates even
+    // while the user was only reading old tickets.
+    refetchInterval: status === "open" ? 10_000 : false,
+    staleTime: status === "open" ? 5_000 : 5 * 60_000,
   })
 
   const tickets = query.data?.tickets

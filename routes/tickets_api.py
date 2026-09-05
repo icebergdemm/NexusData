@@ -5,9 +5,10 @@ API endpoints for ticket system (bot + web panel).
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import desc, func
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 import asyncio
@@ -239,13 +240,45 @@ async def admin_ticket_send_message(
     return RedirectResponse(url=f"/adminold/tickets/{ticket_id}", status_code=302)
 
 
-def _load_ticket_config() -> dict:
-    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'tickets.json')
+_TICKET_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "tickets.json"
+
+
+@lru_cache(maxsize=4)
+def _read_ticket_config(mtime_ns: int) -> dict:
+    del mtime_ns  # The timestamp is the cache-version key.
     try:
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with _TICKET_CONFIG_PATH.open('r', encoding='utf-8') as f:
             return json.load(f)
     except Exception:
         return {"types": {}}
+
+
+def _load_ticket_config() -> dict:
+    try:
+        mtime_ns = _TICKET_CONFIG_PATH.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return _read_ticket_config(mtime_ns)
+
+
+def _ticket_list_config() -> dict:
+    """Return only the type metadata rendered by the inbox.
+
+    Templates, role IDs and Discord channel configuration belong to bot/admin
+    configuration screens and needlessly inflated every polled list response.
+    """
+    ticket_types = _load_ticket_config().get("types") or {}
+    return {
+        "types": {
+            key: {
+                "name": value.get("name", key),
+                "emoji": value.get("emoji", "🎫"),
+                "color": value.get("color", ""),
+            }
+            for key, value in ticket_types.items()
+            if isinstance(value, dict)
+        }
+    }
 
 
 def _admin_avatar(admin: AdminUser | None) -> str | None:
@@ -696,15 +729,48 @@ def api_tickets_list(request: Request, status: str = Query("open"), db: Session 
         raise HTTPException(status_code=403)
 
     q = _ticket_query(db, status)
-    tickets = q.order_by(desc(Ticket.last_message_at), desc(Ticket.created_at)).limit(100).all()
+    tickets = (
+        q.options(load_only(
+            Ticket.id,
+            Ticket.ticket_type,
+            Ticket.title,
+            Ticket.status,
+            Ticket.archive_state,
+            Ticket.discord_channel_id,
+            Ticket.creator_discord_id,
+            Ticket.creator_username,
+            Ticket.creator_display_name,
+            Ticket.player_id,
+            Ticket.assigned_admin_id,
+            Ticket.closed_by,
+            Ticket.created_at,
+            Ticket.closed_at,
+            Ticket.deleted_at,
+            Ticket.deleted_by,
+            Ticket.last_message_at,
+            Ticket.awaiting_admin,
+        ))
+        .order_by(desc(Ticket.last_message_at), desc(Ticket.created_at))
+        .limit(100)
+        .all()
+    )
     assigned_ids = {t.assigned_admin_id for t in tickets if getattr(t, "assigned_admin_id", None)}
     assigned = {
-        row.id: row for row in db.query(AdminUser).filter(AdminUser.id.in_(assigned_ids)).all()
+        row.id: row for row in db.query(AdminUser).options(load_only(
+            AdminUser.id,
+            AdminUser.discord_id,
+            AdminUser.discord_username,
+            AdminUser.discord_avatar,
+            AdminUser.role,
+        )).filter(AdminUser.id.in_(assigned_ids)).all()
     } if assigned_ids else {}
     linked_player_ids = {ticket.player_id for ticket in tickets if ticket.player_id}
     linked_players = {
         row.player_id: row
-        for row in db.query(PlayerData).filter(PlayerData.player_id.in_(linked_player_ids)).all()
+        for row in db.query(PlayerData).options(load_only(
+            PlayerData.player_id,
+            PlayerData.is_secret,
+        )).filter(PlayerData.player_id.in_(linked_player_ids)).all()
     } if linked_player_ids else {}
 
     ticket_ids = [ticket.id for ticket in tickets]
@@ -712,9 +778,8 @@ def api_tickets_list(request: Request, status: str = Query("open"), db: Session 
     participant_counts: dict[int, int] = {}
     if ticket_ids:
         ranked = db.query(
+            TicketMessage.id.label("message_id"),
             TicketMessage.ticket_id.label("ticket_id"),
-            TicketMessage.content.label("content"),
-            TicketMessage.reference_snapshot.label("reference_snapshot"),
             func.row_number().over(
                 partition_by=TicketMessage.ticket_id,
                 order_by=(TicketMessage.created_at.desc(), TicketMessage.id.desc()),
@@ -722,7 +787,14 @@ def api_tickets_list(request: Request, status: str = Query("open"), db: Session 
         ).filter(TicketMessage.ticket_id.in_(ticket_ids)).subquery()
         latest_by_ticket = {
             row.ticket_id: (row.content, row.reference_snapshot)
-            for row in db.query(ranked).filter(ranked.c.row_number == 1).all()
+            for row in db.query(
+                TicketMessage.ticket_id,
+                TicketMessage.content,
+                TicketMessage.reference_snapshot,
+            ).join(
+                ranked,
+                ranked.c.message_id == TicketMessage.id,
+            ).filter(ranked.c.row_number == 1).all()
         }
         participant_counts = {
             ticket_id: int(count or 0)
@@ -756,7 +828,7 @@ def api_tickets_list(request: Request, status: str = Query("open"), db: Session 
     return {
         "tickets": serialized_tickets,
         "status_filter": status,
-        "ticket_config": _load_ticket_config(),
+        "ticket_config": _ticket_list_config(),
         "can_edit": check_permission(admin, "tickets", "edit"),
         "can_assign": check_permission(admin, "tickets", "assign"),
         "can_delete": check_permission(admin, "tickets", "delete"),

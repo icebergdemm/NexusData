@@ -389,6 +389,24 @@ _MISSING_INDEX_COLUMNS = [
     ("round_events", "event_type"),
 ]
 
+_MISSING_COMPOSITE_INDEXES = [
+    # Ticket archive list: equality filters first, newest activity next. This
+    # removes the full scan/filesort that dominates status=closed as history
+    # grows.
+    (
+        "tickets",
+        "ix_tickets_status_deleted_activity",
+        ("status", "deleted_at", "last_message_at", "created_at"),
+    ),
+    # Latest-message lookup ranks only messages belonging to the 100 visible
+    # tickets and orders within each ticket by creation time/id.
+    (
+        "ticket_messages",
+        "ix_ticket_messages_ticket_created_id",
+        ("ticket_id", "created_at", "id"),
+    ),
+]
+
 
 def _add_missing_indexes():
     """Idempotent one-off: adds a plain index for each (table, column) pair in
@@ -419,6 +437,29 @@ def _add_missing_indexes():
                 import logging as _logging
                 _logging.getLogger(__name__).warning(
                     "Adding missing index on %s.%s failed: %s", table, column, e
+                )
+
+        for table, index_name, columns in _MISSING_COMPOSITE_INDEXES:
+            try:
+                has_index = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                    "WHERE TABLE_SCHEMA=:db AND TABLE_NAME=:table AND INDEX_NAME=:index"
+                ), {"db": db_name, "table": table, "index": index_name}).scalar()
+                if has_index:
+                    continue
+                quoted_columns = ", ".join(f"`{column}`" for column in columns)
+                conn.execute(text(
+                    f"ALTER TABLE `{table}` ADD INDEX `{index_name}` ({quoted_columns})"
+                ))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Adding composite index %s on %s failed: %s",
+                    index_name,
+                    table,
+                    e,
                 )
 
 

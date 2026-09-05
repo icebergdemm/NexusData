@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { Suspense, useCallback, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
 import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, PanelsTopLeft } from "lucide-react"
 import {
@@ -231,7 +231,9 @@ export function AppShell() {
         </header>
         <main data-slot="app-content" className="min-w-0 flex-1 overflow-auto p-3 sm:p-6">
           <div key={location.pathname} className="animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out">
-            <Outlet />
+            <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Загрузка страницы…</div>}>
+              <Outlet />
+            </Suspense>
           </div>
         </main>
       </SidebarInset>

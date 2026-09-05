@@ -49,7 +49,10 @@ export function TicketInboxList({
         const selected = ticket.id === activeId
         const actions = compact ? null : renderActions?.(ticket)
         return (
-          <div key={ticket.id} className="group relative min-w-0">
+          <div
+            key={ticket.id}
+            className="group relative min-w-0 [contain-intrinsic-size:auto_92px] [content-visibility:auto]"
+          >
             <Link
               to={`/tickets/${ticket.id}${returnStatus ? `?from=${encodeURIComponent(returnStatus)}` : ""}`}
               onClick={onNavigate}

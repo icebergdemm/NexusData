@@ -580,6 +580,7 @@ def ticket_media_api(tmp_path, monkeypatch):
                 ticket_id=7,
                 author_discord_id="42",
                 content="Evidence",
+                created_at=datetime(2026, 1, 1, 12),
                 attachments=[
                     {
                         "storage_key": storage_key,
@@ -624,6 +625,39 @@ def ticket_media_api(tmp_path, monkeypatch):
             session_factory=session_factory,
         )
     engine.dispose()
+
+
+def test_ticket_list_uses_chronologically_latest_message_without_loading_full_history(ticket_media_api):
+    with ticket_media_api.session_factory() as db:
+        db.add_all([
+            TicketMessage(
+                id=20,
+                ticket_id=7,
+                author_discord_id="84",
+                content="Chronologically newest",
+                created_at=datetime(2026, 1, 3, 12),
+            ),
+            # A later database ID can represent an older backfilled Discord
+            # message; list ordering must remain based on created_at, then id.
+            TicketMessage(
+                id=21,
+                ticket_id=7,
+                author_discord_id="42",
+                content="Backfilled older message",
+                created_at=datetime(2026, 1, 2, 12),
+            ),
+        ])
+        db.commit()
+
+    response = ticket_media_api.client.get("/api/v1/admin/tickets?status=open")
+
+    assert response.status_code == 200
+    payload = response.json()
+    row = payload["tickets"][0]
+    assert row["last_message_preview"] == "Chronologically newest"
+    assert row["participant_count"] == 2
+    assert payload["ticket_config"]["types"]["help"]["emoji"] == "❓"
+    assert "template" not in payload["ticket_config"]["types"]["help"]
 
 
 def test_api_ticket_media_serves_full_private_inline_file(ticket_media_api):
