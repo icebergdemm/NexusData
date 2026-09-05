@@ -8,6 +8,7 @@ from sqlalchemy import and_, desc, or_
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db, get_game_db
+from config import get_settings
 from models import (
     AdminUser,
     AppSetting,
@@ -31,6 +32,21 @@ api_router = APIRouter(
 RETENTION_SETTING = "communications_retention_days"
 DEFAULT_RETENTION_DAYS = 90
 MAX_RETENTION_DAYS = 3650
+
+
+@api_router.get("/communications/config")
+def get_server_communication_config():
+    """Return runtime ASR settings to an authenticated game server only.
+
+    The browser-facing admin endpoints never expose the credential. The
+    existing server API key middleware is the trust boundary for this route.
+    """
+    settings = get_settings()
+    return {
+        "deepgram_api_key": settings.deepgram_api_key or "",
+        "deepgram_model": settings.deepgram_model or "nova-3",
+        "deepgram_language": settings.deepgram_language or "ru",
+    }
 
 
 def _round_event_for(db: Session, event: dict) -> Optional[RoundEvent]:

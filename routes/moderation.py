@@ -1047,24 +1047,16 @@ async def api_console_settings_save(request: Request, db: Session = Depends(get_
         "panel_url": "PTERODACTYL_PANEL_URL", "api_key": "PTERODACTYL_API_KEY",
         "server1_uuid": "PTERODACTYL_SERVER1_UUID", "server2_uuid": "PTERODACTYL_SERVER2_UUID",
     }
-    import os
-    existing = {}
-    if os.path.exists(".env"):
-        with open(".env", "r", encoding="utf-8") as env_file:
-            for line in env_file:
-                if "=" in line and not line.lstrip().startswith("#"):
-                    key, _, value = line.strip().partition("=")
-                    existing[key] = value
+    from config import update_env_file
+    updates = {}
     for field, env_key in mapping.items():
         if field not in body:
             continue
         value = str(body[field] or "").strip()
         if field == "api_key" and value == "********":
             continue
-        existing[env_key] = value
-    with open(".env", "w", encoding="utf-8") as env_file:
-        for key, value in existing.items():
-            env_file.write(f"{key}={value}\n")
+        updates[env_key] = value
+    update_env_file(".env", updates)
     from config import reset_settings_cache
     reset_settings_cache()
     from routes.admin import log_admin_action

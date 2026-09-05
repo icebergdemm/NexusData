@@ -23,7 +23,7 @@ from models import (
     LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
     PlayerPunishment,
 )
-from config import get_settings, snapshot_env_file
+from config import get_settings, update_env_file
 from utils import is_bogon_ip
 import logging
 
@@ -5389,6 +5389,7 @@ SUPERUSER_ONLY_CFG_FIELDS = {
     # Keep it superuser-only even though the AI center itself is visible to
     # ordinary moderators.
     "ai_dossier_url", "ai_dossier_api_key", "ai_dossier_tls_ca_file",
+    "deepgram_api_key", "deepgram_model", "deepgram_language",
 }
 
 # Любой секрет с этой страницы отдаётся наружу ЗАГЛУШКОЙ, а не значением:
@@ -5408,6 +5409,7 @@ MASKED_CFG_FIELDS = {
     "pterodactyl_api_key",
     "git_update_token",
     "ai_dossier_api_key",
+    "deepgram_api_key",
 }
 
 
@@ -5421,8 +5423,7 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
     env_path = ".env"
     list_keys = {"CORS_ORIGINS", "ALLOWED_IPS"}
     if _os.path.exists(env_path):
-        lines = []
-        changed = False
+        updates = {}
         with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
@@ -5433,14 +5434,9 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
                     if k in list_keys and v and not v.startswith("["):
                         # comma-separated → JSON array
                         items = [x.strip() for x in v.split(",") if x.strip()]
-                        lines.append(f"{k}={_json.dumps(items)}\n")
-                        changed = True
-                        continue
-                lines.append(line if line.endswith("\n") else line + "\n")
-        if changed:
-            snapshot_env_file(env_path)
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
+                        updates[k] = _json.dumps(items)
+        if updates:
+            update_env_file(env_path, updates)
             from config import reset_settings_cache
             reset_settings_cache()
 
@@ -5500,6 +5496,9 @@ def _get_editable_config(current_admin: Optional[AdminUser] = None) -> dict:
             "ai_dossier_url": s.ai_dossier_url,
             "ai_dossier_api_key": _mask("ai_dossier_api_key", s.ai_dossier_api_key),
             "ai_dossier_tls_ca_file": s.ai_dossier_tls_ca_file,
+            "deepgram_api_key": _mask("deepgram_api_key", s.deepgram_api_key),
+            "deepgram_model": s.deepgram_model,
+            "deepgram_language": s.deepgram_language,
         })
     return cfg
 
@@ -5540,14 +5539,7 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
 
     body = await request.json()
     env_path = ".env"
-    existing: dict = {}
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, _, v = line.partition("=")
-                    existing[k.strip()] = v.strip()
+    updates: dict = {}
 
     field_map = {
         "debug": "DEBUG", "discord_trap_webhook_url": "DISCORD_TRAP_WEBHOOK_URL",
@@ -5586,6 +5578,9 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         "ai_dossier_url": "AI_DOSSIER_URL",
         "ai_dossier_api_key": "AI_DOSSIER_API_KEY",
         "ai_dossier_tls_ca_file": "AI_DOSSIER_TLS_CA_FILE",
+        "deepgram_api_key": "DEEPGRAM_API_KEY",
+        "deepgram_model": "DEEPGRAM_MODEL",
+        "deepgram_language": "DEEPGRAM_LANGUAGE",
     }
 
     for field, env_key in field_map.items():
@@ -5619,14 +5614,11 @@ async def api_admin_administration_config_save(request: Request, db: Session = D
         if field in ("cors_origins", "allowed_ips"):
             raw = str(val or "").strip()
             items = [x.strip() for x in raw.split(",") if x.strip()]
-            existing[env_key] = json.dumps(items)
+            updates[env_key] = json.dumps(items)
         else:
-            existing[env_key] = str(val) if val is not None else ""
+            updates[env_key] = str(val) if val is not None else ""
 
-    snapshot_env_file(env_path)
-    with open(env_path, "w", encoding="utf-8") as f:
-        for k, v in existing.items():
-            f.write(f"{k}={v}\n")
+    update_env_file(env_path, updates)
     from config import reset_settings_cache
     reset_settings_cache()
     log_admin_action(db, current_admin.id, "save_config", {})
@@ -5646,19 +5638,10 @@ async def admin_administration_config_save(
 
     form = await request.form()
 
-    # Build new .env content
+    # Update only fields submitted by the legacy form. The helper preserves
+    # comments, ordering, unknown keys and line endings in .env.
     env_path = ".env"
-    import os
-
-    # Read existing .env lines (preserve unknown keys)
-    existing: dict = {}
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, _, v = line.partition("=")
-                    existing[k.strip()] = v.strip()
+    updates: dict = {}
 
     # Map form fields → env keys
     field_map = {
@@ -5693,6 +5676,9 @@ async def admin_administration_config_save(
         "onlyoffice_document_server_url": "ONLYOFFICE_DOCUMENT_SERVER_URL",
         "onlyoffice_callback_base_url": "ONLYOFFICE_CALLBACK_BASE_URL",
         "onlyoffice_jwt_secret": "ONLYOFFICE_JWT_SECRET",
+        "deepgram_api_key": "DEEPGRAM_API_KEY",
+        "deepgram_model": "DEEPGRAM_MODEL",
+        "deepgram_language": "DEEPGRAM_LANGUAGE",
     }
 
     for field, env_key in field_map.items():
@@ -5722,16 +5708,13 @@ async def admin_administration_config_save(
             raw = (val or "").strip()
             items = [x.strip() for x in raw.split(",") if x.strip()]
             import json as _json
-            existing[env_key] = _json.dumps(items)
+            updates[env_key] = _json.dumps(items)
         else:
-            existing[env_key] = val or ""
+            updates[env_key] = val or ""
 
     # Write back
     try:
-        snapshot_env_file(env_path)
-        with open(env_path, "w", encoding="utf-8") as f:
-            for k, v in existing.items():
-                f.write(f"{k}={v}\n")
+        update_env_file(env_path, updates)
         # Invalidate settings cache
         from config import reset_settings_cache
         reset_settings_cache()

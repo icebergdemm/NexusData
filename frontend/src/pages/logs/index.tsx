@@ -140,6 +140,19 @@ function logSearchErrorMessage(error: unknown) {
   return "Не удалось получить ответ от сервера"
 }
 
+function LogViewToggle({ communications }: { communications: boolean }) {
+  return (
+    <div className="flex items-center gap-1">
+      <Button asChild variant={communications ? "outline" : "secondary"} size="sm">
+        <Link to="/logs">Журнал событий</Link>
+      </Button>
+      <Button asChild variant={communications ? "secondary" : "outline"} size="sm">
+        <Link to="/logs?view=communications">Общение игроков</Link>
+      </Button>
+    </div>
+  )
+}
+
 export function LogsPage() {
   const { data: admin } = useCurrentAdmin()
   const [searchParams] = useSearchParams()
@@ -275,11 +288,13 @@ export function LogsPage() {
 
   if (communicationMode) {
     return (
-      <div className="-m-4 flex min-h-[calc(100dvh-3.5rem)] flex-col bg-background sm:-m-5 lg:h-[calc(100dvh-3.5rem)] lg:overflow-hidden">
-        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center border border-border"><ScrollText className="size-4" /></div><div><h1 className="text-sm font-semibold uppercase tracking-[0.08em]">Логи сервера</h1><p className="text-xs text-muted-foreground">Журнал событий и общение игроков</p></div></div>
-          <div className="ml-auto flex gap-1"><Button asChild variant="outline" size="sm"><Link to="/logs">Журнал событий</Link></Button><Button variant="secondary" size="sm" disabled>Общение игроков</Button></div>
-        </div>
+      <div>
+        <PageHeader
+          title="Логи сервера"
+          description="Журнал событий и общение игроков"
+          icon={ScrollText}
+          actions={<LogViewToggle communications />}
+        />
         <CommunicationsView />
       </div>
     )
@@ -354,7 +369,7 @@ export function LogsPage() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <div className="hidden gap-1 sm:flex"><Button asChild variant="secondary" size="sm" disabled><Link to="/logs">Журнал событий</Link></Button><Button asChild variant="outline" size="sm"><Link to="/logs?view=communications">Общение игроков</Link></Button></div>
+            <div className="hidden sm:flex"><LogViewToggle communications={false} /></div>
             <Button
               type="button"
               variant="outline"
@@ -747,12 +762,17 @@ export function LogsPage() {
         title="Логи сервера"
         description="Быстрый разбор действий игроков, игровых событий и технических записей"
         icon={ScrollText}
-        actions={admin?.is_superuser && (
-          <Button variant="outline" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
-            <RefreshCw className={`h-4 w-4 ${refresh.isPending ? "animate-spin" : ""}`} />
-            Обновить из SFTP
-          </Button>
-        )}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <LogViewToggle communications={false} />
+            {admin?.is_superuser && (
+              <Button variant="outline" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+                <RefreshCw className={`h-4 w-4 ${refresh.isPending ? "animate-spin" : ""}`} />
+                Обновить из SFTP
+              </Button>
+            )}
+          </div>
+        }
       />
 
       {stats && Object.keys(stats).length > 0 && (

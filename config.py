@@ -40,6 +40,60 @@ def snapshot_env_file(path: str | os.PathLike) -> Path | None:
     return snapshot
 
 
+def update_env_file(path: str | os.PathLike, updates: Dict[str, Any]) -> Path | None:
+    """Update only named .env keys without rewriting unrelated file content.
+
+    Keep comments, blank lines, unknown settings, ordering, and existing line
+    endings intact. The snapshot is made before the atomic replacement so a
+    failed admin save never leaves a half-written environment file behind.
+    """
+    target = Path(path)
+    original = target.read_text(encoding="utf-8") if target.is_file() else ""
+    newline = "\r\n" if "\r\n" in original else "\n"
+    normalized: Dict[str, str] = {}
+    for key, value in updates.items():
+        name = str(key).strip()
+        text_value = "" if value is None else str(value)
+        if not name or "\r" in name or "\n" in name or "\r" in text_value or "\n" in text_value:
+            raise ValueError(".env keys and values cannot contain line breaks")
+        normalized[name] = text_value
+
+    lines = original.splitlines(keepends=True)
+    output: list[str] = []
+    replaced: set[str] = set()
+    for line in lines:
+        content = line.rstrip("\r\n")
+        if not content.lstrip().startswith("#") and "=" in content:
+            key, _, _ = content.partition("=")
+            key = key.strip()
+            if key in normalized:
+                output.append(f"{key}={normalized[key]}{line[len(content):]}")
+                replaced.add(key)
+                continue
+        output.append(line)
+
+    missing = [key for key in normalized if key not in replaced]
+    if missing:
+        if output and not output[-1].endswith(("\n", "\r")):
+            output[-1] += newline
+        output.extend(f"{key}={normalized[key]}{newline}" for key in missing)
+
+    snapshot = snapshot_env_file(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as stream:
+            stream.write("".join(output))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return snapshot
+
+
 class Settings(BaseSettings):
     app_name: str = "Barotrauma RoundManager API"
     app_version: str = "3.0"
@@ -77,6 +131,12 @@ class Settings(BaseSettings):
     # these read endpoints never needs the ingest credential. Empty by
     # default = these endpoints stay closed until explicitly configured.
     client_api_key: str = Field("")
+    # Server-side voice transcription credential. It is stored in the
+    # NexusData .env and exposed only to authenticated game-server requests;
+    # the admin UI always masks it.
+    deepgram_api_key: str = Field("")
+    deepgram_model: str = Field("nova-3")
+    deepgram_language: str = Field("ru")
     # Optional bridge to AsperAIDispatcher. Every player terminal message is
     # forwarded; the model returns respond=false for traffic unrelated to the
     # dispatch post, otherwise its reply is queued back into the game.

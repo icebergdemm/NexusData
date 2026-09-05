@@ -62,6 +62,12 @@ const SUPERUSER_CFG_FIELDS: { key: string; label: string; type?: "password" }[] 
   { key: "sub_projects_test_server_uuid", label: "Sub-проекты: UUID тестового сервера (Сервер 2 / ASPER2)" },
 ]
 
+const DEEPGRAM_CFG_FIELDS: { key: string; label: string; type?: "password"; placeholder?: string }[] = [
+  { key: "deepgram_api_key", label: "Deepgram API Key", type: "password" },
+  { key: "deepgram_model", label: "Модель", placeholder: "nova-3" },
+  { key: "deepgram_language", label: "Язык", placeholder: "ru" },
+]
+
 /** Настройки консольной команды `update` (обновление кода из git).
  *  Тоже только для суперпользователей: подменив каталог, remote или ветку,
  *  можно заставить сервер выполнить чужой код. */
@@ -183,6 +189,27 @@ export function AdministrationPage() {
           <Button onClick={() => saveCommunicationConfig.mutate()} disabled={saveCommunicationConfig.isPending}>Сохранить срок хранения</Button>
         </CardContent>
       </Card>
+
+      {me?.is_superuser && (
+        <Card className="overflow-hidden py-0">
+          <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Распознавание голоса (Deepgram)</CardTitle></CardHeader>
+          <CardContent className="space-y-4 py-4">
+            <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>Ключ хранится в `.env` NexusData и не показывается в браузере. Игровой плагин забирает его через защищённый server API endpoint. После изменения перезапустите серверный плагин.</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              {DEEPGRAM_CFG_FIELDS.map((f) => (
+                <div key={f.key}>
+                  <Label className="text-xs text-muted-foreground">{f.label}</Label>
+                  <Input className="mt-1" type={f.type === "password" ? "password" : "text"} autoComplete={f.type === "password" ? "new-password" : undefined} placeholder={f.placeholder} value={cfg[f.key] ?? ""} onChange={(e) => setCfg((c) => ({ ...c, [f.key]: e.target.value }))} />
+                </div>
+              ))}
+            </div>
+            <Button onClick={() => saveConfig.mutate()} disabled={saveConfig.isPending}>Сохранить настройки Deepgram</Button>
+          </CardContent>
+        </Card>
+      )}
 
       {me?.is_superuser && (
         <Card className="overflow-hidden py-0">
