@@ -1,7 +1,7 @@
 """Player chat and voice communication ingest/admin APIs."""
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Iterable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import and_, desc, or_
@@ -192,7 +192,32 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
         raise HTTPException(status_code=422, detail=f"Invalid datetime: {value}") from exc
 
 
-def _event_dict(event: PlayerCommunication, include_recipients: bool = False) -> dict:
+def _player_ids_by_steamid(db: Session, steamids: Iterable[Optional[str]]) -> dict[str, int]:
+    values = {str(steamid) for steamid in steamids if steamid}
+    if not values:
+        return {}
+    rows = db.query(PlayerData.player_steamid, PlayerData.player_id).filter(
+        PlayerData.player_steamid.in_(values)
+    ).all()
+    return {steamid: player_id for steamid, player_id in rows if steamid and player_id is not None}
+
+
+def _round_context(event: PlayerCommunication) -> str:
+    if event.round_event_id is not None:
+        return "round"
+    if event.round_token:
+        return "unmatched"
+    return "lobby"
+
+
+def _event_dict(
+    event: PlayerCommunication,
+    include_recipients: bool = False,
+    player_ids: Optional[dict[str, int]] = None,
+) -> dict:
+    resolved_player_id = event.player_id
+    if player_ids is not None and event.player_steamid:
+        resolved_player_id = player_ids.get(event.player_steamid, event.player_id)
     result = {
         "id": event.id,
         "event_uid": event.event_uid,
@@ -201,10 +226,11 @@ def _event_dict(event: PlayerCommunication, include_recipients: bool = False) ->
         "server_name": event.server_name,
         "server_session_id": event.server_session_id,
         "round_token": event.round_token,
+        "round_context": _round_context(event),
         "round_id": event.round_event_id,
         "round_finished": bool(event.round_event and event.round_event.event_type == "end"),
         "player_steamid": event.player_steamid,
-        "player_id": event.player_id,
+        "player_id": resolved_player_id,
         "player_name": event.player_name,
         "role": event.role,
         "submarine_name": event.submarine_name,
@@ -227,7 +253,7 @@ def _event_dict(event: PlayerCommunication, include_recipients: bool = False) ->
             {
                 "id": r.id,
                 "player_steamid": r.player_steamid,
-                "player_id": r.player_id,
+                "player_id": player_ids.get(r.player_steamid, r.player_id) if player_ids is not None else r.player_id,
                 "player_name": r.player_name,
                 "delivered_text": r.delivered_text,
                 "server_queued": r.server_queued,
@@ -245,6 +271,25 @@ def _event_dict(event: PlayerCommunication, include_recipients: bool = False) ->
     return result
 
 
+def _event_dicts(
+    db: Session,
+    events: list[PlayerCommunication],
+    include_recipients: bool = False,
+) -> list[dict]:
+    steamids = [event.player_steamid for event in events]
+    if include_recipients:
+        steamids.extend(
+            recipient.player_steamid
+            for event in events
+            for recipient in event.recipients
+        )
+    player_ids = _player_ids_by_steamid(db, steamids)
+    return [
+        _event_dict(event, include_recipients=include_recipients, player_ids=player_ids)
+        for event in events
+    ]
+
+
 @router.get("/api/v1/admin/communications")
 def list_communications(
     request: Request,
@@ -255,6 +300,7 @@ def list_communications(
     channel: Optional[str] = None,
     asr_status: Optional[str] = None,
     round_id: Optional[int] = None,
+    context: Optional[str] = Query(None, pattern="^(round|lobby|unmatched)$"),
     lobby: bool = False,
     search: Optional[str] = None,
     time_from: Optional[str] = None,
@@ -281,8 +327,18 @@ def list_communications(
         query = query.filter(PlayerCommunication.asr_status == asr_status)
     if round_id is not None:
         query = query.filter(PlayerCommunication.round_event_id == round_id)
-    elif lobby:
-        query = query.filter(PlayerCommunication.round_event_id.is_(None))
+    elif context == "round":
+        query = query.filter(PlayerCommunication.round_event_id.isnot(None))
+    elif context == "lobby" or lobby:
+        query = query.filter(
+            PlayerCommunication.round_event_id.is_(None),
+            PlayerCommunication.round_token.is_(None),
+        )
+    elif context == "unmatched":
+        query = query.filter(
+            PlayerCommunication.round_event_id.is_(None),
+            PlayerCommunication.round_token.isnot(None),
+        )
     if search:
         pattern = f"%{search.strip()}%"
         query = query.filter(
@@ -308,7 +364,7 @@ def list_communications(
         .all()
     )
     return {
-        "events": [_event_dict(row) for row in rows],
+        "events": _event_dicts(db, rows),
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -332,7 +388,7 @@ def get_communication(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Communication not found")
-    return _event_dict(row, include_recipients=True)
+    return _event_dicts(db, [row], include_recipients=True)[0]
 
 
 @router.get("/api/v1/admin/communications/{communication_id}/recipients")
@@ -350,7 +406,7 @@ def get_communication_recipients(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Communication not found")
-    return {"communication_id": row.id, "recipients": _event_dict(row, include_recipients=True)["recipients"]}
+    return {"communication_id": row.id, "recipients": _event_dicts(db, [row], include_recipients=True)[0]["recipients"]}
 
 
 @router.get("/api/v1/admin/communications/config")

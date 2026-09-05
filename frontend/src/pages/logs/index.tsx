@@ -369,7 +369,7 @@ export function LogsPage() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <div className="hidden sm:flex"><LogViewToggle communications={false} /></div>
+            <LogViewToggle communications={false} />
             <Button
               type="button"
               variant="outline"

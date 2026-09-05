@@ -4,8 +4,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models import AppSetting, PlayerCommunication, PlayerCommunicationRecipient, RoundEvent
+from models import AppSetting, PlayerCommunication, PlayerCommunicationRecipient, PlayerData, RoundEvent
 from routes.communications import (
+    _event_dicts,
     ingest_communications,
     purge_expired_communications,
     reconcile_stale_pending_communications,
@@ -90,6 +91,32 @@ def test_lobby_message_does_not_attach_to_any_round():
 
     row = db.query(PlayerCommunication).one()
     assert row.round_event_id is None
+    assert _event_dicts(db, [row])[0]["round_context"] == "lobby"
+
+
+def test_round_token_without_lifecycle_is_not_mislabeled_as_lobby():
+    db = _db()
+    ingest_communications(_batch(uid="unmatched-1", token="round-not-yet-reported"), db)
+
+    row = db.query(PlayerCommunication).one()
+    payload = _event_dicts(db, [row])[0]
+
+    assert row.round_event_id is None
+    assert payload["round_context"] == "unmatched"
+
+
+def test_event_and_recipients_resolve_player_profiles_at_read_time():
+    db = _db()
+    db.add(PlayerData(player_id=77, player_last_time_name="Player", player_steamid="76561198000000001"))
+    db.add(PlayerData(player_id=88, player_last_time_name="Listener", player_steamid="76561198000000002"))
+    db.commit()
+
+    ingest_communications(_batch(uid="dynamic-profile-1"), db)
+    row = db.query(PlayerCommunication).one()
+    payload = _event_dicts(db, [row], include_recipients=True)[0]
+
+    assert payload["player_id"] == 77
+    assert payload["recipients"][0]["player_id"] == 88
 
 
 def test_retention_deletes_recipients_with_parent():

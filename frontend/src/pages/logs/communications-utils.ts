@@ -1,10 +1,22 @@
 export const communicationChannelLabels: Record<string, string> = {
-  default: "локальный",
-  local: "локальный",
+  default: "локальный чат",
+  local: "локальный голос",
   radio: "радио",
-  private: "личный",
-  team: "команда",
-  dead: "мёртвые",
+  private: "личный чат",
+  team: "командный чат",
+  dead: "чат мёртвых",
+}
+
+export const communicationContextLabels: Record<string, string> = {
+  round: "раунд",
+  lobby: "лобби",
+  unmatched: "раунд не сопоставлен",
+}
+
+export function recipientTextVariant(originalText: string | null, deliveredText: string | null): string | null {
+  if (!deliveredText) return null
+  if (originalText?.trim() === deliveredText.trim()) return null
+  return deliveredText
 }
 
 export interface CommunicationFilters {
@@ -13,7 +25,7 @@ export interface CommunicationFilters {
   channel: string
   server: string
   asrStatus: string
-  lobby: boolean
+  context: string
 }
 
 export function buildCommunicationQuery(filters: CommunicationFilters, page: number): string {
@@ -23,6 +35,6 @@ export function buildCommunicationQuery(filters: CommunicationFilters, page: num
   if (filters.channel !== "all") params.set("channel", filters.channel)
   if (filters.server !== "all") params.set("server", filters.server)
   if (filters.asrStatus !== "all") params.set("asr_status", filters.asrStatus)
-  if (filters.lobby) params.set("lobby", "true")
+  if (filters.context !== "all") params.set("context", filters.context)
   return params.toString()
 }

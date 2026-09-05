@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { buildCommunicationQuery, communicationChannelLabels } from "../frontend/src/pages/logs/communications-utils.ts"
+import {
+  buildCommunicationQuery,
+  communicationChannelLabels,
+  communicationContextLabels,
+  recipientTextVariant,
+} from "../frontend/src/pages/logs/communications-utils.ts"
 
 test("communication query serializes the investigation filters", () => {
   const query = new URLSearchParams(buildCommunicationQuery({
@@ -10,19 +15,33 @@ test("communication query serializes the investigation filters", () => {
     channel: "radio",
     server: "ASPER1",
     asrStatus: "recognized",
-    lobby: true,
+    context: "lobby",
   }, 3))
 
   assert.equal(query.get("page"), "3")
   assert.equal(query.get("source"), "voice")
   assert.equal(query.get("channel"), "radio")
   assert.equal(query.get("asr_status"), "recognized")
-  assert.equal(query.get("lobby"), "true")
+  assert.equal(query.get("context"), "lobby")
   assert.equal(query.get("search"), "опасный текст")
 })
 
 test("communication channel labels cover chat and voice channels", () => {
-  assert.equal(communicationChannelLabels.private, "личный")
-  assert.equal(communicationChannelLabels.dead, "мёртвые")
-  assert.equal(communicationChannelLabels.local, "локальный")
+  assert.equal(communicationChannelLabels.private, "личный чат")
+  assert.equal(communicationChannelLabels.dead, "чат мёртвых")
+  assert.equal(communicationChannelLabels.default, "локальный чат")
+  assert.equal(communicationChannelLabels.local, "локальный голос")
+})
+
+test("communication context labels distinguish lobby, round, and unresolved round token", () => {
+  assert.equal(communicationContextLabels.lobby, "лобби")
+  assert.equal(communicationContextLabels.round, "раунд")
+  assert.equal(communicationContextLabels.unmatched, "раунд не сопоставлен")
+})
+
+test("recipient text is shown only when server delivery changed the message", () => {
+  assert.equal(recipientTextVariant("hello", "hello"), null)
+  assert.equal(recipientTextVariant("hello", " hello "), null)
+  assert.equal(recipientTextVariant("hello", "hеllo"), "hеllo")
+  assert.equal(recipientTextVariant(null, "delivered"), "delivered")
 })
