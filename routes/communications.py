@@ -32,6 +32,7 @@ api_router = APIRouter(
 RETENTION_SETTING = "communications_retention_days"
 DEFAULT_RETENTION_DAYS = 90
 MAX_RETENTION_DAYS = 3650
+STALE_PENDING_AFTER = timedelta(minutes=5)
 
 
 @api_router.get("/communications/config")
@@ -155,6 +156,33 @@ def _require_view(admin: AdminUser) -> None:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
 
+def reconcile_stale_pending_communications(db: Session, now: Optional[datetime] = None) -> int:
+    """Close voice rows whose producer disappeared before sending a final state.
+
+    A game-server restart destroys the in-memory ASR session. Without this
+    reconciliation, its initial ``pending`` row is indistinguishable from a
+    live session and survives forever. Five minutes is deliberately longer
+    than the plugin's normal segment/finalization timeout.
+    """
+    cutoff = (now or datetime.utcnow()) - STALE_PENDING_AFTER
+    rows = (
+        db.query(PlayerCommunication)
+        .filter(
+            PlayerCommunication.source == "voice",
+            PlayerCommunication.asr_status == "pending",
+            PlayerCommunication.occurred_at < cutoff,
+        )
+        .all()
+    )
+    for row in rows:
+        row.asr_status = "failed"
+        row.asr_error = "ASR timed out before completion; the game server may have restarted"
+        row.ended_at = row.ended_at or row.occurred_at
+    if rows:
+        db.commit()
+    return len(rows)
+
+
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -237,6 +265,7 @@ def list_communications(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     _require_view(current_admin)
+    reconcile_stale_pending_communications(db)
     query = db.query(PlayerCommunication).options(joinedload(PlayerCommunication.recipients))
     if server:
         query = query.filter(PlayerCommunication.server_name == server)

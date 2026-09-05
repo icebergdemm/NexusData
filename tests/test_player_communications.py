@@ -5,7 +5,11 @@ from sqlalchemy.orm import sessionmaker
 
 from database import Base
 from models import AppSetting, PlayerCommunication, PlayerCommunicationRecipient, RoundEvent
-from routes.communications import ingest_communications, purge_expired_communications
+from routes.communications import (
+    ingest_communications,
+    purge_expired_communications,
+    reconcile_stale_pending_communications,
+)
 from schemas import CommunicationBatchIn
 
 
@@ -102,3 +106,24 @@ def test_retention_deletes_recipients_with_parent():
     assert purge_expired_communications(db) == 1
     assert db.query(PlayerCommunication).count() == 0
     assert db.query(PlayerCommunicationRecipient).count() == 0
+
+
+def test_stale_pending_voice_is_marked_failed_after_server_restart():
+    db = _db()
+    row = PlayerCommunication(
+        event_uid="stale-voice",
+        source="voice",
+        channel="local",
+        server_name="ASPER1",
+        server_session_id="old-session",
+        player_name="Old",
+        asr_status="pending",
+        occurred_at=datetime.utcnow() - timedelta(minutes=10),
+    )
+    db.add(row)
+    db.commit()
+
+    assert reconcile_stale_pending_communications(db) == 1
+    db.refresh(row)
+    assert row.asr_status == "failed"
+    assert "timed out" in (row.asr_error or "")
