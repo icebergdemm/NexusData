@@ -1,4 +1,5 @@
 import { ExternalLink } from "lucide-react"
+import { Link } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import type { AIDossierContext, AIDossierEvidence, AIDossierResult } from "@/pages/players/detail-types"
 
@@ -23,16 +24,16 @@ function EvidenceLinks({ items }: { items: AIDossierEvidence[] }) {
   if (!items.length) return null
   return <div className="flex flex-wrap gap-2">
     {items.map((item, index) => item.href ? (
-      <a key={`${item.kind}-${item.id}-${index}`} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-primary underline" href={item.href}>
+      <Link key={`${item.kind}-${item.id}-${index}`} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-primary underline" to={item.href}>
         <ExternalLink className="size-3" /> {sourceLabel[item.kind] || item.kind} #{item.id}
-      </a>
+      </Link>
     ) : <span key={`${item.kind}-${item.id}-${index}`} className="rounded border px-2 py-1 text-xs text-muted-foreground">{sourceLabel[item.kind] || item.kind} #{item.id}</span>)}
   </div>
 }
 
 function ContextRow({ item }: { item: AIDossierContext }) {
   const content = <>{sourceLabel[item.kind] || item.kind}: {item.text}{item.source_id != null ? ` (#${item.source_id})` : ""}</>
-  return item.href ? <a className="block text-primary underline" href={item.href}>{content}</a> : <div>{content}</div>
+  return item.href ? <Link className="block text-primary underline" to={item.href}>{content}</Link> : <div>{content}</div>
 }
 
 export function DossierResultView({ result }: { result: AIDossierResult }) {
