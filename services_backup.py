@@ -682,6 +682,12 @@ def _connect_sftp(settings: Settings, normalized: dict) -> tuple[paramiko.SSHCli
         if transport is not None:
             transport.set_keepalive(30)
         return client, client.open_sftp()
+    except paramiko.AuthenticationException:
+        client.close()
+        raise BackupExecutionError(
+            "SFTP authentication rejected. Check credentials and server login policy; "
+            "BACKUP_SFTP_PASSWORD takes precedence over the SFTP_* password profile."
+        ) from None
     except TimeoutError as exc:
         client.close()
         raise BackupExecutionError(
@@ -753,6 +759,22 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _preflight_backup_connection(settings: Settings, normalized: dict) -> None:
+    """Fail before an expensive dump/archive if SFTP authentication is broken.
+
+    Do not create files or prune backups here. Upload reconnects after building
+    the archive so an idle SSH session is not held open during a long dump.
+    """
+    client, sftp = _connect_sftp(settings, normalized)
+    try:
+        normalized["host_key_is_pinned"] = True
+    finally:
+        try:
+            sftp.close()
+        finally:
+            client.close()
+
+
 def test_backup_connection(settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     normalized = validate_backup_settings(settings)
@@ -808,6 +830,7 @@ def create_and_upload_backup(
             return {"status": "skipped", "reason": "already_running"}
 
         normalized = validate_backup_settings(settings)
+        _preflight_backup_connection(settings, normalized)
         temp_parent = Path(settings.backup_temp_dir).expanduser() if settings.backup_temp_dir else None
         if temp_parent is not None:
             temp_parent.mkdir(parents=True, exist_ok=True)

@@ -408,6 +408,18 @@ def list_communications(
     }
 
 
+# Static paths must precede the ID route: otherwise "config" is parsed as an ID.
+@router.get("/api/v1/admin/communications/config")
+def get_communication_config(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_view(current_admin)
+    row = db.query(AppSetting).filter(AppSetting.key == RETENTION_SETTING).first()
+    value = int(row.value) if row and row.value else DEFAULT_RETENTION_DAYS
+    return {"retention_days": value, "default_days": DEFAULT_RETENTION_DAYS, "max_days": MAX_RETENTION_DAYS}
+
+
 @router.get("/api/v1/admin/communications/{communication_id}")
 def get_communication(
     communication_id: int,
@@ -442,17 +454,6 @@ def get_communication_recipients(
     if row is None:
         raise HTTPException(status_code=404, detail="Communication not found")
     return {"communication_id": row.id, "recipients": _event_dicts(db, [row], include_recipients=True)[0]["recipients"]}
-
-
-@router.get("/api/v1/admin/communications/config")
-def get_communication_config(
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    _require_view(current_admin)
-    row = db.query(AppSetting).filter(AppSetting.key == RETENTION_SETTING).first()
-    value = int(row.value) if row and row.value else DEFAULT_RETENTION_DAYS
-    return {"retention_days": value, "default_days": DEFAULT_RETENTION_DAYS, "max_days": MAX_RETENTION_DAYS}
 
 
 @router.patch("/api/v1/admin/communications/config")

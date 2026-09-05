@@ -1114,7 +1114,7 @@ def cleanup_old_logs(retention_days: int = LOG_RETENTION_DAYS, vacuum: bool = Tr
     фоновой закачке логов работать параллельно.
 
     VACUUM выполняется один раз в конце и только если реально что-то удалено:
-    он переписывает файл БД целиком (нужен запас места примерно в размер базы)
+    он переписывает файл БД целиком (нужен запас места до двух размеров базы)
     и на время блокирует её, поэтому гонять его на каждую порцию нельзя.
     """
     cutoff_ms = _ts_to_ms(datetime.utcnow() - timedelta(days=retention_days))
@@ -1144,16 +1144,19 @@ def cleanup_old_logs(retention_days: int = LOG_RETENTION_DAYS, vacuum: bool = Tr
         conn = _get_conn()
         if vacuum:
             # VACUUM переписывает базу целиком во временную копию, поэтому
-            # требует свободного места примерно в размер самой базы. Без
+            # требует до двух размеров базы (временная копия плюс WAL). Без
             # проверки на почти полном диске он падает уже в процессе,
-            # оставляя мусор. Если места мало — просто пропускаем: файл не
-            # уменьшится, но освободившиеся страницы всё равно переиспользуются
-            # под новые события, то есть база не растёт дальше.
+            # расходуя время и I/O. Если места мало — просто пропускаем: файл
+            # не уменьшится, но освободившиеся страницы могут использоваться
+            # повторно под новые события.
             try:
                 import shutil
-                db_size = os.path.getsize(LOG_DB_PATH)
+                # In WAL mode the main file alone can underreport the size.
+                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+                page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+                db_size = max(os.path.getsize(LOG_DB_PATH), page_size * page_count)
                 free = shutil.disk_usage(LOG_STORAGE_DIR).free
-                if free < db_size * 1.2:
+                if free < db_size * 2 + 64 * 1024 * 1024:
                     logger.warning(
                         f"VACUUM пропущен: на диске {free // (1024*1024)} МБ свободно, "
                         f"для базы в {db_size // (1024*1024)} МБ этого мало"

@@ -4,6 +4,7 @@ import threading
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import services_logs
 
@@ -65,6 +66,33 @@ class LogSearchTests(unittest.TestCase):
         self.assertEqual(len(result.events), 1)
         self.assertEqual(result.events[0].player_name, "Игрок Один")
         self.assertEqual(result.events[0].action_type, "wire")
+
+    def test_retention_skips_vacuum_without_two_database_sizes_of_space(self):
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        with patch("shutil.disk_usage", return_value=SimpleNamespace(free=150 * 1024 * 1024)), \
+             patch("os.path.getsize", return_value=100 * 1024 * 1024):
+            services_logs.cleanup_old_logs(retention_days=0)
+        self.assertFalse(any(sql == "VACUUM" for sql in statements))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM log_events").fetchone()[0], 0)
+
+    def test_retention_vacuums_with_sufficient_space(self):
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        with patch("shutil.disk_usage", return_value=SimpleNamespace(free=1024 * 1024 * 1024)):
+            services_logs.cleanup_old_logs(retention_days=0)
+        self.assertIn("VACUUM", statements)
+
+    def test_retention_space_check_includes_pages_not_checkpointed_from_wal(self):
+        statements = []
+        self.conn.set_trace_callback(statements.append)
+        page_size = self.conn.execute("PRAGMA page_size").fetchone()[0]
+        page_count = self.conn.execute("PRAGMA page_count").fetchone()[0]
+        free = page_size * page_count + 64 * 1024 * 1024
+        with patch("shutil.disk_usage", return_value=SimpleNamespace(free=free)), \
+             patch("os.path.getsize", return_value=0):
+            services_logs.cleanup_old_logs(retention_days=0)
+        self.assertNotIn("VACUUM", statements)
 
     def test_related_scope_also_returns_mentions_in_details(self):
         result = services_logs.search_logs(
