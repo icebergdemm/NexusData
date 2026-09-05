@@ -6,12 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session, load_only
-from sqlalchemy import desc, func
+from sqlalchemy import String, and_, cast, desc, func, or_
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 import asyncio
+import base64
+import binascii
 import hashlib
 import mimetypes
 import secrets
@@ -279,6 +281,72 @@ def _ticket_list_config() -> dict:
             if isinstance(value, dict)
         }
     }
+
+
+_TICKET_CURSOR_VERSION = 1
+_TICKET_CURSOR_EPOCH = datetime(1970, 1, 1)
+
+
+def _encode_ticket_cursor(ticket: Ticket) -> str:
+    payload = {
+        "v": _TICKET_CURSOR_VERSION,
+        "last_message_at": (
+            ticket.last_message_at.isoformat(timespec="microseconds")
+            if ticket.last_message_at else None
+        ),
+        "created_at": (
+            ticket.created_at.isoformat(timespec="microseconds")
+            if ticket.created_at else None
+        ),
+        "id": int(ticket.id),
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_ticket_cursor(value: str) -> tuple[datetime | None, datetime, int]:
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("cursor payload must be an object")
+        if payload.get("v") != _TICKET_CURSOR_VERSION:
+            raise ValueError("unsupported cursor version")
+        last_message_raw = payload.get("last_message_at")
+        created_raw = payload.get("created_at")
+        last_message_at = (
+            datetime.fromisoformat(last_message_raw) if last_message_raw else None
+        )
+        created_at = (
+            datetime.fromisoformat(created_raw) if created_raw else _TICKET_CURSOR_EPOCH
+        )
+        if (
+            (last_message_at and last_message_at.utcoffset() is not None)
+            or created_at.utcoffset() is not None
+        ):
+            raise ValueError("cursor timestamps must be timezone-naive")
+        ticket_id = int(payload["id"])
+        if ticket_id < 1:
+            raise ValueError("invalid ticket id")
+        return last_message_at, created_at, ticket_id
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Некорректный курсор списка тикетов") from exc
+
+
+def _apply_ticket_cursor(query, cursor: str):
+    last_message_at, created_at, ticket_id = _decode_ticket_cursor(cursor)
+    created_sort = func.coalesce(Ticket.created_at, _TICKET_CURSOR_EPOCH)
+    after_same_activity = or_(
+        created_sort < created_at,
+        and_(created_sort == created_at, Ticket.id < ticket_id),
+    )
+    if last_message_at is None:
+        return query.filter(Ticket.last_message_at.is_(None), after_same_activity)
+    return query.filter(or_(
+        Ticket.last_message_at < last_message_at,
+        Ticket.last_message_at.is_(None),
+        and_(Ticket.last_message_at == last_message_at, after_same_activity),
+    ))
 
 
 def _admin_avatar(admin: AdminUser | None) -> str | None:
@@ -723,12 +791,34 @@ def _ticket_mention_profiles(
 
 
 @panel_router.get("/api/v1/admin/tickets")
-def api_tickets_list(request: Request, status: str = Query("open"), db: Session = Depends(get_db)):
+def api_tickets_list(
+    request: Request,
+    status: str = Query("open"),
+    cursor: str | None = Query(None, max_length=512),
+    limit: int = Query(30, ge=10, le=50),
+    search: str = Query("", max_length=100),
+    db: Session = Depends(get_db),
+):
     admin = _get_admin(request, db)
     if not check_permission(admin, "tickets", "view"):
         raise HTTPException(status_code=403)
+    if status not in {"open", "closed", "deleted", "all"}:
+        raise HTTPException(status_code=400, detail="Неизвестный статус списка тикетов")
 
     q = _ticket_query(db, status)
+    search_value = search.strip()
+    if search_value:
+        like = f"%{search_value}%"
+        q = q.filter(or_(
+            cast(Ticket.id, String).ilike(like),
+            Ticket.title.ilike(like),
+            Ticket.ticket_type.ilike(like),
+            Ticket.creator_discord_id.ilike(like),
+            Ticket.creator_username.ilike(like),
+            Ticket.creator_display_name.ilike(like),
+        ))
+    if cursor:
+        q = _apply_ticket_cursor(q, cursor)
     tickets = (
         q.options(load_only(
             Ticket.id,
@@ -750,10 +840,13 @@ def api_tickets_list(request: Request, status: str = Query("open"), db: Session 
             Ticket.last_message_at,
             Ticket.awaiting_admin,
         ))
-        .order_by(desc(Ticket.last_message_at), desc(Ticket.created_at))
-        .limit(100)
+        .order_by(desc(Ticket.last_message_at), desc(Ticket.created_at), desc(Ticket.id))
+        .limit(limit + 1)
         .all()
     )
+    has_more = len(tickets) > limit
+    if has_more:
+        tickets = tickets[:limit]
     assigned_ids = {t.assigned_admin_id for t in tickets if getattr(t, "assigned_admin_id", None)}
     assigned = {
         row.id: row for row in db.query(AdminUser).options(load_only(
@@ -828,6 +921,9 @@ def api_tickets_list(request: Request, status: str = Query("open"), db: Session 
     return {
         "tickets": serialized_tickets,
         "status_filter": status,
+        "next_cursor": _encode_ticket_cursor(tickets[-1]) if has_more and tickets else None,
+        "has_more": has_more,
+        "page_size": limit,
         "ticket_config": _ticket_list_config(),
         "can_edit": check_permission(admin, "tickets", "edit"),
         "can_assign": check_permission(admin, "tickets", "assign"),

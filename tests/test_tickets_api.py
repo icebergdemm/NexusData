@@ -658,6 +658,91 @@ def test_ticket_list_uses_chronologically_latest_message_without_loading_full_hi
     assert row["participant_count"] == 2
     assert payload["ticket_config"]["types"]["help"]["emoji"] == "❓"
     assert "template" not in payload["ticket_config"]["types"]["help"]
+    assert payload["has_more"] is False
+    assert payload["next_cursor"] is None
+    assert payload["page_size"] == 30
+
+
+def test_ticket_list_cursor_pages_without_duplicates(ticket_media_api):
+    with ticket_media_api.session_factory() as db:
+        for ticket_id in range(100, 135):
+            db.add(Ticket(
+                id=ticket_id,
+                ticket_type="help",
+                title=f"Paginated ticket {ticket_id}",
+                status="open",
+                creator_discord_id=str(ticket_id),
+                created_at=datetime(2026, 1, 1, 12, ticket_id % 60),
+                last_message_at=datetime(2026, 2, 1, 12, ticket_id % 5),
+            ))
+        db.commit()
+
+    cursor = None
+    seen_ids = []
+    while True:
+        params = {"status": "open", "limit": 10}
+        if cursor:
+            params["cursor"] = cursor
+        response = ticket_media_api.client.get("/api/v1/admin/tickets", params=params)
+
+        assert response.status_code == 200
+        payload = response.json()
+        page_ids = [row["id"] for row in payload["tickets"]]
+        assert len(page_ids) <= 10
+        assert not set(page_ids).intersection(seen_ids)
+        seen_ids.extend(page_ids)
+        if not payload["has_more"]:
+            assert payload["next_cursor"] is None
+            break
+        cursor = payload["next_cursor"]
+        assert cursor and not cursor.isdigit()
+
+    assert len(seen_ids) == 36
+    assert len(set(seen_ids)) == 36
+
+
+def test_ticket_list_cursor_rejects_malformed_value(ticket_media_api):
+    response = ticket_media_api.client.get(
+        "/api/v1/admin/tickets",
+        params={"status": "open", "cursor": "not-a-cursor"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Некорректный курсор списка тикетов"
+
+
+def test_ticket_list_search_runs_before_pagination(ticket_media_api):
+    with ticket_media_api.session_factory() as db:
+        db.add_all([
+            Ticket(
+                id=80,
+                ticket_type="help",
+                title="Unique submarine report",
+                status="closed",
+                creator_discord_id="80",
+                creator_display_name="Searchable Moderator",
+                created_at=datetime(2026, 1, 2, 12),
+            ),
+            Ticket(
+                id=81,
+                ticket_type="help",
+                title="Unrelated ticket",
+                status="closed",
+                creator_discord_id="81",
+                created_at=datetime(2026, 1, 3, 12),
+            ),
+        ])
+        db.commit()
+
+    response = ticket_media_api.client.get(
+        "/api/v1/admin/tickets",
+        params={"status": "closed", "search": "submarine", "limit": 10},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["id"] for row in payload["tickets"]] == [80]
+    assert payload["has_more"] is False
 
 
 def test_api_ticket_media_serves_full_private_inline_file(ticket_media_api):

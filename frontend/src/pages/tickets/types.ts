@@ -94,6 +94,9 @@ export interface TicketTypeMeta {
 export interface TicketsListResponse {
   tickets: TicketRow[]
   status_filter: string
+  next_cursor: string | null
+  has_more: boolean
+  page_size: number
   ticket_config: { types: Record<string, TicketTypeMeta> }
   permissions?: Partial<TicketPermissions>
   can_edit: boolean

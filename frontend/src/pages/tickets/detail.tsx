@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams, useSearchParams } from "react-router-dom"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { AlertTriangle, ArrowDown, ArrowLeft, Inbox, PanelRight, RefreshCw, Search, Ticket, UsersRound } from "lucide-react"
 import {
@@ -22,6 +22,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import type { TicketDetailResponse, TicketListStatus, TicketMessagePollResponse, TicketsListResponse } from "./types"
@@ -30,13 +32,12 @@ import { ArchiveLegend, TicketConversation } from "./components/ticket-conversat
 import { TicketContextPanel } from "./components/ticket-context"
 import { TicketInboxList, TicketInboxSkeleton } from "./components/ticket-inbox"
 import { ArchiveStatusBadge, TicketStatusBadge } from "./components/ticket-shared"
-import { filterTickets, identityName, normalizeTicketListStatus, ticketListHref } from "./components/ticket-utils"
+import { identityName, normalizeTicketListStatus, ticketListHref } from "./components/ticket-utils"
 import { TicketActionsMenu } from "./TicketActionsMenu"
 import { TicketMemberDialog } from "./TicketMemberDialog"
 import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
 
 const DETAIL_REFRESH_MS = 4_000
-const INBOX_REFRESH_MS = 10_000
 
 function TicketInboxPane({
   data,
@@ -47,6 +48,13 @@ function TicketInboxPane({
   onRefresh,
   onNavigate,
   returnStatus,
+  search,
+  status,
+  hasMore,
+  loadingMore,
+  onSearchChange,
+  onStatusChange,
+  onLoadMore,
 }: {
   data?: TicketsListResponse
   activeId: number
@@ -56,13 +64,16 @@ function TicketInboxPane({
   onRefresh: () => void
   onNavigate?: () => void
   returnStatus?: TicketListStatus | null
+  search: string
+  status: TicketListStatus
+  hasMore: boolean
+  loadingMore: boolean
+  onSearchChange: (value: string) => void
+  onStatusChange: (value: TicketListStatus) => void
+  onLoadMore: () => void
 }) {
-  const [search, setSearch] = useState("")
-  const [status, setStatus] = useState("open")
-  const tickets = data?.tickets
-  const filteredTickets = useMemo(() => filterTickets(tickets ?? [], search, status), [tickets, search, status])
-  const openCount = tickets?.filter((ticket) => ticket.status !== "closed").length ?? 0
-  const closedCount = (tickets?.length ?? 0) - openCount
+  const tickets = data?.tickets ?? []
+  const sentinelRef = useInfiniteScroll(onLoadMore, hasMore, loadingMore)
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
@@ -78,13 +89,13 @@ function TicketInboxPane({
         </div>
         <div className="relative mt-3">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Номер, автор или тема" className="h-8 pl-8 text-xs" aria-label="Поиск тикетов" />
+          <Input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Номер, автор или тема" className="h-8 pl-8 text-xs" aria-label="Поиск тикетов" />
         </div>
-        <Tabs value={status} onValueChange={setStatus} className="mt-2">
+        <Tabs value={status} onValueChange={(value) => onStatusChange(normalizeTicketListStatus(value))} className="mt-2">
           <TabsList variant="line" className="grid h-8 w-full grid-cols-3">
-            <TabsTrigger value="open" className="text-xs">Открытые <span className="font-mono text-[9px]">{openCount}</span></TabsTrigger>
-            <TabsTrigger value="closed" className="text-xs">Архив <span className="font-mono text-[9px]">{closedCount}</span></TabsTrigger>
-            <TabsTrigger value="all" className="text-xs">Все <span className="font-mono text-[9px]">{tickets?.length ?? 0}</span></TabsTrigger>
+            <TabsTrigger value="open" className="text-xs">Открытые</TabsTrigger>
+            <TabsTrigger value="closed" className="text-xs">Архив</TabsTrigger>
+            <TabsTrigger value="all" className="text-xs">Все</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
@@ -95,7 +106,10 @@ function TicketInboxPane({
             <p className="text-xs text-muted-foreground">{error.message}</p>
             <Button type="button" variant="outline" size="sm" onClick={onRefresh}>Повторить</Button>
           </div>
-        ) : <TicketInboxList tickets={filteredTickets} ticketTypes={data?.ticket_config.types ?? {}} activeId={activeId} compact onNavigate={onNavigate} returnStatus={returnStatus} />}
+        ) : <TicketInboxList tickets={tickets} ticketTypes={data?.ticket_config.types ?? {}} activeId={activeId} compact onNavigate={onNavigate} returnStatus={returnStatus} />}
+        <div ref={sentinelRef} className="flex min-h-10 items-center justify-center px-3 py-2 text-[10px] text-muted-foreground" aria-live="polite">
+          {loadingMore ? <><RefreshCw className="mr-1.5 size-3 animate-spin" />Загрузка…</> : hasMore ? "Прокрутите ниже" : tickets.length ? "Список загружен" : null}
+        </div>
       </div>
       <div className="border-t p-2">
         <Button asChild variant="ghost" size="sm" className="w-full justify-start">
@@ -108,7 +122,7 @@ function TicketInboxPane({
 
 function DetailLoading() {
   return (
-    <div className="-m-4 grid h-[calc(100dvh-3.5rem)] min-h-[38rem] grid-cols-1 overflow-hidden border-t bg-background sm:-m-5 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
+    <div className="-m-3 grid h-[calc(100dvh-3.5rem)] min-h-0 grid-cols-1 overflow-hidden border-t bg-background sm:-m-6 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
       <div className="hidden border-r p-3 lg:flex lg:flex-col lg:gap-3">
         <Skeleton className="h-16 w-full" />
         {Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-20 w-full" />)}
@@ -143,6 +157,11 @@ export function TicketDetailPage() {
   const [restoreOpen, setRestoreOpen] = useState(false)
   const [memberDialogOpen, setMemberDialogOpen] = useState(false)
   const [removeMemberDialogOpen, setRemoveMemberDialogOpen] = useState(false)
+  const [inboxSearch, setInboxSearch] = useState("")
+  const [inboxStatus, setInboxStatus] = useState<TicketListStatus>(() => (
+    returnStatus === "closed" || returnStatus === "all" ? returnStatus : "open"
+  ))
+  const debouncedInboxSearch = useDebouncedValue(inboxSearch.trim(), 300)
   const [pollReady, setPollReady] = useState(false)
   const detailQueryKey = useMemo(() => ["ticket-detail", ticketId] as const, [ticketId])
 
@@ -151,11 +170,26 @@ export function TicketDetailPage() {
     queryFn: () => api.get<TicketDetailResponse>(`/api/v1/admin/tickets/${ticketId}`),
     enabled: Number.isFinite(numericTicketId),
   })
-  const inboxQuery = useQuery({
-    queryKey: ["tickets", "all"],
-    queryFn: () => api.get<TicketsListResponse>("/api/v1/admin/tickets?status=all"),
-    refetchInterval: INBOX_REFRESH_MS,
+  const inboxQuery = useInfiniteQuery({
+    queryKey: ["tickets", inboxStatus, debouncedInboxSearch],
+    queryFn: ({ pageParam = null as string | null }) => {
+      const params = new URLSearchParams({ status: inboxStatus, limit: "30" })
+      if (pageParam) params.set("cursor", pageParam as string)
+      if (debouncedInboxSearch) params.set("search", debouncedInboxSearch)
+      return api.get<TicketsListResponse>(`/api/v1/admin/tickets?${params}`)
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    staleTime: inboxStatus === "open" ? 5_000 : 5 * 60_000,
   })
+  const inboxData = useMemo(() => {
+    const firstPage = inboxQuery.data?.pages[0]
+    if (!firstPage) return undefined
+    return {
+      ...firstPage,
+      tickets: inboxQuery.data?.pages.flatMap((page) => page.tickets) ?? [],
+    }
+  }, [inboxQuery.data?.pages])
 
   const messageCount = detailQuery.data?.messages.length ?? 0
   useEffect(() => {
@@ -379,14 +413,21 @@ export function TicketDetailPage() {
 
   const inboxPane = (
     <TicketInboxPane
-      data={inboxQuery.data}
+      data={inboxData}
       activeId={ticket.id}
       loading={inboxQuery.isLoading}
       error={inboxQuery.error instanceof Error ? inboxQuery.error : null}
       refreshing={inboxQuery.isFetching}
       onRefresh={() => { void inboxQuery.refetch() }}
       onNavigate={() => setInboxOpen(false)}
-      returnStatus={returnStatus}
+      returnStatus={inboxStatus}
+      search={inboxSearch}
+      status={inboxStatus}
+      hasMore={Boolean(inboxQuery.hasNextPage)}
+      loadingMore={inboxQuery.isFetchingNextPage}
+      onSearchChange={setInboxSearch}
+      onStatusChange={setInboxStatus}
+      onLoadMore={() => { if (inboxQuery.hasNextPage) void inboxQuery.fetchNextPage() }}
     />
   )
 
@@ -395,7 +436,7 @@ export function TicketDetailPage() {
   )
 
   return (
-    <div className="-m-4 grid h-[calc(100dvh-3.5rem)] min-h-[38rem] grid-cols-1 overflow-hidden border-t bg-background sm:-m-5 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
+    <div className="-m-3 grid h-[calc(100dvh-3.5rem)] min-h-0 grid-cols-1 overflow-hidden border-t bg-background sm:-m-6 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
       <section className="hidden min-h-0 border-r lg:block">{inboxPane}</section>
 
       <main className="flex min-h-0 min-w-0 flex-col bg-background">
