@@ -80,6 +80,12 @@ def test_pending_voice_can_be_updated_without_new_row():
     assert rows[0].transcript_text == "recognized text"
 
 
+def test_no_speech_is_a_valid_terminal_voice_status():
+    batch = _batch(uid="voice-no-speech", status="no_speech", text=None, source="voice")
+
+    assert batch.events[0].asr_status == "no_speech"
+
+
 def test_lobby_message_does_not_attach_to_any_round():
     db = _db()
     db.add(RoundEvent(

@@ -473,7 +473,7 @@ class CommunicationIn(BaseModel):
     position_y: Optional[float] = None
     original_text: Optional[str] = Field(None, max_length=4000)
     transcript_text: Optional[str] = Field(None, max_length=4000)
-    asr_status: Literal["not_applicable", "pending", "recognized", "failed"] = "not_applicable"
+    asr_status: Literal["not_applicable", "pending", "recognized", "no_speech", "failed"] = "not_applicable"
     asr_confidence: Optional[float] = Field(None, ge=0, le=1)
     asr_duration_ms: Optional[int] = Field(None, ge=0)
     asr_error: Optional[str] = Field(None, max_length=1000)

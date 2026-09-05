@@ -13,6 +13,16 @@ export const communicationContextLabels: Record<string, string> = {
   unmatched: "раунд не сопоставлен",
 }
 
+export const communicationAsrStatusLabels: Record<string, string> = {
+  pending: "в очереди",
+  recognized: "распознано",
+  no_speech: "речь не обнаружена",
+  failed: "ошибка",
+  not_applicable: "не применимо",
+}
+
+export const communicationsRefreshIntervalMs = 5000
+
 export function communicationContextSummary(context: string): string {
   return communicationContextLabels[context] ?? "контекст неизвестен"
 }

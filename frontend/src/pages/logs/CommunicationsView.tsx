@@ -18,6 +18,8 @@ import {
   communicationChannelLabels,
   communicationContextLabels,
   communicationContextSummary,
+  communicationAsrStatusLabels,
+  communicationsRefreshIntervalMs,
   recipientTextVariant,
 } from "./communications-utils"
 
@@ -173,8 +175,7 @@ function RoundContext({ event }: { event: Communication }) {
 
 function AsrStatus({ event }: { event: Communication }) {
   if (event.source !== "voice") return null
-  const labels: Record<string, string> = { pending: "в очереди", recognized: "распознано", failed: "ошибка", not_applicable: "не применимо" }
-  return <Badge variant={event.asr_status === "failed" ? "destructive" : "secondary"}>{labels[event.asr_status] ?? event.asr_status}</Badge>
+  return <Badge variant={event.asr_status === "failed" ? "destructive" : "secondary"}>{communicationAsrStatusLabels[event.asr_status] ?? event.asr_status}</Badge>
 }
 
 function CommunicationDrawer({ event, communicationId, loading, onClose }: { event: Communication | undefined; communicationId: number | null; loading: boolean; onClose: () => void }) {
@@ -262,12 +263,16 @@ export function CommunicationsView() {
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ["player-communications", applied, page],
     queryFn: () => api.get<CommunicationsResponse>(`/api/v1/admin/communications?${buildCommunicationQuery(applied, page)}`),
+    refetchInterval: communicationsRefreshIntervalMs,
+    refetchIntervalInBackground: false,
   })
 
   const detail = useQuery({
     queryKey: ["player-communication", selectedId],
     queryFn: () => api.get<Communication>(`/api/v1/admin/communications/${selectedId}`),
     enabled: selectedId != null,
+    refetchInterval: selectedId != null ? communicationsRefreshIntervalMs : false,
+    refetchIntervalInBackground: false,
   })
 
   const syncUrl = (next: CommunicationFilters, nextPage: number, communicationId: number | null = selectedId) => {
@@ -308,7 +313,7 @@ export function CommunicationsView() {
               <div className="space-y-1.5 xl:col-span-2"><Label>Источник</Label><Select value={source} onValueChange={setSource}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все</SelectItem><SelectItem value="chat">Чат</SelectItem><SelectItem value="voice">Голос</SelectItem></SelectContent></Select></div>
               <div className="space-y-1.5 xl:col-span-2"><Label>Тип общения</Label><Select value={channel} onValueChange={setChannel}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все типы</SelectItem>{Object.entries(communicationChannelLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
               <div className="space-y-1.5 xl:col-span-2"><Label>Сервер</Label><Select value={server} onValueChange={setServer}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все серверы</SelectItem><SelectItem value="ASPER1">ASPER1</SelectItem><SelectItem value="ASPER2">ASPER2</SelectItem></SelectContent></Select></div>
-              <div className="space-y-1.5 xl:col-span-2"><Label>ASR</Label><Select value={asrStatus} onValueChange={setAsrStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Любой статус</SelectItem><SelectItem value="pending">В очереди</SelectItem><SelectItem value="recognized">Распознано</SelectItem><SelectItem value="failed">Ошибка</SelectItem><SelectItem value="not_applicable">Не применимо</SelectItem></SelectContent></Select></div>
+              <div className="space-y-1.5 xl:col-span-2"><Label>ASR</Label><Select value={asrStatus} onValueChange={setAsrStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Любой статус</SelectItem>{Object.entries(communicationAsrStatusLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>
             </div>
             <div className="flex flex-wrap items-end gap-3 border-t pt-3"><div className="space-y-1.5"><Label>Контекст</Label><Select value={context} onValueChange={setContext}><SelectTrigger className="w-52"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все контексты</SelectItem>{Object.entries(communicationContextLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>{appliedCount > 0 && <Badge variant="outline">Фильтров: {appliedCount}</Badge>}<div className="ml-auto flex gap-2"><Button type="button" variant="ghost" size="sm" onClick={reset}><RotateCcw className="size-4" />Сбросить</Button><Button type="submit" disabled={isFetching}><Search className="size-4" />Применить</Button></div></div>
           </CardContent>

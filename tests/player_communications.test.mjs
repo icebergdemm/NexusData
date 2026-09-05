@@ -6,6 +6,8 @@ import {
   communicationChannelLabels,
   communicationContextLabels,
   communicationContextSummary,
+  communicationAsrStatusLabels,
+  communicationsRefreshIntervalMs,
   recipientTextVariant,
 } from "../frontend/src/pages/logs/communications-utils.ts"
 
@@ -44,6 +46,11 @@ test("communication context summary does not expose internal server session ids"
   assert.equal(communicationContextSummary("lobby"), "лобби")
   assert.equal(communicationContextSummary("round"), "раунд")
   assert.equal(communicationContextSummary("unmatched"), "раунд не сопоставлен")
+})
+
+test("communication ASR labels include silent microphone frames", () => {
+  assert.equal(communicationAsrStatusLabels.no_speech, "речь не обнаружена")
+  assert.equal(communicationsRefreshIntervalMs, 5000)
 })
 
 test("recipient text is shown only when server delivery changed the message", () => {
