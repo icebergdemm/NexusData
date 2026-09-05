@@ -21,10 +21,13 @@ from services_ai_dossier import (
     list_dossier_runs,
     process_one_dossier,
     run_ai_health_check,
+    run_active_dossier_batch,
     search_dossier_players,
     select_active_player_ids,
     validate_dossier_ca_pem,
     require_dossier_generation,
+    normalize_ip_entries,
+    save_manual_ip_entries,
 )
 
 router = APIRouter()
@@ -120,6 +123,20 @@ async def test_run_ai_dossiers(
     return {"selected": len(ids), "queued": queued, "player_ids": ids}
 
 
+@router.post("/api/v1/admin/ai-dossiers/run-active-now", status_code=202)
+async def run_active_ai_dossiers_now(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Queue all eligible profiles in the configured activity window now."""
+    require_dossier_generation(current_admin)
+    result = await run_in_threadpool(run_active_dossier_batch, current_admin.id)
+    log_admin_action(db, current_admin.id, "queue_ai_player_dossier_active_window", result)
+    if result.get("queued"):
+        _wake_worker()
+    return result
+
+
 @router.get("/api/v1/admin/ai-dossiers/config")
 async def get_ai_dossier_config(
     db: Session = Depends(get_db),
@@ -179,7 +196,7 @@ async def set_ai_dossier_config(
     if not current_admin.is_superuser:
         raise HTTPException(status_code=403, detail="Только для суперпользователей")
     body = await request.json()
-    allowed = {"enabled", "daily_enabled", "test_mode", "daily_limit", "schedule_hour", "active_days", "max_log_events", "prompt"}
+    allowed = {"enabled", "daily_enabled", "test_mode", "daily_limit", "schedule_hour", "active_days", "max_log_events", "prompt", "ignored_ips"}
     unknown = set(body) - allowed
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown settings: {', '.join(sorted(unknown))}")
@@ -187,6 +204,13 @@ async def set_ai_dossier_config(
         if key == "prompt":
             if not isinstance(value, str) or len(value) > 20000:
                 raise HTTPException(status_code=422, detail="prompt must be text no longer than 20000 characters")
+        elif key == "ignored_ips":
+            try:
+                value = normalize_ip_entries(value)
+                save_manual_ip_entries(db, value)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            continue
         elif key in {"daily_limit", "schedule_hour", "active_days", "max_log_events"}:
             try:
                 bounds = {

@@ -1896,6 +1896,8 @@ class TwinkDetectionService:
           3. Similar name (prefix match >= 6 chars)
         """
         from models import PlayerIP, PlayerName
+        from services_ip_filter import build_analysis_ip_policy
+        policy = build_analysis_ip_policy(self.db)
         target = self.db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
         if not target:
             return []
@@ -1903,8 +1905,8 @@ class TwinkDetectionService:
         # Get target IPs and subnets
         target_ips_rows = (self.db.query(PlayerIP)
                            .filter(PlayerIP.player_id == player_id).all())
-        target_ips = {r.ip for r in target_ips_rows if not is_bogon_ip(r.ip)}
-        target_subnets = {r.subnet for r in target_ips_rows if not is_bogon_ip(r.ip)}
+        target_ips = {r.ip for r in target_ips_rows if not is_bogon_ip(r.ip) and not policy.is_ignored(r.ip)}
+        target_subnets = {r.subnet for r in target_ips_rows if not is_bogon_ip(r.ip) and not policy.is_ignored(r.ip)}
 
         # Get target names
         target_name_rows = (self.db.query(PlayerName)
@@ -1928,7 +1930,7 @@ class TwinkDetectionService:
                               .filter(PlayerIP.ip.in_(target_ips),
                                       PlayerIP.player_id != player_id).all())
             for r in shared_ip_rows:
-                if is_bogon_ip(r.ip):
+                if is_bogon_ip(r.ip) or policy.is_ignored(r.ip):
                     continue
                 _add(r.player_id, f"Одинаковый IP: {r.ip}")
 
@@ -1938,7 +1940,7 @@ class TwinkDetectionService:
                                   .filter(PlayerIP.subnet.in_(target_subnets),
                                           PlayerIP.player_id != player_id).all())
             for r in shared_subnet_rows:
-                if is_bogon_ip(r.ip):
+                if is_bogon_ip(r.ip) or policy.is_ignored(r.ip):
                     continue
                 already_ip = any("Одинаковый IP" in reason
                                   for reason in suspects.get(r.player_id, {}).get("reasons", []))
@@ -1985,32 +1987,36 @@ class TwinkDetectionService:
         Performance: uses a single JOIN on player_ips, then groups in Python.
         """
         from models import PlayerIP
-        from sqlalchemy import text
+        from sqlalchemy import bindparam, text
+        from services_ip_filter import build_analysis_ip_policy
+        policy = build_analysis_ip_policy(self.db)
 
         # Self-join: find all (A, B) sharing the same IP
         ip_pairs = self.db.execute(text(
             "SELECT a.player_id AS pid_a, b.player_id AS pid_b, a.ip AS shared_ip "
             "FROM player_ips a JOIN player_ips b "
-            "ON a.ip = b.ip AND a.player_id < b.player_id"
-        )).fetchall()
+            "ON a.ip = b.ip AND a.player_id < b.player_id "
+            "WHERE a.ip NOT IN :ignored_ips"
+        ).bindparams(bindparam("ignored_ips", expanding=True)), {"ignored_ips": policy.exact_ignored_ips}).fetchall()
 
         # Self-join by subnet (weaker signal)
         subnet_pairs = self.db.execute(text(
             "SELECT a.player_id AS pid_a, b.player_id AS pid_b, a.subnet AS shared_subnet, "
             "a.ip AS ip_a, b.ip AS ip_b "
             "FROM player_ips a JOIN player_ips b "
-            "ON a.subnet = b.subnet AND a.player_id < b.player_id"
-        )).fetchall()
+            "ON a.subnet = b.subnet AND a.player_id < b.player_id "
+            "WHERE a.ip NOT IN :ignored_ips AND b.ip NOT IN :ignored_ips"
+        ).bindparams(bindparam("ignored_ips", expanding=True)), {"ignored_ips": policy.exact_ignored_ips}).fetchall()
 
         # Build edge map: pair -> set of reasons
         edges: Dict[tuple, list] = {}
         for row in ip_pairs:
-            if is_bogon_ip(row.shared_ip):
+            if is_bogon_ip(row.shared_ip) or policy.is_ignored(row.shared_ip):
                 continue
             key = (row.pid_a, row.pid_b)
             edges.setdefault(key, []).append(f"Одинаковый IP: {row.shared_ip}")
         for row in subnet_pairs:
-            if is_bogon_ip(row.ip_a) or is_bogon_ip(row.ip_b):
+            if is_bogon_ip(row.ip_a) or is_bogon_ip(row.ip_b) or policy.is_ignored(row.ip_a) or policy.is_ignored(row.ip_b):
                 continue
             key = (row.pid_a, row.pid_b)
             # Skip if IP reason already added for this pair (subnet is weaker)

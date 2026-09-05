@@ -5,8 +5,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
-from models import PlayerData, PlayerIP
-from services import EventDispatcherService, PlayerIPService
+from models import AppSetting, PlayerData, PlayerIP
+from services import EventDispatcherService, PlayerIPService, TwinkDetectionService
 from utils import is_bogon_ip
 
 
@@ -57,6 +57,31 @@ class BogonIPTests(unittest.TestCase):
 
             self.assertEqual(response["ignored"], "bogon_ip")
             self.assertEqual(db.query(PlayerIP).count(), 0)
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_mass_player_ip_is_excluded_from_twink_detection(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__, PlayerData.__table__, PlayerIP.__table__])
+        db = sessionmaker(bind=engine)()
+        try:
+            now = datetime.utcnow()
+            players = [PlayerData(player_id=index, player_steamid=str(index), player_last_time_name=f"p{index}") for index in range(1, 6)]
+            db.add_all(players)
+            db.flush()
+            db.add_all([
+                PlayerIP(player_id=player.player_id, ip="8.8.8.8", subnet="8.8.8.0/24", first_seen=now, last_seen=now)
+                for player in players[:4]
+            ])
+            db.commit()
+
+            self.assertTrue(TwinkDetectionService(db).get_all_twink_pairs())
+
+            db.add(PlayerIP(player_id=players[4].player_id, ip="8.8.8.8", subnet="8.8.8.0/24", first_seen=now, last_seen=now))
+            db.commit()
+
+            self.assertEqual(TwinkDetectionService(db).get_all_twink_pairs(), [])
         finally:
             db.close()
             engine.dispose()

@@ -1,6 +1,8 @@
 import { ExternalLink } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { formatBrowserDate } from "@/lib/format-date"
 import type { AIDossierContext, AIDossierEvidence, AIDossierResult } from "@/pages/players/detail-types"
 
 const triageLabel = { none: "Нет активных сигналов", review: "Нужна проверка", urgent: "Срочная проверка" } as const
@@ -17,7 +19,7 @@ const severityClass = {
 } as const
 const sourceLabel: Record<string, string> = {
   anomaly: "Аномалия Sauron", anticheat: "Античит", log: "Лог", punishment: "Наказание",
-  note: "Заметка", label: "Метка", player: "Профиль игрока", ticket: "Тикет",
+  note: "Заметка", label: "Метка", player: "Профиль игрока", ticket: "Тикет", log_security: "Security-лог",
 }
 const coverageLabel: Record<string, string> = {
   sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", logs: "Логи", security_logs: "Security-логи", tickets: "Тикеты",
@@ -26,20 +28,28 @@ const coverageStatusLabel: Record<string, string> = {
   matched: "есть совпадения", checked_empty: "проверено, пусто", unavailable: "недоступно", stale: "кэш устарел",
 }
 
-function EvidenceLinks({ items }: { items: AIDossierEvidence[] }) {
+function DossierHoverContent({ kind, id, text }: { kind: string; id?: string | number; text?: string }) {
+  return <div className="max-w-sm space-y-1 text-left"><div className="font-medium">{sourceLabel[kind] || kind}{id != null ? ` #${id}` : ""}</div>{text ? <div className="whitespace-pre-wrap text-xs leading-snug text-muted-foreground">{text}</div> : null}<div className="text-[11px] text-muted-foreground">Клик — открыть источник.</div></div>
+}
+
+function DossierHoverLink({ href, kind, id, text, className, children }: { href: string; kind: string; id?: string | number; text?: string; className?: string; children: React.ReactNode }) {
+  return <Tooltip delayDuration={300}><TooltipTrigger asChild><Link className={className ?? "text-primary underline"} to={href}>{children}</Link></TooltipTrigger><TooltipContent side="top" sideOffset={8} className="border bg-popover p-3 text-popover-foreground shadow-md"><DossierHoverContent kind={kind} id={id} text={text} /></TooltipContent></Tooltip>
+}
+
+function EvidenceLinks({ items, findingText }: { items: AIDossierEvidence[]; findingText?: string }) {
   if (!items.length) return null
   return <div className="flex flex-wrap gap-2">
     {items.map((item, index) => item.href ? (
-      <Link key={`${item.kind}-${item.id}-${index}`} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-primary underline" to={item.href}>
+      <DossierHoverLink key={`${item.kind}-${item.id}-${index}`} href={item.href} kind={item.kind} id={item.id} text={findingText} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs text-primary underline">
         <ExternalLink className="size-3" /> {sourceLabel[item.kind] || item.kind} #{item.id}
-      </Link>
+      </DossierHoverLink>
     ) : <span key={`${item.kind}-${item.id}-${index}`} className="rounded border px-2 py-1 text-xs text-muted-foreground">{sourceLabel[item.kind] || item.kind} #{item.id}</span>)}
   </div>
 }
 
 function ContextRow({ item }: { item: AIDossierContext }) {
   const content = <>{sourceLabel[item.kind] || item.kind}: {item.text}{item.source_id != null ? ` (#${item.source_id})` : ""}</>
-  return item.href ? <Link className="block text-primary underline" to={item.href}>{content}</Link> : <div>{content}</div>
+  return item.href ? <DossierHoverLink href={item.href} kind={item.kind} id={item.source_id} text={item.text}>{content}</DossierHoverLink> : <div>{content}</div>
 }
 
 export function DossierResultView({ result }: { result: AIDossierResult }) {
@@ -59,7 +69,7 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">{Object.entries(result.coverage).map(([key, item]) => <div key={key} className="rounded border p-2 text-xs">
         <div className="font-medium">{coverageLabel[key] || key}</div>
         <div className="mt-1 text-muted-foreground">{item.status ? coverageStatusLabel[item.status] : item.checked ? `проверено · совпадений: ${item.matches}` : "не проверялось"}{item.checked && ` · ${item.matches}`}{key === "tickets" && item.messages != null ? ` · сообщений: ${item.messages}` : ""}</div>
-        {key === "logs" && item.cache_servers != null && <div className="mt-1 text-muted-foreground">кэш: {item.cache_servers} сервер(а){item.cache_last_refresh ? ` · ${item.cache_last_refresh}` : ""}</div>}
+        {key === "logs" && item.cache_servers != null && <div className="mt-1 text-muted-foreground">кэш: {item.cache_servers} сервер(а){item.cache_last_refresh ? ` · ${formatBrowserDate(item.cache_last_refresh)}` : ""}</div>}
       </div>)}</div>
     </section>}
 
@@ -74,7 +84,7 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
         <p className="mt-2 text-xs text-muted-foreground">Почему: {finding.reason}</p>
         <p className="mt-1 text-xs text-muted-foreground">Следующий шаг: {finding.next_step}</p>
         {finding.basis && finding.basis.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Основание: {finding.basis.join(" · ")}</p>}
-        <div className="mt-2"><EvidenceLinks items={finding.evidence} /></div>
+        <div className="mt-2"><EvidenceLinks items={finding.evidence} findingText={finding.details} /></div>
       </article>)}</div> : <p className="text-sm text-muted-foreground">Активных сигналов для проверки не найдено. Игровые stats и сессии намеренно не показаны.</p>}
     </section>
 

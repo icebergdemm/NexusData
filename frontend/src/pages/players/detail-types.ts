@@ -193,11 +193,15 @@ export interface AIDossierCoverage {
   messages?: number
   cache_servers?: number
   cache_last_refresh?: string | null
+  excluded_manual?: number
+  excluded_auto?: number
+  policy_fingerprint?: string
 }
 
 export interface AIDossierResult {
   summary: string
   schema_version: 2
+  rules_version?: number
   triage: { level: AIDossierTriage; title: string; reason: string }
   summary_source?: "rules" | "qwen"
   findings: AIDossierFinding[]

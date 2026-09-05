@@ -11,10 +11,11 @@ from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from models import PlayerData
 from utils import is_bogon_ip
+from services_ip_filter import build_analysis_ip_policy
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,9 @@ def detect_all_twink_pairs(db: Session, days: int = 90) -> List[dict]:
     Find player pairs sharing IPs or subnets using SQL self-joins only.
     Returns at most _MAX_TWINK_PAIRS results.
     """
+    policy = build_analysis_ip_policy(db)
+    ignored_ips = policy.exact_ignored_ips
+
     # Signal 1: shared exact IP (weight 3)
     ip_pairs = db.execute(text(f"""
         SELECT a.player_id AS pid_a, b.player_id AS pid_b,
@@ -81,8 +85,9 @@ def detect_all_twink_pairs(db: Session, days: int = 90) -> List[dict]:
         FROM player_ips a
         JOIN player_ips b ON a.ip = b.ip AND a.player_id < b.player_id
         WHERE {_NON_GLOBAL_IPV4_SQL.format(alias='a')}
+          AND a.ip NOT IN :ignored_ips
         LIMIT 2000
-    """)).fetchall()
+    """).bindparams(bindparam("ignored_ips", expanding=True)), {"ignored_ips": ignored_ips}).fetchall()
 
     # Signal 2: shared subnet but different IPs (weight 2)
     subnet_pairs = db.execute(text(f"""
@@ -95,8 +100,10 @@ def detect_all_twink_pairs(db: Session, days: int = 90) -> List[dict]:
                           AND a.ip != b.ip
         WHERE {_NON_GLOBAL_IPV4_SQL.format(alias='a')}
           AND {_NON_GLOBAL_IPV4_SQL.format(alias='b')}
+          AND a.ip NOT IN :ignored_ips
+          AND b.ip NOT IN :ignored_ips
         LIMIT 2000
-    """)).fetchall()
+    """).bindparams(bindparam("ignored_ips", expanding=True)), {"ignored_ips": ignored_ips}).fetchall()
 
     # Merge into edges dict
     edges: Dict[Tuple[int, int], dict] = {}
@@ -111,10 +118,10 @@ def detect_all_twink_pairs(db: Session, days: int = 90) -> List[dict]:
             edges[key]["signals"].append({"type": sig_type, "label": reason, "weight": weight})
 
     for r in ip_pairs:
-        if not is_bogon_ip(r.shared_ip):
+        if not is_bogon_ip(r.shared_ip) and not policy.is_ignored(r.shared_ip):
             _add(r.pid_a, r.pid_b, r.weight, r.reason, "shared_ip")
     for r in subnet_pairs:
-        if not is_bogon_ip(r.ip_a) and not is_bogon_ip(r.ip_b):
+        if not is_bogon_ip(r.ip_a) and not is_bogon_ip(r.ip_b) and not policy.is_ignored(r.ip_a) and not policy.is_ignored(r.ip_b):
             _add(r.pid_a, r.pid_b, r.weight, r.reason, "shared_subnet")
 
     # Signal 3: similar name prefix via SQL (weight 1)
@@ -293,16 +300,18 @@ def get_sauron_summary(db: Session) -> dict:
     Quick counts using cheap SQL — does NOT run full analysis.
     """
     # Count distinct IP-sharing pairs (cheap)
+    policy = build_analysis_ip_policy(db)
     twink_count = db.execute(text(f"""
         SELECT COUNT(*) FROM (
             SELECT a.player_id
             FROM player_ips a
             JOIN player_ips b ON a.ip = b.ip AND a.player_id < b.player_id
             WHERE {_NON_GLOBAL_IPV4_SQL.format(alias="a")}
+              AND a.ip NOT IN :ignored_ips
             GROUP BY a.player_id
             LIMIT 500
         ) t
-    """)).scalar() or 0
+    """).bindparams(bindparam("ignored_ips", expanding=True)), {"ignored_ips": policy.exact_ignored_ips}).scalar() or 0
 
     # Count players with teamkills
     deviant_count = db.execute(text("""

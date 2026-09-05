@@ -25,6 +25,7 @@ from models import (
     PlayerRoleAction, PlayerRoleStat, PlayerSession, PlayerStats, PlayerTrap,
 )
 from utils import is_bogon_ip
+from services_ip_filter import AnalysisIPPolicy, build_analysis_ip_policy, get_manual_ip_entries, normalize_ip_entries, save_manual_ip_entries
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +33,12 @@ DOSSIER_STATUSES = {"queued", "running", "succeeded", "failed"}
 CONFIDENCE_VALUES = {"low", "medium", "high"}
 TRIAGE_LEVELS = {"none", "review", "urgent"}
 DOSSIER_SCHEMA_VERSION = 2
-DOSSIER_RULES_VERSION = 3
+DOSSIER_RULES_VERSION = 4
 MAX_OUTPUT_TOKENS = 260
 MAX_RAW_RESPONSE_CHARS = 12000
 DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
-ALLOWED_RUN_SOURCES = {"manual", "daily", "test", "health"}
+ALLOWED_RUN_SOURCES = {"manual", "manual_batch", "daily", "test", "health"}
 AI_REQUEST_LOCK = Lock()
 OUTPUT_CONTRACT = """
 NON-NEGOTIABLE OUTPUT CONTRACT:
@@ -645,6 +646,13 @@ def build_moderation_packet(input_payload: dict) -> dict:
         "security_logs": coverage_entry("logs" in input_payload and not logs_unavailable, len(security_logs), logs_unavailable),
         "tickets": dict(coverage_entry("tickets" in input_payload, len(input_payload.get("tickets", []))), messages=ticket_messages),
     }
+    ip_filter = input_payload.get("ip_filter") if isinstance(input_payload.get("ip_filter"), dict) else {}
+    if ip_filter:
+        coverage["ip"].update({
+            "excluded_manual": _safe_int(ip_filter.get("manual_count")),
+            "excluded_auto": _safe_int(ip_filter.get("auto_count")),
+            "policy_fingerprint": str(ip_filter.get("fingerprint") or "")[:32],
+        })
     log_cache = input_payload.get("log_cache")
     if isinstance(log_cache, dict):
         cache_refreshes = [row.get("last_refresh") for row in log_cache.values() if isinstance(row, dict) and row.get("last_refresh")]
@@ -659,7 +667,7 @@ def build_moderation_packet(input_payload: dict) -> dict:
                     coverage["logs"]["status"] = "stale"
             except (TypeError, ValueError):
                 coverage["logs"]["status"] = "stale"
-    return {
+    result = {
         "player": {"player_id": profile.get("player_id"), "name": _bounded_text(profile.get("name"), 200)},
         "rules_version": DOSSIER_RULES_VERSION,
         "findings": unique_findings[:8],
@@ -667,6 +675,7 @@ def build_moderation_packet(input_payload: dict) -> dict:
         "coverage": coverage,
         "missing": missing,
     }
+    return result
 
 
 def _sauron_signal_is_bogon(signal: Any) -> bool:
@@ -686,6 +695,19 @@ def _anomaly_has_bogon_ip_evidence(row: PlayerAnomaly) -> bool:
     signals = evidence.get("signals") or []
     ip_signals = [signal for signal in signals if isinstance(signal, dict) and signal.get("type") in {"shared_ip", "shared_subnet"}]
     return any(_sauron_signal_is_bogon(signal) for signal in ip_signals)
+
+
+def _anomaly_has_ignored_ip_evidence(row: PlayerAnomaly, policy: AnalysisIPPolicy) -> bool:
+    evidence = row.evidence if isinstance(row.evidence, dict) else {}
+    if evidence.get("ip") and policy.is_ignored(evidence.get("ip")):
+        return True
+    signals = evidence.get("signals") or []
+    return any(
+        isinstance(signal, dict)
+        and signal.get("type") in {"shared_ip", "shared_subnet"}
+        and policy.is_ignored(signal.get("label", "").split(":", 1)[-1].strip())
+        for signal in signals
+    )
 
 
 def build_rules_result(packet: dict) -> dict:
@@ -709,6 +731,13 @@ def build_rules_result(packet: dict) -> dict:
         summary = f"{title}."
     missing = packet.get("missing") or []
     caveats = []
+    ip_coverage = (packet.get("coverage") or {}).get("ip") or {}
+    excluded_manual = _safe_int(ip_coverage.get("excluded_manual"))
+    excluded_auto = _safe_int(ip_coverage.get("excluded_auto"))
+    if excluded_manual or excluded_auto:
+        caveats.append(
+            f"Из IP-анализа исключено адресов: вручную {excluded_manual}, автоматически {excluded_auto}; профиль и поиск не изменены."
+        )
     if "server_logs" in missing:
         caveats.append("Серверные логи недоступны или не были сопоставлены.")
     if "ticket_messages" in missing:
@@ -932,6 +961,12 @@ def build_qwen_packet(packet: dict) -> dict:
         if not isinstance(item, dict) or item.get("kind") not in allowed_context:
             continue
         context_text = str(item.get("text") or "")[:360]
+        if item.get("kind") == "ticket":
+            # Ticket bodies are available to the moderator in the dossier, but
+            # are deliberately not sent to the small model. A complaint is
+            # context, not a second evidence engine with a Russian accent.
+            context_text = context_text.split(" — сообщения", 1)[0]
+            context_text = f"{context_text} — полное содержимое доступно модератору."
         context_text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[IP скрыт]", context_text)
         if context_text:
             model_context.append({"kind": item["kind"], "text": context_text})
@@ -972,14 +1007,17 @@ def should_queue_dossier(report: Optional[AIPlayerDossier], input_hash: str, for
     return not generated_at or generated_at < now - timedelta(days=stale_days)
 
 
-def select_active_player_ids(db: Session, now: datetime, limit: int) -> list[int]:
+def select_active_player_ids(db: Session, now: datetime, limit: Optional[int] = None) -> list[int]:
     cutoff = now - timedelta(days=get_dossier_config(db)["active_days"])
-    rows = db.query(PlayerData.player_id).outerjoin(
+    query = db.query(PlayerData.player_id).outerjoin(
         PlayerSession, PlayerSession.player_id == PlayerData.player_id,
     ).filter(or_(
         PlayerData.last_login_time >= cutoff,
         PlayerSession.login_time >= cutoff,
-    )).distinct().order_by(PlayerData.last_login_time.desc(), PlayerData.player_id.asc()).limit(limit).all()
+    )).distinct().order_by(PlayerData.last_login_time.desc(), PlayerData.player_id.asc())
+    if limit is not None:
+        query = query.limit(limit)
+    rows = query.all()
     return [row[0] for row in rows]
 
 
@@ -998,6 +1036,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     active_days = runtime_config["active_days"]
     max_log_events = runtime_config["max_log_events"]
     since = now - timedelta(days=active_days)
+    ip_policy = build_analysis_ip_policy(db, now)
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
     if not player:
         raise ValueError("Player not found")
@@ -1040,11 +1079,14 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     role_actions = db.query(PlayerRoleAction).filter(PlayerRoleAction.player_id == player_id).limit(100).all()
     role_stats = db.query(PlayerRoleStat).filter(PlayerRoleStat.player_id == player_id).limit(100).all()
     anticheat = db.query(AnticheatEvent).filter(AnticheatEvent.player_id == player_id, AnticheatEvent.occurred_at >= since).order_by(AnticheatEvent.occurred_at.desc()).limit(100).all()
-    ips = [row for row in db.query(PlayerIP).filter(PlayerIP.player_id == player_id).all() if not is_bogon_ip(row.ip)]
+    ips = [
+        row for row in db.query(PlayerIP).filter(PlayerIP.player_id == player_id).all()
+        if not is_bogon_ip(row.ip) and not ip_policy.is_ignored(row.ip)
+    ]
     anomaly_rows = db.query(PlayerAnomaly).filter(
         or_(PlayerAnomaly.player_id == player_id, PlayerAnomaly.related_player_id == player_id)
     ).order_by(PlayerAnomaly.score.desc(), PlayerAnomaly.last_seen_at.desc()).limit(50).all()
-    anomalies = [row for row in anomaly_rows if not _anomaly_has_bogon_ip_evidence(row)]
+    anomalies = [row for row in anomaly_rows if not _anomaly_has_bogon_ip_evidence(row) and not _anomaly_has_ignored_ip_evidence(row, ip_policy)]
     related_ids = {
         row.related_player_id if row.player_id == player_id else row.player_id
         for row in anomalies
@@ -1129,7 +1171,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
             "kit_level": player.kit_level,
             "discord_id": player.discord_id,
             "discord_id_confirmed": bool(player.discord_id_confirmed),
-            "last_ip": player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) else None,
+            "last_ip": player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) and not ip_policy.is_ignored(player.last_ip) else None,
             "known_ips": [ip.ip for ip in ips],
         },
         "stats": {key: getattr(stats, key) for key in (
@@ -1165,6 +1207,11 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
             ][:5],
         } for row in anomalies],
         "shared_accounts": shared_accounts,
+        "ip_filter": {
+            "manual_count": len(ip_policy.manual_entries),
+            "auto_count": len(ip_policy.auto_ignored_ips),
+            "fingerprint": ip_policy.fingerprint,
+        },
         "logs": [],
         "missing": [],
         "window": {"from": since.isoformat(), "to": now.isoformat(), "days": active_days},
@@ -1254,7 +1301,13 @@ def enqueue_dossier(
     return report, True
 
 
-def enqueue_dossier_if_needed(db: Session, player_id: int, requested_by_admin_id: Optional[int] = None, now: Optional[datetime] = None) -> tuple[Optional[AIPlayerDossier], bool]:
+def enqueue_dossier_if_needed(
+    db: Session,
+    player_id: int,
+    requested_by_admin_id: Optional[int] = None,
+    now: Optional[datetime] = None,
+    source: str = "daily",
+) -> tuple[Optional[AIPlayerDossier], bool]:
     now = now or datetime.utcnow()
     report = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id).first()
     if report and report.status in {"queued", "running"}:
@@ -1263,7 +1316,7 @@ def enqueue_dossier_if_needed(db: Session, player_id: int, requested_by_admin_id
     packet = build_moderation_packet(payload)
     if not should_queue_dossier(report, dossier_input_hash(packet), False, now, 7):
         return report, False
-    return enqueue_dossier(db, player_id, requested_by_admin_id, force=False, now=now, source="daily")
+    return enqueue_dossier(db, player_id, requested_by_admin_id, force=False, now=now, source=source)
 
 
 def _claim_next(db: Session, now: datetime) -> Optional[AIPlayerDossier]:
@@ -1405,18 +1458,33 @@ def process_one_dossier() -> dict:
         db.close()
 
 
-def run_daily_dossier_batch() -> dict:
+def _run_dossier_batch(*, requested_by_admin_id: Optional[int], limit: Optional[int] | str, source: str) -> dict:
     from database import SessionLocal
     db = SessionLocal()
     try:
-        ids = select_active_player_ids(db, datetime.utcnow(), get_dossier_config(db)["daily_limit"])
+        now = datetime.utcnow()
+        effective_limit = get_dossier_config(db)["daily_limit"] if limit == "daily" else limit
+        ids = select_active_player_ids(db, now, effective_limit)
         queued = 0
         for player_id in ids:
-            _, created = enqueue_dossier_if_needed(db, player_id, None)
+            _, created = enqueue_dossier_if_needed(db, player_id, requested_by_admin_id, now, source)
             queued += int(created)
-        return {"selected": len(ids), "queued": queued}
+        return {"selected": len(ids), "queued": queued, "skipped": len(ids) - queued}
     finally:
         db.close()
+
+
+def run_daily_dossier_batch() -> dict:
+    return _run_dossier_batch(
+        requested_by_admin_id=None,
+        limit="daily",
+        source="daily",
+    )
+
+
+def run_active_dossier_batch(requested_by_admin_id: int) -> dict:
+    """Queue every eligible player in the configured activity window."""
+    return _run_dossier_batch(requested_by_admin_id=requested_by_admin_id, limit=None, source="manual_batch")
 
 
 def get_dossier_config(db: Session, include_prompt: bool = False) -> dict:
@@ -1453,6 +1521,9 @@ def get_dossier_config(db: Session, include_prompt: bool = False) -> dict:
         "tls_ca_configured": bool(settings.ai_dossier_tls_ca_file),
         "model": settings.ai_dossier_model,
         "timeout_seconds": settings.ai_dossier_timeout_seconds,
+        "ignored_ips": get_manual_ip_entries(db),
+        "auto_ip_ignore_days": 30,
+        "auto_ip_ignore_min_players": 5,
     }
     if include_prompt:
         config["prompt"] = get_dossier_prompt(db)

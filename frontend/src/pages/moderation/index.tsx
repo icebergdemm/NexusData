@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Terminal, Circle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -54,7 +55,8 @@ function offlineDisplayName(p: OfflinePlayer): string {
 function DossierMarker({ triage }: { triage?: DossierTriageMarker | null }) {
   if (!triage) return null
   const urgent = triage.level === "urgent"
-  return <Badge variant={urgent ? "destructive" : "outline"} className={!urgent ? "border-warning/40 bg-warning/10 text-warning" : undefined} title={`${triage.title}. ${triage.notice} ${triage.summary}`}>ИИ: {urgent ? "срочно" : "проверить"}</Badge>
+  const icon = urgent ? "🔴" : "🟡"
+  return <Tooltip delayDuration={300}><TooltipTrigger asChild><span className="ml-1 inline-flex cursor-help items-center align-middle text-[12px]" aria-label={`${triage.title}: ${triage.summary}`}>{icon}</span></TooltipTrigger><TooltipContent side="top" sideOffset={6} className="max-w-sm border bg-popover p-3 text-popover-foreground shadow-md"><div className="space-y-1 text-left"><div className="font-medium">{triage.title}</div><div className="text-xs leading-snug text-muted-foreground">{triage.summary}</div><div className="text-[11px] text-muted-foreground">{triage.notice}</div></div></TooltipContent></Tooltip>
 }
 
 function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {

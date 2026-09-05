@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from database import Base
 from config import Settings, snapshot_env_file
-from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerSession
+from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerIP, PlayerSession
 from services_ai_dossier import (
     DOSSIER_RULES_VERSION,
     build_kobold_request,
@@ -34,6 +34,8 @@ from services_ai_dossier import (
     dossier_input_hash,
     sanitize_dossier_result,
     get_dossier_triage_map,
+    select_active_player_ids,
+    run_active_dossier_batch,
 )
 import services_ai_dossier
 
@@ -388,7 +390,8 @@ class AIDossierContractTests(unittest.TestCase):
 
         self.assertIn("оскорбления", model_context)
         self.assertIn("токсичность", model_context)
-        self.assertIn("неподтверждённые", model_context)
+        self.assertIn("полное содержимое доступно модератору", model_context)
+        self.assertNotIn("жалоба на спам", model_context)
         self.assertNotIn("8.8.8.8", model_context)
         self.assertNotIn("source_id", model_context)
 
@@ -409,7 +412,8 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertIn("оскорбления", model_context)
         self.assertIn("токсичность", model_context)
         self.assertIn("контекст заметки", model_context)
-        self.assertIn("сообщение жалобы", model_context)
+        self.assertIn("полное содержимое доступно модератору", model_context)
+        self.assertNotIn("сообщение жалобы", model_context)
 
     def test_old_rules_version_is_stale_even_when_schema_is_v2(self):
         self.assertFalse(services_ai_dossier.is_current_dossier_result({
@@ -737,6 +741,107 @@ class AIDossierContractTests(unittest.TestCase):
             ])
             db.commit()
             self.assertEqual(select_active_player_ids(db, datetime(2026, 9, 4), 10), [1, 2])
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_active_player_selection_without_limit_returns_every_recent_player(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[PlayerData.__table__, PlayerSession.__table__])
+        db = Session(engine)
+        try:
+            db.add_all([
+                PlayerData(player_id=1, player_steamid="1", player_last_time_name="one", last_login_time=datetime(2026, 9, 3)),
+                PlayerData(player_id=2, player_steamid="2", player_last_time_name="two", last_login_time=datetime(2026, 9, 3)),
+                PlayerData(player_id=3, player_steamid="3", player_last_time_name="old", last_login_time=datetime(2026, 7, 1)),
+                PlayerData(player_id=4, player_steamid="4", player_last_time_name="four", last_login_time=datetime(2026, 9, 2)),
+            ])
+            db.commit()
+
+            self.assertEqual(select_active_player_ids(db, datetime(2026, 9, 4), None), [1, 2, 4])
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_analysis_ip_policy_combines_manual_and_mass_player_exclusions(self):
+        from services_ip_filter import build_analysis_ip_policy
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__, PlayerData.__table__, PlayerIP.__table__])
+        db = Session(engine)
+        try:
+            now = datetime(2026, 9, 4, 12, 0)
+            players = [PlayerData(player_id=index, player_steamid=str(index), player_last_time_name=f"p{index}") for index in range(1, 6)]
+            db.add_all(players)
+            db.flush()
+            db.add(AppSetting(key="ai_dossier_ignored_ips", value='["9.9.9.0/24"]'))
+            db.add_all([
+                PlayerIP(player_id=player.player_id, ip="8.8.8.8", subnet="8.8.8.0/24", first_seen=now, last_seen=now)
+                for player in players
+            ])
+            db.commit()
+
+            policy = build_analysis_ip_policy(db, now)
+
+            self.assertTrue(policy.is_ignored("9.9.9.7"))
+            self.assertTrue(policy.is_ignored("8.8.8.8"))
+            self.assertFalse(policy.is_ignored("1.1.1.1"))
+            self.assertEqual(policy.auto_ignored_ips, {"8.8.8.8"})
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_payload_excludes_mass_ip_from_dossier_links(self):
+        from models import PlayerIP
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        try:
+            now = datetime(2026, 9, 4, 12, 0)
+            target = PlayerData(player_id=7, player_steamid="7", player_last_time_name="target")
+            others = [PlayerData(player_id=index, player_steamid=str(index), player_last_time_name=f"p{index}") for index in range(8, 12)]
+            db.add_all([target, *others])
+            db.flush()
+            db.add_all([
+                PlayerIP(player_id=player.player_id, ip="8.8.8.8", subnet="8.8.8.0/24", first_seen=now, last_seen=now)
+                for player in [target, *others]
+            ])
+            db.commit()
+
+            with patch("services_logs.search_logs", return_value=SimpleNamespace(events=[])), patch("services_logs.get_log_stats", return_value={}):
+                payload = services_ai_dossier.build_player_dossier_payload(db, 7, now)
+
+            self.assertEqual(payload["shared_accounts"], [])
+            self.assertEqual(payload["profile"]["known_ips"], [])
+            self.assertEqual(payload["ip_filter"]["auto_count"], 1)
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_manual_active_window_batch_uses_all_eligible_players(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[AppSetting.__table__, PlayerData.__table__, PlayerSession.__table__])
+        db = Session(engine)
+        try:
+            now = datetime(2026, 9, 4, 12, 0)
+            db.add_all([
+                PlayerData(player_id=1, player_steamid="1", player_last_time_name="one", last_login_time=datetime(2026, 9, 3)),
+                PlayerData(player_id=2, player_steamid="2", player_last_time_name="two", last_login_time=datetime(2026, 9, 2)),
+                PlayerData(player_id=3, player_steamid="3", player_last_time_name="old", last_login_time=datetime(2026, 7, 1)),
+            ])
+            db.commit()
+
+            calls = []
+            with patch("database.SessionLocal", return_value=db), patch.object(
+                services_ai_dossier, "enqueue_dossier_if_needed",
+                side_effect=lambda _db, player_id, admin_id, requested_at, source: calls.append((player_id, admin_id, requested_at, source)) or (None, True),
+            ):
+                result = run_active_dossier_batch(99)
+
+            self.assertEqual(result, {"selected": 2, "queued": 2, "skipped": 0})
+            self.assertEqual([call[0] for call in calls], [1, 2])
+            self.assertTrue(all(call[1] == 99 and call[3] == "manual_batch" for call in calls))
         finally:
             db.close()
             engine.dispose()
