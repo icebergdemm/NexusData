@@ -783,13 +783,13 @@ export function PlayerDetailPage() {
                 <CardTitle className="text-sm">ИИ-досье игрока</CardTitle>
                 <p className="mt-1 text-xs text-muted-foreground">Справочный материал. Решение модератора остаётся решением модератора.</p>
               </div>
-              <Button
+              {admin?.is_superuser && <Button
                 size="sm"
                 onClick={() => dossierMutation.mutate()}
                 disabled={dossierMutation.isPending || dossier?.status === "queued" || dossier?.status === "running"}
               >
                 <Sparkles className="size-3.5" /> Сгенерировать
-              </Button>
+              </Button>}
             </CardHeader>
             <CardContent className="space-y-4">
               {dossierLoading && <div className="text-sm text-muted-foreground">Загрузка состояния…</div>}

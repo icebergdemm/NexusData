@@ -28,9 +28,11 @@ class PlayerRepositoryDiscordFilterTests(unittest.TestCase):
         self.category_id = category.id
         self.session.add_all([
             PlayerLabel(player_id=first.player_id, category_id=category.id),
-            PlayerIP(player_id=first.player_id, ip="10.0.0.1", subnet="10.0.0.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
-            PlayerIP(player_id=first.player_id, ip="10.0.0.2", subnet="10.0.0.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
-            PlayerIP(player_id=second.player_id, ip="10.0.1.1", subnet="10.0.1.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=first.player_id, ip="8.8.8.1", subnet="8.8.8.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=first.player_id, ip="8.8.8.2", subnet="8.8.8.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=second.player_id, ip="1.1.1.1", subnet="1.1.1.0/24", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=third.player_id, ip="172.18.0.3", subnet="172.18.0.0/16", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
+            PlayerIP(player_id=third.player_id, ip="172.18.0.4", subnet="172.18.0.0/16", first_seen=datetime.utcnow(), last_seen=datetime.utcnow()),
             PlayerNote(player_id=first.player_id, content="Есть заметка"),
             PlayerName(
                 player_id=first.player_id,
@@ -125,6 +127,14 @@ class PlayerRepositoryDiscordFilterTests(unittest.TestCase):
         self.assertEqual(anomalies_total, 2)
         self.assertEqual(names_total, 1)
         self.assertEqual(ips_total, 1)
+
+    def test_bogon_ip_history_is_not_searchable_or_counted_as_history(self):
+        repository = PlayerRepository(self.session)
+
+        self.assertEqual(repository.search("172.18.0.3", limit=10), [])
+        _, total = repository.search_paginated("172.18.0.", page=1, page_size=50)
+
+        self.assertEqual(total, 0)
 
 
 if __name__ == "__main__":

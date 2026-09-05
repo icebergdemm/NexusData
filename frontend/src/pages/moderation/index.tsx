@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { ShieldAlert, MapPin, Ship, Target, Users2, Copy, IdCard, Terminal, Circle } from "lucide-react"
@@ -129,13 +130,18 @@ const DEFAULT_ONLINE_SORT: PlayerSort = { key: "join_time", direction: "desc" }
 const DEFAULT_OFFLINE_SORT: PlayerSort = { key: "last_login", direction: "desc" }
 
 export function ModerationPage() {
+  const [searchParams] = useSearchParams()
+  const requestedTab = searchParams.get("tab")
+  const initialTab = requestedTab && ["status", "banhammer", "anticheat", "anomalies", "console"].includes(requestedTab)
+    ? requestedTab
+    : "status"
   const [search, setSearch] = useState("")
   const [searchQuery, setSearchQuery] = useState<string | undefined>()
   const [actionTarget, setActionTarget] = useState<{ steamid: string; name: string; type: ActionType } | null>(null)
   const [actionReason, setActionReason] = useState("")
   const [actionServer, setActionServer] = useState("")
   const [summaryPlayerId, setSummaryPlayerId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState("status")
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [filters, setFilters] = useState(loadPlayerFilterState)
   const [onlineSort, setOnlineSort] = useState(() => loadPlayerSort("moderation-online", DEFAULT_ONLINE_SORT, ONLINE_SORT_OPTIONS.map((option) => option.key)))
   const [offlineSort, setOfflineSort] = useState(() => loadPlayerSort("moderation-offline", DEFAULT_OFFLINE_SORT, OFFLINE_SORT_OPTIONS.map((option) => option.key)))

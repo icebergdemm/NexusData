@@ -293,11 +293,12 @@ def get_sauron_summary(db: Session) -> dict:
     Quick counts using cheap SQL — does NOT run full analysis.
     """
     # Count distinct IP-sharing pairs (cheap)
-    twink_count = db.execute(text("""
+    twink_count = db.execute(text(f"""
         SELECT COUNT(*) FROM (
             SELECT a.player_id
             FROM player_ips a
             JOIN player_ips b ON a.ip = b.ip AND a.player_id < b.player_id
+            WHERE {_NON_GLOBAL_IPV4_SQL.format(alias="a")}
             GROUP BY a.player_id
             LIMIT 500
         ) t

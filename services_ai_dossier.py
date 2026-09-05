@@ -9,7 +9,7 @@ import re
 import ssl
 from threading import Lock
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from config import get_settings
 from models import (
-    AIPlayerDossier, AIPlayerDossierRun, AdminUser, AppSetting, AnticheatEvent, LabelCategory, PlayerAnomaly, Ticket,
+    AIPlayerDossier, AIPlayerDossierRun, AdminUser, AppSetting, AnticheatEvent, LabelCategory, PlayerAnomaly, Ticket, TicketMessage,
     PlayerData, PlayerIP, PlayerKill, PlayerLabel, PlayerName, PlayerNote, PlayerPunishment,
     PlayerRoleAction, PlayerRoleStat, PlayerSession, PlayerStats, PlayerTrap,
 )
@@ -300,6 +300,14 @@ def _severity_for_score(score: Any) -> str:
     return "high" if score >= 10 else "medium" if score >= 5 else "low"
 
 
+def require_dossier_generation(admin: Any) -> None:
+    """Manual dossier generation is a superuser-only operation."""
+    from fastapi import HTTPException
+
+    if not getattr(admin, "is_superuser", False):
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+
+
 def _finding(category: str, severity: str, title: str, details: str, reason: str,
              next_step: str, evidence: list[dict], basis: Optional[list[str]] = None) -> dict:
     return {
@@ -330,7 +338,7 @@ def _sauron_basis(row: dict) -> list[str]:
 
 
 def build_moderation_packet(input_payload: dict) -> dict:
-    """Reduce the profile to sources that can actually change a moderation decision."""
+    """Build deterministic, moderator-facing triage data from a raw payload."""
     profile = input_payload.get("profile") or {}
     findings: list[dict] = []
     context: list[dict] = []
@@ -357,6 +365,21 @@ def build_moderation_packet(input_payload: dict) -> dict:
     def evidence(kind: str, source_id: Any) -> list[dict]:
         return [{"kind": kind, "id": source_id}] if source_id is not None else []
 
+    def severity_rank(value: str) -> int:
+        return {"low": 0, "medium": 1, "high": 2}.get(value, 0)
+
+    def add_unique_context(kind: str, text: str, source_id: Any = None) -> None:
+        marker = (kind, source_id, text[:500])
+        if not any((item.get("kind"), item.get("source_id"), item.get("text")) == marker for item in context):
+            add_context(kind, text, source_id)
+
+    public_ips = list(dict.fromkeys(
+        str(value) for value in [profile.get("last_ip"), *(profile.get("known_ips") or [])]
+        if value and not is_bogon_ip(value)
+    ))
+    if public_ips:
+        add_context("ip_history", "Глобальные IP в истории профиля: " + ", ".join(public_ips) + ".")
+
     for row in input_payload.get("anomalies", []):
         if not isinstance(row, dict) or row.get("status") == "dismissed":
             continue
@@ -377,25 +400,39 @@ def build_moderation_packet(input_payload: dict) -> dict:
                 basis or ["связь Sauron с активным баном"],
             ))
         elif category == "twink":
-            findings.append(_finding(
-                "twink_link", _severity_for_score(score), "Связь с другим аккаунтом",
-                f"Сохранённая Sauron-связь с аккаунтом {related_name or 'без имени'}; score {score}. Основание: {', '.join(basis) or 'детализация Sauron недоступна'}.",
-                "Совпадают технические или никнеймовые признаки, но это не доказывает общего владельца.",
-                "Открыть оба профиля и проверить совпадения отдельно.",
-                evidence("anomaly", anomaly_id) + evidence("player", related.get("id") if isinstance(related, dict) else None),
-                basis,
-            ))
+            technical_basis = {
+                "точное совпадение IP", "совпадение подсети",
+                "точное совпадение IP с активным баном", "новый аккаунт после бана",
+            }
+            if not technical_basis.intersection(basis):
+                add_unique_context(
+                    "sauron",
+                    f"Sauron: аккаунт {related_name or 'без имени'} связан только по похожему нику; это не доказательство общего владельца.",
+                    anomaly_id,
+                )
+            else:
+                finding_severity = "medium" if score >= 5 else "low"
+                findings.append(_finding(
+                    "twink_link", finding_severity, "Связь с другим аккаунтом",
+                    f"Сохранённая Sauron-связь с аккаунтом {related_name or 'без имени'}; score {score}. Основание: {', '.join(basis)}.",
+                    "Совпадают технические признаки, но общий IP или подсеть не доказывают личность владельца.",
+                    "Открыть оба профиля и проверить IP, временные пересечения и общий NAT/VPN.",
+                    evidence("anomaly", anomaly_id) + evidence("player", related.get("id") if isinstance(related, dict) else None),
+                    basis,
+                ))
         elif category == "behavior":
             incidents = row.get("incidents") or []
             labels = [str(item.get("label")) for item in incidents if isinstance(item, dict) and item.get("label")]
             detail = "; ".join(labels[:3]) or f"Sauron score {score}"
+            behavior_types = {str(item.get("type")) for item in incidents if isinstance(item, dict)}
+            teamkill_only = behavior_types and behavior_types.issubset({"teamkill", "team_damage", "self_death"})
             findings.append(_finding(
-                "deviant_behavior", _severity_for_score(score), "Поведенческая аномалия",
+                "deviant_behavior", "low" if teamkill_only else min(_severity_for_score(score), "medium", key=severity_rank), "Поведенческий сигнал",
                 detail,
-                "Сохранённая аномалия Sauron не была отклонена модератором.",
-                "Проверить исходные игровые события и контекст раундов.",
+                "Игровая статистика сама по себе не доказывает нарушение; teamkill может быть частью RP.",
+                "Проверить исходные события и контекст раундов вручную.",
                 evidence("anomaly", anomaly_id) + evidence("player", related.get("id") if isinstance(related, dict) else None),
-                ["сохранённая аномалия Sauron"],
+                ["сохранённая аномалия Sauron"] + (["teamkill/RP-контекст"] if teamkill_only else []),
             ))
 
     anticheat = [row for row in input_payload.get("anticheat_events", []) if isinstance(row, dict) and not row.get("reviewed")]
@@ -472,11 +509,27 @@ def build_moderation_packet(input_payload: dict) -> dict:
             text = f"{ticket_type}: {status}"
             if title:
                 text += f" — {title}"
+            messages = row.get("messages") or []
+            excerpts = []
+            for message in messages[:4]:
+                if not isinstance(message, dict):
+                    continue
+                content = safe_text(message.get("content"), 260)
+                if not content:
+                    continue
+                author = safe_text(message.get("author") or message.get("author_display_name"), 80)
+                created_at = _bounded_text(message.get("created_at"), 40)
+                prefix = " / ".join(part for part in (author, created_at) if part)
+                excerpts.append(f"[{prefix}] {content}" if prefix else content)
+            if excerpts:
+                text += " — сообщения (неподтверждённые сведения): " + " | ".join(excerpts)
+            elif row.get("messages_checked"):
+                text += " — сообщения не содержат текста"
             add_context("ticket", text, row.get("id"))
 
     for row in input_payload.get("labels", [])[:5]:
         if isinstance(row, dict):
-            text = str(row.get("name") or "Метка")
+            text = f"Метка (не доказательство): {str(row.get('name') or 'Метка')}"
             if row.get("note"):
                 text += f" — {safe_text(row.get('note'), 260)}"
             add_context("label", text, row.get("id"))
@@ -484,48 +537,109 @@ def build_moderation_packet(input_payload: dict) -> dict:
         if isinstance(row, dict) and row.get("content"):
             add_context("note", f"Недоверенный текст заметки: {safe_text(row.get('content'), 400)}", row.get("id"))
 
-    for row in input_payload.get("shared_accounts", [])[:5]:
-        if not isinstance(row, dict):
+    shared_by_player: dict[Any, dict] = {}
+    for row in input_payload.get("shared_accounts", []):
+        if not isinstance(row, dict) or row.get("player_id") is None:
             continue
+        player_key = row.get("player_id")
+        item = shared_by_player.setdefault(player_key, {
+            "player_id": player_key,
+            "name": row.get("name"),
+            "active_ban": False,
+            "shared_ip_count": 0,
+            "shared_ips": {},
+        })
+        item["name"] = item["name"] or row.get("name")
+        item["active_ban"] = item["active_ban"] or bool(row.get("active_ban"))
+        item["shared_ip_count"] += _safe_int(row.get("shared_ip_count"))
+        for shared in row.get("shared_ips") or []:
+            if not isinstance(shared, dict) or is_bogon_ip(shared.get("ip")):
+                continue
+            ip = str(shared["ip"])
+            current = item["shared_ips"].setdefault(ip, {"ip": ip, "overlap_count": 0})
+            current["overlap_count"] += _safe_int(shared.get("overlap_count"), 1)
+            for key in ("first_seen", "last_seen"):
+                value = shared.get(key)
+                if value and (key not in current or (key == "first_seen" and value < current[key]) or (key == "last_seen" and value > current[key])):
+                    current[key] = value
+
+    for row in shared_by_player.values():
+        row["shared_ips"] = list(row["shared_ips"].values())[:10]
         name = row.get("name") or f"#{row.get('player_id')}"
+        ip_details = ", ".join(
+            f"{item['ip']} ({item.get('first_seen', '—')}—{item.get('last_seen', '—')}, пересечений: {item.get('overlap_count', 0)})"
+            for item in row["shared_ips"]
+        )
+        match_count = max(_safe_int(row.get("shared_ip_count")), len(row["shared_ips"]), 1)
+        details = f"Общие публичные IP с аккаунтом {name} (совпадений: {match_count})"
+        if ip_details:
+            details += f": {ip_details}."
+        else:
+            details += "."
         if row.get("active_ban"):
             findings.append(_finding(
                 "ban_evasion", "high", "Совпадение IP с забаненным аккаунтом",
-                f"Общий IP с аккаунтом {name}, у которого есть активный бан.",
+                details + " У связанного аккаунта есть активный бан.",
                 "Прямая связь аккаунтов подтверждена данными IP; общий IP не доказывает личность владельца.",
                 "Проверить IP-историю, время входов и исключить общий NAT/VPN.",
                 evidence("player", row.get("player_id")),
                 ["точное совпадение IP", "активный бан связанного аккаунта"],
             ))
         else:
-            add_context("ip_link", f"Совпадение IP с аккаунтом {name}; активный бан не найден.", row.get("player_id"))
+            add_context("ip_link", details + " Активный бан не найден.", row.get("player_id"))
 
     findings.sort(key=lambda row: ({"high": 0, "medium": 1, "low": 2}.get(row["severity"], 3), row["category"], row["title"]))
     unique_findings = []
     seen = set()
     for row in findings:
-        marker = (row["category"], tuple((item.get("kind"), item.get("id")) for item in row["evidence"]))
-        if marker not in seen:
+        related_id = next((item.get("id") for item in row["evidence"] if item.get("kind") == "player"), None)
+        marker = (row["category"], related_id or tuple((item.get("kind"), item.get("id")) for item in row["evidence"]))
+        if marker in seen:
+            existing = next(item for item in unique_findings if item["category"] == row["category"] and (related_id is None or any(e.get("kind") == "player" and e.get("id") == related_id for e in item["evidence"])))
+            existing["evidence"] = (existing["evidence"] + row["evidence"])[:5]
+            existing["basis"] = list(dict.fromkeys(existing.get("basis", []) + row.get("basis", [])))[:5]
+            if severity_rank(row["severity"]) > severity_rank(existing["severity"]):
+                existing["severity"] = row["severity"]
+        else:
             seen.add(marker)
             unique_findings.append(row)
 
     missing = list(input_payload.get("missing", []))
-    public_ips = [
-        value for value in [profile.get("last_ip"), *(profile.get("known_ips") or [])]
-        if value and not is_bogon_ip(value)
-    ]
+    def coverage_entry(checked: bool, matches: int, unavailable: bool = False) -> dict:
+        return {
+            "checked": checked,
+            "matches": matches,
+            "status": "unavailable" if unavailable else "matched" if matches else "checked_empty",
+        }
+
+    logs_unavailable = "server_logs" in missing
+    ticket_messages = sum(len(row.get("messages") or []) for row in input_payload.get("tickets", []) if isinstance(row, dict))
     coverage = {
-        "sauron": {"checked": "anomalies" in input_payload, "matches": sum(1 for row in input_payload.get("anomalies", []) if isinstance(row, dict) and row.get("status") != "dismissed")},
-        "ip": {"checked": bool(public_ips), "matches": len(input_payload.get("shared_accounts", []))},
-        "anticheat": {"checked": "anticheat_events" in input_payload, "matches": len(input_payload.get("anticheat_events", []))},
-        "logs": {"checked": "logs" in input_payload and "server_logs" not in missing, "matches": len(input_payload.get("logs", []))},
-        "security_logs": {"checked": "logs" in input_payload and "server_logs" not in missing, "matches": len(security_logs)},
-        "tickets": {"checked": "tickets" in input_payload, "matches": len(input_payload.get("tickets", []))},
+        "sauron": coverage_entry("anomalies" in input_payload, sum(1 for row in input_payload.get("anomalies", []) if isinstance(row, dict) and row.get("status") != "dismissed")),
+        "ip": coverage_entry("shared_accounts" in input_payload, len(shared_by_player)),
+        "anticheat": coverage_entry("anticheat_events" in input_payload, len(input_payload.get("anticheat_events", []))),
+        "logs": coverage_entry("logs" in input_payload and not logs_unavailable, len(input_payload.get("logs", [])), logs_unavailable),
+        "security_logs": coverage_entry("logs" in input_payload and not logs_unavailable, len(security_logs), logs_unavailable),
+        "tickets": dict(coverage_entry("tickets" in input_payload, len(input_payload.get("tickets", []))), messages=ticket_messages),
     }
+    log_cache = input_payload.get("log_cache")
+    if isinstance(log_cache, dict):
+        cache_refreshes = [row.get("last_refresh") for row in log_cache.values() if isinstance(row, dict) and row.get("last_refresh")]
+        coverage["logs"]["cache_servers"] = len(log_cache)
+        coverage["logs"]["cache_last_refresh"] = max(cache_refreshes) if cache_refreshes else None
+        if cache_refreshes:
+            try:
+                latest_refresh = datetime.fromisoformat(max(cache_refreshes).replace("Z", "+00:00"))
+                if latest_refresh.tzinfo:
+                    latest_refresh = latest_refresh.astimezone(timezone.utc).replace(tzinfo=None)
+                if datetime.utcnow() - latest_refresh > timedelta(minutes=10):
+                    coverage["logs"]["status"] = "stale"
+            except (TypeError, ValueError):
+                coverage["logs"]["status"] = "stale"
     return {
         "player": {"player_id": profile.get("player_id"), "name": _bounded_text(profile.get("name"), 200)},
-        "findings": unique_findings[:5],
-        "context": context[:8],
+        "findings": unique_findings[:8],
+        "context": context[:12],
         "coverage": coverage,
         "missing": missing,
     }
@@ -552,9 +666,10 @@ def _anomaly_has_bogon_ip_evidence(row: PlayerAnomaly) -> bool:
 
 def build_rules_result(packet: dict) -> dict:
     """Create the trustworthy part of the v2 result without involving Qwen."""
-    findings = list(packet.get("findings") or [])[:5]
+    findings = list(packet.get("findings") or [])[:8]
     categories = {row.get("category") for row in findings}
-    if any(row.get("severity") == "high" for row in findings) or len(categories) >= 2:
+    serious_categories = categories.intersection({"ban_evasion", "anticheat", "log_security"})
+    if any(row.get("severity") == "high" for row in findings) or len(serious_categories) >= 2:
         level = "urgent"
         title = "Нужна срочная проверка"
     elif findings:
@@ -572,6 +687,8 @@ def build_rules_result(packet: dict) -> dict:
     caveats = []
     if "server_logs" in missing:
         caveats.append("Серверные логи недоступны или не были сопоставлены.")
+    if "ticket_messages" in missing:
+        caveats.append("Сообщения тикетов недоступны; показаны только метаданные обращений.")
     if "payload_truncated" in missing:
         caveats.append("Часть исходных записей была обрезана по лимиту.")
     if missing and not caveats:
@@ -582,10 +699,10 @@ def build_rules_result(packet: dict) -> dict:
         "summary": summary,
         "summary_source": "rules",
         "findings": findings,
-        "context": list(packet.get("context") or [])[:8],
+        "context": list(packet.get("context") or [])[:12],
         "coverage": packet.get("coverage") or {},
         "caveats": caveats[:3],
-        "confidence": "low" if missing else "high",
+        "confidence": "low" if any(item not in {"no_matching_server_logs"} for item in missing) else "high",
     }
 
 
@@ -741,10 +858,23 @@ def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFA
 
 
 def build_qwen_packet(packet: dict) -> dict:
-    """Send findings only; moderator context stays in the web result."""
+    """Send only a compact, IP-redacted explanation packet to Qwen."""
+    model_findings = []
+    for finding in list(packet.get("findings") or [])[:8]:
+        if not isinstance(finding, dict):
+            continue
+        model_finding = {
+            key: finding.get(key)
+            for key in ("category", "severity", "title", "details", "reason", "next_step", "basis")
+            if key in finding
+        }
+        for key in ("title", "details", "reason", "next_step"):
+            if isinstance(model_finding.get(key), str):
+                model_finding[key] = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[IP скрыт]", model_finding[key])
+        model_findings.append(model_finding)
     return {
         "player": packet.get("player"),
-        "findings": list(packet.get("findings") or [])[:5],
+        "findings": model_findings,
         "missing": list(packet.get("missing") or [])[:5],
     }
 
@@ -754,6 +884,11 @@ def dossier_input_hash(payload: dict) -> str:
     if isinstance(stable_payload.get("window"), dict):
         stable_payload["window"] = dict(stable_payload["window"])
         stable_payload["window"].pop("to", None)
+    if isinstance(stable_payload.get("coverage"), dict):
+        stable_payload["coverage"] = dict(stable_payload["coverage"])
+        if isinstance(stable_payload["coverage"].get("logs"), dict):
+            stable_payload["coverage"]["logs"] = dict(stable_payload["coverage"]["logs"])
+            stable_payload["coverage"]["logs"].pop("cache_last_refresh", None)
     canonical = json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -810,6 +945,27 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     sessions = db.query(PlayerSession).filter(PlayerSession.player_id == player_id, PlayerSession.login_time >= since).order_by(PlayerSession.login_time.desc()).limit(100).all()
     notes = db.query(PlayerNote).filter(PlayerNote.player_id == player_id).order_by(PlayerNote.created_at.desc()).limit(100).all()
     tickets = db.query(Ticket).filter(Ticket.player_id == player_id, Ticket.deleted_at.is_(None)).order_by(Ticket.created_at.desc()).limit(100).all()
+    ticket_messages_by_id: dict[int, list[dict]] = {}
+    ticket_messages_missing = False
+    ticket_ids = [row.id for row in tickets if row.id is not None]
+    if ticket_ids:
+        try:
+            ticket_message_rows = (db.query(TicketMessage)
+                                   .filter(TicketMessage.ticket_id.in_(ticket_ids))
+                                   .order_by(TicketMessage.created_at.desc(), TicketMessage.id.desc())
+                                   .limit(500).all())
+            for message in ticket_message_rows:
+                rows = ticket_messages_by_id.setdefault(message.ticket_id, [])
+                if len(rows) < 4:
+                    rows.append({
+                        "id": message.id,
+                        "author": message.author_display_name or message.author_username,
+                        "created_at": _iso(message.created_at),
+                        "content": _bounded_text(message.content, 500),
+                    })
+        except Exception as exc:
+            logger.warning("AI dossier ticket messages unavailable for player %s: %s", player_id, exc)
+            ticket_messages_missing = True
     labels = (db.query(PlayerLabel, LabelCategory)
               .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
               .filter(PlayerLabel.player_id == player_id)
@@ -845,6 +1001,10 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     shared_accounts = []
     own_ips = {row.ip for row in ips if row.ip}
     if own_ips:
+        own_rows_by_ip: dict[str, list[PlayerIP]] = {}
+        for own_row in ips:
+            if own_row.ip:
+                own_rows_by_ip.setdefault(own_row.ip, []).append(own_row)
         shared_rows = (db.query(PlayerIP, PlayerData)
                        .join(PlayerData, PlayerData.player_id == PlayerIP.player_id)
                        .filter(PlayerIP.ip.in_(own_ips), PlayerIP.player_id != player_id)
@@ -865,8 +1025,31 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
                 "name": other.display_name,
                 "active_ban": other.player_id in banned_ids or other.player_id in shared_banned_ids,
                 "shared_ip_count": 0,
+                "shared_ips": {},
             })
             item["shared_ip_count"] += 1
+            shared = item["shared_ips"].setdefault(ip_row.ip, {
+                "ip": ip_row.ip,
+                "first_seen": None,
+                "last_seen": None,
+                "overlap_count": 0,
+            })
+            for own_row in own_rows_by_ip.get(ip_row.ip, []):
+                overlap_start = max(own_row.first_seen, ip_row.first_seen)
+                overlap_end = min(own_row.last_seen, ip_row.last_seen)
+                if overlap_start <= overlap_end:
+                    shared["overlap_count"] += 1
+                    start_value = _iso(overlap_start)
+                    end_value = _iso(overlap_end)
+                    if shared["first_seen"] is None or start_value < shared["first_seen"]:
+                        shared["first_seen"] = start_value
+                    if shared["last_seen"] is None or end_value > shared["last_seen"]:
+                        shared["last_seen"] = end_value
+            if shared["first_seen"] is None:
+                shared["first_seen"] = _iso(ip_row.first_seen)
+                shared["last_seen"] = _iso(ip_row.last_seen)
+        for item in per_player.values():
+            item["shared_ips"] = list(item["shared_ips"].values())[:10]
         shared_accounts = list(per_player.values())
 
     payload = {
@@ -891,7 +1074,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
         )} if stats else None,
         "sessions": [{"id": row.id, "session_number": row.session_number, "login_time": _iso(row.login_time), "logout_time": _iso(row.logout_time), "duration": row.session_duration, "avg_ping": row.avg_ping} for row in sessions],
         "notes": [{"id": row.id, "content": _bounded_text(row.content, 1500), "created_at": _iso(row.created_at)} for row in notes],
-        "tickets": [{"id": row.id, "type": row.ticket_type, "title": _bounded_text(row.title, 500), "status": row.status, "created_at": _iso(row.created_at), "last_message_at": _iso(row.last_message_at)} for row in tickets],
+        "tickets": [{"id": row.id, "type": row.ticket_type, "title": _bounded_text(row.title, 500), "status": row.status, "created_at": _iso(row.created_at), "last_message_at": _iso(row.last_message_at), "messages": ticket_messages_by_id.get(row.id, []), "messages_checked": not ticket_messages_missing} for row in tickets],
         "labels": [{"id": row.id, "category_id": row.category_id, "name": category.name, "note": _bounded_text(row.note, 500), "assigned_at": _iso(row.assigned_at)} for row, category in labels],
         "traps": [{"id": row.id, "active": bool(row.active), "reason": _bounded_text(row.reason, 500), "set_at": _iso(row.set_at), "triggered_at": _iso(row.triggered_at)} for row in traps],
         "punishments": [{"id": row.id, "type": row.type, "reason": _bounded_text(row.reason, 1000), "issued_at": _iso(row.issued_at), "expires_at": _iso(row.expires_at), "active": bool(row.is_active), "status": "void" if not row.is_active else "expired" if row.expires_at and row.expires_at < now else "active", "recent": bool(row.issued_at and row.issued_at >= since)} for row in punishments],
@@ -924,7 +1107,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     }
 
     try:
-        from services_logs import search_logs
+        from services_logs import get_log_stats, search_logs
         result = search_logs(
             names_list=known_names,
             time_from=since,
@@ -935,9 +1118,12 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
             raise_on_unavailable=True,
         )
         payload["logs"] = [{"id": event.row_id, "timestamp": _iso(event.timestamp), "player_name": event.player_name, "action": event.action_type, "details": _bounded_text(event.details, 500), "server": event.server_name, "source": event.source_file} for event in result.events]
+        payload["log_cache"] = get_log_stats()
     except Exception as exc:
         logger.warning("AI dossier logs unavailable for player %s: %s", player_id, exc)
         payload["missing"].append("server_logs")
+    if ticket_messages_missing:
+        payload["missing"].append("ticket_messages")
 
     def _encoded_length() -> int:
         return len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
@@ -1285,7 +1471,7 @@ def dossier_evidence_link(kind: Any, source_id: Any, player_id: Optional[int]) -
     if kind == "log":
         return f"/logs?event_id={source_id}"
     if kind == "anomaly":
-        return "/moderation"
+        return "/moderation?tab=anomalies"
     if kind == "player":
         return f"/players/{source_id}"
     if kind == "ticket":

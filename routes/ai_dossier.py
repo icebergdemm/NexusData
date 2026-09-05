@@ -24,6 +24,7 @@ from services_ai_dossier import (
     search_dossier_players,
     select_active_player_ids,
     validate_dossier_ca_pem,
+    require_dossier_generation,
 )
 
 router = APIRouter()
@@ -87,6 +88,7 @@ async def request_player_ai_dossier(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
+    require_dossier_generation(current_admin)
     player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")

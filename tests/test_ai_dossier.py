@@ -177,6 +177,7 @@ class AIDossierContractTests(unittest.TestCase):
             "anomalies": [{
                 "id": 52, "category": "twink", "subtype": "sauron_pair", "score": 4,
                 "status": "new", "related_player": {"id": 8, "name": "Связанный"},
+                "signals": [{"type": "shared_ip", "label": "IP: 8.8.8.8"}],
             }],
             "shared_accounts": [{"player_id": 9, "name": "Забаненный", "active_ban": True}],
             "punishments": [], "labels": [], "notes": [], "anticheat_events": [], "logs": [], "missing": [],
@@ -231,13 +232,199 @@ class AIDossierContractTests(unittest.TestCase):
             "punishments": [], "labels": [], "notes": [], "missing": [],
         })
 
-        self.assertEqual(packet["coverage"]["tickets"], {"checked": True, "matches": 1})
-        self.assertEqual(packet["coverage"]["logs"], {"checked": True, "matches": 3})
-        self.assertEqual(packet["coverage"]["security_logs"], {"checked": True, "matches": 1})
-        self.assertEqual(packet["coverage"]["sauron"], {"checked": True, "matches": 0})
+        self.assertEqual(packet["coverage"]["tickets"], {"checked": True, "matches": 1, "status": "matched", "messages": 0})
+        self.assertEqual(packet["coverage"]["logs"], {"checked": True, "matches": 3, "status": "matched"})
+        self.assertEqual(packet["coverage"]["security_logs"], {"checked": True, "matches": 1, "status": "matched"})
+        self.assertEqual(packet["coverage"]["sauron"], {"checked": True, "matches": 0, "status": "checked_empty"})
         self.assertEqual(packet["findings"], [])
         self.assertTrue(any(item["kind"] == "ticket" and item["source_id"] == 301 for item in packet["context"]))
         self.assertTrue(any(item["kind"] == "log" and item["source_id"] == 403 for item in packet["context"]))
+
+    def test_teamkill_only_behavior_stays_review_and_never_urgent(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [{
+                "id": 501, "category": "behavior", "subtype": "sauron_deviant", "score": 12,
+                "status": "new", "incidents": [
+                    {"type": "teamkill", "label": "Убийств союзников: 145", "score": 10},
+                    {"type": "team_damage", "label": "Урон по союзникам: 5481 HP", "score": 8},
+                    {"type": "self_death", "label": "Самоубийств: 7", "score": 6},
+                ],
+            }],
+            "shared_accounts": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        self.assertEqual(len(packet["findings"]), 1)
+        self.assertEqual(packet["findings"][0]["severity"], "low")
+        self.assertEqual(build_rules_result(packet)["triage"]["level"], "review")
+
+    def test_nickname_only_sauron_signal_is_context_not_twink_finding(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [{
+                "id": 502, "category": "twink", "subtype": "sauron_pair", "score": 2,
+                "status": "new", "related_player": {"id": 8, "name": "Похожий"},
+                "signals": [{"type": "similar_name", "label": "Похожее имя: Test..."}],
+            }],
+            "shared_accounts": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        self.assertEqual(packet["findings"], [])
+        self.assertTrue(any(item["kind"] == "sauron" for item in packet["context"]))
+
+    def test_anomaly_is_used_when_player_is_related_side(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [{
+                "id": 503, "category": "twink", "subtype": "ip_ban_evasion", "score": 12,
+                "status": "new", "related_player": {"id": 8, "name": "Забаненный"},
+                "signals": [{"type": "ip_exact_match_active_ban"}],
+            }],
+            "shared_accounts": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        self.assertEqual([item["category"] for item in packet["findings"]], ["ban_evasion"])
+
+    def test_repeated_command_denied_logs_are_a_finding_with_evidence(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+            "logs": [
+                {"id": 601, "action": "command_denied", "details": "ban"},
+                {"id": 602, "action": "command_denied", "details": "ban"},
+            ],
+        })
+
+        finding = next(item for item in packet["findings"] if item["category"] == "log_security")
+        self.assertEqual(finding["severity"], "medium")
+        self.assertEqual({item["id"] for item in finding["evidence"]}, {601, 602})
+
+    def test_stale_log_cache_is_marked_in_coverage(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+            "log_cache": {"ASPER1": {"last_refresh": "2020-01-01T00:00:00", "event_count": 1}},
+        })
+
+        self.assertEqual(packet["coverage"]["logs"]["status"], "stale")
+
+    def test_shared_ip_rows_for_one_account_are_aggregated_with_public_details(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+            "shared_accounts": [
+                {"player_id": 8, "name": "Связанный", "active_ban": False,
+                 "shared_ip_count": 1, "shared_ips": [{
+                     "ip": "8.8.8.8", "first_seen": "2026-08-01T10:00:00",
+                     "last_seen": "2026-08-02T10:00:00", "overlap_count": 1,
+                 }]},
+                {"player_id": 8, "name": "Связанный", "active_ban": False,
+                 "shared_ip_count": 1, "shared_ips": [{
+                     "ip": "1.1.1.1", "first_seen": "2026-08-03T10:00:00",
+                     "last_seen": "2026-08-04T10:00:00", "overlap_count": 1,
+                 }]},
+            ],
+        })
+
+        links = [item for item in packet["context"] if item["kind"] == "ip_link"]
+        self.assertEqual(len(links), 1)
+        self.assertIn("8.8.8.8", links[0]["text"])
+        self.assertIn("1.1.1.1", links[0]["text"])
+
+    def test_ticket_messages_are_context_and_explicitly_unverified(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [], "logs": [],
+            "tickets": [{
+                "id": 301, "type": "player_report", "title": "Проверить жалобу", "status": "open",
+                "messages": [{"author": "Жалобщик", "created_at": "2026-09-04T10:00:00", "content": "Игрок ломал реактор"}],
+            }],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        ticket_context = [item for item in packet["context"] if item["kind"] == "ticket"]
+        self.assertEqual(len(ticket_context), 1)
+        self.assertIn("Игрок ломал реактор", ticket_context[0]["text"])
+        self.assertIn("неподтвержд", ticket_context[0]["text"].casefold())
+
+    def test_qwen_packet_redacts_public_ip_even_when_moderator_packet_shows_it(self):
+        request = build_kobold_request({
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [{"category": "ban_evasion", "severity": "high", "title": "Связь",
+                          "details": "Общий публичный IP 8.8.8.8 с забаненным аккаунтом.",
+                          "reason": "Проверить", "next_step": "Сверить", "evidence": []}],
+            "missing": [],
+        }, api_key="secret")
+
+        model_input = request["json"]["messages"][1]["content"]
+
+        self.assertNotIn("8.8.8.8", model_input)
+        self.assertIn("ban_evasion", model_input)
+
+    def test_non_superuser_cannot_request_manual_dossier_generation(self):
+        from fastapi import HTTPException
+        from services_ai_dossier import require_dossier_generation
+
+        with self.assertRaises(HTTPException) as error:
+            require_dossier_generation(SimpleNamespace(is_superuser=False))
+
+        self.assertEqual(error.exception.status_code, 403)
+
+    def test_profile_ip_context_excludes_bogon_and_keeps_global_ip(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест", "last_ip": "172.18.0.3", "known_ips": ["172.18.0.3", "8.8.8.8"]},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        text = json.dumps(packet, ensure_ascii=False)
+        self.assertNotIn("172.18.0.3", text)
+        self.assertIn("8.8.8.8", text)
+
+    def test_payload_loads_ticket_messages_and_log_cache_metadata(self):
+        from models import Ticket, TicketMessage
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        try:
+            player = PlayerData(player_id=7, player_steamid="76561198000000007", player_last_time_name="Тест")
+            ticket = Ticket(id=301, ticket_type="player_report", title="Проверить", status="open", creator_discord_id="123", player_id=7, created_at=datetime(2026, 9, 4, 10, 0))
+            message = TicketMessage(id=901, ticket_id=301, author_display_name="Жалобщик", author_discord_id="123", content="Игрок ломал реактор", created_at=datetime(2026, 9, 4, 10, 1))
+            db.add_all([player, ticket, message])
+            db.commit()
+            fake_event = SimpleNamespace(row_id=902, timestamp=datetime(2026, 9, 4, 10, 2), player_name="Тест", action_type="kick", details="кик", server_name="ASPER1", source_file="server.log")
+            with (
+                patch("services_logs.search_logs", return_value=SimpleNamespace(events=[fake_event])),
+                patch("services_logs.get_log_stats", return_value={"ASPER1": {"last_refresh": "2026-09-04T10:05:00", "event_count": 10}}),
+            ):
+                payload = services_ai_dossier.build_player_dossier_payload(db, 7, datetime(2026, 9, 4, 12, 0))
+
+            self.assertEqual(payload["tickets"][0]["messages"][0]["content"], "Игрок ломал реактор")
+            self.assertEqual(payload["log_cache"]["ASPER1"]["event_count"], 10)
+            self.assertEqual(payload["logs"][0]["action"], "kick")
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_unavailable_log_cache_is_explicit_in_coverage_and_caveats(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [], "logs": [], "tickets": [],
+            "punishments": [], "labels": [], "notes": [], "missing": ["server_logs"],
+        })
+
+        result = build_rules_result(packet)
+
+        self.assertEqual(packet["coverage"]["logs"]["status"], "unavailable")
+        self.assertEqual(packet["coverage"]["security_logs"]["status"], "unavailable")
+        self.assertTrue(any("Серверные логи недоступны" in item for item in result["caveats"]))
 
     def test_dismissed_anomalies_and_ordinary_gameplay_create_no_findings(self):
         packet = build_moderation_packet({
@@ -257,7 +444,7 @@ class AIDossierContractTests(unittest.TestCase):
             "player": {"player_id": 7, "name": "Тест"},
             "findings": [
                 {"category": "anticheat", "severity": "medium", "title": "Античит", "details": "A", "reason": "B", "next_step": "C", "evidence": [{"kind": "anticheat", "id": 1}]},
-                {"category": "deviant_behavior", "severity": "medium", "title": "Поведение", "details": "A", "reason": "B", "next_step": "C", "evidence": [{"kind": "anomaly", "id": 2}]},
+                {"category": "log_security", "severity": "medium", "title": "Security-лог", "details": "A", "reason": "B", "next_step": "C", "evidence": [{"kind": "log", "id": 2}]},
             ],
             "context": [],
             "missing": [],
@@ -581,6 +768,7 @@ class AIDossierContractTests(unittest.TestCase):
 
     def test_evidence_links_are_derived_from_whitelisted_source_ids(self):
         self.assertEqual(dossier_evidence_link("log", 42, 7), "/logs?event_id=42")
+        self.assertEqual(dossier_evidence_link("anomaly", 52, 7), "/moderation?tab=anomalies")
         self.assertEqual(dossier_evidence_link("note", 3, 7), "/players/7?tab=notes&source_id=3")
         self.assertEqual(dossier_evidence_link("ticket", 301, 7), "/tickets/301")
         self.assertIsNone(dossier_evidence_link("note", 999, None))

@@ -1,4 +1,4 @@
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, exists, func, not_, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Tuple
@@ -51,7 +51,27 @@ def _open_anomaly_exists():
 def _ip_history_exists():
     return select(PlayerIP.player_id).where(
         PlayerIP.player_id == PlayerData.player_id,
+        _usable_ip_sql(PlayerIP.ip),
     ).group_by(PlayerIP.player_id).having(func.count(PlayerIP.id) >= 2).exists()
+
+
+def _usable_ip_sql(column):
+    """Cheap SQL prefilter for legacy non-global IPv4 rows.
+
+    New writes are validated by ``is_bogon_ip``. This predicate keeps the
+    common container/LAN/reserved ranges out of list facets and joins; every
+    user-facing serializer still applies the complete Python check.
+    """
+    excluded = [
+        "0.%", "10.%", "127.%", "169.254.%", "192.0.2.%", "192.168.%",
+        "198.18.%", "198.19.%", "198.51.100.%", "203.0.113.%", "100.64.%",
+        "100.65.%", "100.66.%", "100.67.%", "100.68.%", "100.69.%",
+        "100.70.%", "100.71.%", "100.72.%", "100.73.%", "100.74.%",
+        "100.75.%", "100.76.%", "100.77.%", "100.78.%", "100.79.%",
+        "100.8%.%", "100.9%.%", "100.10%.%", "100.11%.%", "100.12%.%",
+        "100.127.%",
+    ] + [f"172.{value}.%" for value in range(16, 32)] + [f"{value}.%" for value in range(224, 240)]
+    return not_(or_(*(column.like(pattern) for pattern in excluded)))
 
 
 def _apply_player_facets(
@@ -310,6 +330,7 @@ class PlayerRepository(BaseRepository):
             ip_q = self.db.query(PlayerData).join(
                 PlayerIP, PlayerData.player_id == PlayerIP.player_id
             ).filter(
+                _usable_ip_sql(PlayerIP.ip),
                 or_(
                     PlayerIP.ip.ilike(query_lower),
                     PlayerIP.subnet.ilike(query_lower),
@@ -348,6 +369,7 @@ class PlayerRepository(BaseRepository):
         )
         ip_match = exists().where(
             PlayerIP.player_id == PlayerData.player_id,
+            _usable_ip_sql(PlayerIP.ip),
             or_(PlayerIP.ip.ilike(query_lower), PlayerIP.subnet.ilike(query_lower)),
         )
         search_query = self.db.query(PlayerData).filter(or_(
@@ -402,7 +424,8 @@ class PlayerRepository(BaseRepository):
         ).distinct():
             flags[player_id]["has_previous_names"] = True
         for player_id, in self.db.query(PlayerIP.player_id).filter(
-            PlayerIP.player_id.in_(player_ids)
+            PlayerIP.player_id.in_(player_ids),
+            _usable_ip_sql(PlayerIP.ip),
         ).group_by(PlayerIP.player_id).having(func.count(PlayerIP.id) >= 2):
             flags[player_id]["has_ip_history"] = True
         for player_id, in self.db.query(PlayerPunishment.player_id).filter(

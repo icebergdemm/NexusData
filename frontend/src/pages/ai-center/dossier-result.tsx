@@ -22,6 +22,9 @@ const sourceLabel: Record<string, string> = {
 const coverageLabel: Record<string, string> = {
   sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", logs: "Логи", security_logs: "Security-логи", tickets: "Тикеты",
 }
+const coverageStatusLabel: Record<string, string> = {
+  matched: "есть совпадения", checked_empty: "проверено, пусто", unavailable: "недоступно", stale: "кэш устарел",
+}
 
 function EvidenceLinks({ items }: { items: AIDossierEvidence[] }) {
   if (!items.length) return null
@@ -55,7 +58,8 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
       <h3 className="mb-2 text-sm font-medium">Что проверено</h3>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">{Object.entries(result.coverage).map(([key, item]) => <div key={key} className="rounded border p-2 text-xs">
         <div className="font-medium">{coverageLabel[key] || key}</div>
-        <div className="mt-1 text-muted-foreground">{item.checked ? `проверено · совпадений: ${item.matches}` : "не проверялось"}</div>
+        <div className="mt-1 text-muted-foreground">{item.status ? coverageStatusLabel[item.status] : item.checked ? `проверено · совпадений: ${item.matches}` : "не проверялось"}{item.checked && ` · ${item.matches}`}{key === "tickets" && item.messages != null ? ` · сообщений: ${item.messages}` : ""}</div>
+        {key === "logs" && item.cache_servers != null && <div className="mt-1 text-muted-foreground">кэш: {item.cache_servers} сервер(а){item.cache_last_refresh ? ` · ${item.cache_last_refresh}` : ""}</div>}
       </div>)}</div>
     </section>}
 

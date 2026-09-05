@@ -189,6 +189,10 @@ export interface AIDossierContext {
 export interface AIDossierCoverage {
   checked: boolean
   matches: number
+  status?: "matched" | "checked_empty" | "unavailable" | "stale"
+  messages?: number
+  cache_servers?: number
+  cache_last_refresh?: string | null
 }
 
 export interface AIDossierResult {
