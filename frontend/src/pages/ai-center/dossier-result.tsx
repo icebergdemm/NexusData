@@ -19,10 +19,10 @@ const severityClass = {
 } as const
 const sourceLabel: Record<string, string> = {
   anomaly: "Аномалия Sauron", anticheat: "Античит", log: "Лог", punishment: "Наказание",
-  note: "Заметка", label: "Метка", player: "Профиль игрока", ticket: "Тикет", log_security: "Security-лог",
+  note: "Заметка", label: "Метка", player: "Профиль игрока", ticket: "Тикет", log_security: "Security-лог", rating_negative: "Отрицательные действия рейтинга",
 }
 const coverageLabel: Record<string, string> = {
-  sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", logs: "Логи", security_logs: "Security-логи", tickets: "Тикеты",
+  sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", logs: "Логи", security_logs: "Security-логи", tickets: "Тикеты", rating: "Рейтинг",
 }
 const coverageStatusLabel: Record<string, string> = {
   matched: "есть совпадения", checked_empty: "проверено, пусто", unavailable: "недоступно", stale: "кэш устарел",
@@ -54,6 +54,7 @@ function ContextRow({ item }: { item: AIDossierContext }) {
 
 export function DossierResultView({ result }: { result: AIDossierResult }) {
   const level = result.triage?.level || "review"
+  const ratingContext = result.context.find((item) => item.kind === "rating_negative")
   return <div className="space-y-4">
     <div className={`rounded-md border p-4 ${triageClass[level]}`}>
       <div className="flex flex-wrap items-center gap-2">
@@ -71,6 +72,14 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
         <div className="mt-1 text-muted-foreground">{item.status ? coverageStatusLabel[item.status] : item.checked ? `проверено · совпадений: ${item.matches}` : "не проверялось"}{item.checked && ` · ${item.matches}`}{key === "tickets" && item.messages != null ? ` · сообщений: ${item.messages}` : ""}</div>
         {key === "logs" && item.cache_servers != null && <div className="mt-1 text-muted-foreground">кэш: {item.cache_servers} сервер(а){item.cache_last_refresh ? ` · ${formatBrowserDate(item.cache_last_refresh)}` : ""}</div>}
       </div>)}</div>
+    </section>}
+
+    {ratingContext && <section className="rounded-md border border-slate-500/30 bg-slate-500/5 p-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+        <span>Отрицательные действия рейтинга</span>
+        <Badge variant="secondary">за всю историю</Badge>
+      </div>
+      <p className="mt-1 text-sm text-muted-foreground">{ratingContext.href ? <DossierHoverLink href={ratingContext.href} kind={ratingContext.kind} id={ratingContext.source_id} text={ratingContext.text}>{ratingContext.text}</DossierHoverLink> : ratingContext.text}</p>
     </section>}
 
     <section>
