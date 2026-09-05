@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from config import get_settings
 from models import (
-    AIPlayerDossier, AIPlayerDossierRun, AdminUser, AppSetting, AnticheatEvent, LabelCategory, PlayerAnomaly,
+    AIPlayerDossier, AIPlayerDossierRun, AdminUser, AppSetting, AnticheatEvent, LabelCategory, PlayerAnomaly, Ticket,
     PlayerData, PlayerIP, PlayerKill, PlayerLabel, PlayerName, PlayerNote, PlayerPunishment,
     PlayerRoleAction, PlayerRoleStat, PlayerSession, PlayerStats, PlayerTrap,
 )
@@ -300,7 +300,7 @@ def _severity_for_score(score: Any) -> str:
 
 
 def _finding(category: str, severity: str, title: str, details: str, reason: str,
-             next_step: str, evidence: list[dict]) -> dict:
+             next_step: str, evidence: list[dict], basis: Optional[list[str]] = None) -> dict:
     return {
         "category": category,
         "severity": severity,
@@ -309,7 +309,23 @@ def _finding(category: str, severity: str, title: str, details: str, reason: str
         "reason": reason[:500],
         "next_step": next_step[:300],
         "evidence": evidence[:5],
+        "basis": (basis or [])[:5],
     }
+
+
+def _sauron_basis(row: dict) -> list[str]:
+    labels = {
+        "shared_ip": "точное совпадение IP",
+        "shared_subnet": "совпадение подсети",
+        "similar_name": "похожий префикс ника",
+        "ip_exact_match_active_ban": "точное совпадение IP с активным баном",
+        "new_account_after_ban": "новый аккаунт после бана",
+    }
+    basis = []
+    for signal in row.get("signals") or []:
+        if isinstance(signal, dict) and signal.get("type") in labels and labels[signal["type"]] not in basis:
+            basis.append(labels[signal["type"]])
+    return basis
 
 
 def build_moderation_packet(input_payload: dict) -> dict:
@@ -349,6 +365,7 @@ def build_moderation_packet(input_payload: dict) -> dict:
         related = row.get("related_player") or {}
         related_name = related.get("name") if isinstance(related, dict) else None
         score = _safe_int(row.get("score"))
+        basis = _sauron_basis(row)
         if subtype == "ip_ban_evasion":
             findings.append(_finding(
                 "ban_evasion", "high", "Возможный обход бана",
@@ -356,14 +373,16 @@ def build_moderation_packet(input_payload: dict) -> dict:
                 "Sauron зафиксировал совпадение, связанное с действующим баном.",
                 "Сверить связанный аккаунт, IP-историю и время выдачи бана.",
                 evidence("anomaly", anomaly_id),
+                basis or ["связь Sauron с активным баном"],
             ))
         elif category == "twink":
             findings.append(_finding(
                 "twink_link", _severity_for_score(score), "Связь с другим аккаунтом",
-                f"Сохранённая Sauron-связь с аккаунтом {related_name or 'без имени'}; score {score}.",
+                f"Сохранённая Sauron-связь с аккаунтом {related_name or 'без имени'}; score {score}. Основание: {', '.join(basis) or 'детализация Sauron недоступна'}.",
                 "Совпадают технические или никнеймовые признаки, но это не доказывает общего владельца.",
                 "Открыть оба профиля и проверить совпадения отдельно.",
-                evidence("anomaly", anomaly_id),
+                evidence("anomaly", anomaly_id) + evidence("player", related.get("id") if isinstance(related, dict) else None),
+                basis,
             ))
         elif category == "behavior":
             incidents = row.get("incidents") or []
@@ -374,7 +393,8 @@ def build_moderation_packet(input_payload: dict) -> dict:
                 detail,
                 "Сохранённая аномалия Sauron не была отклонена модератором.",
                 "Проверить исходные игровые события и контекст раундов.",
-                evidence("anomaly", anomaly_id),
+                evidence("anomaly", anomaly_id) + evidence("player", related.get("id") if isinstance(related, dict) else None),
+                ["сохранённая аномалия Sauron"],
             ))
 
     anticheat = [row for row in input_payload.get("anticheat_events", []) if isinstance(row, dict) and not row.get("reviewed")]
@@ -389,6 +409,7 @@ def build_moderation_packet(input_payload: dict) -> dict:
             "Событие ещё не отмечено как проверенное в панели модерации.",
             "Открыть античит-записи и сопоставить их с логом/реплеем.",
             [{"kind": "anticheat", "id": row.get("id")} for row in rows[:5] if row.get("id") is not None],
+            ["событие не отмечено как проверенное"],
         ))
 
     security_logs = [
@@ -402,6 +423,7 @@ def build_moderation_packet(input_payload: dict) -> dict:
             "Одинаковый тип security-события повторяется в серверном журнале.",
             "Проверить команды и права игрока в исходных логах.",
             [{"kind": "log", "id": row.get("id")} for row in security_logs[:5] if row.get("id") is not None],
+            ["повторение одного security-типа"],
         ))
     elif security_logs:
         add_context("log_security", "Одно запрещённое событие команды в серверном логе.", security_logs[0].get("id"))
@@ -423,7 +445,18 @@ def build_moderation_packet(input_payload: dict) -> dict:
             "Повторяемость стоит проверить вместе с исходными основаниями, но сама по себе не доказывает новое нарушение.",
             "Открыть записи наказаний и проверить, повторяется ли причина.",
             [{"kind": "punishment", "id": row.get("id")} for row in recent_punishments[:5] if row.get("id") is not None],
+            ["повторяемость записей наказаний"],
         ))
+
+    for row in input_payload.get("tickets", [])[:5]:
+        if isinstance(row, dict):
+            ticket_type = safe_text(row.get("type"), 80) or "обращение"
+            status = safe_text(row.get("status"), 80) or "без статуса"
+            title = safe_text(row.get("title"), 260)
+            text = f"{ticket_type}: {status}"
+            if title:
+                text += f" — {title}"
+            add_context("ticket", text, row.get("id"))
 
     for row in input_payload.get("labels", [])[:5]:
         if isinstance(row, dict):
@@ -446,6 +479,7 @@ def build_moderation_packet(input_payload: dict) -> dict:
                 "Прямая связь аккаунтов подтверждена данными IP; общий IP не доказывает личность владельца.",
                 "Проверить IP-историю, время входов и исключить общий NAT/VPN.",
                 evidence("player", row.get("player_id")),
+                ["точное совпадение IP", "активный бан связанного аккаунта"],
             ))
         else:
             add_context("ip_link", f"Совпадение IP с аккаунтом {name}; активный бан не найден.", row.get("player_id"))
@@ -459,11 +493,20 @@ def build_moderation_packet(input_payload: dict) -> dict:
             seen.add(marker)
             unique_findings.append(row)
 
+    missing = list(input_payload.get("missing", []))
+    coverage = {
+        "sauron": {"checked": "anomalies" in input_payload, "matches": sum(1 for row in input_payload.get("anomalies", []) if isinstance(row, dict) and row.get("status") != "dismissed")},
+        "ip": {"checked": bool(profile.get("known_ips") or profile.get("last_ip")), "matches": len(input_payload.get("shared_accounts", []))},
+        "anticheat": {"checked": "anticheat_events" in input_payload, "matches": len(input_payload.get("anticheat_events", []))},
+        "security_logs": {"checked": "logs" in input_payload and "server_logs" not in missing, "matches": len(security_logs)},
+        "tickets": {"checked": "tickets" in input_payload, "matches": len(input_payload.get("tickets", []))},
+    }
     return {
         "player": {"player_id": profile.get("player_id"), "name": _bounded_text(profile.get("name"), 200)},
         "findings": unique_findings[:5],
         "context": context[:8],
-        "missing": list(input_payload.get("missing", [])),
+        "coverage": coverage,
+        "missing": missing,
     }
 
 
@@ -500,6 +543,7 @@ def build_rules_result(packet: dict) -> dict:
         "summary_source": "rules",
         "findings": findings,
         "context": list(packet.get("context") or [])[:8],
+        "coverage": packet.get("coverage") or {},
         "caveats": caveats[:3],
         "confidence": "low" if missing else "high",
     }
@@ -629,7 +673,7 @@ def build_dossier_baseline_facts(input_payload: dict) -> list[dict]:
 
 def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFAULT_MODEL, prompt: Optional[str] = None) -> dict:
     system_prompt = (prompt or PROMPT_PATH.read_text(encoding="utf-8")).rstrip() + "\n\n" + OUTPUT_CONTRACT
-    input_text = json.dumps(input_payload, ensure_ascii=False, sort_keys=True)
+    input_text = json.dumps(build_qwen_packet(input_payload), ensure_ascii=False, sort_keys=True)
     return {
         "headers": {
             "Authorization": f"Bearer {api_key}",
@@ -653,6 +697,15 @@ def build_kobold_request(input_payload: dict, *, api_key: str, model: str = DEFA
             },
             "stream": False,
         },
+    }
+
+
+def build_qwen_packet(packet: dict) -> dict:
+    """Send findings only; moderator context stays in the web result."""
+    return {
+        "player": packet.get("player"),
+        "findings": list(packet.get("findings") or [])[:5],
+        "missing": list(packet.get("missing") or [])[:5],
     }
 
 
@@ -716,6 +769,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
     sessions = db.query(PlayerSession).filter(PlayerSession.player_id == player_id, PlayerSession.login_time >= since).order_by(PlayerSession.login_time.desc()).limit(100).all()
     notes = db.query(PlayerNote).filter(PlayerNote.player_id == player_id).order_by(PlayerNote.created_at.desc()).limit(100).all()
+    tickets = db.query(Ticket).filter(Ticket.player_id == player_id, Ticket.deleted_at.is_(None)).order_by(Ticket.created_at.desc()).limit(100).all()
     labels = (db.query(PlayerLabel, LabelCategory)
               .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
               .filter(PlayerLabel.player_id == player_id)
@@ -796,6 +850,7 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
         )} if stats else None,
         "sessions": [{"id": row.id, "session_number": row.session_number, "login_time": _iso(row.login_time), "logout_time": _iso(row.logout_time), "duration": row.session_duration, "avg_ping": row.avg_ping} for row in sessions],
         "notes": [{"id": row.id, "content": _bounded_text(row.content, 1500), "created_at": _iso(row.created_at)} for row in notes],
+        "tickets": [{"id": row.id, "type": row.ticket_type, "title": _bounded_text(row.title, 500), "status": row.status, "created_at": _iso(row.created_at), "last_message_at": _iso(row.last_message_at)} for row in tickets],
         "labels": [{"id": row.id, "category_id": row.category_id, "name": category.name, "note": _bounded_text(row.note, 500), "assigned_at": _iso(row.assigned_at)} for row, category in labels],
         "traps": [{"id": row.id, "active": bool(row.active), "reason": _bounded_text(row.reason, 500), "set_at": _iso(row.set_at), "triggered_at": _iso(row.triggered_at)} for row in traps],
         "punishments": [{"id": row.id, "type": row.type, "reason": _bounded_text(row.reason, 1000), "issued_at": _iso(row.issued_at), "expires_at": _iso(row.expires_at), "active": bool(row.is_active), "status": "void" if not row.is_active else "expired" if row.expires_at and row.expires_at < now else "active", "recent": bool(row.issued_at and row.issued_at >= since)} for row in punishments],
@@ -815,6 +870,11 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
                           if related_players.get(row.related_player_id if row.player_id == player_id else row.player_id) else None),
             },
             "incidents": (row.evidence or {}).get("incidents", []) if isinstance(row.evidence, dict) else [],
+            "signals": [
+                {"type": signal.get("type")}
+                for signal in ((row.evidence or {}).get("signals", []) if isinstance(row.evidence, dict) else [])
+                if isinstance(signal, dict) and signal.get("type")
+            ][:5],
         } for row in anomalies],
         "shared_accounts": shared_accounts,
         "logs": [],
@@ -836,11 +896,11 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
     if _encoded_length() > settings.ai_dossier_max_input_chars:
         # Keep the recent rows first, then progressively reduce the noisiest
         # collections. The final guard matters when notes themselves are large.
-        for key in ("logs", "notes", "punishments", "traps", "labels", "sessions", "anticheat_events", "role_actions", "role_stats", "kills"):
+        for key in ("logs", "notes", "tickets", "punishments", "traps", "labels", "sessions", "anticheat_events", "role_actions", "role_stats", "kills"):
             while _encoded_length() > settings.ai_dossier_max_input_chars and len(payload[key]) > 10:
                 payload[key] = payload[key][:max(10, len(payload[key]) // 2)]
         if _encoded_length() > settings.ai_dossier_max_input_chars:
-            for key in ("logs", "notes", "punishments", "traps", "labels", "sessions", "anticheat_events", "role_actions", "role_stats", "kills"):
+            for key in ("logs", "notes", "tickets", "punishments", "traps", "labels", "sessions", "anticheat_events", "role_actions", "role_stats", "kills"):
                 if _encoded_length() <= settings.ai_dossier_max_input_chars:
                     break
                 payload[key] = payload[key][:3]
@@ -1179,6 +1239,8 @@ def dossier_evidence_link(kind: Any, source_id: Any, player_id: Optional[int]) -
         return "/moderation"
     if kind == "player":
         return f"/players/{source_id}"
+    if kind == "ticket":
+        return f"/tickets/{source_id}"
     if player_id is None:
         return None
     tabs = {

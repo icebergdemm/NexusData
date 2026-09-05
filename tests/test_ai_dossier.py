@@ -97,7 +97,7 @@ class AIDossierContractTests(unittest.TestCase):
 
     def test_kobold_request_has_bearer_auth_and_json_only_contract(self):
         request = build_kobold_request(
-            {"player_id": 7, "missing": ["logs"]},
+            {"player": {"player_id": 7, "name": "Тест"}, "findings": [], "missing": ["logs"]},
             api_key="secret",
             model="qwen2.5-3b-instruct",
         )
@@ -185,6 +185,53 @@ class AIDossierContractTests(unittest.TestCase):
         self.assertEqual({finding["category"] for finding in packet["findings"]}, {"twink_link", "ban_evasion"})
         self.assertTrue(any(item["kind"] == "player" and item["id"] == 9 for item in packet["findings"][0]["evidence"] + packet["findings"][1]["evidence"]))
         self.assertNotIn("10.0.0.1", json.dumps(packet, ensure_ascii=False))
+
+    def test_qwen_request_does_not_receive_context_or_source_coverage(self):
+        request = build_kobold_request({
+            "player": {"player_id": 7, "name": "Тест"},
+            "findings": [{"category": "twink_link", "severity": "medium", "title": "Связь", "details": "Основание", "reason": "Проверить", "next_step": "Сверить", "evidence": []}],
+            "context": [{"kind": "label", "text": "Метка Дитриха"}],
+            "coverage": {"tickets": {"checked": True, "matches": 1}},
+            "missing": [],
+        }, api_key="secret")
+
+        model_input = request["json"]["messages"][1]["content"]
+
+        self.assertIn("Связь", model_input)
+        self.assertNotIn("Метка Дитриха", model_input)
+        self.assertNotIn('"coverage"', model_input)
+
+    def test_twink_finding_exposes_sauron_basis_without_raw_ip(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест", "known_ips": ["10.0.0.1"]},
+            "anomalies": [{
+                "id": 52, "category": "twink", "subtype": "sauron_pair", "score": 7,
+                "status": "new", "related_player": {"id": 8, "name": "Связанный"},
+                "signals": [{"type": "shared_ip"}, {"type": "similar_name"}],
+            }],
+            "shared_accounts": [], "punishments": [], "labels": [], "notes": [],
+            "anticheat_events": [], "logs": [], "missing": [],
+        })
+
+        finding = packet["findings"][0]
+
+        self.assertEqual(finding["basis"], ["точное совпадение IP", "похожий префикс ника"])
+        self.assertNotIn("10.0.0.1", json.dumps(packet, ensure_ascii=False))
+
+    def test_packet_reports_source_coverage_and_keeps_tickets_as_context(self):
+        packet = build_moderation_packet({
+            "profile": {"player_id": 7, "name": "Тест"},
+            "anomalies": [], "shared_accounts": [], "anticheat_events": [],
+            "logs": [], "tickets": [{"id": 301, "type": "player_report", "title": "Проверить жалобу", "status": "open"}],
+            "punishments": [], "labels": [], "notes": [], "missing": [],
+        })
+
+        self.assertEqual(packet["coverage"]["tickets"], {"checked": True, "matches": 1})
+        self.assertEqual(packet["coverage"]["security_logs"], {"checked": True, "matches": 0})
+        self.assertEqual(packet["coverage"]["sauron"], {"checked": True, "matches": 0})
+        self.assertEqual(packet["findings"], [])
+        self.assertEqual(packet["context"][0]["kind"], "ticket")
+        self.assertEqual(packet["context"][0]["source_id"], 301)
 
     def test_dismissed_anomalies_and_ordinary_gameplay_create_no_findings(self):
         packet = build_moderation_packet({
@@ -529,6 +576,7 @@ class AIDossierContractTests(unittest.TestCase):
     def test_evidence_links_are_derived_from_whitelisted_source_ids(self):
         self.assertEqual(dossier_evidence_link("log", 42, 7), "/logs?event_id=42")
         self.assertEqual(dossier_evidence_link("note", 3, 7), "/players/7?tab=notes&source_id=3")
+        self.assertEqual(dossier_evidence_link("ticket", 301, 7), "/tickets/301")
         self.assertIsNone(dossier_evidence_link("note", 999, None))
 
     def test_run_public_dict_contains_metadata_but_no_response_body(self):

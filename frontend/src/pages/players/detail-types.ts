@@ -176,6 +176,7 @@ export interface AIDossierFinding {
   reason: string
   next_step: string
   evidence: AIDossierEvidence[]
+  basis?: string[]
 }
 
 export interface AIDossierContext {
@@ -185,6 +186,11 @@ export interface AIDossierContext {
   href?: string
 }
 
+export interface AIDossierCoverage {
+  checked: boolean
+  matches: number
+}
+
 export interface AIDossierResult {
   summary: string
   schema_version: 2
@@ -192,6 +198,7 @@ export interface AIDossierResult {
   summary_source?: "rules" | "qwen"
   findings: AIDossierFinding[]
   context: AIDossierContext[]
+  coverage?: Record<string, AIDossierCoverage>
   caveats: string[]
   confidence: "low" | "medium" | "high"
 }

@@ -17,7 +17,10 @@ const severityClass = {
 } as const
 const sourceLabel: Record<string, string> = {
   anomaly: "Аномалия Sauron", anticheat: "Античит", log: "Лог", punishment: "Наказание",
-  note: "Заметка", label: "Метка", player: "Профиль игрока",
+  note: "Заметка", label: "Метка", player: "Профиль игрока", ticket: "Тикет",
+}
+const coverageLabel: Record<string, string> = {
+  sauron: "Sauron", ip: "IP-связи", anticheat: "Античит", security_logs: "Security-логи", tickets: "Тикеты",
 }
 
 function EvidenceLinks({ items }: { items: AIDossierEvidence[] }) {
@@ -48,6 +51,14 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
       <p className="mt-2 text-xs opacity-80">{result.triage?.reason} · Полнота источников: {result.confidence}.</p>
     </div>
 
+    {result.coverage && <section>
+      <h3 className="mb-2 text-sm font-medium">Что проверено</h3>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">{Object.entries(result.coverage).map(([key, item]) => <div key={key} className="rounded border p-2 text-xs">
+        <div className="font-medium">{coverageLabel[key] || key}</div>
+        <div className="mt-1 text-muted-foreground">{item.checked ? `проверено · совпадений: ${item.matches}` : "не проверялось"}</div>
+      </div>)}</div>
+    </section>}
+
     <section>
       <h3 className="mb-2 text-sm font-medium">Находки для проверки</h3>
       {result.findings.length ? <div className="space-y-3">{result.findings.map((finding, index) => <article key={`${finding.category}-${index}`} className="rounded-md border p-3">
@@ -58,6 +69,7 @@ export function DossierResultView({ result }: { result: AIDossierResult }) {
         <p className="mt-1 text-sm">{finding.details}</p>
         <p className="mt-2 text-xs text-muted-foreground">Почему: {finding.reason}</p>
         <p className="mt-1 text-xs text-muted-foreground">Следующий шаг: {finding.next_step}</p>
+        {finding.basis && finding.basis.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Основание: {finding.basis.join(" · ")}</p>}
         <div className="mt-2"><EvidenceLinks items={finding.evidence} /></div>
       </article>)}</div> : <p className="text-sm text-muted-foreground">Активных сигналов для проверки не найдено. Игровые stats и сессии намеренно не показаны.</p>}
     </section>
