@@ -30,6 +30,7 @@ import { formatBrowserDate } from "@/lib/format-date"
 import { filterAndSortPlayers, resetPlayerFilters, type PlayerSort } from "@/lib/player-filters"
 import { clearPlayerFilterState, loadPlayerFilterState, loadPlayerSort, savePlayerFilterState, savePlayerSort } from "@/lib/player-filter-storage"
 import type { DossierTriageMarker, ModerationOverview, OfflinePlayer, OnlinePlayer } from "./types"
+import { formatSessionDuration, formatSessionStart, getJobColor } from "./formatters"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
 
@@ -48,6 +49,25 @@ function fmtPlayTime(hours: number | null | undefined): string {
 function onlineDisplayName(p: OnlinePlayer): string {
   return p.player_name || p.player_steamid
 }
+
+function SessionDurationCell({ joinTime }: { joinTime: string | null }) {
+  const duration = formatSessionDuration(joinTime)
+  if (duration === "-") {
+    return <span className="text-sm text-muted-foreground">-</span>
+  }
+
+  return (
+    <Tooltip delayDuration={300}>
+      <TooltipTrigger asChild>
+        <span className="cursor-help text-sm text-muted-foreground">{duration}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>
+        {formatSessionStart(joinTime)}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 function offlineDisplayName(p: OfflinePlayer): string {
   return p.player_last_time_name
 }
@@ -318,9 +338,8 @@ export function ModerationPage() {
                   <TableRow>
                     <TableHead>Игрок</TableHead>
                     <TableHead>Сервер</TableHead>
-                    <TableHead>Роль</TableHead>
                     <TableHead>Пинг</TableHead>
-                    <TableHead>Дата входа</TableHead>
+                    <TableHead>Сессия</TableHead>
                     <TableHead>Наиграно</TableHead>
                     {(data.can_edit || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
@@ -347,18 +366,19 @@ export function ModerationPage() {
                     >
                       <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
                         <TableCell className="font-medium">
-                          {p.player_id ? (
-                            <PlayerHoverLink playerId={p.player_id}>{name}</PlayerHoverLink>
-                          ) : name}
+                          <span style={{ color: getJobColor(p.job_id) }}>
+                            {p.player_id ? (
+                              <PlayerHoverLink playerId={p.player_id} className="font-medium text-inherit underline-offset-2 hover:underline">{name}</PlayerHoverLink>
+                            ) : name}
+                          </span>
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
                           <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />
                         </TableCell>
                         <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
-                        <TableCell>{p.job_id ?? "-"}</TableCell>
                         <TableCell>{p.ping ?? "-"}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground">{fmtDate(p.join_time)}</TableCell>
+                        <TableCell><SessionDurationCell joinTime={p.join_time} /></TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtPlayTime(p.total_play_time != null ? p.total_play_time / 3600 : null)}</TableCell>
                         {(data.can_edit || data.can_issue_punishment) && (
                           <TableCell className="text-right">
@@ -379,7 +399,7 @@ export function ModerationPage() {
                     )
                   })}
                   {!filteredOnlinePlayers.length && (
-                    <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
                       {data.online_players.length ? "Нет игроков по выбранным фильтрам" : "Никого нет онлайн"}
                     </TableCell></TableRow>
                   )}
