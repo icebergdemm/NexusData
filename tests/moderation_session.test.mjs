@@ -44,9 +44,10 @@ test("invalid session start has no tooltip text", () => {
   assert.equal(formatSessionStart("not-a-date"), "-")
 })
 
-test("job colors match vanilla roles and use the default for unknown roles", () => {
+test("job colors keep assistants white and players without a character blue", () => {
   assert.equal(getJobColor("medicaldoctor"), "#CF4F30")
   assert.equal(getJobColor("ENGINEER"), "#E0B86E")
+  assert.equal(getJobColor("assistant"), undefined)
   assert.equal(getJobColor("customjob"), undefined)
-  assert.equal(getJobColor(null), undefined)
+  assert.equal(getJobColor(null), "#3b82f6")
 })

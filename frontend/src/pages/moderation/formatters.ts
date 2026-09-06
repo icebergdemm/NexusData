@@ -9,6 +9,7 @@ const JOB_COLORS: Record<string, string> = {
 }
 
 export function getJobColor(jobId: string | null): string | undefined {
+  if (jobId == null) return "#3b82f6"
   return jobId ? JOB_COLORS[jobId.toLowerCase()] : undefined
 }
 
