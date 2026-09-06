@@ -2,6 +2,7 @@ import base64
 import os
 import tarfile
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import paramiko
@@ -386,6 +387,7 @@ def test_create_backup_removes_local_temporary_copy(tmp_path, monkeypatch):
             "retention_removed": 0,
         }
 
+    monkeypatch.setattr(services_backup, "_preflight_backup_connection", Mock())
     monkeypatch.setattr(services_backup, "_upload_archive", fake_upload)
     result = services_backup.create_and_upload_backup(settings)
 
@@ -405,6 +407,7 @@ def test_manual_backup_can_run_before_schedule_is_enabled(tmp_path, monkeypatch)
         backup_temp_dir=str(tmp_path / "temp"),
     )
 
+    monkeypatch.setattr(services_backup, "_preflight_backup_connection", Mock())
     monkeypatch.setattr(
         services_backup,
         "_upload_archive",
@@ -420,6 +423,56 @@ def test_manual_backup_can_run_before_schedule_is_enabled(tmp_path, monkeypatch)
         settings,
         allow_when_disabled=True,
     )["status"] == "ok"
+
+
+def test_authentication_failure_is_actionable_and_does_not_expose_password(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, backup_sftp_password="test-secret")
+    normalized = services_backup.validate_backup_settings(settings)
+    client = Mock()
+    client.connect.side_effect = paramiko.AuthenticationException("test-secret")
+    monkeypatch.setattr(services_backup.paramiko, "SSHClient", lambda: client)
+
+    with pytest.raises(services_backup.BackupExecutionError, match="SFTP authentication rejected") as error:
+        services_backup._connect_sftp(settings, normalized)
+
+    assert "test-secret" not in str(error.value)
+    assert error.value.__suppress_context__
+    client.close.assert_called_once()
+
+
+def test_preflight_closes_connections_and_pins_followup_connection(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    normalized = services_backup.validate_backup_settings(settings)
+    normalized["host_key_is_pinned"] = False
+    client, sftp = Mock(), Mock()
+    monkeypatch.setattr(services_backup, "_connect_sftp", lambda *_: (client, sftp))
+
+    services_backup._preflight_backup_connection(settings, normalized)
+
+    assert normalized["host_key_is_pinned"] is True
+    sftp.close.assert_called_once()
+    client.close.assert_called_once()
+    sftp.put.assert_not_called()
+    sftp.remove.assert_not_called()
+
+
+def test_preflight_failure_never_builds_archive_and_releases_lock(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, backup_temp_dir=str(tmp_path / "temp"))
+    monkeypatch.setattr(services_backup, "BACKUP_LOCK_PATH", tmp_path / "backup.lock")
+    preflight = Mock(side_effect=services_backup.BackupExecutionError("SFTP authentication rejected"))
+    build = Mock()
+    upload = Mock()
+    monkeypatch.setattr(services_backup, "_preflight_backup_connection", preflight)
+    monkeypatch.setattr(services_backup, "_build_encrypted_archive", build)
+    monkeypatch.setattr(services_backup, "_upload_archive", upload)
+
+    for _ in range(2):
+        with pytest.raises(services_backup.BackupExecutionError, match="authentication"):
+            services_backup.create_and_upload_backup(settings)
+    assert preflight.call_count == 2
+    build.assert_not_called()
+    upload.assert_not_called()
+    assert not (tmp_path / "temp").exists()
 
 
 def test_cli_configuration_error_is_json_without_traceback(monkeypatch, capsys):

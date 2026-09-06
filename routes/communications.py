@@ -48,6 +48,14 @@ def get_server_communication_config():
         "deepgram_api_key": settings.deepgram_api_key or "",
         "deepgram_model": settings.deepgram_model or "nova-3",
         "deepgram_language": settings.deepgram_language or "ru",
+        "deepgram_streaming": {
+            "segment_gap_ms": settings.deepgram_segment_gap_ms,
+            "max_segment_seconds": settings.deepgram_max_segment_seconds,
+            "finalize_timeout_seconds": settings.deepgram_finalize_timeout_seconds,
+            "io_timeout_seconds": settings.deepgram_io_timeout_seconds,
+            "audio_queue_frames": settings.deepgram_audio_queue_frames,
+            "endpointing_ms": settings.deepgram_endpointing_ms,
+        },
     }
 
 
@@ -408,6 +416,18 @@ def list_communications(
     }
 
 
+# Static paths must precede the ID route: otherwise "config" is parsed as an ID.
+@router.get("/api/v1/admin/communications/config")
+def get_communication_config(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_view(current_admin)
+    row = db.query(AppSetting).filter(AppSetting.key == RETENTION_SETTING).first()
+    value = int(row.value) if row and row.value else DEFAULT_RETENTION_DAYS
+    return {"retention_days": value, "default_days": DEFAULT_RETENTION_DAYS, "max_days": MAX_RETENTION_DAYS}
+
+
 @router.get("/api/v1/admin/communications/{communication_id}")
 def get_communication(
     communication_id: int,
@@ -442,17 +462,6 @@ def get_communication_recipients(
     if row is None:
         raise HTTPException(status_code=404, detail="Communication not found")
     return {"communication_id": row.id, "recipients": _event_dicts(db, [row], include_recipients=True)[0]["recipients"]}
-
-
-@router.get("/api/v1/admin/communications/config")
-def get_communication_config(
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    _require_view(current_admin)
-    row = db.query(AppSetting).filter(AppSetting.key == RETENTION_SETTING).first()
-    value = int(row.value) if row and row.value else DEFAULT_RETENTION_DAYS
-    return {"retention_days": value, "default_days": DEFAULT_RETENTION_DAYS, "max_days": MAX_RETENTION_DAYS}
 
 
 @router.patch("/api/v1/admin/communications/config")

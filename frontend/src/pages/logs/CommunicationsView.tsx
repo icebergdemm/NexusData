@@ -1,18 +1,21 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import { Copy, ExternalLink, Filter, MessageSquare, RotateCcw, Search, Volume2 } from "lucide-react"
+import { Copy, ExternalLink, Filter, LoaderCircle, MessageSquare, RefreshCw, RotateCcw, Search, Volume2, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
+import { IS_V2 } from "@/lib/ui-version"
+import { cn } from "@/lib/utils"
+import { LogsWorkspace, LogsWorkspaceHeader } from "./logs-workspace"
 import {
   buildCommunicationQuery,
   communicationChannelLabels,
@@ -245,6 +248,8 @@ function CommunicationDrawer({ event, communicationId, loading, onClose }: { eve
 }
 
 export function CommunicationsView() {
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const resultsScrollRef = useRef<HTMLDivElement>(null)
   const [searchParams, setSearchParams] = useSearchParams()
   const initialFilters = filtersFromUrl(searchParams)
   const [search, setSearch] = useState(initialFilters.search)
@@ -260,7 +265,7 @@ export function CommunicationsView() {
   })
   const [applied, setApplied] = useState<CommunicationFilters>(initialFilters)
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["player-communications", applied, page],
     queryFn: () => api.get<CommunicationsResponse>(`/api/v1/admin/communications?${buildCommunicationQuery(applied, page)}`),
     refetchInterval: communicationsRefreshIntervalMs,
@@ -294,6 +299,7 @@ export function CommunicationsView() {
   const apply = () => {
     const next = { search: search.trim(), source, channel, server, asrStatus, context }
     setPage(1); setApplied(next); syncUrl(next, 1)
+    if (resultsScrollRef.current) resultsScrollRef.current.scrollTop = 0
   }
 
   const reset = () => {
@@ -301,6 +307,110 @@ export function CommunicationsView() {
   }
 
   const appliedCount = Number(applied.search.length > 0) + Number(applied.source !== "all") + Number(applied.channel !== "all") + Number(applied.server !== "all") + Number(applied.asrStatus !== "all") + Number(applied.context !== "all")
+
+  const resultsTable = (
+    <Table className="min-w-[1180px]"><TableHeader className={IS_V2 ? "sticky top-0 z-10 bg-background" : "bg-muted/35"}><TableRow><TableHead>Время</TableHead><TableHead>Источник</TableHead><TableHead>Тип общения</TableHead><TableHead>Игрок</TableHead><TableHead>Сервер / раунд</TableHead><TableHead>Отсек</TableHead><TableHead>Сообщение</TableHead><TableHead>Получатели</TableHead></TableRow></TableHeader><TableBody>
+            {isLoading && <TableRow><TableCell colSpan={8} className="py-12 text-center">Загрузка…</TableCell></TableRow>}
+            {!isLoading && !(IS_V2 && isError) && !(data?.events.length) && <TableRow><TableCell colSpan={8} className="py-12 text-center text-muted-foreground">Сообщений не найдено</TableCell></TableRow>}
+            {data?.events.map((event) => { const text = event.source === "voice" ? event.transcript_text : event.original_text; return <TableRow key={event.id} className="cursor-pointer align-top" data-selected={selectedId === event.id || undefined} onClick={() => selectCommunication(selectedId === event.id ? null : event.id)}>
+              <TableCell className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">{formatBrowserDate(event.occurred_at)}</TableCell><TableCell><Badge variant="outline" className="flex w-fit items-center gap-1"><SourceIcon source={event.source} />{sourceLabel(event.source)}</Badge></TableCell><TableCell><Badge variant="secondary">{communicationChannelLabels[event.channel] ?? event.channel}</Badge></TableCell><TableCell className="font-medium"><PlayerName playerId={event.player_id} playerName={event.player_name} stopPropagation /></TableCell><TableCell><RoundContext event={event} /></TableCell><TableCell className="text-xs">{event.hull_name ?? "-"}</TableCell><TableCell className="max-w-[360px] whitespace-normal break-words text-xs">{text ?? <AsrStatus event={event} />}</TableCell><TableCell className="text-xs">{event.recipient_count}</TableCell>
+            </TableRow> })}
+          </TableBody></Table>
+  )
+
+  if (IS_V2) {
+    const fields = [
+      { key: "server", label: "Сервер", value: server, set: setServer, all: "Все серверы", options: { ASPER1: "ASPER1", ASPER2: "ASPER2" } },
+      { key: "source", label: "Источник", value: source, set: setSource, all: "Чат и голос", options: { chat: "Чат", voice: "Голос" } },
+      { key: "channel", label: "Тип общения", value: channel, set: setChannel, all: "Все типы", options: communicationChannelLabels },
+      { key: "asrStatus", label: "Распознавание голоса", value: asrStatus, set: setAsrStatus, all: "Любой статус", options: communicationAsrStatusLabels },
+      { key: "context", label: "Контекст", value: context, set: setContext, all: "Все контексты", options: communicationContextLabels },
+    ] as const
+    const hasPendingChanges = search.trim() !== applied.search || fields.some((field) => field.value !== applied[field.key])
+    const chips = fields.filter((field) => applied[field.key] !== "all").map((field) => ({
+      key: field.key as keyof CommunicationFilters,
+      label: `${field.label}: ${(field.options as Record<string, string>)[applied[field.key]] ?? applied[field.key]}`,
+      clear: () => field.set("all"),
+    }))
+    if (applied.search) chips.unshift({ key: "search", label: `Текст: ${applied.search}`, clear: () => setSearch("") })
+    const removeFilter = (chip: typeof chips[number]) => {
+      chip.clear()
+      const next = { ...applied, [chip.key]: chip.key === "search" ? "" : "all" }
+      setApplied(next); setPage(1); syncUrl(next, 1)
+      if (resultsScrollRef.current) resultsScrollRef.current.scrollTop = 0
+    }
+    const changePage = (next: number) => {
+      setPage(next); syncUrl(applied, next)
+      if (resultsScrollRef.current) resultsScrollRef.current.scrollTop = 0
+    }
+
+    return (
+      <LogsWorkspace>
+        <LogsWorkspaceHeader communications filtersOpen={filtersOpen} filterCount={appliedCount}
+          onToggleFilters={() => setFiltersOpen((current) => !current)} />
+        <div className={cn("grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] lg:grid-cols-[21rem_minmax(0,1fr)] lg:grid-rows-1", filtersOpen && "max-lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)]")}>
+          <aside id="logs-filters-v2" aria-label="Фильтры общения" className={cn("min-h-0 overflow-auto border-b bg-background lg:block lg:border-r lg:border-b-0", filtersOpen ? "block" : "hidden")}>
+            <form onSubmit={(event) => { event.preventDefault(); apply() }} className="flex h-full min-h-0 flex-col">
+              <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
+                <div className="flex items-center gap-2"><Filter className="size-4" /><span className="text-xs font-semibold uppercase tracking-[0.12em]">Фильтры</span></div>
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  {hasPendingChanges && <span>Есть изменения</span>}
+                  {appliedCount > 0 && <Badge variant="outline">{appliedCount}</Badge>}
+                </div>
+              </div>
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain p-4">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="communications-search-v2">Текст, транскрипция или игрок</Label>
+                  <Input id="communications-search-v2" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Найти сообщение…" />
+                </div>
+                {fields.map((field) => (
+                  <div key={field.key} className="flex flex-col gap-1.5">
+                    <Label htmlFor={`communications-${field.key}-v2`}>{field.label}</Label>
+                    <Select value={field.value} onValueChange={field.set}>
+                      <SelectTrigger id={`communications-${field.key}-v2`} className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectGroup>
+                        <SelectItem value="all">{field.all}</SelectItem>
+                        {Object.entries(field.options).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
+                      </SelectGroup></SelectContent>
+                    </Select>
+                  </div>
+                ))}
+                <p className="border-t pt-3 text-[11px] leading-4 text-muted-foreground">Чат и расшифровки голоса. Получатели — наблюдение сервера, не подтверждение прочтения или прослушивания.</p>
+              </div>
+              <div className="grid shrink-0 grid-cols-2 gap-2 border-t bg-background p-3">
+                <Button type="button" variant="outline" onClick={reset} disabled={isFetching}><RotateCcw data-icon="inline-start" />Сбросить</Button>
+                <Button type="submit" disabled={isFetching || !hasPendingChanges}><Search data-icon="inline-start" />Применить</Button>
+              </div>
+            </form>
+          </aside>
+          <section aria-label="Общение игроков — результаты" className="flex min-h-0 min-w-0 flex-col">
+            <div className="shrink-0 border-b px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="mr-1 text-xs font-semibold uppercase tracking-[0.12em]">Результаты</h2>
+                {data && <Badge variant="secondary">{data.total.toLocaleString("ru-RU")} сообщений</Badge>}
+                {isFetching && <span role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />Выполняется запрос</span>}
+                <Button type="button" variant="ghost" size="icon-sm" className="ml-auto" onClick={() => refetch()} disabled={isFetching} aria-label="Обновить результаты"><RefreshCw /></Button>
+              </div>
+              <div className="mt-2 flex min-h-7 flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-[11px] text-muted-foreground">Активные фильтры</span>
+                {chips.map((chip) => <button key={chip.key} type="button" onClick={() => removeFilter(chip)} title={`Убрать фильтр «${chip.label}»`} className="flex max-w-72 items-center gap-1.5 border border-border bg-muted/35 px-2 py-1 text-[11px] hover:bg-accent"><span className="truncate">{chip.label}</span><X className="size-3 shrink-0" /></button>)}
+                {!chips.length && <span className="text-[11px] text-muted-foreground">Нет</span>}
+              </div>
+            </div>
+            {isError && <div role="alert" className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 text-sm text-destructive"><span>Не удалось загрузить сообщения</span><Button variant="outline" size="sm" onClick={() => refetch()}>Повторить</Button></div>}
+            <div ref={resultsScrollRef} data-logs-results-scroll className="min-h-0 flex-1 overflow-auto overscroll-contain [&>[data-slot=table-container]]:overflow-visible">
+              {resultsTable}
+            </div>
+            <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-t px-4 py-2 text-xs text-muted-foreground">
+              <span>Страница {data?.page ?? page} из {data?.total_pages ?? 1}</span>
+              <div className="flex gap-2"><Button variant="outline" size="sm" disabled={page <= 1 || isFetching} onClick={() => changePage(page - 1)}>Назад</Button><Button variant="outline" size="sm" disabled={!data?.has_next || isFetching} onClick={() => changePage(page + 1)}>Дальше</Button></div>
+            </div>
+          </section>
+        </div>
+        <CommunicationDrawer event={detail.data} communicationId={selectedId} loading={detail.isLoading} onClose={() => selectCommunication(null)} />
+      </LogsWorkspace>
+    )
+  }
 
   return (
     <div className="space-y-4">
@@ -323,13 +433,7 @@ export function CommunicationsView() {
       <Card className="gap-0 py-0">
         <CardHeader className="border-b py-3"><CardTitle className="flex items-center gap-2 text-sm">Результаты <Badge variant="secondary">{data?.total?.toLocaleString("ru-RU") ?? 0} сообщений</Badge></CardTitle><CardDescription className="ml-auto text-right">Серверная доставка, не телепатия клиента</CardDescription></CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto"><Table className="min-w-[1180px]"><TableHeader className="bg-muted/35"><TableRow><TableHead>Время</TableHead><TableHead>Источник</TableHead><TableHead>Тип общения</TableHead><TableHead>Игрок</TableHead><TableHead>Сервер / раунд</TableHead><TableHead>Отсек</TableHead><TableHead>Сообщение</TableHead><TableHead>Получатели</TableHead></TableRow></TableHeader><TableBody>
-            {isLoading && <TableRow><TableCell colSpan={8} className="py-12 text-center">Загрузка…</TableCell></TableRow>}
-            {!isLoading && !(data?.events.length) && <TableRow><TableCell colSpan={8} className="py-12 text-center text-muted-foreground">Сообщений не найдено</TableCell></TableRow>}
-            {data?.events.map((event) => { const text = event.source === "voice" ? event.transcript_text : event.original_text; return <TableRow key={event.id} className="cursor-pointer align-top" data-selected={selectedId === event.id || undefined} onClick={() => selectCommunication(selectedId === event.id ? null : event.id)}>
-              <TableCell className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">{formatBrowserDate(event.occurred_at)}</TableCell><TableCell><Badge variant="outline" className="flex w-fit items-center gap-1"><SourceIcon source={event.source} />{sourceLabel(event.source)}</Badge></TableCell><TableCell><Badge variant="secondary">{communicationChannelLabels[event.channel] ?? event.channel}</Badge></TableCell><TableCell className="font-medium"><PlayerName playerId={event.player_id} playerName={event.player_name} stopPropagation /></TableCell><TableCell><RoundContext event={event} /></TableCell><TableCell className="text-xs">{event.hull_name ?? "-"}</TableCell><TableCell className="max-w-[360px] whitespace-normal break-words text-xs">{text ?? <AsrStatus event={event} />}</TableCell><TableCell className="text-xs">{event.recipient_count}</TableCell>
-            </TableRow> })}
-          </TableBody></Table></div>
+          <div className="overflow-x-auto">{resultsTable}</div>
           <div className="flex items-center justify-between border-t px-4 py-3 text-xs text-muted-foreground"><span>Страница {data?.page ?? page} из {data?.total_pages ?? 1}</span><div className="flex gap-2"><Button variant="outline" size="sm" disabled={page <= 1 || isFetching} onClick={() => { const next = page - 1; setPage(next); syncUrl(applied, next) }}>Назад</Button><Button variant="outline" size="sm" disabled={!data?.has_next || isFetching} onClick={() => { const next = page + 1; setPage(next); syncUrl(applied, next) }}>Дальше</Button></div></div>
         </CardContent>
       </Card>

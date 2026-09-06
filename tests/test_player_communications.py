@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from database import Base
 from models import AppSetting, PlayerCommunication, PlayerCommunicationRecipient, PlayerData, RoundEvent
@@ -12,6 +16,37 @@ from routes.communications import (
     reconcile_stale_pending_communications,
 )
 from schemas import CommunicationBatchIn
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_config_http_route_is_not_shadowed_by_communication_id(monkeypatch, allowed):
+    from routes import communications
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    AppSetting.__table__.create(engine)
+    factory = sessionmaker(bind=engine)
+
+    def database_override():
+        with factory() as db:
+            yield db
+
+    app = FastAPI()
+    app.include_router(communications.router)
+    app.dependency_overrides[communications.get_db] = database_override
+    app.dependency_overrides[communications.get_current_admin] = lambda: object()
+    monkeypatch.setattr(communications, "check_permission", lambda *_: allowed)
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/admin/communications/config")
+            assert response.status_code == (200 if allowed else 403)
+            if allowed:
+                assert response.json()["retention_days"] == communications.DEFAULT_RETENTION_DAYS
+                with factory() as db:
+                    db.add(AppSetting(key=communications.RETENTION_SETTING, value="30"))
+                    db.commit()
+                assert client.get("/api/v1/admin/communications/config").json()["retention_days"] == 30
+    finally:
+        engine.dispose()
 
 
 def _db():
