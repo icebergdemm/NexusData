@@ -7,8 +7,6 @@ import {
   CalendarClock,
   Filter,
   LoaderCircle,
-  PanelLeftClose,
-  PanelLeftOpen,
   RefreshCw,
   RotateCcw,
   ScrollText,
@@ -45,6 +43,7 @@ import { IS_V2 } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
 import { formatBrowserDate } from "@/lib/format-date"
 import { CommunicationsView } from "./CommunicationsView"
+import { LogsWorkspace, LogsWorkspaceHeader } from "./logs-workspace"
 
 interface LogsResponse {
   events: LogEvent[]
@@ -202,6 +201,7 @@ export function LogsPage() {
     },
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled: !communicationMode,
     retry: false,
   })
   const data = infiniteData?.pages[infiniteData.pages.length - 1]
@@ -210,12 +210,14 @@ export function LogsPage() {
   const { data: stats } = useQuery({
     queryKey: ["logs-stats"],
     queryFn: () => api.get<Record<string, LogStatEntry>>("/api/v1/admin/logs/stats"),
+    enabled: !communicationMode,
   })
 
   const { data: searchIndex } = useQuery({
     queryKey: ["logs-search-index"],
     queryFn: () => api.get<SearchIndexStatus>("/api/v1/admin/logs/search-index"),
-    refetchInterval: (query) => (query.state.data?.ready === false ? 15000 : false),
+    enabled: !communicationMode,
+    refetchInterval: (query) => (!communicationMode && query.state.data?.ready === false ? 15000 : false),
   })
 
   const refresh = useMutation({
@@ -287,6 +289,7 @@ export function LogsPage() {
       : ""
 
   if (communicationMode) {
+    if (IS_V2) return <CommunicationsView />
     return (
       <div>
         <PageHeader
@@ -357,57 +360,21 @@ export function LogsPage() {
     }
 
     return (
-      <div className="-m-4 flex min-h-[calc(100dvh-3.5rem)] flex-col bg-background sm:-m-5 lg:h-[calc(100dvh-3.5rem)] lg:overflow-hidden">
-        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center border border-border">
-              <ScrollText className="size-4" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold uppercase tracking-[0.08em]">Логи сервера</h1>
-              <p className="truncate text-xs text-muted-foreground">Поиск действий игроков, игровых событий и технических записей</p>
-            </div>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            <LogViewToggle communications={false} />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="lg:hidden"
-              onClick={() => setV2FiltersOpen((current) => !current)}
-              aria-expanded={v2FiltersOpen}
-            >
-              {v2FiltersOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
-              Фильтры{appliedCount > 0 ? ` (${appliedCount})` : ""}
-            </Button>
-            {admin?.is_superuser && (
+      <LogsWorkspace>
+        <LogsWorkspaceHeader communications={false} filtersOpen={v2FiltersOpen}
+          onToggleFilters={() => setV2FiltersOpen((current) => !current)} filterCount={appliedCount}
+          actions={admin?.is_superuser && (
               <Button variant="outline" size="sm" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
                 <RefreshCw className={cn("size-4", refresh.isPending && "animate-spin")} />
                 <span className="hidden sm:inline">Обновить из SFTP</span>
               </Button>
-            )}
-          </div>
-        </div>
+          )} />
 
-        {stats && Object.keys(stats).length > 0 && (
-          <div className="flex shrink-0 overflow-x-auto border-b">
-            {Object.entries(stats).map(([serverName, stat]) => (
-              <div key={serverName} className="flex min-w-72 items-center gap-4 border-r px-4 py-2.5 text-xs">
-                <span className="font-semibold">{serverName}</span>
-                <span className="font-mono text-muted-foreground">{stat.event_count.toLocaleString("ru-RU")} событий</span>
-                <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
-                  {stat.last_refresh ? formatBrowserDate(stat.last_refresh) : "Не обновлялось"}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="grid min-h-0 flex-1 lg:grid-cols-[21rem_minmax(0,1fr)]">
+        <div className={cn("grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] lg:grid-cols-[21rem_minmax(0,1fr)] lg:grid-rows-1", v2FiltersOpen && "max-lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)]")}>
           <aside
+            id="logs-filters-v2"
             className={cn(
-              "border-b bg-background lg:block lg:min-h-0 lg:border-r lg:border-b-0",
+              "min-h-0 overflow-auto border-b bg-background lg:block lg:border-r lg:border-b-0",
               v2FiltersOpen ? "block" : "hidden",
             )}
           >
@@ -576,6 +543,12 @@ export function LogsPage() {
                     : "Упоминания также ищутся внутри текста и могут потребовать ограничить период."}
                   {draftFilters.consoleOnly && ` Выбран тип: ${draftActionType}.`}
                 </p>
+                {stats && Object.entries(stats).map(([serverName, stat]) => (
+                  <div key={serverName} className="flex flex-col gap-1 border-t pt-3 text-[11px] text-muted-foreground">
+                    <span>{serverName} · {stat.event_count.toLocaleString("ru-RU")} событий</span>
+                    <span>Обновлено: {stat.last_refresh ? formatBrowserDate(stat.last_refresh) : "Не обновлялось"}</span>
+                  </div>
+                ))}
               </div>
 
               <div className="grid shrink-0 grid-cols-2 gap-2 border-t bg-background p-3">
@@ -651,7 +624,7 @@ export function LogsPage() {
               </div>
             )}
 
-            <div className="min-h-0 flex-1 overflow-auto">
+            <div data-logs-results-scroll className="min-h-0 flex-1 overflow-auto overscroll-contain [&>[data-slot=table-container]]:overflow-visible">
               {isLoading ? (
                 <div className="space-y-2 p-4">
                   {Array.from({ length: 12 }).map((_, index) => <Skeleton key={index} className="h-9" />)}
@@ -752,7 +725,7 @@ export function LogsPage() {
           open={summaryPlayerId != null}
           onOpenChange={(open) => !open && setSummaryPlayerId(null)}
         />
-      </div>
+      </LogsWorkspace>
     )
   }
 

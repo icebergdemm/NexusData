@@ -48,6 +48,14 @@ def get_server_communication_config():
         "deepgram_api_key": settings.deepgram_api_key or "",
         "deepgram_model": settings.deepgram_model or "nova-3",
         "deepgram_language": settings.deepgram_language or "ru",
+        "deepgram_streaming": {
+            "segment_gap_ms": settings.deepgram_segment_gap_ms,
+            "max_segment_seconds": settings.deepgram_max_segment_seconds,
+            "finalize_timeout_seconds": settings.deepgram_finalize_timeout_seconds,
+            "io_timeout_seconds": settings.deepgram_io_timeout_seconds,
+            "audio_queue_frames": settings.deepgram_audio_queue_frames,
+            "endpointing_ms": settings.deepgram_endpointing_ms,
+        },
     }
 
 

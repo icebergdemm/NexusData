@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     deepgram_api_key: str = Field("")
     deepgram_model: str = Field("nova-3")
     deepgram_language: str = Field("ru")
+    # One ASR configuration, distributed to game servers by /communications/config.
+    deepgram_segment_gap_ms: int = Field(1800, ge=500, le=5000)
+    deepgram_max_segment_seconds: int = Field(60, ge=5, le=120)
+    deepgram_finalize_timeout_seconds: int = Field(8, ge=2, le=30)
+    deepgram_io_timeout_seconds: int = Field(10, ge=2, le=30)
+    deepgram_audio_queue_frames: int = Field(512, ge=64, le=2048)
+    deepgram_endpointing_ms: int = Field(600, ge=100, le=2000)
     # Optional bridge to AsperAIDispatcher. Every player terminal message is
     # forwarded; the model returns respond=false for traffic unrelated to the
     # dispatch post, otherwise its reply is queued back into the game.
