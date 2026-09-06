@@ -28,7 +28,13 @@ export function formatSessionDuration(
   const joinedAt = parseSessionTime(joinTime)
   if (joinedAt == null) return "-"
   const minutes = Math.max(0, Math.floor((now - joinedAt) / 60_000))
-  return `${minutes} мин`
+  if (minutes < 60) return `${minutes} мин`
+
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes === 0
+    ? `${hours} ч`
+    : `${hours} ч ${remainingMinutes} мин`
 }
 
 export function formatSessionStart(joinTime: string | null | undefined): string {
