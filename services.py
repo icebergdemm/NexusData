@@ -13,6 +13,33 @@ def _now_msk() -> datetime:
     """Current time in Moscow timezone (naive datetime for display)."""
     return datetime.now(tz=MSK).replace(tzinfo=None)
 
+
+def _session_login_time_to_msk(login_time: Optional[datetime]) -> Optional[datetime]:
+    """Convert a stored player-session login time to the display timezone.
+
+    Login events are stored as naive UTC after ``parse_iso_datetime`` strips
+    the incoming ``Z`` offset. The online cache stores naive MSK timestamps.
+    """
+    if login_time is None:
+        return None
+    if login_time.tzinfo is not None:
+        return login_time.astimezone(MSK).replace(tzinfo=None)
+    return login_time + timedelta(hours=3)
+
+
+def _resolve_online_join_time(
+    existing: Optional[dict],
+    active_session_login_time: Optional[datetime],
+    now: datetime,
+) -> datetime:
+    """Prefer the real login event while keeping snapshot compatibility."""
+    if active_session_login_time is not None:
+        return active_session_login_time
+    if existing is not None:
+        return existing.get("join_time", now)
+    return now
+
+
 from models import (
     PlayerData, PlayerStats, AdminUser, PlayerKill, PlayerRoleAction,
     PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, ServerPlayerPrivilege,
@@ -1202,6 +1229,33 @@ class ServerModerationService:
                 for r in self.db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
             }
 
+        # The login event is recorded when the client actually connects,
+        # unlike this periodic snapshot. Use its open session for the online
+        # duration, but keep the snapshot timestamp as a compatibility
+        # fallback if the login event has not arrived or is unavailable.
+        active_session_login_times = {}
+        player_ids = {
+            pd.player_id for pd in pd_rows.values()
+            if pd is not None and pd.player_id is not None
+        }
+        if player_ids:
+            try:
+                active_sessions = (
+                    self.db.query(PlayerSession.player_id, PlayerSession.login_time)
+                    .filter(
+                        PlayerSession.player_id.in_(player_ids),
+                        PlayerSession.logout_time.is_(None),
+                    )
+                    .order_by(PlayerSession.id.desc())
+                    .all()
+                )
+                for player_id, login_time in active_sessions:
+                    active_session_login_times.setdefault(
+                        player_id, _session_login_time_to_msk(login_time)
+                    )
+            except Exception as exc:
+                logger.warning("Could not resolve active player sessions: %s", exc)
+
         newly_joined = set()
 
         with _online_players_lock:
@@ -1221,12 +1275,14 @@ class ServerModerationService:
                 character_name = db_name if db_name and db_name != player_name else None
 
                 existing = _online_players.get(steamid)
+                active_session_login_time = active_session_login_times.get(player_id)
+                join_time = _resolve_online_join_time(
+                    existing, active_session_login_time, now
+                )
+
                 # Detect newly joined (not previously online OR was on a different server)
                 if existing is None:
                     newly_joined.add(steamid)
-                    join_time = now
-                else:
-                    join_time = existing.get("join_time", now)
 
                 _online_players[steamid] = {
                     "player_steamid": steamid,
