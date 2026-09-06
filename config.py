@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     deepgram_model: str = Field("nova-3")
     deepgram_language: str = Field("ru")
     # One ASR configuration, distributed to game servers by /communications/config.
-    deepgram_segment_gap_ms: int = Field(1800, ge=500, le=5000)
+    deepgram_segment_gap_ms: int = Field(5000, ge=500, le=5000)
     deepgram_max_segment_seconds: int = Field(60, ge=5, le=120)
     deepgram_finalize_timeout_seconds: int = Field(8, ge=2, le=30)
     deepgram_io_timeout_seconds: int = Field(10, ge=2, le=30)

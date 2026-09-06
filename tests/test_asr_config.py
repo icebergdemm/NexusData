@@ -38,6 +38,10 @@ def test_streaming_config_retains_auth_dependency():
     ]
 
 
+def test_default_speech_window_preserves_short_pauses():
+    assert Settings.model_fields["deepgram_segment_gap_ms"].default == 5000
+
+
 @pytest.mark.parametrize(("field", "bad"), [
     ("deepgram_segment_gap_ms", 0),
     ("deepgram_max_segment_seconds", 1000),
