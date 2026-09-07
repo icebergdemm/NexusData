@@ -5115,7 +5115,13 @@ async def api_moderation_templates_list(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    allowed_types = set(MODERATION_TEMPLATE_TYPES) if current_admin.is_superuser else _allowed_moderation_template_types(current_admin)
+    allowed_types = (
+        set(MODERATION_TEMPLATE_TYPES)
+        if check_permission(current_admin, "moderation_templates", "manage")
+        else _allowed_moderation_template_types(current_admin)
+    )
+    if not allowed_types:
+        raise HTTPException(status_code=403, detail="Нет прав на использование шаблонов модерации")
     return {"templates": [_serialize_moderation_template(row) for row in ModerationActionTemplateService(db).list(allowed_types)]}
 
 
@@ -5125,8 +5131,8 @@ async def api_moderation_template_create(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    if not check_permission(current_admin, "moderation_templates", "manage"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав: управление шаблонами")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
     try:
@@ -5146,8 +5152,8 @@ async def api_moderation_template_update(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    if not check_permission(current_admin, "moderation_templates", "manage"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав: управление шаблонами")
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
     try:
@@ -5169,8 +5175,8 @@ async def api_moderation_template_delete(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    if not check_permission(current_admin, "moderation_templates", "manage"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав: управление шаблонами")
     await ensure_csrf_or_valid_admin_session(request, db)
     if not ModerationActionTemplateService(db).delete(template_id):
         raise HTTPException(status_code=404, detail="Шаблон не найден")

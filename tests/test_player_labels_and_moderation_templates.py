@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,8 @@ from database import Base
 from models import LabelCategory, PlayerData
 from security import check_moderation_action_permission, csrf_token_from_request
 from services import ModerationActionTemplateService, PlayerLabelService, prepare_admin_message
+from permissions_registry import PERMISSION_REGISTRY
+from services_ai_dossier import require_ai_center_access
 
 
 def _database() -> tuple[object, Session]:
@@ -80,3 +83,16 @@ def test_csrf_header_is_used_by_json_requests():
     request = SimpleNamespace(headers={"X-CSRF-Token": "header-token"})
 
     assert csrf_token_from_request(request, None) == "header-token"
+
+
+def test_template_management_is_a_separate_assignable_permission():
+    template_page = PERMISSION_REGISTRY["moderation_templates"]
+
+    assert template_page["actions"] == [{"key": "manage", "label": "Управление шаблонами"}]
+
+
+def test_ai_center_access_is_superuser_only():
+    with pytest.raises(HTTPException):
+        require_ai_center_access(SimpleNamespace(is_superuser=False))
+
+    require_ai_center_access(SimpleNamespace(is_superuser=True))

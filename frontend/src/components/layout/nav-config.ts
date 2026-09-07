@@ -96,12 +96,10 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Пользователи Nexus Data", to: "/users", icon: UserCog, permission: "admin" },
       { label: "Администрирование", to: "/administration", icon: Settings, permission: "admin" },
-      { label: "Шаблоны модерации", to: "/moderation-templates", icon: FileText, isVisible: (admin) => !!admin?.is_superuser },
+      { label: "Шаблоны модерации", to: "/moderation-templates", icon: FileText, isVisible: (admin) => canDo(admin, "moderation_templates", "manage") },
       {
         label: "AI-центр", to: "/ai-center", icon: Bot,
-        isVisible: (admin) => !!admin && (
-          admin.is_superuser || canDo(admin, "players", "view") || canDo(admin, "players_special", "view")
-        ),
+        isVisible: (admin) => !!admin?.is_superuser,
       },
       { label: "Серверные привилегии", to: "/server-privileges", icon: KeyRound, permission: "privileges" },
       { label: "Редактирование китов", to: "/kits", icon: Wrench, permission: "kits" },

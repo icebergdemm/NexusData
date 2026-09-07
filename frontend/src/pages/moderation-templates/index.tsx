@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { FileText, Pencil, Plus, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
-import { useCurrentAdmin } from "@/lib/auth"
+import { canDo, useCurrentAdmin } from "@/lib/auth"
 import type { ModerationTemplate, ModerationTemplateType } from "@/components/layout/ModerationTemplatePicker"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
@@ -27,6 +27,7 @@ const EMPTY_FORM = { action_type: "message" as ModerationTemplateType, name: "",
 
 export function ModerationTemplatesPage() {
   const { data: admin, isLoading: isAdminLoading } = useCurrentAdmin()
+  const canManage = canDo(admin, "moderation_templates", "manage")
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<ModerationTemplate | null>(null)
@@ -36,7 +37,7 @@ export function ModerationTemplatesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["moderation-templates"],
     queryFn: () => api.get<{ templates: ModerationTemplate[] }>("/api/v1/admin/moderation-templates"),
-    enabled: !!admin?.is_superuser,
+    enabled: canManage,
   })
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["moderation-templates"] })
 
@@ -67,7 +68,7 @@ export function ModerationTemplatesPage() {
   }
 
   if (isAdminLoading) return <div className="text-sm text-muted-foreground">Загрузка…</div>
-  if (!admin?.is_superuser) return <Card><CardContent className="py-10 text-center text-muted-foreground">Доступ только для суперпользователей.</CardContent></Card>
+  if (!canManage) return <Card><CardContent className="py-10 text-center text-muted-foreground">Нет права «Управление шаблонами».</CardContent></Card>
 
   const templates = data?.templates ?? []
   return (

@@ -28,6 +28,7 @@ from services_ai_dossier import (
     require_dossier_generation,
     normalize_ip_entries,
     save_manual_ip_entries,
+    require_ai_center_access,
 )
 
 router = APIRouter()
@@ -152,9 +153,8 @@ async def get_ai_dossier_overview(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    _require_player_view(current_admin)
-    include_secret = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
-    return get_dossier_overview(db, include_secret=include_secret)
+    require_ai_center_access(current_admin)
+    return get_dossier_overview(db, include_secret=True)
 
 
 @router.get("/api/v1/admin/ai-dossiers/runs")
@@ -163,9 +163,8 @@ async def get_ai_dossier_runs(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    _require_player_view(current_admin)
-    include_secret = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
-    return {"runs": list_dossier_runs(db, limit, include_secret)}
+    require_ai_center_access(current_admin)
+    return {"runs": list_dossier_runs(db, limit, include_secret=True)}
 
 
 @router.get("/api/v1/admin/ai-dossiers/players")
@@ -175,9 +174,8 @@ async def get_ai_dossier_players(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    _require_player_view(current_admin)
-    include_secret = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
-    return {"players": search_dossier_players(db, q, limit, include_secret)}
+    require_ai_center_access(current_admin)
+    return {"players": search_dossier_players(db, q, limit, include_secret=True)}
 
 
 @router.post("/api/v1/admin/ai-dossiers/health-check")
