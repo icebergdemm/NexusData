@@ -23,7 +23,10 @@ test("ratings page uses one paginated role table with row and drawer navigation"
   assert.match(ratingsPageSource, /pageSize: PAGE_SIZE/)
   assert.match(ratingsPageSource, /onClick=\{\(\) => selectPlayer\(entry\.steamId, entry\.role\)\}/)
   assert.match(ratingsPageSource, /<Sheet open=\{Boolean\(selectedPlayer\)\}/)
-  assert.match(ratingsPageSource, /Открыть игрока/)
+  assert.match(ratingsPageSource, /search-suggestions\?q=/)
+  assert.match(ratingsPageSource, /PlayerHoverLink/)
+  assert.match(ratingsPageSource, /Обновить Discord/)
+  assert.doesNotMatch(ratingsPageSource, /leaderboard\.extra\.map/)
   assert.match(ratingsPageSource, /setDrawerRole\("all"\)/)
   assert.match(ratingsPageSource, /aria-label="Роль в превью"/)
   assert.doesNotMatch(ratingsPageSource, /Enter — открыть игрока/)
@@ -38,7 +41,7 @@ test("rating v2 leaderboard keeps usable rows when optional transparency fields 
   })
 
   assert.deepEqual(result, {
-    leaderboard: [{ rank: 1, steamId: "7656119", playerName: "Ada", role: null, rating: 42, points: null, activity: null, playtimeHours: null, qualifiedRounds: null, confidence: null, eligibility: null, dataQuality: null, eventCount: null, lastActivity: null, extra: [] }],
+    leaderboard: [{ rank: 1, steamId: "7656119", playerId: null, playerName: "Ada", role: null, rating: 42, points: null, activity: null, playtimeHours: null, qualifiedRounds: null, confidence: null, eligibility: null, dataQuality: null, eventCount: null, lastActivity: null, extra: [] }],
     roles: ["captain"],
     selectedRole: "captain",
     pagination: { total: 1, totalPages: 1, page: 1, pageSize: 100, hasNext: false },

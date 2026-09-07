@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import sys
 import types
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 if sys.platform == "win32" and "fcntl" not in sys.modules:
@@ -76,6 +77,36 @@ def test_admin_leaderboard_is_scoped_by_mode_and_role():
         pvp = client.get("/api/v2/admin/ratings?mode=pvp&role=mechanic")
         assert pvp.status_code == 200
         assert pvp.json()["leaderboard"] == []
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_admin_can_force_discord_rating_publish(monkeypatch):
+    scheduled = {}
+
+    class FakeBot:
+        def publish_rating_task(self):
+            return object()
+
+        def schedule(self, coroutine, description=""):
+            scheduled["coroutine"] = coroutine
+            scheduled["description"] = description
+            future = Future()
+            future.set_result(None)
+            return future
+
+    monkeypatch.setitem(sys.modules, "discord_bot", types.SimpleNamespace(bot=FakeBot()))
+    async def skip_csrf(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(rating_admin_v2, "ensure_csrf_or_valid_admin_session", skip_csrf)
+    client, db, engine = _client()
+    try:
+        response = client.post("/api/v2/admin/ratings/discord-refresh")
+        assert response.status_code == 200
+        assert response.json()["status"] == "published"
+        assert scheduled["description"] == "Принудительное обновление рейтинга в Discord"
     finally:
         db.close()
         engine.dispose()

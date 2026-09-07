@@ -5,6 +5,7 @@ export type RatingMetadata = [string, RatingMetadataValue][]
 export interface RatingLeaderboardRow {
   rank: number
   steamId: string
+  playerId: number | null
   playerName: string
   role: string | null
   rating: number | null
@@ -46,7 +47,7 @@ type UnknownRecord = Record<string, unknown>
 const leaderboardKeys = new Set([
   "leaderboard", "entries", "roles", "selected_role", "selectedRole", "role", "mode", "pagination",
   "total", "total_pages", "page", "page_size", "has_next",
-  "steam_id", "steamId", "player_name", "playerName", "name", "rank", "rating",
+  "steam_id", "steamId", "player_id", "playerId", "player_name", "playerName", "name", "rank", "rating",
   "current_rating", "points", "cumulative_points", "last_activity", "last_activity_date", "last_event_at",
   "activity", "activity_factor", "play_time_hours", "playtime_hours", "qualified_rounds", "confidence", "eligibility", "event_count", "unmapped_events", "data_quality", "source",
 ])
@@ -95,6 +96,7 @@ export function normalizeRatingLeaderboard(value: unknown): RatingLeaderboard {
     return [{
       rank: asNumber(row.rank) ?? (page - 1) * pageSize + index + 1,
       steamId,
+      playerId: asNumber(row.player_id) ?? asNumber(row.playerId),
       playerName: asString(row.player_name) ?? asString(row.playerName) ?? asString(row.name) ?? steamId,
       role: asString(row.role) ?? asString(row.job) ?? asString(row.character_role),
       rating: asNumber(row.rating) ?? asNumber(row.current_rating),

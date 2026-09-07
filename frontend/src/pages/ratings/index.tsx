@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
-import { Gift, Medal, Search, Star } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { useMutation, useQuery } from "@tanstack/react-query"
+import { Gift, Medal, RefreshCw, Search, Star } from "lucide-react"
 import { Link } from "react-router-dom"
+import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -12,22 +12,28 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { RatingConfigSection } from "./config-section"
-import { buildRatingV2Query, normalizeRatingLeaderboard, type RatingMetadataValue, type RatingMode } from "./rating-v2-contract"
+import { buildRatingV2Query, normalizeRatingLeaderboard, type RatingMode } from "./rating-v2-contract"
 import { RatingEventDrawer, RatingV2Investigation } from "./rating-v2-views"
 
 const ROLE_LABELS: Record<string, string> = { captain: "Капитан", mechanic: "Механик", medic: "Врач", security: "СБ", engineer: "Инженер" }
 const FALLBACK_ROLES = ["captain", "mechanic", "medic", "security", "engineer"]
 const PAGE_SIZE = 25
 
-function displayMetadata(value: RatingMetadataValue): string {
-  return value === null ? "—" : String(value)
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+interface PlayerSuggestion {
+  player_id: number
+  player_last_time_name: string
+  forced_display_name: string | null
+  player_steamid: string
+  steam_avatar_url: string | null
 }
 
 function labelForRole(role: string | null | undefined): string {
@@ -46,6 +52,9 @@ export function RatingsPage() {
   const [mode, setMode] = useState<RatingMode>("mission")
   const [role, setRole] = useState("all")
   const [searchInput, setSearchInput] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
+  const [suggestOpen, setSuggestOpen] = useState(false)
+  const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [page, setPage] = useState(1)
   const [selectedPlayer, setSelectedPlayer] = useState<{ steamId: string; sourceRole: string | null } | null>(null)
   const [drawerRole, setDrawerRole] = useState("all")
@@ -59,6 +68,23 @@ export function RatingsPage() {
   const roleOptions = ["all", ...roles.filter((item) => item !== "all")]
   const topLevel = asRecord(leaderboardQuery.data)
   const canConfigure = topLevel.is_superuser === true || topLevel.can_edit === true
+  useEffect(() => {
+    const timeout = setTimeout(() => setDebouncedSearch(searchInput.trim()), 300)
+    return () => clearTimeout(timeout)
+  }, [searchInput])
+
+  const { data: suggestData } = useQuery({
+    queryKey: ["rating-player-suggestions", debouncedSearch],
+    queryFn: () => api.get<{ players: PlayerSuggestion[] }>(`/api/v1/admin/players/search-suggestions?q=${encodeURIComponent(debouncedSearch)}`),
+    enabled: debouncedSearch.length >= 2,
+  })
+  const suggestions = debouncedSearch.length >= 2 ? (suggestData?.players ?? []) : []
+
+  const discordRefreshMutation = useMutation({
+    mutationFn: () => api.post<{ status: string }>("/api/v2/admin/ratings/discord-refresh", {}),
+    onSuccess: () => toast.success("Рейтинг опубликован в Discord"),
+    onError: (error: Error) => toast.error(error.message),
+  })
   useEffect(() => {
     setPage(1)
   }, [mode, role])
@@ -100,16 +126,17 @@ export function RatingsPage() {
   const detailLoading = detailQuery.isLoading || explanationQuery.isLoading || eventsQuery.isLoading || historyQuery.isLoading || deliveryQuery.isLoading
 
   return <div className="space-y-4">
-    <PageHeader title="Рейтинг" description="Mission и PvP — отдельные таблицы, расчёты и журнал изменений" icon={Star} actions={<Button variant="outline" asChild><Link to="/ratings/rewards"><Gift className="size-4" /> Награды</Link></Button>} />
+    <PageHeader title="Рейтинг" description="Mission и PvP — отдельные таблицы, расчёты и журнал изменений" icon={Star} actions={<div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => discordRefreshMutation.mutate()} disabled={!canConfigure || discordRefreshMutation.isPending} title="Опубликовать обе доски рейтинга в Discord прямо сейчас"><RefreshCw className={`size-3.5 ${discordRefreshMutation.isPending ? "animate-spin" : ""}`} /> Обновить Discord</Button><Button variant="outline" asChild><Link to="/ratings/rewards"><Gift className="size-4" /> Награды</Link></Button></div>} />
 
     <div className="flex flex-wrap items-center gap-2">
       <Tabs value={mode} onValueChange={(value) => setMode(value as RatingMode)}><TabsList><TabsTrigger value="mission">Mission</TabsTrigger><TabsTrigger value="pvp">PvP</TabsTrigger></TabsList></Tabs>
       <Select value={role} onValueChange={setRole}><SelectTrigger className="w-44" aria-label="Фильтр роли"><SelectValue placeholder="Все роли" /></SelectTrigger><SelectContent>{roleOptions.map((item) => <SelectItem key={item} value={item}>{item === "all" ? "Все роли" : labelForRole(item)}</SelectItem>)}</SelectContent></Select>
-      <SearchInput value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="SteamID игрока…" className="max-w-xs" />
+      <div className="relative min-w-56 max-w-xs flex-1">
+        <SearchInput value={searchInput} onChange={(event) => setSearchInput(event.target.value)} onFocus={() => setSuggestOpen(true)} onBlur={() => { blurTimeout.current = setTimeout(() => setSuggestOpen(false), 150) }} placeholder="Поиск по нику, SteamID, Discord ID…" />
+        {suggestOpen && suggestions.length > 0 && <div className="absolute top-full left-0 z-20 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-md">{suggestions.map((player) => <button key={player.player_id} type="button" className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-accent" onMouseDown={(event) => { event.preventDefault(); if (blurTimeout.current) clearTimeout(blurTimeout.current); setSearchInput(player.forced_display_name || player.player_last_time_name); selectPlayer(player.player_steamid) }}><PlayerAvatar url={player.steam_avatar_url} name={player.forced_display_name || player.player_last_time_name} size={22} /><span className="min-w-0 flex-1 truncate">{player.forced_display_name || player.player_last_time_name}</span><span className="shrink-0 font-mono text-[10px] text-muted-foreground">{player.player_steamid}</span></button>)}</div>}
+      </div>
       <Button variant="outline" size="sm" disabled={!searchInput.trim()} onClick={() => selectPlayer(searchInput)}><Search className="size-3.5" />Открыть игрока</Button>
     </div>
-
-    {leaderboard.extra.length > 0 && <Card><CardContent className="flex flex-wrap gap-2 p-3 text-xs text-muted-foreground">{leaderboard.extra.map(([key, value]) => <Badge key={key} variant="outline">{key}: {displayMetadata(value)}</Badge>)}</CardContent></Card>}
 
     <Card className="overflow-hidden py-0">
       <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">{mode === "pvp" ? "PvP" : "Mission"} · рейтинг игроков</CardTitle></CardHeader>
@@ -118,7 +145,7 @@ export function RatingsPage() {
           <TableHeader><TableRow><TableHead className="w-12">#</TableHead><TableHead>Игрок</TableHead><TableHead>Роль</TableHead><TableHead>Рейтинг</TableHead><TableHead>Вклад</TableHead><TableHead>Активность</TableHead><TableHead>Часы</TableHead><TableHead>Раунды</TableHead><TableHead>Данные</TableHead></TableRow></TableHeader>
           <TableBody>{leaderboard.leaderboard.map((entry) => <TableRow key={`${entry.steamId}:${entry.role ?? "unknown"}`} tabIndex={0} className={`cursor-pointer align-top hover:bg-muted/40 focus-visible:bg-muted/40 ${entry.rank <= 3 ? "bg-warning/5" : ""}`} onClick={() => selectPlayer(entry.steamId, entry.role)} onKeyDown={(event) => event.key === "Enter" && selectPlayer(entry.steamId, entry.role)}>
             <TableCell className="text-base">{entry.rank <= 3 ? <PlatformIcon value={["🥇", "🥈", "🥉"][entry.rank - 1]} fallback={Medal} /> : <span className="text-muted-foreground">{entry.rank}</span>}</TableCell>
-            <TableCell><div className="font-medium">{entry.playerName}</div><div className="text-xs text-muted-foreground">Последняя активность: {entry.lastActivity ?? "—"}</div>{entry.extra.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{entry.extra.map(([key, value]) => <Badge key={key} variant="outline" className="text-[10px]">{key}: {displayMetadata(value)}</Badge>)}</div>}</TableCell>
+            <TableCell><span onClick={(event) => event.stopPropagation()}><PlayerHoverLink playerId={entry.playerId} className="font-medium text-primary underline-offset-2 hover:underline">{entry.playerName}</PlayerHoverLink></span><div className="text-xs text-muted-foreground">Последняя активность: {entry.lastActivity ?? "—"}</div></TableCell>
             <TableCell className="text-sm">{labelForRole(entry.role)}</TableCell><TableCell className="font-semibold text-primary">{entry.rating ?? "—"}</TableCell><TableCell className="text-muted-foreground">{entry.points ?? "—"}</TableCell><TableCell className="text-xs text-muted-foreground">{entry.activity == null ? "—" : entry.activity.toFixed(2)}</TableCell><TableCell className="text-xs text-muted-foreground">{entry.playtimeHours ?? "—"}</TableCell><TableCell className="text-xs text-muted-foreground">{entry.qualifiedRounds ?? "—"}</TableCell><TableCell className="text-xs text-muted-foreground">{labelForDataQuality(entry.dataQuality ?? entry.eligibility)}</TableCell>
           </TableRow>)}{!leaderboard.leaderboard.length && <TableRow><TableCell colSpan={9} className="py-8 text-center text-muted-foreground">Нет данных</TableCell></TableRow>}</TableBody>
         </Table>}

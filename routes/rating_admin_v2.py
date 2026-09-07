@@ -1,5 +1,6 @@
 """Admin read/configuration API for the versioned rating projection."""
 
+import asyncio
 from datetime import datetime
 import json
 import math
@@ -202,6 +203,34 @@ def get_rating_leaderboard_v2(
         "can_edit": check_permission(admin, "ratings", "edit"),
         "is_superuser": bool(admin.is_superuser),
     }
+
+
+@router.post("/api/v2/admin/ratings/discord-refresh")
+async def force_discord_rating_refresh(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin_v2),
+):
+    """Ask the already-running Discord worker to publish both rating boards now."""
+    await ensure_csrf_or_valid_admin_session(request, db)
+    _require_edit(admin)
+
+    from discord_bot import bot as discord_bot
+
+    try:
+        future = discord_bot.schedule(
+            discord_bot.publish_rating_task(),
+            "Принудительное обновление рейтинга в Discord",
+        )
+        await asyncio.wait_for(asyncio.wrap_future(future), timeout=120)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Discord-бот не завершил обновление за 120 секунд") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Не удалось обновить рейтинг в Discord: {exc}") from exc
+
+    return {"status": "published", "published_at": datetime.utcnow()}
 
 
 @router.get("/api/v2/admin/ratings/{steam_id}")
