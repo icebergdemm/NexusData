@@ -54,7 +54,7 @@ export function ModerationTemplatePicker({ type, onSelect }: ModerationTemplateP
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setSearch("") }}>
       <PopoverTrigger asChild>
         <Button type="button" size="sm" variant="outline" className="gap-1.5">
-          <FileText className="size-3.5" /> Шаблон
+          <FileText className="size-3.5" /> Выбрать шаблон
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[min(92vw,22rem)]">

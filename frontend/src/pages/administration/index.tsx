@@ -6,9 +6,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { AlertTriangle } from "lucide-react"
+import { AlertTriangle, ArrowRight, FileText } from "lucide-react"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
+import { useNavigate } from "react-router-dom"
 
 // Статистика (онлайн за период, топ игроков) отсюда убрана — она дублировала
 // страницу «Аналитика» неоптимизированной версией расчётов (полный скан
@@ -131,6 +132,7 @@ export function AdministrationPage() {
   const [retentionDays, setRetentionDays] = useState(90)
   const queryClient = useQueryClient()
   const { data: me } = useCurrentAdmin()
+  const navigate = useNavigate()
 
   const { data } = useQuery({
     queryKey: ["administration"],
@@ -162,6 +164,17 @@ export function AdministrationPage() {
 
   return (
     <div className="space-y-4">
+      {me?.is_superuser && (
+        <Card className="overflow-hidden py-0">
+          <CardHeader className="border-b bg-muted/30 py-3">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold"><FileText className="size-4" /> Шаблоны модерации</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
+            <p className="max-w-2xl text-sm text-muted-foreground">Создавайте готовые тексты для сообщений, предупреждений, киков и банов. Шаблон только заполняет поле — действие всегда подтверждается отдельно.</p>
+            <Button variant="outline" onClick={() => navigate("/moderation-templates")}>Открыть шаблоны <ArrowRight className="size-4" /></Button>
+          </CardContent>
+        </Card>
+      )}
       <Card className="overflow-hidden py-0">
         <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="text-sm font-semibold">Конфигурация (.env)</CardTitle></CardHeader>
         <CardContent className="space-y-4 py-4">

@@ -44,6 +44,8 @@ import { useDiscordProfile } from "@/lib/use-discord-profile"
 
 interface AdminOption { id: number; discord_username: string | null }
 
+type PlayerActionType = "message" | "warning" | "reprimand" | "kick" | "ban"
+
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
 }
@@ -93,7 +95,7 @@ export function PlayerDetailPage() {
   /** Наказание, для которого открыт диалог подтверждения отмены, и режим:
    *  "void" — просто пометить отменённым, "unban" — плюс снять бан на серверах. */
   const [revokeTarget, setRevokeTarget] = useState<{ row: PunishmentRow; mode: "void" | "unban" } | null>(null)
-  const [punishForm, setPunishForm] = useState({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
+  const [punishForm, setPunishForm] = useState<{ ptype: PlayerActionType; reason: string; expires_days: string; notes: string; server_name: string }>({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
 
   const queryKey = ["player-detail", playerId]
 
@@ -268,15 +270,17 @@ export function PlayerDetailPage() {
   })
 
   const sendMessageMutation = useMutation({
-    mutationFn: () => api.post(`/api/v1/admin/players/${playerId}/message`, {
-      message_text: messageDraft,
-      server_name: messageServer || null,
+    mutationFn: ({ text, server }: { text: string; server: string }) => api.post(`/api/v1/admin/players/${playerId}/message`, {
+      message_text: text,
+      server_name: server || null,
     }),
     onSuccess: () => {
       toast.success("Сообщение поставлено в очередь")
       setMessageDialogOpen(false)
+      setPunishDialogOpen(false)
       setMessageDraft("")
       setMessageServer("")
+      setPunishForm({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -653,9 +657,9 @@ export function PlayerDetailPage() {
         </TabsContent>
 
         <TabsContent value="punishments" className="space-y-3">
-          {data.can_issue_punishment && (
+          {(data.can_issue_punishment || data.can_send_message) && (
             <div className="flex justify-end">
-              <Button onClick={() => setPunishDialogOpen(true)}><Plus className="h-4 w-4" /> Выдать наказание</Button>
+              <Button onClick={() => { setPunishForm((form) => ({ ...form, ptype: data.can_issue_punishment ? "warning" : "message" })); setPunishDialogOpen(true) }}><Plus className="h-4 w-4" /> Выдать наказание</Button>
             </div>
           )}
           <Card className="overflow-hidden py-0">
@@ -863,7 +867,7 @@ export function PlayerDetailPage() {
             </div>
             <div><Label className="mb-1.5 block">Сервер (пусто — определить автоматически)</Label><Input value={messageServer} onChange={(event) => setMessageServer(event.target.value)} placeholder="ASPER1 / ASPER2" /></div>
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setMessageDialogOpen(false)}>Отмена</Button><Button disabled={!messageDraft.trim() || sendMessageMutation.isPending} onClick={() => sendMessageMutation.mutate()}>Отправить</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setMessageDialogOpen(false)}>Отмена</Button><Button disabled={!messageDraft.trim() || sendMessageMutation.isPending} onClick={() => sendMessageMutation.mutate({ text: messageDraft, server: messageServer })}>Отправить</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -888,45 +892,50 @@ export function PlayerDetailPage() {
       <Dialog open={punishDialogOpen} onOpenChange={setPunishDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Выдать «{data.punishment_type_labels[punishForm.ptype] ?? punishForm.ptype}»</DialogTitle>
-            <DialogDescription>Наказание будет привязано к {player.player_steamid} и записано в историю игрока.</DialogDescription>
+            <DialogTitle>{punishForm.ptype === "message" ? "Отправить сообщение" : `Выдать «${data.punishment_type_labels[punishForm.ptype] ?? punishForm.ptype}»`}</DialogTitle>
+            <DialogDescription>{punishForm.ptype === "message" ? "Сообщение покажется игроку отдельным окном при следующем опросе сервера. Отправка требует отдельного подтверждения." : `Наказание будет привязано к ${player.player_steamid} и записано в историю игрока.`}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
               <Label className="mb-1.5 block">Тип</Label>
-              <Select value={punishForm.ptype} onValueChange={(v) => setPunishForm((f) => ({ ...f, ptype: v }))}>
+              <Select value={punishForm.ptype} onValueChange={(v) => setPunishForm((f) => ({ ...f, ptype: v as PlayerActionType }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {data.punishment_types.map((t) => (
+                  {data.can_send_message && <SelectItem value="message">Сообщение</SelectItem>}
+                  {data.can_issue_punishment && data.punishment_types.map((t) => (
                     <SelectItem key={t} value={t}>{data.punishment_type_labels[t] ?? t}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label className="mb-1.5 block">Причина</Label>
-              <Input value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} />
+              <Label className="mb-1.5 block">{punishForm.ptype === "message" ? "Текст сообщения" : "Причина"}</Label>
+              {punishForm.ptype === "message" ? (
+                <Textarea maxLength={2000} value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Текст для игрока" autoFocus />
+              ) : (
+                <Input value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} />
+              )}
               {punishForm.ptype !== "reprimand" && <div className="mt-2"><ModerationTemplatePicker type={punishForm.ptype as "message" | "warning" | "kick" | "ban"} onSelect={(content) => setPunishForm((f) => ({ ...f, reason: content }))} /></div>}
             </div>
-            <div>
+            {punishForm.ptype !== "message" && <div>
               <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
               <Input type="number" value={punishForm.expires_days} onChange={(e) => setPunishForm((f) => ({ ...f, expires_days: e.target.value }))} />
-            </div>
-            {(punishForm.ptype === "ban" || punishForm.ptype === "kick") && (
+            </div>}
+            {(punishForm.ptype === "ban" || punishForm.ptype === "kick" || punishForm.ptype === "message") && (
               <div>
-                <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
+                <Label className="mb-1.5 block">Сервер (пусто — определить автоматически)</Label>
                 <Input value={punishForm.server_name} onChange={(e) => setPunishForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
               </div>
             )}
-            <div>
+            {punishForm.ptype !== "message" && <div>
               <Label className="mb-1.5 block">Внутренние заметки</Label>
               <Textarea value={punishForm.notes} onChange={(e) => setPunishForm((f) => ({ ...f, notes: e.target.value }))} />
-            </div>
+            </div>}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPunishDialogOpen(false)}>Отмена</Button>
-            <Button disabled={createPunishmentMutation.isPending} onClick={() => createPunishmentMutation.mutate()}>
-              Выдать
+            <Button disabled={!punishForm.reason.trim() || createPunishmentMutation.isPending || sendMessageMutation.isPending} onClick={() => punishForm.ptype === "message" ? sendMessageMutation.mutate({ text: punishForm.reason, server: punishForm.server_name }) : createPunishmentMutation.mutate()}>
+              {punishForm.ptype === "message" ? "Отправить" : "Выдать"}
             </Button>
           </DialogFooter>
         </DialogContent>
