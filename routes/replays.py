@@ -185,72 +185,194 @@ def _write_stream_file(path: str, data: bytes) -> None:
         f.write(data)
 
 
+class _DemoTruncated(Exception):
+    """A chunk ended mid-frame.
+
+    Huge static frames (geometry/outline) may span several HTTP chunks, so a
+    single chunk is not always self-contained. The replay file itself is still
+    preserved verbatim; only the live extraction stops at the cut point.
+    """
+
+
+def _need(data: bytes, offset: int, size: int) -> None:
+    if size < 0 or offset + size > len(data):
+        raise _DemoTruncated()
+
+
 def _read_u16(data: bytes, offset: int) -> tuple[int, int]:
+    _need(data, offset, 2)
     return struct.unpack_from("<H", data, offset)[0], offset + 2
 
 
 def _read_u32(data: bytes, offset: int) -> tuple[int, int]:
+    _need(data, offset, 4)
     return struct.unpack_from("<I", data, offset)[0], offset + 4
+
+
+def _read_i32(data: bytes, offset: int) -> tuple[int, int]:
+    _need(data, offset, 4)
+    return struct.unpack_from("<i", data, offset)[0], offset + 4
 
 
 def _read_str(data: bytes, offset: int) -> tuple[str, int]:
     length, offset = _read_u16(data, offset)
-    end = offset + length
-    return data[offset:end].decode("utf-8", errors="replace"), end
+    _need(data, offset, length)
+    return data[offset:offset + length].decode("utf-8", errors="replace"), offset + length
+
+
+def _read_bytes(data: bytes, offset: int, size: int) -> tuple[bytes, int]:
+    _need(data, offset, size)
+    return data[offset:offset + size], offset + size
+
+
+# Mirror of the game plugin's outline cap (WorldDemoStreamer/DemoRecorder):
+# static geometry beyond this is dropped from live state, never from the file.
+_DEMO_STATIC_POLY_CAP = 20000
 
 
 def _parse_demo_chunk(data: bytes) -> dict:
-    """Extract only live state from a demo frame batch.
+    """Extract live state from a demo frame batch.
 
-    This intentionally ignores geometry, events and voice payloads. They remain
-    in the assembled replay, while the live page receives only the latest
-    compact state.
+    Never raises: truncation (a static frame split across chunks) yields
+    whatever was fully decoded; anything else unexpected skips the chunk.
+    The assembled replay file is always preserved verbatim by the caller.
+
+    Keys produced: header, static (hulls/walls/doors/outline), spawns,
+    despawns, t, characters, doors, subs, items.
     """
+    result: dict = {}
+    try:
+        _parse_demo_chunk_into(data, result)
+    except _DemoTruncated:
+        pass
+    except Exception:
+        logger.warning("Demo live parse failed, chunk skipped", exc_info=True)
+        return {}
+    return result
+
+
+def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
     offset = 0
     origin_x = 0
     origin_y = 0
     if data[:4] == b"BDMO":
-        offset = 4 + 2 + 2 + 1 + 8
-        for _ in range(4):
-            _, offset = _read_str(data, offset)
+        _need(data, 0, 17)
+        version, offset = _read_u16(data, 4)
+        flags, offset = _read_u16(data, offset)
+        _need(data, offset, 1 + 8)
+        tick_rate = data[offset]
+        offset += 1
+        start_ms = struct.unpack_from("<q", data, offset)[0]
+        offset += 8
+        server, offset = _read_str(data, offset)
+        seed, offset = _read_str(data, offset)
+        level, offset = _read_str(data, offset)
+        sub, offset = _read_str(data, offset)
+        _need(data, offset, 4)
         offset += 4
-    result = {}
+        result["header"] = {
+            "version": version, "flags": flags, "tick_rate": tick_rate,
+            "start_ms": start_ms, "server": server, "seed": seed,
+            "level": level, "sub": sub,
+        }
     while offset < len(data):
+        _need(data, offset, 1)
         frame = data[offset]
         offset += 1
         if frame == 0x10:
             hulls, offset = _read_u16(data, offset)
-            offset += hulls * 20
+            _need(data, offset, hulls * 20)
+            hull_rows = []
+            for _ in range(hulls):
+                sub_id, p = _read_u16(data, offset)
+                hull_id, p = _read_u16(data, p)
+                x, p = _read_i32(data, p)
+                y, p = _read_i32(data, p)
+                w, p = _read_i32(data, p)
+                h, p = _read_i32(data, p)
+                offset = p
+                hull_rows.append({"id": hull_id, "sub": sub_id, "r": [x, y, w, h]})
             walls, offset = _read_u16(data, offset)
-            offset += walls * 19
-            doors, offset = _read_u16(data, offset)
-            offset += doors * 21
+            _need(data, offset, walls * 19)
+            wall_rows = []
+            for _ in range(walls):
+                sub_id, p = _read_u16(data, offset)
+                x, p = _read_i32(data, p)
+                y, p = _read_i32(data, p)
+                w, p = _read_i32(data, p)
+                h, p = _read_i32(data, p)
+                _need(data, p, 1)
+                wall_flags = data[p]
+                offset = p + 1
+                wall_rows.append({"sub": sub_id, "r": [x, y, w, h],
+                                  "h": bool(wall_flags & 1), "p": bool(wall_flags & 2)})
+            door_count, offset = _read_u16(data, offset)
+            _need(data, offset, door_count * 21)
+            door_rows = []
+            for _ in range(door_count):
+                sub_id, p = _read_u16(data, offset)
+                door_id, p = _read_u16(data, p)
+                x, p = _read_i32(data, p)
+                y, p = _read_i32(data, p)
+                w, p = _read_i32(data, p)
+                h, p = _read_i32(data, p)
+                _need(data, p, 1)
+                door_flags = data[p]
+                offset = p + 1
+                door_rows.append({"id": door_id, "sub": sub_id, "r": [x, y, w, h],
+                                  "h": bool(door_flags & 1)})
+            result.setdefault("static", {}).update(
+                {"hulls": hull_rows, "walls": wall_rows, "doors": door_rows})
         elif frame == 0x11:
-            offset += 8
+            level_w, offset = _read_i32(data, offset)
+            level_h, offset = _read_i32(data, offset)
             polygons, offset = _read_u16(data, offset)
-            for _ in range(polygons):
+            outline = []
+            for _ in range(min(polygons, _DEMO_STATIC_POLY_CAP)):
                 points, offset = _read_u16(data, offset)
-                offset += points * 8
+                _need(data, offset, points * 8)
+                poly = []
+                for _ in range(points):
+                    x, p = _read_i32(data, offset)
+                    y, p = _read_i32(data, p)
+                    offset = p
+                    poly.append([x, y])
+                if len(poly) >= 3:
+                    outline.append(poly)
+            result.setdefault("static", {}).update(
+                {"outline": outline, "outline_w": level_w, "outline_h": level_h})
         elif frame == 0x02:
+            _need(data, offset, 8)
             origin_x, origin_y = struct.unpack_from("<ii", data, offset)
             offset += 8
         elif frame == 0x03:
+            _need(data, offset, 4)
             offset += 4
             character_id, offset = _read_u16(data, offset)
             species, offset = _read_str(data, offset)
             name, offset = _read_str(data, offset)
+            _need(data, offset, 1)
             team = struct.unpack_from("<b", data, offset)[0]
             offset += 1
             result.setdefault("spawns", {})[character_id] = {
                 "name": name, "species": species,
                 "team": {1: "Team1", 2: "Team2", 3: "FriendlyNPC"}.get(team, "None"),
             }
+        elif frame == 0x04:
+            # Despawn (format v6+): stale spawn/name entries must go, otherwise
+            # recycled entity IDs keep showing the wrong name on the live page.
+            _need(data, offset, 4 + 2)
+            offset += 4
+            despawn_id, offset = _read_u16(data, offset)
+            result.setdefault("despawns", []).append(despawn_id)
         elif frame == 0x01:
             time_ms, offset = _read_u32(data, offset)
             count, offset = _read_u16(data, offset)
+            _need(data, offset, count * 6)
             characters = []
             for _ in range(count):
                 character_id, offset = _read_u16(data, offset)
+                _need(data, offset, 6)
                 x, y, flags, health = struct.unpack_from("<hhBB", data, offset)
                 offset += 6
                 characters.append({
@@ -272,6 +394,7 @@ def _parse_demo_chunk(data: bytes) -> dict:
                     "hull": None,
                 })
             door_count, offset = _read_u16(data, offset)
+            _need(data, offset, door_count * 3)
             doors = []
             for _ in range(door_count):
                 door_id, offset = _read_u16(data, offset)
@@ -279,21 +402,43 @@ def _parse_demo_chunk(data: bytes) -> dict:
                 offset += 1
                 doors.append({"id": door_id, "open": opened * 100.0 / 255.0})
             water_count, offset = _read_u16(data, offset)
+            _need(data, offset, water_count * 3)
             offset += water_count * 3
             sub_count, offset = _read_u16(data, offset)
+            _need(data, offset, sub_count * 10)
             subs = []
             for _ in range(sub_count):
                 sub_id, offset = _read_u16(data, offset)
+                _need(data, offset, 8)
                 x, y = struct.unpack_from("<ii", data, offset)
                 offset += 8
                 subs.append({"id": sub_id, "x": x, "y": y})
             result.update({"t": time_ms / 1000.0, "characters": characters, "doors": doors, "subs": subs})
         elif frame == 0x06:
+            _need(data, offset, 4 + 1 + 2 + 2 + 4 + 4 + 4)
             offset += 4 + 1 + 2 + 2 + 4 + 4 + 4
             _, offset = _read_str(data, offset)
+        elif frame == 0x05:
+            # Chat (DemoRecorder): time + sender + type + author + text.
+            _need(data, offset, 4 + 2 + 1)
+            offset += 4 + 2 + 1
+            _, offset = _read_str(data, offset)
+            _, offset = _read_str(data, offset)
         elif frame == 0x07:
+            _need(data, offset, 4 + 2)
             offset += 4 + 2
             length, offset = _read_u16(data, offset)
+            _need(data, offset, length)
+            offset += length
+        elif frame == 0x09:
+            # Voice with channel marker (WorldDemoStreamer): time + speaker +
+            # radio + payload. Previously fell into the unknown-frame branch
+            # and silently dropped the whole rest of the chunk from live state
+            # on every voice-active tick.
+            _need(data, offset, 4 + 2 + 1)
+            offset += 4 + 2 + 1
+            length, offset = _read_u16(data, offset)
+            _need(data, offset, length)
             offset += length
         elif frame == 0x08:
             count, offset = _read_u16(data, offset)
@@ -302,6 +447,7 @@ def _parse_demo_chunk(data: bytes) -> dict:
                 item_id, offset = _read_u16(data, offset)
                 owner_id, offset = _read_u16(data, offset)
                 identifier, offset = _read_str(data, offset)
+                _need(data, offset, 1)
                 condition = data[offset]
                 offset += 1
                 items.append({
@@ -312,13 +458,81 @@ def _parse_demo_chunk(data: bytes) -> dict:
                 })
             result["items"] = items
         elif frame == 0xFF:
+            _need(data, offset, 4)
             offset += 4
             break
         else:
-            # Newer event/frame types must not make the live monitor corrupt
-            # the stream. The replay file itself is still preserved verbatim.
+            # Genuinely newer frame type: stop this chunk, keep the file.
             break
-    return result
+
+
+def _apply_parsed_to_state(state: dict, parsed: dict) -> None:
+    """Merge one parsed chunk into the per-stream live cache (pure, no I/O)."""
+    if "spawns" in parsed:
+        state.setdefault("spawns", {}).update(parsed["spawns"])
+    despawns = parsed.get("despawns") or []
+    if despawns:
+        gone = set(despawns)
+        spawns = state.get("spawns")
+        if spawns:
+            for character_id in gone:
+                spawns.pop(character_id, None)
+        if isinstance(state.get("characters"), list):
+            state["characters"] = [c for c in state["characters"] if c.get("id") not in gone]
+    if "characters" in parsed:
+        for character in parsed["characters"]:
+            character.update(state.get("spawns", {}).get(character["id"], {}))
+    for key in ("t", "characters", "doors", "subs", "items"):
+        if key in parsed:
+            state[key] = parsed[key]
+    if "static" in parsed:
+        state["static"] = parsed["static"]
+    if "header" in parsed:
+        state["header"] = parsed["header"]
+
+
+def _fill_static_from_demo(row, parsed: dict, payload: dict) -> bool:
+    """Fill empty static-geometry columns from the demo stream itself.
+
+    `/world/init` stays authoritative and always overwrites these columns;
+    this is only a fallback so live monitoring works even when init was lost.
+    Returns True when anything was filled.
+    """
+    filled = False
+    static = parsed.get("static") or {}
+    header = parsed.get("header") or {}
+
+    def _fill(attr: str, value) -> None:
+        nonlocal filled
+        if value is not None and not getattr(row, attr, None):
+            setattr(row, attr, value)
+            filled = True
+
+    if static:
+        _fill("hulls", static.get("hulls"))
+        _fill("walls", static.get("walls"))
+        _fill("doors", static.get("doors"))
+        _fill("outline", static.get("outline"))
+        if static.get("outline") and (not row.outline_w or not row.outline_h):
+            row.outline_w = static.get("outline_w")
+            row.outline_h = static.get("outline_h")
+            filled = True
+    if header:
+        _fill("sub_name", (header.get("sub") or "").strip() or None)
+        _fill("level_seed", (header.get("seed") or "").strip() or None)
+        _fill("level_name", (header.get("level") or "").strip() or None)
+        if not getattr(row, "submarines", None):
+            sub_ids = {h.get("sub") for h in (static.get("hulls") or []) if h.get("sub")}
+            sub_ids.update(s.get("id") for s in (payload.get("subs") or []) if s.get("id") is not None)
+            if sub_ids:
+                row.submarines = [{"id": sid, "name": ""} for sid in sorted(sub_ids)]
+                filled = True
+    return filled
+
+
+# Bound the per-stream live cache: one small entry per round, but rounds are
+# unbounded over process lifetime.
+_LIVE_CACHE_MAX_STREAMS = 64
 
 
 def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str] = None) -> None:
@@ -327,22 +541,21 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
         return
     now = datetime.utcnow()
     with _live_cache_lock:
-        state = _live_cache.setdefault(stream_id, {"pending": 0, "seq": 0})
-        if "spawns" in parsed:
-            state.setdefault("spawns", {}).update(parsed["spawns"])
-        if "characters" in parsed:
-            for character in parsed["characters"]:
-                character.update(state.get("spawns", {}).get(character["id"], {}))
-        for key in ("t", "characters", "doors", "subs", "items"):
-            if key in parsed:
-                state[key] = parsed[key]
+        state = _live_cache.get(stream_id)
+        if state is None:
+            if len(_live_cache) >= _LIVE_CACHE_MAX_STREAMS:
+                _live_cache.pop(next(iter(_live_cache)))
+            state = _live_cache.setdefault(stream_id, {"pending": 0, "seq": 0})
+        _apply_parsed_to_state(state, parsed)
         if "t" in parsed:
             state["seq"] += 1
             state["pending"] += 1
-        if state["pending"] < 3:
+        static_pending = "static" in parsed or "header" in parsed
+        if state["pending"] < 3 and not static_pending:
             return
         state["pending"] = 0
         payload = dict(state)
+        payload["__static"] = static_pending
     db = GameSessionLocal()
     try:
         from models import WorldRound
@@ -351,6 +564,8 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
             row = WorldRound(round_id=stream_id, server_name=server_name)
             db.add(row)
         if row:
+            if payload.pop("__static", False):
+                _fill_static_from_demo(row, parsed, payload)
             row.last_seq = payload.get("seq")
             row.last_t = payload.get("t", 0)
             row.last_sent_at = now
