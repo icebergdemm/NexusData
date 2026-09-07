@@ -19,6 +19,7 @@ const PlayersListPage = lazy(() => import("@/pages/players").then(({ PlayersList
 const PlayerDetailPage = lazy(() => import("@/pages/players/detail").then(({ PlayerDetailPage }) => ({ default: PlayerDetailPage })))
 const ModerationPage = lazy(() => import("@/pages/moderation").then(({ ModerationPage }) => ({ default: ModerationPage })))
 const PunishmentsPage = lazy(() => import("@/pages/punishments").then(({ PunishmentsPage }) => ({ default: PunishmentsPage })))
+const ModerationTemplatesPage = lazy(() => import("@/pages/moderation-templates").then(({ ModerationTemplatesPage }) => ({ default: ModerationTemplatesPage })))
 const AnalyticsPage = lazy(() => import("@/pages/analytics").then(({ AnalyticsPage }) => ({ default: AnalyticsPage })))
 const TicketDetailPage = lazy(() => import("@/pages/tickets/detail").then(({ TicketDetailPage }) => ({ default: TicketDetailPage })))
 const RatingsPage = lazy(() => import("@/pages/ratings").then(({ RatingsPage }) => ({ default: RatingsPage })))
@@ -113,6 +114,7 @@ export default function App() {
           <Route path="respawn-dolls" element={<RespawnDollsPage />} />
           <Route path="achievements" element={<AchievementsPage />} />
           <Route path="punishments" element={<PunishmentsPage />} />
+          <Route path="moderation-templates" element={<ModerationTemplatesPage />} />
           <Route path="replays" element={<ReplaysListPage />} />
           <Route path="replays/rounds/:roundId" element={<RoundDetailPage />} />
           <Route path="replays/:replayId" element={<ReplayPlayerPage />} />

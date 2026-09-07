@@ -1844,6 +1844,10 @@ class PlayerLabelService:
                 .all())
 
     def assign(self, player_id: int, category_id: int, note: Optional[str], admin_id: int) -> PlayerLabel:
+        note = note.strip() if isinstance(note, str) else None
+        note = note or None
+        if note and len(note) > 500:
+            raise ValueError("Комментарий к метке слишком длинный")
         # prevent duplicate
         existing = (self.db.query(PlayerLabel)
                     .filter(PlayerLabel.player_id == player_id,
@@ -1861,8 +1865,26 @@ class PlayerLabelService:
         self.db.refresh(lbl)
         return lbl
 
-    def remove(self, label_id: int) -> bool:
-        lbl = self.db.query(PlayerLabel).filter(PlayerLabel.id == label_id).first()
+    def update_note(self, label_id: int, player_id: int, note: Optional[str]) -> Optional[PlayerLabel]:
+        note = note.strip() if isinstance(note, str) else None
+        note = note or None
+        if note and len(note) > 500:
+            raise ValueError("Комментарий к метке слишком длинный")
+        lbl = (self.db.query(PlayerLabel)
+               .filter(PlayerLabel.id == label_id, PlayerLabel.player_id == player_id)
+               .first())
+        if not lbl:
+            return None
+        lbl.note = note
+        self.db.commit()
+        self.db.refresh(lbl)
+        return lbl
+
+    def remove(self, label_id: int, player_id: Optional[int] = None) -> bool:
+        query = self.db.query(PlayerLabel).filter(PlayerLabel.id == label_id)
+        if player_id is not None:
+            query = query.filter(PlayerLabel.player_id == player_id)
+        lbl = query.first()
         if not lbl:
             return False
         self.db.delete(lbl)
@@ -1883,6 +1905,94 @@ class PlayerLabelService:
                 PlayerData.player_steamid.ilike(f"%{search}%")
             )
         return q.order_by(PlayerLabel.assigned_at.desc()).all()
+
+
+MODERATION_TEMPLATE_TYPES = ("message", "warning", "kick", "ban")
+MODERATION_TEMPLATE_TYPE_LABELS = {
+    "message": "Сообщение",
+    "warning": "Предупреждение",
+    "kick": "Кик",
+    "ban": "Бан",
+}
+
+
+class ModerationActionTemplateService:
+    """CRUD for reusable moderation text snippets."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        from models import ModerationActionTemplate
+        self._model = ModerationActionTemplate
+
+    def list(self, allowed_types: Optional[set[str]] = None):
+        query = self.db.query(self._model)
+        if allowed_types is not None:
+            if not allowed_types:
+                return []
+            query = query.filter(self._model.action_type.in_(sorted(allowed_types)))
+        return query.order_by(self._model.action_type, self._model.name, self._model.id).all()
+
+    def get(self, template_id: int):
+        return self.db.query(self._model).filter(self._model.id == template_id).first()
+
+    @staticmethod
+    def _validate(action_type: str, name: str, content: str) -> tuple[str, str, str]:
+        action_type = (action_type or "").strip().lower()
+        name = (name or "").strip()
+        content = (content or "").strip()
+        if action_type not in MODERATION_TEMPLATE_TYPES:
+            raise ValueError("Недопустимый тип шаблона")
+        if not name:
+            raise ValueError("Название шаблона обязательно")
+        if len(name) > 128:
+            raise ValueError("Название шаблона слишком длинное")
+        max_content_length = 2000 if action_type == "message" else 1000
+        if not content:
+            raise ValueError("Текст шаблона обязателен")
+        if len(content) > max_content_length:
+            raise ValueError(f"Текст шаблона не должен превышать {max_content_length} символов")
+        return action_type, name, content
+
+    def create(self, action_type: str, name: str, content: str, admin_id: int):
+        action_type, name, content = self._validate(action_type, name, content)
+        duplicate = (self.db.query(self._model)
+                     .filter(self._model.action_type == action_type, self._model.name == name)
+                     .first())
+        if duplicate:
+            raise ValueError("Шаблон с таким названием уже существует для этого типа")
+        row = self._model(action_type=action_type, name=name, content=content, created_by_admin_id=admin_id)
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def update(self, template_id: int, *, name: Optional[str] = None, content: Optional[str] = None):
+        row = self.get(template_id)
+        if not row:
+            return None
+        next_name = row.name if name is None else name
+        next_content = row.content if content is None else content
+        _, next_name, next_content = self._validate(row.action_type, next_name, next_content)
+        duplicate = (self.db.query(self._model)
+                     .filter(self._model.action_type == row.action_type,
+                             self._model.name == next_name,
+                             self._model.id != template_id)
+                     .first())
+        if duplicate:
+            raise ValueError("Шаблон с таким названием уже существует для этого типа")
+        row.name = next_name
+        row.content = next_content
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def delete(self, template_id: int) -> bool:
+        row = self.get(template_id)
+        if not row:
+            return False
+        self.db.delete(row)
+        self.db.commit()
+        return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════

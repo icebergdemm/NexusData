@@ -17,6 +17,8 @@ from services import (
     PlayerNoteService, PlayerLabelService, PlayerTrapService,
     LabelCategoryService, TwinkDetectionService, ServerModerationService,
     PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
+    ModerationActionTemplateService, MODERATION_TEMPLATE_TYPES,
+    MODERATION_TEMPLATE_TYPE_LABELS,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -1729,6 +1731,18 @@ def _serialize_label_pair(pair) -> dict:
     }
 
 
+def _serialize_moderation_template(row) -> dict:
+    return {
+        "id": row.id,
+        "action_type": row.action_type,
+        "action_label": MODERATION_TEMPLATE_TYPE_LABELS.get(row.action_type, row.action_type),
+        "name": row.name,
+        "content": row.content,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
 def _serialize_trap(t) -> dict:
     return {
         "id": t.id, "target_steamid": t.target_steamid, "reason": t.reason,
@@ -1923,6 +1937,7 @@ async def api_player_detail(
         "can_edit_discord_id": check_permission(current_admin, "players", "edit_discord_id"),
         "can_manage_notes": check_permission(current_admin, "players", "manage_notes"),
         "can_manage_labels": check_permission(current_admin, "players", "manage_labels"),
+        "can_send_message": check_permission(current_admin, "moderation", "message"),
         "can_manage_traps": check_permission(current_admin, "players", "manage_traps"),
         "can_manage_achievements": check_permission(current_admin, "players", "manage_achievements"),
         "can_manage_rewards": check_permission(current_admin, "players", "manage_rewards"),
@@ -2252,6 +2267,44 @@ async def api_delete_player_note(
     return {"status": "ok"}
 
 
+@router.post("/api/v1/admin/players/{player_id}/message")
+async def api_send_player_message(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "moderation", "message"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await request.json()
+    message_text = (body.get("message_text") or "").strip()
+    if not message_text:
+        raise HTTPException(status_code=400, detail="message_text required")
+    if len(message_text) > 2000:
+        raise HTTPException(status_code=400, detail="message_text too long")
+
+    from routes.moderation import _effective_server_name, _prefix_admin_message, _queued_action_type
+    from schemas import QueueActionIn
+
+    action_in = QueueActionIn(
+        action_type=_queued_action_type("message"),
+        target_steamid=player.player_steamid,
+        message_text=_prefix_admin_message(message_text),
+        server_name=_effective_server_name(db, "message", player.player_steamid, body.get("server_name")),
+    )
+    action = ServerModerationService(db).enqueue_action(action_in, admin_id=current_admin.id)
+    log_admin_action(db, current_admin.id, "player_message_queue", {
+        "player_id": player_id, "action_id": action.id,
+    })
+    return {"status": "queued", "action_id": action.id}
+
+
 @router.post("/api/v1/admin/players/{player_id}/labels")
 async def api_assign_player_label(
     request: Request,
@@ -2266,8 +2319,36 @@ async def api_assign_player_label(
     category_id = body.get("category_id")
     if not category_id:
         raise HTTPException(status_code=400, detail="category_id required")
-    label = PlayerLabelService(db).assign(player_id, int(category_id), body.get("note"), current_admin.id)
+    try:
+        label = PlayerLabelService(db).assign(player_id, int(category_id), body.get("note"), current_admin.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     category = db.query(LabelCategory).filter(LabelCategory.id == label.category_id).first()
+    return {"status": "ok", "label": _serialize_label_pair((label, category))}
+
+
+@router.patch("/api/v1/admin/players/{player_id}/labels/{label_id}")
+async def api_update_player_label(
+    request: Request,
+    player_id: int,
+    label_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "manage_labels"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    try:
+        label = PlayerLabelService(db).update_note(label_id, player_id, body.get("note"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not label:
+        raise HTTPException(status_code=404, detail="Метка не найдена")
+    category = db.query(LabelCategory).filter(LabelCategory.id == label.category_id).first()
+    log_admin_action(db, current_admin.id, "update_player_label", {
+        "player_id": player_id, "label_id": label_id,
+    })
     return {"status": "ok", "label": _serialize_label_pair((label, category))}
 
 
@@ -2282,7 +2363,9 @@ async def api_remove_player_label(
     if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
-    PlayerLabelService(db).remove(label_id)
+    if not PlayerLabelService(db).remove(label_id, player_id=player_id):
+        raise HTTPException(status_code=404, detail="Метка не найдена")
+    log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
     return {"status": "ok"}
 
 
@@ -5007,10 +5090,92 @@ async def remove_label(
     if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
-    PlayerLabelService(db).remove(label_id)
+    if not PlayerLabelService(db).remove(label_id, player_id=player_id):
+        raise HTTPException(status_code=404, detail="Метка не найдена")
     log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
     push_flash(request, "success", "Метка снята")
     return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
+
+
+def _allowed_moderation_template_types(admin: AdminUser) -> set[str]:
+    allowed: set[str] = set()
+    if check_permission(admin, "moderation", "message"):
+        allowed.add("message")
+    if check_permission(admin, "punishments", "issue"):
+        allowed.update(("warning", "kick", "ban"))
+    if check_permission(admin, "moderation", "kick"):
+        allowed.add("kick")
+    if check_permission(admin, "moderation", "ban"):
+        allowed.add("ban")
+    return allowed
+
+
+@router.get("/api/v1/admin/moderation-templates")
+async def api_moderation_templates_list(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    allowed_types = set(MODERATION_TEMPLATE_TYPES) if current_admin.is_superuser else _allowed_moderation_template_types(current_admin)
+    return {"templates": [_serialize_moderation_template(row) for row in ModerationActionTemplateService(db).list(allowed_types)]}
+
+
+@router.post("/api/v1/admin/moderation-templates")
+async def api_moderation_template_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    try:
+        row = ModerationActionTemplateService(db).create(
+            body.get("action_type"), body.get("name"), body.get("content"), current_admin.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_admin_action(db, current_admin.id, "moderation_template_create", {"template_id": row.id, "action_type": row.action_type})
+    return {"status": "ok", "template": _serialize_moderation_template(row)}
+
+
+@router.patch("/api/v1/admin/moderation-templates/{template_id}")
+async def api_moderation_template_update(
+    template_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    try:
+        row = ModerationActionTemplateService(db).update(
+            template_id, name=body.get("name"), content=body.get("content"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    log_admin_action(db, current_admin.id, "moderation_template_update", {"template_id": template_id})
+    return {"status": "ok", "template": _serialize_moderation_template(row)}
+
+
+@router.delete("/api/v1/admin/moderation-templates/{template_id}")
+async def api_moderation_template_delete(
+    template_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    if not ModerationActionTemplateService(db).delete(template_id):
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    log_admin_action(db, current_admin.id, "moderation_template_delete", {"template_id": template_id})
+    return {"status": "ok"}
 
 
 def _has_label_category_perm(admin: AdminUser, action: str) -> bool:

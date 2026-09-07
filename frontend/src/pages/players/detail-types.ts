@@ -149,6 +149,8 @@ export interface PlayerDetailResponse {
   can_manage_notes: boolean
   /** players:manage_labels — назначение и снятие меток в профиле игрока. */
   can_manage_labels: boolean
+  /** moderation:message — отправка сообщения игроку из профиля. */
+  can_send_message: boolean
   has_delete: boolean
   has_special: boolean
   can_issue_punishment: boolean

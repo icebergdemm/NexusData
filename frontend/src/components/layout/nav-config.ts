@@ -96,6 +96,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Пользователи Nexus Data", to: "/users", icon: UserCog, permission: "admin" },
       { label: "Администрирование", to: "/administration", icon: Settings, permission: "admin" },
+      { label: "Шаблоны модерации", to: "/moderation-templates", icon: FileText, isVisible: (admin) => !!admin?.is_superuser },
       {
         label: "AI-центр", to: "/ai-center", icon: Bot,
         isVisible: (admin) => !!admin && (

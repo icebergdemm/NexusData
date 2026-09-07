@@ -33,6 +33,7 @@ import type { DossierTriageMarker, ModerationOverview, OfflinePlayer, OnlinePlay
 import { formatSessionDuration, formatSessionStart, getJobColor } from "./formatters"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
+import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 
 function copyToClipboard(text: string, label: string) {
   navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
@@ -560,6 +561,7 @@ export function ModerationPage() {
             <div>
               <Label className="mb-1.5 block">{actionTarget?.type === "message" ? "Текст сообщения" : "Причина"}</Label>
               <Textarea value={actionReason} onChange={(e) => setActionReason(e.target.value)} />
+              {actionTarget?.type && <div className="mt-2"><ModerationTemplatePicker type={actionTarget.type} onSelect={setActionReason} /></div>}
             </div>
             <div>
               <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
@@ -584,6 +586,7 @@ export function ModerationPage() {
           <div>
             <Label className="mb-1.5 block">Причина</Label>
             <Textarea value={warnReason} onChange={(e) => setWarnReason(e.target.value)} placeholder="За что выдано предупреждение" />
+            <div className="mt-2"><ModerationTemplatePicker type="warning" onSelect={setWarnReason} /></div>
           </div>
           <DialogFooter>
             <Button

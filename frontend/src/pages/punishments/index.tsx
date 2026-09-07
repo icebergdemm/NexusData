@@ -24,6 +24,7 @@ import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
+import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 
 interface PunishmentRow {
   id: number
@@ -170,6 +171,7 @@ export function PunishmentsPage() {
                 <div>
                   <Label className="mb-1.5 block">Причина</Label>
                   <Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
+                  {tab !== "reprimand" && <div className="mt-2"><ModerationTemplatePicker type={tab as "message" | "warning" | "kick" | "ban"} onSelect={(content) => setForm((f) => ({ ...f, reason: content }))} /></div>}
                 </div>
                 <div>
                   <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>

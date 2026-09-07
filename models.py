@@ -490,6 +490,23 @@ class PlayerLabel(Base):
     assigned_at = Column(DateTime, default=func.now())
 
 
+class ModerationActionTemplate(Base):
+    """Reusable text for player-facing moderation actions."""
+    __tablename__ = "moderation_action_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String(20), nullable=False, index=True)  # message|warning|kick|ban
+    name = Column(String(128), nullable=False)
+    content = Column(String(2000), nullable=False)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("action_type", "name", name="uq_moderation_action_template_name"),
+    )
+
+
 class PlayerTrap(Base):
     """Trap set on a player — fires Discord webhook when they join the server."""
     __tablename__ = "player_traps"
