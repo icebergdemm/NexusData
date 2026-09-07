@@ -6472,6 +6472,7 @@ async def admin_debug(
 ):
     """Detailed permission diagnostics for troubleshooting access issues."""
     import json
+    from html import escape
     
     # Build diagnostic info
     diagnostics = {
@@ -6509,6 +6510,12 @@ async def admin_debug(
     # pages, and a fixed view/edit/delete triad that doesn't reflect the
     # custom actions several pages actually use).
     from permissions_registry import PERMISSION_REGISTRY
+
+    # Keep the page/action list derived from the registry.  This endpoint used
+    # to render a fixed view/edit/delete matrix; after the registry became
+    # action-specific those old local variables disappeared and /debug started
+    # failing with NameError for every authenticated user.
+    pages = list(PERMISSION_REGISTRY)
 
     permission_tests = {}
     permission_traces = {}
@@ -6583,7 +6590,7 @@ async def admin_debug(
             </div>
             <div class="info-row">
                 <span class="label">Discord Username:</span>
-                <span class="value">""" + diagnostics["discord_username"] + """</span>
+                <span class="value">""" + escape(str(diagnostics["discord_username"] or "—")) + """</span>
             </div>
             <div class="info-row">
                 <span class="label">Superuser:</span>
@@ -6661,34 +6668,39 @@ async def admin_debug(
         <div class="section">
             <h2>Permission Check Results</h2>
             <table>
-                <tr>
-                    <th>Page</th>
-                    <th>View</th>
-                    <th>Edit</th>
-                    <th>Delete</th>
-                </tr>
+                <tr><th>Page</th><th>Action</th><th>Result</th></tr>
     """
-    
+
     for page in pages:
-        html_content += f"<tr><td><strong>{page}</strong></td>"
-        for action in actions:
+        for action_def in PERMISSION_REGISTRY[page]["actions"]:
+            action = action_def["key"]
             result = permission_tests[page][action]
-            html_content += f"<td class='{'true' if result else 'false'}'>{str(result)}</td>"
-        html_content += "</tr>"
+            result_class = "true" if result else "false"
+            html_content += (
+                f"<tr><td><strong>{escape(page)}</strong></td>"
+                f"<td>{escape(action)}</td>"
+                f"<td class='{result_class}'>{str(result)}</td></tr>"
+            )
     
     html_content += """
             </table>
         </div>
         
         <div class="section">
-            <h2>Permission Resolution Trace (for view action)</h2>
+            <h2>Permission Resolution Trace</h2>
             <p>Shows step-by-step why each permission check returns True/False:</p>
     """
-    
+
     for page in pages:
-        trace = permission_traces[page].get("view", "N/A")
-        result = permission_tests[page].get("view", False)
-        html_content += f"<div class='trace' style='color: {"green" if result else "red"}'><strong>{page}:</strong> {trace}</div>"
+        for action_def in PERMISSION_REGISTRY[page]["actions"]:
+            action = action_def["key"]
+            trace = permission_traces[page].get(action, "N/A")
+            result = permission_tests[page].get(action, False)
+            trace_color = "green" if result else "red"
+            html_content += (
+                f"<div class='trace' style='color: {trace_color}'><strong>"
+                f"{escape(page)} / {escape(action)}:</strong> {escape(trace)}</div>"
+            )
     
     html_content += """
         </div>

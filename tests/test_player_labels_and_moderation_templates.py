@@ -1,4 +1,15 @@
 from types import SimpleNamespace
+import asyncio
+import sys
+import types
+
+if "fcntl" not in sys.modules:
+    _fcntl = types.ModuleType("fcntl")
+    _fcntl.LOCK_EX = 2
+    _fcntl.LOCK_UN = 8
+    _fcntl.LOCK_NB = 4
+    _fcntl.flock = lambda *args, **kwargs: None
+    sys.modules["fcntl"] = _fcntl
 
 import pytest
 from fastapi import HTTPException
@@ -11,6 +22,7 @@ from security import check_moderation_action_permission, csrf_token_from_request
 from services import ModerationActionTemplateService, PlayerLabelService, prepare_admin_message
 from permissions_registry import PERMISSION_REGISTRY
 from services_ai_dossier import require_ai_center_access
+from routes.admin import admin_debug
 
 
 def _database() -> tuple[object, Session]:
@@ -96,3 +108,21 @@ def test_ai_center_access_is_superuser_only():
         require_ai_center_access(SimpleNamespace(is_superuser=False))
 
     require_ai_center_access(SimpleNamespace(is_superuser=True))
+
+
+def test_permission_debug_page_uses_registry_and_handles_empty_username():
+    admin = SimpleNamespace(
+        id=42,
+        discord_username=None,
+        is_superuser=False,
+        privilege_group_id=None,
+        individual_permissions=None,
+        privilege_group=None,
+    )
+
+    response = asyncio.run(admin_debug(db=None, current_admin=admin))
+
+    assert response.status_code == 200
+    body = response.body.decode("utf-8")
+    assert "moderation_templates" in body
+    assert "manage" in body
