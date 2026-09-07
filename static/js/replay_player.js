@@ -75,7 +75,7 @@
   // без копирования); значение, пересекающее границу страницы (редкость —
   // страница держит десятки мегабайт, а любое поле формата — единицы-сотни
   // байт), собирается через маленький временный буфер.
-  const PAGE_SIZE = 32 * 1024 * 1024; // 32 МБ — с большим запасом ниже потолка ArrayBuffer в любом браузере
+  const PAGE_SIZE = 4 * 1024 * 1024; // Smaller pages reduce idle RAM for short demos.
 
   function readU16(dv, o) { return dv.getUint16(o, true); }
   function readI16(dv, o) { return dv.getInt16(o, true); }
@@ -172,8 +172,8 @@
     };
     r.u32();
     const hasVoice = (header.flags & 1) !== 0;
-    if (header.version !== 4) {
-      throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4). Файл может быть повреждён.");
+    if (header.version !== 4 && header.version !== 5) {
+      throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4 или 5). Файл может быть повреждён.");
     }
     const geometry = { hulls: [], walls: [], doors: [] };
     const world = { w: 0, h: 0, polys: [] };
@@ -260,6 +260,15 @@
         const t=r.u32(); const sid=r.u16(); const len=r.u16();
         voiceT.push(t); voiceSid.push(sid); voiceOff.push(r.o); voiceLen.push(len);
         r.skip(len); // do not copy now — slice lazily during playback
+      } else if (type === 0x08) { // INVENTORY — indexed state, not needed for map rendering
+        const count = r.u16();
+        if (count > 65535) throw new Error("Битый счётчик inventory=" + count);
+        for (let i = 0; i < count; i++) {
+          r.u16(); // item id
+          r.u16(); // player owner id
+          r.str();
+          r.u8();
+        }
       } else if (type === 0xFF) { const t=r.u32();if(t>durationMs)durationMs=t;break; }
       else { throw new Error("Неизвестный тип фрейма 0x"+type.toString(16)+" — формат несовместим или файл повреждён"); }
     }

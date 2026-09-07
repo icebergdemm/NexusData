@@ -10,21 +10,26 @@ which unpacks and parses it client-side (minimal server load).
 import os
 import secrets
 import logging
+import asyncio
+import shutil
+import struct
+import threading
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import (
-    APIRouter, Depends, HTTPException, Request, Query, Form, UploadFile, File,
+    APIRouter, Depends, HTTPException, Request, Query, Form, UploadFile, File, WebSocket,
 )
+from starlette.websockets import WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session, aliased, joinedload
 
-from database import get_db
+from database import get_db, GameSessionLocal
 from security import verify_external_api_key_dependency, check_permission
 from config import get_settings
 from models import AdminUser, AdminSession, RoundEvent, RoundReplay
@@ -47,6 +52,344 @@ api_router = APIRouter(
     tags=["replays"],
     dependencies=[Depends(verify_external_api_key_dependency)] if settings.require_auth else [],
 )
+
+STREAM_ROOT = os.path.join(settings.replays_upload_dir, ".streaming")
+STREAM_MAX_CHUNK = 2 * 1024 * 1024
+_live_cache = {}
+_live_cache_lock = threading.Lock()
+
+
+def _safe_stream_id(value: str) -> str:
+    value = (value or "").strip()
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    if not value or len(value) > 100 or any(c not in allowed for c in value):
+        raise HTTPException(status_code=400, detail="Некорректный stream_id")
+    return value
+
+
+def _stream_dir(stream_id: str) -> str:
+    return os.path.join(STREAM_ROOT, _safe_stream_id(stream_id))
+
+
+async def _read_stream_chunk(request: Request) -> bytes:
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Пустой бинарный чанк")
+    if len(body) > STREAM_MAX_CHUNK:
+        raise HTTPException(status_code=413, detail="Чанк слишком большой")
+    return body
+
+
+@api_router.post("/stream/start")
+async def start_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    data = await _read_stream_chunk(request)
+    directory = _stream_dir(stream_id)
+    await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
+    await asyncio.to_thread(os.makedirs, directory, exist_ok=True)
+    await asyncio.to_thread(_write_stream_file, os.path.join(directory, "00000000.bin"), data)
+    await asyncio.to_thread(_consume_stream_chunk, stream_id, data, server_name)
+    return {"status": "ok"}
+
+
+@api_router.post("/stream/chunk")
+async def append_replay_stream(request: Request, stream_id: str = Query(...), seq: int = Query(..., ge=1)):
+    data = await _read_stream_chunk(request)
+    directory = _stream_dir(stream_id)
+    if not os.path.isdir(directory):
+        raise HTTPException(status_code=404, detail="Поток не запущен")
+    await asyncio.to_thread(_write_stream_file, os.path.join(directory, f"{seq:08d}.bin"), data)
+    await asyncio.to_thread(_consume_stream_chunk, stream_id, data, None)
+    return {"status": "ok", "seq": seq}
+
+
+@api_router.post("/stream/finish")
+async def finish_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    end = await _read_stream_chunk(request)
+    directory = _stream_dir(stream_id)
+    if not os.path.isdir(directory):
+        raise HTTPException(status_code=404, detail="Поток не запущен")
+    await asyncio.to_thread(_consume_stream_chunk, stream_id, end, server_name)
+    return await asyncio.to_thread(_assemble_stream, directory, end, server_name)
+
+
+def _websocket_api_key_is_valid(websocket: WebSocket) -> bool:
+    if not settings.require_auth:
+        return True
+    supplied = websocket.headers.get("x-api-key", "")
+    expected = getattr(settings, "api_key", "") or ""
+    return bool(expected and secrets.compare_digest(supplied, expected))
+
+
+@api_router.websocket("/stream/ws")
+async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    """Ordered binary replay transport.
+
+    The first binary message is the .barodemo header/static section. Every
+    following binary message is one frame batch. The final text message must
+    be ``finish``; the last binary batch already contains FRAME_END.
+    """
+    if not _websocket_api_key_is_valid(websocket):
+        await websocket.close(code=1008, reason="invalid api key")
+        return
+    try:
+        safe_id = _safe_stream_id(stream_id)
+    except HTTPException:
+        await websocket.close(code=1008, reason="invalid stream id")
+        return
+
+    await websocket.accept()
+    directory = _stream_dir(safe_id)
+    await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
+    await asyncio.to_thread(os.makedirs, directory, exist_ok=True)
+    seq = 0
+    started = False
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
+            if message.get("bytes") is not None:
+                data = message["bytes"]
+                if not data or len(data) > STREAM_MAX_CHUNK:
+                    await websocket.close(code=1009, reason="chunk too large")
+                    return
+                await asyncio.to_thread(
+                    _write_stream_file,
+                    os.path.join(directory, f"{seq:08d}.bin"),
+                    data,
+                )
+                await asyncio.to_thread(_consume_stream_chunk, safe_id, data, server_name)
+                started = True
+                seq += 1
+                continue
+            text = (message.get("text") or "").strip().lower()
+            if text == "finish":
+                if not started:
+                    await websocket.close(code=1008, reason="empty stream")
+                    return
+                result = await asyncio.to_thread(_assemble_stream, directory, b"", server_name)
+                await websocket.send_json(result)
+                await websocket.close(code=1000)
+                return
+            await websocket.close(code=1003, reason="expected binary chunk or finish")
+            return
+    except WebSocketDisconnect:
+        return
+
+
+def _write_stream_file(path: str, data: bytes) -> None:
+    if os.path.exists(path):
+        return
+    with open(path, "xb") as f:
+        f.write(data)
+
+
+def _read_u16(data: bytes, offset: int) -> tuple[int, int]:
+    return struct.unpack_from("<H", data, offset)[0], offset + 2
+
+
+def _read_u32(data: bytes, offset: int) -> tuple[int, int]:
+    return struct.unpack_from("<I", data, offset)[0], offset + 4
+
+
+def _read_str(data: bytes, offset: int) -> tuple[str, int]:
+    length, offset = _read_u16(data, offset)
+    end = offset + length
+    return data[offset:end].decode("utf-8", errors="replace"), end
+
+
+def _parse_demo_chunk(data: bytes) -> dict:
+    """Extract only live state from a demo frame batch.
+
+    This intentionally ignores geometry, events and voice payloads. They remain
+    in the assembled replay, while the live page receives only the latest
+    compact state.
+    """
+    offset = 0
+    if data[:4] == b"BDMO":
+        offset = 4 + 2 + 2 + 1 + 8
+        for _ in range(4):
+            _, offset = _read_str(data, offset)
+        offset += 4
+    result = {}
+    while offset < len(data):
+        frame = data[offset]
+        offset += 1
+        if frame == 0x10:
+            hulls, offset = _read_u16(data, offset)
+            offset += hulls * 24
+            walls, offset = _read_u16(data, offset)
+            offset += walls * 19
+            doors, offset = _read_u16(data, offset)
+            offset += doors * 21
+        elif frame == 0x11:
+            offset += 8
+            polygons, offset = _read_u16(data, offset)
+            for _ in range(polygons):
+                points, offset = _read_u16(data, offset)
+                offset += points * 8
+        elif frame == 0x02:
+            offset += 8
+        elif frame == 0x03:
+            offset += 4
+            character_id, offset = _read_u16(data, offset)
+            species, offset = _read_str(data, offset)
+            name, offset = _read_str(data, offset)
+            team = struct.unpack_from("<b", data, offset)[0]
+            offset += 1
+            result.setdefault("spawns", {})[character_id] = {
+                "name": name, "species": species,
+                "team": {1: "Team1", 2: "Team2", 3: "FriendlyNPC"}.get(team, "None"),
+            }
+        elif frame == 0x01:
+            time_ms, offset = _read_u32(data, offset)
+            count, offset = _read_u16(data, offset)
+            characters = []
+            for _ in range(count):
+                character_id, offset = _read_u16(data, offset)
+                x, y, flags, health = struct.unpack_from("<hhBB", data, offset)
+                offset += 6
+                characters.append({
+                    "id": character_id,
+                    "name": "",
+                    "species": "",
+                    "human": bool(flags & 4),
+                    "team": "None",
+                    "job": None,
+                    "steamid": None,
+                    "x": x * 4,
+                    "y": y * 4,
+                    "hp": health * 200.0 / 255.0,
+                    "oxygen": 0,
+                    "dead": bool(flags & 1),
+                    "water": bool(flags & 8),
+                    "ragdoll": bool(flags & 16),
+                    "dir": -1 if flags & 2 else 1,
+                    "hull": None,
+                })
+            door_count, offset = _read_u16(data, offset)
+            doors = []
+            for _ in range(door_count):
+                door_id, offset = _read_u16(data, offset)
+                opened = data[offset]
+                offset += 1
+                doors.append({"id": door_id, "open": opened * 100.0 / 255.0})
+            water_count, offset = _read_u16(data, offset)
+            offset += water_count * 3
+            sub_count, offset = _read_u16(data, offset)
+            subs = []
+            for _ in range(sub_count):
+                sub_id, offset = _read_u16(data, offset)
+                x, y = struct.unpack_from("<ii", data, offset)
+                offset += 8
+                subs.append({"id": sub_id, "x": x, "y": y})
+            result.update({"t": time_ms / 1000.0, "characters": characters, "doors": doors, "subs": subs})
+        elif frame == 0x06:
+            offset += 4 + 1 + 2 + 2 + 4 + 4 + 4
+            _, offset = _read_str(data, offset)
+        elif frame == 0x07:
+            offset += 4 + 2
+            length, offset = _read_u16(data, offset)
+            offset += length
+        elif frame == 0x08:
+            count, offset = _read_u16(data, offset)
+            items = []
+            for _ in range(count):
+                item_id, offset = _read_u16(data, offset)
+                owner_id, offset = _read_u16(data, offset)
+                identifier, offset = _read_str(data, offset)
+                condition = data[offset]
+                offset += 1
+                items.append({
+                    "id": item_id, "item": identifier, "x": 0, "y": 0,
+                    "cond": condition * 100.0 / 255.0,
+                    "owner_t": "character" if owner_id else "world",
+                    "owner_id": owner_id or None,
+                })
+            result["items"] = items
+        elif frame == 0xFF:
+            offset += 4
+            break
+        else:
+            # Newer event/frame types must not make the live monitor corrupt
+            # the stream. The replay file itself is still preserved verbatim.
+            break
+    return result
+
+
+def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str] = None) -> None:
+    parsed = _parse_demo_chunk(data)
+    if not parsed:
+        return
+    now = datetime.utcnow()
+    with _live_cache_lock:
+        state = _live_cache.setdefault(stream_id, {"pending": 0, "seq": 0})
+        if "spawns" in parsed:
+            state.setdefault("spawns", {}).update(parsed["spawns"])
+        if "characters" in parsed:
+            for character in parsed["characters"]:
+                character.update(state.get("spawns", {}).get(character["id"], {}))
+        for key in ("t", "characters", "doors", "subs", "items"):
+            if key in parsed:
+                state[key] = parsed[key]
+        if "t" in parsed:
+            state["seq"] += 1
+            state["pending"] += 1
+        if state["pending"] < 3:
+            return
+        state["pending"] = 0
+        payload = dict(state)
+    db = GameSessionLocal()
+    try:
+        from models import WorldRound
+        row = db.query(WorldRound).filter(WorldRound.round_id == stream_id).first()
+        if row is None:
+            row = WorldRound(round_id=stream_id, server_name=server_name)
+            db.add(row)
+        if row:
+            row.last_seq = payload.get("seq")
+            row.last_t = payload.get("t", 0)
+            row.last_sent_at = now
+            row.last_subs = payload.get("subs", [])
+            row.last_hulls_state = []
+            row.last_doors_state = payload.get("doors", [])
+            row.last_reactors = []
+            row.last_characters = payload.get("characters", [])
+            row.last_items = payload.get("items", [])
+            row.last_update_at = now
+            db.commit()
+    finally:
+        db.close()
+
+
+def _assemble_stream(directory: str, end: bytes, server_name: Optional[str]) -> dict:
+    import uuid
+    from database import SessionLocal
+    chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
+    expected = [f"{index:08d}.bin" for index in range(len(chunk_names))]
+    if chunk_names != expected:
+        raise HTTPException(status_code=409, detail="Поток демки содержит пропущенные чанки")
+    if sum(os.path.getsize(os.path.join(directory, name)) for name in chunk_names) + len(end) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Демка превышает лимит 500 МБ")
+    raw_path = os.path.join(
+        directory,
+        f"round_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.barodemo",
+    )
+    with open(raw_path, "wb") as out:
+        for name in chunk_names:
+            with open(os.path.join(directory, name), "rb") as src:
+                shutil.copyfileobj(src, out, length=1024 * 1024)
+        out.write(end)
+    db = SessionLocal()
+    try:
+        replay = ReplayService(db).save_staged_demo(
+            raw_path, os.path.basename(raw_path), server_name=server_name,
+            notes="Собрано потоковым WorldDemoStreamer",
+        )
+        return {"success": True, "replay_id": replay.id, "stored_filename": replay.stored_filename}
+    finally:
+        db.close()
+        shutil.rmtree(directory, ignore_errors=True)
 
 # ── Admin panel router (session protected) ────────────────────────────────────
 panel_router = APIRouter()
