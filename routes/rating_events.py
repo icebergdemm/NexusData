@@ -1,6 +1,6 @@
 """Versioned game-server ingest for the rating v2 event ledger."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -161,15 +161,22 @@ def _semantic_dedup_key(event: RatingEventIn) -> str:
 
 def _semantic_duplicate(db: Session, event: RatingEventIn, dedup_key: str) -> RatingEventLedger | None:
     """Find a recently accepted semantic twin without deleting ledger rows."""
-    occurred_at = event.occurred_at.replace(tzinfo=None)
+    occurred_at = _utc_naive(event.occurred_at)
     candidates = db.query(RatingEventLedger).filter(
         RatingEventLedger.dedup_key == dedup_key,
     ).order_by(RatingEventLedger.received_at.desc()).limit(20).all()
     for candidate in candidates:
-        candidate_time = candidate.occurred_at.replace(tzinfo=None) if candidate.occurred_at else None
+        candidate_time = _utc_naive(candidate.occurred_at) if candidate.occurred_at else None
         if candidate_time is not None and abs((candidate_time - occurred_at).total_seconds()) <= SEMANTIC_DEDUP_WINDOW_SECONDS:
             return candidate
     return None
+
+
+def _utc_naive(value: datetime) -> datetime:
+    """Normalize aware and naive API datetimes to comparable UTC values."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _record_delivery(db: Session, raw_event: object, status: str, reason: str | None = None) -> None:
