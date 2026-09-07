@@ -81,6 +81,54 @@ def test_admin_leaderboard_is_scoped_by_mode_and_role():
         engine.dispose()
 
 
+def test_admin_leaderboard_supports_one_paginated_table_for_all_roles():
+    client, db, engine = _client()
+    try:
+        db.add_all([
+            models.RatingProjectionState(
+                steam_id="76561198000000002", mode="mission", role="captain",
+                cumulative_points=25.0, current_rating=6.0,
+            ),
+            models.RatingProjectionState(
+                steam_id="76561198000000003", mode="mission", role="medic",
+                cumulative_points=20.0, current_rating=5.0,
+            ),
+        ])
+        db.commit()
+        response = client.get("/api/v2/admin/ratings?mode=mission&role=all&page=2&page_size=1")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["page"] == 2
+        assert payload["page_size"] == 1
+        assert payload["total"] == 3
+        assert payload["total_pages"] == 3
+        assert payload["has_next"] is True
+        assert payload["leaderboard"][0]["role"] == "medic"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_admin_quality_is_honest_about_legacy_data_instead_of_calling_it_confidence():
+    client, db, engine = _client()
+    try:
+        state = db.query(models.RatingProjectionState).filter_by(
+            steam_id="76561198000000001", mode="mission", role="mechanic"
+        ).one()
+        state.qualified_rounds = 1
+        state.round_tokens = ["legacy:player:1"]
+        db.commit()
+        response = client.get("/api/v2/admin/ratings?mode=mission&role=mechanic")
+        assert response.status_code == 200
+        row = response.json()["leaderboard"][0]
+        assert row["qualified_rounds"] == 1
+        assert row["data_quality"] == "legacy"
+        assert row["confidence"] is None
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_admin_player_explanation_and_event_log_are_available():
     client, db, engine = _client()
     try:
@@ -96,6 +144,40 @@ def test_admin_player_explanation_and_event_log_are_available():
         events = client.get("/api/v2/admin/rating-events?mode=mission&role=mechanic&steam_id=76561198000000001")
         assert events.status_code == 200
         assert events.json()["events"][0]["event_id"] == "r1"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_admin_event_log_is_paginated():
+    client, db, engine = _client()
+    try:
+        db.add_all([
+            models.RatingEventLedger(
+                event_id="r2", version=1, steam_id="76561198000000001", mode="mission",
+                role="mechanic", event_type="repair.device", points_delta=2.0,
+                occurred_at=datetime(2026, 9, 7, 11, tzinfo=timezone.utc),
+                source_context={}, round_context={},
+            ),
+            models.RatingEventLedger(
+                event_id="r3", version=1, steam_id="76561198000000001", mode="mission",
+                role="mechanic", event_type="engineering.wire", points_delta=1.0,
+                occurred_at=datetime(2026, 9, 7, 10, tzinfo=timezone.utc),
+                source_context={}, round_context={},
+            ),
+        ])
+        db.commit()
+        response = client.get("/api/v2/admin/rating-events?mode=mission&page=2&page_size=1")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["events"][0]["event_id"] == "r2"
+        assert payload["pagination"] == {
+            "page": 2,
+            "page_size": 1,
+            "total": 3,
+            "total_pages": 3,
+            "has_next": True,
+        }
     finally:
         db.close()
         engine.dispose()
@@ -118,6 +200,14 @@ def test_admin_exposes_rank_history_and_mode_scoped_delivery_log():
             "reason": None,
             "received_at": delivery.json()["entries"][0]["received_at"],
         }]
+        assert delivery.json()["summary"] == {
+            "accepted": 1,
+            "duplicate": 0,
+            "rejected": 0,
+            "retry": 0,
+            "failed": 0,
+            "total": 1,
+        }
     finally:
         db.close()
         engine.dispose()

@@ -6,6 +6,7 @@ export interface RatingLeaderboardRow {
   rank: number
   steamId: string
   playerName: string
+  role: string | null
   rating: number | null
   points: number | null
   activity: number | null
@@ -13,6 +14,7 @@ export interface RatingLeaderboardRow {
   qualifiedRounds: number | null
   confidence: number | null
   eligibility: string | null
+  dataQuality: string | null
   eventCount: number | null
   lastActivity: string | null
   extra: RatingMetadata
@@ -22,7 +24,16 @@ export interface RatingLeaderboard {
   leaderboard: RatingLeaderboardRow[]
   roles: string[]
   selectedRole: string
+  pagination: RatingPagination
   extra: RatingMetadata
+}
+
+export interface RatingPagination {
+  total: number
+  totalPages: number
+  page: number
+  pageSize: number
+  hasNext: boolean
 }
 
 export interface RatingProfile {
@@ -33,10 +44,11 @@ export interface RatingProfile {
 type UnknownRecord = Record<string, unknown>
 
 const leaderboardKeys = new Set([
-  "leaderboard", "entries", "roles", "selected_role", "selectedRole", "role", "mode",
+  "leaderboard", "entries", "roles", "selected_role", "selectedRole", "role", "mode", "pagination",
+  "total", "total_pages", "page", "page_size", "has_next",
   "steam_id", "steamId", "player_name", "playerName", "name", "rank", "rating",
   "current_rating", "points", "cumulative_points", "last_activity", "last_activity_date", "last_event_at",
-  "activity", "activity_factor", "play_time_hours", "qualified_rounds", "confidence", "eligibility", "event_count", "unmapped_events",
+  "activity", "activity_factor", "play_time_hours", "playtime_hours", "qualified_rounds", "confidence", "eligibility", "event_count", "unmapped_events", "data_quality", "source",
 ])
 
 function asRecord(value: unknown): UnknownRecord {
@@ -59,8 +71,10 @@ function transparencyFields(value: UnknownRecord, known: Set<string>): RatingMet
   ))
 }
 
-export function buildRatingV2Query({ mode, role, steamId }: { mode: RatingMode; role: string; steamId?: string }): string {
+export function buildRatingV2Query({ mode, role, page, pageSize, steamId }: { mode: RatingMode; role: string; page?: number; pageSize?: number; steamId?: string }): string {
   const query = new URLSearchParams({ mode, role })
+  if (page != null) query.set("page", String(Math.max(1, Math.trunc(page))))
+  if (pageSize != null) query.set("page_size", String(Math.max(1, Math.trunc(pageSize))))
   if (steamId?.trim()) query.set("steam_id", steamId.trim())
   return query.toString()
 }
@@ -68,32 +82,43 @@ export function buildRatingV2Query({ mode, role, steamId }: { mode: RatingMode; 
 export function normalizeRatingLeaderboard(value: unknown): RatingLeaderboard {
   const response = asRecord(value)
   const entries = Array.isArray(response.leaderboard) ? response.leaderboard : Array.isArray(response.entries) ? response.entries : []
+  const paginationResponse = asRecord(response.pagination)
+  const page = asNumber(response.page) ?? asNumber(paginationResponse.page) ?? 1
+  const pageSize = asNumber(response.page_size) ?? asNumber(paginationResponse.page_size) ?? 100
+  const total = asNumber(response.total) ?? asNumber(paginationResponse.total) ?? entries.length
+  const totalPages = asNumber(response.total_pages) ?? asNumber(paginationResponse.total_pages) ?? Math.max(1, Math.ceil(total / Math.max(1, pageSize)))
+  const hasNext = typeof response.has_next === "boolean" ? response.has_next : typeof paginationResponse.has_next === "boolean" ? paginationResponse.has_next : page < totalPages
   const leaderboard = entries.flatMap((entry, index) => {
     const row = asRecord(entry)
     const steamId = asString(row.steam_id) ?? asString(row.steamId) ?? ""
     if (!steamId) return []
     return [{
-      rank: asNumber(row.rank) ?? index + 1,
+      rank: asNumber(row.rank) ?? (page - 1) * pageSize + index + 1,
       steamId,
       playerName: asString(row.player_name) ?? asString(row.playerName) ?? asString(row.name) ?? steamId,
+      role: asString(row.role) ?? asString(row.job) ?? asString(row.character_role),
       rating: asNumber(row.rating) ?? asNumber(row.current_rating),
       points: asNumber(row.cumulative_points) ?? asNumber(row.points),
       activity: asNumber(row.activity_factor) ?? asNumber(row.activity),
-      playtimeHours: asNumber(row.play_time_hours),
+      playtimeHours: asNumber(row.play_time_hours) ?? asNumber(row.playtime_hours),
       qualifiedRounds: asNumber(row.qualified_rounds),
       confidence: asNumber(row.confidence),
       eligibility: asString(row.eligibility),
+      dataQuality: asString(row.data_quality) ?? asString(row.dataQuality),
       eventCount: asNumber(row.event_count),
       lastActivity: asString(row.last_activity) ?? asString(row.last_activity_date) ?? asString(row.last_event_at),
       extra: transparencyFields(row, leaderboardKeys),
     }]
   })
   const roles = Array.isArray(response.roles) ? response.roles.filter((role): role is string => typeof role === "string") : []
-  const selectedRole = asString(response.selected_role) ?? asString(response.selectedRole) ?? asString(response.role) ?? roles[0] ?? "captain"
+  const rowRoles = leaderboard.flatMap((row) => row.role ? [row.role] : [])
+  const allRoles = Array.from(new Set([...roles, ...rowRoles]))
+  const selectedRole = asString(response.selected_role) ?? asString(response.selectedRole) ?? asString(response.role) ?? (allRoles.length === 1 ? allRoles[0] : "all")
   return {
     leaderboard,
-    roles,
+    roles: allRoles,
     selectedRole,
+    pagination: { total, totalPages, page, pageSize, hasNext },
     extra: transparencyFields(response, leaderboardKeys),
   }
 }

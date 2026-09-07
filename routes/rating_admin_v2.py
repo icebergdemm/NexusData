@@ -73,6 +73,13 @@ def _validate_role(role: str) -> str:
     return role
 
 
+def _validate_role_filter(role: str) -> Optional[str]:
+    """Validate the optional role filter used by the combined leaderboard."""
+    if role == "all":
+        return None
+    return _validate_role(role)
+
+
 def _validate_mode(mode: str) -> str:
     if mode not in {"mission", "pvp"}:
         raise HTTPException(status_code=422, detail="Unsupported rating mode")
@@ -87,6 +94,16 @@ def _player_map(db: Session, steam_ids: list[str]) -> dict[str, PlayerData]:
 
 
 def _state_row(state: RatingProjectionState, player: Optional[PlayerData], event_count: int = 0) -> dict:
+    round_tokens = list(state.round_tokens or [])
+    is_legacy = any(str(token).startswith("legacy:") for token in round_tokens)
+    if is_legacy:
+        data_quality = "legacy"
+    elif state.qualified_rounds >= 10:
+        data_quality = "sufficient_data"
+    elif event_count:
+        data_quality = "insufficient_data"
+    else:
+        data_quality = "no_data"
     return {
         "steam_id": state.steam_id,
         "player_name": player.display_name if player else state.steam_id,
@@ -101,8 +118,11 @@ def _state_row(state: RatingProjectionState, player: Optional[PlayerData], event
         "event_count": event_count,
         "qualified_rounds": state.qualified_rounds,
         "unmapped_events": state.unmapped_events,
-        "eligibility": "eligible" if state.qualified_rounds >= 1 and event_count else "insufficient_data",
-        "confidence": min(1.0, state.qualified_rounds / 10.0),
+        "eligibility": "eligible" if data_quality in {"legacy", "sufficient_data"} else "insufficient_data",
+        "data_quality": data_quality,
+        # This used to be displayed as a fake percentage. It was only
+        # qualified_rounds / 10, not statistical confidence.
+        "confidence": None,
     }
 
 
@@ -110,45 +130,61 @@ def _state_row(state: RatingProjectionState, player: Optional[PlayerData], event
 def get_rating_leaderboard_v2(
     mode: str = Query("mission"),
     role: str = Query("captain"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     admin: AdminUser = Depends(get_current_admin_v2),
     db: Session = Depends(get_db),
 ):
     _require_view(admin)
     mode = _validate_mode(mode)
-    role = _validate_role(role)
+    role_filter = _validate_role_filter(role)
+    effective_page_size = limit or page_size
+    offset = 0 if limit else (page - 1) * effective_page_size
+    base_query = db.query(RatingProjectionState).filter(
+        RatingProjectionState.mode == mode,
+        RatingProjectionState.current_rating > 0,
+    )
+    if role_filter:
+        base_query = base_query.filter(RatingProjectionState.role == role_filter)
+    total = base_query.count()
     states = (
-        db.query(RatingProjectionState)
-        .filter(
-            RatingProjectionState.mode == mode,
-            RatingProjectionState.role == role,
-            RatingProjectionState.current_rating > 0,
-        )
-        .order_by(desc(RatingProjectionState.current_rating), RatingProjectionState.steam_id)
-        .limit(limit)
+        base_query
+        .order_by(desc(RatingProjectionState.current_rating), RatingProjectionState.role, RatingProjectionState.steam_id)
+        .offset(offset)
+        .limit(effective_page_size)
         .all()
     )
     players = _player_map(db, [state.steam_id for state in states])
-    counts = dict(
-        db.query(RatingEventLedger.steam_id, func.count(RatingEventLedger.id))
-        .filter(
-            RatingEventLedger.mode == mode,
-            RatingEventLedger.role == role,
-            RatingEventLedger.steam_id.in_(players.keys() or ["-"]),
-        )
-        .group_by(RatingEventLedger.steam_id)
-        .all()
+    count_query = db.query(RatingEventLedger.steam_id, RatingEventLedger.role, func.count(RatingEventLedger.id)).filter(
+        RatingEventLedger.mode == mode,
+        RatingEventLedger.steam_id.in_(players.keys() or ["-"]),
     )
+    if role_filter:
+        count_query = count_query.filter(RatingEventLedger.role == role_filter)
+    counts = {
+        (steam_id, event_role): count
+        for steam_id, event_role, count in count_query
+        .group_by(RatingEventLedger.steam_id, RatingEventLedger.role)
+        .all()
+    }
     leaderboard = []
-    for rank, state in enumerate(states, 1):
-        row = _state_row(state, players.get(state.steam_id), counts.get(state.steam_id, 0))
-        row["rank"] = rank
+    for index, state in enumerate(states):
+        row = _state_row(state, players.get(state.steam_id), counts.get((state.steam_id, state.role), 0))
+        row["role"] = state.role
+        row["rank"] = offset + index + 1
         leaderboard.append(row)
+    total_pages = max(1, math.ceil(total / effective_page_size))
     return {
         "mode": mode,
-        "selected_role": role,
+        "selected_role": role_filter or "all",
         "roles": ROLES,
         "leaderboard": leaderboard,
+        "page": 1 if limit else page,
+        "page_size": effective_page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": (offset + len(states)) < total,
         "formula_version": FORMULA_VERSION,
         "generated_at": datetime.utcnow(),
         "can_edit": check_permission(admin, "ratings", "edit"),
@@ -265,6 +301,10 @@ def get_rating_explanation_v2(
         "contributions": contributions,
         "activity_factor": activity_factor(state.qualified_rounds) if state else 0.85,
         "qualified_rounds": state.qualified_rounds if state else 0,
+        "data_quality": (
+            _state_row(state, None, len(events))["data_quality"]
+            if state else ("insufficient_data" if events else "no_data")
+        ),
         "unmapped_events": state.unmapped_events if state else sum(
             1 for event in events if event.mapping_status == "unmapped"
         ),
@@ -286,20 +326,34 @@ def get_rating_events_v2(
     mode: str = Query("mission"),
     role: Optional[str] = Query(None),
     steam_id: Optional[str] = Query(None),
-    limit: int = Query(200, ge=1, le=500),
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     admin: AdminUser = Depends(get_current_admin_v2),
     db: Session = Depends(get_db),
 ):
     _require_view(admin)
     mode = _validate_mode(mode)
     query = db.query(RatingEventLedger).filter(RatingEventLedger.mode == mode)
-    if role:
+    if role and role != "all":
         query = query.filter(RatingEventLedger.role == _validate_role(role))
     if steam_id:
         query = query.filter(RatingEventLedger.steam_id == steam_id)
-    events = query.order_by(desc(RatingEventLedger.occurred_at), desc(RatingEventLedger.id)).limit(limit).all()
+    effective_page_size = limit or page_size
+    total = query.count()
+    offset = 0 if limit else (page - 1) * effective_page_size
+    events = query.order_by(
+        desc(RatingEventLedger.occurred_at), desc(RatingEventLedger.id)
+    ).offset(offset).limit(effective_page_size).all()
     return {
         "mode": mode,
+        "pagination": {
+            "page": 1 if limit else page,
+            "page_size": effective_page_size,
+            "total": total,
+            "total_pages": max(1, math.ceil(total / effective_page_size)),
+            "has_next": (offset + len(events)) < total,
+        },
         "events": [{
             "id": event.id,
             "event_id": event.event_id,
@@ -337,14 +391,20 @@ def get_rating_delivery_log_v2(
         query = query.filter(RatingDeliveryLog.status == status)
     if mode:
         query = query.filter(RatingDeliveryLog.mode == _validate_mode(mode))
-    if role:
+    if role and role != "all":
         query = query.filter(RatingDeliveryLog.role == _validate_role(role))
     if steam_id:
         query = query.filter(RatingDeliveryLog.event_id.in_(
             db.query(RatingEventLedger.event_id).filter(RatingEventLedger.steam_id == steam_id)
         ))
     rows = query.order_by(desc(RatingDeliveryLog.received_at), desc(RatingDeliveryLog.id)).limit(limit).all()
+    status_counts = dict(query.with_entities(
+        RatingDeliveryLog.status, func.count(RatingDeliveryLog.id)
+    ).group_by(RatingDeliveryLog.status).all())
+    summary = {status: int(status_counts.get(status, 0)) for status in ("accepted", "duplicate", "rejected", "retry", "failed")}
+    summary["total"] = int(sum(status_counts.values()))
     return {
+        "summary": summary,
         "entries": [{
             "event_id": row.event_id,
             "mode": row.mode,
