@@ -109,7 +109,9 @@ function Explanation({ explanation }: { explanation: unknown }) {
 function PlayerProfile({ player }: { player: unknown }) {
   const wrapper = asRecord(player)
   const rating = asRecord(wrapper.rating)
-  const data = Object.keys(rating).length ? { ...wrapper, ...rating } : wrapper
+  const data = Object.keys(rating).length
+    ? { ...wrapper, ...rating, rating: rating.rating ?? rating.current_rating }
+    : wrapper
   if (!Object.keys(data).length) return <p className="text-sm text-muted-foreground">Нет данных о профиле игрока.</p>
   const source = asString(metric(data, "source", "data_source"))
   return <div className="space-y-4"><MetricGrid data={data} />{source && <Badge variant="outline">Источник: {source === "legacy" ? "legacy-миграция" : source}</Badge>}</div>

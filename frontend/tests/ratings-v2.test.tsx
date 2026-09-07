@@ -109,6 +109,7 @@ test("rating investigation renders human-readable player details and clickable j
   />)
 
   assert.match(html, /Профиль игрока/)
+  assert.match(html, />42<\/div>/)
   assert.match(html, /Почему такой рейтинг/)
   assert.match(html, /Журнал рейтинга/)
   assert.match(html, /Убийство игрока/)
