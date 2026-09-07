@@ -52,6 +52,7 @@ api_router = APIRouter(
     tags=["replays"],
     dependencies=[Depends(verify_external_api_key_dependency)] if settings.require_auth else [],
 )
+ws_router = APIRouter(prefix="/api/v1/replays", tags=["replays-stream"])
 
 STREAM_ROOT = os.path.join(settings.replays_upload_dir, ".streaming")
 STREAM_MAX_CHUNK = 2 * 1024 * 1024
@@ -120,7 +121,7 @@ def _websocket_api_key_is_valid(websocket: WebSocket) -> bool:
     return bool(expected and secrets.compare_digest(supplied, expected))
 
 
-@api_router.websocket("/stream/ws")
+@ws_router.websocket("/stream/ws")
 async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
     """Ordered binary replay transport.
 
@@ -206,6 +207,8 @@ def _parse_demo_chunk(data: bytes) -> dict:
     compact state.
     """
     offset = 0
+    origin_x = 0
+    origin_y = 0
     if data[:4] == b"BDMO":
         offset = 4 + 2 + 2 + 1 + 8
         for _ in range(4):
@@ -217,7 +220,7 @@ def _parse_demo_chunk(data: bytes) -> dict:
         offset += 1
         if frame == 0x10:
             hulls, offset = _read_u16(data, offset)
-            offset += hulls * 24
+            offset += hulls * 20
             walls, offset = _read_u16(data, offset)
             offset += walls * 19
             doors, offset = _read_u16(data, offset)
@@ -229,6 +232,7 @@ def _parse_demo_chunk(data: bytes) -> dict:
                 points, offset = _read_u16(data, offset)
                 offset += points * 8
         elif frame == 0x02:
+            origin_x, origin_y = struct.unpack_from("<ii", data, offset)
             offset += 8
         elif frame == 0x03:
             offset += 4
@@ -257,8 +261,8 @@ def _parse_demo_chunk(data: bytes) -> dict:
                     "team": "None",
                     "job": None,
                     "steamid": None,
-                    "x": x * 4,
-                    "y": y * 4,
+                    "x": origin_x + x * 4,
+                    "y": origin_y + y * 4,
                     "hp": health * 200.0 / 255.0,
                     "oxygen": 0,
                     "dead": bool(flags & 1),

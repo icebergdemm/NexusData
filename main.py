@@ -274,6 +274,7 @@ def create_app() -> FastAPI:
     app.include_router(dispatch_panel_router)
     app.include_router(dispatch_client_router)
     app.include_router(replays_api_router)
+    app.include_router(replays_ws_router)
     app.include_router(replays_panel_router)
     app.include_router(analytics_router)
     app.include_router(notifications_router)

@@ -186,8 +186,10 @@
     let origin = { x: 0, y: 0 }, durationMs = 0;
     // Lazy snapshot index: parallel arrays (time, byte-offset, origin at that point)
     const snapTimes = [], snapOffsets = [], snapOx = [], snapOy = [];
+    const inventories = [];
     // Voice: collect compact offset records (no per-packet Uint8Array allocations)
-    const voiceT = [], voiceSid = [], voiceOff = [], voiceLen = [];
+    const voiceT = [], voiceSid = [], voiceOff = [], voiceLen = [], voiceRadio = [];
+    let lastSnapshotTime = 0;
 
     while (r.o < r.len) {
       const type = r.u8();
@@ -221,6 +223,7 @@
       else if (type === 0x01) { // SNAPSHOT — INDEX ONLY (lazy decode at render)
         const snapStart = r.o - 1; // include the frame-type byte
         const timeMs=r.u32(); const ec=r.u16();
+        lastSnapshotTime = timeMs;
         if(ec>LIM.ent)throw new Error("Битый счётчик entities="+ec+" — рассинхрон парсера");
         if(collectTimeline&&timeMs>=nextHealthSampleMs){
           // Real recordings repeat every active affliction as damage telemetry.
@@ -258,17 +261,20 @@
         const e=events[events.length-1];if(e.timeMs>durationMs)durationMs=e.timeMs;
       } else if (type === 0x07) { // VOICE — record offset, keep bytes in the paged buffer
         const t=r.u32(); const sid=r.u16(); const len=r.u16();
-        voiceT.push(t); voiceSid.push(sid); voiceOff.push(r.o); voiceLen.push(len);
+        voiceT.push(t); voiceSid.push(sid); voiceRadio.push(0); voiceOff.push(r.o); voiceLen.push(len);
         r.skip(len); // do not copy now — slice lazily during playback
+      } else if (type === 0x09) { // VOICE WITH CHANNEL: 0 local, 1 radio
+        const t=r.u32(); const sid=r.u16(); const radio=r.u8(); const len=r.u16();
+        voiceT.push(t); voiceSid.push(sid); voiceRadio.push(radio ? 1 : 0); voiceOff.push(r.o); voiceLen.push(len);
+        r.skip(len);
       } else if (type === 0x08) { // INVENTORY — indexed state, not needed for map rendering
         const count = r.u16();
         if (count > 65535) throw new Error("Битый счётчик inventory=" + count);
+        const items = [];
         for (let i = 0; i < count; i++) {
-          r.u16(); // item id
-          r.u16(); // player owner id
-          r.str();
-          r.u8();
+          items.push({id:r.u16(), ownerId:r.u16(), identifier:r.str(), condition:r.u8()});
         }
+        inventories.push({timeMs:lastSnapshotTime,items});
       } else if (type === 0xFF) { const t=r.u32();if(t>durationMs)durationMs=t;break; }
       else { throw new Error("Неизвестный тип фрейма 0x"+type.toString(16)+" — формат несовместим или файл повреждён"); }
     }
@@ -278,6 +284,7 @@
       count: voiceT.length,
       t: Int32Array.from(voiceT),
       sid: Uint16Array.from(voiceSid),
+      radio: Uint8Array.from(voiceRadio),
       // Файл теперь может быть сколь угодно большим (PagedBuffer больше не
       // упирается в потолок одного ArrayBuffer — см. выше), а voice-пакеты
       // разбросаны по всему файлу и попадаются позже снапшотов. Int32Array
@@ -298,7 +305,7 @@
       oy: Int32Array.from(snapOy),
       store: pagedBuffer,
     };
-    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,durationMs,voice};
+    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,inventories,durationMs,voice};
   }
 
   function indexAtTime(snaps, t) {
@@ -503,6 +510,26 @@
     if (idx !== _curSnapIdx) { _curSnap = API.decodeSnapshot(demo.snaps, idx); _curSnapIdx = idx; }
     return _curSnap;
   }
+  let _nextSnap = null, _nextSnapIdx = -1;
+  function snapAtInterpolated(t){
+    const idx=API.indexAtTime(demo.snaps,t);
+    const current=snapAt(t);
+    if(!current||idx>=demo.snaps.count-1)return current;
+    if(_nextSnapIdx!==idx+1){_nextSnap=API.decodeSnapshot(demo.snaps,idx+1);_nextSnapIdx=idx+1;}
+    if(!_nextSnap)return current;
+    const span=Math.max(1,_nextSnap.timeMs-current.timeMs);
+    const alpha=Math.max(0,Math.min(1,(t-current.timeMs)/span));
+    const nextEntities=new Map(_nextSnap.ents.map(e=>[e.id,e]));
+    const ents=current.ents.map(e=>{
+      const n=nextEntities.get(e.id);if(!n)return e;
+      return {...e,x:e.x+(n.x-e.x)*alpha,y:e.y+(n.y-e.y)*alpha,healthPct:e.healthPct+(n.healthPct-e.healthPct)*alpha};
+    });
+    const subPos=new Map();
+    for(const [id,p] of current.subPos){const n=_nextSnap.subPos.get(id);subPos.set(id,n?{x:p.x+(n.x-p.x)*alpha,y:p.y+(n.y-p.y)*alpha}:p);}
+    const doors=new Map();
+    for(const [id,p] of current.doors){const n=_nextSnap.doors.get(id);doors.set(id,n===undefined?p:p+(n-p)*alpha);}
+    return {...current,ents,subPos,doors};
+  }
 
   // ── Voice state ──────────────────────────────────────────────────────────
   let audioCtx = null, voiceEnabled = false, masterVol = 1.0;
@@ -510,6 +537,7 @@
   let voicePtr = 0, opusSupported = false;
   const speakerState = new Map();   // sid -> {mute, vol}
   const speakingNow = new Set();    // sids speaking within window
+  const speakingRadio = new Set();  // sids currently using the radio channel
   // Per-speaker Opus decoders (stateful codec — must NOT be shared between speakers)
   const decoders = new Map();       // sid -> {decoder, queue:[], gainNode}
 
@@ -591,7 +619,7 @@
   function render(){
     const W=cw(),H=ch();ctx.fillStyle=C.bg;ctx.fillRect(0,0,W,H);
     if(!demo)return;
-    const snap=snapAt(currentTimeMs);if(!snap)return;
+    const snap=snapAtInterpolated(currentTimeMs);if(!snap)return;
     // World outline (compact flat polygons)
     ctx.strokeStyle=C.worldOutline;ctx.lineWidth=1;
     for(const poly of demo.world.polys){
@@ -638,7 +666,7 @@
       const sz=Math.max(4,8*cam.zoom*6);
       ctx.fillStyle=dead?C.dead:teamColor(sp);ctx.fillRect(X-sz/2,Y-sz/2,sz,sz);
       if(!dead){ctx.strokeStyle="#fff";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(X,Y);ctx.lineTo(X+(facingLeft?-sz:sz),Y);ctx.stroke();}
-      if(speakingNow.has(e.id)){ctx.strokeStyle="#22d06f";ctx.lineWidth=2;ctx.beginPath();ctx.arc(X,Y,sz,0,Math.PI*2);ctx.stroke();}
+      if(speakingNow.has(e.id)){ctx.strokeStyle=speakingRadio.has(e.id)?"#ffd23f":"#63d9f2";ctx.lineWidth=2;ctx.beginPath();ctx.arc(X,Y,sz,0,Math.PI*2);ctx.stroke();}
       if(sp&&isHumanSpecies(sp.species)&&!dead){
         const bw=sz*1.5,bh=2;ctx.fillStyle="#333";ctx.fillRect(X-bw/2,Y-sz/2-6,bw,bh);
         ctx.fillStyle=lerpColor("#5ADC5A","#DC4646",1-e.healthPct/200);ctx.fillRect(X-bw/2,Y-sz/2-6,bw*Math.max(0,Math.min(1,e.healthPct/200)),bh);
@@ -662,6 +690,39 @@
     if(visible.length===lastChatLen)return;lastChatLen=visible.length;
     box.innerHTML=visible.map(c=>`<div class="rpv-chat-line"><b>${esc(c.author||"—")}</b>: ${esc(c.text||"")}</div>`).join("");
     box.scrollTop=box.scrollHeight;
+  }
+  let lastInventoryBucket=-1, lastRadioBucket=-1;
+  function inventoryAt(t){
+    const list=demo?.inventories||[];let result=null;
+    for(const frame of list){if(frame.timeMs<=t)result=frame;else break;}
+    return result;
+  }
+  function updateInventory(){
+    if(!demo)return;
+    const bucket=Math.floor(currentTimeMs/150);if(bucket===lastInventoryBucket)return;lastInventoryBucket=bucket;
+    const box=document.getElementById("rpvInventory");if(!box)return;
+    const frame=inventoryAt(currentTimeMs);
+    if(!frame||!frame.items.length){box.innerHTML='<span style="color:var(--gray);">Инвентари пусты</span>';return;}
+    const groups=new Map();
+    for(const item of frame.items){if(!item.ownerId)continue;if(!groups.has(item.ownerId))groups.set(item.ownerId,[]);groups.get(item.ownerId).push(item);}
+    box.innerHTML=[...groups].map(([id,items])=>{
+      const sp=demo.spawns.get(id);const name=esc(sp?.name||("Игрок #"+id));
+      return '<div class="rpv-inventory-player">'+name+'</div>'+items.map(i=>
+        '<div class="rpv-inventory-item">'+esc(i.identifier||"?")+" · "+Math.round(i.condition*100/255)+"%</div>").join("");
+    }).join("")||'<span style="color:var(--gray);">Инвентари пусты</span>';
+  }
+  function updateRadioPanel(){
+    if(!demo||!demo.voice)return;
+    const bucket=Math.floor(currentTimeMs/120);if(bucket===lastRadioBucket)return;lastRadioBucket=bucket;
+    const box=document.getElementById("rpvRadio");if(!box)return;
+    const from=currentTimeMs-2500, seen=new Set(), rows=[];
+    for(let i=demo.voice.count-1;i>=0;i--){
+      const t=demo.voice.t[i];if(t>currentTimeMs)continue;if(t<from)break;
+      const sid=demo.voice.sid[i], radio=!!demo.voice.radio[i], key=sid+":"+radio;if(seen.has(key))continue;seen.add(key);
+      const sp=demo.spawns.get(sid);rows.push('<div class="rpv-radio-line '+(radio?"":"local")+'">'+
+        (radio?"📻 Радиоэфир":"◌ Локальный")+" · "+esc(sp?.name||("Игрок #"+sid))+" · общий канал</div>");
+    }
+    box.innerHTML=rows.length?rows.reverse().join(""):'<span style="color:var(--gray);">Нет голосовой активности</span>';
   }
   function esc(t){const d=document.createElement("span");d.textContent=t;return d.innerHTML;}
   function fmtTime(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return String(m).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
@@ -700,6 +761,8 @@
     if(!demo)return;
     const label=document.getElementById("rpvTimeLabel");if(!label)return; // страница уже ушла со плеера
     label.textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
+    const rateLabel=document.getElementById("rpvRateLabel");
+    if(rateLabel)rateLabel.textContent=(demo.header.tickRate||10)+" Гц";
     const seek=document.getElementById("rpvSeek");
     if(seek){
       if(collectTimeline){
@@ -727,6 +790,7 @@
     voicePtr=voiceIndexAtTime(currentTimeMs);
     while(voicePtr<demo.voice.count&&demo.voice.t[voicePtr]<currentTimeMs)voicePtr++;
     speakingNow.clear();
+    speakingRadio.clear();
     updateSpeakingIndicators();
   }
   function applySeek(ms,syncVoice=true){
@@ -865,7 +929,10 @@
     speakingNow.clear();
     const si=voiceIndexAtTime(currentTimeMs);
     for(let k=Math.max(0,si-30);k<Math.min(V.count,si+30);k++){
-      if(Math.abs(V.t[k]-currentTimeMs)<=150)speakingNow.add(V.sid[k]);
+      if(Math.abs(V.t[k]-currentTimeMs)<=150){
+        speakingNow.add(V.sid[k]);
+        if(V.radio[k])speakingRadio.add(V.sid[k]);
+      }
     }
     // Schedule near-live packets to each speaker's own decoder
     while(voicePtr<V.count&&V.t[voicePtr]<=currentTimeMs){
@@ -889,6 +956,8 @@
     document.querySelectorAll(".rpv-player").forEach(row=>{
       const sid=parseInt(row.dataset.sid);
       row.classList.toggle("speaking",speakingNow.has(sid));
+      row.classList.toggle("speaking-radio",speakingNow.has(sid)&&speakingRadio.has(sid));
+      row.classList.toggle("speaking-local",speakingNow.has(sid)&&!speakingRadio.has(sid));
     });
   }
 
@@ -899,7 +968,7 @@
     const prev=currentTimeMs;
     if(playing&&demo){currentTimeMs+=dt*speed;if(currentTimeMs>=demo.durationMs){currentTimeMs=demo.durationMs;setPlaying(false);}}
     if(followSub&&demo&&followSubId!=null){const c=subCenterAt(snapAt(currentTimeMs),followSubId);cam.x=c.x;cam.y=c.y;}
-    render();updateChat();updateTimeUI();
+    render();updateChat();updateInventory();updateRadioPanel();updateTimeUI();
     if(voiceEnabled){updateVoice(prev);updateSpeakingIndicators();}
     requestAnimationFrame(loop);
   }

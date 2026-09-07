@@ -17,7 +17,7 @@ from .discord_viewer_api import router as discord_viewer_router
 from .tickets_api import panel_router as tickets_panel_router
 from .logs import router as logs_router
 from .dispatch import api_router as dispatch_api_router, panel_router as dispatch_panel_router, client_router as dispatch_client_router
-from .replays import api_router as replays_api_router, panel_router as replays_panel_router
+from .replays import api_router as replays_api_router, panel_router as replays_panel_router, ws_router as replays_ws_router
 from .analytics import router as analytics_router
 from .notifications import router as notifications_router
 from .documents import router as documents_router
@@ -61,6 +61,7 @@ __all__ = [
     "dispatch_panel_router",
     "dispatch_client_router",
     "replays_api_router",
+    "replays_ws_router",
     "replays_panel_router",
     "analytics_router",
     "notifications_router",
