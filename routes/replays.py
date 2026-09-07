@@ -230,19 +230,25 @@ def _read_bytes(data: bytes, offset: int, size: int) -> tuple[bytes, int]:
 _DEMO_STATIC_POLY_CAP = 20000
 
 
-def _parse_demo_chunk(data: bytes) -> dict:
+def _parse_demo_chunk(data: bytes, demo_version: int = 7, base_origin: tuple = (0, 0)) -> dict:
     """Extract live state from a demo frame batch.
 
     Never raises: truncation (a static frame split across chunks) yields
     whatever was fully decoded; anything else unexpected skips the chunk.
     The assembled replay file is always preserved verbatim by the caller.
 
-    Keys produced: header, static (hulls/walls/doors/outline), spawns,
-    despawns, t, characters, doors, subs, items.
+    `demo_version` selects version-dependent layouts (entity oxygen byte,
+    spawn job, inventory owner kinds, hull-assign frame — all v7+); it is
+    overridden by the stream header whenever the chunk carries one.
+    `base_origin` resolves coords in chunks that start mid-stream, before
+    their first 0x02 origin frame.
+
+    Keys produced: header, static (hulls/walls/doors/outline), origin,
+    spawns, despawns, hull_assign, t, characters, doors, subs, items.
     """
     result: dict = {}
     try:
-        _parse_demo_chunk_into(data, result)
+        _parse_demo_chunk_into(data, result, demo_version, base_origin)
     except _DemoTruncated:
         pass
     except Exception:
@@ -251,10 +257,10 @@ def _parse_demo_chunk(data: bytes) -> dict:
     return result
 
 
-def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
+def _parse_demo_chunk_into(data: bytes, result: dict, demo_version: int, base_origin: tuple) -> None:
     offset = 0
-    origin_x = 0
-    origin_y = 0
+    origin_x, origin_y = base_origin
+    version = demo_version
     if data[:4] == b"BDMO":
         _need(data, 0, 17)
         version, offset = _read_u16(data, 4)
@@ -275,6 +281,8 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
             "start_ms": start_ms, "server": server, "seed": seed,
             "level": level, "sub": sub,
         }
+        # `version` above came from the header itself and now governs the
+        # version-dependent frame layouts below for the rest of this chunk.
     while offset < len(data):
         _need(data, offset, 1)
         frame = data[offset]
@@ -345,6 +353,7 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
             _need(data, offset, 8)
             origin_x, origin_y = struct.unpack_from("<ii", data, offset)
             offset += 8
+            result["origin"] = (origin_x, origin_y)
         elif frame == 0x03:
             _need(data, offset, 4)
             offset += 4
@@ -354,9 +363,12 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
             _need(data, offset, 1)
             team = struct.unpack_from("<b", data, offset)[0]
             offset += 1
+            # v7+: job identifier, sent once per entity (2 bytes when empty).
+            job, offset = _read_str(data, offset) if version >= 7 else ("", offset)
             result.setdefault("spawns", {})[character_id] = {
                 "name": name, "species": species,
                 "team": {1: "Team1", 2: "Team2", 3: "FriendlyNPC"}.get(team, "None"),
+                "job": job or None,
             }
         elif frame == 0x04:
             # Despawn (format v6+): stale spawn/name entries must go, otherwise
@@ -365,16 +377,35 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
             offset += 4
             despawn_id, offset = _read_u16(data, offset)
             result.setdefault("despawns", []).append(despawn_id)
+        elif frame == 0x0A:
+            # v7+ sparse hull assignments: only characters whose hull changed
+            # since the previous snapshot are listed (usually a few or zero).
+            _need(data, offset, 4)
+            offset += 4
+            assign_count, offset = _read_u16(data, offset)
+            _need(data, offset, assign_count * 4)
+            assign = {}
+            for _ in range(assign_count):
+                assign_id, offset = _read_u16(data, offset)
+                assign_hull, offset = _read_u16(data, offset)
+                assign[assign_id] = assign_hull
+            result.setdefault("hull_assign", {}).update(assign)
         elif frame == 0x01:
             time_ms, offset = _read_u32(data, offset)
             count, offset = _read_u16(data, offset)
-            _need(data, offset, count * 6)
+            ent_size = 7 if version >= 7 else 6  # v7 appends 1 oxygen byte
+            _need(data, offset, count * ent_size)
             characters = []
             for _ in range(count):
                 character_id, offset = _read_u16(data, offset)
-                _need(data, offset, 6)
+                _need(data, offset, ent_size)
                 x, y, flags, health = struct.unpack_from("<hhBB", data, offset)
                 offset += 6
+                if version >= 7:
+                    oxygen = data[offset]
+                    offset += 1
+                else:
+                    oxygen = 0
                 characters.append({
                     "id": character_id,
                     "name": "",
@@ -386,7 +417,7 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
                     "x": origin_x + x * 4,
                     "y": origin_y + y * 4,
                     "hp": health * 200.0 / 255.0,
-                    "oxygen": 0,
+                    "oxygen": oxygen,
                     "dead": bool(flags & 1),
                     "water": bool(flags & 8),
                     "ragdoll": bool(flags & 16),
@@ -445,15 +476,33 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
             items = []
             for _ in range(count):
                 item_id, offset = _read_u16(data, offset)
-                owner_id, offset = _read_u16(data, offset)
+                if version >= 7:
+                    # v7: direct owner kind (0 world, 1 character, 2 item
+                    # container, 3 hull floor). Coords only for unowned items,
+                    # origin-relative i16 like entities (4 bytes, not 8).
+                    _need(data, offset, 1)
+                    owner_kind = data[offset]
+                    offset += 1
+                    owner_id, offset = _read_u16(data, offset)
+                else:
+                    owner_id, offset = _read_u16(data, offset)
+                    owner_kind = 1 if owner_id else 0
                 identifier, offset = _read_str(data, offset)
                 _need(data, offset, 1)
                 condition = data[offset]
                 offset += 1
+                if version >= 7 and owner_kind in (0, 3):
+                    _need(data, offset, 4)
+                    ix, iy = struct.unpack_from("<hh", data, offset)
+                    offset += 4
+                    ix = origin_x + ix * 4
+                    iy = origin_y + iy * 4
+                else:
+                    ix, iy = 0, 0
                 items.append({
-                    "id": item_id, "item": identifier, "x": 0, "y": 0,
+                    "id": item_id, "item": identifier, "x": ix, "y": iy,
                     "cond": condition * 100.0 / 255.0,
-                    "owner_t": "character" if owner_id else "world",
+                    "owner_t": {0: "world", 1: "character", 2: "item", 3: "hull"}.get(owner_kind, "world"),
                     "owner_id": owner_id or None,
                 })
             result["items"] = items
@@ -468,6 +517,11 @@ def _parse_demo_chunk_into(data: bytes, result: dict) -> None:
 
 def _apply_parsed_to_state(state: dict, parsed: dict) -> None:
     """Merge one parsed chunk into the per-stream live cache (pure, no I/O)."""
+    if "header" in parsed:
+        state["header"] = parsed["header"]
+        state["demo_version"] = parsed["header"].get("version", 7)
+    if "origin" in parsed:
+        state["origin"] = parsed["origin"]
     if "spawns" in parsed:
         state.setdefault("spawns", {}).update(parsed["spawns"])
     despawns = parsed.get("despawns") or []
@@ -477,18 +531,26 @@ def _apply_parsed_to_state(state: dict, parsed: dict) -> None:
         if spawns:
             for character_id in gone:
                 spawns.pop(character_id, None)
+        hulls = state.get("hull_by_char")
+        if hulls:
+            for character_id in gone:
+                hulls.pop(character_id, None)
         if isinstance(state.get("characters"), list):
             state["characters"] = [c for c in state["characters"] if c.get("id") not in gone]
+    if "hull_assign" in parsed:
+        state.setdefault("hull_by_char", {}).update(parsed["hull_assign"])
     if "characters" in parsed:
+        spawns = state.get("spawns", {})
+        hulls = state.get("hull_by_char", {})
         for character in parsed["characters"]:
-            character.update(state.get("spawns", {}).get(character["id"], {}))
+            character.update(spawns.get(character["id"], {}))
+            hull_id = hulls.get(character["id"])
+            character["hull"] = hull_id if hull_id else None
     for key in ("t", "characters", "doors", "subs", "items"):
         if key in parsed:
             state[key] = parsed[key]
     if "static" in parsed:
         state["static"] = parsed["static"]
-    if "header" in parsed:
-        state["header"] = parsed["header"]
 
 
 def _fill_static_from_demo(row, parsed: dict, payload: dict) -> bool:
@@ -536,7 +598,14 @@ _LIVE_CACHE_MAX_STREAMS = 64
 
 
 def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str] = None) -> None:
-    parsed = _parse_demo_chunk(data)
+    # Version and origin are per-stream incremental state: the header and
+    # 0x02 frames only ride the first chunks, later chunks need them for
+    # the v7 layouts and origin-relative coords.
+    with _live_cache_lock:
+        cached = _live_cache.get(stream_id, {})
+        demo_version = cached.get("demo_version", 7)
+        base_origin = cached.get("origin", (0, 0))
+    parsed = _parse_demo_chunk(data, demo_version, base_origin)
     if not parsed:
         return
     now = datetime.utcnow()

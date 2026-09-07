@@ -172,14 +172,19 @@
     };
     r.u32();
     const hasVoice = (header.flags & 1) !== 0;
-    if (header.version !== 4 && header.version !== 5) {
-      throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4 или 5). Файл может быть повреждён.");
+    if (header.version !== 4 && header.version !== 5 && header.version !== 6 && header.version !== 7) {
+      throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4–7). Файл может быть повреждён.");
     }
+    // v7: entity +1 oxygen byte, spawn +job string, sparse hull-assign 0x0A,
+    // inventory direct owner kind + coords for unowned items only.
+    const isV7 = header.version >= 7;
     const geometry = { hulls: [], walls: [], doors: [] };
     const world = { w: 0, h: 0, polys: [] };
     const chat = [], events = [], spawnEvents = [], healthDrops = [];
     const spawns = new Map();
     const activeSpawns = new Map();
+    const hullEvents = [];
+    const hullByChar = new Map();
     const sampledHealth = new Map();
     const healthSampleIntervalMs = Math.max(50, Math.round(1000 / Math.max(1, header.tickRate || 10)));
     let nextHealthSampleMs = 0;
@@ -210,14 +215,20 @@
       } else if (type === 0x02) { origin={x:r.i32(),y:r.i32()}; }
       else if (type === 0x03) {
         const t=r.u32(),id=r.u16(),species=r.str(),name=r.str(),teamId=r.i8();
-        const spawn={id,species,name,teamId};spawns.set(id,spawn);activeSpawns.set(id,spawn);sampledHealth.delete(id);
+        const job=isV7?r.str():null;
+        const spawn={id,species,name,teamId,job};spawns.set(id,spawn);activeSpawns.set(id,spawn);sampledHealth.delete(id);
         if(collectTimeline)spawnEvents.push({timeMs:t,kind:"spawn",...spawn});
         if(t>durationMs)durationMs=t;
       }
       else if (type === 0x04) {
         const t=r.u32(),id=r.u16(),known=collectTimeline?activeSpawns.get(id):null;
-        if(collectTimeline)spawnEvents.push({timeMs:t,kind:"despawn",id,species:known?.species||"",name:known?.name||"",teamId:known?.teamId??0});
-        activeSpawns.delete(id);sampledHealth.delete(id);
+        if(collectTimeline)spawnEvents.push({timeMs:t,kind:"despawn",id,species:known?.species||"",name:known?.name||"",teamId:known?.teamId??0,job:known?.job||null});
+        activeSpawns.delete(id);sampledHealth.delete(id);hullByChar.delete(id);
+        if(t>durationMs)durationMs=t;
+      }
+      else if (type === 0x0A) { // HULL ASSIGN (v7+) — sparse, only changed hulls
+        const t=r.u32(),ac=r.u16();if(ac>LIM.ent)throw new Error("Битый счётчик hullAssign="+ac);
+        for(let i=0;i<ac;i++){const id=r.u16(),hull=r.u16();hullEvents.push({timeMs:t,id,hull});if(hull)hullByChar.set(id,hull);else hullByChar.delete(id);}
         if(t>durationMs)durationMs=t;
       }
       else if (type === 0x01) { // SNAPSHOT — INDEX ONLY (lazy decode at render)
@@ -230,7 +241,7 @@
           // Sample the authoritative health byte at the advertised tick rate;
           // later only a real health decrease can become an audit event.
           for(let i=0;i<ec;i++){
-            const id=r.u16();r.skip(4);r.u8();const healthByte=r.u8();
+            const id=r.u16();r.skip(4);r.u8();const healthByte=r.u8();if(isV7)r.skip(1); // oxygen
             const spawn=activeSpawns.get(id);
             if(!isHumanSpecies(spawn?.species))continue;
             const previous=sampledHealth.get(id);
@@ -244,7 +255,7 @@
           }
           nextHealthSampleMs=timeMs+healthSampleIntervalMs;
         }else{
-          r.skip(ec*8); // entity = u16 id + i16 x + i16 y + u8 flags + u8 health = 8 bytes
+          r.skip(ec*(isV7?9:8)); // entity = u16 id + i16 x + i16 y + u8 flags + u8 health [+ u8 oxygen v7]
         }
         const ddc=r.u16();if(ddc>LIM.door)throw new Error("Битый счётчик doors="+ddc);
         r.skip(ddc*3); // u16 id + u8 open
@@ -272,7 +283,16 @@
         if (count > 65535) throw new Error("Битый счётчик inventory=" + count);
         const items = [];
         for (let i = 0; i < count; i++) {
-          items.push({id:r.u16(), ownerId:r.u16(), identifier:r.str(), condition:r.u8()});
+          const id=r.u16();
+          // v7: direct owner kind (0 world, 1 character, 2 item, 3 hull);
+          // coords (origin-relative i16) only for unowned kinds 0/3.
+          const ownerKind=isV7?r.u8():null;
+          const ownerId=r.u16();
+          const identifier=r.str(),condition=r.u8();
+          let x=0,y=0;
+          const kind=isV7?ownerKind:(ownerId?1:0);
+          if(isV7&&(kind===0||kind===3)){x=origin.x+r.i16()*POS_SCALE;y=origin.y+r.i16()*POS_SCALE;}
+          items.push({id,ownerId,identifier,condition,ownerKind:kind,x,y});
         }
         inventories.push({timeMs:lastSnapshotTime,items});
       } else if (type === 0xFF) { const t=r.u32();if(t>durationMs)durationMs=t;break; }
@@ -299,13 +319,14 @@
     };
     const snaps = {
       count: snapTimes.length,
+      v: header.version,
       t: Int32Array.from(snapTimes),
       off: (snapOffsets.length && snapOffsets[snapOffsets.length-1] < 2**31) ? Int32Array.from(snapOffsets) : Float64Array.from(snapOffsets),
       ox: Int32Array.from(snapOx),
       oy: Int32Array.from(snapOy),
       store: pagedBuffer,
     };
-    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,inventories,durationMs,voice};
+    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,inventories,hullEvents,durationMs,voice};
   }
 
   function indexAtTime(snaps, t) {
@@ -319,6 +340,7 @@
   function decodeSnapshot(snaps, idx) {
     if (idx < 0 || idx >= snaps.count) return null;
     const s = snaps.store;
+    const v7 = (snaps.v || 4) >= 7;
     let o = snaps.off[idx];
     const ox = snaps.ox[idx], oy = snaps.oy[idx];
     o += 1; // skip frame-type byte (0x01)
@@ -331,7 +353,8 @@
       const py=s.i16(o);o+=2;
       const fl=s.u8(o);o+=1;
       const hb=s.u8(o);o+=1;
-      ents[i]={id,x:ox+px*POS_SCALE,y:oy+py*POS_SCALE,flags:fl,healthPct:hb*200/255};
+      const oxy=v7?s.u8(o):0;if(v7)o+=1;
+      ents[i]={id,x:ox+px*POS_SCALE,y:oy+py*POS_SCALE,flags:fl,healthPct:hb*200/255,oxygen:oxy};
     }
     const doors=new Map();const ddc=s.u16(o);o+=2;
     for(let i=0;i<ddc;i++){const id=s.u16(o);o+=2;doors.set(id,s.u8(o)/255);o+=1;}
@@ -1209,7 +1232,7 @@
     for(const sp of demo.spawnEvents){
       if(sp.kind!=="spawn")continue;
       if(!isHumanSpawn(sp)||!sp.name||seenNames.has(sp.name))continue;
-      seenNames.add(sp.name);players.push({id:sp.id,name:sp.name,species:sp.species,teamId:sp.teamId});
+      seenNames.add(sp.name);players.push({id:sp.id,name:sp.name,species:sp.species,teamId:sp.teamId,job:sp.job??null});
     }
     for(const chat of demo.chat){
       if(!chat.author||seenNames.has(chat.author))continue;
