@@ -372,7 +372,12 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str]) -> 
     chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
     expected = [f"{index:08d}.bin" for index in range(len(chunk_names))]
     if chunk_names != expected:
-        raise HTTPException(status_code=409, detail="Поток демки содержит пропущенные чанки")
+        missing = [name for name in expected if name not in chunk_names]
+        raise HTTPException(status_code=409, detail={
+            "message": "Поток демки содержит пропущенные чанки",
+            "missing": missing[:20],
+            "received": chunk_names[-5:],
+        })
     if sum(os.path.getsize(os.path.join(directory, name)) for name in chunk_names) + len(end) > 500 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Демка превышает лимит 500 МБ")
     raw_path = os.path.join(
