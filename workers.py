@@ -209,6 +209,19 @@ def task_project_rating_events() -> dict:
     return {"pending_events": len(ids)}
 
 
+def task_migrate_legacy_rating() -> dict:
+    """Import the frozen legacy role-action aggregate once on startup."""
+    from rating_legacy_migration import import_legacy_rating_once
+
+    source_db = SessionLocal()
+    target_db = GameSessionLocal()
+    try:
+        return import_legacy_rating_once(source_db, target_db)
+    finally:
+        source_db.close()
+        target_db.close()
+
+
 def task_check_rating_reward_schedules() -> dict:
     """Проверяет, не наступило ли назначенное время (день недели + время МСК)
     у какого-нибудь правила награды за место в рейтинге, и если да —
@@ -1231,6 +1244,7 @@ def _start_simple_workers():
     periodic_tasks = [
         (task_compensate_playtime, 30 * 60),
         (task_recalculate_ratings, 24 * 60 * 60),
+        (task_migrate_legacy_rating, 30),
         (task_project_rating_events, 10),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
@@ -1283,6 +1297,15 @@ def _start_scheduler():
         interval_secs=24 * 60 * 60,
         priority=Priority.LOW,
         task_id="rating_recalc",
+    )
+
+    # The old role-action aggregate has no round/mode context. Import it once
+    # as explicitly tagged Mission history before new v2 events accumulate.
+    scheduler.register_periodic(
+        task_migrate_legacy_rating,
+        interval_secs=30,
+        priority=Priority.NORMAL,
+        task_id="rating_legacy_migration",
     )
 
     # Accepted v2 events are durable before projection. This short retry loop

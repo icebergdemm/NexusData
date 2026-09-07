@@ -33,21 +33,7 @@ from models import (
 )
 from rating_constants import ROLES
 from rating_v2_engine import FORMULA_VERSION, calculate_event_delta
-
-
-def normalize_steam_id(value: str | None) -> str:
-    value = (value or "").strip()
-    if value.upper().startswith("STEAM_"):
-        value = "STEAM:" + value[6:].replace("_", ":")
-    if not value.upper().startswith("STEAM:"):
-        return value
-    parts = value.split(":")
-    if len(parts) != 3:
-        return value
-    try:
-        return str(76561197960265728 + int(parts[2]) * 2 + int(parts[1]))
-    except ValueError:
-        return value
+from rating_legacy_migration import normalize_steam_id
 
 
 def _row(row) -> dict:

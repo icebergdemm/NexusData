@@ -223,9 +223,11 @@ def _project_rating_events(event_ids: List[int]) -> None:
             run.completed_at = now
         _snapshot_rank_history(db, events, now)
         db.commit()
+        return True
     except Exception:
         db.rollback()
         logger.exception("rating v2 projection failed for ledger ids %s", event_ids)
+        return False
     finally:
         db.close()
 
