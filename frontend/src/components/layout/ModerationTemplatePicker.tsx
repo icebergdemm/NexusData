@@ -28,7 +28,7 @@ interface ModerationTemplatePickerProps {
 export function ModerationTemplatePicker({ type, onSelect }: ModerationTemplatePickerProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
-  const { data } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["moderation-templates"],
     queryFn: () => api.get<{ templates: ModerationTemplate[] }>("/api/v1/admin/moderation-templates"),
     staleTime: 60_000,
@@ -42,7 +42,13 @@ export function ModerationTemplatePicker({ type, onSelect }: ModerationTemplateP
     ))
   }, [data?.templates, search, type])
 
-  if (!(data?.templates ?? []).some((template) => template.action_type === type)) return null
+  if (isLoading) {
+    return <Button type="button" size="sm" variant="outline" className="gap-1.5" disabled><FileText className="size-3.5" /> Шаблоны…</Button>
+  }
+
+  if (isError) {
+    return <Button type="button" size="sm" variant="outline" className="gap-1.5" disabled title="Не удалось загрузить шаблоны"><FileText className="size-3.5" /> Шаблоны</Button>
+  }
 
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setSearch("") }}>
@@ -63,7 +69,7 @@ export function ModerationTemplatePicker({ type, onSelect }: ModerationTemplateP
           placeholder="Найти шаблон…"
           className="mt-3"
         />
-        <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+          <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
           {templates.map((template) => (
             <button
               key={template.id}
@@ -75,7 +81,7 @@ export function ModerationTemplatePicker({ type, onSelect }: ModerationTemplateP
               <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{template.content}</div>
             </button>
           ))}
-          {!templates.length && <div className="py-3 text-center text-xs text-muted-foreground">Ничего не найдено</div>}
+          {!templates.length && <div className="py-3 text-center text-xs text-muted-foreground">Для этого действия шаблонов пока нет.</div>}
         </div>
       </PopoverContent>
     </Popover>

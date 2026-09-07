@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from database import get_db
-from security import check_permission
+from security import check_permission, check_moderation_action_permission, csrf_token_from_request
 from services import (
     AdminService, DiscordAuthService, PlayerService,
     PlayerKillService, PlayerRoleActionService, PlayerIPService,
@@ -197,28 +197,15 @@ async def api_me_set_forced_nickname(request: Request, db: Session = Depends(get
 
 
 async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
-    """Validate CSRF token with a safe fallback to a valid server-side admin session.
-
-    Primary protection is still CSRF token equality.
-    Fallback is used only when a valid `admin_token` cookie maps to an active DB session.
-    """
-    form = await request.form()
-    csrf_token = form.get("csrf_token")
+    """Validate the CSRF header used by JSON clients or the legacy form field."""
+    csrf_token = csrf_token_from_request(request)
+    if not csrf_token:
+        form = await request.form()
+        csrf_token = form.get("csrf_token")
     session_csrf = request.session.get("csrf_token")
 
     if csrf_token and session_csrf and secrets.compare_digest(str(csrf_token), str(session_csrf)):
         return
-
-    token = request.cookies.get("admin_token")
-    if token:
-        now = datetime.utcnow()
-        admin_session = db.query(AdminSession).filter(
-            AdminSession.token == token,
-            AdminSession.revoked == 0
-        ).first()
-        if admin_session and (admin_session.expires_at is None or admin_session.expires_at > now):
-            logger.warning("CSRF mismatch accepted via valid admin session fallback for %s", request.url.path)
-            return
 
     raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
@@ -1784,11 +1771,12 @@ async def api_player_detail(
         AdminUser.discord_id == player.discord_id,
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
+    special_access = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
     # Профиль, привязанный к аккаунту СУПЕРПОЛЬЗОВАТЕЛЯ, и is_secret
     # открываются правом players_special:view (или статусом суперпользователя).
-    if linked_admin and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
+    if linked_admin and not special_access:
         return {"classified": True}
-    if is_secret and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
+    if is_secret and not special_access:
         return {"classified": True}
 
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
@@ -1937,7 +1925,7 @@ async def api_player_detail(
         "can_edit_discord_id": check_permission(current_admin, "players", "edit_discord_id"),
         "can_manage_notes": check_permission(current_admin, "players", "manage_notes"),
         "can_manage_labels": check_permission(current_admin, "players", "manage_labels"),
-        "can_send_message": check_permission(current_admin, "moderation", "message"),
+        "can_send_message": check_moderation_action_permission(current_admin, "message"),
         "can_manage_traps": check_permission(current_admin, "players", "manage_traps"),
         "can_manage_achievements": check_permission(current_admin, "players", "manage_achievements"),
         "can_manage_rewards": check_permission(current_admin, "players", "manage_rewards"),
@@ -2274,7 +2262,7 @@ async def api_send_player_message(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "moderation", "message"):
+    if not check_moderation_action_permission(current_admin, "message"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     await ensure_csrf_or_valid_admin_session(request, db)
 
@@ -2282,20 +2270,32 @@ async def api_send_player_message(
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
 
+    special_access = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
+    if not check_permission(current_admin, "players", "view") and not special_access:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    linked_admin = db.query(AdminUser).filter(
+        AdminUser.discord_id == player.discord_id,
+        AdminUser.is_superuser == True,
+    ).first() if player.discord_id else None
+    if not special_access and (getattr(player, "is_secret", 0) == 1 or linked_admin):
+        raise HTTPException(status_code=404, detail="Player not found")
+
     body = await request.json()
     message_text = (body.get("message_text") or "").strip()
     if not message_text:
         raise HTTPException(status_code=400, detail="message_text required")
-    if len(message_text) > 2000:
-        raise HTTPException(status_code=400, detail="message_text too long")
-
     from routes.moderation import _effective_server_name, _prefix_admin_message, _queued_action_type
     from schemas import QueueActionIn
+
+    try:
+        prepared_message = _prefix_admin_message(message_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     action_in = QueueActionIn(
         action_type=_queued_action_type("message"),
         target_steamid=player.player_steamid,
-        message_text=_prefix_admin_message(message_text),
+        message_text=prepared_message,
         server_name=_effective_server_name(db, "message", player.player_steamid, body.get("server_name")),
     )
     action = ServerModerationService(db).enqueue_action(action_in, admin_id=current_admin.id)
@@ -5099,13 +5099,13 @@ async def remove_label(
 
 def _allowed_moderation_template_types(admin: AdminUser) -> set[str]:
     allowed: set[str] = set()
-    if check_permission(admin, "moderation", "message"):
+    if check_moderation_action_permission(admin, "message"):
         allowed.add("message")
-    if check_permission(admin, "punishments", "issue"):
+    if check_permission(admin, "punishments", "issue") or check_permission(admin, "punishments", "edit"):
         allowed.update(("warning", "kick", "ban"))
-    if check_permission(admin, "moderation", "kick"):
+    if check_moderation_action_permission(admin, "kick"):
         allowed.add("kick")
-    if check_permission(admin, "moderation", "ban"):
+    if check_moderation_action_permission(admin, "ban"):
         allowed.add("ban")
     return allowed
 

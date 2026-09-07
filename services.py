@@ -7,6 +7,20 @@ import httpx
 import threading
 from datetime import datetime, timezone, timedelta
 
+ADMIN_MESSAGE_MAX_LENGTH = 2000
+ADMIN_MESSAGE_PREFIX = "[Администрация]: "
+
+
+def prepare_admin_message(text: Optional[str]) -> Optional[str]:
+    """Normalize an admin message and enforce the queue column limit."""
+    if not text:
+        return text
+    text = text.strip()
+    prepared = text if text.startswith(ADMIN_MESSAGE_PREFIX) else f"{ADMIN_MESSAGE_PREFIX}{text}"
+    if len(prepared) > ADMIN_MESSAGE_MAX_LENGTH:
+        raise ValueError(f"Текст сообщения не должен превышать {ADMIN_MESSAGE_MAX_LENGTH - len(ADMIN_MESSAGE_PREFIX)} символов")
+    return prepared
+
 MSK = timezone(timedelta(hours=3))
 
 def _now_msk() -> datetime:

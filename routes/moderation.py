@@ -22,10 +22,10 @@ import secrets
 from datetime import datetime, timedelta
 
 from database import get_db, get_game_db
-from security import check_permission
+from security import check_permission, check_moderation_action_permission, csrf_token_from_request
 from config import get_settings
 from security import verify_external_api_key_dependency
-from services import PunishmentService, ServerModerationService, PlayerService
+from services import PunishmentService, ServerModerationService, PlayerService, prepare_admin_message
 from services_ai_dossier import get_dossier_triage_map
 from schemas import (
     ServerPlayersReport, ServerPlayersReportResult,
@@ -67,20 +67,14 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
 
 
 async def ensure_csrf(request: Request, db: Session):
-    form = await request.form()
-    csrf_token = form.get("csrf_token")
+    """Validate the CSRF header used by JSON clients or the legacy form field."""
+    csrf_token = csrf_token_from_request(request)
+    if not csrf_token:
+        form = await request.form()
+        csrf_token = form.get("csrf_token")
     session_csrf = request.session.get("csrf_token")
     if csrf_token and session_csrf and secrets.compare_digest(str(csrf_token), str(session_csrf)):
         return
-    token = request.cookies.get("admin_token")
-    if token:
-        now = datetime.utcnow()
-        s = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if s and (s.expires_at is None or s.expires_at > now):
-            logger.warning("CSRF mismatch accepted via valid admin session for %s", request.url.path)
-            return
     raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
@@ -250,18 +244,19 @@ def _effective_server_name(db: Session, action_type: str, target_steamid: str,
     return chosen
 
 
-_ADMIN_MSG_PREFIX = "[Администрация]: "
-
-
 def _prefix_admin_message(text: Optional[str]) -> Optional[str]:
     """Сообщение игроку с сайта должно быть узнаваемо как официальное — иначе
     в игровом чате/окне не отличить от розыгрыша другим игроком. Проверка на
     уже проставленный префикс — на случай повторной отправки (сеть, ретрай),
     чтобы префикс не задваивался."""
-    if not text:
-        return text
-    text = text.strip()
-    return text if text.startswith(_ADMIN_MSG_PREFIX) else f"{_ADMIN_MSG_PREFIX}{text}"
+    return prepare_admin_message(text)
+
+
+def _queued_message_or_400(text: Optional[str]) -> Optional[str]:
+    try:
+        return _prefix_admin_message(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @panel_router.get("/adminold/moderation", response_class=HTMLResponse)
@@ -379,7 +374,7 @@ async def enqueue_moderation_action(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Enqueue a kick / ban / unban / message action from the admin panel."""
-    if not check_permission(current_admin, "moderation", _moderation_action_permission(action_type)):
+    if not check_moderation_action_permission(current_admin, _moderation_action_permission(action_type)):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     await ensure_csrf(request, db)
@@ -393,7 +388,7 @@ async def enqueue_moderation_action(
         target_steamid=target_steamid,
         reason=reason or None,
         duration_minutes=duration_minutes or None,
-        message_text=_prefix_admin_message(message_text) if action_type in ("message", "msg_box") else (message_text or None),
+        message_text=_queued_message_or_400(message_text) if action_type in ("message", "msg_box") else (message_text or None),
         server_name=_effective_server_name(db, action_type, target_steamid, server_name),
     )
 
@@ -662,6 +657,9 @@ async def api_moderation_overview(
         "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
         "can_edit": check_permission(current_admin, "moderation", "edit"),
         "can_delete": check_permission(current_admin, "moderation", "delete"),
+        "can_message": check_moderation_action_permission(current_admin, "message"),
+        "can_kick": check_moderation_action_permission(current_admin, "kick"),
+        "can_ban": check_moderation_action_permission(current_admin, "ban"),
         # Быстрая выдача предупреждения прямо из списка онлайна — право то же,
         # что и на обычную выдачу наказаний, а не moderation:edit.
         "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),
@@ -675,10 +673,11 @@ async def api_enqueue_moderation_action(
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """JSON variant of enqueue_moderation_action — same side effects, JSON in/out."""
+    await ensure_csrf(request, db)
     body = await request.json()
     action_type = body.get("action_type")
 
-    if not check_permission(current_admin, "moderation", _moderation_action_permission(action_type)):
+    if not check_moderation_action_permission(current_admin, _moderation_action_permission(action_type)):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     target_steamid = body.get("target_steamid")
@@ -698,7 +697,7 @@ async def api_enqueue_moderation_action(
         target_steamid=target_steamid,
         reason=reason or None,
         duration_minutes=duration_minutes or None,
-        message_text=_prefix_admin_message(message_text) if action_type in ("message", "msg_box") else (message_text or None),
+        message_text=_queued_message_or_400(message_text) if action_type in ("message", "msg_box") else (message_text or None),
         server_name=_effective_server_name(db, action_type, target_steamid, server_name),
     )
 

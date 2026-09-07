@@ -1,9 +1,13 @@
+from types import SimpleNamespace
+
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
 from models import LabelCategory, PlayerData
-from services import ModerationActionTemplateService, PlayerLabelService
+from security import check_moderation_action_permission, csrf_token_from_request
+from services import ModerationActionTemplateService, PlayerLabelService, prepare_admin_message
 
 
 def _database() -> tuple[object, Session]:
@@ -54,3 +58,25 @@ def test_moderation_action_templates_support_crud_and_type_filtering():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_legacy_moderation_edit_keeps_message_action_available():
+    admin = SimpleNamespace(
+        is_superuser=False,
+        individual_permissions={"pages": {"moderation": {"edit": True}}},
+        privilege_group=None,
+    )
+
+    assert check_moderation_action_permission(admin, "message") is True
+
+
+def test_admin_message_limit_includes_administration_prefix():
+    assert len(prepare_admin_message("x" * 1980)) <= 2000
+    with pytest.raises(ValueError):
+        prepare_admin_message("x" * 1984)
+
+
+def test_csrf_header_is_used_by_json_requests():
+    request = SimpleNamespace(headers={"X-CSRF-Token": "header-token"})
+
+    assert csrf_token_from_request(request, None) == "header-token"

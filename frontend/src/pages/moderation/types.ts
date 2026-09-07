@@ -92,4 +92,7 @@ export interface ModerationOverview {
   can_edit: boolean
   can_delete: boolean
   can_issue_punishment: boolean
+  can_message: boolean
+  can_kick: boolean
+  can_ban: boolean
 }
