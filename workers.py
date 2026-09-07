@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
+from database import GameSessionLocal, SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,23 @@ def task_recalculate_ratings() -> dict:
         raise
     finally:
         db.close()
+
+
+def task_project_rating_events() -> dict:
+    """Retry accepted but not-yet-projected v2 events after transient DB errors."""
+    from models import RatingEventLedger
+    from routes.rating_events import _project_rating_events
+
+    db = GameSessionLocal()
+    try:
+        ids = [row.id for row in db.query(RatingEventLedger.id).filter(
+            RatingEventLedger.projected_at.is_(None),
+        ).order_by(RatingEventLedger.id).limit(500).all()]
+    finally:
+        db.close()
+    if ids:
+        _project_rating_events(ids)
+    return {"pending_events": len(ids)}
 
 
 def task_check_rating_reward_schedules() -> dict:
@@ -1214,6 +1231,7 @@ def _start_simple_workers():
     periodic_tasks = [
         (task_compensate_playtime, 30 * 60),
         (task_recalculate_ratings, 24 * 60 * 60),
+        (task_project_rating_events, 10),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
         (task_cleanup_communications, 6 * 60 * 60),
@@ -1265,6 +1283,15 @@ def _start_scheduler():
         interval_secs=24 * 60 * 60,
         priority=Priority.LOW,
         task_id="rating_recalc",
+    )
+
+    # Accepted v2 events are durable before projection. This short retry loop
+    # makes a transient DB lock or worker exception observable and recoverable.
+    scheduler.register_periodic(
+        task_project_rating_events,
+        interval_secs=10,
+        priority=Priority.NORMAL,
+        task_id="rating_v2_projection",
     )
 
     # Награды за место в рейтинге: правило само решает по своему расписанию

@@ -392,7 +392,7 @@ async def publish_rating_task():
     }
 
     for role in roles:
-        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10)
+        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10, "mission")
         if not data or not data.get("leaderboard"):
             await asyncio.sleep(15)
             continue
@@ -454,6 +454,56 @@ async def publish_rating_task():
 
         # Wait 15 seconds between messages to avoid rate limits
         await asyncio.sleep(15)
+
+    # Mission keeps its existing per-role messages above. PvP is deliberately
+    # a separate message: merging it into those embeds makes the two scoring
+    # systems look comparable when they are not, and quickly runs into the
+    # embed field limit once the boards grow.
+    pvp_fields = []
+    for role in roles:
+        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10, "pvp")
+        lb = (data or {}).get("leaderboard") or []
+        lines = []
+        for entry in lb:
+            if entry["rank"] == 1:
+                medal = "🥇"
+            elif entry["rank"] == 2:
+                medal = "🥈"
+            elif entry["rank"] == 3:
+                medal = "🥉"
+            else:
+                medal = f"**{entry['rank']}.**"
+            name = f"<@{entry['discord_id']}>" if entry.get("discord_id") else entry["player_name"]
+            lines.append(f"{medal}  {name}  -  **{entry['rating']}**")
+        if lines:
+            pvp_fields.append((f"{role_emojis.get(role, '')} {role_names.get(role, role)}", "\n".join(lines)))
+
+    pvp_embed = discord.Embed(
+        title="⚔ PvP рейтинг",
+        description=None if pvp_fields else "Нет данных",
+        color=0xb33939,
+    )
+    for name, value in pvp_fields:
+        pvp_embed.add_field(name=name, value=value, inline=False)
+    pvp_embed.set_footer(text=f"Сделано за сухарики | Обновлено {format_msk(datetime.utcnow())} МСК")
+
+    pvp_message_id = _rating_message_ids.get("pvp")
+    if pvp_message_id:
+        try:
+            message = await channel.fetch_message(int(pvp_message_id))
+            await message.edit(embed=pvp_embed)
+            return
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            logger.warning(f"Не удалось обновить PvP рейтинг, попробуем в следующий раз: {e}")
+            return
+    try:
+        message = await channel.send(embed=pvp_embed)
+        _rating_message_ids["pvp"] = message.id
+        _save_rating_ids(_rating_message_ids)
+    except Exception as e:
+        logger.error(f"Failed to send PvP rating embed: {e}")
 
 
 # Department rating message IDs (persisted to their own JSON file, same

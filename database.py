@@ -174,6 +174,18 @@ def _apply_migrations():
         # documents: department-scoped documentation + nested sub-pages
         ("documents", "department_id", "INT"),
         ("documents", "parent_document_id", "INT"),
+        # rating v2: raw input is retained separately from any calculated delta
+        ("rating_event_ledger", "raw_value", "DOUBLE NOT NULL DEFAULT 0"),
+        ("rating_event_ledger", "mapping_status", "VARCHAR(16) NOT NULL DEFAULT 'mapped'"),
+        ("rating_event_ledger", "metadata", "JSON"),
+        ("rating_event_ledger", "formula_version", "VARCHAR(64) NOT NULL DEFAULT 'rating-v2-ledger-v1'"),
+        ("rating_event_ledger", "config_version", "VARCHAR(64) NOT NULL DEFAULT 'default'"),
+        ("rating_projection_states", "action_counts", "JSON"),
+        ("rating_projection_states", "round_tokens", "JSON"),
+        ("rating_projection_states", "qualified_rounds", "INT NOT NULL DEFAULT 0"),
+        ("rating_projection_states", "unmapped_events", "INT NOT NULL DEFAULT 0"),
+        ("rating_delivery_log", "mode", "VARCHAR(16)"),
+        ("rating_delivery_log", "role", "VARCHAR(32)"),
         # orders (item 8): department Discord channel + order-doc/-template flags
         ("departments", "orders_channel_id", "VARCHAR(50)"),
         ("documents", "is_order", "TINYINT NOT NULL DEFAULT 0"),

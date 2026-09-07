@@ -699,6 +699,121 @@ class RatingHistory(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+class RatingEventLedger(Base):
+    """Immutable v2 rating input accepted from an external game source."""
+    __tablename__ = "rating_event_ledger"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String(128), nullable=False, unique=True, index=True)
+    version = Column(Integer, nullable=False)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False)
+    raw_value = Column(Float, nullable=False, default=0.0)
+    points_delta = Column(Float, nullable=False)
+    mapping_status = Column(String(16), nullable=False, default="mapped")
+    formula_version = Column(String(64), nullable=False, default="rating-v2-ledger-v1")
+    config_version = Column(String(64), nullable=False, default="default")
+    occurred_at = Column(DateTime, nullable=False, index=True)
+    source_context = Column(JSON, nullable=False)
+    round_context = Column(JSON, nullable=False)
+    event_metadata = Column("metadata", JSON, nullable=False, default=dict)
+    received_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    projected_at = Column(DateTime, nullable=True, index=True)
+
+
+class RatingProjectionState(Base):
+    """Materialized v2 rating total for one player, mode, and role."""
+    __tablename__ = "rating_projection_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    cumulative_points = Column(Float, nullable=False, default=0.0)
+    current_rating = Column(Float, nullable=False, default=0.0)
+    last_event_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    action_counts = Column(JSON, nullable=False, default=dict)
+    round_tokens = Column(JSON, nullable=False, default=list)
+    qualified_rounds = Column(Integer, nullable=False, default=0)
+    unmapped_events = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "mode", "role", name="uq_rating_projection_state_key"),
+    )
+
+
+class RatingRankHistory(Base):
+    """Periodic leaderboard snapshots used to explain position changes."""
+    __tablename__ = "rating_rank_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    rank = Column(Integer, nullable=False)
+    rating = Column(Float, nullable=False)
+    cumulative_points = Column(Float, nullable=False)
+    captured_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class RatingCalculationRun(Base):
+    """Reproducibility record for a projection/rebuild calculation."""
+    __tablename__ = "rating_calculation_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    formula_version = Column(String(64), nullable=False)
+    config_version = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, default="completed")
+    event_count = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, default=func.now(), nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(String(1000), nullable=True)
+
+
+class RatingConfigVersion(Base):
+    """Append-only configuration history; saving never destroys a prior config."""
+    __tablename__ = "rating_config_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    version = Column(String(64), nullable=False, index=True)
+    config = Column(JSON, nullable=False)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class RatingAdjustment(Base):
+    """Auditable manual adjustment, kept outside raw game events."""
+    __tablename__ = "rating_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    delta = Column(Float, nullable=False)
+    reason = Column(String(1000), nullable=False)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class RatingDeliveryLog(Base):
+    """Per-event ingest status for delivery latency and rejection diagnostics."""
+    __tablename__ = "rating_delivery_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String(128), nullable=True, index=True)
+    mode = Column(String(16), nullable=True, index=True)
+    role = Column(String(32), nullable=True, index=True)
+    status = Column(String(16), nullable=False, index=True)
+    reason = Column(String(1000), nullable=True)
+    received_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
 class RatingRewardHolder(Base):
     """Текущий держатель награды за место в рейтинге — по одной строке на
     (rule_id, place). Это то, чего не хватало старой системе: без записи

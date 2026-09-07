@@ -536,7 +536,13 @@ def set_document_message_id(document_id: int, message_id: str, channel_id: str) 
 
 # ── Ratings leaderboards (published as embeds) ───────────────────────────
 
-def get_ratings_leaderboard(role: str = "captain", limit: int = 10) -> dict:
+def get_ratings_leaderboard(role: str = "captain", limit: int = 10, mode: str = "mission") -> dict:
+    """Return a role leaderboard for one rating mode.
+
+    Older deployments have one PlayerRating table without a mode column. It
+    remains the Mission source, but it must never be recycled as PvP data:
+    a separate empty PvP board is more useful than a convincing lie.
+    """
     from sqlalchemy import desc
     from rating_constants import ROLES
     from models import PlayerRating, PlayerData
@@ -545,13 +551,47 @@ def get_ratings_leaderboard(role: str = "captain", limit: int = 10) -> dict:
     try:
         if role not in ROLES:
             role = "captain"
-        records = (
-            db.query(PlayerRating)
-            .filter(PlayerRating.role == role, PlayerRating.current_rating > 0)
-            .order_by(desc(PlayerRating.current_rating))
-            .limit(limit)
-            .all()
-        )
+        mode = mode if mode in {"mission", "pvp"} else "mission"
+        try:
+            from models import RatingProjectionState
+        except ImportError:
+            RatingProjectionState = None
+
+        if RatingProjectionState is not None:
+            records = (
+                db.query(RatingProjectionState)
+                .filter(
+                    RatingProjectionState.role == role,
+                    RatingProjectionState.mode == mode,
+                    RatingProjectionState.current_rating > 0,
+                )
+                .order_by(desc(RatingProjectionState.current_rating))
+                .limit(limit)
+                .all()
+            )
+            # Keep the existing Mission board alive during the staged dev
+            # rollout. An empty v2 projection is not proof that the old board
+            # has been migrated; treating it as one would blank Discord for
+            # no good reason.
+            if not records and mode == "mission":
+                records = (
+                    db.query(PlayerRating)
+                    .filter(PlayerRating.role == role, PlayerRating.current_rating > 0)
+                    .order_by(desc(PlayerRating.current_rating))
+                    .limit(limit)
+                    .all()
+                )
+        else:
+            # Pre-v2 fallback: legacy totals are Mission-only, never PvP.
+            if mode == "pvp":
+                return {"mode": mode, "role": role, "leaderboard": []}
+            records = (
+                db.query(PlayerRating)
+                .filter(PlayerRating.role == role, PlayerRating.current_rating > 0)
+                .order_by(desc(PlayerRating.current_rating))
+                .limit(limit)
+                .all()
+            )
         steam_ids = [r.steam_id for r in records]
         players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all() if steam_ids else []
         pmap = {p.player_steamid: p for p in players}
@@ -567,7 +607,7 @@ def get_ratings_leaderboard(role: str = "captain", limit: int = 10) -> dict:
                 "rating": round(r.current_rating, 2),
                 "cumulative_points": round(r.cumulative_points, 1),
             })
-        return {"role": role, "leaderboard": result}
+        return {"mode": mode, "role": role, "leaderboard": result}
     finally:
         db.close()
 
