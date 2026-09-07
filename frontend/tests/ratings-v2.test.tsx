@@ -23,7 +23,11 @@ test("ratings page uses one paginated role table with row and drawer navigation"
   assert.match(ratingsPageSource, /pageSize: PAGE_SIZE/)
   assert.match(ratingsPageSource, /onClick=\{\(\) => selectPlayer\(entry\.steamId, entry\.role\)\}/)
   assert.match(ratingsPageSource, /<Sheet open=\{Boolean\(selectedPlayer\)\}/)
-  assert.doesNotMatch(ratingsPageSource, /Открыть игрока/)
+  assert.match(ratingsPageSource, /Открыть игрока/)
+  assert.match(ratingsPageSource, /setDrawerRole\("all"\)/)
+  assert.match(ratingsPageSource, /aria-label="Роль в превью"/)
+  assert.doesNotMatch(ratingsPageSource, /Enter — открыть игрока/)
+  assert.doesNotMatch(ratingsPageSource, /onKeyDown=\{\(event\) => event\.key === "Enter" && selectPlayer\(searchInput\)\}/)
   assert.doesNotMatch(ratingsPageSource, /<Tabs value=\{role\}/)
 })
 
@@ -123,6 +127,23 @@ test("rating investigation renders explicit empty states for missing v2 fields",
   assert.match(html, /Нет данных о расчёте/)
   assert.match(html, /Журнал пока пуст/)
   assert.match(html, /История появится/)
+})
+
+test("rating investigation renders all-role player preview", () => {
+  const html = renderToStaticMarkup(<RatingV2Investigation
+    player={{ steam_id: "7656119", mode: "mission", role: "all", ratings: [
+      { role: "captain", current_rating: 42, cumulative_points: 12 },
+      { role: "mechanic", current_rating: 31, cumulative_points: 9 },
+    ] }}
+    explanation={{ role: "all", roles: [
+      { role: "captain", current_rating: 42, contributions: { "captain.navigate": 8 } },
+      { role: "mechanic", current_rating: 31, contributions: { "engineering.repair": 4 } },
+    ] }}
+    events={{ events: [] }}
+  />)
+  assert.match(html, /Капитан/)
+  assert.match(html, /Механик/)
+  assert.match(html, /Показаны все роли/)
 })
 
 test("rating investigation shows delivery summary instead of an empty delivery table", () => {

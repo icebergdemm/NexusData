@@ -47,7 +47,8 @@ export function RatingsPage() {
   const [role, setRole] = useState("all")
   const [searchInput, setSearchInput] = useState("")
   const [page, setPage] = useState(1)
-  const [selectedPlayer, setSelectedPlayer] = useState<{ steamId: string; role: string } | null>(null)
+  const [selectedPlayer, setSelectedPlayer] = useState<{ steamId: string; sourceRole: string | null } | null>(null)
+  const [drawerRole, setDrawerRole] = useState("all")
   const [selectedEvent, setSelectedEvent] = useState<Record<string, unknown> | null>(null)
   const leaderboardQuery = useQuery({
     queryKey: ["ratings-v2", mode, role, page, PAGE_SIZE],
@@ -58,30 +59,28 @@ export function RatingsPage() {
   const roleOptions = ["all", ...roles.filter((item) => item !== "all")]
   const topLevel = asRecord(leaderboardQuery.data)
   const canConfigure = topLevel.is_superuser === true || topLevel.can_edit === true
-  const selectedRole = selectedPlayer?.role ?? (role === "all" ? "captain" : role)
-
   useEffect(() => {
     setPage(1)
   }, [mode, role])
 
   const detailQuery = useQuery({
-    queryKey: ["rating-v2-player", mode, selectedPlayer?.steamId, selectedRole],
-    queryFn: () => api.get<unknown>(`/api/v2/admin/ratings/${encodeURIComponent(selectedPlayer?.steamId ?? "")}?${buildRatingV2Query({ mode, role: selectedRole })}`),
+    queryKey: ["rating-v2-player", mode, selectedPlayer?.steamId, drawerRole],
+    queryFn: () => api.get<unknown>(`/api/v2/admin/ratings/${encodeURIComponent(selectedPlayer?.steamId ?? "")}?${buildRatingV2Query({ mode, role: drawerRole })}`),
     enabled: Boolean(selectedPlayer),
   })
   const explanationQuery = useQuery({
-    queryKey: ["rating-v2-explanation", mode, selectedPlayer?.steamId, selectedRole],
-    queryFn: () => api.get<unknown>(`/api/v2/admin/ratings/${encodeURIComponent(selectedPlayer?.steamId ?? "")}/explanation?${buildRatingV2Query({ mode, role: selectedRole })}`),
+    queryKey: ["rating-v2-explanation", mode, selectedPlayer?.steamId, drawerRole],
+    queryFn: () => api.get<unknown>(`/api/v2/admin/ratings/${encodeURIComponent(selectedPlayer?.steamId ?? "")}/explanation?${buildRatingV2Query({ mode, role: drawerRole })}`),
     enabled: Boolean(selectedPlayer),
   })
   const eventsQuery = useQuery({
-    queryKey: ["rating-v2-events", mode, selectedPlayer?.steamId, selectedRole],
-    queryFn: () => api.get<unknown>(`/api/v2/admin/rating-events?${buildRatingV2Query({ mode, role: selectedRole, page: 1, pageSize: PAGE_SIZE, steamId: selectedPlayer?.steamId })}`),
+    queryKey: ["rating-v2-events", mode, selectedPlayer?.steamId, drawerRole],
+    queryFn: () => api.get<unknown>(`/api/v2/admin/rating-events?${buildRatingV2Query({ mode, role: drawerRole, page: 1, pageSize: PAGE_SIZE, steamId: selectedPlayer?.steamId })}`),
     enabled: Boolean(selectedPlayer),
   })
   const historyQuery = useQuery({
-    queryKey: ["rating-v2-history", mode, selectedPlayer?.steamId, selectedRole],
-    queryFn: () => api.get<unknown>(`/api/v2/admin/ratings/${encodeURIComponent(selectedPlayer?.steamId ?? "")}/history?${buildRatingV2Query({ mode, role: selectedRole })}`),
+    queryKey: ["rating-v2-history", mode, selectedPlayer?.steamId, drawerRole],
+    queryFn: () => api.get<unknown>(`/api/v2/admin/ratings/${encodeURIComponent(selectedPlayer?.steamId ?? "")}/history?${buildRatingV2Query({ mode, role: drawerRole })}`),
     enabled: Boolean(selectedPlayer),
   })
   const deliveryQuery = useQuery({
@@ -92,7 +91,10 @@ export function RatingsPage() {
 
   const selectPlayer = (steamId: string, rowRole?: string | null) => {
     const next = steamId.trim()
-    if (next) setSelectedPlayer({ steamId: next, role: rowRole ?? (role === "all" ? "captain" : role) })
+    if (next) {
+      setDrawerRole("all")
+      setSelectedPlayer({ steamId: next, sourceRole: rowRole ?? null })
+    }
   }
   const closePlayer = () => { setSelectedPlayer(null); setSelectedEvent(null) }
   const detailLoading = detailQuery.isLoading || explanationQuery.isLoading || eventsQuery.isLoading || historyQuery.isLoading || deliveryQuery.isLoading
@@ -103,8 +105,8 @@ export function RatingsPage() {
     <div className="flex flex-wrap items-center gap-2">
       <Tabs value={mode} onValueChange={(value) => setMode(value as RatingMode)}><TabsList><TabsTrigger value="mission">Mission</TabsTrigger><TabsTrigger value="pvp">PvP</TabsTrigger></TabsList></Tabs>
       <Select value={role} onValueChange={setRole}><SelectTrigger className="w-44" aria-label="Фильтр роли"><SelectValue placeholder="Все роли" /></SelectTrigger><SelectContent>{roleOptions.map((item) => <SelectItem key={item} value={item}>{item === "all" ? "Все роли" : labelForRole(item)}</SelectItem>)}</SelectContent></Select>
-      <SearchInput value={searchInput} onChange={(event) => setSearchInput(event.target.value)} onKeyDown={(event) => event.key === "Enter" && selectPlayer(searchInput)} placeholder="SteamID игрока…" className="max-w-xs" />
-      <span className="text-xs text-muted-foreground"><Search className="mr-1 inline size-3.5" />Enter — открыть игрока</span>
+      <SearchInput value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="SteamID игрока…" className="max-w-xs" />
+      <Button variant="outline" size="sm" disabled={!searchInput.trim()} onClick={() => selectPlayer(searchInput)}><Search className="size-3.5" />Открыть игрока</Button>
     </div>
 
     {leaderboard.extra.length > 0 && <Card><CardContent className="flex flex-wrap gap-2 p-3 text-xs text-muted-foreground">{leaderboard.extra.map(([key, value]) => <Badge key={key} variant="outline">{key}: {displayMetadata(value)}</Badge>)}</CardContent></Card>}
@@ -126,7 +128,7 @@ export function RatingsPage() {
 
     {canConfigure && <RatingConfigSection mode={mode} />}
 
-    <Sheet open={Boolean(selectedPlayer)} onOpenChange={(open) => !open && closePlayer()}><SheetContent side="right" className="flex w-[min(96vw,42rem)] flex-col gap-0 p-0 sm:max-w-none"><SheetHeader className="border-b px-5 py-4 text-left"><SheetTitle className="text-base">Игрок {selectedPlayer?.steamId}</SheetTitle><SheetDescription>{mode === "pvp" ? "PvP" : "Mission"} · {labelForRole(selectedPlayer?.role)}</SheetDescription></SheetHeader><div className="min-h-0 flex-1 overflow-y-auto p-5">{detailLoading ? <Skeleton className="h-96" /> : <RatingV2Investigation player={detailQuery.data} explanation={explanationQuery.data} events={eventsQuery.data} history={historyQuery.data} delivery={deliveryQuery.data} onEventSelect={(event) => setSelectedEvent({ mode, role: selectedPlayer?.role, steam_id: selectedPlayer?.steamId, ...event })} />}</div></SheetContent></Sheet>
+    <Sheet open={Boolean(selectedPlayer)} onOpenChange={(open) => !open && closePlayer()}><SheetContent side="right" className="flex w-[min(96vw,42rem)] flex-col gap-0 p-0 sm:max-w-none"><SheetHeader className="border-b px-5 py-4 text-left"><SheetTitle className="text-base">Игрок {selectedPlayer?.steamId}</SheetTitle><SheetDescription>{mode === "pvp" ? "PvP" : "Mission"} · {drawerRole === "all" ? "Все роли" : labelForRole(drawerRole)}</SheetDescription><Select value={drawerRole} onValueChange={setDrawerRole}><SelectTrigger className="w-full" aria-label="Роль в превью"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все роли</SelectItem>{roles.filter((item) => item !== "all").map((item) => <SelectItem key={item} value={item}>{labelForRole(item)}</SelectItem>)}</SelectContent></Select></SheetHeader><div className="min-h-0 flex-1 overflow-y-auto p-5">{detailLoading ? <Skeleton className="h-96" /> : <RatingV2Investigation player={detailQuery.data} explanation={explanationQuery.data} events={eventsQuery.data} history={historyQuery.data} delivery={deliveryQuery.data} onEventSelect={(event) => setSelectedEvent({ mode, role: event.role ?? drawerRole, steam_id: selectedPlayer?.steamId, ...event })} />}</div></SheetContent></Sheet>
     <RatingEventDrawer open={selectedEvent !== null} event={selectedEvent ?? undefined} onClose={() => setSelectedEvent(null)} />
   </div>
 }

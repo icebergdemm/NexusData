@@ -101,6 +101,9 @@ function ContributionRows({ explanation }: { explanation: UnknownRecord }) {
 function Explanation({ explanation }: { explanation: unknown }) {
   const data = asRecord(explanation)
   if (!Object.keys(data).length) return <p className="text-sm text-muted-foreground">Нет данных о расчёте.</p>
+  const roleExplanations = Array.isArray(data.roles) ? data.roles.map(asRecord).filter((item) => Object.keys(item).length > 0) : []
+  if (roleExplanations.length) return <div className="space-y-4">{roleExplanations.map((roleData) => <section key={String(roleData.role)} className="space-y-3 rounded-md border p-3"><h3 className="text-sm font-semibold">{roleLabel(roleData.role)}</h3><MetricGrid data={roleData} /><ContributionRows explanation={roleData} /></section>)}</div>
+  if (data.role === "all") return <p className="text-sm text-muted-foreground">По выбранному режиму событий для игрока пока нет.</p>
   const penalties = asNumber(metric(data, "penalties", "penalty_points"))
   const adjustments = asNumber(metric(data, "adjustments", "adjustment_points"))
   return <div className="space-y-4"><MetricGrid data={data} /><div className="space-y-2"><h3 className="text-sm font-semibold">Вклад по действиям</h3><ContributionRows explanation={data} /></div><div className="grid gap-2 sm:grid-cols-2">{penalties != null && <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"><div className="text-xs text-muted-foreground">Штрафы</div><div className="font-medium text-destructive">{displayNumber(penalties)}</div></div>}{adjustments != null && <div className="rounded-md border bg-muted/20 p-3 text-sm"><div className="text-xs text-muted-foreground">Ручные корректировки</div><div className="font-medium">{displayNumber(adjustments)}</div></div>}</div><div className="text-xs text-muted-foreground">Формула: {displayValue(metric(data, "formula_version", "formula"))} · конфигурация: {displayValue(metric(data, "config_version"))}</div></div>
@@ -108,6 +111,8 @@ function Explanation({ explanation }: { explanation: unknown }) {
 
 function PlayerProfile({ player }: { player: unknown }) {
   const wrapper = asRecord(player)
+  const ratings = Array.isArray(wrapper.ratings) ? wrapper.ratings.map(asRecord).filter((item) => Object.keys(item).length > 0) : []
+  if (ratings.length) return <div className="space-y-3"><p className="text-sm text-muted-foreground">Показаны все роли в выбранном режиме. Роль можно отфильтровать выше.</p><div className="space-y-3">{ratings.map((rating) => <section key={String(rating.role)} className="rounded-md border p-3"><h3 className="mb-3 text-sm font-semibold">{roleLabel(rating.role)}</h3><MetricGrid data={rating} /></section>)}</div></div>
   const rating = asRecord(wrapper.rating)
   const data = Object.keys(rating).length
     ? { ...wrapper, ...rating, rating: rating.rating ?? rating.current_rating }
@@ -120,7 +125,7 @@ function PlayerProfile({ player }: { player: unknown }) {
 function HistoryTable({ history }: { history: unknown }) {
   const rows = eventRows(history)
   if (!rows.length) return <p className="text-sm text-muted-foreground">История появится после первого периодического снимка.</p>
-  return <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Время</TableHead><TableHead>Место</TableHead><TableHead>Рейтинг</TableHead></TableRow></TableHeader><TableBody>{rows.map((entry, index) => <TableRow key={String(entry.id ?? entry.captured_at ?? index)}><TableCell>{formatBrowserDate(asString(entry.captured_at ?? entry.created_at))}</TableCell><TableCell>{displayValue(entry.rank)}</TableCell><TableCell>{displayNumber(entry.rating ?? entry.current_rating)}</TableCell></TableRow>)}</TableBody></Table></div>
+  return <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Время</TableHead><TableHead>Роль</TableHead><TableHead>Место</TableHead><TableHead>Рейтинг</TableHead></TableRow></TableHeader><TableBody>{rows.map((entry, index) => <TableRow key={String(entry.id ?? `${entry.role ?? "all"}:${entry.captured_at ?? index}`)}><TableCell>{formatBrowserDate(asString(entry.captured_at ?? entry.created_at))}</TableCell><TableCell>{roleLabel(entry.role)}</TableCell><TableCell>{displayValue(entry.rank)}</TableCell><TableCell>{displayNumber(entry.rating ?? entry.current_rating)}</TableCell></TableRow>)}</TableBody></Table></div>
 }
 
 function RatingJournal({ events, onEventSelect }: { events: unknown; onEventSelect?: (event: UnknownRecord) => void }) {

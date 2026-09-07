@@ -126,6 +126,18 @@ def _state_row(state: RatingProjectionState, player: Optional[PlayerData], event
     }
 
 
+def _event_count_by_role(db: Session, steam_id: str, mode: str) -> dict[str, int]:
+    return {
+        role: int(count)
+        for role, count in db.query(
+            RatingEventLedger.role, func.count(RatingEventLedger.id)
+        ).filter(
+            RatingEventLedger.steam_id == steam_id,
+            RatingEventLedger.mode == mode,
+        ).group_by(RatingEventLedger.role).all()
+    }
+
+
 @router.get("/api/v2/admin/ratings")
 def get_rating_leaderboard_v2(
     mode: str = Query("mission"),
@@ -202,13 +214,63 @@ def get_rating_player_v2(
 ):
     _require_view(admin)
     mode = _validate_mode(mode)
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == steam_id).first()
+    if role == "all":
+        states = db.query(RatingProjectionState).filter(
+            RatingProjectionState.steam_id == steam_id,
+            RatingProjectionState.mode == mode,
+        ).all()
+        state_by_role = {state.role: state for state in states}
+        event_counts = _event_count_by_role(db, steam_id, mode)
+        legacy_rows = db.query(PlayerRating).filter(
+            PlayerRating.steam_id == steam_id,
+        ).all() if mode == "mission" else []
+        legacy_by_role = {row.role: {
+            "rating": round(row.current_rating, 2),
+            "cumulative_points": round(row.cumulative_points, 2),
+            "source": "player_ratings",
+        } for row in legacy_rows}
+        ratings = []
+        for role_name in ROLES:
+            state = state_by_role.get(role_name)
+            event_count = event_counts.get(role_name, 0)
+            if state is None and not event_count and role_name not in legacy_by_role:
+                continue
+            row = _state_row(state, player, event_count) if state else {
+                "steam_id": steam_id,
+                "player_name": player.display_name if player else steam_id,
+                "player_id": player.player_id if player else None,
+                "rating": None,
+                "current_rating": None,
+                "cumulative_points": 0.0,
+                "last_activity": None,
+                "last_activity_date": None,
+                "play_time_seconds": player.play_time if player else 0,
+                "play_time_hours": round(player.play_time_hours, 2) if player else 0.0,
+                "event_count": event_count,
+                "qualified_rounds": 0,
+                "unmapped_events": 0,
+                "eligibility": "insufficient_data",
+                "data_quality": "insufficient_data" if event_count else "no_data",
+                "confidence": None,
+            }
+            row["role"] = role_name
+            row["legacy_comparison"] = legacy_by_role.get(role_name)
+            ratings.append(row)
+        return {
+            "steam_id": steam_id,
+            "mode": mode,
+            "role": "all",
+            "roles": ROLES,
+            "ratings": ratings,
+        }
+
     role = _validate_role(role)
     state = db.query(RatingProjectionState).filter(
         RatingProjectionState.steam_id == steam_id,
         RatingProjectionState.mode == mode,
         RatingProjectionState.role == role,
     ).first()
-    player = db.query(PlayerData).filter(PlayerData.player_steamid == steam_id).first()
     event_count = db.query(func.count(RatingEventLedger.id)).filter(
         RatingEventLedger.steam_id == steam_id,
         RatingEventLedger.mode == mode,
@@ -244,31 +306,24 @@ def get_rating_rank_history_v2(
 ):
     _require_view(admin)
     mode = _validate_mode(mode)
-    role = _validate_role(role)
-    rows = db.query(RatingRankHistory).filter(
+    query = db.query(RatingRankHistory).filter(
         RatingRankHistory.steam_id == steam_id,
         RatingRankHistory.mode == mode,
-        RatingRankHistory.role == role,
-    ).order_by(RatingRankHistory.captured_at.desc(), RatingRankHistory.id.desc()).limit(limit).all()
-    return {"steam_id": steam_id, "mode": mode, "role": role, "history": [{
+    )
+    if role != "all":
+        query = query.filter(RatingRankHistory.role == _validate_role(role))
+    rows = query.order_by(RatingRankHistory.captured_at.desc(), RatingRankHistory.id.desc()).limit(limit).all()
+    history = [{
+        "role": row.role,
         "rank": row.rank,
         "rating": round(row.rating, 2),
         "cumulative_points": round(row.cumulative_points, 2),
         "captured_at": row.captured_at,
-    } for row in rows]}
+    } for row in rows]
+    return {"steam_id": steam_id, "mode": mode, "role": role, "history": history}
 
 
-@router.get("/api/v2/admin/ratings/{steam_id}/explanation")
-def get_rating_explanation_v2(
-    steam_id: str,
-    mode: str = Query("mission"),
-    role: str = Query("captain"),
-    admin: AdminUser = Depends(get_current_admin_v2),
-    db: Session = Depends(get_db),
-):
-    _require_view(admin)
-    mode = _validate_mode(mode)
-    role = _validate_role(role)
+def _rating_explanation_for_role(db: Session, steam_id: str, mode: str, role: str) -> dict:
     events = db.query(RatingEventLedger).filter(
         RatingEventLedger.steam_id == steam_id,
         RatingEventLedger.mode == mode,
@@ -319,6 +374,26 @@ def get_rating_explanation_v2(
         "formula_version": FORMULA_VERSION,
         "config_version": next((event.config_version for event in reversed(events) if event.config_version), "default"),
     }
+
+
+@router.get("/api/v2/admin/ratings/{steam_id}/explanation")
+def get_rating_explanation_v2(
+    steam_id: str,
+    mode: str = Query("mission"),
+    role: str = Query("captain"),
+    admin: AdminUser = Depends(get_current_admin_v2),
+    db: Session = Depends(get_db),
+):
+    _require_view(admin)
+    mode = _validate_mode(mode)
+    if role == "all":
+        roles = []
+        for role_name in ROLES:
+            explanation = _rating_explanation_for_role(db, steam_id, mode, role_name)
+            if explanation["event_count"] or explanation["qualified_rounds"] or explanation["adjustments"]:
+                roles.append(explanation)
+        return {"steam_id": steam_id, "mode": mode, "role": "all", "roles": roles}
+    return _rating_explanation_for_role(db, steam_id, mode, _validate_role(role))
 
 
 @router.get("/api/v2/admin/rating-events")

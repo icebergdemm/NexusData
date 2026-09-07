@@ -68,8 +68,23 @@ def test_legacy_import_runs_once_and_never_duplicates_events():
         assert event.event_type == "legacy.repair_hull"
         assert marker.status == "completed"
         assert len(projected) == 1
+
+        source.add(models.PlayerRoleAction(
+            id=43,
+            player_id=7,
+            role="mechanic",
+            action_type="repair_device",
+            value=8,
+        ))
+        source.commit()
+        locked = rating_legacy_migration.import_legacy_rating_once(
+            source,
+            target,
+            project_events=lambda ids: projected.extend(ids) or True,
+        )
+        assert locked["status"] == "already-complete"
+        assert target.query(models.RatingEventLedger).count() == 1
     finally:
         source.close()
         target.close()
         engine.dispose()
-

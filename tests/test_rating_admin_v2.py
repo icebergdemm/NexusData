@@ -149,6 +149,38 @@ def test_admin_player_explanation_and_event_log_are_available():
         engine.dispose()
 
 
+def test_admin_player_preview_defaults_to_all_roles():
+    client, db, engine = _client()
+    try:
+        db.add(models.RatingProjectionState(
+            steam_id="76561198000000001", mode="mission", role="captain",
+            cumulative_points=8.0, current_rating=2.5,
+        ))
+        db.add(models.RatingEventLedger(
+            event_id="captain-event", version=1, steam_id="76561198000000001", mode="mission",
+            role="captain", event_type="captain.navigate", points_delta=8.0,
+            occurred_at=datetime(2026, 9, 7, 13, tzinfo=timezone.utc),
+            source_context={}, round_context={},
+        ))
+        db.commit()
+
+        detail = client.get("/api/v2/admin/ratings/76561198000000001?mode=mission&role=all")
+        assert detail.status_code == 200
+        assert detail.json()["role"] == "all"
+        assert {row["role"] for row in detail.json()["ratings"]} == {"captain", "mechanic"}
+
+        explanation = client.get("/api/v2/admin/ratings/76561198000000001/explanation?mode=mission&role=all")
+        assert explanation.status_code == 200
+        assert {row["role"] for row in explanation.json()["roles"]} == {"captain", "mechanic"}
+
+        history = client.get("/api/v2/admin/ratings/76561198000000001/history?mode=mission&role=all")
+        assert history.status_code == 200
+        assert history.json()["role"] == "all"
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_admin_event_log_is_paginated():
     client, db, engine = _client()
     try:
