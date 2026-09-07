@@ -235,3 +235,55 @@ def test_reusing_event_id_with_different_payload_is_rejected(monkeypatch):
     finally:
         db.close()
         engine.dispose()
+
+
+def test_semantically_identical_events_with_different_ids_are_deduplicated(monkeypatch):
+    """Retries with a new id must not award the same gameplay event twice."""
+    client, db, engine = _client(monkeypatch)
+    try:
+        first_event = _event(event_id="round-42:alice:repair:1")
+        retry_event = _event(event_id="round-42:alice:repair:retry")
+        with client:
+            first = client.post("/api/v2/rating/events:batch", json={"events": [first_event]})
+            retry = client.post("/api/v2/rating/events:batch", json={"events": [retry_event]})
+
+        assert first.json()["results"][0]["status"] == "accepted"
+        assert retry.json()["results"][0] == {
+            "event_id": "round-42:alice:repair:retry",
+            "status": "duplicate",
+        }
+        assert db.query(models.RatingEventLedger).count() == 1
+        assert db.query(models.RatingProjectionState).one().cumulative_points == 18.75
+        delivery = db.query(models.RatingDeliveryLog).order_by(models.RatingDeliveryLog.id).all()
+        assert [row.status for row in delivery] == ["accepted", "duplicate"]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_semantic_dedup_normalizes_metadata_but_preserves_later_events(monkeypatch):
+    client, db, engine = _client(monkeypatch)
+    try:
+        first = _event(
+            event_id="round-42:alice:repair:1",
+            metadata={"device": "reactor", "parts": {"a": 1, "b": 2}},
+        )
+        retry = _event(
+            event_id="round-42:alice:repair:retry",
+            metadata={"parts": {"b": 2, "a": 1}, "device": "reactor"},
+        )
+        later = _event(
+            event_id="round-42:alice:repair:2",
+            occurred_at="2026-09-07T12:00:03Z",
+            metadata={"device": "reactor", "parts": {"a": 1, "b": 2}},
+        )
+        with client:
+            response = client.post("/api/v2/rating/events:batch", json={"events": [first, retry, later]})
+
+        assert [item["status"] for item in response.json()["results"]] == [
+            "accepted", "duplicate", "accepted"
+        ]
+        assert db.query(models.RatingEventLedger).count() == 2
+    finally:
+        db.close()
+        engine.dispose()

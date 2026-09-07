@@ -459,32 +459,26 @@ async def publish_rating_task():
     # a separate message: merging it into those embeds makes the two scoring
     # systems look comparable when they are not, and quickly runs into the
     # embed field limit once the boards grow.
-    pvp_fields = []
-    for role in roles:
-        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10, "pvp")
-        lb = (data or {}).get("leaderboard") or []
-        lines = []
-        for entry in lb:
-            if entry["rank"] == 1:
-                medal = "🥇"
-            elif entry["rank"] == 2:
-                medal = "🥈"
-            elif entry["rank"] == 3:
-                medal = "🥉"
-            else:
-                medal = f"**{entry['rank']}.**"
-            name = f"<@{entry['discord_id']}>" if entry.get("discord_id") else entry["player_name"]
-            lines.append(f"{medal}  {name}  -  **{entry['rating']}**")
-        if lines:
-            pvp_fields.append((f"{role_emojis.get(role, '')} {role_names.get(role, role)}", "\n".join(lines)))
+    pvp_data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, "all", 10, "pvp")
+    pvp_lb = (pvp_data or {}).get("leaderboard") or []
+    pvp_lines = []
+    for entry in pvp_lb:
+        if entry["rank"] == 1:
+            medal = "🥇"
+        elif entry["rank"] == 2:
+            medal = "🥈"
+        elif entry["rank"] == 3:
+            medal = "🥉"
+        else:
+            medal = f"**{entry['rank']}.**"
+        name = f"<@{entry['discord_id']}>" if entry.get("discord_id") else entry["player_name"]
+        pvp_lines.append(f"{medal}  {name}  -  **{entry['rating']}**")
 
     pvp_embed = discord.Embed(
         title="⚔ PvP рейтинг",
-        description=None if pvp_fields else "Нет данных",
+        description="\n\n".join(pvp_lines) if pvp_lines else "Нет данных",
         color=0xb33939,
     )
-    for name, value in pvp_fields:
-        pvp_embed.add_field(name=name, value=value, inline=False)
     pvp_embed.set_footer(text=f"Сделано за сухарики | Обновлено {format_msk(datetime.utcnow())} МСК")
 
     pvp_message_id = _rating_message_ids.get("pvp")

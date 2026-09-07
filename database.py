@@ -180,6 +180,7 @@ def _apply_migrations():
         ("rating_event_ledger", "metadata", "JSON"),
         ("rating_event_ledger", "formula_version", "VARCHAR(64) NOT NULL DEFAULT 'rating-v2-ledger-v1'"),
         ("rating_event_ledger", "config_version", "VARCHAR(64) NOT NULL DEFAULT 'default'"),
+        ("rating_event_ledger", "dedup_key", "VARCHAR(64)"),
         ("rating_projection_states", "action_counts", "JSON"),
         ("rating_projection_states", "round_tokens", "JSON"),
         ("rating_projection_states", "qualified_rounds", "INT NOT NULL DEFAULT 0"),
@@ -423,6 +424,7 @@ _MISSING_INDEX_COLUMNS = [
     ("round_events", "event_type"),
     ("round_events", "server_session_id"),
     ("round_events", "round_token"),
+    ("rating_event_ledger", "dedup_key"),
 ]
 
 _MISSING_COMPOSITE_INDEXES = [

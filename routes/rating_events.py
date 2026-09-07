@@ -1,6 +1,8 @@
 """Versioned game-server ingest for the rating v2 event ledger."""
 
 from datetime import datetime, timedelta
+import hashlib
+import json
 import logging
 from uuid import uuid4
 from typing import Any, Dict, List, Literal
@@ -21,6 +23,11 @@ from security import verify_external_api_key_dependency
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# The collector can observe the same game transition more than once during a
+# Harmony/network retry. Two seconds catches that noise without collapsing two
+# real actions performed a few seconds apart.
+SEMANTIC_DEDUP_WINDOW_SECONDS = 2
 
 router = APIRouter(
     prefix="/api/v2/rating",
@@ -128,6 +135,41 @@ def _event_conflicts(existing: RatingEventLedger, incoming: RatingEventIn) -> bo
         (existing.round_context or {}) != (incoming.round or {}),
         (existing.event_metadata or {}) != (incoming.metadata or {}),
     ))
+
+
+def _semantic_dedup_key(event: RatingEventIn) -> str:
+    """Build a deterministic key for one gameplay event, excluding event_id.
+
+    Source sequence numbers and timestamps are deliberately excluded: both can
+    change when an outbox retries. Round/session context stays in the key so a
+    repair in one round cannot suppress an identical repair in another.
+    """
+    payload = {
+        "steam_id": event.steam_id,
+        "mode": event.mode,
+        "role": event.role,
+        "event_type": event.event_type,
+        "raw_value": float(event.raw_value if event.raw_value is not None else event.points_delta or 0.0),
+        "server_name": event.server_name or "",
+        "server_session_id": event.server_session_id or "",
+        "round_token": event.round_token or "",
+        "metadata": event.metadata or {},
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _semantic_duplicate(db: Session, event: RatingEventIn, dedup_key: str) -> RatingEventLedger | None:
+    """Find a recently accepted semantic twin without deleting ledger rows."""
+    occurred_at = event.occurred_at.replace(tzinfo=None)
+    candidates = db.query(RatingEventLedger).filter(
+        RatingEventLedger.dedup_key == dedup_key,
+    ).order_by(RatingEventLedger.received_at.desc()).limit(20).all()
+    for candidate in candidates:
+        candidate_time = candidate.occurred_at.replace(tzinfo=None) if candidate.occurred_at else None
+        if candidate_time is not None and abs((candidate_time - occurred_at).total_seconds()) <= SEMANTIC_DEDUP_WINDOW_SECONDS:
+            return candidate
+    return None
 
 
 def _record_delivery(db: Session, raw_event: object, status: str, reason: str | None = None) -> None:
@@ -292,6 +334,11 @@ def ingest_rating_events(
             continue
 
         weights, config_version = _weights_for_mode(db, event.mode)
+        dedup_key = _semantic_dedup_key(event)
+        if _semantic_duplicate(db, event, dedup_key) is not None:
+            _record_delivery(db, raw_event, "duplicate", "semantic duplicate")
+            results.append(_event_result(raw_event, "duplicate"))
+            continue
         points_delta, mapping_status = calculate_event_delta(
             event.mode, event.role, event.event_type, event.raw_value, weights=weights
         )
@@ -312,6 +359,7 @@ def ingest_rating_events(
             source_context=event.source or {},
             round_context=event.round or {},
             event_metadata=event.metadata,
+            dedup_key=dedup_key,
         )
         try:
             with db.begin_nested():

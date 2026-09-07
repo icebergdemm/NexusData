@@ -16,6 +16,7 @@ import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { PlatformIcon } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
+import { formatRatingDate } from "@/lib/format-date"
 import { RatingConfigSection } from "./config-section"
 import { buildRatingV2Query, normalizeRatingLeaderboard, type RatingMode } from "./rating-v2-contract"
 import { RatingEventDrawer, RatingV2Investigation } from "./rating-v2-views"
@@ -145,7 +146,7 @@ export function RatingsPage() {
           <TableHeader><TableRow><TableHead className="w-12">#</TableHead><TableHead>Игрок</TableHead><TableHead>Роль</TableHead><TableHead>Рейтинг</TableHead><TableHead>Вклад</TableHead><TableHead>Активность</TableHead><TableHead>Часы</TableHead><TableHead>Раунды</TableHead><TableHead>Данные</TableHead></TableRow></TableHeader>
           <TableBody>{leaderboard.leaderboard.map((entry) => <TableRow key={`${entry.steamId}:${entry.role ?? "unknown"}`} tabIndex={0} className={`cursor-pointer align-top hover:bg-muted/40 focus-visible:bg-muted/40 ${entry.rank <= 3 ? "bg-warning/5" : ""}`} onClick={() => selectPlayer(entry.steamId, entry.role)} onKeyDown={(event) => event.key === "Enter" && selectPlayer(entry.steamId, entry.role)}>
             <TableCell className="text-base">{entry.rank <= 3 ? <PlatformIcon value={["🥇", "🥈", "🥉"][entry.rank - 1]} fallback={Medal} /> : <span className="text-muted-foreground">{entry.rank}</span>}</TableCell>
-            <TableCell><span onClick={(event) => event.stopPropagation()}><PlayerHoverLink playerId={entry.playerId} className="font-medium text-primary underline-offset-2 hover:underline">{entry.playerName}</PlayerHoverLink></span><div className="text-xs text-muted-foreground">Последняя активность: {entry.lastActivity ?? "—"}</div></TableCell>
+            <TableCell><span onClick={(event) => event.stopPropagation()}><PlayerHoverLink playerId={entry.playerId} className="font-medium text-primary underline-offset-2 hover:underline">{entry.playerName}</PlayerHoverLink></span><div className="text-xs text-muted-foreground">Последняя активность: {formatRatingDate(entry.lastActivity)}</div></TableCell>
             <TableCell className="text-sm">{labelForRole(entry.role)}</TableCell><TableCell className="font-semibold text-primary">{entry.rating ?? "—"}</TableCell><TableCell className="text-muted-foreground">{entry.points ?? "—"}</TableCell><TableCell className="text-xs text-muted-foreground">{entry.activity == null ? "—" : entry.activity.toFixed(2)}</TableCell><TableCell className="text-xs text-muted-foreground">{entry.playtimeHours ?? "—"}</TableCell><TableCell className="text-xs text-muted-foreground">{entry.qualifiedRounds ?? "—"}</TableCell><TableCell className="text-xs text-muted-foreground">{labelForDataQuality(entry.dataQuality ?? entry.eligibility)}</TableCell>
           </TableRow>)}{!leaderboard.leaderboard.length && <TableRow><TableCell colSpan={9} className="py-8 text-center text-muted-foreground">Нет данных</TableCell></TableRow>}</TableBody>
         </Table>}

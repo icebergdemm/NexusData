@@ -719,6 +719,10 @@ class RatingEventLedger(Base):
     source_context = Column(JSON, nullable=False)
     round_context = Column(JSON, nullable=False)
     event_metadata = Column("metadata", JSON, nullable=False, default=dict)
+    # Stable semantic fingerprint used to reject accidental replays that carry
+    # a fresh event_id. It is nullable for old/imported rows whose provenance
+    # must remain untouched.
+    dedup_key = Column(String(64), nullable=True, index=True)
     received_at = Column(DateTime, default=func.now(), nullable=False, index=True)
     projected_at = Column(DateTime, nullable=True, index=True)
 

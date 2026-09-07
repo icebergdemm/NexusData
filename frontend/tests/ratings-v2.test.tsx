@@ -32,6 +32,7 @@ test("ratings page uses one paginated role table with row and drawer navigation"
   assert.doesNotMatch(ratingsPageSource, /Enter — открыть игрока/)
   assert.doesNotMatch(ratingsPageSource, /onKeyDown=\{\(event\) => event\.key === "Enter" && selectPlayer\(searchInput\)\}/)
   assert.doesNotMatch(ratingsPageSource, /<Tabs value=\{role\}/)
+  assert.match(ratingsPageSource, /formatRatingDate\(entry\.lastActivity\)/)
 })
 
 test("rating v2 leaderboard keeps usable rows when optional transparency fields are absent", () => {
@@ -161,6 +162,21 @@ test("rating investigation shows delivery summary instead of an empty delivery t
   assert.match(html, /Принято.*12/)
   assert.match(html, /Дубли.*2/)
   assert.doesNotMatch(html, /Нет данных о доставке/)
+})
+
+test("rating investigation hides unmapped events by default and exposes a filter", () => {
+  const html = renderToStaticMarkup(<RatingV2Investigation
+    player={{ steam_id: "7656119", player_name: "Ada" }}
+    explanation={{}}
+    events={{ events: [
+      { event_id: "mapped-1", event_type: "combat.player_kill", mapping_status: "mapped", points_delta: 5, occurred_at: "2026-09-07T00:00:00Z" },
+      { event_id: "unmapped-1", event_type: "player.death", mapping_status: "unmapped", points_delta: 0, occurred_at: "2026-09-07T00:00:01Z" },
+    ] }}
+  />)
+
+  assert.match(html, /Показывать unmapped-события/)
+  assert.match(html, /Убийство игрока/)
+  assert.doesNotMatch(html, /не сопоставлено/)
 })
 
 test("rating event drawer explains an event and keeps raw fields technical", () => {
