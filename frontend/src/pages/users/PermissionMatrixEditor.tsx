@@ -26,11 +26,33 @@ export function resolvePermissionValue(sources: Array<{ value: boolean; applies?
 
 export function formatPermissionSource(source: { kind: string; [key: string]: unknown }): string {
   if (source.kind === "individual") return "Индивидуальное правило"
-  if (source.kind === "group") return `Группа: ${String(source.group_name ?? "без названия")}${source.applies === false ? " (запрет не применяется)" : ""}`
-  if (source.kind === "department_access_level") return `${String(source.department_name ?? "Департамент")} → ${String(source.level_name ?? source.level_key)}${source.applies === false ? " (запрет не применяется)" : ""}`
+  if (source.kind === "group") return `Группа: ${String(source.group_name ?? "без названия")}`
+  if (source.kind === "department_access_level") return `${String(source.department_name ?? "Департамент")} → ${String(source.level_name ?? source.level_key)}`
   if (source.kind === "department_site") return `Департамент: ${String(source.department_name ?? "общее правило")}`
   if (source.kind === "superuser") return "Superuser: полный обход"
   return "Базовое правило"
+}
+
+export function permissionSourceHref(source: { kind: string; [key: string]: unknown }): string | undefined {
+  const groupId = sourceId(source.group_id)
+  if (source.kind === "group" && Number.isInteger(groupId)) {
+    return `/users?tab=groups&group_id=${groupId}#group-${groupId}`
+  }
+  const departmentId = sourceId(source.department_id)
+  const levelId = sourceId(source.level_id)
+  if (source.kind === "department_access_level" && Number.isInteger(departmentId) && Number.isInteger(levelId)) {
+    return `/departments/${departmentId}#level-${levelId}`
+  }
+  if (source.kind === "department_site" && Number.isInteger(departmentId)) {
+    return `/departments/${departmentId}`
+  }
+  return undefined
+}
+
+function sourceId(value: unknown): number {
+  if (typeof value === "number") return value
+  if (typeof value === "string" && value.trim() !== "") return Number(value)
+  return Number.NaN
 }
 
 export function setPermissionOverride(value: PermissionValue, page: string, action: string, next: PermissionState): PermissionValue {

@@ -7,6 +7,7 @@ const model = permissionMatrix as typeof permissionMatrix & {
   hasPermissionConflict?: (sources: Array<{ value: boolean; applies?: boolean }>) => boolean
   resolvePermissionValue?: (sources: Array<{ value: boolean; applies?: boolean }>, policyMode: string) => boolean
   formatPermissionSource?: (source: { kind: string; [key: string]: unknown }) => string
+  permissionSourceHref?: (source: { kind: string; [key: string]: unknown }) => string | undefined
   setPermissionOverride?: (
     value: Record<string, Record<string, boolean | undefined>>,
     page: string,
@@ -57,6 +58,16 @@ test("permission details describe hidden source rows", () => {
 
   assert.equal(format({ kind: "individual", value: true }), "Индивидуальное правило")
   assert.equal(format({ kind: "group", value: true, group_name: "Модераторы" }), "Группа: Модераторы")
-  assert.equal(format({ kind: "group", value: false, group_name: "Модераторы", applies: false }), "Группа: Модераторы (запрет не применяется)")
+  assert.equal(format({ kind: "group", value: false, group_name: "Модераторы", applies: false }), "Группа: Модераторы")
   assert.equal(format({ kind: "superuser", value: true }), "Superuser: полный обход")
+})
+
+test("permission source links target the exact editable group or department level", () => {
+  const href = model.permissionSourceHref!
+
+  assert.equal(href({ kind: "group", group_id: 7, group_name: "Модераторы" }), "/users?tab=groups&group_id=7#group-7")
+  assert.equal(href({ kind: "department_access_level", department_id: 12, level_id: 4 }), "/departments/12#level-4")
+  assert.equal(href({ kind: "department_site", department_id: 12 }), "/departments/12")
+  assert.equal(href({ kind: "individual", value: true }), undefined)
+  assert.equal(href({ kind: "group", group_id: null }), undefined)
 })

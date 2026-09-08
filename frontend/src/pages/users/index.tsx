@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -97,6 +97,17 @@ export function UsersPage() {
   const openEditGroup = (group: PrivilegeGroup) => {
     setEditingGroupId(group.id); setGroupName(group.name); setGroupPerms(unwrapPages(group.permissions)); setGroupDialogOpen(true)
   }
+  const linkedGroupId = Number(searchParams.get("group_id"))
+  useEffect(() => {
+    if (tab !== "groups" || !Number.isInteger(linkedGroupId) || !data?.groups) return
+    const group = data.groups.find((item) => item.id === linkedGroupId)
+    if (!group) return
+    if (data.can_edit) {
+      if (!groupDialogOpen || editingGroupId !== group.id) openEditGroup(group)
+    } else {
+      document.getElementById(`group-${group.id}`)?.scrollIntoView({ block: "center" })
+    }
+  }, [tab, linkedGroupId, data?.groups, data?.can_edit, groupDialogOpen, editingGroupId])
 
   return (
     <div>
@@ -170,7 +181,7 @@ export function UsersPage() {
 }
 
 function GroupsTab({ data, canEdit, onCreate, onEdit, onDelete }: { data: UsersResponse | undefined; canEdit: boolean; onCreate: () => void; onEdit: (group: PrivilegeGroup) => void; onDelete: (id: number) => void }) {
-  return <div className="space-y-4">{canEdit && <Button onClick={onCreate}>+ Новая группа прав</Button>}<div className="grid gap-4 md:grid-cols-2">{data?.groups.map((group) => <Card key={group.id}><CardHeader className="flex flex-row items-center justify-between space-y-0"><CardTitle className="text-sm">{group.name}</CardTitle><Badge variant="secondary">{group.member_count} участников</Badge></CardHeader><CardContent className="space-y-3"><div className="text-xs text-muted-foreground">Группа выдаёт только разрешения. Запреты группы не применяются.</div><div className="flex flex-wrap gap-1">{Object.entries(unwrapPages(group.permissions)).filter(([, actions]) => Object.values(actions).some((value) => value === true)).map(([page, actions]) => <Badge key={page} variant="outline" className="text-xs">{page}: {Object.entries(actions).filter(([, value]) => value === true).map(([action]) => `${action}: да`).join("/")}</Badge>)}</div>{canEdit && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => onEdit(group)}>Изменить</Button><Button size="sm" variant="destructive" onClick={() => onDelete(group.id)}>Удалить группу</Button></div>}</CardContent></Card>)}</div></div>
+  return <div className="space-y-4">{canEdit && <Button onClick={onCreate}>+ Новая группа прав</Button>}<div className="grid gap-4 md:grid-cols-2">{data?.groups.map((group) => <Card key={group.id} id={`group-${group.id}`}><CardHeader className="flex flex-row items-center justify-between space-y-0"><CardTitle className="text-sm">{group.name}</CardTitle><Badge variant="secondary">{group.member_count} участников</Badge></CardHeader><CardContent className="space-y-3"><div className="text-xs text-muted-foreground">Группа выдаёт только разрешения. Запреты группы не применяются.</div><div className="flex flex-wrap gap-1">{Object.entries(unwrapPages(group.permissions)).filter(([, actions]) => Object.values(actions).some((value) => value === true)).map(([page, actions]) => <Badge key={page} variant="outline" className="text-xs">{page}: {Object.entries(actions).filter(([, value]) => value === true).map(([action]) => `${action}: да`).join("/")}</Badge>)}</div>{canEdit && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => onEdit(group)}>Изменить</Button><Button size="sm" variant="destructive" onClick={() => onDelete(group.id)}>Удалить группу</Button></div>}</CardContent></Card>)}</div></div>
 }
 
 function FilterSelect({ label, value, onValueChange, children }: { label: string; value: string; onValueChange: (value: string) => void; children: React.ReactNode }) {

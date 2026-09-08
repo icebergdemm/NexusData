@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 import { useCurrentAdmin, usePermissionRegistry, type PermissionRegistry } from "@/lib/auth"
 import { LoginKeysDialog } from "./LoginKeysDialog"
-import { formatPermissionSource, hasPermissionConflict, permissionStatusLabel, resolvePermissionValue, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
+import { formatPermissionSource, hasPermissionConflict, permissionSourceHref, permissionStatusLabel, resolvePermissionValue, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
 import type { AuthorizationTrace, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
 
@@ -137,7 +137,8 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
   }
 
   const rows = useMemo(() => Object.entries(trace.effective.pages).map(([page, actions]) => ({
-    page, actions: Object.entries(actions).filter(([action, decision]) => {
+    page,
+    actions: Object.entries(actions).filter(([action, decision]) => {
       const query = search.trim().toLowerCase()
       const actionLabel = registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action
       const pageLabel = registry?.[page]?.label ?? page
@@ -154,20 +155,140 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
     setDraft(next)
     save.mutate(next)
   }
-  const togglePage = (page: string) => setExpanded((current) => ({ ...current, [page]: !(current[page] ?? true) }))
+  const togglePage = (page: string) => setExpanded((current) => ({ ...current, [page]: !(current[page] ?? false) }))
   const toggleDetails = (key: string) => setExpandedDetails((current) => ({ ...current, [key]: !(current[key] ?? false) }))
 
-  return <Card><CardHeader className="space-y-3"><div><CardTitle className="text-base">Все page/action permissions</CardTitle><p className="mt-1 text-xs text-muted-foreground">Результат обновляется сразу после нажатия. Подробности конкретного правила раскрываются прямо под ним.</p></div><div className="flex flex-wrap gap-2"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск страницы или действия..." className="min-w-64 flex-1" /><Select value={filter} onValueChange={(value) => setFilter(value as typeof filter)}><SelectTrigger className="w-52"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все права</SelectItem><SelectItem value="allow">Только разрешённые</SelectItem><SelectItem value="deny">Только запрещённые</SelectItem><SelectItem value="override">С override</SelectItem><SelectItem value="conflict">Только конфликты</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="space-y-2">
-    <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2 text-xs text-muted-foreground">Индивидуальное правило имеет приоритет. Группа и департамент только добавляют доступ, их запреты не применяются. Нажмите «Детали» у правила, чтобы увидеть источники и причину результата.</div>
-    {rows.map(({ page, actions }) => <div key={page} className="rounded-md border"><button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left font-medium" onClick={() => togglePage(page)}><span>{registry?.[page]?.label ?? page} <span className="font-mono text-xs text-muted-foreground">({page})</span></span><span className="text-xs text-muted-foreground">{actions.length} действий</span></button>{(expanded[page] ?? true) && <div className="border-t px-3 py-2">{actions.map(([action, decision]) => {
-      const displayedDecision = getDisplayedDecision(page, action, decision)
-      const conflict = hasPermissionConflict(displayedDecision.sources)
-      const detailsKey = `${page}:${action}`
-      const detailsExpanded = expandedDetails[detailsKey] ?? false
-      const hasOverride = draft[page]?.[action] !== undefined
-      return <div key={action} className="border-b py-2 last:border-0"><div className="flex flex-col gap-2 lg:flex-row lg:items-center"><div className="min-w-40 flex-1"><div className="text-sm">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</div><div className="font-mono text-[10px] text-muted-foreground">{action}</div></div><div className="flex flex-wrap items-center gap-1.5"><Badge variant={displayedDecision.value ? "default" : "destructive"}>{permissionStatusLabel(displayedDecision.value)}</Badge>{conflict && <button type="button" className="inline-flex items-center gap-1 rounded-full border border-destructive/50 bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/20" aria-expanded={detailsExpanded} title="Нажмите, чтобы увидеть конфликтующие источники" onClick={() => setExpandedDetails((current) => ({ ...current, [detailsKey]: true }))}><AlertTriangle className="size-3" />Конфликт</button>}</div><div className="flex flex-wrap gap-1.5 lg:justify-end">{canEdit && !trace.admin.is_superuser && <><Button size="sm" variant="outline" disabled={save.isPending} onClick={() => mutatePermission(page, action, true)}><Check className="size-3.5" />Разрешить</Button><Button size="sm" variant="destructive" disabled={save.isPending} onClick={() => mutatePermission(page, action, false)}>Запретить</Button><Button size="sm" variant="ghost" disabled={!hasOverride || save.isPending} onClick={() => mutatePermission(page, action, undefined)}>Сбросить</Button></>}<Button size="sm" variant="ghost" onClick={() => toggleDetails(detailsKey)}><ChevronDown className={`size-3.5 transition-transform ${detailsExpanded ? "rotate-180" : ""}`} />{detailsExpanded ? "Скрыть детали" : "Детали"}</Button></div></div>{detailsExpanded && <div className="mt-2 rounded-md border border-muted-foreground/20 bg-muted/10 px-3 py-2 text-xs"><div className="font-medium">Источники решения</div>{displayedDecision.sources.length ? <div className="mt-2 space-y-1.5">{displayedDecision.sources.map((source, index) => <div key={`${source.kind}-${index}`} className="flex flex-wrap items-center gap-1.5"><span>{formatPermissionSource(source)}</span><Badge variant={source.applies === false ? "secondary" : source.value ? "default" : "destructive"}>{source.applies === false ? "Не применяется" : source.value ? "Разрешает" : "Запрещает"}</Badge></div>)}</div> : <p className="mt-1 text-muted-foreground">Явное правило не задано; доступ не выдан.</p>}{conflict && <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"><div className="font-medium text-destructive">Почему конфликт</div><p className="mt-1 text-muted-foreground">Применимые источники дают разные решения. Индивидуальное правило имеет приоритет; если его нет, разрешение приходит от группы или департамента.</p><p className="mt-1 text-muted-foreground">Чтобы убрать конфликт, сбросьте индивидуальное правило или измените источник в разделе группы/департамента.</p></div>}</div>}</div>})}</div>}</div>)}
-    {!rows.length && <div className="py-10 text-center text-sm text-muted-foreground">По этим фильтрам прав нет.</div>}
-  </CardContent></Card>
+  return (
+    <Card>
+      <CardHeader className="space-y-3">
+        <div>
+          <CardTitle className="text-base">Все page/action permissions</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">Нажмите на строку права, чтобы увидеть источники решения и перейти к месту их настройки.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск страницы или действия..." className="min-w-64 flex-1" />
+          <Select value={filter} onValueChange={(value) => setFilter(value as typeof filter)}>
+            <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Все права</SelectItem>
+              <SelectItem value="allow">Только разрешённые</SelectItem>
+              <SelectItem value="deny">Только запрещённые</SelectItem>
+              <SelectItem value="override">С индивидуальным правилом</SelectItem>
+              <SelectItem value="conflict">Только конфликты</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2 text-xs text-muted-foreground">Индивидуальное правило имеет приоритет. Группа и департамент только добавляют доступ — их запреты не применяются.</div>
+        {rows.map(({ page, actions }) => (
+          <div key={page} className="rounded-md border">
+            <button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left font-medium" onClick={() => togglePage(page)}>
+              <span className="flex items-center gap-2"><ChevronDown className={`size-4 transition-transform ${expanded[page] ? "rotate-180" : ""}`} />{registry?.[page]?.label ?? page} <span className="font-mono text-xs text-muted-foreground">({page})</span></span>
+              <span className="text-xs text-muted-foreground">{actions.length} действий</span>
+            </button>
+            {expanded[page] && <div className="border-t px-3 py-1">
+              {actions.map(([action, decision]) => {
+                const displayedDecision = getDisplayedDecision(page, action, decision)
+                const conflict = hasPermissionConflict(displayedDecision.sources)
+                const detailsKey = `${page}:${action}`
+                const detailsExpanded = expandedDetails[detailsKey] ?? false
+                const hasOverride = draft[page]?.[action] !== undefined
+                return (
+                  <div key={action} className="border-b last:border-0">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={detailsExpanded}
+                      className="grid cursor-pointer gap-3 py-3 transition-colors hover:bg-muted/20 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                      onClick={() => toggleDetails(detailsKey)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          toggleDetails(detailsKey)
+                        }
+                      }}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{action}</div>
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <Badge variant={displayedDecision.value ? "default" : "destructive"}>{permissionStatusLabel(displayedDecision.value)}</Badge>
+                          {conflict && <Badge variant="destructive" className="gap-1" title="Внутри раскрытия указано, какие источники расходятся"><AlertTriangle className="size-3" />Конфликт</Badge>}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-start gap-1.5 border-t pt-2 sm:justify-end sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                        {canEdit && !trace.admin.is_superuser && <>
+                          <Button size="sm" variant="outline" disabled={save.isPending} onClick={() => mutatePermission(page, action, true)}><Check className="size-3.5" />Разрешить</Button>
+                          <Button size="sm" variant="destructive" disabled={save.isPending} onClick={() => mutatePermission(page, action, false)}>Запретить</Button>
+                          <Button size="sm" variant="ghost" disabled={!hasOverride || save.isPending} onClick={() => mutatePermission(page, action, undefined)}>Сбросить</Button>
+                        </>}
+                      </div>
+                    </div>
+                    {detailsExpanded && <PermissionSourceInspector decision={displayedDecision} conflict={conflict} />}
+                  </div>
+                )
+              })}
+            </div>}
+          </div>
+        ))}
+        {!rows.length && <div className="py-10 text-center text-sm text-muted-foreground">По этим фильтрам прав нет.</div>}
+      </CardContent>
+    </Card>
+  )
+}
+
+function PermissionSourceInspector({ decision, conflict }: { decision: AuthorizationTrace["effective"]["pages"][string][string]; conflict: boolean }) {
+  return (
+    <div className="border-t border-info/20 bg-muted/10 px-3 py-3 text-xs" onClick={(event) => event.stopPropagation()}>
+      <div className="font-medium">Как принято решение</div>
+      {decision.sources.length ? <div className="mt-2 space-y-2">
+        {decision.sources.map((source, index) => {
+          const active = source.applies !== false
+          const href = permissionSourceHref(source)
+          return <div key={`${source.kind}-${index}`} className="rounded-md border bg-background/40 p-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium">{formatPermissionSource(source)}</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant={active ? "outline" : "secondary"}>{active ? "Применяется" : "Не применяется"}</Badge>
+                <Badge variant={active && source.value ? "default" : active ? "destructive" : "secondary"}>{active ? source.value ? "Разрешает" : "Запрещает" : "Не влияет"}</Badge>
+              </div>
+            </div>
+            <div className="mt-1 text-muted-foreground">{sourceContribution(source, active)}</div>
+            {sourceReason(source) && <div className="mt-1 text-muted-foreground">{sourceReason(source)}</div>}
+            {source.kind === "individual" && <div className="mt-1 text-muted-foreground">Имеет приоритет над группой и департаментом. После сброса будут учитываться доступные разрешения группы и департамента.</div>}
+            {href && <Link className="mt-2 inline-flex text-primary hover:underline" to={href}>{sourceLinkLabel(source.kind)} <ExternalLink className="ml-1 size-3" /></Link>}
+          </div>
+        })}
+      </div> : <p className="mt-1 text-muted-foreground">Явное право не задано, доступ не выдан.</p>}
+      {conflict && <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"><div className="font-medium text-destructive">Источники расходятся</div><p className="mt-1 text-muted-foreground">Раскрытые выше источники дают разные решения. Измените или сбросьте источник в его разделе.</p></div>}
+    </div>
+  )
+}
+
+function sourceContribution(source: { kind: string; value: boolean; [key: string]: unknown }, active: boolean): string {
+  if (!active) return "Вклад в итог: отсутствует."
+  if (source.kind === "superuser") return "Вклад в итог: полный обход проверок NexusData."
+  if (source.kind === "individual") return `Вклад в итог: индивидуально ${source.value ? "разрешает" : "запрещает"} доступ.`
+  return `Вклад в итог: ${source.value ? "добавляет разрешение" : "запрещает доступ"}.`
+}
+
+function sourceReason(source: { kind: string; reason?: unknown; [key: string]: unknown }): string | null {
+  if (source.applies === false && source.reason === "individual_permission_has_priority") return "Не применяется: индивидуальное правило имеет приоритет над группой и департаментом."
+  if (source.kind === "group") return "Группа только добавляет доступ; её запрет не применяется."
+  if (source.kind === "department_access_level" || source.kind === "department_site") return "Департамент только добавляет доступ; его запрет не применяется."
+  if (source.reason === "group_permissions_are_grant_only") return "Группа только добавляет доступ; запрет группы не применяется."
+  if (source.reason === "department_permissions_are_grant_only") return "Департамент только добавляет доступ; запрет департамента не применяется."
+  if (source.reason === "individual_permission_has_priority") return "Индивидуальное правило имеет приоритет над группой и департаментом."
+  if (source.applies !== false) return typeof source.reason === "string" ? source.reason : null
+  return typeof source.reason === "string" ? source.reason : "Источник проигнорирован политикой приоритетов."
+}
+
+function sourceLinkLabel(kind: string): string {
+  if (kind === "group") return "Открыть группу"
+  if (kind === "department_access_level") return "Открыть уровень департамента"
+  if (kind === "department_site") return "Открыть департамент"
+  return "Открыть источник"
 }
 
 function DepartmentLinks({ trace }: { trace: AuthorizationTrace }) {
