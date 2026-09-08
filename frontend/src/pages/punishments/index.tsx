@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
-import { Gavel, Plus, Star, StickyNote, Pencil, RefreshCw } from "lucide-react"
+import { Gavel, Plus, Star, StickyNote, Pencil } from "lucide-react"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -21,7 +21,6 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
-import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
@@ -55,15 +54,6 @@ interface PunishmentsResponse {
   punishment_types: string[]
   can_edit: boolean
   can_delete: boolean
-  can_refresh_issuers: boolean
-}
-
-interface DiscordRefreshResponse {
-  database_updated: number
-  matched: number
-  updated: number
-  scanned: number
-  errors: string[]
 }
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
@@ -87,8 +77,6 @@ export function PunishmentsPage() {
   const [editTarget, setEditTarget] = useState<PunishmentRow | null>(null)
   const [editForm, setEditForm] = useState({ reason: "", expires_days: "", notes: "" })
   const [form, setForm] = useState({ player_steamid: "", reason: "", expires_days: "", notes: "", server_name: "" })
-  const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
-  const [refreshDiscordConfirmOpen, setRefreshDiscordConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
   const debouncedSearch = useDebouncedValue(search.trim())
 
@@ -146,24 +134,6 @@ export function PunishmentsPage() {
     mutationFn: (id: number) => api.delete(`/api/v1/admin/punishments/${id}`),
     onSuccess: () => { toast.success("Удалено"); invalidate() },
   })
-  const refreshIssuersMutation = useMutation<{ updated: number }>({
-    mutationFn: () => api.post("/api/v1/admin/punishments/refresh-issuers"),
-    onSuccess: (result) => {
-      toast.success(`Обновлено авторов: ${result.updated}`)
-      setRefreshConfirmOpen(false)
-      invalidate()
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
-  const refreshDiscordMutation = useMutation<DiscordRefreshResponse>({
-    mutationFn: () => api.post("/api/v1/admin/punishments/refresh-discord-messages"),
-    onSuccess: (result) => {
-      toast.success(`Discord: изменено ${result.updated}, найдено ${result.matched}`)
-      setRefreshDiscordConfirmOpen(false)
-      invalidate()
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
   const editMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/admin/punishments/${editTarget?.id}`, {
       reason: editForm.reason, expires_days: editForm.expires_days ? Number(editForm.expires_days) : null, notes: editForm.notes,
@@ -183,38 +153,9 @@ export function PunishmentsPage() {
         title="Наказания"
         description="Предупреждения, выговоры, кики и баны, выданные игрокам"
         icon={Gavel}
-        actions={(data?.can_refresh_issuers || data?.can_edit) && (
+        actions={data?.can_edit && (
           <div className="flex flex-wrap gap-2">
-            {data?.can_refresh_issuers && (
-              <>
-                <Button variant="outline" disabled={refreshIssuersMutation.isPending} onClick={() => setRefreshConfirmOpen(true)}>
-                  <RefreshCw className={`h-4 w-4 ${refreshIssuersMutation.isPending ? "animate-spin" : ""}`} /> Обновить 30 имён
-                </Button>
-                <ConfirmDialog
-                  open={refreshConfirmOpen}
-                  onOpenChange={setRefreshConfirmOpen}
-                  title="Обновить имена последних 30 наказаний?"
-                  description="Будут обновлены только записи, выданные через админ-панель и связанные с администратором."
-                  confirmLabel="Обновить"
-                  onConfirm={() => refreshIssuersMutation.mutate()}
-                  confirmDisabled={refreshIssuersMutation.isPending}
-                />
-                <Button variant="outline" disabled={refreshDiscordMutation.isPending} onClick={() => setRefreshDiscordConfirmOpen(true)}>
-                  <RefreshCw className={`h-4 w-4 ${refreshDiscordMutation.isPending ? "animate-spin" : ""}`} /> Обновить Discord
-                </Button>
-                <ConfirmDialog
-                  open={refreshDiscordConfirmOpen}
-                  onOpenChange={setRefreshDiscordConfirmOpen}
-                  title="Обновить старые Discord-сообщения?"
-                  description="Бот проверит настроенные каналы наказаний и обновит только свои эмбеды для последних 30 наказаний. Остальные сообщения не изменяются."
-                  confirmLabel="Обновить Discord"
-                  onConfirm={() => refreshDiscordMutation.mutate()}
-                  confirmDisabled={refreshDiscordMutation.isPending}
-                />
-              </>
-            )}
-            {data?.can_edit && (
-              <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
                 <DialogTrigger asChild>
                   <Button><Plus className="h-4 w-4" /> Выдать наказание</Button>
                 </DialogTrigger>
@@ -254,8 +195,7 @@ export function PunishmentsPage() {
                     </Button>
                   </DialogFooter>
                 </DialogContent>
-              </Dialog>
-            )}
+            </Dialog>
           </div>
         )}
       />

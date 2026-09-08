@@ -6,6 +6,9 @@ import os
 import httpx
 import threading
 from datetime import datetime, timezone, timedelta
+import hashlib
+import json
+import re
 
 ADMIN_MESSAGE_MAX_LENGTH = 2000
 ADMIN_MESSAGE_PREFIX = "[Администрация]: "
@@ -47,6 +50,12 @@ def format_admin_issuer_name(db: Session, admin) -> str:
             .first()
         )
 
+    return format_admin_issuer_name_from_member(admin, member)
+
+
+def format_admin_issuer_name_from_member(admin, member=None) -> str:
+    """Format an admin issuer when the Discord member row is already loaded."""
+    discord_id = str(getattr(admin, "discord_id", "") or "").strip()
     server_name = (getattr(member, "display_name", None) or "").strip()
     fallback = (getattr(admin, "discord_username", None) or "").strip()
     if not fallback:
@@ -54,44 +63,122 @@ def format_admin_issuer_name(db: Session, admin) -> str:
     return f"ND. {server_name or fallback}"
 
 
-def refresh_recent_punishment_issuers(db: Session, limit: int = 30) -> int:
-    """Refresh the latest linked punishment issuers from server nicknames.
+_BANNED_BY_INITIATOR_RE = re.compile(r'^ServerMessage\.BannedBy~\[initiator\]=(.*)$')
 
-    Rows created directly by a game server have no ``issued_by_admin_id`` and
-    are deliberately excluded.  Missing admin rows are also left alone: a
-    made-up current identity is worse than preserving the historical value.
-    """
-    from models import AdminUser, PlayerPunishment
 
-    if limit <= 0:
-        return 0
+def clean_punishment_reason(reason: Optional[str]) -> tuple[str, Optional[str]]:
+    """Return the public reason and any legacy game initiator marker."""
+    if reason:
+        match = _BANNED_BY_INITIATOR_RE.match(reason.strip())
+        if match:
+            return "-", match.group(1).strip() or None
+    return (reason or "Не указана"), None
 
-    punishments = (
-        db.query(PlayerPunishment)
-        .filter(PlayerPunishment.issued_by_admin_id.isnot(None))
-        .order_by(PlayerPunishment.issued_at.desc(), PlayerPunishment.id.desc())
-        .limit(limit)
-        .all()
-    )
-    if not punishments:
-        return 0
 
-    admin_ids = {p.issued_by_admin_id for p in punishments}
-    admins = {
-        admin.id: admin
-        for admin in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()
+def punishment_effective_status(punishment) -> str:
+    if not punishment.is_active:
+        return "void"
+    if punishment.expires_at and punishment.expires_at < _now_msk():
+        return "expired"
+    return "active"
+
+
+def punishment_discord_state(punishment, issuer_name: str) -> dict:
+    """Return the mutable Discord fields for a web punishment."""
+    status = punishment_effective_status(punishment)
+    return {
+        "issuer": issuer_name,
+        "reason": clean_punishment_reason(punishment.reason)[0],
+        "expires_at": punishment.expires_at.strftime("%d.%m.%Y %H:%M") if punishment.expires_at else None,
+        "status": {"expired": "Истекло", "void": "Аннулировано"}.get(status),
     }
 
-    updated = 0
-    for punishment in punishments:
-        admin = admins.get(punishment.issued_by_admin_id)
-        if admin is None:
-            continue
-        punishment.issued_by_name = format_admin_issuer_name(db, admin)
-        updated += 1
 
-    db.commit()
-    return updated
+def punishment_discord_state_hash(state: dict) -> str:
+    payload = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def apply_punishment_discord_state(embed_data: dict, state: dict) -> bool:
+    """Apply managed punishment fields without touching the rest of an embed."""
+    changed = False
+    fields = embed_data.setdefault("fields", [])
+
+    def set_field(name: str, value: Optional[str], inline: bool) -> None:
+        nonlocal changed
+        matching = [field for field in fields if field.get("name") == name]
+        if value is None:
+            if matching:
+                fields[:] = [field for field in fields if field.get("name") != name]
+                changed = True
+            return
+        if matching:
+            if matching[0].get("value") != value:
+                matching[0]["value"] = value
+                changed = True
+            return
+        fields.append({"name": name, "value": value, "inline": inline})
+        changed = True
+
+    set_field("Выдал", state.get("issuer"), True)
+    set_field("Причина", state.get("reason") or "Не указана", False)
+    set_field("Истекает", state.get("expires_at"), True)
+    set_field("Статус", state.get("status"), False)
+    return changed
+
+
+def build_punishment_discord_embed(db: Session, punishment) -> tuple[dict, str]:
+    """Build a punishment embed and its mutable-state fingerprint."""
+    from models import PlayerData
+
+    type_labels = {
+        "warning": "⚠️ Предупреждение",
+        "reprimand": "📋 Выговор",
+        "kick": "👢 Кик",
+        "ban": "🔨 Бан",
+    }
+    type_colors = {"warning": 0xffaa00, "reprimand": 0xff8800, "kick": 0xff4400, "ban": 0xcc0000}
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == punishment.player_steamid).first()
+    player_name = (player.forced_display_name or player.player_last_time_name) if player else None
+
+    issuer_name = punishment.issued_by_name or "—"
+    if punishment.issued_by_admin_id:
+        from models import AdminUser
+        admin = db.query(AdminUser).filter(AdminUser.id == punishment.issued_by_admin_id).first()
+        if admin:
+            issuer_name = format_admin_issuer_name(db, admin)
+    clean_reason, extracted_initiator = clean_punishment_reason(punishment.reason)
+    if not punishment.issued_by_admin_id:
+        issuer_name = punishment.issued_by_name or extracted_initiator or "—"
+
+    state = punishment_discord_state(punishment, issuer_name)
+    # Punishments written directly by a game server are outside the web
+    # punishment lifecycle. Keep their legacy embed shape untouched; the
+    # worker also excludes them because they have no admin foreign key.
+    if not punishment.issued_by_admin_id:
+        state["status"] = None
+    fields = [
+        {
+            "name": "Игрок",
+            "value": f"`{punishment.player_steamid}`" + (f" ({player_name})" if player_name else ""),
+            "inline": True,
+        },
+        {"name": "Выдал", "value": issuer_name, "inline": True},
+        {"name": "Причина", "value": clean_reason, "inline": False},
+    ]
+    if state["expires_at"]:
+        fields.append({"name": "Истекает", "value": state["expires_at"], "inline": True})
+    if state["status"]:
+        fields.append({"name": "Статус", "value": state["status"], "inline": False})
+
+    embed = {
+        "title": type_labels.get(punishment.type, punishment.type),
+        "color": type_colors.get(punishment.type, 0xff0000),
+        "fields": fields,
+        "footer": {"text": "1984"},
+        "timestamp": datetime.now(tz=timezone(timedelta(hours=3))).isoformat(),
+    }
+    return embed, punishment_discord_state_hash(state)
 
 
 def _session_login_time_to_msk(login_time: Optional[datetime]) -> Optional[datetime]:
@@ -2508,8 +2595,4 @@ class PunishmentService:
 
     def effective_status(self, punishment) -> str:
         """'active' | 'expired' | 'void'"""
-        if not punishment.is_active:
-            return "void"
-        if self.is_expired(punishment):
-            return "expired"
-        return "active"
+        return punishment_effective_status(punishment)

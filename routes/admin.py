@@ -19,7 +19,7 @@ from services import (
     PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
     ModerationActionTemplateService, MODERATION_TEMPLATE_TYPES,
     MODERATION_TEMPLATE_TYPE_LABELS,
-    format_admin_issuer_name, refresh_recent_punishment_issuers,
+    format_admin_issuer_name,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -37,13 +37,6 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 discord_auth = DiscordAuthService()
-
-# The temporary historical repair must also cover the archived channel, which
-# may no longer be present in the bot's current channel configuration.
-_PUNISHMENT_DISCORD_BACKFILL_CHANNEL_IDS = [
-    1513646859824922634,
-    1513647011147157741,
-]
 
 
 def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[dict] = None):
@@ -6268,88 +6261,6 @@ async def api_punishments_list(
         "punishment_types": list(PUNISHMENT_TYPES),
         "can_edit": check_permission(current_admin, "punishments", "edit"),
         "can_delete": current_admin.is_superuser,
-        "can_refresh_issuers": bool(current_admin.is_superuser),
-    }
-
-
-@router.post("/api/v1/admin/punishments/refresh-issuers")
-async def api_refresh_recent_punishment_issuers(
-    request: Request,
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Refresh the 30 latest web punishment author names.
-
-    This temporary superuser-only endpoint exists for the historical backfill
-    and is deliberately separate from punishment creation.  The service
-    excludes game-server rows and is safe to run more than once.
-    """
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователей")
-    await ensure_csrf_or_valid_admin_session(request, db)
-
-    updated = refresh_recent_punishment_issuers(db, limit=30)
-    log_admin_action(db, current_admin.id, "refresh_punishment_issuers", {
-        "limit": 30,
-        "updated": updated,
-    })
-    return {"status": "ok", "updated": updated, "limit": 30}
-
-
-@router.post("/api/v1/admin/punishments/refresh-discord-messages")
-async def api_refresh_punishment_discord_messages(
-    request: Request,
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Refresh issuer fields in the Discord embeds for the same 30 rows."""
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только для суперпользователей")
-    await ensure_csrf_or_valid_admin_session(request, db)
-
-    database_updated = refresh_recent_punishment_issuers(db, limit=30)
-    punishments = (
-        db.query(PlayerPunishment)
-        .join(AdminUser, AdminUser.id == PlayerPunishment.issued_by_admin_id)
-        .filter(PlayerPunishment.issued_by_admin_id.isnot(None))
-        .order_by(PlayerPunishment.issued_at.desc(), PlayerPunishment.id.desc())
-        .limit(30)
-        .all()
-    )
-    records = [
-        {
-            "id": punishment.id,
-            "type": punishment.type,
-            "player_steamid": punishment.player_steamid,
-            "reason": punishment.reason,
-            "issued_at": punishment.issued_at.isoformat() if punishment.issued_at else None,
-            "issued_by_name": punishment.issued_by_name,
-            "is_void": not bool(punishment.is_active),
-        }
-        for punishment in punishments
-        if punishment.issued_by_name
-    ]
-
-    from discord_bot import bot as discord_bot
-    from routes.discord_viewer_api import _call_bot
-
-    discord_result = await _call_bot(
-        discord_bot.refresh_punishment_discord_messages(
-            records, channel_ids=_PUNISHMENT_DISCORD_BACKFILL_CHANNEL_IDS,
-        ),
-        timeout=180.0,
-    )
-    log_admin_action(db, current_admin.id, "refresh_punishment_discord_messages", {
-        "limit": 30,
-        "database_updated": database_updated,
-        "discord_updated": discord_result.get("updated", 0),
-        "discord_matched": discord_result.get("matched", 0),
-    })
-    return {
-        "status": "ok",
-        "limit": 30,
-        "database_updated": database_updated,
-        **discord_result,
     }
 
 

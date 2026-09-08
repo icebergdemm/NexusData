@@ -32,6 +32,7 @@ from discord import app_commands
 
 from config import get_settings
 from discord_bot import data as bot_data
+from services import apply_punishment_discord_state
 from services_ticket_media import (
     TicketMediaQuotaExceeded,
     new_storage_key,
@@ -1333,9 +1334,7 @@ _PUNISHMENT_EMBED_TYPES = {
 def _punishment_embed_signature(embed_data: dict) -> Optional[tuple[str, str, str]]:
     """Extract the stable identity fields from a punishment embed.
 
-    Historical punishment messages predate Discord message-id tracking, so
-    backfill deliberately recognises only the exact embed shape emitted by
-    ``routes.game_api._queue_punishment_discord_notification``.
+    Only the exact embed shape emitted by the punishment renderer is managed.
     """
     if (embed_data.get("footer") or {}).get("text") != "1984":
         return None
@@ -1352,151 +1351,84 @@ def _punishment_embed_signature(embed_data: dict) -> Optional[tuple[str, str, st
     return punishment_type, player_steamid, str(fields["Причина"]).strip()
 
 
-def _parse_punishment_issued_at(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone(MSK_OFFSET))
-    return parsed.astimezone(timezone.utc)
-
-
-def _find_punishment_record_for_message(
-    embed_data: dict,
-    message_created_at: datetime,
-    records: list[dict],
-    used_record_ids: set[int],
-) -> Optional[dict]:
-    """Find one safe historical DB match for an embed, if there is one."""
-    signature = _punishment_embed_signature(embed_data)
-    if not signature:
-        return None
-    punishment_type, player_steamid, embed_reason = signature
-    candidates = []
-    for record in records:
-        record_id = record.get("id")
-        if record_id in used_record_ids:
-            continue
-        if record.get("type") != punishment_type or str(record.get("player_steamid") or "").strip() != player_steamid:
-            continue
-        issued_at = _parse_punishment_issued_at(record.get("issued_at"))
-        if issued_at is None:
-            continue
-        delta = abs((message_created_at - issued_at).total_seconds())
-        expected_reason = str(record.get("reason") or "Не указана").strip()
-        reason_matches = embed_reason == expected_reason
-        # Exact reason permits a wider window for delayed bot delivery.  If an
-        # admin edited the reason later, only a close timestamp is accepted.
-        if delta > (24 * 60 * 60 if reason_matches else 15 * 60):
-            continue
-        candidates.append((0 if reason_matches else 1, delta, record))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (item[0], item[1]))
-    return candidates[0][2]
-
-
-def _apply_punishment_record_to_embed(embed_data: dict, record: dict) -> bool:
-    """Apply the denormalised issuer and void status to one embed."""
-    changed = False
-    for field in embed_data.get("fields", []):
-        if field.get("name") == "Выдал" and field.get("value") != record["issued_by_name"]:
-            field["value"] = record["issued_by_name"]
-            changed = True
-
-    if record.get("is_void"):
-        status_field = next((field for field in embed_data.get("fields", []) if field.get("name") == "Статус"), None)
-        if status_field is None:
-            embed_data.setdefault("fields", []).append({
-                "name": "Статус", "value": "Аннулировано", "inline": False,
-            })
-            changed = True
-        elif status_field.get("value") != "Аннулировано":
-            status_field["value"] = "Аннулировано"
-            changed = True
-    return changed
-
-
-async def refresh_punishment_discord_messages(
-    records: list[dict], max_messages: int = 20000, channel_ids: Optional[list[int]] = None,
-) -> dict:
-    """Update issuer fields in historical punishment embeds.
-
-    The caller supplies the already-filtered, linked DB rows.  This function
-    never edits arbitrary channel messages: it restricts itself to configured
-    punishment channels, messages authored by this bot, and embeds carrying
-    the punishment footer marker.
-    """
-    channel_targets: dict[int, set[str]] = {}
-    if channel_ids is None:
-        config = await asyncio.to_thread(bot_data.get_bot_config)
-        configured_channels = ((key, (config or {}).get(key)) for key in ("punishment_channel_id", "ban_channel_id"))
-    else:
-        # Explicit IDs are used only by the temporary historical repair route
-        # for the current and archived punishment channels.
-        configured_channels = (("all", raw_channel_id) for raw_channel_id in channel_ids)
-    for key, raw_channel_id in configured_channels:
+async def send_punishment_embed(punishment_id: int, embed_data: dict, state_hash: str, include_ban_channel: bool) -> dict:
+    """Send one punishment to configured channels and persist message IDs."""
+    config = await asyncio.to_thread(bot_data.get_bot_config)
+    keys = ["punishment_channel_id"] + (["ban_channel_id"] if include_ban_channel else [])
+    channel_ids = []
+    for key in keys:
+        raw_channel_id = (config or {}).get(key)
         if not raw_channel_id:
             continue
         try:
             channel_id = int(raw_channel_id)
         except (TypeError, ValueError):
+            logger.warning("Invalid punishment channel config key %s", key)
             continue
-        channel_targets.setdefault(channel_id, set()).add(key)
+        if channel_id not in channel_ids:
+            channel_ids.append(channel_id)
 
-    result = {"scanned": 0, "matched": 0, "updated": 0, "channels": [], "errors": []}
-    for channel_id, target_keys in channel_targets.items():
-        expected_records = records if {"all", "punishment_channel_id"} & target_keys else [
-            record for record in records if record.get("type") in ("ban", "warning", "reprimand")
-        ]
-        expected_ids = {record.get("id") for record in expected_records}
-        used_record_ids: set[int] = set()
-        channel_result = {"channel_id": str(channel_id), "scanned": 0, "matched": 0, "updated": 0}
-        try:
-            channel = bot.get_channel(channel_id)
-            if not channel:
+    sent = []
+    for channel_id in channel_ids:
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            try:
                 channel = await bot.fetch_channel(channel_id)
-            async for message in channel.history(limit=max(1, min(max_messages, 20000))):
-                channel_result["scanned"] += 1
-                result["scanned"] += 1
-                if not bot.user or message.author.id != bot.user.id or not message.embeds:
-                    continue
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning("Punishment channel %s unavailable: %s", channel_id, type(exc).__name__)
+                continue
+        message = await channel.send(embed=discord.Embed.from_dict(embed_data))
+        await asyncio.to_thread(
+            bot_data.record_punishment_discord_message,
+            punishment_id, channel_id, message.id, state_hash,
+        )
+        sent.append({"channel_id": str(channel_id), "message_id": str(message.id)})
+    return {"sent": sent}
 
-                embed_dicts = [embed.to_dict() for embed in message.embeds]
-                matched_record = None
-                matched_index = None
-                for index, embed_data in enumerate(embed_dicts):
-                    matched_record = _find_punishment_record_for_message(
-                        embed_data, message.created_at, expected_records, used_record_ids,
-                    )
-                    if matched_record:
-                        matched_index = index
-                        break
-                if not matched_record or matched_index is None:
-                    continue
 
-                used_record_ids.add(matched_record["id"])
-                channel_result["matched"] += 1
-                result["matched"] += 1
-                changed = _apply_punishment_record_to_embed(embed_dicts[matched_index], matched_record)
-                if changed:
-                    try:
+async def sync_punishment_discord_messages(changes: list[dict]) -> list[dict]:
+    """Edit tracked punishment messages and report per-message outcomes."""
+    outcomes = []
+    for change in changes:
+        channel_id = str(change["channel_id"])
+        message_id = str(change["message_id"])
+        outcome = {
+            "link_id": change["link_id"],
+            "status": "error",
+            "error": None,
+        }
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await bot.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            if not bot.user or message.author.id != bot.user.id:
+                outcome["error"] = "message is not authored by this bot"
+                outcomes.append(outcome)
+                continue
+
+            embed_dicts = [embed.to_dict() for embed in message.embeds]
+            matched = False
+            for embed_data in embed_dicts:
+                if _punishment_embed_signature(embed_data):
+                    matched = True
+                    if apply_punishment_discord_state(embed_data, change["state"]):
                         await message.edit(embeds=[discord.Embed.from_dict(data) for data in embed_dicts])
-                    except discord.HTTPException as exc:
-                        result["errors"].append(f"message {message.id}: {exc.__class__.__name__}")
-                        continue
-                    channel_result["updated"] += 1
-                    result["updated"] += 1
-
-                if expected_ids and used_record_ids >= expected_ids:
                     break
+            if not matched:
+                outcome["error"] = "unexpected punishment embed format"
+                outcomes.append(outcome)
+                continue
+            outcome["status"] = "synced"
+        except discord.NotFound:
+            outcome["status"] = "missing"
+            outcome["error"] = "message or channel not found"
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            outcome["error"] = type(exc).__name__
         except Exception as exc:
-            result["errors"].append(f"channel {channel_id}: {exc.__class__.__name__}")
-        result["channels"].append(channel_result)
-    return result
+            outcome["error"] = type(exc).__name__
+        outcomes.append(outcome)
+    return outcomes
 
 
 async def viewer_get_roles() -> list:
@@ -1573,6 +1505,15 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
             server_name = payload.get("server_name")
             if server_name:
                 await refresh_round_status_embed(server_name)
+            return True, None
+
+        elif action_type == "send_punishment_embed":
+            await send_punishment_embed(
+                int(payload["punishment_id"]),
+                payload.get("embed", {}),
+                payload.get("state_hash"),
+                bool(payload.get("include_ban_channel")),
+            )
             return True, None
 
         elif action_type == "send_embed":

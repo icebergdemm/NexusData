@@ -1020,6 +1020,27 @@ class PlayerPunishment(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class PlayerPunishmentDiscordMessage(Base):
+    """Durable link between one web punishment and one Discord embed."""
+    __tablename__ = "player_punishment_discord_messages"
+    __table_args__ = (
+        UniqueConstraint("punishment_id", "channel_id", name="uq_punishment_discord_channel"),
+        Index("ix_punishment_discord_message", "channel_id", "message_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    punishment_id = Column(Integer, ForeignKey("player_punishments.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel_id = Column(String(50), nullable=False)
+    message_id = Column(String(64), nullable=False)
+    state_hash = Column(String(64), nullable=True)
+    sync_status = Column(String(16), nullable=False, default="synced")  # synced | error | missing
+    last_attempt_at = Column(DateTime, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
 class DispatchMessage(Base):
     """Radio dispatch messages (game terminal ↔ web dispatcher)."""
     __tablename__ = "dispatch_messages"

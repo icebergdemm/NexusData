@@ -350,6 +350,41 @@ def set_bot_config(key: str, value: str) -> None:
         db.close()
 
 
+def record_punishment_discord_message(
+    punishment_id: int,
+    channel_id: int | str,
+    message_id: int | str,
+    state_hash: str | None,
+) -> None:
+    """Persist the Discord message created for one web punishment."""
+    from models import PlayerPunishmentDiscordMessage
+
+    now = datetime.utcnow()
+    db = SessionLocal()
+    try:
+        link = db.query(PlayerPunishmentDiscordMessage).filter(
+            PlayerPunishmentDiscordMessage.punishment_id == int(punishment_id),
+            PlayerPunishmentDiscordMessage.channel_id == str(channel_id),
+        ).first()
+        if link is None:
+            link = PlayerPunishmentDiscordMessage(
+                punishment_id=int(punishment_id),
+                channel_id=str(channel_id),
+                message_id=str(message_id),
+            )
+            db.add(link)
+        else:
+            link.message_id = str(message_id)
+        link.state_hash = state_hash
+        link.sync_status = "synced"
+        link.last_attempt_at = now
+        link.synced_at = now
+        link.last_error = None
+        db.commit()
+    finally:
+        db.close()
+
+
 def get_json_bot_config(key: str, default):
     """Read structured bot settings while keeping the simple key/value config table."""
     import json

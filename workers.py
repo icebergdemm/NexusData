@@ -110,6 +110,129 @@ def task_compensate_playtime() -> dict:
         db.close()
 
 
+def task_sync_punishment_discord() -> dict:
+    """Reconcile linked web punishment names and Discord embeds."""
+    from models import AdminUser, DiscordMember, PlayerPunishment, PlayerPunishmentDiscordMessage
+    from services import (
+        format_admin_issuer_name_from_member,
+        punishment_discord_state,
+        punishment_discord_state_hash,
+    )
+
+    db = SessionLocal()
+    try:
+        punishments = db.query(PlayerPunishment).filter(
+            PlayerPunishment.issued_by_admin_id.isnot(None),
+        ).order_by(PlayerPunishment.id).all()
+        if not punishments:
+            return {"issuer_updated": 0, "discord_synced": 0, "discord_missing": 0, "discord_errors": 0}
+
+        admin_ids = {punishment.issued_by_admin_id for punishment in punishments}
+        admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()
+        discord_ids = {str(admin.discord_id) for admin in admins if admin.discord_id}
+        members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+        members_by_discord_id = {str(member.discord_id): member for member in members}
+        issuer_by_admin_id = {
+            admin.id: format_admin_issuer_name_from_member(
+                admin, members_by_discord_id.get(str(admin.discord_id)),
+            )
+            for admin in admins
+        }
+
+        issuer_updated = 0
+        for punishment in punishments:
+            current_name = issuer_by_admin_id.get(punishment.issued_by_admin_id)
+            if current_name and punishment.issued_by_name != current_name:
+                punishment.issued_by_name = current_name
+                issuer_updated += 1
+        db.commit()
+
+        link_rows = (
+            db.query(PlayerPunishmentDiscordMessage, PlayerPunishment)
+            .join(PlayerPunishment, PlayerPunishment.id == PlayerPunishmentDiscordMessage.punishment_id)
+            .filter(PlayerPunishment.issued_by_admin_id.isnot(None))
+            .all()
+        )
+        changes = []
+        for link, punishment in link_rows:
+            if link.sync_status == "missing":
+                continue
+            issuer_name = issuer_by_admin_id.get(punishment.issued_by_admin_id)
+            if not issuer_name:
+                continue
+            state = punishment_discord_state(punishment, issuer_name)
+            state_hash = punishment_discord_state_hash(state)
+            if link.sync_status == "synced" and link.state_hash == state_hash:
+                continue
+            changes.append({
+                "link_id": link.id,
+                "channel_id": link.channel_id,
+                "message_id": link.message_id,
+                "state": state,
+                "state_hash": state_hash,
+            })
+
+        if not changes:
+            return {"issuer_updated": issuer_updated, "discord_synced": 0, "discord_missing": 0, "discord_errors": 0}
+
+        from discord_bot import bot as discord_bot
+        sync_coro = discord_bot.sync_punishment_discord_messages(changes)
+        try:
+            future = discord_bot.schedule(
+                sync_coro,
+                description="Синхронизация наказаний с Discord",
+            )
+        except RuntimeError as exc:
+            sync_coro.close()
+            logger.warning("Punishment Discord sync deferred: %s", type(exc).__name__)
+            return {"issuer_updated": issuer_updated, "discord_synced": 0, "discord_missing": 0, "discord_errors": len(changes)}
+        try:
+            outcomes = future.result(timeout=90)
+        except TimeoutError as exc:
+            logger.warning("Punishment Discord sync deferred: %s", type(exc).__name__)
+            return {"issuer_updated": issuer_updated, "discord_synced": 0, "discord_missing": 0, "discord_errors": len(changes)}
+
+        links_by_id = {link.id: link for link, _ in link_rows}
+        changes_by_link_id = {change["link_id"]: change for change in changes}
+        now = datetime.utcnow()
+        discord_synced = discord_missing = discord_errors = 0
+        for outcome in outcomes:
+            link = links_by_id.get(outcome.get("link_id"))
+            if not link:
+                continue
+            link.last_attempt_at = now
+            status = outcome.get("status")
+            if status == "synced":
+                change = changes_by_link_id.get(link.id)
+                if not change:
+                    continue
+                link.state_hash = change["state_hash"]
+                link.sync_status = "synced"
+                link.synced_at = now
+                link.last_error = None
+                discord_synced += 1
+            elif status == "missing":
+                link.sync_status = "missing"
+                link.last_error = (outcome.get("error") or "Discord message not found")[:500]
+                discord_missing += 1
+            else:
+                link.sync_status = "error"
+                link.last_error = (outcome.get("error") or "Discord message sync failed")[:500]
+                discord_errors += 1
+        db.commit()
+        return {
+            "issuer_updated": issuer_updated,
+            "discord_synced": discord_synced,
+            "discord_missing": discord_missing,
+            "discord_errors": discord_errors,
+        }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 # 8 часов — порог, выше которого сессия считается битой (зависший logout,
 # сбой часов, незакрытая сессия). Такие сессии искажают play_time.
 _BROKEN_SESSION_THRESHOLD_SECS = 8 * 3600  # 28800
@@ -1397,6 +1520,7 @@ def _start_simple_workers():
         (task_cleanup_deleted_tickets, 30 * 60),
         (task_cleanup_ticket_media_orphans, 6 * 60 * 60),
         (task_sync_auto_server_privileges, 5 * 60),
+        (task_sync_punishment_discord, 10 * 60),
         (task_reconcile_department_discord_roles, 30 * 60),
         (task_cleanup_online_snapshots, 6 * 60 * 60),
         (task_cleanup_server_actions, 6 * 60 * 60),
@@ -1591,6 +1715,14 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.BACKGROUND,
         task_id="auto_server_privileges_sync",
+    )
+
+    scheduler.register_periodic(
+        task_sync_punishment_discord,
+        interval_secs=10 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="punishment_discord_sync",
+        timeout=120,
     )
 
     # Soft, additive-only safety net for site -> Discord department role
