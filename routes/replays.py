@@ -181,8 +181,14 @@ async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(.
 def _write_stream_file(path: str, data: bytes) -> None:
     if os.path.exists(path):
         return
-    with open(path, "xb") as f:
-        f.write(data)
+    try:
+        with open(path, "xb") as f:
+            f.write(data)
+    except FileExistsError:
+        # A retried HTTP request may race with the original request.  Chunks
+        # are addressed by sequence number, so accepting the existing file is
+        # safe and keeps the transport idempotent.
+        return
 
 
 class _DemoTruncated(Exception):
@@ -646,6 +652,15 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
             row.last_items = payload.get("items", [])
             row.last_update_at = now
             db.commit()
+    except Exception:
+        # Live monitoring is auxiliary to replay ingest.  Never turn a DB,
+        # serialization, or schema problem here into a failed binary chunk:
+        # the chunk has already been persisted and can still be assembled.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception("Replay live state update failed for stream %s", stream_id)
     finally:
         db.close()
 
