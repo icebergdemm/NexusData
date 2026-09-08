@@ -30,7 +30,11 @@ _NOTIF_TTL_DAYS = 7
 
 
 def _get_admin_id(request: Request, db: Session) -> int:
-    """Fast admin_id lookup from cookie — no full ORM load."""
+    """Fast cookie lookup, with the shared API-key path for API callers."""
+    if request.url.path.startswith("/api/") and request.headers.get("X-ND-Login-Key") is not None:
+        from routes.admin import load_current_admin
+        return load_current_admin(request, db).id
+
     token = request.cookies.get("admin_token")
     if not token:
         raise HTTPException(status_code=401)

@@ -28,7 +28,7 @@ from models import (
 from rating_constants import ROLES
 from rating_v2_engine import EVENT_WEIGHTS, FORMULA_VERSION, activity_factor, calculate_event_delta, diminishing_factor, rating_from_points
 from security import check_permission
-from .admin import ensure_csrf_or_valid_admin_session
+from .admin import ensure_csrf_or_valid_admin_session, load_current_admin
 
 
 router = APIRouter(tags=["rating-admin-v2"])
@@ -36,26 +36,7 @@ settings = get_settings()
 
 
 def get_current_admin_v2(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    session = db.query(AdminSession).filter(
-        AdminSession.token == token,
-        AdminSession.revoked == 0,
-    ).first()
-    if not session or (session.expires_at is not None and session.expires_at <= datetime.utcnow()):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    admin = (
-        db.query(AdminUser)
-        .options(joinedload(AdminUser.privilege_group))
-        .filter(AdminUser.id == session.admin_id)
-        .first()
-    )
-    if not admin:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    from security import compute_department_site_permissions
-    admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-    return admin
+    return load_current_admin(request, db)
 
 
 def _require_view(admin: AdminUser) -> None:

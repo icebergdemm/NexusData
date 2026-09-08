@@ -173,6 +173,45 @@ def generate_api_key() -> str:
 
 # ── Privilege helpers ────────────────────────────────────────────────────────
 
+PERMISSION_POLICY_SETTING = "permission_policy_version"
+LEGACY_PERMISSION_POLICY = "legacy_additive"
+DENY_PERMISSION_POLICY = "deny_v2"
+
+
+def get_permission_policy_mode(db) -> str:
+    """Return the persisted NexusData permission policy, failing closed to legacy."""
+    from models import AppSetting
+
+    row = db.query(AppSetting).filter(AppSetting.key == PERMISSION_POLICY_SETTING).first()
+    return row.value if row and row.value in (LEGACY_PERMISSION_POLICY, DENY_PERMISSION_POLICY) else LEGACY_PERMISSION_POLICY
+
+
+def _permission_value(raw, page: str, action: str):
+    if not isinstance(raw, dict):
+        return None
+    pages = raw.get("pages", raw)
+    if not isinstance(pages, dict) or not isinstance(pages.get(page), dict):
+        return None
+    value = pages[page].get(action)
+    return value if isinstance(value, bool) else None
+
+
+def _explicit_permission_values(admin, page: str, action: str):
+    individual = getattr(admin, "individual_permissions", None)
+    value = _permission_value(individual, page, action)
+    if value is not None:
+        yield value
+
+    group = getattr(admin, "privilege_group", None)
+    value = _permission_value(getattr(group, "permissions", None), page, action)
+    if value is not None:
+        yield value
+
+    value = _permission_value(getattr(admin, "_department_site_permissions", None), page, action)
+    if value is not None:
+        yield value
+
+
 def check_permission(admin, page: str, action: str = "view") -> bool:
     """Check if admin has a specific page permission.
 
@@ -191,6 +230,13 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
     """
     if admin.is_superuser:
         return True
+
+    if getattr(admin, "_permission_policy_mode", LEGACY_PERMISSION_POLICY) == DENY_PERMISSION_POLICY:
+        explicit = list(_explicit_permission_values(admin, page, action))
+        if False in explicit:
+            return False
+        if True in explicit:
+            return True
 
     if page == "documents" and action in ("create_personal", "view"):
         return True
@@ -330,8 +376,13 @@ def compute_department_site_permissions(db, admin_id: int) -> dict:
                     continue
                 for page, actions in (level.site_permissions or {}).get("pages", {}).items():
                     for action, allowed in (actions or {}).items():
-                        if allowed:
-                            merged.setdefault(page, {})[action] = True
+                        if not isinstance(allowed, bool):
+                            continue
+                        current = merged.setdefault(page, {}).get(action)
+                        if allowed is False or current is None:
+                            merged[page][action] = allowed
+                        elif current is not False:
+                            merged[page][action] = True
             result = {"pages": merged} if merged else {}
 
     with _dept_site_perms_cache_lock:
@@ -372,15 +423,25 @@ def check_department_permission(admin, department, member, page: str, action: st
         return True
     if member is None:
         return False
-    if member.is_head:
-        return True
-
     held = member.held_level_keys or []
+    decisions = []
     for level in department.access_levels:
         if level.key in held:
             pages = (level.permissions or {}).get("pages", {})
-            if page in pages and pages[page].get(action):
-                return True
+            if page in pages and isinstance(pages[page], dict) and isinstance(pages[page].get(action), bool):
+                decisions.append(pages[page][action])
+
+    if getattr(admin, "_permission_policy_mode", LEGACY_PERMISSION_POLICY) == DENY_PERMISSION_POLICY:
+        if False in decisions:
+            return False
+        if True in decisions:
+            return True
+
+    if member.is_head:
+        return True
+
+    if True in decisions:
+        return True
     return False
 
 

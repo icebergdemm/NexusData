@@ -33,24 +33,8 @@ MODULE_KEYS = ["documentation", "roster", "rating", "orders", "test_server", "ch
 # ── Auth (mirrors routes/documents.py's self-contained dependency) ──────────
 
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            admin = (
-                db.query(AdminUser)
-                .options(joinedload(AdminUser.privilege_group))
-                .filter(AdminUser.id == session.admin_id)
-                .first()
-            )
-            if admin:
-                from security import compute_department_site_permissions
-                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    return load_current_admin(request, db)
 
 
 def require_departments_page(admin: AdminUser, action: str = "view"):
@@ -708,7 +692,10 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
             if page not in PERMISSION_REGISTRY or not isinstance(actions, dict):
                 continue
             valid_actions = {a["key"] for a in PERMISSION_REGISTRY[page]["actions"]}
-            cleaned[page] = {k: True for k, v in actions.items() if k in valid_actions and v}
+            cleaned[page] = {
+                k: v for k, v in actions.items()
+                if k in valid_actions and isinstance(v, bool)
+            }
         if not current_admin.is_superuser:
             if not is_head_or_deputy_or_superuser(current_admin, member):
                 raise HTTPException(status_code=403, detail="Только суперпользователь может выдавать права сайта")

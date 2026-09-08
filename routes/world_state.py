@@ -507,31 +507,8 @@ def _try_queue_ai_world_briefing(db: Session, row: WorldRound) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _get_admin(request: Request, db: Session) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            from sqlalchemy.orm import joinedload
-            admin = (
-                db.query(AdminUser)
-                .options(joinedload(AdminUser.privilege_group))
-                .filter(AdminUser.id == session.admin_id)
-                .first()
-            )
-            if admin:
-                # check_permission's "hybrid" tier (site-wide grants attached
-                # to a department access level, e.g. how a non-superuser most
-                # likely got "Обзор мира" access) reads this attribute — it
-                # was missing here, so that grant path silently never worked
-                # for this page even though it works everywhere else (every
-                # other router's get_current_admin sets it). Superusers were
-                # unaffected since they short-circuit check_permission
-                # entirely, which is why this only showed up for regular users.
-                from security import compute_department_site_permissions
-                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    return load_current_admin(request, db)
 
 
 def _require_world_state(request: Request, db: Session) -> AdminUser:

@@ -29,16 +29,8 @@ router = APIRouter()
 
 
 def _get_admin(request: Request, db: Session) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            from sqlalchemy.orm import joinedload
-            admin = db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(AdminUser.id == session.admin_id).first()
-            if admin:
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    return load_current_admin(request, db)
 
 
 async def _call_bot(coro, timeout: float = 12.0):

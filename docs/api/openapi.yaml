@@ -1,0 +1,110 @@
+openapi: 3.0.3
+info:
+  title: NexusData Admin API
+  version: 1.0.0
+  description: |
+    API для автоматизаций NexusData. Аутентификация через slogin-ключ
+    связанного администратора. Ключ не повышает права аккаунта.
+servers:
+  - url: /
+security:
+  - NexusDataLoginKey: []
+paths:
+  /api/v1/admin/users:
+    get:
+      summary: Список администраторов с кратким effective summary
+      responses:
+        '200': { description: OK }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Нет права admin:view }
+  /api/v1/admin/users/{admin_id}/authorization:
+    get:
+      summary: Полное дерево эффективных прав администратора
+      parameters:
+        - { name: admin_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Effective matrix, sources, departments and resource ACLs }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Нет права admin:view }
+        '404': { description: Администратор не найден }
+  /api/v1/admin/permission-policy:
+    get:
+      summary: Текущий режим permission policy
+      responses:
+        '200': { description: OK }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Только superuser }
+  /api/v1/admin/permission-policy/impact:
+    get:
+      summary: Dry-run перехода между режимами прав
+      parameters:
+        - name: target
+          in: query
+          schema: { type: string, enum: [deny_v2, legacy_additive], default: deny_v2 }
+      responses:
+        '200': { description: Snapshot digest and affected administrators }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Только superuser }
+        '422': { description: Недопустимая политика }
+  /api/v1/admin/permission-policy/apply:
+    post:
+      summary: Включить deny_v2 после проверки dry-run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyApplyRequest'
+            example:
+              expected_digest: '<digest из impact>'
+              confirmation: DENY_POLICY_V2
+      responses:
+        '200': { description: Policy enabled and audit event written }
+        '400': { description: Неверное подтверждение }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Только superuser }
+        '409': { description: Snapshot устарел }
+  /api/v1/admin/permission-policy/rollback:
+    post:
+      summary: Вернуть legacy_additive через API
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyRollbackRequest'
+            example:
+              expected_digest: '<digest из impact?target=legacy_additive>'
+              confirmation: RESTORE_LEGACY_PERMISSION_POLICY
+      responses:
+        '200': { description: Legacy policy enabled and audit event written }
+        '400': { description: Неверное подтверждение }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Только superuser }
+        '409': { description: Snapshot устарел }
+components:
+  securitySchemes:
+    NexusDataLoginKey:
+      type: apiKey
+      in: header
+      name: X-ND-Login-Key
+      description: Активный slogin-ключ. Не передавать в URL и не коммитить.
+  schemas:
+    PolicyApplyRequest:
+      type: object
+      required: [expected_digest, confirmation]
+      properties:
+        expected_digest: { type: string, minLength: 64, maxLength: 64 }
+        confirmation: { type: string, enum: [DENY_POLICY_V2] }
+    PolicyRollbackRequest:
+      type: object
+      required: [expected_digest, confirmation]
+      properties:
+        expected_digest: { type: string, minLength: 64, maxLength: 64 }
+        confirmation: { type: string, enum: [RESTORE_LEGACY_PERMISSION_POLICY] }
+  responses:
+    RateLimited:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          schema: { type: integer }

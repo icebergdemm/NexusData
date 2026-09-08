@@ -298,22 +298,8 @@ def _build_spawn_analysis(row: MonsterSpawnControl) -> dict:
 
 
 def _current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token,
-            AdminSession.revoked == 0,
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > datetime.utcnow()):
-            admin = db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(
-                AdminUser.id == session.admin_id
-            ).first()
-            if admin:
-                from security import compute_department_site_permissions
-
-                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    return load_current_admin(request, db)
 
 
 def _require(admin: AdminUser, action: str) -> None:

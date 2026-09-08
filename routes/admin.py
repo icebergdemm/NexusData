@@ -9,7 +9,14 @@ import threading
 import time
 from datetime import datetime, timedelta
 from database import get_db
-from security import check_permission, check_moderation_action_permission, csrf_token_from_request
+from security import (
+    check_permission,
+    check_moderation_action_permission,
+    csrf_token_from_request,
+    compute_department_site_permissions,
+    get_permission_policy_mode,
+)
+from services_login_keys import resolve_api_login_key
 from services import (
     AdminService, DiscordAuthService, PlayerService,
     PlayerKillService, PlayerRoleActionService, PlayerIPService,
@@ -24,7 +31,7 @@ from services import (
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
     LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
-    PlayerPunishment,
+    PlayerPunishment, AppSetting,
 )
 from config import get_settings, update_env_file
 from utils import is_bogon_ip
@@ -58,27 +65,53 @@ def pop_flashes(request: Request):
     return flashes
 
 
-def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    """Get current admin strictly from server-side admin session token."""
+def load_current_admin(request: Request, db: Session) -> AdminUser:
+    """Load the current admin from a cookie session or API login-key context."""
+    login_key = request.headers.get("X-ND-Login-Key") if request.url.path.startswith("/api/") else None
+    if login_key is not None:
+        if getattr(request.state, "nd_auth_type", None) == "invalid_login_key":
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        admin_id = getattr(request.state, "nd_admin_id", None)
+        if admin_id is None:
+            identity = resolve_api_login_key(db, login_key)
+            admin_id = identity[1] if identity else None
+        if admin_id is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        admin = (
+            db.query(AdminUser)
+            .options(joinedload(AdminUser.privilege_group))
+            .filter(AdminUser.id == admin_id)
+            .first()
+        )
+        if not admin or getattr(admin, "is_deleted", 0) == 1:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        admin._auth_type = "login_key"
+        request.state.nd_auth_type = "login_key"
+    else:
+        admin = None
     token = request.cookies.get("admin_token")
     now = datetime.utcnow()
-    if token:
+    if admin is None and token:
         session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
         if session and (session.expires_at is None or session.expires_at > now):
-            from sqlalchemy.orm import joinedload
             admin = (
                 db.query(AdminUser)
                 .options(joinedload(AdminUser.privilege_group))
                 .filter(AdminUser.id == session.admin_id)
                 .first()
             )
-            if admin:
-                request.session["username"] = admin.discord_username
-                from security import compute_department_site_permissions
-                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-                return admin
+    if admin:
+        request.session["username"] = admin.discord_username
+        admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
+        admin._permission_policy_mode = get_permission_policy_mode(db)
+        return admin
 
     raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
+    """Get current admin from the server-side session or X-ND-Login-Key."""
+    return load_current_admin(request, db)
 
 
 @router.get("/api/v1/admin/permissions/registry")
@@ -199,6 +232,8 @@ async def api_me_set_forced_nickname(request: Request, db: Session = Depends(get
 
 async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
     """Validate the CSRF header used by JSON clients or the legacy form field."""
+    if request.url.path.startswith("/api/") and getattr(request.state, "nd_auth_type", None) == "login_key":
+        return
     csrf_token = csrf_token_from_request(request)
     if not csrf_token:
         form = await request.form()
@@ -725,14 +760,126 @@ async def api_admin_users_list(db: Session = Depends(get_db), current_admin: Adm
     linked_players = db.query(PlayerData).filter(PlayerData.linked_admin_id.in_([a.id for a in admins])).all()
     linked_by_admin_id = {p.linked_admin_id: p for p in linked_players}
 
+    from permission_audit import permission_summary
+    admins_data = []
+    for a in admins:
+        item = _serialize_admin_user(a, linked_by_admin_id.get(a.id))
+        item["permission_summary"] = permission_summary(db, a)
+        admins_data.append(item)
+
     return {
-        "admins": [_serialize_admin_user(a, linked_by_admin_id.get(a.id)) for a in admins],
+        "admins": admins_data,
         "roles": list(settings.roles_mapping.keys()),
         "groups": groups_data,
         "can_edit": check_permission(current_admin, "admin", "edit"),
         "can_delete": check_permission(current_admin, "admin", "delete"),
         "is_superuser": current_admin.is_superuser,
     }
+
+
+@router.get("/api/v1/admin/users/{admin_id}/authorization")
+async def api_admin_authorization_trace(
+    admin_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "admin", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    from permission_audit import build_authorization_trace
+
+    trace = build_authorization_trace(db, admin_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Администратор не найден")
+    return trace
+
+
+def _policy_impact(db: Session, target_policy: str):
+    from permission_audit import build_policy_impact
+    return build_policy_impact(db, target_policy)
+
+
+@router.get("/api/v1/admin/permission-policy")
+async def api_permission_policy_status(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    from security import get_permission_policy_mode
+
+    last_apply = (
+        db.query(AdminActionLog)
+        .filter(AdminActionLog.action.in_(("permission_policy_apply", "permission_policy_rollback")))
+        .order_by(AdminActionLog.created_at.desc(), AdminActionLog.id.desc())
+        .first()
+    )
+    return {
+        "policy": get_permission_policy_mode(db),
+        "last_change": ({
+            "action": last_apply.action,
+            "admin_id": last_apply.admin_id,
+            "created_at": last_apply.created_at.isoformat() if last_apply.created_at else None,
+            "details": last_apply.details,
+        } if last_apply else None),
+    }
+
+
+@router.get("/api/v1/admin/permission-policy/impact")
+async def api_permission_policy_impact(
+    target: str = Query("deny_v2"),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    from security import DENY_PERMISSION_POLICY, LEGACY_PERMISSION_POLICY
+
+    if target not in (DENY_PERMISSION_POLICY, LEGACY_PERMISSION_POLICY):
+        raise HTTPException(status_code=422, detail="Недопустимая целевая политика")
+    return _policy_impact(db, target)
+
+
+async def _apply_permission_policy(request: Request, db: Session, current_admin: AdminUser, target: str, confirmation: str):
+    _require_superuser(current_admin)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json() if await request.body() else {}
+    expected_digest = body.get("expected_digest")
+    if body.get("confirmation") != confirmation:
+        raise HTTPException(status_code=400, detail="Неверное подтверждение операции")
+    impact = _policy_impact(db, target)
+    if expected_digest != impact["digest"]:
+        raise HTTPException(status_code=409, detail="Снимок прав устарел — повторите impact")
+
+    row = db.query(AppSetting).filter(AppSetting.key == "permission_policy_version").first()
+    if row is None:
+        row = AppSetting(key="permission_policy_version")
+        db.add(row)
+    row.value = target
+    db.add(AdminActionLog(
+        admin_id=current_admin.id,
+        action="permission_policy_apply" if target == "deny_v2" else "permission_policy_rollback",
+        details={"policy": target, "digest": impact["digest"], "changed_permission_count": impact["changed_permission_count"]},
+    ))
+    db.commit()
+    return {"status": "ok", "policy": target, "impact": impact}
+
+
+@router.post("/api/v1/admin/permission-policy/apply")
+async def api_permission_policy_apply(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    from security import DENY_PERMISSION_POLICY
+    return await _apply_permission_policy(request, db, current_admin, DENY_PERMISSION_POLICY, "DENY_POLICY_V2")
+
+
+@router.post("/api/v1/admin/permission-policy/rollback")
+async def api_permission_policy_rollback(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    from security import LEGACY_PERMISSION_POLICY
+    return await _apply_permission_policy(request, db, current_admin, LEGACY_PERMISSION_POLICY, "RESTORE_LEGACY_PERMISSION_POLICY")
 
 
 @router.post("/api/v1/admin/users")

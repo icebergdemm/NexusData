@@ -17,6 +17,19 @@ _MAX_TRACKED_IPS = 5000
 # Пути, которые обязаны отвечать быстро и без лишней логики поверх —
 # healthcheck'и (Pterodactyl/мониторинг) и статика/сборка SPA.
 _EXEMPT_PREFIXES = ("/healthz", "/static", "/admin/assets", "/docs", "/redoc", "/openapi.json")
+LOGIN_KEY_RATE_MULTIPLIER = 4
+
+
+def resolve_api_login_key(raw_key):
+    """Resolve a NexusData login key for middleware identity/rate data."""
+    from database import SessionLocal
+    from services_login_keys import resolve_api_login_key as _resolve
+
+    db = SessionLocal()
+    try:
+        return _resolve(db, raw_key)
+    finally:
+        db.close()
 
 
 def client_ip(request: Request) -> str:
@@ -29,7 +42,7 @@ def client_ip(request: Request) -> str:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory rate limiter by IP address with periodic cleanup."""
+    """Simple in-memory limiter by IP or validated admin login key."""
 
     def __init__(self, app, requests_per_window: int, window_seconds: int):
         super().__init__(app)
@@ -56,6 +69,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not settings.rate_limit_enabled:
             return await call_next(request)
 
+        login_key_id = None
+        login_key_header_present = False
+        if request.url.path.startswith("/api/"):
+            raw_login_key = request.headers.get("X-ND-Login-Key")
+            if raw_login_key is not None:
+                login_key_header_present = True
+                identity = resolve_api_login_key(raw_login_key)
+                if identity:
+                    login_key_id, admin_id = identity
+                    request.state.nd_auth_type = "login_key"
+                    request.state.nd_login_key_id = login_key_id
+                    request.state.nd_admin_id = admin_id
+                else:
+                    request.state.nd_auth_type = "invalid_login_key"
+
         # Игровой сервер (плагин) шлёт X-API-Key на каждый вызов — это уже
         # авторизованный, доверенный источник с потенциально куда более
         # частым легитимным трафиком (события с десятков одновременных
@@ -67,26 +95,31 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # это IP-лимитом.
         import secrets as _secrets
         provided_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-        if provided_key and (
+        if not login_key_header_present and provided_key and (
             (settings.api_key and _secrets.compare_digest(str(provided_key), str(settings.api_key)))
             or (settings.client_api_key and _secrets.compare_digest(str(provided_key), str(settings.client_api_key)))
         ):
             return await call_next(request)
 
-        ip = client_ip(request)
+        if login_key_id is not None:
+            bucket = f"login-key:{login_key_id}"
+            limit = self.requests_per_window * LOGIN_KEY_RATE_MULTIPLIER
+        else:
+            bucket = f"ip:{client_ip(request)}"
+            limit = self.requests_per_window
         now = time()
 
         # Periodic cleanup of stale IPs to prevent memory leak
         if now - self._last_cleanup > self._cleanup_interval or len(self.request_history) > _MAX_TRACKED_IPS:
             self._cleanup_stale_ips(now)
 
-        self.request_history[ip] = [
-            req_time for req_time in self.request_history[ip]
+        self.request_history[bucket] = [
+            req_time for req_time in self.request_history[bucket]
             if now - req_time < self.window_seconds
         ]
 
-        if len(self.request_history[ip]) >= self.requests_per_window:
-            logger.warning(f"Rate limit exceeded for IP: {ip}")
+        if len(self.request_history[bucket]) >= limit:
+            logger.warning("Rate limit exceeded for %s", bucket)
             # ВОЗВРАЩАЕМ ответ, а не raise HTTPException. Внутри
             # BaseHTTPMiddleware исключение уже некому превратить в ответ:
             # ExceptionMiddleware, который делает из HTTPException аккуратный
@@ -101,7 +134,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # идут прямо в event loop и держат его.
             # InjectionGuardMiddleware ниже в этом же файле всегда делал
             # правильно — возвращал PlainTextResponse.
-            oldest = self.request_history[ip][0]
+            oldest = self.request_history[bucket][0]
             retry_after = max(1, int(self.window_seconds - (now - oldest)) + 1)
             return JSONResponse(
                 # Форма тела ровно та же, что раньше отдавал бы FastAPI из
@@ -111,7 +144,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(retry_after)},
             )
 
-        self.request_history[ip].append(now)
+        self.request_history[bucket].append(now)
 
         return await call_next(request)
 

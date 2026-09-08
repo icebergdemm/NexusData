@@ -50,29 +50,13 @@ templates.env.globals.update(check_permission=check_permission)
 # ── Reusable helpers (copied from admin.py pattern) ──────────────────────────
 
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            from sqlalchemy.orm import joinedload
-            admin = (
-                db.query(AdminUser)
-                .options(joinedload(AdminUser.privilege_group))
-                .filter(AdminUser.id == session.admin_id)
-                .first()
-            )
-            if admin:
-                request.session["username"] = admin.discord_username
-                from security import compute_department_site_permissions
-                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    return load_current_admin(request, db)
 
 
 async def ensure_csrf(request: Request, db: Session):
+    if request.url.path.startswith("/api/") and getattr(request.state, "nd_auth_type", None) == "login_key":
+        return
     """Validate the CSRF header used by JSON clients or the legacy form field."""
     csrf_token = csrf_token_from_request(request)
     if not csrf_token:

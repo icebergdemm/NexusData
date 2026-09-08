@@ -29,7 +29,7 @@ import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api, ApiError } from "@/lib/api"
 import { useCurrentAdmin, usePermissionRegistry } from "@/lib/auth"
-import { PermissionMatrixEditor, type PermissionValue } from "@/pages/users/PermissionMatrixEditor"
+import { PermissionMatrixEditor, TriStatePermissionButton, cyclePermissionState, type PermissionValue } from "@/pages/users/PermissionMatrixEditor"
 import {
   departmentsApi, OPTIONAL_MODULE_KEYS, MODULE_KEYS, MODULE_LABELS,
   type DepartmentDetail, type DepartmentAccessLevel, type DepartmentMemberRow, type DepartmentModule,
@@ -421,7 +421,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
 }) {
   const queryClient = useQueryClient()
   const { data: registryData } = usePermissionRegistry()
-  const [perms, setPerms] = useState<Record<string, { view: boolean; edit: boolean }>>({})
+  const [perms, setPerms] = useState<PermissionValue>({})
   const [sitePerms, setSitePerms] = useState<PermissionValue>({})
   const [kitBindingKey, setKitBindingKey] = useState<string>("none")
   const [serverPrivGroupId, setServerPrivGroupId] = useState<number | null>(null)
@@ -442,8 +442,14 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
   useEffect(() => {
     if (!open) return
     const pages = level.permissions?.pages ?? {}
-    const next: Record<string, { view: boolean; edit: boolean }> = {}
-    for (const mod of MODULE_KEYS) next[mod] = { view: !!pages[mod]?.view, edit: !!pages[mod]?.edit }
+    const next: PermissionValue = {}
+    for (const mod of MODULE_KEYS) {
+      const modulePages: Record<string, boolean> = {}
+      for (const action of ["view", "edit"]) {
+        if (typeof pages[mod]?.[action] === "boolean") modulePages[action] = pages[mod][action]
+      }
+      if (Object.keys(modulePages).length > 0) next[mod] = modulePages
+    }
     setPerms(next)
     setSitePerms((level.site_permissions?.pages as PermissionValue) ?? {})
     setKitBindingKey(level.kit_binding ? `${level.kit_binding.job_id}::${level.kit_binding.kit_level}` : "none")
@@ -454,6 +460,19 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
   const isHeadOrDeputy = level.kind === "head" || level.kind === "deputy_head"
   const canManageBind = department.can_manage_server_privilege_binding || isSuperuser
   const canEditSite = isSuperuser || department.is_head || department.is_deputy_head
+
+  const toggleModulePermission = (module: string, action: string) => {
+    setPerms((current) => {
+      const nextState = cyclePermissionState(current[module]?.[action])
+      const nextModule = { ...current[module] }
+      if (nextState === undefined) delete nextModule[action]
+      else nextModule[action] = nextState
+      const next = { ...current }
+      if (Object.keys(nextModule).length === 0) delete next[module]
+      else next[module] = nextModule
+      return next
+    })
+  }
 
   const updateMutation = useMutation({
     mutationFn: () => {
@@ -495,10 +514,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
               <span>{MODULE_LABELS[mod]}</span>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Checkbox
-                    checked={perms[mod]?.view ?? false}
-                    onCheckedChange={(c) => setPerms((p) => ({ ...p, [mod]: { view: c === true, edit: p[mod]?.edit ?? false } }))}
-                  /> Просмотр
+                  <TriStatePermissionButton value={perms[mod]?.view} onChange={() => toggleModulePermission(mod, "view")} label={`${MODULE_LABELS[mod]}: просмотр`} /> Просмотр
                 </label>
                 {mod === "news" ? (
                   <span className="text-xs text-muted-foreground/60" title="Публикация новостей доступна только главе отдела или суперпользователю">
@@ -506,10 +522,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
                   </span>
                 ) : (
                   <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Checkbox
-                      checked={perms[mod]?.edit ?? false}
-                      onCheckedChange={(c) => setPerms((p) => ({ ...p, [mod]: { view: p[mod]?.view ?? false, edit: c === true } }))}
-                    /> Изменение
+                    <TriStatePermissionButton value={perms[mod]?.edit} onChange={() => toggleModulePermission(mod, "edit")} label={`${MODULE_LABELS[mod]}: изменение`} /> Изменение
                   </label>
                 )}
               </div>
@@ -529,7 +542,7 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
               Дополнительные права на весь сайт {isSuperuser ? "(суперпользователь)" : "(только те, что есть у вас)"}
             </div>
             <p className="text-xs text-muted-foreground">
-              Выдаются в ДОПОЛНЕНИЕ к правам из «Пользователи ND» всем, кто держит этот уровень доступа. Вы можете выдать только те функции, которые есть у вас самого и только если у вас есть право изменять уровни доступа.
+              Применяются ко всем, кто держит этот уровень доступа. «—» не задаёт правило, ✓ разрешает, × запрещает; в режиме deny_v2 любой явный запрет побеждает разрешение.
             </p>
             <PermissionMatrixEditor registry={registryData.pages} value={sitePerms} onChange={setSitePerms} />
           </div>
@@ -1135,7 +1148,7 @@ export function DepartmentDetailPage() {
                   try { await departmentsApi.accessLevels.reorder(Number(data.id), ids); queryClient.invalidateQueries({queryKey:["department",Number(data.id)]}) } catch(err:any){ toast.error(err.message)}
                 }
                 const renderRow = (l: DepartmentAccessLevel, manualOnly: boolean) => (
-                  <div key={l.id} draggable={canManage} onDragStart={(e)=>handleDragStart(e,l.id)} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e,l.id)}
+                  <div id={`level-${l.id}`} key={l.id} draggable={canManage} onDragStart={(e)=>handleDragStart(e,l.id)} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e,l.id)}
                     className={`group flex flex-wrap items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-sm transition-all duration-200 hover:shadow-sm hover:border-primary/30 ${manualOnly ? "border-dashed border-warning/30 bg-warning/5" : ""} ${canManage ? "cursor-grab active:cursor-grabbing" : ""}`}>
                     <span className="flex items-center gap-1.5 flex-1 min-w-0">
                       {canManage && <GripVertical className="size-3.5 shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />}

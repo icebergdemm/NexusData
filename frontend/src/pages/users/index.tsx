@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -15,7 +15,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-import { UserCog, ShieldCheck, KeyRound } from "lucide-react"
+import { UserCog, ShieldCheck, KeyRound, AlertTriangle } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { api } from "@/lib/api"
@@ -29,6 +29,11 @@ interface AdminUserRow {
   is_superuser: boolean; privilege_group_id: number | null; privilege_group_name: string | null
   individual_permissions: { pages?: PermissionValue } | PermissionValue | null
   linked_player: LinkedPlayer | null
+  permission_summary: {
+    department_count: number
+    conflict_count: number
+    effective: Record<string, boolean>
+  }
 }
 interface PrivilegeGroup {
   id: number; name: string; description: string | null
@@ -38,6 +43,21 @@ interface PrivilegeGroup {
 interface UsersResponse {
   admins: AdminUserRow[]; roles: string[]; groups: PrivilegeGroup[]
   can_edit: boolean; can_delete: boolean; is_superuser: boolean
+}
+
+interface PermissionDecision {
+  value: boolean
+  state: "allow" | "deny" | "unset"
+  sources: Array<{ kind: string; value: boolean; [key: string]: unknown }>
+}
+interface AuthorizationTrace {
+  admin: { id: number; discord_id: string; discord_username: string | null; role: string; is_superuser: boolean; policy_mode: string }
+  effective: { pages: Record<string, Record<string, PermissionDecision>> }
+  sources: { individual: unknown; group: { id: number; name: string; permissions: unknown } | null; department_site: unknown[] }
+  departments: Array<{ id: number; name: string; held_level_keys: string[]; is_head: boolean; is_deputy_head: boolean; is_auto: boolean; levels: Array<{ id: number; key: string; name: string; held: boolean }> }>
+  linked_player: { player_id: number; name: string } | null
+  login_keys: Array<{ id: number; prefix: string; label: string | null; revoked: boolean; expires_at: string | null; use_count: number }>
+  resource_acl: { documents: unknown[]; task_boards: unknown[] }
 }
 
 function unwrapPages(raw: { pages?: PermissionValue } | PermissionValue | null | undefined): PermissionValue {
@@ -60,6 +80,7 @@ export function UsersPage() {
   const [indivTarget, setIndivTarget] = useState<AdminUserRow | null>(null)
   const [indivPerms, setIndivPerms] = useState<PermissionValue>({})
   const [search, setSearch] = useState("")
+  const [selectedAdminId, setSelectedAdminId] = useState<number | null>(null)
   const queryClient = useQueryClient()
 
   const { data } = useQuery({ queryKey: ["admin-users"], queryFn: () => api.get<UsersResponse>("/api/v1/admin/users") })
@@ -75,6 +96,21 @@ export function UsersPage() {
       (a.role ?? "").toLowerCase().includes(q) ||
       (a.is_superuser ? "суперпользователь superuser" : "").includes(q)
     )
+  })
+
+  useEffect(() => {
+    if (!filteredAdmins.length) {
+      setSelectedAdminId(null)
+    } else if (!filteredAdmins.some((admin) => admin.id === selectedAdminId)) {
+      setSelectedAdminId(filteredAdmins[0].id)
+    }
+  }, [filteredAdmins, selectedAdminId])
+
+  const selectedAdmin = (data?.admins ?? []).find((admin) => admin.id === selectedAdminId) ?? null
+  const { data: authorization } = useQuery({
+    queryKey: ["admin-authorization", selectedAdminId],
+    queryFn: () => api.get<AuthorizationTrace>(`/api/v1/admin/users/${selectedAdminId}/authorization`),
+    enabled: selectedAdminId !== null,
   })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["admin-users"] })
@@ -175,15 +211,17 @@ export function UsersPage() {
             <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по имени, Discord ID, группе, игроку..." className="max-w-sm" />
             {search && <span className="text-xs text-muted-foreground">Найдено {filteredAdmins.length} из {data?.admins.length ?? 0}</span>}
           </div>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
           <Card>
             <CardContent>
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow><TableHead>Админ</TableHead><TableHead>Игрок</TableHead><TableHead>Группа прав</TableHead><TableHead>Индивидуальные права</TableHead><TableHead>Суперпользователь</TableHead>{me?.is_superuser && <TableHead>Вход по ключу</TableHead>}{data?.can_delete && <TableHead />}</TableRow>
+                  <TableRow><TableHead>Админ</TableHead><TableHead>Игрок</TableHead><TableHead>Группа</TableHead><TableHead>Департаменты</TableHead><TableHead>Конфликты</TableHead><TableHead>Итог</TableHead><TableHead>Индивидуальные</TableHead><TableHead>Superuser</TableHead>{me?.is_superuser && <TableHead>Ключи</TableHead>}{data?.can_delete && <TableHead />}</TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredAdmins.map((a) => (
-                    <TableRow key={a.id}>
+                    <TableRow key={a.id} onClick={() => setSelectedAdminId(a.id)} className={selectedAdminId === a.id ? "bg-primary/10" : "cursor-pointer"}>
                       <TableCell>
                         <div className="font-medium">{a.discord_username}</div>
                         <div className="font-mono text-xs text-muted-foreground">{a.discord_id}</div>
@@ -211,6 +249,19 @@ export function UsersPage() {
                             </SelectContent>
                           </Select>
                         ) : (a.privilege_group_name ?? "-")}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{a.permission_summary.department_count}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {a.permission_summary.conflict_count > 0 ? (
+                          <Badge variant="destructive" className="gap-1"><AlertTriangle className="size-3" />{a.permission_summary.conflict_count}</Badge>
+                        ) : <Badge variant="secondary">0</Badge>}
+                      </TableCell>
+                      <TableCell className="space-x-1">
+                        {Object.entries(a.permission_summary.effective).map(([page, allowed]) => (
+                          <Badge key={page} variant={allowed ? "default" : "secondary"} className="text-[10px]">{page}:{allowed ? "да" : "нет"}</Badge>
+                        ))}
                       </TableCell>
                       <TableCell>
                         {(() => {
@@ -250,8 +301,18 @@ export function UsersPage() {
                   ))}
                 </TableBody>
               </Table>
+              </div>
             </CardContent>
           </Card>
+          <AuthorizationInspector
+            admin={selectedAdmin}
+            trace={authorization}
+            registry={registryData?.pages}
+            canEdit={!!data?.can_edit}
+            onEditIndividual={selectedAdmin ? () => openIndividualPerms(selectedAdmin) : undefined}
+            onOpenKeys={selectedAdmin ? () => setKeysTarget({ id: selectedAdmin.id, name: selectedAdmin.discord_username ?? selectedAdmin.discord_id }) : undefined}
+          />
+          </div>
         </div>
       )}
 
@@ -291,9 +352,9 @@ export function UsersPage() {
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <div className="flex flex-wrap gap-1">
-                    {Object.entries(unwrapPages(g.permissions)).filter(([, v]) => Object.values(v).some(Boolean)).map(([page, v]) => (
+                    {Object.entries(unwrapPages(g.permissions)).filter(([, v]) => Object.values(v).some((state) => state !== undefined)).map(([page, v]) => (
                       <Badge key={page} variant="outline" className="text-xs">
-                        {page}: {Object.entries(v).filter(([, on]) => on).map(([action]) => action).join("/")}
+                        {page}: {Object.entries(v).filter(([, state]) => state !== undefined).map(([action, state]) => `${action}:${state ? "да" : "нет"}`).join("/")}
                       </Badge>
                     ))}
                   </div>
@@ -315,8 +376,8 @@ export function UsersPage() {
           <DialogHeader>
             <DialogTitle>Индивидуальные права — {indivTarget?.discord_username ?? indivTarget?.discord_id}</DialogTitle>
             <DialogDescription>
-              Переопределяют права группы для этого конкретного администратора. Отмеченное здесь действует поверх группы;
-              оставьте всё пустым, чтобы использовать только групповые права.
+              Здесь можно явно разрешить или запретить действие для этого администратора.
+              «—» оставляет решение другим источникам; в режиме deny_v2 любой явный запрет побеждает разрешение.
             </DialogDescription>
           </DialogHeader>
           {registryData && (
@@ -338,5 +399,108 @@ export function UsersPage() {
         />
       )}
     </div>
+  )
+}
+
+function AuthorizationInspector({ admin, trace, registry, canEdit, onEditIndividual, onOpenKeys }: {
+  admin: AdminUserRow | null
+  trace: AuthorizationTrace | undefined
+  registry: Record<string, { label: string; actions: Array<{ key: string; label: string }> }> | undefined
+  canEdit: boolean
+  onEditIndividual?: () => void
+  onOpenKeys?: () => void
+}) {
+  if (!admin) {
+    return <Card><CardContent className="flex min-h-64 items-center justify-center text-sm text-muted-foreground">Выберите администратора</CardContent></Card>
+  }
+  if (!trace) {
+    return <Card><CardContent className="min-h-64 p-4 text-sm text-muted-foreground">Загрузка полного дерева прав…</CardContent></Card>
+  }
+
+  const sourceLabel = (source: { kind: string; [key: string]: unknown }) => {
+    if (source.kind === "individual") return "Индивидуально"
+    if (source.kind === "group") return `Группа: ${String(source.group_name ?? "без названия")}`
+    if (source.kind === "department_access_level") return `${String(source.department_name ?? "Департамент")} → ${String(source.level_name ?? source.level_key)}`
+    if (source.kind === "department_site") return "Правило отдела"
+    return "Базовое правило"
+  }
+
+  const conflictCount = Object.values(trace.effective.pages).reduce(
+    (total, actions) => total + Object.values(actions).filter((decision) => {
+      const values = new Set(decision.sources.map((source) => source.value))
+      return values.has(true) && values.has(false)
+    }).length,
+    0,
+  )
+
+  return (
+    <Card className="min-w-0">
+      <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
+        <div>
+          <CardTitle className="text-base">Полный аудит прав</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">{admin.discord_username ?? admin.discord_id} · режим {trace.admin.policy_mode}</p>
+        </div>
+        <div className="flex gap-1.5">
+          {canEdit && <Button size="sm" variant="outline" onClick={onEditIndividual}><ShieldCheck className="mr-1 size-3.5" />Индивидуальные</Button>}
+          {onOpenKeys && <Button size="sm" variant="outline" onClick={onOpenKeys}><KeyRound className="mr-1 size-3.5" />Ключи</Button>}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-2">
+          <div><span className="text-muted-foreground">Группа:</span> {trace.sources.group?.name ?? "Без группы"}</div>
+          <div><span className="text-muted-foreground">Игрок:</span> {trace.linked_player ? <Link className="text-primary hover:underline" to={`/players/${trace.linked_player.player_id}`}>{trace.linked_player.name}</Link> : "не привязан"}</div>
+          <div><span className="text-muted-foreground">Департаментов:</span> {trace.departments.length}</div>
+          <div><span className="text-muted-foreground">Login keys:</span> {trace.login_keys.length}</div>
+        </div>
+
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="font-medium">Effective page/action permissions</h3>
+            <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground">
+              <span>✓ разрешено · × запрещено · — не задано</span>
+              {conflictCount > 0 && <span className="flex items-center gap-1 text-destructive"><AlertTriangle className="size-3" />Конфликт источников: {conflictCount}</span>}
+            </div>
+          </div>
+          <div className="max-h-[48vh] space-y-1.5 overflow-y-auto pr-1">
+            {Object.entries(trace.effective.pages).map(([page, actions]) => (
+              <details key={page} className="rounded-md border px-3 py-2">
+                <summary className="cursor-pointer list-none font-medium">{registry?.[page]?.label ?? page}</summary>
+                <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                  {Object.entries(actions).map(([action, decision]) => (
+                    <div key={action} className="rounded border bg-muted/20 px-2 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</span>
+                        <Badge variant={decision.state === "allow" ? "default" : decision.state === "deny" ? "destructive" : "secondary"}>{decision.state}</Badge>
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {decision.sources.length ? decision.sources.map((source, index) => <span key={`${source.kind}-${index}`} className="mr-1.5">{sourceLabel(source)}</span>) : "нет источника"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="mb-2 font-medium">Департаменты и уровни</h3>
+          {trace.departments.length ? trace.departments.map((department) => (
+            <div key={department.id} className="mb-1.5 rounded-md border px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <Link className="font-medium text-primary hover:underline" to={`/departments/${department.id}`}>{department.name}</Link>
+                <span className="text-xs text-muted-foreground">{department.is_head ? "глава" : department.is_deputy_head ? "заместитель" : "участник"}</span>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-1">{department.levels.filter((level) => level.held).map((level) => <Link key={level.id} to={`/departments/${department.id}#level-${level.id}`}><Badge variant="outline" className="cursor-pointer hover:bg-accent">{level.name}</Badge></Link>)}</div>
+            </div>
+          )) : <p className="text-xs text-muted-foreground">Нет членства в департаментах.</p>}
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="rounded-md border p-3"><div className="font-medium">Документные ACL</div><div className="mt-1 text-xs text-muted-foreground">{trace.resource_acl.documents.length} применимых правил · view/comment/edit</div></div>
+          <div className="rounded-md border p-3"><div className="font-medium">ACL досок задач</div><div className="mt-1 text-xs text-muted-foreground">{trace.resource_acl.task_boards.length} применимых правил</div></div>
+        </div>
+      </CardContent>
+    </Card>
   )
 }

@@ -118,6 +118,29 @@ def resolve_admin(db: Session, raw_key: str, client_ip: Optional[str] = None) ->
     return admin
 
 
+def resolve_api_login_key(db: Session, raw_key: str) -> Optional[Tuple[int, int]]:
+    """Resolve an API login key without mutating usage counters.
+
+    The rate-limit middleware runs before FastAPI dependencies and must be able
+    to identify the key bucket. Updating ``last_used`` on every request there
+    would turn a read-only API call into a database write hotspot.
+    """
+    raw_key = (raw_key or "").strip()
+    if not raw_key:
+        return None
+
+    row = db.query(AdminLoginKey).filter(AdminLoginKey.key_hash == _hash_key(raw_key)).first()
+    if not row or row.revoked:
+        return None
+    if row.expires_at is not None and row.expires_at <= datetime.utcnow():
+        return None
+
+    admin = db.query(AdminUser).filter(AdminUser.id == row.admin_id).first()
+    if not admin or getattr(admin, "is_deleted", 0) == 1:
+        return None
+    return row.id, admin.id
+
+
 def serialize(row: AdminLoginKey) -> dict:
     return {
         "id": row.id,

@@ -15,18 +15,8 @@ router = APIRouter()
 
 
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    from datetime import datetime
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            admin = db.query(AdminUser).filter(AdminUser.id == session.admin_id).first()
-            if admin:
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    return load_current_admin(request, db)
 
 
 def _require_superuser(admin: AdminUser):

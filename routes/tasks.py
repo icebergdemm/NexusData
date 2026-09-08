@@ -73,28 +73,13 @@ def _has_any_board_view(db: Session, admin: AdminUser) -> bool:
 
 
 def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminUser:
-    token = request.cookies.get("admin_token")
-    now = datetime.utcnow()
-    if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > now):
-            admin = (
-                db.query(AdminUser)
-                .options(joinedload(AdminUser.privilege_group))
-                .filter(AdminUser.id == session.admin_id)
-                .first()
-            )
-            if admin:
-                from security import compute_department_site_permissions
-                admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-                try:
-                    admin._has_task_board_view = _has_any_board_view(db, admin)
-                except Exception:
-                    admin._has_task_board_view = False
-                return admin
-    raise HTTPException(status_code=401, detail="Not authenticated")
+    from routes.admin import load_current_admin
+    admin = load_current_admin(request, db)
+    try:
+        admin._has_task_board_view = _has_any_board_view(db, admin)
+    except Exception:
+        admin._has_task_board_view = False
+    return admin
 
 
 def require_tasks_page(admin: AdminUser, action: str = "view"):
