@@ -40,6 +40,7 @@ import logging
 import math
 import re
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -47,6 +48,8 @@ from config import get_settings
 from services_ai_client import AIClientError, chat_content, post_chat_completions
 
 logger = logging.getLogger(__name__)
+
+TASK_KIND = "monster_llm"  # task-log kind for the AI Centre journal
 
 SETTINGS_KEY = "monster_spawn_llm_config_v1"
 
@@ -138,11 +141,13 @@ DEFAULT_RUNTIME = {
     "auto_apply": False,       # false = model decisions wait for operator
     "auto_interval_minutes": 0,
     "last_run_at": None,
-    "last_result": None,
-    "history": [],             # last 20 runs: {at, mode, applied, rejected, summary}
+    "history": [],             # short breadcrumbs: {at, mode, applied, rejected, summary<=150}
     # Async manual runs (POST /llm/run returns 202 immediately, a worker
     # executes, the UI polls runtime): at most one pending + one active.
-    "pending_run": None,       # {id, mode, instruction, requested_at, requested_by, attempts}
+    # Full runs (text, counts, validation details) live in the durable
+    # monster_spawn_llm_runs table — the AppSetting row is String(2000) and
+    # used to silently truncate last_result, so operators never saw results.
+    "pending_run": None,       # {id, mode, instruction<=300, requested_at, requested_by, attempts}
     "active_run": None,        # pending + {started_at, lease_expires_at}
 }
 
@@ -176,19 +181,26 @@ def save_llm_runtime(db, server: str, runtime: Dict[str, Any]) -> None:
     if row is None:
         row = AppSetting(key=SETTINGS_KEY, value="{}")
         db.add(row)
+
+    # Legacy keys no longer live here: results are in monster_spawn_llm_runs
+    # (the old String(2000) truncation used to wipe last_result entirely,
+    # which is why the assistant "never showed anything").
+    runtime.pop("last_result", None)
+
     data[server] = runtime
 
-    # AppSetting.value is String(2000): drop the oldest history entries (and
-    # finally the bulky last_result) rather than failing the commit.
+    # AppSetting.value is String(2000): already-bounded history and run dicts
+    # normally fit; trim defensively rather than truncating mid-JSON.
     encoded = json.dumps(data, ensure_ascii=False)
     while len(encoded) > 1900 and runtime.get("history"):
         runtime["history"] = runtime["history"][1:]
         encoded = json.dumps(data, ensure_ascii=False)
     if len(encoded) > 1900:
-        runtime["last_result"] = None
+        runtime["history"] = []
         encoded = json.dumps(data, ensure_ascii=False)
     if len(encoded) > 2000:
-        runtime["last_result"] = None
+        # Keep control keys — remaining payload must be tiny; never hand the
+        # runtime a truncated JSON blob.
         runtime["history"] = []
         encoded = json.dumps(data, ensure_ascii=False)
 
@@ -586,23 +598,104 @@ def _record_history(runtime: dict, entry: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Durable run records (monster_spawn_llm_runs in the main DB)
+# ---------------------------------------------------------------------------
+
+def _create_run_record(main_db, server: str, mode: str, instruction: Optional[str],
+                       source: str, run_id: str, admin_id: Optional[int]):
+    from models import MonsterSpawnLLMRun
+
+    row = MonsterSpawnLLMRun(
+        server=server,
+        run_id=run_id,
+        mode=mode,
+        source=source,
+        instruction=(instruction or "")[:2000] or None,
+        requested_by_admin_id=admin_id,
+        requested_at=datetime.utcnow(),
+        status="queued",
+    )
+    main_db.add(row)
+    main_db.commit()
+    return row
+
+
+def _find_run_record(main_db, server: str, run_id: str):
+    from models import MonsterSpawnLLMRun
+
+    if not run_id:
+        return None
+    return main_db.query(MonsterSpawnLLMRun).filter(
+        MonsterSpawnLLMRun.server == server,
+        MonsterSpawnLLMRun.run_id == run_id,
+    ).first()
+
+
+def _finish_run_record(main_db, row, result: dict, error: Optional[str]) -> None:
+    from models import MonsterSpawnLLMRun
+
+    if row is None:
+        return
+    try:
+        now = datetime.utcnow()
+        row.finished_at = now
+        if error:
+            row.status = "failed"
+            row.error_message = error[:2000]
+        else:
+            row.status = "succeeded"
+            try:
+                row.confidence = float(result.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                row.confidence = 0.0
+            row.duration_ms = int(result.get("duration_ms") or 0)
+            row.applied_count = len(result.get("applied_changes") or [])
+            row.rejected_count = len(result.get("rejected") or [])
+            row.spawned_count = len(result.get("spawn_plans") or [])
+            row.result_json = result
+        main_db.commit()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            main_db.rollback()
+        except Exception:
+            pass
+        logger.warning("Failed to persist monster LLM run record: %s", exc)
+
+
+def _task(kind: str, ref: str, stage: str, message: str = "", level: str = "info") -> None:
+    from services_ai_tasklog import ai_task_log
+
+    from database import SessionLocal
+    db_session = next(SessionLocal())
+    try:
+        ai_task_log(db_session, kind, ref, stage, message, level)
+    finally:
+        db_session.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
-                  instruction: Optional[str] = None) -> Dict[str, Any]:
+                  instruction: Optional[str] = None, task_ref: Optional[str] = None) -> Dict[str, Any]:
     """mode: analyze (read-only analyzer: situation + crew summary +
     recommendations, no config writes), apply (config changes applied by
     bumping desired_revision), spawn (also add spawn plans)."""
+    ref = task_ref or server
     settings = get_settings()
     if not (settings.ai_dossier_url or "").strip() or not settings.ai_dossier_api_key:
+        _task(TASK_KIND, ref, "failed", "AI-агрегатор не настроен (AI_DOSSIER_URL/AI_DOSSIER_API_KEY)", "error")
         raise LLMError("AI-агрегатор не настроен: задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY")
 
     runtime = get_llm_runtime(db, server)
     known_species = _collect_known_species(state)
     user_prompt = _build_user_prompt(state, instruction, known_species)
+    _task(TASK_KIND, ref, "state_built",
+          f"известных видов: {len(known_species)}, волн в памяти: {len((state.get('memory') or {}).get('waves') or {})}; промпт {len(user_prompt)} симв.")
 
     started = time.monotonic()
+    _task(TASK_KIND, ref, "request_sent", f"отправка запроса в агрегатор (модель {settings.monster_llm_model}, режим {mode})")
     content = _chat_completions(
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -613,11 +706,14 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         temperature=settings.monster_llm_temperature,
         top_p=settings.monster_llm_top_p,
     )
+    _task(TASK_KIND, ref, "response_received", f"ответ получен за {int((time.monotonic() - started) * 1000)} мс, {len(content)} симв.")
 
     try:
         decision = _extract_json(content)
+        _task(TASK_KIND, ref, "json_validated", "JSON-схема ответа модели корректна")
     except LLMError:
         # One retry with a strict reminder.
+        _task(TASK_KIND, ref, "retry", "ответ не был валидным JSON — повторная генерация с строгим напоминанием", "warning")
         content = _chat_completions(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -668,8 +764,10 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         "plan_ids": [plan["id"] for plan in spawn_plans],
         "raw_decision_keys": list(decision.keys()),
     }
+    _task(TASK_KIND, ref, "validated",
+          f"валидация: применено {len(applied_changes)}, отклонено {len(result['rejected'])}, "
+          f"спавн-волн {len(spawn_plans)} (уверенность {result['confidence']:.0%})")
 
-    runtime["last_result"] = result
     _record_history(runtime, {
         "at": result["at"],
         "mode": mode,
@@ -680,6 +778,7 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     })
     runtime["last_run_at"] = result["at"]
     save_llm_runtime(db, server, runtime)
+    _task(TASK_KIND, ref, "completed", f"цикл завершён: {situation[:150]}")
 
     return result
 
@@ -717,19 +816,38 @@ def check_auto_cycle_due(runtime: dict) -> bool:
     return elapsed_minutes >= interval
 
 
-def get_llm_deployment_info() -> Dict[str, Any]:
-    """Non-secret info for the admin UI (transport = shared AI aggregator)."""
-    settings = get_settings()
-    return {
-        "base_url": settings.ai_dossier_url,
-        "model": settings.monster_llm_model,
-        "temperature": settings.monster_llm_temperature,
-        "top_p": settings.monster_llm_top_p,
-        "timeout_seconds": settings.monster_llm_timeout_seconds,
-        "api_key_set": bool(settings.ai_dossier_api_key),
-        "has_base_url": bool((settings.ai_dossier_url or "").strip()),
-        "via": "ai-aggregator",
-    }
+def list_llm_runs(db, server: str, limit: int = 30) -> List[Dict[str, Any]]:
+    """Durable run records for the admin UI (newest first)."""
+    from models import MonsterSpawnLLMRun
+
+    server = (server or "").strip().upper()
+    query = db.query(MonsterSpawnLLMRun)
+    if server:
+        query = query.filter(MonsterSpawnLLMRun.server == server)
+    rows = query.order_by(MonsterSpawnLLMRun.id.desc()).limit(min(max(limit, 1), 100)).all()
+    return [
+        {
+            "id": row.id,
+            "run_id": row.run_id,
+            "server": row.server,
+            "mode": row.mode,
+            "source": row.source,
+            "status": row.status,
+            "instruction": (row.instruction or "")[:300],
+            "requested_by_admin_id": row.requested_by_admin_id,
+            "requested_at": row.requested_at.isoformat() if row.requested_at else None,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "duration_ms": row.duration_ms,
+            "confidence": row.confidence,
+            "applied_count": row.applied_count,
+            "rejected_count": row.rejected_count,
+            "spawned_count": row.spawned_count,
+            "error_message": (row.error_message or "")[:500],
+            "result": row.result_json,
+        }
+        for row in rows
+    ]
 
 
 def get_llm_deployment_info() -> Dict[str, Any]:
@@ -784,7 +902,7 @@ def _run_lease_seconds() -> float:
     return float(get_settings().monster_llm_timeout_seconds) * 2.0 + 120.0
 
 
-def _reap_stale_active(runtime: dict, now: datetime) -> bool:
+def _reap_stale_active(runtime: dict, now: datetime, main_db=None, server: str = "") -> bool:
     """Reclaim an active run whose worker died (lease expired).
 
     Returns True if the runtime changed. A run that already burned all
@@ -810,6 +928,9 @@ def _reap_stale_active(runtime: dict, now: datetime) -> bool:
             "rejected": 0,
             "confidence": 0.0,
         })
+        if main_db is not None and server:
+            run_row = _find_run_record(main_db, server, str(active.get("id") or ""))
+            _finish_run_record(main_db, run_row, {}, "Запуск прерван: воркер не завершил работу, все попытки исчерпаны")
         runtime.pop("active_run", None)
         return True
     pending = dict(active)
@@ -828,8 +949,6 @@ def queue_llm_run(db, server: str, mode: str = "analyze",
     Raises QueueBusyError if a run is already queued/running, LLMError if
     the mode is unknown or the aggregator is not configured (fail fast
     instead of queueing work that can never run)."""
-    import uuid
-
     if mode not in ("analyze", "apply", "spawn"):
         raise LLMError(f"Неизвестный режим LLM-цикла: {mode}")
     settings = get_settings()
@@ -838,16 +957,22 @@ def queue_llm_run(db, server: str, mode: str = "analyze",
 
     runtime = get_llm_runtime(db, server)
     now = datetime.utcnow()
-    if _reap_stale_active(runtime, now):
+    if _reap_stale_active(runtime, now, db, server):
         save_llm_runtime(db, server, runtime)
         runtime = get_llm_runtime(db, server)
     if isinstance(runtime.get("pending_run"), dict) or _active_run_live(runtime.get("active_run"), now):
         raise QueueBusyError("LLM-цикл уже стоит в очереди или выполняется — дождитесь результата")
 
+    run_id = uuid.uuid4().hex[:12]
+    full_instruction = str(instruction or "")[:2000]
+    _create_run_record(db, server, mode, full_instruction, "manual", run_id, admin_id)
+
+    # pending_run lives in the String(2000) AppSetting row — keep it short;
+    # the full instruction is durable in the run record.
     run = {
-        "id": uuid.uuid4().hex[:12],
+        "id": run_id,
         "mode": mode,
-        "instruction": str(instruction or "")[:2000],
+        "instruction": full_instruction[:300],
         "requested_at": now.isoformat(),
         "requested_by": admin_id,
         "attempts": 0,
@@ -889,13 +1014,16 @@ def _record_run_failure(main_db, server: str, active: dict, error: str) -> None:
         "confidence": 0.0,
     })
     save_llm_runtime(main_db, server, runtime)
+    run_row = _find_run_record(main_db, server, str(active.get("id") or ""))
+    _finish_run_record(main_db, run_row, {}, error)
+    _task(TASK_KIND, f"{server}:{active.get('id')}", "failed", f"Ошибка цикла: {error}"[:300], "error")
 
 
 def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Dict[str, Any]]:
     """Claim and execute at most one queued manual run for a server."""
     runtime = get_llm_runtime(main_db, server)
     now = datetime.utcnow()
-    if _reap_stale_active(runtime, now):
+    if _reap_stale_active(runtime, now, main_db, server):
         save_llm_runtime(main_db, server, runtime)
     if _active_run_live(runtime.get("active_run"), now):
         return None
@@ -914,6 +1042,15 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
     runtime["pending_run"] = None
     save_llm_runtime(main_db, server, runtime)
 
+    run_id = str(active.get("id") or "")
+    task_ref = f"{server}:{run_id}"
+    _task(TASK_KIND, task_ref, "claimed", f"воркер взял задачу (режим {active.get('mode')}, попытка {active['attempts']})")
+    run_row = _find_run_record(main_db, server, run_id)
+    if run_row is not None:
+        run_row.status = "running"
+        run_row.started_at = now
+        main_db.commit()
+
     game_db.commit()
     game_db.refresh(row)
     state = {
@@ -925,7 +1062,7 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
     mode = active.get("mode") or "analyze"
     instruction = active.get("instruction") or None
     try:
-        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction)
+        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction, task_ref=task_ref)
     except LLMError as exc:
         _record_run_failure(main_db, server, active, str(exc))
         return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
@@ -937,8 +1074,12 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
     admin_id = active.get("requested_by")
     _apply_llm_result(game_db, row, state, result, admin_id)
     game_db.commit()
+    _task(TASK_KIND, task_ref, "applied",
+          f"изменения записаны (desired_revision {row.desired_revision}); применено {len(result.get('applied_changes', []))}, спавн-волн {len(result.get('spawn_plans', []))}")
 
-    # run_llm_cycle already persisted last_result/history; just clear active.
+    # run_llm_cycle already persisted history; persist the result and clear
+    # the active lease.
+    _finish_run_record(main_db, run_row, result, None)
     runtime = get_llm_runtime(main_db, server)
     runtime["active_run"] = None
     save_llm_runtime(main_db, server, runtime)
@@ -1008,8 +1149,12 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
                     "telemetry": row.telemetry if isinstance(row.telemetry, dict) else {},
                     "dashboard": {},
                 }
+                run_id = uuid.uuid4().hex[:12]
+                _create_run_record(main_db, server, "apply", None, "auto", run_id, None)
+                task_ref = f"{server}:{run_id}"
+                _task(TASK_KIND, task_ref, "claimed", "автоцикл запущен планировщиком")
                 try:
-                    result = run_llm_cycle(main_db, server, state, mode="apply")
+                    result = run_llm_cycle(main_db, server, state, mode="apply", task_ref=task_ref)
                     if result.get("applied_changes"):
                         row.config = state["config"]
                         row.desired_revision = (row.desired_revision or 0) + 1
@@ -1021,13 +1166,21 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
                         row.desired_revision = (row.desired_revision or 0) + 1
                         row.updated_at = datetime.utcnow()
                     game_db.commit()
+                    run_row = _find_run_record(main_db, server, run_id)
+                    _finish_run_record(main_db, run_row, result, None)
                     results.append({"server": server, "status": "ok",
                                     "applied": len(result.get("applied_changes", [])),
                                     "spawned": len(result.get("spawn_plans", []))})
                 except LLMError as exc:
+                    run_row = _find_run_record(main_db, server, run_id)
+                    _finish_run_record(main_db, run_row, {}, str(exc))
+                    _task(TASK_KIND, task_ref, "failed", f"Ошибка автоцикла: {exc}"[:300], "error")
                     results.append({"server": server, "status": "error", "error": str(exc)})
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("LLM auto-cycle failed for %s: %s", server, exc)
+                    run_row = _find_run_record(main_db, server, run_id)
+                    _finish_run_record(main_db, run_row, {}, f"Ошибка автоцикла: {exc}")
+                    _task(TASK_KIND, task_ref, "failed", f"Ошибка автоцикла: {exc}"[:300], "error")
                     results.append({"server": server, "status": "error", "error": str(exc)})
         finally:
             game_db.close()

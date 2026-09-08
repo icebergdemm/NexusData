@@ -299,22 +299,38 @@ export interface LLMRuntime {
   auto_apply: boolean
   auto_interval_minutes: number
   last_run_at: string | null
-  last_result: {
-    at: string
-    mode: string
-    duration_ms: number
-    situation: string
-    crew_summary: string
-    recommendations: { title: string; detail: string }[]
-    confidence: number
-    applied_changes: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
-    rejected: string[]
-    spawn_requests: { species: string; count: number; hp_multiplier: number; position_hint: string; reason?: string }[]
-    plan_ids: string[]
-  } | null
   history: { at: string; mode: string; summary: string; applied: number; rejected: number; confidence: number }[]
   pending_run: LLMRun | null
   active_run: (LLMRun & { started_at: string; lease_expires_at: string }) | null
+}
+
+export interface LLMRunRecord {
+  id: number
+  run_id: string
+  server: string
+  mode: "analyze" | "apply" | "spawn" | string
+  source: "manual" | "auto" | string
+  status: "queued" | "running" | "succeeded" | "failed" | string
+  instruction: string
+  requested_by_admin_id: number | null
+  requested_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+  confidence: number | null
+  applied_count: number
+  rejected_count: number
+  spawned_count: number
+  error_message: string
+  result: {
+    situation?: string
+    crew_summary?: string
+    recommendations?: { title: string; detail: string }[]
+    applied_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
+    rejected?: string[]
+    spawn_requests?: { species: string; count: number; hp_multiplier: number; position_hint: string; reason?: string }[]
+    plan_ids?: string[]
+  } | null
 }
 
 export interface LLMDeployment {
@@ -419,6 +435,8 @@ export const monsterSpawnApi = {
   reports: (server: string) => api.get<{ server: string; reports: RoundReport[] }>(`/api/v1/admin/monster-spawn/reports?server=${encodeURIComponent(server)}`),
   llmRuntime: (server: string) =>
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
+  llmRuns: (server: string, limit = 30) =>
+    api.get<{ runs: LLMRunRecord[] }>(`/api/v1/admin/monster-spawn/llm/runs?server=${encodeURIComponent(server)}&limit=${limit}`),
   updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) =>
     api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
   runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>

@@ -1,13 +1,13 @@
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import AppSetting
+from models import AppSetting, MonsterSpawnLLMRun
 import services_llm_monster
 from services_llm_monster import (
     QueueBusyError,
@@ -34,7 +34,7 @@ def _configured_settings():
 
 def _main_db():
     engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[AppSetting.__table__])
+    Base.metadata.create_all(engine, tables=[AppSetting.__table__, MonsterSpawnLLMRun.__table__])
     db = Session(engine)
     db._test_engine = engine
     return db
@@ -46,7 +46,16 @@ def _close(db):
 
 
 class MonsterLLMQueueTests(unittest.TestCase):
-    def test_queue_stores_pending_run(self):
+    def setUp(self):
+        # _task (stage logging) opens its own production DB session — never
+        # appropriate for unit tests.
+        self._task_patch = patch.object(services_llm_monster, "_task", MagicMock())
+        self._task_patch.start()
+
+    def tearDown(self):
+        self._task_patch.stop()
+
+    def test_queue_stores_pending_run_and_durable_record(self):
         db = _main_db()
         try:
             with patch.object(services_llm_monster, "get_settings", return_value=_configured_settings()):
@@ -55,6 +64,11 @@ class MonsterLLMQueueTests(unittest.TestCase):
             self.assertEqual(run["instruction"], "давление")
             self.assertEqual(run["requested_by"], 7)
             self.assertEqual(get_llm_runtime(db, "ASPER1")["pending_run"]["id"], run["id"])
+            record = db.query(MonsterSpawnLLMRun).one()
+            self.assertEqual(record.run_id, run["id"])
+            self.assertEqual(record.status, "queued")
+            self.assertEqual(record.instruction, "давление")
+            self.assertEqual(record.requested_by_admin_id, 7)
         finally:
             _close(db)
 
@@ -63,7 +77,14 @@ class MonsterLLMQueueTests(unittest.TestCase):
         try:
             with patch.object(services_llm_monster, "get_settings", return_value=_configured_settings()):
                 run = queue_llm_run(db, "ASPER1", instruction="x" * 5000)
-            self.assertEqual(len(run["instruction"]), 2000)
+            self.assertEqual(len(run["instruction"]), 300)
+            # Full instruction lives on the durable record, not the 2000-char
+            # AppSetting blob (which used to corrupt the whole runtime JSON).
+            record = db.query(MonsterSpawnLLMRun).one()
+            self.assertEqual(record.instruction, "x" * 2000)
+            runtime = get_llm_runtime(db, "ASPER1")
+            self.assertEqual(runtime["pending_run"]["id"], run["id"])
+            self.assertEqual(runtime["enabled"], False)
         finally:
             _close(db)
 
@@ -90,6 +111,7 @@ class MonsterLLMQueueTests(unittest.TestCase):
                     queue_llm_run(db, "ASPER1", mode="analyze")
             # Nothing was queued by the failed attempts.
             self.assertIsNone(get_llm_runtime(db, "ASPER1")["pending_run"])
+            self.assertEqual(db.query(MonsterSpawnLLMRun).count(), 0)
         finally:
             _close(db)
 
@@ -136,13 +158,17 @@ class MonsterLLMQueueTests(unittest.TestCase):
             )
             game_db = SimpleNamespace(commit=lambda: None, refresh=lambda _row: None)
             fake_result = {
+                "at": datetime.utcnow().isoformat(),
+                "duration_ms": 500,
+                "confidence": 0.8,
                 "applied_changes": [{"key": "intensity_threshold", "new_value": 0.25}],
                 "spawn_requests": [],
                 "spawn_plans": [{"id": "llm-plan-1"}],
                 "rejected": [],
+                "situation": "test",
             }
 
-            def _fake_cycle(main_db, server, state, mode="analyze", instruction=None):
+            def _fake_cycle(main_db, server, state, mode="analyze", instruction=None, task_ref=None):
                 self.assertEqual(server, "ASPER1")
                 self.assertEqual(mode, "apply")
                 state["config"]["global"]["intensity_threshold"] = 0.25
@@ -160,6 +186,12 @@ class MonsterLLMQueueTests(unittest.TestCase):
             runtime = get_llm_runtime(db, "ASPER1")
             self.assertIsNone(runtime["pending_run"])
             self.assertIsNone(runtime["active_run"])
+            # The durable record carries the full result.
+            record = db.query(MonsterSpawnLLMRun).one()
+            self.assertEqual(record.status, "succeeded")
+            self.assertEqual(record.applied_count, 1)
+            self.assertEqual(record.spawned_count, 1)
+            self.assertIsNotNone(record.result_json)
         finally:
             _close(db)
 
@@ -182,6 +214,9 @@ class MonsterLLMQueueTests(unittest.TestCase):
             self.assertIsNone(runtime["active_run"])
             self.assertTrue(any("Ошибка" in entry.get("summary", "") for entry in runtime["history"]))
             self.assertEqual(row.desired_revision, 1)
+            record = db.query(MonsterSpawnLLMRun).one()
+            self.assertEqual(record.status, "failed")
+            self.assertIn("недоступен", record.error_message)
         finally:
             _close(db)
 

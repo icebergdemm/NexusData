@@ -1435,6 +1435,7 @@ def _claim_next(db: Session, now: datetime) -> Optional[AIPlayerDossier]:
 
 def process_one_dossier() -> dict:
     from database import SessionLocal
+    from services_ai_tasklog import ai_task_log, TASK_KIND_DOSSIER
     db = SessionLocal()
     try:
         report = _claim_next(db, datetime.utcnow())
@@ -1448,6 +1449,8 @@ def process_one_dossier() -> dict:
             AIPlayerDossierRun.dossier_id == report.id,
             AIPlayerDossierRun.status == "running",
         ).order_by(AIPlayerDossierRun.id.desc()).first()
+        ref = f"player-{report.player_id}:{run.id if run else report.id}"
+        ai_task_log(db, TASK_KIND_DOSSIER, ref, "claimed", f"воркер взял досье игрока #{report.player_id}")
         fallback_result = None
         request_hash = None
         try:
@@ -1455,12 +1458,16 @@ def process_one_dossier() -> dict:
             packet = build_moderation_packet(payload)
             request_hash = dossier_input_hash(packet)
             fallback_result = build_rules_result(packet)
+            ai_task_log(db, TASK_KIND_DOSSIER, ref, "packet_built",
+                        f"moderation-packet собран: находок {len(packet.get('findings') or [])}, ролей {len(packet.get('context') or {})}; hash {request_hash[:12]}")
             request = build_kobold_request(
                 packet,
                 api_key=settings.ai_dossier_api_key,
                 model=settings.ai_dossier_model,
                 prompt=get_dossier_prompt(db),
             )
+            ai_task_log(db, TASK_KIND_DOSSIER, ref, "request_sent",
+                        f"отправка в агрегатор (модель {settings.ai_dossier_model}, таймаут {settings.ai_dossier_timeout_seconds}s)")
             # Transport (endpoint/auth/TLS/queue) is owned by the shared AI
             # aggregator client; only the JSON body comes from the builder.
             response_payload, elapsed_ms = post_chat_completions(
@@ -1469,6 +1476,8 @@ def process_one_dossier() -> dict:
             raw_response = _kobold_chat_content(response_payload)
             usage = response_payload.get("usage") or {}
             completion_tokens = usage.get("completion_tokens")
+            ai_task_log(db, TASK_KIND_DOSSIER, ref, "response_received",
+                        f"ответ за {elapsed_ms} мс, токены {usage.get('prompt_tokens')}+{completion_tokens}")
             if run:
                 run.latency_ms = elapsed_ms
                 run.prompt_tokens = usage.get("prompt_tokens")
@@ -1476,6 +1485,7 @@ def process_one_dossier() -> dict:
                 run.model = settings.ai_dossier_model
             result = merge_ai_summary(fallback_result, parse_kobold_response(response_payload))
             logger.info("AI dossier request complete player=%s latency_ms=%s prompt_tokens=%s completion_tokens=%s", report.player_id, elapsed_ms, usage.get("prompt_tokens"), completion_tokens)
+            ai_task_log(db, TASK_KIND_DOSSIER, ref, "result_validated", "результат модели нормализован и объединён с rules-only базой")
             report.status = "succeeded"
             report.result_json = result
             report.summary_text = result["summary"]
@@ -1495,9 +1505,12 @@ def process_one_dossier() -> dict:
                 run.input_hash = request_hash
                 run.raw_response = raw_response[:MAX_RAW_RESPONSE_CHARS] if isinstance(raw_response, str) else None
             db.commit()
+            ai_task_log(db, TASK_KIND_DOSSIER, ref, "succeeded", f"досье для #{report.player_id} записано от {settings.ai_dossier_model}")
             return {"status": "succeeded", "player_id": report.player_id}
         except Exception as exc:
             logger.exception("AI dossier generation failed for player %s", report.player_id)
+            ai_task_log(db, TASK_KIND_DOSSIER, ref, "failed",
+                        f"{type(exc).__name__}: {exc}"[:450], "error")
             report.status = "failed"
             if not report.model:
                 report.model = settings.ai_dossier_model

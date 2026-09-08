@@ -167,6 +167,22 @@ async def get_ai_dossier_runs(
     return {"runs": list_dossier_runs(db, limit, include_secret=True)}
 
 
+@router.get("/api/v1/admin/ai-dossiers/task-log")
+async def get_ai_task_log(
+    kind: str = Query("", max_length=30),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Stage-by-stage progress log of AI tasks (dossier, monster LLM, health)."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    from services_ai_tasklog import recent_ai_task_entries
+
+    kinds = [k.strip() for k in kind.split(",") if k.strip()] or None
+    return {"entries": recent_ai_task_entries(db, kinds, limit)}
+
+
 @router.get("/api/v1/admin/ai-dossiers/players")
 async def get_ai_dossier_players(
     q: str = Query("", max_length=100),

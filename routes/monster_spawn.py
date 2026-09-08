@@ -518,12 +518,33 @@ def admin_llm_runtime(
     _require(admin, "view")
     from services_llm_monster import get_llm_runtime, get_llm_deployment_info
     settings = get_settings()
-    runtime = get_llm_runtime(_get_main_db(), _normalize_server(server))
+    main_db = _get_main_db()
+    try:
+        runtime = get_llm_runtime(main_db, _normalize_server(server))
+    finally:
+        main_db.close()
     return {
         "runtime": runtime,
         "deployment": get_llm_deployment_info(),
         "endpoint_configured": bool((settings.ai_dossier_url or "").strip() and settings.ai_dossier_api_key),
     }
+
+
+@admin_router.get("/llm/runs")
+def admin_llm_runs(
+    server: str = Query(...),
+    limit: int = Query(30, ge=1, le=100),
+    admin: AdminUser = Depends(_current_admin),
+):
+    """Durable LLM run records: status, timing, counts and the full result."""
+    _require(admin, "view")
+    from services_llm_monster import list_llm_runs
+    main_db = _get_main_db()
+    try:
+        runs = list_llm_runs(main_db, _normalize_server(server), limit)
+    finally:
+        main_db.close()
+    return {"runs": runs}
 
 
 @admin_router.put("/llm/runtime")
@@ -537,14 +558,17 @@ def admin_llm_runtime_update(
 
     main_db = _get_main_db()
     server_key = _normalize_server(server)
-    runtime = get_llm_runtime(main_db, server_key)
-    if payload.enabled is not None:
-        runtime["enabled"] = payload.enabled
-    if payload.auto_apply is not None:
-        runtime["auto_apply"] = payload.auto_apply
-    if payload.auto_interval_minutes is not None:
-        runtime["auto_interval_minutes"] = payload.auto_interval_minutes
-    save_llm_runtime(main_db, server_key, runtime)
+    try:
+        runtime = get_llm_runtime(main_db, server_key)
+        if payload.enabled is not None:
+            runtime["enabled"] = payload.enabled
+        if payload.auto_apply is not None:
+            runtime["auto_apply"] = payload.auto_apply
+        if payload.auto_interval_minutes is not None:
+            runtime["auto_interval_minutes"] = payload.auto_interval_minutes
+        save_llm_runtime(main_db, server_key, runtime)
+    finally:
+        main_db.close()
     return {"status": "ok", "runtime": runtime}
 
 
@@ -568,11 +592,14 @@ def admin_llm_run(
 
     _require(admin, "edit")
     server_key = _normalize_server(server)
+    main_db = _get_main_db()
     try:
-        run = queue_llm_run(_get_main_db(), server_key, mode=payload.mode,
+        run = queue_llm_run(main_db, server_key, mode=payload.mode,
                             instruction=payload.instruction, admin_id=admin.id)
     except QueueBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        main_db.close()
     return JSONResponse(status_code=202, content={"status": "queued", "run": run})

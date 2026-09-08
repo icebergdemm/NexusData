@@ -31,6 +31,7 @@ import {
   type ActiveWaveTelemetry,
   type HeldVanillaTelemetry,
   type LearnedWaveTelemetry,
+  type LLMRunRecord,
   type LLMRuntime,
   type MonsterSpawnAnalysis,
   type MonsterSpawnRecommendation,
@@ -613,6 +614,9 @@ function LLMPanel({ server }: { server: string }) {
   const [instruction, setInstruction] = useState("")
   const [mode, setMode] = useState<"analyze" | "apply" | "spawn">("analyze")
   const runtime = useQuery({ queryKey: ["monster-spawn-llm", server], queryFn: () => monsterSpawnApi.llmRuntime(server), refetchInterval: 10000 })
+  // Durable run records: полный результат больше не в AppSetting (он
+  // обрезался 2000-символьным лимитом и «терялся»), а в таблице циклов.
+  const runsQuery = useQuery({ queryKey: ["monster-spawn-llm-runs", server], queryFn: () => monsterSpawnApi.llmRuns(server, 30), refetchInterval: 5000 })
   const saveRuntime = useMutation({
     mutationFn: (body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) => monsterSpawnApi.updateLLMRuntime(server, body),
     onSuccess: () => { toast.success("Настройки ассистента обновлены"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }) },
@@ -620,14 +624,14 @@ function LLMPanel({ server }: { server: string }) {
   })
   const run = useMutation({
     mutationFn: () => monsterSpawnApi.runLLM(server, { mode, instruction: instruction.trim() || undefined }),
-    onSuccess: () => { toast.success("Цикл поставлен в очередь — результат появится ниже"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }) },
+    onSuccess: () => { toast.success("Цикл поставлен в очередь — результат появится ниже"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
 
   const r = runtime.data?.runtime
   const deployment = runtime.data?.deployment
-  const last = r?.last_result
-  const history = r?.history ?? []
+  const records: LLMRunRecord[] = runsQuery.data?.runs ?? []
+  const last = records[0] ?? null
   const queued = r?.pending_run ?? null
   const active = r?.active_run ?? null
   const busy = run.isPending || queued !== null || active !== null
@@ -657,16 +661,33 @@ function LLMPanel({ server }: { server: string }) {
         </div>}
       </div>
       {last && <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
-        <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{last.at}</Badge><Badge variant="secondary">{last.mode}</Badge><span className="text-muted-foreground">уверенность {Math.round((last.confidence ?? 0) * 100)}% · {last.duration_ms}мс</span></div>
-        <div className="text-foreground">{last.situation}</div>
-        {last.crew_summary && <div className="rounded-lg bg-background/60 p-3"><div className="mb-1 font-medium text-foreground">Эффективность экипажа</div><div className="text-muted-foreground">{last.crew_summary}</div></div>}
-        {last.recommendations?.length > 0 && <div><div className="font-medium">Рекомендации оператору:</div><ul className="mt-1 space-y-1">{last.recommendations.map((rec, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-medium text-foreground">{rec.title}</span>{rec.detail && <span className="text-muted-foreground"> — {rec.detail}</span>}</li>)}</ul></div>}        {last.applied_changes?.length > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.applied_changes.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
-        {last.spawn_requests?.length > 0 && <div><div className="font-medium">Спавн:</div><ul className="mt-1 space-y-1">{last.spawn_requests.map((request, index) => <li key={index} className="font-mono text-[11px] text-info">{request.species} x{request.count} ({request.position_hint}) {request.reason ? `— ${request.reason}` : ""}</li>)}</ul></div>}
-        {last.rejected?.length > 0 && <div><div className="font-medium text-warning">Отклонено валидатором:</div><ul className="mt-1 space-y-1">{last.rejected.map((reason, index) => <li key={index} className="font-mono text-[11px] text-warning">{reason}</li>)}</ul></div>}
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={last.status === "succeeded" ? "default" : last.status === "failed" ? "destructive" : "secondary"}>{last.status === "succeeded" ? "готово" : last.status === "failed" ? "ошибка" : last.status === "running" ? "выполняется" : "в очереди"}</Badge>
+          <Badge variant="outline">{last.mode}</Badge>
+          <Badge variant="secondary">{last.source === "auto" ? "автоцикл" : "вручную"}</Badge>
+          <span className="text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${last.duration_ms}мс` : ""}{last.confidence != null ? ` · уверенность ${Math.round(last.confidence * 100)}%` : ""}{last.applied_count ? ` · применено ${last.applied_count}` : ""}{last.spawned_count ? ` · спавн ${last.spawned_count}` : ""}{last.rejected_count ? ` · отклонено ${last.rejected_count}` : ""}</span>
+        </div>
+        {last.instruction && <div className="text-muted-foreground">Команда оператора: «{last.instruction}»</div>}
+        {last.status === "failed" && <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-destructive">Ошибка: {last.error_message || "неизвестная ошибка"}</div>}
+        {last.result && <div className="space-y-2">
+          {last.result.situation && <div className="text-foreground">{last.result.situation}</div>}
+          {last.result.crew_summary && <div className="rounded-lg bg-background/60 p-3"><div className="mb-1 font-medium text-foreground">Эффективность экипажа</div><div className="text-muted-foreground">{last.result.crew_summary}</div></div>}
+          {(last.result.recommendations?.length ?? 0) > 0 && <div><div className="font-medium">Рекомендации оператору:</div><ul className="mt-1 space-y-1">{last.result.recommendations!.map((rec, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-medium text-foreground">{rec.title}</span>{rec.detail && <span className="text-muted-foreground"> — {rec.detail}</span>}</li>)}</ul></div>}
+          {(last.result.applied_changes?.length ?? 0) > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.result.applied_changes!.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
+          {(last.result.spawn_requests?.length ?? 0) > 0 && <div><div className="font-medium">Спавн:</div><ul className="mt-1 space-y-1">{last.result.spawn_requests!.map((request, index) => <li key={index} className="font-mono text-[11px] text-info">{request.species} x{request.count} ({request.position_hint}) {request.reason ? `— ${request.reason}` : ""}</li>)}</ul></div>}
+          {(last.result.rejected?.length ?? 0) > 0 && <div><div className="font-medium text-warning">Отклонено валидатором:</div><ul className="mt-1 space-y-1">{last.result.rejected!.map((reason, index) => <li key={index} className="font-mono text-[11px] text-warning">{reason}</li>)}</ul></div>}
+        </div>}
       </div>}
-      {history.length > 0 && <div className="space-y-1 text-[11px] text-muted-foreground">
-        <div className="font-medium text-foreground">История последних запусков</div>
-        {history.slice().reverse().map((entry, index) => <div key={index} className="flex flex-wrap gap-2"><span className="font-mono">{entry.at.slice(0, 16).replace("T", " ")}</span><Badge variant="outline" className="text-[9px]">{entry.mode}</Badge><span>применено {entry.applied}, отклонено {entry.rejected}</span><span className="truncate">{entry.summary}</span></div>)}
+      {records.length > 1 && <div className="space-y-1 text-[11px] text-muted-foreground">
+        <div className="font-medium text-foreground">История запусков (Журнал задач AI — поэтапный лог в AI-центре)</div>
+        {records.slice(1, 11).map((record) => <div key={record.id} className="flex flex-wrap gap-2">
+          <span className="font-mono">{record.requested_at?.slice(0, 16).replace("T", " ")}</span>
+          <Badge variant={record.status === "succeeded" ? "secondary" : record.status === "failed" ? "destructive" : "outline"} className="text-[9px]">{record.status}</Badge>
+          <Badge variant="outline" className="text-[9px]">{record.mode}</Badge>
+          <span>применено {record.applied_count}, отклонено {record.rejected_count}</span>
+          {record.source === "auto" && <span className="text-[9px]">авто</span>}
+          <span className="truncate">{record.status === "failed" ? record.error_message : record.result?.situation}</span>
+        </div>)}
       </div>}
     </CardContent></Card>
 }

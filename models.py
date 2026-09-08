@@ -2179,6 +2179,54 @@ class MonsterSpawnControl(Base):
     last_seen_at = Column(DateTime, nullable=True, index=True)
 
 
+class MonsterSpawnLLMRun(Base):
+    """Durable record of one monster-spawn LLM assistant cycle.
+
+    Lives in the main DB because the AppSetting runtime row is String(2000)
+    and silently truncates full analyzer results; this table keeps every run
+    with its validated outcome so the operator can always see what the model
+    decided (and what was rejected)."""
+
+    __tablename__ = "monster_spawn_llm_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server = Column(String(100), nullable=False, index=True)
+    run_id = Column(String(32), nullable=False, index=True)
+    mode = Column(String(10), nullable=False, default="analyze")
+    source = Column(String(10), nullable=False, default="manual")  # manual | auto
+    instruction = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="queued", index=True)  # queued | running | succeeded | failed
+    requested_by_admin_id = Column(Integer, nullable=True)
+    requested_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    confidence = Column(Float, nullable=True)
+    applied_count = Column(Integer, nullable=False, default=0)
+    rejected_count = Column(Integer, nullable=False, default=0)
+    spawned_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(String(2000), nullable=True)
+    result_json = Column(JSON, nullable=True)
+
+
+class AITaskLog(Base):
+    """Stage-by-stage progress log for AI tasks (dossiers, monster LLM, health).
+
+    Each worker appends bounded entries while a task moves through its
+    stages, so an operator can trace where a task sits and what happened
+    at each step without tailing application logs."""
+
+    __tablename__ = "ai_task_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_kind = Column(String(30), nullable=False, index=True)  # dossier | monster_llm | health
+    task_ref = Column(String(120), nullable=False, index=True)
+    stage = Column(String(40), nullable=False)
+    level = Column(String(10), nullable=False, default="info")  # info | warning | error
+    message = Column(String(500), nullable=False, default="")
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
 class AICreatureAlert(Base):
     """Durable one-alert-per-character state for dispatcher contact warnings."""
 

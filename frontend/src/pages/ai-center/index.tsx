@@ -35,7 +35,67 @@ type Run = { id: number; player_id: number | null; player_name: string | null; s
 
 const statusLabel: Record<string, string> = { none: "Нет отчёта", queued: "В очереди", running: "В работе", succeeded: "Готово", failed: "Ошибка" }
 const sourceLabel: Record<string, string> = { manual: "вручную", manual_batch: "полный запуск", daily: "ежедневно", test: "тест", health: "health-check" }
+const kindLabel: Record<string, string> = { dossier: "досье", monster_llm: "монстры · LLM", health: "health-check" }
+const stageLabel: Record<string, string> = {
+  claimed: "задача взята воркером", packet_built: "packet собран", request_sent: "запрос отправлен",
+  response_received: "ответ получен", result_validated: "результат валиден", json_validated: "JSON валиден",
+  state_built: "состояние собрано", validated: "изменения валидированы", applied: "применено",
+  completed: "завершено", succeeded: "успешно", failed: "ошибка", retry: "повторная генерация",
+}
+const levelColor: Record<string, string> = { info: "text-muted-foreground", warning: "text-warning", error: "text-destructive" }
 const fmt = (value?: string | null) => value ? formatBrowserDate(value) : "—"
+
+type TaskLogEntry = { id: number; kind: string; ref: string; stage: string; level: string; message: string; created_at: string | null }
+
+function TaskLogCard() {
+  const [kindFilter, setKindFilter] = useState("")
+  const { data } = useQuery({
+    queryKey: ["ai-center-task-log", kindFilter],
+    queryFn: () => api.get<{ entries: TaskLogEntry[] }>(`/api/v1/admin/ai-dossiers/task-log?limit=300${kindFilter ? `&kind=${kindFilter}` : ""}`),
+    refetchInterval: 3000,
+  })
+  const entries = data?.entries ?? []
+  // Группировка по задаче с сохранением порядка появления (новые сверху):
+  // оператор видит весь прогресс конкретной задачи как один блок.
+  const groups: Array<{ key: string; entries: TaskLogEntry[] }> = []
+  const byKey = new Map<string, TaskLogEntry[]>()
+  for (const entry of entries) {
+    const key = `${entry.kind}:${entry.ref}`
+    const bucket = byKey.get(key)
+    if (bucket) bucket.push(entry)
+    else { const fresh: TaskLogEntry[] = [entry]; byKey.set(key, fresh); groups.push({ key, entries: fresh }) }
+  }
+  return <Card><CardHeader>
+    <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-sm">Журнал задач AI (по этапам)
+      <select className="rounded border bg-background px-2 py-1 text-xs" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
+        <option value="">все виды задач</option>
+        <option value="dossier">досье</option>
+        <option value="monster_llm">монстры · LLM</option>
+        <option value="health">health-check</option>
+      </select>
+    </CardTitle>
+  </CardHeader><CardContent className="max-h-[28rem] space-y-3 overflow-auto text-xs">
+    {!groups.length && <p className="text-sm text-muted-foreground">Пока нет записей — журнал заполняется, когда AI-задачи доходят до воркеров.</p>}
+    {groups.slice(0, 25).map((group) => {
+      const failed = group.entries.some((e) => e.level === "error")
+      const running = group.entries.some((e) => e.stage === "claimed" || e.stage === "request_sent") && group.entries.every((e) => e.stage !== "succeeded" && e.stage !== "completed" && e.stage !== "applied" && e.stage !== "failed")
+      return <div key={group.key} className={`rounded-lg border p-2 ${failed ? "border-destructive/30 bg-destructive/5" : running ? "border-primary/30 bg-primary/5" : ""}`}>
+        <div className="mb-1 flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">{kindLabel[group.entries[0].kind] || group.entries[0].kind}</Badge>
+          <span className="font-mono text-[10px]">{group.entries[0].ref}</span>
+          <Badge variant={failed ? "destructive" : running ? "default" : "outline"} className="text-[9px]">{failed ? "ошибка" : running ? "в работе" : "завершено"}</Badge>
+        </div>
+        <ol className="space-y-0.5">
+          {group.entries.slice().reverse().map((entry) => <li key={entry.id} className="flex flex-wrap items-baseline gap-2 text-[11px]">
+            <span className="font-mono text-muted-foreground">{entry.created_at?.slice(11, 19)}</span>
+            <span className="font-medium">{stageLabel[entry.stage] || entry.stage}</span>
+            <span className={levelColor[entry.level] || "text-muted-foreground"}>{entry.message}</span>
+          </li>)}
+        </ol>
+      </div>
+    })}
+  </CardContent></Card>
+}
 
 function Status({ value }: { value: string }) {
   return <Badge variant={value === "succeeded" ? "default" : value === "failed" ? "destructive" : "secondary"}>{statusLabel[value] || value}</Badge>
@@ -170,6 +230,8 @@ export function AICenterPage() {
       <Card><CardHeader><CardTitle className="text-sm">Игрок для проверки</CardTitle></CardHeader><CardContent className="space-y-3"><div className="relative"><Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" /><Input className="pl-8" placeholder="Имя или SteamID" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="max-h-80 space-y-1 overflow-auto">{players?.players.map((player) => <button key={player.player_id} onClick={() => setSelected(player)} className={`w-full rounded border p-2 text-left text-sm hover:bg-accent ${selected?.player_id === player.player_id ? "border-primary bg-accent" : ""}`}><div className="flex items-center justify-between gap-2"><span className="truncate">{player.name}</span><Status value={player.status} /></div><div className="text-xs text-muted-foreground">#{player.player_id} · вход: {fmt(player.last_login_time)}</div></button>)}{players && !players.players.length && <p className="text-sm text-muted-foreground">Ничего не найдено.</p>}</div>{isSuperuser && selected && <Button className="w-full" onClick={() => setConfirmOpen(true)} disabled={dossier?.status === "queued" || dossier?.status === "running"}><Play className="mr-1.5 size-3.5" /> Запустить для {selected.name}</Button>}</CardContent></Card>
       <Card><CardHeader><CardTitle className="text-sm">Результат {selected && <span className="font-normal text-muted-foreground">— {selected.name}</span>}</CardTitle></CardHeader><CardContent className="space-y-4">{!selected && <p className="text-sm text-muted-foreground">Выберите реального игрока слева. Синтетические профили оставим для health-check.</p>}{selected && !dossier && <p className="text-sm text-muted-foreground">Загрузка…</p>}{dossier && <><div className="flex flex-wrap items-center gap-2"><Status value={dossier.status} /> <span className="text-xs text-muted-foreground">{fmt(dossier.generated_at)} · {dossier.model || "модель не указана"}</span>{dossier.run && <span className="text-xs text-muted-foreground">{dossier.run.latency_ms ?? "—"} мс · {dossier.run.prompt_tokens ?? "—"}+{dossier.run.completion_tokens ?? "—"} токенов</span>}<Link className="text-xs text-primary underline" to={`/players/${selected?.player_id}`}>Открыть профиль <ExternalLink className="inline size-3" /></Link></div>{dossier.status === "failed" && dossier.error && <div className="rounded border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive">Qwen не ответил: {dossier.error}. Показан последний валидный результат или серверный rules-only результат.</div>}{dossier.stale && <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-sm">Старый формат досье устарел и скрыт до перегенерации. История запусков сохранена.</div>}{dossier.result && <DossierResultView result={dossier.result} />}{!dossier.result && dossier.status !== "failed" && <p className="text-sm text-muted-foreground">Задача {statusLabel[dossier.status] || dossier.status}.</p>}</>}</CardContent></Card>
     </div>
+
+    <TaskLogCard />
 
     <Card><CardHeader><CardTitle className="text-sm">Последние AI-запуски</CardTitle></CardHeader><CardContent className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b text-xs text-muted-foreground"><th className="p-2">Время</th><th className="p-2">Источник</th><th className="p-2">Игрок</th><th className="p-2">Инициатор</th><th className="p-2">Статус</th><th className="p-2">Latency / токены</th><th className="p-2">Ошибка</th></tr></thead><tbody>{runs?.runs.map((run) => <tr key={run.id} className="border-b last:border-0"><td className="p-2 whitespace-nowrap">{fmt(run.requested_at)}</td><td className="p-2">{sourceLabel[run.source] || run.source}</td><td className="p-2">{run.player_id ? <Link className="text-primary underline" to={`/players/${run.player_id}`}>{run.player_name || `#${run.player_id}`}</Link> : "—"}</td><td className="p-2">{run.requested_by_admin_id ? `#${run.requested_by_admin_id}` : "система"}</td><td className="p-2"><Status value={run.status} /></td><td className="p-2 whitespace-nowrap">{run.latency_ms ?? "—"} мс / {run.prompt_tokens ?? "—"}+{run.completion_tokens ?? "—"}</td><td className="max-w-xs truncate p-2 text-xs text-destructive">{run.error || "—"}</td></tr>)}</tbody></table>{!runs?.runs.length && <p className="p-3 text-sm text-muted-foreground">Запусков пока нет.</p>}</CardContent></Card>
 
