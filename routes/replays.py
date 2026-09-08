@@ -83,6 +83,11 @@ def _expire_stale_streams() -> None:
         directory = os.path.join(STREAM_ROOT, stream_id)
         if not os.path.isdir(directory) or os.path.getmtime(directory) > cutoff:
             continue
+        # A directory without sequence zero is an orphan, not a playable
+        # stream. Leave it for a later retry instead of emitting an exception
+        # on every incoming request.
+        if not os.path.exists(os.path.join(directory, "00000000.bin")):
+            continue
         try:
             _assemble_stream(directory, b"", None, broken=True, keep_directory=True)
         except Exception:
@@ -718,6 +723,24 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
     chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
     expected = [f"{index:08d}.bin" for index in range(len(chunk_names))]
     if chunk_names != expected:
+        if broken:
+            # Preserve the longest valid prefix. The missing chunks can still
+            # arrive later and the next assembly will replace this snapshot.
+            prefix = []
+            for index in range(len(chunk_names) + 1):
+                name = f"{index:08d}.bin"
+                if name not in chunk_names:
+                    break
+                prefix.append(name)
+            chunk_names = prefix
+        else:
+            missing = [name for name in expected if name not in chunk_names]
+            raise HTTPException(status_code=409, detail={
+                "message": "Поток демки содержит пропущенные чанки",
+                "missing": missing[:20],
+                "received": chunk_names[-5:],
+            })
+    if not chunk_names:
         missing = [name for name in expected if name not in chunk_names]
         raise HTTPException(status_code=409, detail={
             "message": "Поток демки содержит пропущенные чанки",
@@ -739,7 +762,7 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
     try:
         replay = ReplayService(db).save_staged_demo(
             raw_path, os.path.basename(raw_path), server_name=server_name,
-            notes=("Собрано потоковым WorldDemoStreamer; поток прерван более часа"
+            notes=("Собрано потоковым WorldDemoStreamer; поток прерван более минуты"
                    if broken else "Собрано потоковым WorldDemoStreamer"),
             stream_id=os.path.basename(directory), is_broken=broken,
         )
