@@ -90,7 +90,7 @@ def punishment_discord_state(punishment, issuer_name: str) -> dict:
         "issuer": issuer_name,
         "reason": clean_punishment_reason(punishment.reason)[0],
         "expires_at": punishment.expires_at.strftime("%d.%m.%Y %H:%M") if punishment.expires_at else None,
-        "status": {"expired": "Истекло", "void": "Аннулировано"}.get(status),
+        "status": {"expired": "Истекло", "void": "Отменено"}.get(status),
     }
 
 

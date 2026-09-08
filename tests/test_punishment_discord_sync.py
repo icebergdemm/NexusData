@@ -32,7 +32,7 @@ def _embed():
             {"name": "Выдал", "value": "ND. Старое имя", "inline": True},
             {"name": "Причина", "value": "Старая причина", "inline": False},
             {"name": "Истекает", "value": "01.01.2020 00:00", "inline": True},
-            {"name": "Статус", "value": "Аннулировано", "inline": False},
+            {"name": "Статус", "value": "Отменено", "inline": False},
         ],
     }
 
@@ -79,11 +79,11 @@ def test_apply_state_adds_void_status_without_touching_unmanaged_fields():
         "issuer": "ND. Ник",
         "reason": "Причина",
         "expires_at": None,
-        "status": "Аннулировано",
+        "status": "Отменено",
     })
 
     fields = {field["name"]: field["value"] for field in embed["fields"]}
-    assert fields["Статус"] == "Аннулировано"
+    assert fields["Статус"] == "Отменено"
     assert "Истекает" not in fields
     assert embed["description"] == "Неуправляемое поле"
 
