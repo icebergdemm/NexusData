@@ -31,7 +31,7 @@ from models import AdminUser, AdminSession, Department, TaskBoard, TaskColumn, T
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-TASK_PRIORITIES = {"low", "medium", "high", "urgent"}
+TASK_PRIORITIES = {"low", "medium", "high", "urgent", "ultra"}
 
 
 # ── Auth (self-contained, mirrors routes/departments.py's dependency) ───────
@@ -625,6 +625,41 @@ async def api_update_task(task_id: int, request: Request, db: Session = Depends(
 
     db.commit()
     _log_task_activity(db, task.id, current_admin.id, "update", None)
+    comment_count = db.query(TaskComment).filter(TaskComment.task_id == task.id).count()
+    attachment_count = db.query(TaskAttachment).filter(TaskAttachment.task_id == task.id).count()
+    return {"status": "ok", "task": serialize_task(task, comment_count, attachment_count)}
+
+
+@router.post("/api/v1/admin/tasks/tasks/{task_id}/move")
+async def api_move_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    require_tasks_page(current_admin, "manage_boards")
+
+    task = get_task_or_404(db, task_id)
+    body = await request.json()
+    try:
+        target_board_id = int(body.get("target_board_id"))
+        target_column_id = int(body.get("target_column_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Укажите целевую доску и колонку")
+
+    target_board = get_board_or_404(db, target_board_id)
+    if task.board_id == target_board.id:
+        raise HTTPException(status_code=400, detail="Задача уже находится на этой доске")
+    target_column = get_column_or_404(db, target_board.id, target_column_id)
+
+    source_board = db.query(TaskBoard).filter(TaskBoard.id == task.board_id).first()
+    source_column = db.query(TaskColumn).filter(TaskColumn.id == task.column_id).first()
+    max_order = db.query(func.max(Task.sort_order)).filter(Task.column_id == target_column.id).scalar()
+    old_location = f"{source_board.name if source_board else task.board_id} / {source_column.name if source_column else task.column_id}"
+    new_location = f"{target_board.name} / {target_column.name}"
+
+    task.board_id = target_board.id
+    task.column_id = target_column.id
+    task.sort_order = (max_order if max_order is not None else -1) + 1
+    _log_task_activity(db, task.id, current_admin.id, "move", f"{old_location} → {new_location}")
+    db.commit()
+    db.refresh(task)
+
     comment_count = db.query(TaskComment).filter(TaskComment.task_id == task.id).count()
     attachment_count = db.query(TaskAttachment).filter(TaskAttachment.task_id == task.id).count()
     return {"status": "ok", "task": serialize_task(task, comment_count, attachment_count)}

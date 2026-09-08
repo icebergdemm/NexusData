@@ -1,6 +1,6 @@
 import { api } from "@/lib/api"
 
-export type TaskPriority = "low" | "medium" | "high" | "urgent"
+export type TaskPriority = "low" | "medium" | "high" | "urgent" | "ultra"
 export type TaskStatus = "review" | "in_progress" | "done"
 
 export const PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -8,6 +8,7 @@ export const PRIORITY_LABELS: Record<TaskPriority, string> = {
   medium: "Средний",
   high: "Высокий",
   urgent: "Срочно",
+  ultra: "УЛЬТРА СУПЕР МЕГА ОЧЕНЬ СРОЧНЫЙ СПАТЬ НЕЛЬЗЯ РАБОТАТЬ НАДО",
 }
 
 export const PRIORITY_COLORS: Record<TaskPriority, string> = {
@@ -15,6 +16,7 @@ export const PRIORITY_COLORS: Record<TaskPriority, string> = {
   medium: "#3B82F6",
   high: "#F59E0B",
   urgent: "#EF4444",
+  ultra: "#F43F5E",
 }
 
 export const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -207,6 +209,8 @@ export const tasksApi = {
       column_id: number; sort_order: number
       status: TaskStatus; is_hidden: boolean; rejection_reason: string | null; preview_attachment_id: number | null
     }>) => api.patch<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}`, body),
+    move: (taskId: number, body: { target_board_id: number; target_column_id: number }) =>
+      api.post<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}/move`, body),
     delete: (taskId: number) => api.delete<{ status: string }>(`${base}/tasks/${taskId}`),
     reorder: (boardId: number, columns: Record<number, number[]>) =>
       api.post<{ status: string }>(`${base}/boards/${boardId}/tasks/reorder`, { columns }),

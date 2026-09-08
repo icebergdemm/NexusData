@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink,
+  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink, ArrowRightLeft,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -27,7 +27,7 @@ import { UI_BASENAME } from "@/lib/ui-version"
 import { ImageLightbox, type LightboxImage } from "@/components/ui/image-lightbox"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
-  type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type AssigneeCandidates,
+  type TaskBoardRow, type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type AssigneeCandidates,
 } from "./api"
 import { BoardPermissionsDialog } from "./BoardPermissionsDialog"
 
@@ -45,21 +45,115 @@ function sendLinkToChat(text: string) {
   toast.success("Ссылка добавлена в чат")
 }
 
+function MoveTaskDialog({ task, currentBoardId, open, onOpenChange, onMoved }: {
+  task: TaskRow | null
+  currentBoardId: number
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onMoved: (targetBoardId: number, taskId: number) => void
+}) {
+  const queryClient = useQueryClient()
+  const [targetBoardId, setTargetBoardId] = useState("")
+  const [targetColumnId, setTargetColumnId] = useState("")
+
+  const { data: boardsData, isLoading: boardsLoading } = useQuery({
+    queryKey: ["task-boards"],
+    queryFn: () => tasksApi.boards.list(),
+    enabled: open,
+  })
+  const availableBoards = boardsData?.boards.filter((board) => board.id !== currentBoardId) ?? []
+  const selectedBoardId = Number(targetBoardId)
+  const { data: selectedBoard, isLoading: columnsLoading } = useQuery({
+    queryKey: ["task-move-board", selectedBoardId],
+    queryFn: () => tasksApi.boards.get(selectedBoardId),
+    enabled: open && !!selectedBoardId,
+  })
+
+  useEffect(() => {
+    if (open) {
+      setTargetBoardId("")
+      setTargetColumnId("")
+    }
+  }, [open, task?.id, currentBoardId])
+
+  useEffect(() => {
+    setTargetColumnId("")
+  }, [targetBoardId])
+
+  const moveMutation = useMutation({
+    mutationFn: () => tasksApi.tasks.move(task?.id as number, {
+      target_board_id: selectedBoardId,
+      target_column_id: Number(targetColumnId),
+    }),
+    onSuccess: () => {
+      const movedTaskId = task?.id
+      if (!movedTaskId) return
+      queryClient.invalidateQueries({ queryKey: ["task-boards"] })
+      queryClient.invalidateQueries({ queryKey: ["task-board"] })
+      onOpenChange(false)
+      onMoved(selectedBoardId, movedTaskId)
+      toast.success("Задача перенесена")
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Перенести задачу</DialogTitle>
+          <DialogDescription className="truncate" title={task?.title}>{task?.title}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="mb-1.5 block">Целевая доска</Label>
+            <Select value={targetBoardId || "none"} onValueChange={(value) => setTargetBoardId(value === "none" ? "" : value)} disabled={boardsLoading}>
+              <SelectTrigger><SelectValue placeholder={boardsLoading ? "Загрузка…" : "Выберите доску"} /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Выберите доску</SelectItem>
+                {availableBoards.map((board: TaskBoardRow) => <SelectItem key={board.id} value={String(board.id)}>{board.icon} {board.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="mb-1.5 block">Целевая колонка</Label>
+            <Select value={targetColumnId || "none"} onValueChange={(value) => setTargetColumnId(value === "none" ? "" : value)} disabled={!selectedBoardId || columnsLoading}>
+              <SelectTrigger><SelectValue placeholder={columnsLoading ? "Загрузка…" : "Выберите колонку"} /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Выберите колонку</SelectItem>
+                {selectedBoard?.columns.map((column) => <SelectItem key={column.id} value={String(column.id)}>{column.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>Отмена</Button>
+          <Button disabled={!task || !selectedBoardId || !targetColumnId || moveMutation.isPending} onClick={() => moveMutation.mutate()}>
+            <ArrowRightLeft className="size-4" /> Перенести
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function TaskStatusBadge({ status }: { status: TaskStatus }) {
   return <Badge style={{ backgroundColor: `${STATUS_COLORS[status as TaskStatus]}22`, color: STATUS_COLORS[status as TaskStatus] }} className="text-[10px]">{STATUS_LABELS[status as TaskStatus] ?? status}</Badge>
 }
 
 // ── Board Permissions Dialog с поиском ───────────────────────────────────────
 // ── Task Card (без тегов, с анимацией) ───────────────────────────────────────
-function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns, canEdit, canDelete }: {
+function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, columns, canEdit, canDelete, canManageBoards }: {
   task: TaskRow
   onOpen: () => void
   onDragStart: (e: React.DragEvent) => void
   onDeleted: () => void
+  onMove: () => void
   boardId: number
   columns: TaskColumnRow[]
   canEdit: boolean
   canDelete: boolean
+  canManageBoards: boolean
 }) {
   const overdue = isOverdue(task)
   const queryClient = useQueryClient()
@@ -92,6 +186,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns, canE
         { label: "Копировать ссылку на задачу", icon: Link2, onSelect: () => copyToClipboard(taskLink, "Ссылка") },
         { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}`) },
         ...moveActions.slice(0, 5),
+        ...(canManageBoards ? [{ label: "Перенести на другую доску", icon: ArrowRightLeft, onSelect: onMove, separatorBefore: true }] : []),
         ...(canEdit ? [
           { label: task.priority === "urgent" ? "Снять высокий приоритет" : "Выделить высоким приоритетом", icon: Flag, onSelect: toggleUrgent, separatorBefore: true },
           { label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : EyeOff, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) },
@@ -106,7 +201,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns, canE
       draggable={canEdit}
       onDragStart={canEdit ? onDragStart : undefined}
       onClick={onOpen}
-      className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-[0.98] data-[dragging=true]:opacity-50 ${task.is_hidden ? "opacity-60 border-dashed" : ""} ${task.priority === "urgent" ? "ring-1 ring-urgent/30" : ""}`}
+      className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-[0.98] data-[dragging=true]:opacity-50 ${task.is_hidden ? "opacity-60 border-dashed" : ""} ${task.priority === "urgent" ? "ring-1 ring-urgent/30" : ""} ${task.priority === "ultra" ? "task-priority-ultra" : ""}`}
     >
       {task.preview_url && <img src={task.preview_url} alt="" className="h-28 w-full object-cover" />}
       <CardContent className="space-y-1.5 p-3">
@@ -116,7 +211,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns, canE
         </div>
         <div className="flex flex-wrap items-center gap-1">
           <TaskStatusBadge status={task.status} />
-          {task.priority && <Badge style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className="text-[10px]">{PRIORITY_LABELS[task.priority]}</Badge>}
+          {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className={`text-[10px] ${task.priority === "ultra" ? "max-w-full min-w-0 truncate" : ""}`}>{PRIORITY_LABELS[task.priority]}</Badge>}
           {task.attachment_count > 0 && <Badge variant="outline" className="gap-1 text-[10px]"><ImageIcon className="size-3" />{task.attachment_count}</Badge>}
           {task.rejection_reason && <Badge variant="outline" className="text-[10px] border-destructive/40 text-destructive">отклонена</Badge>}
         </div>
@@ -144,7 +239,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, boardId, columns, canE
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
-function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn }: {
+function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
@@ -155,6 +250,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   onDeleteColumn: () => void
   onCreateTask: (columnId: number, title: string) => void
   onTaskDeleted: () => void
+  onMoveTask: (task: TaskRow) => void
   boardId: number
   allColumns: TaskColumnRow[]
   currentAdminId: number | undefined
@@ -215,7 +311,9 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             columns={allColumns}
             canEdit={taskRights(t).edit}
             canDelete={taskRights(t).delete}
+            canManageBoards={canManageBoards}
             onOpen={() => onOpenTask(t.id)}
+            onMove={() => onMoveTask(t)}
             onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
             onDeleted={onTaskDeleted}
           />
@@ -248,7 +346,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
 }
 
 // ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
-function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
+function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, canManageBoards, onMove, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
@@ -257,6 +355,8 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
   canEditOwn: boolean
   canDeleteAll: boolean
   canDeleteOwn: boolean
+  canManageBoards: boolean
+  onMove: () => void
   currentAdminId: number | undefined
   boardId: number
   allTasks?: TaskRow[]
@@ -363,7 +463,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
   return (
     <>
     <Dialog open={!!taskId} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90vh] w-full max-w-2xl overflow-y-auto" onOpenAutoFocus={(e) => e.preventDefault()}>
+      <DialogContent className={`max-h-[90vh] w-full max-w-2xl overflow-y-auto ${task.priority === "ultra" ? "task-priority-ultra" : ""}`} onOpenAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Input
@@ -380,6 +480,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
             {task.is_hidden && <Badge variant="outline" className="border-warning/40 text-warning">скрыта</Badge>}
             {task.rejection_reason && <span className="text-xs text-destructive">Отклонена: {task.rejection_reason}</span>}
           </DialogDescription>
+          {canManageBoards && <Button variant="outline" size="sm" className="w-fit" onClick={onMove}><ArrowRightLeft className="size-4" /> Перенести на другую доску</Button>}
         </DialogHeader>
 
         <div className="space-y-4">
@@ -750,6 +851,7 @@ export function TaskBoardPage() {
   const [deleteColumn, setDeleteColumn] = useState<TaskColumnRow | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
+  const [moveTask, setMoveTask] = useState<TaskRow | null>(null)
   const [highlightCommentId, setHighlightCommentId] = useState<number | null>(null)
   const [showHidden, setShowHidden] = useState(false)
   const [permsOpen, setPermsOpen] = useState(false)
@@ -896,6 +998,7 @@ export function TaskBoardPage() {
               onDeleteColumn={() => setDeleteColumn(col)}
               onCreateTask={(columnId, title) => createTaskMutation.mutate({ columnId, title })}
               onTaskDeleted={invalidate}
+              onMoveTask={setMoveTask}
               boardId={boardIdNum}
               allColumns={data.columns}
               currentAdminId={admin?.id}
@@ -923,10 +1026,20 @@ export function TaskBoardPage() {
         canEditOwn={canEditOwn}
         canDeleteAll={data.can_delete_all}
         canDeleteOwn={canDeleteOwn}
+        canManageBoards={data.can_manage_boards}
+        onMove={() => selectedTask && setMoveTask(selectedTask)}
         currentAdminId={admin?.id}
         boardId={boardIdNum}
         onOpenLightbox={openLightbox}
         highlightCommentId={highlightCommentId}
+      />
+
+      <MoveTaskDialog
+        task={moveTask}
+        currentBoardId={boardIdNum}
+        open={!!moveTask}
+        onOpenChange={(open) => !open && setMoveTask(null)}
+        onMoved={(targetBoardId, taskId) => navigate(`/tasks/${targetBoardId}?task=${taskId}`)}
       />
 
       <BoardPermissionsDialog boardId={boardIdNum} open={permsOpen} onOpenChange={setPermsOpen} />

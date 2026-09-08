@@ -1962,7 +1962,7 @@ class Task(Base):
     title = Column(String(500), nullable=False)
     description = Column(String(4000), nullable=True)
     deadline = Column(DateTime, nullable=True)
-    priority = Column(String(10), nullable=True)  # "low" | "medium" | "high" | "urgent"
+    priority = Column(String(10), nullable=True)  # "low" | "medium" | "high" | "urgent" | "ultra"
     tags = Column(JSON, default=lambda: [])
     # An assignee can be an admin, a department, or both (e.g. "this
     # employee, on behalf of this department") — either may be NULL.

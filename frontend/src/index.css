@@ -1,5 +1,32 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+
+@property --task-rainbow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes task-rainbow-spin {
+  to { --task-rainbow-angle: 360deg; }
+}
+
+.task-priority-ultra {
+  border: 2px solid transparent !important;
+  background:
+    linear-gradient(var(--card), var(--card)) padding-box,
+    conic-gradient(from var(--task-rainbow-angle), #ef4444, #f59e0b, #eab308, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444) border-box !important;
+  animation: task-rainbow-spin 3s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-priority-ultra {
+    animation: none;
+    background:
+      linear-gradient(var(--card), var(--card)) padding-box,
+      conic-gradient(#ef4444, #f59e0b, #eab308, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444) border-box !important;
+  }
+}
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
