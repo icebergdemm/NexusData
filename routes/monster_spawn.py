@@ -31,6 +31,11 @@ class PluginTelemetry(BaseModel):
     telemetry: Dict[str, Any] = Field(default_factory=dict)
 
 
+class RoundReportPayload(BaseModel):
+    server: str
+    report: Dict[str, Any]
+
+
 class AdminUpdate(BaseModel):
     config: Optional[Dict[str, Any]] = None
     memory: Optional[Dict[str, Any]] = None
@@ -160,6 +165,7 @@ def _serialize(row: MonsterSpawnControl) -> dict:
         "memory": memory,
         "plans": row.plans if isinstance(row.plans, list) else [],
         "telemetry": telemetry,
+        "round_reports": getattr(row, "round_reports", []) if isinstance(getattr(row, "round_reports", []), list) else [],
         "dashboard": {
             "round_active": bool(telemetry.get("round_active", False)),
             "round_seconds": telemetry.get("round_seconds", 0),
@@ -365,6 +371,20 @@ def plugin_telemetry(payload: PluginTelemetry, db: Session = Depends(get_game_db
     return {"status": "ok", "desired_revision": row.desired_revision}
 
 
+@game_router.post("/round-report")
+def plugin_round_report(payload: RoundReportPayload, db: Session = Depends(get_game_db)):
+    server = _normalize_server(payload.server)
+    row = _get_or_create(db, server)
+    reports = row.round_reports if isinstance(row.round_reports, list) else []
+    report = dict(payload.report)
+    report.setdefault("received_at_utc", datetime.utcnow().isoformat())
+    reports.append(report)
+    row.round_reports = reports[-50:]
+    row.last_seen_at = datetime.utcnow()
+    db.commit()
+    return {"status": "ok", "reports": len(row.round_reports)}
+
+
 @admin_router.get("")
 def admin_state(
     server: str = Query(...),
@@ -423,6 +443,18 @@ def admin_analysis(
     db.commit()
     db.refresh(row)
     return _build_spawn_analysis(row)
+
+
+@admin_router.get("/reports")
+def admin_reports(
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    _require(admin, "view")
+    row = _get_or_create(db, _normalize_server(server))
+    db.commit()
+    return {"server": row.server, "reports": row.round_reports if isinstance(row.round_reports, list) else []}
 
 
 # ---------------------------------------------------------------------------

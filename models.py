@@ -2160,6 +2160,7 @@ class MonsterSpawnControl(Base):
     memory = Column(JSON, nullable=False, default=lambda: {})
     plans = Column(JSON, nullable=False, default=lambda: [])
     telemetry = Column(JSON, nullable=False, default=lambda: {})
+    round_reports = Column(JSON, nullable=False, default=lambda: [])
     desired_revision = Column(Integer, nullable=False, default=0)
     applied_revision = Column(Integer, nullable=False, default=0)
     updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)

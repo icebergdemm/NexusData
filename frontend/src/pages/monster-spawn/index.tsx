@@ -45,6 +45,7 @@ import {
   type SpawnWave,
   type SpeciesThreatTelemetry,
   type WaveOverride,
+  type RoundReport,
 } from "./api"
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
@@ -71,6 +72,22 @@ function Metric({ icon: Icon, label, value, detail, tone = "primary" }: { icon: 
       <div className="min-w-0"><div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</div><div className="mt-1 truncate text-2xl font-semibold tracking-tight">{value}</div><div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div></div>
     </CardContent>
   </Card>
+}
+
+function RoundReports({ reports }: { reports: RoundReport[] }) {
+  const download = (report: RoundReport) => {
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `monster-round-${String(report.round_start_utc ?? "report").replace(/[:.]/g, "-")}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  return <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Files className="size-4 text-info" /> Подробные отчёты раундов</CardTitle><CardDescription className="text-xs">Полный timeline решений, обмена с сайтом, спавнов, исходов и адаптивности. JSON скачивается без потери данных.</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
+    {!reports.length && <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Отчёты появятся после завершения раунда</div>}
+    {reports.slice().reverse().map((report, index) => <details key={String(report.round_start_utc ?? index)} className="rounded-xl border bg-muted/10 p-3 text-xs"><summary className="flex cursor-pointer list-none flex-wrap items-center gap-2"><span className="font-medium">{report.submarine_name ?? "unknown"}</span><Badge variant="outline">{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "без даты"}</Badge><span className="text-muted-foreground">волн: {Array.isArray(report.waves) ? report.waves.length : 0} · событий: {Array.isArray(report.events) ? report.events.length : 0}</span><Button className="ml-auto" size="sm" variant="outline" onClick={(event) => { event.preventDefault(); download(report) }}>JSON</Button></summary><div className="mt-3 space-y-2 border-t pt-3"><div className="grid gap-2 sm:grid-cols-4">{Object.entries(report.summary ?? {}).slice(0, 8).map(([key, value]) => <div key={key} className="rounded-lg bg-background/70 p-2"><div className="text-[10px] text-muted-foreground">{key}</div><div className="font-mono">{String(value)}</div></div>)}</div><div className="max-h-72 overflow-auto rounded-lg bg-background p-2 font-mono text-[10px]">{(report.events ?? []).map((event, eventIndex) => <div key={eventIndex} className="border-b border-border/50 py-1 last:border-0"><span className="text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)}s</span> <b>{event.direction}</b> {event.kind} <span className="break-all text-muted-foreground">{event.payload}</span></div>)}</div></div></details>)}
+  </CardContent></Card>
 }
 
 function ChartCard({ title, description, children, className = "" }: { title: string; description?: string; children: React.ReactNode; className?: string }) {
@@ -672,6 +689,7 @@ export function MonsterSpawnPage() {
   const world = useQuery({ queryKey: ["world-state", round?.round_id], queryFn: () => worldStateApi.getState(round!.round_id), enabled: !!round, refetchInterval: 3000 })
   const state = useQuery({ queryKey: ["monster-spawn", server], queryFn: () => monsterSpawnApi.get(server), refetchInterval: 5000 })
   const analysis = useQuery({ queryKey: ["monster-spawn-analysis", server], queryFn: () => monsterSpawnApi.analysis(server), refetchInterval: 15000, staleTime: 5000 })
+  const reports = useQuery({ queryKey: ["monster-spawn-reports", server], queryFn: () => monsterSpawnApi.reports(server), refetchInterval: 15000 })
   // История интенсивности за текущий раунд: точка на каждый свежий опрос
   // плагина (~5 c, окно ~6 мин). last_seen_at меняется только когда плагин
   // реально прислал телеметрию — по нему отсекаем дубли одного снапшота,
@@ -892,7 +910,7 @@ export function MonsterSpawnPage() {
     <PageHeader title="Управление монстрами" description="Ванильный pipeline под контролем MonsterSpawnController: наблюдай, корректируй, не применяй вслепую" icon={Skull} actions={<div className="flex gap-2"><Select value={server} onValueChange={setServer}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent>{["ASPER1", "ASPER2"].map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select><Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save className="size-4" /> Сохранить</Button></div>} />
     <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card px-3 py-2 text-xs"><Badge variant={dashboard.round_active ? "default" : "outline"}>{dashboard.round_active ? "Раунд активен" : "Ожидание раунда"}</Badge><Badge variant={draft.pending ? "destructive" : "secondary"}>{draft.pending ? `Ожидает применения r${draft.desired_revision}` : `Применено r${draft.applied_revision}`}</Badge>{dashboard.round_active && <Badge variant="outline">волн в бою: {dashboard.blocking_wave_count ?? 0} (лимит {dashboard.max_simultaneous_waves ?? 1})</Badge>}{dashboard.last_spawn_scheme && <Badge variant="outline" className="text-[10px]">схема: {dashboard.last_spawn_scheme}{dashboard.last_spawn_zone ? ` · ${dashboard.last_spawn_zone}` : ""}</Badge>}<span className="text-muted-foreground">Vanilla pipeline: <b className="text-foreground">{String(vanilla.mode ?? "controller")}</b></span>{dirty && <Badge variant="outline">Есть несохранённые изменения</Badge>}<span className="ml-auto text-muted-foreground">Последний контакт: {draft.last_seen_at ? formatBrowserDate(draft.last_seen_at) : "нет данных"}</span></div>
 
-    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0">
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0">{activeTab === "logs" && <RoundReports reports={reports.data?.reports ?? []} />}
       <TabsList className="grid h-auto w-full grid-cols-3 gap-1 bg-muted/60 p-1 sm:grid-cols-4 lg:grid-cols-7"><TabsTrigger value="overview" className="gap-2 py-2"><Activity className="size-4" /> Обзор</TabsTrigger><TabsTrigger value="monitoring" className="gap-2 py-2"><Radar className="size-4" /> Мониторинг</TabsTrigger><TabsTrigger value="llm" className="gap-2 py-2"><Bot className="size-4" /> LLM-ассистент</TabsTrigger><TabsTrigger value="control" className="gap-2 py-2"><SlidersHorizontal className="size-4" /> Визуальное управление</TabsTrigger><TabsTrigger value="schemes" className="gap-2 py-2"><Layers className="size-4" /> Схемы спавна</TabsTrigger><TabsTrigger value="logs" className="gap-2 py-2"><TrendingUp className="size-4" /> Логи и анализ</TabsTrigger><TabsTrigger value="manual" className="gap-2 py-2"><Target className="size-4" /> Ручная настройка</TabsTrigger></TabsList>
 
       <TabsContent value="overview" className="space-y-4 pt-2">

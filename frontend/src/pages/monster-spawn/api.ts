@@ -93,7 +93,19 @@ export interface MonsterSpawnState {
   pending: boolean
   updated_at: string | null
   last_seen_at: string | null
+  round_reports?: RoundReport[]
   dashboard?: MonsterSpawnDashboard
+}
+
+export interface RoundReport {
+  round_start_utc?: string
+  round_end_utc?: string
+  round_duration_seconds?: number
+  submarine_name?: string
+  summary?: Record<string, unknown>
+  waves?: Array<Record<string, unknown>>
+  events?: Array<{ time_seconds?: number; direction?: string; kind?: string; payload?: string }>
+  [key: string]: unknown
 }
 
 export interface MonsterSpawnDashboard {
@@ -391,6 +403,7 @@ export const monsterSpawnApi = {
   update: (server: string, body: Partial<Pick<MonsterSpawnState, "config" | "memory" | "plans">>) =>
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
   analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
+  reports: (server: string) => api.get<{ server: string; reports: RoundReport[] }>(`/api/v1/admin/monster-spawn/reports?server=${encodeURIComponent(server)}`),
   llmRuntime: (server: string) =>
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
   updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) =>
