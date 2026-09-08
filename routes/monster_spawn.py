@@ -201,6 +201,7 @@ def _serialize(row: MonsterSpawnControl) -> dict:
             "known_submarines": len(submarines),
             # Политика столкновения и одновременные волны.
             "blocking_wave_count": telemetry.get("blocking_wave_count", 0),
+            "tracked_wave_count": telemetry.get("tracked_wave_count", telemetry.get("blocking_wave_count", 0)),
             "max_simultaneous_waves": telemetry.get("max_simultaneous_waves", 1),
             "last_spawn_scheme": telemetry.get("last_spawn_scheme"),
             "last_spawn_zone": telemetry.get("last_spawn_zone"),

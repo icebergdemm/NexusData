@@ -119,6 +119,7 @@ export interface MonsterSpawnDashboard {
   pending_waves: number
   known_submarines: number
   blocking_wave_count?: number
+  tracked_wave_count?: number
   max_simultaneous_waves?: number
   last_spawn_scheme?: string | null
   last_spawn_zone?: string | null
@@ -390,7 +391,8 @@ export const normalizeMonsterSpawnState = (value: MonsterSpawnState): MonsterSpa
       event_threshold: typeof telemetry.event_threshold === "number" ? telemetry.event_threshold : 0.2,
       pending_waves: typeof telemetry.pending_waves === "number" ? telemetry.pending_waves : 0,
       known_submarines: Object.keys(submarines).length,
-      blocking_wave_count: typeof telemetry.blocking_wave_count === "number" ? telemetry.blocking_wave_count : 0,
+       blocking_wave_count: typeof telemetry.blocking_wave_count === "number" ? telemetry.blocking_wave_count : 0,
+       tracked_wave_count: typeof telemetry.tracked_wave_count === "number" ? telemetry.tracked_wave_count : 0,
       max_simultaneous_waves: typeof telemetry.max_simultaneous_waves === "number" ? telemetry.max_simultaneous_waves : 1,
       last_spawn_scheme: typeof telemetry.last_spawn_scheme === "string" ? telemetry.last_spawn_scheme : null,
       last_spawn_zone: typeof telemetry.last_spawn_zone === "string" ? telemetry.last_spawn_zone : null,
