@@ -1095,6 +1095,11 @@ class RoundReplay(Base):
     recorded_at = Column(DateTime, nullable=True)         # round start time
     uploaded_at = Column(DateTime, default=func.now(), index=True)
     notes = Column(String(1000), nullable=True)
+    # Stream lifecycle is durable so a process restart does not turn an
+    # interrupted live demo into an invisible orphan.
+    stream_id = Column(String(100), nullable=True, unique=True, index=True)
+    is_broken = Column(Boolean, nullable=False, default=False, index=True)
+    broken_at = Column(DateTime, nullable=True)
     # Manual escape hatch when the automatic header-timestamp/server_name
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.
@@ -2160,7 +2165,10 @@ class MonsterSpawnControl(Base):
     memory = Column(JSON, nullable=False, default=lambda: {})
     plans = Column(JSON, nullable=False, default=lambda: [])
     telemetry = Column(JSON, nullable=False, default=lambda: {})
-    round_reports = Column(JSON, nullable=False, default=lambda: [])
+    # MariaDB treats JSON as LONGTEXT and may contain legacy empty strings.
+    # Keep this append-only report envelope as text and parse it defensively
+    # in the route, so one malformed historical report cannot break the panel.
+    round_reports = Column(Text, nullable=False, default="[]")
     desired_revision = Column(Integer, nullable=False, default=0)
     applied_revision = Column(Integer, nullable=False, default=0)
     updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)

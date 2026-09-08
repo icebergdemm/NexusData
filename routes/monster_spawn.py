@@ -1,6 +1,7 @@
 """Declarative control plane for the MonsterSpawnController game plugin."""
 
 from datetime import datetime
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -56,6 +57,19 @@ def _get_or_create(db: Session, server: str) -> MonsterSpawnControl:
         db.add(row)
         db.flush()
     return row
+
+
+def _round_reports(row: MonsterSpawnControl) -> List[Dict[str, Any]]:
+    raw = getattr(row, "round_reports", "[]")
+    if isinstance(raw, list):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, list) else []
+    except (TypeError, ValueError):
+        return []
 
 
 def _normalize_config(value: Any) -> Dict[str, Any]:
@@ -165,7 +179,7 @@ def _serialize(row: MonsterSpawnControl) -> dict:
         "memory": memory,
         "plans": row.plans if isinstance(row.plans, list) else [],
         "telemetry": telemetry,
-        "round_reports": getattr(row, "round_reports", []) if isinstance(getattr(row, "round_reports", []), list) else [],
+        "round_reports": _round_reports(row),
         "dashboard": {
             "round_active": bool(telemetry.get("round_active", False)),
             "round_seconds": telemetry.get("round_seconds", 0),
@@ -375,14 +389,14 @@ def plugin_telemetry(payload: PluginTelemetry, db: Session = Depends(get_game_db
 def plugin_round_report(payload: RoundReportPayload, db: Session = Depends(get_game_db)):
     server = _normalize_server(payload.server)
     row = _get_or_create(db, server)
-    reports = row.round_reports if isinstance(row.round_reports, list) else []
+    reports = _round_reports(row)
     report = dict(payload.report)
     report.setdefault("received_at_utc", datetime.utcnow().isoformat())
     reports.append(report)
-    row.round_reports = reports[-50:]
+    row.round_reports = json.dumps(reports[-50:], ensure_ascii=False, separators=(",", ":"))
     row.last_seen_at = datetime.utcnow()
     db.commit()
-    return {"status": "ok", "reports": len(row.round_reports)}
+    return {"status": "ok", "reports": len(reports[-50:])}
 
 
 @admin_router.get("")
@@ -454,7 +468,7 @@ def admin_reports(
     _require(admin, "view")
     row = _get_or_create(db, _normalize_server(server))
     db.commit()
-    return {"server": row.server, "reports": row.round_reports if isinstance(row.round_reports, list) else []}
+    return {"server": row.server, "reports": _round_reports(row)}
 
 
 # ---------------------------------------------------------------------------
