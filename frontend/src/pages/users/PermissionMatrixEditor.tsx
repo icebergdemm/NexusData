@@ -24,6 +24,15 @@ export function resolvePermissionValue(sources: Array<{ value: boolean; applies?
   return active.some((source) => source.value)
 }
 
+export function formatPermissionSource(source: { kind: string; [key: string]: unknown }): string {
+  if (source.kind === "individual") return "Индивидуальное правило"
+  if (source.kind === "group") return `Группа: ${String(source.group_name ?? "без названия")}${source.applies === false ? " (запрет не применяется)" : ""}`
+  if (source.kind === "department_access_level") return `${String(source.department_name ?? "Департамент")} → ${String(source.level_name ?? source.level_key)}${source.applies === false ? " (запрет не применяется)" : ""}`
+  if (source.kind === "department_site") return `Департамент: ${String(source.department_name ?? "общее правило")}`
+  if (source.kind === "superuser") return "Superuser: полный обход"
+  return "Базовое правило"
+}
+
 export function setPermissionOverride(value: PermissionValue, page: string, action: string, next: PermissionState): PermissionValue {
   const nextPage = { ...value[page] }
   if (next === undefined) delete nextPage[action]

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { AlertTriangle, ArrowLeft, Check, ExternalLink, KeyRound, ShieldCheck, Trash2, UserCog, Users } from "lucide-react"
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ExternalLink, KeyRound, ShieldCheck, Trash2, UserCog, Users } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 import { useCurrentAdmin, usePermissionRegistry, type PermissionRegistry } from "@/lib/auth"
 import { LoginKeysDialog } from "./LoginKeysDialog"
-import { hasPermissionConflict, permissionStatusLabel, resolvePermissionValue, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
+import { formatPermissionSource, hasPermissionConflict, permissionStatusLabel, resolvePermissionValue, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
 import type { AuthorizationTrace, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
 
@@ -110,8 +110,7 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<"all" | "allow" | "deny" | "override" | "conflict">("all")
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [expandedConflicts, setExpandedConflicts] = useState<Record<string, boolean>>({})
-  const [showSources, setShowSources] = useState(false)
+  const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({})
   const save = useMutation({
     mutationFn: (pages: PermissionValue) => api.post(`/api/v1/admin/users/${adminId}/assign-group`, { individual_permissions: { pages } }),
     onSuccess: () => { toast.success("Право обновлено"); onChanged() },
@@ -122,11 +121,18 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
   const getDisplayedDecision = (page: string, action: string, decision: AuthorizationTrace["effective"]["pages"][string][string]) => {
     const override = draft[page]?.[action]
     const sources = [
-      ...decision.sources.filter((source) => source.kind !== "individual"),
+      ...decision.sources.filter((source) => source.kind !== "individual").map((source) => ({ ...source })),
       ...(override === undefined ? [] : [{ kind: "individual", value: override }]),
     ]
+    if (override !== undefined) {
+      for (const source of sources) {
+        if (source.kind !== "individual" && source.applies !== false) {
+          source.applies = false
+          source.reason = "individual_permission_has_priority"
+        }
+      }
+    }
     const effective = resolvePermissionValue(sources, trace.admin.policy_mode)
-
     return { ...decision, value: effective, state: effective ? "allow" as const : "deny" as const, sources }
   }
 
@@ -149,24 +155,17 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
     save.mutate(next)
   }
   const togglePage = (page: string) => setExpanded((current) => ({ ...current, [page]: !(current[page] ?? true) }))
-  const sourceLabel = (source: { kind: string; [key: string]: unknown }) => {
-    if (source.kind === "individual") return "Индивидуально"
-    if (source.kind === "group") return `Группа: ${String(source.group_name ?? "без названия")}${source.applies === false ? " (запрет не применяется)" : ""}`
-    if (source.kind === "department_access_level") return `${String(source.department_name ?? "Департамент")} → ${String(source.level_name ?? source.level_key)}${source.applies === false ? " (запрет не применяется)" : ""}`
-    if (source.kind === "department_site") return "Правило департамента"
-    if (source.kind === "superuser") return "Superuser bypass"
-    return "Базовое правило"
-  }
+  const toggleDetails = (key: string) => setExpandedDetails((current) => ({ ...current, [key]: !(current[key] ?? false) }))
 
-  return <Card><CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><CardTitle className="text-base">Все page/action permissions</CardTitle><p className="mt-1 text-xs text-muted-foreground">Результат обновляется сразу после нажатия. Источник можно раскрыть, а конкретное право — изменить здесь.</p></div><Button size="sm" variant={showSources ? "secondary" : "outline"} onClick={() => setShowSources((value) => !value)}>{showSources ? "Скрыть источники" : "Показать источники"}</Button></div><div className="flex flex-wrap gap-2"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск страницы или действия..." className="min-w-64 flex-1" /><Select value={filter} onValueChange={(value) => setFilter(value as typeof filter)}><SelectTrigger className="w-52"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все права</SelectItem><SelectItem value="allow">Только разрешённые</SelectItem><SelectItem value="deny">Только запрещённые</SelectItem><SelectItem value="override">С override</SelectItem><SelectItem value="conflict">Только конфликты</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="space-y-2">
-    <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2 text-xs text-muted-foreground">Основной результат: <span className="text-success">Разрешено</span> или <span className="text-destructive">Запрещено</span>. Индивидуальное правило имеет приоритет. Группа и департамент только добавляют доступ, их запреты не применяются. Конфликт означает, что применимые источники дают разные решения — нажмите на плашку, чтобы увидеть какие именно. «Сбросить» убирает только индивидуальное правило.</div>
+  return <Card><CardHeader className="space-y-3"><div><CardTitle className="text-base">Все page/action permissions</CardTitle><p className="mt-1 text-xs text-muted-foreground">Результат обновляется сразу после нажатия. Подробности конкретного правила раскрываются прямо под ним.</p></div><div className="flex flex-wrap gap-2"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск страницы или действия..." className="min-w-64 flex-1" /><Select value={filter} onValueChange={(value) => setFilter(value as typeof filter)}><SelectTrigger className="w-52"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все права</SelectItem><SelectItem value="allow">Только разрешённые</SelectItem><SelectItem value="deny">Только запрещённые</SelectItem><SelectItem value="override">С override</SelectItem><SelectItem value="conflict">Только конфликты</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="space-y-2">
+    <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2 text-xs text-muted-foreground">Индивидуальное правило имеет приоритет. Группа и департамент только добавляют доступ, их запреты не применяются. Нажмите «Детали» у правила, чтобы увидеть источники и причину результата.</div>
     {rows.map(({ page, actions }) => <div key={page} className="rounded-md border"><button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left font-medium" onClick={() => togglePage(page)}><span>{registry?.[page]?.label ?? page} <span className="font-mono text-xs text-muted-foreground">({page})</span></span><span className="text-xs text-muted-foreground">{actions.length} действий</span></button>{(expanded[page] ?? true) && <div className="border-t px-3 py-2">{actions.map(([action, decision]) => {
       const displayedDecision = getDisplayedDecision(page, action, decision)
       const conflict = hasPermissionConflict(displayedDecision.sources)
-      const conflictKey = `${page}:${action}`
-      const conflictExpanded = expandedConflicts[conflictKey] ?? false
+      const detailsKey = `${page}:${action}`
+      const detailsExpanded = expandedDetails[detailsKey] ?? false
       const hasOverride = draft[page]?.[action] !== undefined
-      return <div key={action} className="border-b py-2 last:border-0"><div className="flex flex-col gap-2 lg:flex-row lg:items-center"><div className="min-w-40 flex-1"><div className="text-sm">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</div><div className="font-mono text-[10px] text-muted-foreground">{action}</div></div><Badge variant={displayedDecision.value ? "default" : "destructive"} className="self-start">{permissionStatusLabel(displayedDecision.value)}</Badge><div className="flex min-w-0 flex-1 flex-wrap gap-1">{(showSources ? displayedDecision.sources : displayedDecision.sources.slice(0, 1)).map((source, index) => <Badge key={`${source.kind}-${index}`} variant="outline" className="max-w-full truncate text-[10px]">{sourceLabel(source)}{showSources && source.kind !== "superuser" && source.applies !== false ? `: ${source.value ? "разрешает" : "запрещает"}` : ""}</Badge>)}{!displayedDecision.sources.length && <span className="text-xs text-muted-foreground">Нет явного источника</span>}{conflict && <button type="button" className="inline-flex items-center gap-1 rounded-full border border-destructive/50 bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/20" aria-expanded={conflictExpanded} title="Нажмите, чтобы увидеть конфликтующие источники" onClick={() => setExpandedConflicts((current) => ({ ...current, [conflictKey]: !conflictExpanded }))}><AlertTriangle className="size-3" />Конфликт</button>}</div><div className="flex flex-wrap gap-1.5 lg:justify-end">{canEdit && !trace.admin.is_superuser && <><Button size="sm" variant="outline" disabled={save.isPending} onClick={() => mutatePermission(page, action, true)}><Check className="size-3.5" />Разрешить</Button><Button size="sm" variant="destructive" disabled={save.isPending} onClick={() => mutatePermission(page, action, false)}>Запретить</Button><Button size="sm" variant="ghost" disabled={!hasOverride || save.isPending} onClick={() => mutatePermission(page, action, undefined)}>Сбросить</Button></>}{trace.admin.is_superuser && <span className="text-xs text-muted-foreground">Superuser bypass</span>}</div></div>{conflict && conflictExpanded && <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs"><div className="font-medium text-destructive">Почему конфликт</div><p className="mt-1 text-muted-foreground">Применимые источники дают разные решения. Индивидуальное правило имеет приоритет над группой и департаментом.</p><div className="mt-2 space-y-1">{displayedDecision.sources.filter((source) => source.applies !== false).map((source, index) => <div key={`${source.kind}-${index}`} className="flex flex-wrap items-center gap-1.5"><span>{sourceLabel(source)}</span><Badge variant={source.value ? "default" : "destructive"}>{source.value ? "Разрешает" : "Запрещает"}</Badge></div>)}</div><p className="mt-2 text-muted-foreground">Чтобы убрать конфликт, измените или сбросьте один из источников выше. «Сбросить» убирает только индивидуальное правило; группу и департамент меняют в своих разделах.</p></div>}</div>})}</div>}</div>)}
+      return <div key={action} className="border-b py-2 last:border-0"><div className="flex flex-col gap-2 lg:flex-row lg:items-center"><div className="min-w-40 flex-1"><div className="text-sm">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</div><div className="font-mono text-[10px] text-muted-foreground">{action}</div></div><div className="flex flex-wrap items-center gap-1.5"><Badge variant={displayedDecision.value ? "default" : "destructive"}>{permissionStatusLabel(displayedDecision.value)}</Badge>{conflict && <button type="button" className="inline-flex items-center gap-1 rounded-full border border-destructive/50 bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/20" aria-expanded={detailsExpanded} title="Нажмите, чтобы увидеть конфликтующие источники" onClick={() => setExpandedDetails((current) => ({ ...current, [detailsKey]: true }))}><AlertTriangle className="size-3" />Конфликт</button>}</div><div className="flex flex-wrap gap-1.5 lg:justify-end">{canEdit && !trace.admin.is_superuser && <><Button size="sm" variant="outline" disabled={save.isPending} onClick={() => mutatePermission(page, action, true)}><Check className="size-3.5" />Разрешить</Button><Button size="sm" variant="destructive" disabled={save.isPending} onClick={() => mutatePermission(page, action, false)}>Запретить</Button><Button size="sm" variant="ghost" disabled={!hasOverride || save.isPending} onClick={() => mutatePermission(page, action, undefined)}>Сбросить</Button></>}<Button size="sm" variant="ghost" onClick={() => toggleDetails(detailsKey)}><ChevronDown className={`size-3.5 transition-transform ${detailsExpanded ? "rotate-180" : ""}`} />{detailsExpanded ? "Скрыть детали" : "Детали"}</Button></div></div>{detailsExpanded && <div className="mt-2 rounded-md border border-muted-foreground/20 bg-muted/10 px-3 py-2 text-xs"><div className="font-medium">Источники решения</div>{displayedDecision.sources.length ? <div className="mt-2 space-y-1.5">{displayedDecision.sources.map((source, index) => <div key={`${source.kind}-${index}`} className="flex flex-wrap items-center gap-1.5"><span>{formatPermissionSource(source)}</span><Badge variant={source.applies === false ? "secondary" : source.value ? "default" : "destructive"}>{source.applies === false ? "Не применяется" : source.value ? "Разрешает" : "Запрещает"}</Badge></div>)}</div> : <p className="mt-1 text-muted-foreground">Явное правило не задано; доступ не выдан.</p>}{conflict && <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"><div className="font-medium text-destructive">Почему конфликт</div><p className="mt-1 text-muted-foreground">Применимые источники дают разные решения. Индивидуальное правило имеет приоритет; если его нет, разрешение приходит от группы или департамента.</p><p className="mt-1 text-muted-foreground">Чтобы убрать конфликт, сбросьте индивидуальное правило или измените источник в разделе группы/департамента.</p></div>}</div>}</div>})}</div>}</div>)}
     {!rows.length && <div className="py-10 text-center text-sm text-muted-foreground">По этим фильтрам прав нет.</div>}
   </CardContent></Card>
 }
