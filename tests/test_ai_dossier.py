@@ -39,6 +39,7 @@ from services_ai_dossier import (
     run_active_dossier_batch,
 )
 import services_ai_dossier
+import services_ai_client
 
 
 class AIDossierContractTests(unittest.TestCase):
@@ -899,6 +900,7 @@ class AIDossierContractTests(unittest.TestCase):
                 patch("database.SessionLocal", return_value=db),
                 patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7, "profile": {"player_id": 7}}),
                 patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch.object(services_ai_client, "get_settings", return_value=fake_settings),
                 patch("httpx.Client.post", return_value=fake_response),
             ):
                 result = services_ai_dossier.process_one_dossier()
@@ -939,6 +941,7 @@ class AIDossierContractTests(unittest.TestCase):
                 patch("database.SessionLocal", return_value=db),
                 patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7}),
                 patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch.object(services_ai_client, "get_settings", return_value=fake_settings),
                 patch("httpx.Client.post", side_effect=RuntimeError("qwen offline")),
             ):
                 result = services_ai_dossier.process_one_dossier()
@@ -1006,6 +1009,7 @@ class AIDossierContractTests(unittest.TestCase):
                 patch("database.SessionLocal", return_value=db),
                 patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7}),
                 patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch.object(services_ai_client, "get_settings", return_value=fake_settings),
                 patch("httpx.Client.post", return_value=fake_response),
             ):
                 result = services_ai_dossier.process_one_dossier()
@@ -1039,6 +1043,7 @@ class AIDossierContractTests(unittest.TestCase):
                 patch("database.SessionLocal", return_value=db),
                 patch.object(services_ai_dossier, "build_player_dossier_payload", return_value={"player_id": 7}),
                 patch.object(services_ai_dossier, "get_settings", return_value=fake_settings),
+                patch.object(services_ai_client, "get_settings", return_value=fake_settings),
                 patch("httpx.Client.post", side_effect=RuntimeError("qwen offline")),
             ):
                 services_ai_dossier.process_one_dossier()

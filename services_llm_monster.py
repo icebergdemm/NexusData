@@ -1,9 +1,15 @@
-"""LLM assistant for MonsterSpawnController (remote API).
+"""LLM assistant for MonsterSpawnController (via the shared AI aggregator).
 
-The site-side assistant connects to a REMOTE OpenAI-compatible API endpoint
-(configured via MONSTER_LLM_BASE_URL + MONSTER_LLM_API_KEY, Bearer auth) and
-reads the controller's live state (config, memory, telemetry posted by the
-game plugin). It produces STRICT JSON decisions plus a human-readable
+The site-side assistant is a CLIENT of the same AI aggregator that serves
+player dossiers (AI_DOSSIER_URL + AI_DOSSIER_API_KEY, see
+services_ai_client.py): every generation is queued on the single
+AI_REQUEST_LOCK, so monster cycles never run concurrently with dossier or
+health-check generations on the Qwen/KoboldCpp host. Per-consumer settings
+(model name, sampling, timeout) stay in MONSTER_LLM_*; endpoint, auth and
+TLS always come from the aggregator.
+
+It reads the controller's live state (config, memory, telemetry posted by
+the game plugin) and produces STRICT JSON decisions plus a human-readable
 analysis for the operator:
 
   1. Config corrections — small bounded adjustments of a whitelist of
@@ -34,12 +40,11 @@ import logging
 import math
 import re
 import time
-import urllib.request
-import urllib.error
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import get_settings
+from services_ai_client import AIClientError, chat_content, post_chat_completions
 
 logger = logging.getLogger(__name__)
 
@@ -188,19 +193,19 @@ def save_llm_runtime(db, server: str, runtime: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# LLM client (remote OpenAI-compatible /chat/completions, Bearer auth)
+# LLM client — via the shared AI aggregator (queues on AI_REQUEST_LOCK)
 # ---------------------------------------------------------------------------
 
 class LLMError(Exception):
     pass
 
 
-def _chat_completions(messages: List[Dict[str, str]], base_url: str, api_key: str,
-                      model: str, timeout: float, temperature: float,
-                      top_p: float) -> str:
-    """POST to a remote OpenAI-compatible API. Works with https remote
-    endpoints (API key via Bearer) and local shims (key may be empty)."""
-    url = base_url.rstrip("/") + "/chat/completions"
+def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float,
+                      temperature: float, top_p: float) -> str:
+    """One generation through the shared AI aggregator as a client.
+
+    Endpoint/auth/TLS/queueing are owned by services_ai_client; only the
+    model name and sampling params are monster-specific."""
     payload = {
         "model": model,
         "messages": messages,
@@ -210,28 +215,11 @@ def _chat_completions(messages: List[Dict[str, str]], base_url: str, api_key: st
         # Thinking mode: disable for deterministic JSON output.
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, method="POST")
-    request.add_header("Content-Type", "application/json")
-    if api_key:
-        request.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        raise LLMError(f"Удалённый LLM API недоступен ({base_url}): {exc}") from exc
-    except urllib.error.HTTPError as exc:
-        raise LLMError(f"Удалённый LLM API вернул HTTP {exc.code}: {exc.reason}") from exc
-    except (ValueError, KeyError) as exc:
-        raise LLMError(f"Некорректный ответ LLM endpoint: {exc}") from exc
-
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LLMError(f"Ответ LLM без choices/message: {exc}") from exc
-    if not isinstance(content, str):
-        raise LLMError("Ответ LLM не содержит текста")
-    return content
+        data, _elapsed_ms = post_chat_completions(payload, timeout=timeout)
+        return chat_content(data)
+    except AIClientError as exc:
+        raise LLMError(str(exc)) from exc
 
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -603,9 +591,8 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     recommendations, no config writes), apply (config changes applied by
     bumping desired_revision), spawn (also add spawn plans)."""
     settings = get_settings()
-    base_url = (settings.monster_llm_base_url or "").strip()
-    if not base_url:
-        raise LLMError("LLM не настроен: задайте MONSTER_LLM_BASE_URL (remote API endpoint)")
+    if not (settings.ai_dossier_url or "").strip() or not settings.ai_dossier_api_key:
+        raise LLMError("AI-агрегатор не настроен: задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY")
 
     runtime = get_llm_runtime(db, server)
     known_species = _collect_known_species(state)
@@ -617,8 +604,6 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        base_url=base_url,
-        api_key=settings.monster_llm_api_key,
         model=settings.monster_llm_model,
         timeout=settings.monster_llm_timeout_seconds,
         temperature=settings.monster_llm_temperature,
@@ -637,8 +622,6 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
                 {"role": "user", "content": "Предыдущий ответ не был валидным JSON. "
                                             "Верни ТОЛЬКО JSON-объект по схеме."},
             ],
-            base_url=base_url,
-            api_key=settings.monster_llm_api_key,
             model=settings.monster_llm_model,
             timeout=settings.monster_llm_timeout_seconds,
             temperature=0.0,
@@ -731,16 +714,17 @@ def check_auto_cycle_due(runtime: dict) -> bool:
 
 
 def get_llm_deployment_info() -> Dict[str, Any]:
-    """Non-secret info for the admin UI."""
+    """Non-secret info for the admin UI (transport = shared AI aggregator)."""
     settings = get_settings()
     return {
-        "base_url": settings.monster_llm_base_url,
+        "base_url": settings.ai_dossier_url,
         "model": settings.monster_llm_model,
         "temperature": settings.monster_llm_temperature,
         "top_p": settings.monster_llm_top_p,
         "timeout_seconds": settings.monster_llm_timeout_seconds,
-        "api_key_set": bool(settings.monster_llm_api_key),
-        "has_base_url": bool(settings.monster_llm_base_url),
+        "api_key_set": bool(settings.ai_dossier_api_key),
+        "has_base_url": bool((settings.ai_dossier_url or "").strip()),
+        "via": "ai-aggregator",
     }
 
 

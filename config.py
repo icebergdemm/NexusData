@@ -183,16 +183,15 @@ class Settings(BaseSettings):
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
 
-    # LLM assistant for MonsterSpawnController. The site talks to a REMOTE
-    # OpenAI-compatible API endpoint (remote service, llama.cpp llama-server,
-    # LM Studio, Ollama with OpenAI shim). Empty base_url disables it.
-    # For remote endpoints set MONSTER_LLM_BASE_URL to the https URL and
-    # MONSTER_LLM_API_KEY to the service key (sent as Bearer token).
+    # LLM assistant for MonsterSpawnController. Transport is ALWAYS the shared
+    # AI aggregator (AI_DOSSIER_URL + AI_DOSSIER_API_KEY, TLS via
+    # AI_DOSSIER_TLS_CA_FILE — see services_ai_client.py): the assistant is a
+    # client of the same queue as player dossiers, so generations never run
+    # concurrently on the Qwen/KoboldCpp host. The fields below are only the
+    # monster-specific generation params; there is no separate endpoint.
     # Per-server runtime state (enabled/auto_apply/last run) lives in
     # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
     # admin UI; these fields are just the deployment defaults.
-    monster_llm_base_url: str = Field("http://127.0.0.1:8080/v1")
-    monster_llm_api_key: str = Field("")
     monster_llm_model: str = Field("qwen3-4b-instruct")
     monster_llm_timeout_seconds: float = Field(90.0, gt=0, le=300)
     # Anti-hallucination defaults: low temperature, small top_p and a hard

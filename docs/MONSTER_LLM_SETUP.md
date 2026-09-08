@@ -1,59 +1,41 @@
 # LLM-ассистент MonsterSpawnController
 
-Сайт подключается к удалённому LLM API (OpenAI-совместимый endpoint), который
-анализирует состояние спавн-контроллера, даёт текстовые рекомендации и сводку
-эффективности экипажа, корректирует параметры сложности и спавнит волны по
-обстановке или команде оператора.
+Сайт обращается к модели ТОЛЬКО через общий AI-агрегатор
+(`AI_DOSSIER_URL` + `AI_DOSSIER_API_KEY`, TLS — `AI_DOSSIER_TLS_CA_FILE`,
+код — `services_ai_client.py`). Ассистент монстров — обычный клиент этой
+очереди: каждая генерация ждёт общий `AI_REQUEST_LOCK`, поэтому циклы
+монстров никогда не идут параллельно с досье или health-check на
+Qwen/KoboldCpp хосте. Отдельного endpoint/ключа у монстров нет.
+Ассистент анализирует состояние спавн-контроллера, даёт текстовые
+рекомендации и сводку эффективности экипажа, корректирует параметры
+сложности и спавнит волны по обстановке или команде оператора.
 Интеграция полностью серверная (сайт), плагин ничего не знает о модели — он получает
 уже провалидированные изменения через штатный канал ревизий.
 
-## 1. Подключение к удалённому API (основной вариант)
+## 1. Подключение через AI-агрегатор
 
-Сайт работает с любым OpenAI-совместимым API: `POST {BASE_URL}/chat/completions`
-с `Authorization: Bearer <API_KEY>`:
+Транспортные настройки берутся из AI-агрегатора (те же, что у досье):
 
 ```env
-MONSTER_LLM_BASE_URL=https://api.example-llm.com/v1
-MONSTER_LLM_API_KEY=sk-...   # обязателен для удалённых API
-MONSTER_LLM_MODEL=qwen3-4b-instruct
+AI_DOSSIER_URL=https://213.108.170.48:8000/v1/chat/completions
+AI_DOSSIER_API_KEY=...
+AI_DOSSIER_TLS_CA_FILE=config/koboldcpp-ca.pem
 ```
 
-Требования к API: метод `/chat/completions`, формат сообщений OpenAI
-(`system/user/assistant`), текстовый ответ с JSON-объектом по схеме из
-`services_llm_monster.py` (`SYSTEM_PROMPT`).
+Ассистент шлёт туда обычный OpenAI-совместимый `POST /chat/completions`
+(`system/user/assistant`, текстовый ответ с JSON-объектом по схеме из
+`services_llm_monster.py`, `SYSTEM_PROMPT`). Пустые `AI_DOSSIER_URL` или
+`AI_DOSSIER_API_KEY` отключают функцию с ошибкой
+«AI-агрегатор не настроен».
 
-### Локальные альтернативы (тот же протокол)
-
-### Вариант A — llama.cpp `llama-server`
-
-```bash
-llama-server \
-  -m Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 8080 \
-  --ctx-size 16384 \
-  --gpu-layers 99 \
-  --parallel 1
-```
-
-Endpoint: `http://127.0.0.1:8080/v1` (ключ можно оставить пустым).
-
-### Вариант B — LM Studio
-
-Включите Local Server (Developer → Start Server), endpoint вида `http://127.0.0.1:1234/v1`.
-
-### Вариант C — Ollama
-
-```bash
-ollama pull qwen3:4b
-```
-
-Endpoint: `http://127.0.0.1:11434/v1`, модель `qwen3:4b`.
+Старые ключи `MONSTER_LLM_BASE_URL` / `MONSTER_LLM_API_KEY` больше не
+используются и удалены: второй путь в обход очереди не заводится
+намеренно (см. `services_ai_client.py`).
 
 ## 2. Настройки сайта (`.env`)
 
 ```env
-MONSTER_LLM_BASE_URL=https://api.example-llm.com/v1
-MONSTER_LLM_API_KEY=sk-...       # обязателен для удалённого API; для llama.cpp можно пустым
+# Транспорт — общий агрегатор (те же ключи, что у досье, см. раздел 1).
 MONSTER_LLM_MODEL=qwen3-4b-instruct
 MONSTER_LLM_TIMEOUT_SECONDS=90
 MONSTER_LLM_TEMPERATURE=0.15

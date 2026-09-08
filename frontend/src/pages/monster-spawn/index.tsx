@@ -630,7 +630,7 @@ function LLMPanel({ server }: { server: string }) {
 
   return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3">
     <CardTitle className="flex items-center gap-2 text-sm"><Bot className="size-4 text-primary" /> LLM-ассистент</CardTitle>
-    <CardDescription className="text-xs">{deployment?.has_base_url ? `endpoint: ${deployment.base_url} · модель: ${deployment.model} · t=${deployment.temperature}` : "Не настроен — задайте MONSTER_LLM_BASE_URL в .env (см. docs/MONSTER_LLM_SETUP.md)"}</CardDescription>
+    <CardDescription className="text-xs">{deployment?.has_base_url ? `агрегатор: ${deployment.base_url} · модель: ${deployment.model} · t=${deployment.temperature}` : "Не настроен — задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY в .env (см. docs/MONSTER_LLM_SETUP.md)"}</CardDescription>
   </CardHeader>
     <CardContent className="space-y-4 p-4">
       <div className="grid gap-3 sm:grid-cols-3">

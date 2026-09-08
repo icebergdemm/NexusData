@@ -487,7 +487,7 @@ def admin_reports(
 
 
 # ---------------------------------------------------------------------------
-# LLM assistant (remote OpenAI-compatible API endpoint)
+# LLM assistant (via the shared AI aggregator — see services_ai_client.py)
 # ---------------------------------------------------------------------------
 
 class LLMRuntimeUpdate(BaseModel):
@@ -520,7 +520,7 @@ def admin_llm_runtime(
     return {
         "runtime": runtime,
         "deployment": get_llm_deployment_info(),
-        "endpoint_configured": bool(settings.monster_llm_base_url),
+        "endpoint_configured": bool((settings.ai_dossier_url or "").strip() and settings.ai_dossier_api_key),
     }
 
 

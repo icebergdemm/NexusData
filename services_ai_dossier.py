@@ -8,18 +8,17 @@ import logging
 import math
 import re
 import ssl
-from threading import Lock
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-import httpx
 from sqlalchemy import and_, exists, or_
 from sqlalchemy.orm import Session
 
 from config import get_settings
+from services_ai_client import AI_REQUEST_LOCK, post_chat_completions
 from models import (
     AIPlayerDossier, AIPlayerDossierRun, AdminUser, AppSetting, AnticheatEvent, LabelCategory, PlayerAnomaly, Ticket, TicketMessage,
     PlayerData, PlayerIP, PlayerKill, PlayerLabel, PlayerName, PlayerNote, PlayerPunishment,
@@ -41,7 +40,8 @@ MAX_RAW_RESPONSE_CHARS = 12000
 DEFAULT_MODEL = "qwen2.5-3b-instruct"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
 ALLOWED_RUN_SOURCES = {"manual", "manual_batch", "daily", "test", "health"}
-AI_REQUEST_LOCK = Lock()
+# AI_REQUEST_LOCK is imported from services_ai_client (the single site-wide
+# queue for AI generations) and re-exported here for backward compatibility.
 OUTPUT_CONTRACT = """
 NON-NEGOTIABLE OUTPUT CONTRACT:
 - Return exactly one compact JSON object and nothing else.
@@ -1455,31 +1455,26 @@ def process_one_dossier() -> dict:
             packet = build_moderation_packet(payload)
             request_hash = dossier_input_hash(packet)
             fallback_result = build_rules_result(packet)
-            if not settings.ai_dossier_url or not settings.ai_dossier_api_key:
-                raise RuntimeError("AI dossier endpoint is not configured")
             request = build_kobold_request(
                 packet,
                 api_key=settings.ai_dossier_api_key,
                 model=settings.ai_dossier_model,
                 prompt=get_dossier_prompt(db),
             )
-            verify: bool | str = settings.ai_dossier_tls_ca_file or True
-            started = time.monotonic()
-            with AI_REQUEST_LOCK:
-                with httpx.Client(timeout=settings.ai_dossier_timeout_seconds, verify=verify) as client:
-                    response = client.post(settings.ai_dossier_url, **request)
-                    response.raise_for_status()
-                    response_payload = response.json()
-                    raw_response = _kobold_chat_content(response_payload)
-                    usage = response_payload.get("usage") or {}
-                    elapsed_ms = int((time.monotonic() - started) * 1000)
-                    completion_tokens = usage.get("completion_tokens")
-                    if run:
-                        run.latency_ms = elapsed_ms
-                        run.prompt_tokens = usage.get("prompt_tokens")
-                        run.completion_tokens = completion_tokens
-                        run.model = settings.ai_dossier_model
-                    result = merge_ai_summary(fallback_result, parse_kobold_response(response_payload))
+            # Transport (endpoint/auth/TLS/queue) is owned by the shared AI
+            # aggregator client; only the JSON body comes from the builder.
+            response_payload, elapsed_ms = post_chat_completions(
+                request["json"], timeout=settings.ai_dossier_timeout_seconds,
+            )
+            raw_response = _kobold_chat_content(response_payload)
+            usage = response_payload.get("usage") or {}
+            completion_tokens = usage.get("completion_tokens")
+            if run:
+                run.latency_ms = elapsed_ms
+                run.prompt_tokens = usage.get("prompt_tokens")
+                run.completion_tokens = completion_tokens
+                run.model = settings.ai_dossier_model
+            result = merge_ai_summary(fallback_result, parse_kobold_response(response_payload))
             logger.info("AI dossier request complete player=%s latency_ms=%s prompt_tokens=%s completion_tokens=%s", report.player_id, elapsed_ms, usage.get("prompt_tokens"), completion_tokens)
             report.status = "succeeded"
             report.result_json = result
@@ -1784,8 +1779,6 @@ def run_ai_health_check() -> dict:
     started = time.monotonic()
     settings = get_settings()
     try:
-        if not settings.ai_dossier_url or not settings.ai_dossier_api_key:
-            raise RuntimeError("AI dossier endpoint is not configured")
         payload = {"health_check": True, "instruction": "Return the required JSON schema with summary 'OK'. No player data is present."}
         request = build_kobold_request(
             payload,
@@ -1796,17 +1789,14 @@ def run_ai_health_check() -> dict:
                 "Set summary to 'Проверка соединения OK'."
             ),
         )
-        verify: bool | str = settings.ai_dossier_tls_ca_file or True
-        with AI_REQUEST_LOCK:
-            with httpx.Client(timeout=settings.ai_dossier_timeout_seconds, verify=verify) as client:
-                response = client.post(settings.ai_dossier_url, **request)
-                response.raise_for_status()
-                response_payload = response.json()
-                result = normalize_ai_summary(parse_kobold_response(response_payload))
+        response_payload, elapsed_ms = post_chat_completions(
+            request["json"], timeout=settings.ai_dossier_timeout_seconds,
+        )
+        result = normalize_ai_summary(parse_kobold_response(response_payload))
         usage = response_payload.get("usage") or {}
         run.status = "succeeded"
         run.finished_at = datetime.utcnow()
-        run.latency_ms = int((time.monotonic() - started) * 1000)
+        run.latency_ms = elapsed_ms
         run.prompt_tokens = usage.get("prompt_tokens")
         run.completion_tokens = usage.get("completion_tokens")
         run.model = settings.ai_dossier_model
