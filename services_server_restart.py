@@ -182,6 +182,19 @@ def _next_schedule(now: datetime, daily_time: str) -> datetime:
     return _utc_naive(next_daily_run_utc(_utc_aware(now), daily_time))  # type: ignore[arg-type]
 
 
+def _next_schedule_after_manual(
+    scheduled_for: datetime | None,
+    now: datetime,
+    daily_time: str,
+) -> datetime:
+    """Skip a still-future automatic cycle consumed by a manual restart."""
+    current = _utc_aware(now)
+    scheduled = _utc_aware(scheduled_for)
+    if scheduled is not None and current is not None and scheduled > current:
+        return _utc_naive(next_daily_run_utc(scheduled, daily_time))  # type: ignore[arg-type]
+    return _next_schedule(now, daily_time)
+
+
 def _find_schedule(db: Session, server: str) -> ServerRestartSchedule:
     from models import ServerRestartSchedule
 
@@ -406,7 +419,7 @@ def manual_restart(
         db.commit()
         raise
 
-    row.scheduled_for = _next_schedule(current, row.daily_time)
+    row.scheduled_for = _next_schedule_after_manual(row.scheduled_for, current, row.daily_time)
     row.warning_sent_at = None
     row.execution_due_at = None
     row.last_status = "scheduled"
@@ -454,7 +467,7 @@ async def manual_restart_async(
         db.commit()
         raise
 
-    row.scheduled_for = _next_schedule(current, row.daily_time)
+    row.scheduled_for = _next_schedule_after_manual(row.scheduled_for, current, row.daily_time)
     row.warning_sent_at = None
     row.execution_due_at = None
     row.last_status = "scheduled"

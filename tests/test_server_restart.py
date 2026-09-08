@@ -144,6 +144,7 @@ class ServerRestartScheduleTests(unittest.TestCase):
     def test_claim_schedule_resolves_orm_model_at_runtime(self):
         class FakeSchedule:
             id = object()
+            server_name = object()
 
         class FakeQuery:
             def __init__(self, fresh):
@@ -178,6 +179,67 @@ class ServerRestartScheduleTests(unittest.TestCase):
 
         self.assertEqual(db.commits, 1)
         self.assertIsNotNone(row.processing_token)
+
+    def test_manual_restart_skips_the_already_scheduled_same_day_cycle(self):
+        class FakeSchedule:
+            id = object()
+            server_name = object()
+
+        class FakeQuery:
+            def __init__(self, row):
+                self.row = row
+
+            def filter(self, _condition):
+                return self
+
+            def with_for_update(self):
+                return self
+
+            def first(self):
+                return self.row
+
+        class FakeDb:
+            def __init__(self, row):
+                self.row = row
+
+            def query(self, _model):
+                return FakeQuery(self.row)
+
+            def commit(self):
+                pass
+
+        class FakeClient:
+            def send_console_command(self, _server, _command):
+                pass
+
+            def restart(self, _server):
+                pass
+
+        row = SimpleNamespace(
+            id=1,
+            server_name="ASPER1",
+            enabled=True,
+            daily_time="05:30",
+            message_text="restart",
+            scheduled_for=datetime(2026, 9, 8, 2, 30),
+            execution_due_at=None,
+            warning_sent_at=None,
+            processing_until=None,
+            processing_token=None,
+            last_status="scheduled",
+            last_error=None,
+            last_action=None,
+            last_action_at=None,
+            updated_by_admin_id=None,
+        )
+        now = datetime(2026, 9, 8, 2, 22, tzinfo=timezone.utc)
+
+        with patch.dict(sys.modules, {"models": SimpleNamespace(ServerRestartSchedule=FakeSchedule)}):
+            from services_server_restart import manual_restart
+
+            manual_restart(FakeDb(row), "ASPER1", admin_id=1, client=FakeClient(), now=now)
+
+        self.assertEqual(row.scheduled_for, datetime(2026, 9, 9, 2, 30))
 
 
 if __name__ == "__main__":
