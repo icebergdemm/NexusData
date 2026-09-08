@@ -204,6 +204,8 @@ def task_server_restarts() -> dict:
         build_msg_box_command,
         ensure_restart_schedules,
         evaluate_schedule_tick,
+        server_state_allows_restart,
+        suspend_schedule_for_offline,
     )
     from models import AdminActionLog
 
@@ -218,6 +220,19 @@ def task_server_restarts() -> dict:
                 continue
             result["checked"] += 1
             if row.processing_until and row.processing_until > current.replace(tzinfo=None):
+                continue
+
+            try:
+                server_state = client.get_state(row.server_name)
+            except PterodactylError as exc:
+                row.last_status = "error"
+                row.last_error = str(exc)
+                db.commit()
+                result["errors"] += 1
+                continue
+            if not server_state_allows_restart(server_state):
+                suspend_schedule_for_offline(row, current)
+                db.commit()
                 continue
 
             online_count, round_active = _condition_state(db, row.server_name)

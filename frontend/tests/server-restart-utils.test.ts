@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { formatRestartCountdown, restartStatusLabel } from "../src/pages/administration/server-restart-utils"
+import { formatRestartCountdown, restartStatusLabel, type RestartStatus } from "../src/pages/administration/server-restart-utils"
 
 test("countdown formats the remaining time as hh:mm:ss", () => {
   const now = Date.parse("2026-09-08T02:30:00Z")
@@ -18,4 +18,8 @@ test("restart status has explicit operator-facing labels", () => {
   assert.equal(restartStatusLabel("warning_sent"), "Предупреждение отправлено")
   assert.equal(restartStatusLabel("error"), "Ошибка")
   assert.equal(restartStatusLabel("disabled"), "Выключен")
+})
+
+test("offline restart status explains why the timer is absent", () => {
+  assert.equal(restartStatusLabel("server_offline" as RestartStatus), "Сервер выключен")
 })

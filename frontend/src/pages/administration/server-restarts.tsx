@@ -27,6 +27,8 @@ type RestartSchedule = {
   online_count: number
   round_active: boolean
   conditions_met: boolean
+  server_state: string | null
+  server_running: boolean | null
   status: RestartStatus
   last_action: string | null
   last_action_at: string | null
@@ -45,6 +47,7 @@ type RestartPayload = {
 function statusVariant(status: RestartStatus): "default" | "secondary" | "destructive" | "outline" {
   if (status === "error") return "destructive"
   if (status === "disabled") return "secondary"
+  if (status === "server_offline") return "secondary"
   if (status === "waiting_conditions") return "outline"
   return "default"
 }
@@ -136,8 +139,10 @@ function RestartCard({
     return () => window.clearInterval(timer)
   }, [])
 
-  const countdown = schedule.enabled ? formatRestartCountdown(schedule.next_run_at, now) : "—"
+  const serverOffline = schedule.server_running === false
+  const countdown = schedule.enabled && !serverOffline ? formatRestartCountdown(schedule.next_run_at, now) : "—"
   const canAct = schedule.enabled && !pending && schedule.status !== "executing"
+    && !serverOffline
 
   return (
     <Card className="overflow-hidden py-0">
@@ -155,7 +160,11 @@ function RestartCard({
         <div className="rounded-lg border bg-background/40 p-4 text-center">
           <div className="font-mono text-4xl font-semibold tracking-tight tabular-nums">{countdown}</div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {schedule.next_run_at ? formatBrowserDate(schedule.next_run_at) : "Ближайший запуск не назначен"}
+            {serverOffline
+              ? "Автоматический запуск приостановлен: сервер выключен"
+              : schedule.next_run_at
+                ? formatBrowserDate(schedule.next_run_at)
+                : "Ближайший запуск не назначен"}
           </div>
           <Badge className="mt-3" variant={statusVariant(schedule.status)}>{restartStatusLabel(schedule.status)}</Badge>
         </div>

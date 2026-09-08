@@ -4,6 +4,7 @@ export type RestartStatus =
   | "waiting_conditions"
   | "warning_sent"
   | "executing"
+  | "server_offline"
   | "error"
 
 export function formatRestartCountdown(nextRunAt: string | null, now = Date.now()): string {
@@ -20,6 +21,7 @@ export function restartStatusLabel(status: RestartStatus): string {
     case "waiting_conditions": return "Ожидание условий"
     case "warning_sent": return "Предупреждение отправлено"
     case "executing": return "Ребут выполняется"
+    case "server_offline": return "Сервер выключен"
     case "error": return "Ошибка"
     case "disabled": return "Выключен"
     default: return "Запланирован"

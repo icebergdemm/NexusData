@@ -18,6 +18,7 @@ MAX_MSG_BOX_LENGTH = 500
 WARNING_DELAY = timedelta(seconds=15)
 RESTART_LEASE = timedelta(seconds=60)
 RESTART_SERVERS = ("ASPER1", "ASPER2")
+RUNNING_SERVER_STATE = "running"
 DEFAULT_DAILY_TIME = "05:30"
 DEFAULT_MESSAGE = "Сервер будет перезапущен через 15 секунд."
 
@@ -59,6 +60,11 @@ def normalize_server(server: str) -> str:
     if normalized not in RESTART_SERVERS:
         raise ValueError("Неизвестный сервер (ожидается ASPER1 или ASPER2)")
     return normalized
+
+
+def server_state_allows_restart(state: str | None) -> bool:
+    """Only a fully running Pterodactyl server may enter restart flow."""
+    return (state or "").strip().lower() == RUNNING_SERVER_STATE
 
 
 def validate_daily_time(value: str) -> str:
@@ -145,6 +151,25 @@ class PterodactylClient:
         except httpx.HTTPError as exc:
             raise PterodactylError(f"Ошибка обращения к Pterodactyl: {exc}") from exc
 
+    def _get(self, server: str, suffix: str) -> dict:
+        import httpx
+
+        panel_url, api_key, uuid = self._target(server)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(
+                    f"{panel_url}/api/client/servers/{uuid}/{suffix}",
+                    headers=headers,
+                )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise PterodactylError(f"Ошибка обращения к Pterodactyl: {exc}") from exc
+
     async def _post_async(self, server: str, suffix: str, payload: dict) -> None:
         import httpx
 
@@ -164,6 +189,35 @@ class PterodactylClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise PterodactylError(f"Ошибка обращения к Pterodactyl: {exc}") from exc
+
+    async def _get_async(self, server: str, suffix: str) -> dict:
+        import httpx
+
+        panel_url, api_key, uuid = self._target(server)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{panel_url}/api/client/servers/{uuid}/{suffix}",
+                    headers=headers,
+                )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise PterodactylError(f"Ошибка обращения к Pterodactyl: {exc}") from exc
+
+    def get_state(self, server: str) -> str | None:
+        attributes = self._get(server, "resources").get("attributes", {})
+        state = attributes.get("current_state")
+        return str(state).strip().lower() if state else None
+
+    async def get_state_async(self, server: str) -> str | None:
+        attributes = (await self._get_async(server, "resources")).get("attributes", {})
+        state = attributes.get("current_state")
+        return str(state).strip().lower() if state else None
 
     def send_console_command(self, server: str, command: str) -> None:
         self._post(server, "command", {"command": command})
@@ -195,6 +249,18 @@ def _next_schedule_after_manual(
     return _next_schedule(now, daily_time)
 
 
+def suspend_schedule_for_offline(row: "ServerRestartSchedule", now: datetime) -> None:
+    """Hide the timer and cancel an in-flight warning while the server is off."""
+    current = _utc_aware(now)
+    scheduled = _utc_aware(row.scheduled_for)
+    row.warning_sent_at = None
+    row.execution_due_at = None
+    if scheduled is None or (current is not None and scheduled <= current):
+        row.scheduled_for = _next_schedule(now, row.daily_time)
+    row.last_status = "server_offline"
+    row.last_error = None
+
+
 def _find_schedule(db: Session, server: str) -> ServerRestartSchedule:
     from models import ServerRestartSchedule
 
@@ -223,9 +289,12 @@ def _status_for_row(
     now: datetime,
     online_count: int,
     round_active: bool,
+    server_running: bool | None = None,
 ) -> str:
     if not row.enabled:
         return "disabled"
+    if server_running is False:
+        return "server_offline"
     if row.last_status == "error" and row.last_error:
         return "error"
     if row.execution_due_at is not None:
@@ -248,8 +317,19 @@ def serialize_schedule(
     online_count: int,
     round_active: bool,
     now: datetime,
+    server_state: str | None = None,
+    server_running: bool | None = None,
 ) -> dict:
-    status = _status_for_row(row, now=now, online_count=online_count, round_active=round_active)
+    status = _status_for_row(
+        row,
+        now=now,
+        online_count=online_count,
+        round_active=round_active,
+        server_running=server_running,
+    )
+    next_run = row.execution_due_at or row.scheduled_for
+    if server_running is False:
+        next_run = None
     return {
         "server": row.server_name,
         "enabled": bool(row.enabled),
@@ -259,8 +339,10 @@ def serialize_schedule(
             "no_online": bool(row.require_no_online),
             "round_finished": bool(row.require_round_finished),
         },
-        "next_run_at": iso_utc(row.execution_due_at or row.scheduled_for),
-        "scheduled_for": iso_utc(row.scheduled_for),
+        "next_run_at": iso_utc(next_run),
+        "scheduled_for": iso_utc(row.scheduled_for) if server_running is not False else None,
+        "server_state": server_state,
+        "server_running": server_running,
         "online_count": online_count,
         "round_active": round_active,
         "conditions_met": conditions_satisfied(
@@ -279,15 +361,26 @@ def serialize_schedule(
 def schedules_snapshot(db: "Session", now: datetime | None = None) -> list[dict]:
     current = now or datetime.now(timezone.utc)
     rows = ensure_restart_schedules(db)
+    client = PterodactylClient()
     result = []
     for row in rows:
         online_count, round_active = _condition_state(db, row.server_name)
+        server_state = None
+        server_running = None
+        if row.enabled:
+            try:
+                server_state = client.get_state(row.server_name)
+                server_running = server_state_allows_restart(server_state)
+            except PterodactylError:
+                server_running = None
         result.append(
             serialize_schedule(
                 row,
                 online_count=online_count,
                 round_active=round_active,
                 now=current,
+                server_state=server_state,
+                server_running=server_running,
             )
         )
     return result
@@ -398,10 +491,12 @@ def manual_restart(
     row = _find_schedule(db, server)
     if not row.enabled:
         raise ValueError("Сначала включите авторестарт")
+    transport = client or PterodactylClient()
+    if not server_state_allows_restart(transport.get_state(row.server_name)):
+        raise ValueError("Сервер выключен или ещё не перешёл в состояние running")
     if not _claim_schedule(db, row, current):
         raise RuntimeError("Для этого сервера уже выполняется действие")
 
-    transport = client or PterodactylClient()
     warning_error = None
     try:
         try:
@@ -446,10 +541,12 @@ async def manual_restart_async(
     row = _find_schedule(db, server)
     if not row.enabled:
         raise ValueError("Сначала включите авторестарт")
+    transport = client or PterodactylClient()
+    if not server_state_allows_restart(await transport.get_state_async(row.server_name)):
+        raise ValueError("Сервер выключен или ещё не перешёл в состояние running")
     if not _claim_schedule(db, row, current):
         raise RuntimeError("Для этого сервера уже выполняется действие")
 
-    transport = client or PterodactylClient()
     warning_error = None
     try:
         try:

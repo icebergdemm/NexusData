@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import sys
 from unittest.mock import patch
+import services_server_restart
 
 from services_server_restart import (
     PterodactylClient,
@@ -12,6 +13,8 @@ from services_server_restart import (
     evaluate_schedule_tick,
     iso_utc,
     next_daily_run_utc,
+    serialize_schedule,
+    suspend_schedule_for_offline,
     _claim_schedule,
     validate_daily_time,
 )
@@ -209,6 +212,9 @@ class ServerRestartScheduleTests(unittest.TestCase):
                 pass
 
         class FakeClient:
+            def get_state(self, _server):
+                return "running"
+
             def send_console_command(self, _server, _command):
                 pass
 
@@ -240,6 +246,47 @@ class ServerRestartScheduleTests(unittest.TestCase):
             manual_restart(FakeDb(row), "ASPER1", admin_id=1, client=FakeClient(), now=now)
 
         self.assertEqual(row.scheduled_for, datetime(2026, 9, 9, 2, 30))
+
+    def test_only_running_pterodactyl_state_allows_automatic_restart(self):
+        state_gate = getattr(services_server_restart, "server_state_allows_restart", None)
+        self.assertIsNotNone(state_gate)
+        self.assertTrue(state_gate("running"))
+        self.assertFalse(state_gate("offline"))
+        self.assertFalse(state_gate("starting"))
+        self.assertFalse(state_gate(None))
+
+    def test_offline_server_cancels_warning_and_hides_timer(self):
+        row = SimpleNamespace(
+            server_name="ASPER2",
+            enabled=True,
+            daily_time="05:30",
+            message_text="restart",
+            require_no_online=True,
+            require_round_finished=True,
+            scheduled_for=datetime(2026, 9, 8, 2, 30),
+            warning_sent_at=datetime(2026, 9, 8, 2, 29),
+            execution_due_at=datetime(2026, 9, 8, 2, 29, 15),
+            last_status="warning_sent",
+            last_error=None,
+            last_action=None,
+            last_action_at=None,
+        )
+        now = datetime(2026, 9, 8, 2, 29, tzinfo=timezone.utc)
+
+        suspend_schedule_for_offline(row, now)
+        payload = serialize_schedule(
+            row,
+            online_count=0,
+            round_active=False,
+            now=now,
+            server_state="offline",
+            server_running=False,
+        )
+
+        self.assertIsNone(row.execution_due_at)
+        self.assertIsNone(row.warning_sent_at)
+        self.assertIsNone(payload["next_run_at"])
+        self.assertEqual(payload["status"], "server_offline")
 
 
 if __name__ == "__main__":
