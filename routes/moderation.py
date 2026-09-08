@@ -25,7 +25,13 @@ from database import get_db, get_game_db
 from security import check_permission, check_moderation_action_permission, csrf_token_from_request
 from config import get_settings
 from security import verify_external_api_key_dependency
-from services import PunishmentService, ServerModerationService, PlayerService, prepare_admin_message
+from services import (
+    PunishmentService,
+    ServerModerationService,
+    PlayerService,
+    prepare_admin_message,
+    format_admin_issuer_name,
+)
 from services_ai_dossier import get_dossier_triage_map
 from schemas import (
     ServerPlayersReport, ServerPlayersReportResult,
@@ -415,7 +421,7 @@ async def enqueue_moderation_action(
             type="ban",
             reason=reason or None,
             issued_by_admin_id=current_admin.id,
-            issued_by_name=f"ND. {current_admin.discord_username}",
+            issued_by_name=format_admin_issuer_name(db, current_admin),
             issued_by_was_superuser=current_admin.is_superuser,
             issued_at=_now_msk(),
             expires_at=None,
@@ -723,7 +729,7 @@ async def api_enqueue_moderation_action(
             type="ban",
             reason=reason or None,
             issued_by_admin_id=current_admin.id,
-            issued_by_name=f"ND. {current_admin.discord_username}",
+            issued_by_name=format_admin_issuer_name(db, current_admin),
             issued_by_was_superuser=current_admin.is_superuser,
             issued_at=_now_msk(),
             expires_at=None,

@@ -19,6 +19,7 @@ from services import (
     PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
     ModerationActionTemplateService, MODERATION_TEMPLATE_TYPES,
     MODERATION_TEMPLATE_TYPE_LABELS,
+    format_admin_issuer_name,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -6018,7 +6019,7 @@ async def admin_punishment_create(
         ptype=ptype,
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
-        issued_by_name=f"ND. {current_admin.discord_username}",
+        issued_by_name=format_admin_issuer_name(db, current_admin),
         issued_by_was_superuser=current_admin.is_superuser,
         expires_at=expires_at,
         notes=notes or None,
@@ -6142,7 +6143,7 @@ async def admin_punishment_unban(
     action = ServerAction(
         action_type="unban",
         target_steamid=steam2 or steamid,
-        reason=f"Unban by ND. {current_admin.discord_username}",
+        reason=f"Unban by {format_admin_issuer_name(db, current_admin)}",
         target_server=server_name or None,
         queued_by_admin_id=current_admin.id,
     )
@@ -6302,7 +6303,7 @@ async def api_punishment_create(
         ptype=ptype,
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
-        issued_by_name=f"ND. {current_admin.discord_username}",
+        issued_by_name=format_admin_issuer_name(db, current_admin),
         issued_by_was_superuser=current_admin.is_superuser,
         expires_at=expires_at,
         notes=notes or None,
@@ -6423,7 +6424,7 @@ async def api_punishment_unban(
     action = ServerAction(
         action_type="unban",
         target_steamid=steam2 or steamid,
-        reason=f"Unban by ND. {current_admin.discord_username}",
+        reason=f"Unban by {format_admin_issuer_name(db, current_admin)}",
         target_server=server_name or None,
         queued_by_admin_id=current_admin.id,
     )

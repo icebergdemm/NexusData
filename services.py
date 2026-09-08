@@ -28,6 +28,72 @@ def _now_msk() -> datetime:
     return datetime.now(tz=MSK).replace(tzinfo=None)
 
 
+def format_admin_issuer_name(db: Session, admin) -> str:
+    """Return the stable, human-readable issuer label for web punishments.
+
+    ``AdminUser.discord_username`` is populated by OAuth and contains the
+    global Discord display name.  The moderation audience sees the member's
+    server nickname instead, which is already maintained by the bot in
+    ``discord_members``.
+    """
+    from models import DiscordMember
+
+    discord_id = str(getattr(admin, "discord_id", "") or "").strip()
+    member = None
+    if discord_id:
+        member = (
+            db.query(DiscordMember)
+            .filter(DiscordMember.discord_id == discord_id)
+            .first()
+        )
+
+    server_name = (getattr(member, "display_name", None) or "").strip()
+    fallback = (getattr(admin, "discord_username", None) or "").strip()
+    if not fallback:
+        fallback = f"User_{discord_id or 'unknown'}"
+    return f"ND. {server_name or fallback}"
+
+
+def refresh_recent_punishment_issuers(db: Session, limit: int = 30) -> int:
+    """Refresh the latest linked punishment issuers from server nicknames.
+
+    Rows created directly by a game server have no ``issued_by_admin_id`` and
+    are deliberately excluded.  Missing admin rows are also left alone: a
+    made-up current identity is worse than preserving the historical value.
+    """
+    from models import AdminUser, PlayerPunishment
+
+    if limit <= 0:
+        return 0
+
+    punishments = (
+        db.query(PlayerPunishment)
+        .filter(PlayerPunishment.issued_by_admin_id.isnot(None))
+        .order_by(PlayerPunishment.issued_at.desc(), PlayerPunishment.id.desc())
+        .limit(limit)
+        .all()
+    )
+    if not punishments:
+        return 0
+
+    admin_ids = {p.issued_by_admin_id for p in punishments}
+    admins = {
+        admin.id: admin
+        for admin in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()
+    }
+
+    updated = 0
+    for punishment in punishments:
+        admin = admins.get(punishment.issued_by_admin_id)
+        if admin is None:
+            continue
+        punishment.issued_by_name = format_admin_issuer_name(db, admin)
+        updated += 1
+
+    db.commit()
+    return updated
+
+
 def _session_login_time_to_msk(login_time: Optional[datetime]) -> Optional[datetime]:
     """Convert a stored player-session login time to the display timezone.
 
