@@ -963,3 +963,31 @@ def test_api_ticket_media_message_lookup_is_scoped_to_ticket(ticket_media_api):
     )
 
     assert response.status_code == 404
+
+
+def test_forced_close_finishes_a_ticket_whose_channel_is_gone(
+    ticket_media_api, monkeypatch
+):
+    """An unrecoverable archive must not make a ticket permanently uncloseable."""
+    monkeypatch.setattr(
+        tickets_api,
+        "_get_admin",
+        lambda _request, _db: SimpleNamespace(
+            id=1, is_superuser=True, discord_username="Moderator",
+        ),
+    )
+    with ticket_media_api.session_factory() as db:
+        ticket = db.get(Ticket, 7)
+        ticket.archive_state = "incomplete"
+        db.commit()
+
+    response = ticket_media_api.client.post(
+        "/api/v1/admin/tickets/7/close?force=true"
+    )
+
+    assert response.status_code == 200
+    with ticket_media_api.session_factory() as db:
+        ticket = db.get(Ticket, 7)
+        assert ticket.status == "closed"
+        # The evidence exception stays recorded on the closed row.
+        assert ticket.archive_state == "incomplete"

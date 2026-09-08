@@ -13,6 +13,7 @@ the rest of this app's run_in_threadpool usage).
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlsplit
 
 from database import SessionLocal
 
@@ -951,10 +952,38 @@ def _discord_timestamp(value):
     return value
 
 
+_DISCORD_CDN_HOSTS = frozenset({
+    "cdn.discordapp.com", "media.discordapp.net", "cdn.discord.com",
+})
+
+
+def _discord_cdn_identities(url: str) -> set[tuple]:
+    """Aliases for one Discord CDN object across signatures and hosts.
+
+    Discord re-signs attachment links (``?ex=...&is=...&hm=...``) and serves the
+    same object from both the CDN and the media proxy. Comparing raw strings
+    made every refreshed link look like a brand new file, so a pre-archive row
+    was duplicated instead of upgraded — and the duplicate, whose signature had
+    long expired, could never be archived or cleared. The path carries the
+    attachment id, which is stable across both.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return set()
+    if parsed.hostname not in _DISCORD_CDN_HOSTS or not parsed.path:
+        return set()
+    identities = {("cdn", parsed.path)}
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 3 and parts[0] == "attachments" and parts[2].isdigit():
+        identities.add(("discord", parts[2]))
+    return identities
+
+
 def _attachment_identities(value) -> set[tuple]:
     """Return every stable alias so legacy URL rows can become rich records."""
     if isinstance(value, str):
-        return {("url", value)} if value else set()
+        return ({("url", value)} | _discord_cdn_identities(value)) if value else set()
     if not isinstance(value, dict):
         return set()
 
@@ -969,6 +998,7 @@ def _attachment_identities(value) -> set[tuple]:
         url = str(value.get(key) or "")
         if url:
             identities.add(("url", url))
+            identities |= _discord_cdn_identities(url)
     return identities
 
 
@@ -1182,7 +1212,16 @@ def close_ticket(
     closed_by: str,
     *,
     evidence_archive_confirmed: bool = False,
+    archive_state: str = "complete",
+    force: bool = False,
 ) -> bool:
+    """Close a ticket, recording how trustworthy its archive actually is.
+
+    ``archive_state`` is what the caller proved: ``complete`` after a verified
+    sweep, ``partial`` when some evidence could not be mirrored and the closure
+    was an explicit decision.  ``force`` additionally closes a ticket whose
+    channel vanished out of band, which otherwise stays open for review.
+    """
     from models import Ticket
 
     db = SessionLocal()
@@ -1192,15 +1231,17 @@ def close_ticket(
             return False
         # An out-of-band Discord deletion has no remaining channel history to
         # reconcile.  Keep the ticket open and visible as an exception rather
-        # than allowing a generic caller to claim a complete closure.
-        if (
-            getattr(ticket, "archive_state", None) == "incomplete"
-            and not evidence_archive_confirmed
-        ):
+        # than allowing a generic caller to claim a complete closure. A
+        # moderator who accepts the loss can still close it explicitly, and
+        # the incomplete archive stays recorded on the closed row.
+        was_incomplete = getattr(ticket, "archive_state", None) == "incomplete"
+        if was_incomplete and not (evidence_archive_confirmed or force):
             return False
         ticket.status = "closed"
-        if evidence_archive_confirmed:
-            ticket.archive_state = "complete"
+        if was_incomplete and not evidence_archive_confirmed:
+            ticket.archive_state = "incomplete"
+        elif evidence_archive_confirmed:
+            ticket.archive_state = archive_state or "complete"
         ticket.closed_by = closed_by
         ticket.closed_at = datetime.utcnow()
         db.commit()

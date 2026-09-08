@@ -282,3 +282,144 @@ def test_third_party_bot_message_and_embed_are_archived(monkeypatch):
     assert captured["is_bot"] is True
     assert captured["reference_snapshot"]["kind"] == "message_content"
     assert captured["reference_snapshot"]["outer_embeds"][0]["title"] == "Audit event"
+
+
+def test_forced_close_records_an_incomplete_archive(ipc_db):
+    db = ipc_db()
+    db.add(Ticket(
+        id=8,
+        ticket_type="appeal",
+        title="Channel deleted in Discord",
+        status="open",
+        archive_state="incomplete",
+        creator_discord_id="42",
+    ))
+    db.commit()
+    db.close()
+
+    # Without an explicit decision the ticket still stays open for review.
+    assert ticket_data.close_ticket(8, "Unproven") is False
+    assert ticket_data.close_ticket(8, "Moderator", force=True) is True
+
+    db = ipc_db()
+    ticket = db.get(Ticket, 8)
+    assert ticket.status == "closed"
+    # The exception survives the closure instead of being laundered into a
+    # complete archive nobody can audit.
+    assert ticket.archive_state == "incomplete"
+    assert ticket.closed_by == "Moderator"
+    db.close()
+
+
+def test_partial_archive_state_is_persisted_on_close(ipc_db):
+    db = ipc_db()
+    db.add(Ticket(
+        id=9,
+        ticket_type="appeal",
+        title="Oversized evidence",
+        status="open",
+        creator_discord_id="42",
+    ))
+    db.commit()
+    db.close()
+
+    assert ticket_data.close_ticket(
+        9,
+        "Moderator",
+        evidence_archive_confirmed=True,
+        archive_state="partial",
+    ) is True
+
+    db = ipc_db()
+    assert db.get(Ticket, 9).archive_state == "partial"
+    db.close()
+
+
+def test_message_is_visible_before_its_attachments_are_archived(monkeypatch):
+    monkeypatch.setattr(ticket_bot.bot._connection, "user", SimpleNamespace(id=101))
+    captured = {}
+    scheduled = []
+
+    def add_message(**kwargs):
+        captured.update(kwargs)
+        return 91
+
+    async def must_not_archive(*_args, **_kwargs):
+        raise AssertionError("the row must be written before any download")
+
+    monkeypatch.setattr(ticket_bot.bot_data, "add_ticket_message", add_message)
+    monkeypatch.setattr(ticket_bot, "_archive_ticket_attachments", must_not_archive)
+    monkeypatch.setattr(
+        ticket_bot,
+        "_schedule_ticket_media_archive",
+        lambda ticket_id, message: scheduled.append((ticket_id, message.id)),
+    )
+    message = SimpleNamespace(
+        id=1001,
+        content="screenshot attached",
+        attachments=[SimpleNamespace(
+            id=555,
+            filename="proof.png",
+            content_type="image/png",
+            size=4096,
+            width=800,
+            height=600,
+            url="https://cdn.discordapp.com/proof.png",
+            proxy_url="https://media.discordapp.net/proof.png",
+        )],
+        embeds=[],
+        stickers=[],
+        reference=None,
+        message_snapshots=[],
+        created_at=datetime.now(timezone.utc),
+        author=SimpleNamespace(
+            id=202,
+            bot=False,
+            display_name="Player",
+            display_avatar=None,
+        ),
+    )
+
+    assert asyncio.run(ticket_bot._capture_ticket_message_now(4, message)) == 91
+    assert captured["content"] == "screenshot attached"
+    assert captured["attachments"][0]["archive_status"] == "pending"
+    assert captured["attachments"][0]["filename"] == "proof.png"
+    assert scheduled == [(4, 1001)]
+
+
+def test_refreshed_cdn_link_upgrades_the_legacy_row_instead_of_duplicating_it():
+    """A re-signed Discord link is the same file, not a second one."""
+    legacy = (
+        "https://cdn.discordapp.com/attachments/70/555/proof.png"
+        "?ex=old&is=old&hm=old"
+    )
+    stored = {
+        "id": "555",
+        "filename": "proof.png",
+        "source_url": (
+            "https://cdn.discordapp.com/attachments/70/555/proof.png"
+            "?ex=new&is=new&hm=new"
+        ),
+        "proxy_url": "https://media.discordapp.net/attachments/70/555/proof.png",
+        "storage_key": "abc.png",
+        "storage_namespace": "msg-1001",
+        "archive_status": "stored",
+    }
+
+    merged = ticket_data._merge_ticket_attachments([legacy], [stored])
+
+    assert len(merged) == 1
+    assert merged[0]["archive_status"] == "stored"
+
+
+def test_unrelated_cdn_objects_are_not_merged():
+    first = "https://cdn.discordapp.com/attachments/70/555/proof.png?ex=a"
+    second = {
+        "id": "556",
+        "filename": "other.png",
+        "source_url": "https://cdn.discordapp.com/attachments/70/556/other.png?ex=b",
+        "storage_key": "def.png",
+        "archive_status": "stored",
+    }
+
+    assert len(ticket_data._merge_ticket_attachments([first], [second])) == 2

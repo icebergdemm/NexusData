@@ -681,8 +681,8 @@ def test_ticket_history_backfill_pages_open_channel_and_continues_after_message_
     )
     attempted = []
 
-    async def capture(ticket_id, message, *, strict):
-        attempted.append((ticket_id, message.id, strict))
+    async def capture(ticket_id, message):
+        attempted.append((ticket_id, message.id))
         if message.id == 1:
             raise RuntimeError("transient test failure")
 
@@ -696,9 +696,9 @@ def test_ticket_history_backfill_pages_open_channel_and_continues_after_message_
     asyncio.run(bot_module.ticket_history_backfill_task.coro())
 
     assert attempted == [
-        (17, 1, False),
-        (17, 2, False),
-        (17, 3, False),
+        (17, 1),
+        (17, 2),
+        (17, 3),
     ]
     assert bot_module._ticket_history_backfill_after == {}
 

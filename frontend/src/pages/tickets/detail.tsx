@@ -37,7 +37,15 @@ import { TicketActionsMenu } from "./TicketActionsMenu"
 import { TicketMemberDialog } from "./TicketMemberDialog"
 import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
 
-const DETAIL_REFRESH_MS = 4_000
+// Polling cadence for the message stream. A conversation someone is actually
+// typing in is polled several times faster; an idle one falls back so dozens of
+// open moderator tabs do not hammer the API for nothing.
+const IDLE_REFRESH_MS = 4_000
+const ACTIVE_REFRESH_MS = 1_200
+const ACTIVE_WINDOW_MS = 120_000
+// Participant lists and archive totals are far more expensive than the message
+// page, so a burst of incoming messages must not refetch them per message.
+const HEAVY_REFRESH_MIN_INTERVAL_MS = 15_000
 
 function TicketInboxPane({
   data,
@@ -157,12 +165,15 @@ export function TicketDetailPage() {
   const [restoreOpen, setRestoreOpen] = useState(false)
   const [memberDialogOpen, setMemberDialogOpen] = useState(false)
   const [removeMemberDialogOpen, setRemoveMemberDialogOpen] = useState(false)
+  const [forceCloseOffered, setForceCloseOffered] = useState(false)
   const [inboxSearch, setInboxSearch] = useState("")
   const [inboxStatus, setInboxStatus] = useState<TicketListStatus>(() => (
     returnStatus === "closed" || returnStatus === "all" ? returnStatus : "open"
   ))
   const debouncedInboxSearch = useDebouncedValue(inboxSearch.trim(), 300)
   const [pollReady, setPollReady] = useState(false)
+  const lastActivityRef = useRef(0)
+  const heavyRefreshRef = useRef(0)
   const detailQueryKey = useMemo(() => ["ticket-detail", ticketId] as const, [ticketId])
 
   const detailQuery = useQuery({
@@ -198,6 +209,7 @@ export function TicketDetailPage() {
     setPollReady(false)
     stickToBottomRef.current = true
     setShowNewMessages(false)
+    setForceCloseOffered(false)
   }, [ticketId])
 
   useEffect(() => {
@@ -206,6 +218,15 @@ export function TicketDetailPage() {
       (latest, message) => Math.max(latest, message.id),
       0,
     )
+    // Open a ticket that was live a minute ago and poll it at the fast rate
+    // right away, instead of waiting for the first message to prove it.
+    const lastMessageAt = detailQuery.data.ticket.last_message_at
+    if (lastMessageAt) {
+      const parsed = Date.parse(lastMessageAt)
+      if (Number.isFinite(parsed)) {
+        lastActivityRef.current = Math.max(lastActivityRef.current, parsed)
+      }
+    }
     setPollReady(true)
   }, [detailQuery.data])
 
@@ -215,7 +236,9 @@ export function TicketDetailPage() {
       `/api/v1/admin/tickets/${ticketId}/messages?after_id=${latestMessageIdRef.current}`,
     ),
     enabled: pollReady && Number.isFinite(numericTicketId),
-    refetchInterval: DETAIL_REFRESH_MS,
+    refetchInterval: () => (
+      Date.now() - lastActivityRef.current < ACTIVE_WINDOW_MS ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS
+    ),
   })
 
   useEffect(() => {
@@ -274,9 +297,15 @@ export function TicketDetailPage() {
         messages: [...messages, ...additions],
       }
     })
+    if (hasUnseenIncoming) lastActivityRef.current = Date.now()
     // Participant state and archive totals are more expensive to compute, so
-    // refresh the full detail only after the lightweight poll found a change.
-    if (hasUnseenIncoming || statusChanged) {
+    // refresh the full detail only after the lightweight poll found a change,
+    // and at most once per interval: the merged page above already carries the
+    // complete message, so a fast exchange stays instant without refetching
+    // the whole conversation for every line.
+    const now = Date.now()
+    if (statusChanged || (hasUnseenIncoming && now - heavyRefreshRef.current >= HEAVY_REFRESH_MIN_INTERVAL_MS)) {
+      heavyRefreshRef.current = now
       void queryClient.invalidateQueries({ queryKey: detailQueryKey })
       void queryClient.invalidateQueries({ queryKey: ["tickets"] })
     }
@@ -315,6 +344,7 @@ export function TicketDetailPage() {
       setText("")
       setFiles([])
       stickToBottomRef.current = true
+      lastActivityRef.current = Date.now()
       queryClient.invalidateQueries({ queryKey: detailQueryKey })
       queryClient.invalidateQueries({ queryKey: ["tickets"] })
     },
@@ -329,7 +359,13 @@ export function TicketDetailPage() {
   })
 
   const closeMutation = useMutation({
-    mutationFn: () => api.post<{ status: string; detail?: string }>(`/api/v1/admin/tickets/${ticketId}/close`),
+    // ``force`` is the moderator's explicit decision to close despite media
+    // that no retry can recover (an expired Discord link, a file above the
+    // archive limit, a channel already deleted). The closed ticket keeps its
+    // archive marked as incomplete, so the exception stays auditable.
+    mutationFn: (force?: boolean) => api.post<{ status: string; detail?: string }>(
+      `/api/v1/admin/tickets/${ticketId}/close${force ? "?force=true" : ""}`,
+    ),
     onSuccess: (result) => {
       if (result.status === "queued") {
         toast.info(result.detail || "Закрытие поставлено в очередь; канал пока остаётся открытым")
@@ -339,7 +375,12 @@ export function TicketDetailPage() {
       queryClient.invalidateQueries({ queryKey: detailQueryKey })
       queryClient.invalidateQueries({ queryKey: ["tickets"] })
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      toast.error(error.message)
+      // A refused close means the server kept the channel: offer the explicit
+      // force path instead of leaving the moderator to guess.
+      setForceCloseOffered(true)
+    },
   })
 
   const assignMutation = useMutation({
@@ -400,7 +441,9 @@ export function TicketDetailPage() {
   const isDeleted = Boolean(ticket.deleted_at)
   const isArchiveIncomplete = ticket.archive_state === "incomplete"
   const canReply = !isDeleted && !isArchiveIncomplete && (data.permissions?.can_reply ?? data.can_edit)
-  const canClose = !isDeleted && !isArchiveIncomplete && (data.permissions?.can_close ?? data.can_edit)
+  // A ticket whose Discord channel is gone stays closable: refusing it left
+  // the row open forever with no way to finish it from either side.
+  const canClose = !isDeleted && (data.permissions?.can_close ?? data.can_edit)
   const canAssign = !isDeleted && (data.permissions?.can_assign ?? data.can_assign ?? data.can_edit)
   const canDelete = data.permissions?.can_delete ?? data.can_delete ?? false
   const archiveRisk = isArchiveIncomplete || data.archive?.state === "failed" || data.archive?.state === "partial" || data.archive?.state === "pending" || Boolean(data.archive?.failed_count)
@@ -410,6 +453,14 @@ export function TicketDetailPage() {
     "Неизвестный пользователь",
   )
   const participants = data.participants ?? []
+  // Media still downloading is not a reason to force anything — a normal close
+  // waits for it. Only a verdict that will not improve on its own, or a close
+  // the server already refused, offers the destructive path.
+  const showForceClose = isArchiveIncomplete
+    || forceCloseOffered
+    || data.archive?.state === "failed"
+    || data.archive?.state === "partial"
+    || Boolean(data.archive?.failed_count)
 
   const inboxPane = (
     <TicketInboxPane
@@ -488,11 +539,11 @@ export function TicketDetailPage() {
               disabled={closeMutation.isPending || deleteMutation.isPending || restoreMutation.isPending}
               onAddMember={() => setMemberDialogOpen(true)}
               onRemoveMember={() => setRemoveMemberDialogOpen(true)}
-              onClose={() => closeMutation.mutate()}
+              onClose={() => closeMutation.mutate(false)}
               onDelete={() => setDeleteOpen(true)}
               onRestore={() => setRestoreOpen(true)}
             />
-            {canClose && !isClosed && !isArchiveIncomplete ? (
+            {canClose && !isClosed ? (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button type="button" variant="destructive" size="sm" className="hidden sm:inline-flex">Закрыть</Button>
@@ -501,16 +552,25 @@ export function TicketDetailPage() {
                   <AlertDialogHeader>
                     <AlertDialogTitle>Закрыть тикет #{ticket.id}?</AlertDialogTitle>
                     <AlertDialogDescription>
-                      {archiveRisk
-                        ? "Архив материалов ещё не завершён или содержит ошибки. Сервер может не разрешить закрытие, пока важные вложения не будут сохранены."
-                        : "Переписка останется доступна на сайте, а тикет перейдёт в архив."}
+                      {isArchiveIncomplete
+                        ? "Discord-канал удалён вне NexusData, поэтому историю уже нельзя досохранить. Закрытие пометит архив неполным."
+                        : archiveRisk
+                          ? "Архив материалов ещё не завершён или содержит ошибки. Обычное закрытие сначала повторит загрузку вложений; принудительное закроет тикет с пометкой «архив неполный»."
+                          : "Переписка останется доступна на сайте, а тикет перейдёт в архив."}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Отмена</AlertDialogCancel>
-                    <AlertDialogAction variant="destructive" disabled={closeMutation.isPending} onClick={() => closeMutation.mutate()}>
-                      {closeMutation.isPending ? "Закрытие…" : archiveRisk ? "Попробовать закрыть" : "Закрыть тикет"}
-                    </AlertDialogAction>
+                    {showForceClose ? (
+                      <AlertDialogAction variant="destructive" disabled={closeMutation.isPending} onClick={() => closeMutation.mutate(true)}>
+                        {closeMutation.isPending ? "Закрытие…" : "Закрыть без части материалов"}
+                      </AlertDialogAction>
+                    ) : null}
+                    {isArchiveIncomplete ? null : (
+                      <AlertDialogAction variant="destructive" disabled={closeMutation.isPending} onClick={() => closeMutation.mutate(false)}>
+                        {closeMutation.isPending ? "Закрытие…" : archiveRisk ? "Сохранить и закрыть" : "Закрыть тикет"}
+                      </AlertDialogAction>
+                    )}
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
@@ -570,13 +630,17 @@ export function TicketDetailPage() {
           <div className="flex shrink-0 items-center gap-2 border-t bg-muted/30 px-4 py-3 text-xs text-muted-foreground"><UsersRound className="size-4" />У вас нет права отвечать в этом тикете.</div>
         )}
 
-        {canClose && !isClosed && !isArchiveIncomplete ? (
+        {canClose && !isClosed ? (
           <div className="border-t p-2 sm:hidden">
             <AlertDialog>
               <AlertDialogTrigger asChild><Button type="button" variant="destructive" size="sm" className="w-full">Закрыть тикет</Button></AlertDialogTrigger>
               <AlertDialogContent>
-                <AlertDialogHeader><AlertDialogTitle>Закрыть тикет #{ticket.id}?</AlertDialogTitle><AlertDialogDescription>{archiveRisk ? "Архив ещё не завершён или содержит ошибки." : "Переписка останется доступна в архиве."}</AlertDialogDescription></AlertDialogHeader>
-                <AlertDialogFooter><AlertDialogCancel>Отмена</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={closeMutation.isPending} onClick={() => closeMutation.mutate()}>Закрыть</AlertDialogAction></AlertDialogFooter>
+                <AlertDialogHeader><AlertDialogTitle>Закрыть тикет #{ticket.id}?</AlertDialogTitle><AlertDialogDescription>{isArchiveIncomplete ? "Discord-канал удалён вне NexusData; архив останется неполным." : archiveRisk ? "Архив ещё не завершён или содержит ошибки." : "Переписка останется доступна в архиве."}</AlertDialogDescription></AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Отмена</AlertDialogCancel>
+                  {showForceClose ? <AlertDialogAction variant="destructive" disabled={closeMutation.isPending} onClick={() => closeMutation.mutate(true)}>Закрыть без части материалов</AlertDialogAction> : null}
+                  {isArchiveIncomplete ? null : <AlertDialogAction variant="destructive" disabled={closeMutation.isPending} onClick={() => closeMutation.mutate(false)}>Закрыть</AlertDialogAction>}
+                </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
           </div>

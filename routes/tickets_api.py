@@ -1583,7 +1583,20 @@ async def api_ticket_assign(request: Request, ticket_id: int, db: Session = Depe
 
 
 @panel_router.post("/api/v1/admin/tickets/{ticket_id}/close")
-async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+async def api_ticket_close(
+    request: Request,
+    ticket_id: int,
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Close a ticket; ``force`` accepts an archive that cannot be completed.
+
+    The default path still refuses to destroy a Discord channel whose evidence
+    is not mirrored yet. ``force`` is the explicit moderator decision for media
+    no retry can recover — an expired CDN link, a file above the archive limit,
+    a channel already deleted in Discord — so a ticket never becomes permanently
+    uncloseable. The closed ticket keeps a visible non-complete archive state.
+    """
     admin = _get_admin(request, db)
     if not (
         check_permission(admin, "tickets", "view")
@@ -1598,10 +1611,13 @@ async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depen
         raise HTTPException(status_code=409, detail="Удалённый тикет нельзя изменять")
     if ticket.status == "closed":
         return {"status": "ok"}
-    if getattr(ticket, "archive_state", None) == "incomplete":
+    if getattr(ticket, "archive_state", None) == "incomplete" and not force:
         raise HTTPException(
             status_code=409,
-            detail="Канал Discord удалён до завершения архивации; тикет оставлен открытым для проверки",
+            detail=(
+                "Канал Discord удалён до завершения архивации; тикет оставлен открытым "
+                "для проверки. Закройте принудительно, если потеря части материалов принята"
+            ),
         )
     channel_id = ticket.discord_channel_id
     admin_id = int(admin.id)
@@ -1618,6 +1634,7 @@ async def api_ticket_close(request: Request, ticket_id: int, db: Session = Depen
                     "ticket_id": ticket_id,
                     "channel_id": channel_id,
                     "closed_by": closed_by,
+                    "force": bool(force),
                 },
                 timeout=15,
                 queued_by_admin_id=admin_id,
