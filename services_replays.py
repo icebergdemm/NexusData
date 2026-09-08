@@ -566,7 +566,9 @@ class ReplayService:
 
     def save_staged_demo(self, demo_path: str, filename: str,
                          server_name: Optional[str] = None,
-                         notes: Optional[str] = None) -> RoundReplay:
+                         notes: Optional[str] = None,
+                         stream_id: Optional[str] = None,
+                         is_broken: bool = False) -> RoundReplay:
         """Register a raw demo assembled by streaming ingest without RAM copies."""
         import uuid
         from fastapi import HTTPException
@@ -585,18 +587,43 @@ class ReplayService:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
 
         meta = self._extract_metadata(stored_path)
-        replay = RoundReplay(
-            server_name=server_name or meta.get("server_name"),
-            submarine_name=meta.get("sub_name"),
-            level_name=meta.get("level_name"),
-            filename=filename or stored_name,
-            stored_filename=stored_name,
-            file_size=os.path.getsize(stored_path),
-            has_voice=meta.get("has_voice", 0),
-            recorded_at=meta.get("recorded_at"),
-            notes=notes,
-        )
-        self.db.add(replay)
+        replay = self.db.query(RoundReplay).filter(
+            RoundReplay.stream_id == stream_id
+        ).first() if stream_id else None
+        if replay is not None:
+            old_path = os.path.join(self.upload_dir, replay.stored_filename)
+            if old_path != stored_path and os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+            replay.server_name = server_name or meta.get("server_name") or replay.server_name
+            replay.submarine_name = meta.get("sub_name") or replay.submarine_name
+            replay.level_name = meta.get("level_name") or replay.level_name
+            replay.filename = filename or replay.filename
+            replay.stored_filename = stored_name
+            replay.file_size = os.path.getsize(stored_path)
+            replay.has_voice = meta.get("has_voice", 0)
+            replay.recorded_at = meta.get("recorded_at") or replay.recorded_at
+            replay.notes = notes or replay.notes
+            replay.is_broken = is_broken
+            replay.broken_at = datetime.utcnow() if is_broken else None
+        else:
+            replay = RoundReplay(
+                server_name=server_name or meta.get("server_name"),
+                submarine_name=meta.get("sub_name"),
+                level_name=meta.get("level_name"),
+                filename=filename or stored_name,
+                stored_filename=stored_name,
+                file_size=os.path.getsize(stored_path),
+                has_voice=meta.get("has_voice", 0),
+                recorded_at=meta.get("recorded_at"),
+                notes=notes,
+                stream_id=stream_id,
+                is_broken=is_broken,
+                broken_at=datetime.utcnow() if is_broken else None,
+            )
+            self.db.add(replay)
         self.db.commit()
         self.db.refresh(replay)
         return replay

@@ -14,6 +14,7 @@ import asyncio
 import shutil
 import struct
 import threading
+import hashlib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -56,6 +57,7 @@ ws_router = APIRouter(prefix="/api/v1/replays", tags=["replays-stream"])
 
 STREAM_ROOT = os.path.join(settings.replays_upload_dir, ".streaming")
 STREAM_MAX_CHUNK = 2 * 1024 * 1024
+STREAM_STALE_SECONDS = 3600
 _live_cache = {}
 _live_cache_lock = threading.Lock()
 
@@ -72,6 +74,21 @@ def _stream_dir(stream_id: str) -> str:
     return os.path.join(STREAM_ROOT, _safe_stream_id(stream_id))
 
 
+def _expire_stale_streams() -> None:
+    """Materialize disconnected streams so they remain playable after an hour."""
+    if not os.path.isdir(STREAM_ROOT):
+        return
+    cutoff = datetime.utcnow().timestamp() - STREAM_STALE_SECONDS
+    for stream_id in os.listdir(STREAM_ROOT):
+        directory = os.path.join(STREAM_ROOT, stream_id)
+        if not os.path.isdir(directory) or os.path.getmtime(directory) > cutoff:
+            continue
+        try:
+            _assemble_stream(directory, b"", None, broken=True, keep_directory=True)
+        except Exception:
+            logger.exception("Could not preserve stale replay stream %s", stream_id)
+
+
 async def _read_stream_chunk(request: Request) -> bytes:
     body = await request.body()
     if not body:
@@ -83,28 +100,34 @@ async def _read_stream_chunk(request: Request) -> bytes:
 
 @api_router.post("/stream/start")
 async def start_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    await asyncio.to_thread(_expire_stale_streams)
     data = await _read_stream_chunk(request)
     directory = _stream_dir(stream_id)
-    await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
     await asyncio.to_thread(os.makedirs, directory, exist_ok=True)
+    # A reconnect is a continuation, not a new stream. The first chunk is
+    # sequence zero and is accepted only when it is absent or identical.
     await asyncio.to_thread(_write_stream_file, os.path.join(directory, "00000000.bin"), data)
     await asyncio.to_thread(_consume_stream_chunk, stream_id, data, server_name)
+    await asyncio.to_thread(_mark_stream_live, stream_id)
     return {"status": "ok"}
 
 
 @api_router.post("/stream/chunk")
 async def append_replay_stream(request: Request, stream_id: str = Query(...), seq: int = Query(..., ge=1)):
+    await asyncio.to_thread(_expire_stale_streams)
     data = await _read_stream_chunk(request)
     directory = _stream_dir(stream_id)
     if not os.path.isdir(directory):
         raise HTTPException(status_code=404, detail="Поток не запущен")
     await asyncio.to_thread(_write_stream_file, os.path.join(directory, f"{seq:08d}.bin"), data)
     await asyncio.to_thread(_consume_stream_chunk, stream_id, data, None)
+    await asyncio.to_thread(_mark_stream_live, stream_id)
     return {"status": "ok", "seq": seq}
 
 
 @api_router.post("/stream/finish")
 async def finish_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    await asyncio.to_thread(_expire_stale_streams)
     end = await _read_stream_chunk(request)
     directory = _stream_dir(stream_id)
     if not os.path.isdir(directory):
@@ -140,10 +163,10 @@ async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(.
 
     await websocket.accept()
     directory = _stream_dir(safe_id)
-    await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
     await asyncio.to_thread(os.makedirs, directory, exist_ok=True)
-    seq = 0
-    started = False
+    existing = await asyncio.to_thread(_stream_sequence_state, directory)
+    seq = existing[0]
+    started = existing[1]
     try:
         while True:
             message = await websocket.receive()
@@ -154,12 +177,10 @@ async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(.
                 if not data or len(data) > STREAM_MAX_CHUNK:
                     await websocket.close(code=1009, reason="chunk too large")
                     return
-                await asyncio.to_thread(
-                    _write_stream_file,
-                    os.path.join(directory, f"{seq:08d}.bin"),
-                    data,
-                )
+                path = os.path.join(directory, f"{seq:08d}.bin")
+                await asyncio.to_thread(_write_stream_file, path, data)
                 await asyncio.to_thread(_consume_stream_chunk, safe_id, data, server_name)
+                await asyncio.to_thread(_mark_stream_live, safe_id)
                 started = True
                 seq += 1
                 continue
@@ -180,7 +201,10 @@ async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(.
 
 def _write_stream_file(path: str, data: bytes) -> None:
     if os.path.exists(path):
-        return
+        with open(path, "rb") as existing:
+            if hashlib.sha256(existing.read()).digest() == hashlib.sha256(data).digest():
+                return
+        raise ValueError("sequence number already contains different data")
     try:
         with open(path, "xb") as f:
             f.write(data)
@@ -189,6 +213,28 @@ def _write_stream_file(path: str, data: bytes) -> None:
         # are addressed by sequence number, so accepting the existing file is
         # safe and keeps the transport idempotent.
         return
+
+
+def _stream_sequence_state(directory: str) -> tuple[int, bool]:
+    names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
+    expected = [f"{i:08d}.bin" for i in range(len(names))]
+    if names != expected:
+        return len(names), bool(names)
+    return len(names), bool(names)
+
+
+def _mark_stream_live(stream_id: str) -> None:
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        from models import RoundReplay
+        row = db.query(RoundReplay).filter(RoundReplay.stream_id == stream_id).first()
+        if row and row.is_broken:
+            row.is_broken = False
+            row.broken_at = None
+            db.commit()
+    finally:
+        db.close()
 
 
 class _DemoTruncated(Exception):
@@ -665,7 +711,8 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
         db.close()
 
 
-def _assemble_stream(directory: str, end: bytes, server_name: Optional[str]) -> dict:
+def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
+                    broken: bool = False, keep_directory: bool = False) -> dict:
     import uuid
     from database import SessionLocal
     chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
@@ -692,12 +739,16 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str]) -> 
     try:
         replay = ReplayService(db).save_staged_demo(
             raw_path, os.path.basename(raw_path), server_name=server_name,
-            notes="Собрано потоковым WorldDemoStreamer",
+            notes=("Собрано потоковым WorldDemoStreamer; поток прерван более часа"
+                   if broken else "Собрано потоковым WorldDemoStreamer"),
+            stream_id=os.path.basename(directory), is_broken=broken,
         )
-        return {"success": True, "replay_id": replay.id, "stored_filename": replay.stored_filename}
+        return {"success": True, "replay_id": replay.id, "stored_filename": replay.stored_filename,
+                "broken": broken}
     finally:
         db.close()
-        shutil.rmtree(directory, ignore_errors=True)
+        if not keep_directory:
+            shutil.rmtree(directory, ignore_errors=True)
 
 # ── Admin panel router (session protected) ────────────────────────────────────
 panel_router = APIRouter()
@@ -984,6 +1035,7 @@ def _serialize_replay(r) -> dict:
         "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
         "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
         "notes": r.notes,
+        "is_broken": bool(getattr(r, "is_broken", False)),
     }
 
 
