@@ -747,8 +747,8 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
             "missing": missing[:20],
             "received": chunk_names[-5:],
         })
-    if sum(os.path.getsize(os.path.join(directory, name)) for name in chunk_names) + len(end) > 500 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Демка превышает лимит 500 МБ")
+    if sum(os.path.getsize(os.path.join(directory, name)) for name in chunk_names) + len(end) > 2 * 1024 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Демка превышает лимит 2 ГБ")
     raw_path = os.path.join(
         directory,
         f"round_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.barodemo",

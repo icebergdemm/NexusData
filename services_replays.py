@@ -582,7 +582,10 @@ class ReplayService:
         stored_name = f"replay_{ts}.barodemo.zip"
         stored_path = os.path.join(self.upload_dir, stored_name)
         inner_name = filename if filename.endswith(".barodemo") else "round.barodemo"
-        with zipfile.ZipFile(stored_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        # Demo frames are already compact binary data. ZIP_STORED avoids a
+        # long CPU-bound compression phase while the stream finish request is
+        # holding an HTTP worker.
+        with zipfile.ZipFile(stored_path, "w", zipfile.ZIP_STORED) as zf:
             with zf.open(inner_name, "w") as dst, open(demo_path, "rb") as src:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
 
