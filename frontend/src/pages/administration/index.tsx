@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
+import { ServerRestartSettings } from "./server-restarts"
 
 // Статистика (онлайн за период, топ игроков) отсюда убрана — она дублировала
 // страницу «Аналитика» неоптимизированной версией расчётов (полный скан
@@ -189,6 +190,8 @@ export function AdministrationPage() {
           <Button onClick={() => saveCommunicationConfig.mutate()} disabled={saveCommunicationConfig.isPending}>Сохранить срок хранения</Button>
         </CardContent>
       </Card>
+
+      {me?.is_superuser && <ServerRestartSettings />}
 
       {me?.is_superuser && (
         <Card className="overflow-hidden py-0">

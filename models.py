@@ -699,6 +699,40 @@ class RatingHistory(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+class ServerRestartSchedule(Base):
+    """Durable daily restart state for each production Barotrauma server."""
+
+    __tablename__ = "server_restart_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(20), unique=True, nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    daily_time = Column(String(5), nullable=False, default="05:30")
+    message_text = Column(
+        Text,
+        nullable=False,
+        default="Сервер будет перезапущен через 15 секунд.",
+    )
+    require_no_online = Column(Boolean, nullable=False, default=True)
+    require_round_finished = Column(Boolean, nullable=False, default=True)
+
+    # All timestamps are stored as naive UTC, matching the existing database
+    # convention. The API adds the explicit Z suffix before returning them.
+    scheduled_for = Column(DateTime, nullable=True, index=True)
+    warning_sent_at = Column(DateTime, nullable=True)
+    execution_due_at = Column(DateTime, nullable=True, index=True)
+    processing_until = Column(DateTime, nullable=True, index=True)
+    processing_token = Column(String(64), nullable=True)
+
+    last_status = Column(String(30), nullable=False, default="disabled")
+    last_action = Column(String(30), nullable=True)
+    last_action_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class RatingEventLedger(Base):
     """Immutable v2 rating input accepted from an external game source."""
     __tablename__ = "rating_event_ledger"

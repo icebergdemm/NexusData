@@ -16,7 +16,7 @@ import logging
 import os
 import platform
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -185,6 +185,131 @@ def task_recalculate_ratings() -> dict:
             sync_ratings_to_db(db, ratings)
         apply_daily_erosion(db)
         return {"players_recalculated": len(ratings)}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def task_server_restarts() -> dict:
+    """Advance the durable daily restart state for ASPER1 and ASPER2."""
+    from services_server_restart import (
+        PterodactylClient,
+        PterodactylError,
+        _condition_state,
+        _claim_schedule,
+        _next_schedule,
+        _utc_aware,
+        build_msg_box_command,
+        ensure_restart_schedules,
+        evaluate_schedule_tick,
+    )
+    from models import AdminActionLog
+
+    db = SessionLocal()
+    current = datetime.now(timezone.utc)
+    result = {"checked": 0, "warnings": 0, "restarts": 0, "errors": 0}
+    try:
+        rows = ensure_restart_schedules(db)
+        client = PterodactylClient()
+        for row in rows:
+            if not row.enabled:
+                continue
+            result["checked"] += 1
+            if row.processing_until and row.processing_until > current.replace(tzinfo=None):
+                continue
+
+            online_count, round_active = _condition_state(db, row.server_name)
+            decision = evaluate_schedule_tick(
+                enabled=bool(row.enabled),
+                scheduled_for=_utc_aware(row.scheduled_for),
+                execution_due_at=_utc_aware(row.execution_due_at),
+                warning_sent_at=_utc_aware(row.warning_sent_at),
+                no_online=bool(row.require_no_online),
+                round_finished=bool(row.require_round_finished),
+                online_count=online_count,
+                round_active=round_active,
+                now=current,
+            )
+
+            if decision.action == "wait_conditions":
+                row.last_status = "waiting_conditions"
+                db.commit()
+                continue
+            if decision.action == "noop":
+                if row.execution_due_at is None:
+                    row.last_status = "scheduled"
+                    db.commit()
+                continue
+            if not _claim_schedule(db, row, current):
+                continue
+
+            if decision.action == "send_warning":
+                warning_error = None
+                try:
+                    client.send_console_command(row.server_name, build_msg_box_command(row.message_text))
+                except (PterodactylError, ValueError) as exc:
+                    # A warning failure must not prevent the actual restart.
+                    warning_error = str(exc)
+                row.warning_sent_at = current.replace(tzinfo=None)
+                row.execution_due_at = decision.execution_due_at.replace(tzinfo=None) if decision.execution_due_at else None
+                row.last_status = "warning_sent"
+                row.last_error = warning_error
+                row.processing_until = None
+                row.processing_token = None
+                db.add(AdminActionLog(
+                    admin_id=None,
+                    action="server_restart_automatic_warning",
+                    details={
+                        "server": row.server_name,
+                        "warning_error": warning_error,
+                    },
+                ))
+                db.commit()
+                result["warnings"] += 1
+                continue
+
+            if decision.action == "restart":
+                try:
+                    client.restart(row.server_name)
+                except PterodactylError as exc:
+                    row.last_status = "error"
+                    row.last_error = str(exc)
+                    row.last_action = "automatic_restart_failed"
+                    row.last_action_at = current.replace(tzinfo=None)
+                    row.execution_due_at = (current + timedelta(minutes=1)).replace(tzinfo=None)
+                    row.processing_until = None
+                    row.processing_token = None
+                    db.add(AdminActionLog(
+                        admin_id=None,
+                        action="server_restart_automatic_failed",
+                        details={
+                            "server": row.server_name,
+                            "error": str(exc),
+                        },
+                    ))
+                    db.commit()
+                    result["errors"] += 1
+                    continue
+
+                row.scheduled_for = _next_schedule(current, row.daily_time)
+                row.warning_sent_at = None
+                row.execution_due_at = None
+                row.last_status = "scheduled"
+                row.last_error = None
+                row.last_action = "automatic_restart"
+                row.last_action_at = current.replace(tzinfo=None)
+                row.processing_until = None
+                row.processing_token = None
+                db.add(AdminActionLog(
+                    admin_id=None,
+                    action="server_restart_automatic",
+                    details={"server": row.server_name},
+                ))
+                db.commit()
+                result["restarts"] += 1
+        return result
     except Exception:
         db.rollback()
         raise
@@ -1347,6 +1472,17 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="world_rounds_cleanup",
+    )
+
+    # Daily production-server restart controller. It is deliberately a short
+    # poll: the warning window is 15 seconds, and the durable lease prevents
+    # duplicate commands if a tick overlaps or the process has multiple loops.
+    scheduler.register_periodic(
+        task_server_restarts,
+        interval_secs=5,
+        priority=Priority.NORMAL,
+        task_id="server_restarts",
+        timeout=30,
     )
 
     # Anomaly scan (twinks + behavior outliers): BACKGROUND priority, every
