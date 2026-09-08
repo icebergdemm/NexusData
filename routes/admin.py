@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 
 discord_auth = DiscordAuthService()
 
+# The temporary historical repair must also cover the archived channel, which
+# may no longer be present in the bot's current channel configuration.
+_PUNISHMENT_DISCORD_BACKFILL_CHANNEL_IDS = [
+    1513646859824922634,
+    1513647011147157741,
+]
+
 
 def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[dict] = None):
     log = AdminActionLog(admin_id=admin_id, action=action, details=details or {})
@@ -6327,8 +6334,10 @@ async def api_refresh_punishment_discord_messages(
     from routes.discord_viewer_api import _call_bot
 
     discord_result = await _call_bot(
-        discord_bot.refresh_punishment_discord_messages(records),
-        timeout=120.0,
+        discord_bot.refresh_punishment_discord_messages(
+            records, channel_ids=_PUNISHMENT_DISCORD_BACKFILL_CHANNEL_IDS,
+        ),
+        timeout=180.0,
     )
     log_admin_action(db, current_admin.id, "refresh_punishment_discord_messages", {
         "limit": 30,

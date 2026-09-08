@@ -1420,7 +1420,9 @@ def _apply_punishment_record_to_embed(embed_data: dict, record: dict) -> bool:
     return changed
 
 
-async def refresh_punishment_discord_messages(records: list[dict], max_messages: int = 5000) -> dict:
+async def refresh_punishment_discord_messages(
+    records: list[dict], max_messages: int = 20000, channel_ids: Optional[list[int]] = None,
+) -> dict:
     """Update issuer fields in historical punishment embeds.
 
     The caller supplies the already-filtered, linked DB rows.  This function
@@ -1428,10 +1430,15 @@ async def refresh_punishment_discord_messages(records: list[dict], max_messages:
     punishment channels, messages authored by this bot, and embeds carrying
     the punishment footer marker.
     """
-    config = await asyncio.to_thread(bot_data.get_bot_config)
     channel_targets: dict[int, set[str]] = {}
-    for key in ("punishment_channel_id", "ban_channel_id"):
-        raw_channel_id = (config or {}).get(key)
+    if channel_ids is None:
+        config = await asyncio.to_thread(bot_data.get_bot_config)
+        configured_channels = ((key, (config or {}).get(key)) for key in ("punishment_channel_id", "ban_channel_id"))
+    else:
+        # Explicit IDs are used only by the temporary historical repair route
+        # for the current and archived punishment channels.
+        configured_channels = (("all", raw_channel_id) for raw_channel_id in channel_ids)
+    for key, raw_channel_id in configured_channels:
         if not raw_channel_id:
             continue
         try:
@@ -1442,7 +1449,7 @@ async def refresh_punishment_discord_messages(records: list[dict], max_messages:
 
     result = {"scanned": 0, "matched": 0, "updated": 0, "channels": [], "errors": []}
     for channel_id, target_keys in channel_targets.items():
-        expected_records = records if "punishment_channel_id" in target_keys else [
+        expected_records = records if {"all", "punishment_channel_id"} & target_keys else [
             record for record in records if record.get("type") in ("ban", "warning", "reprimand")
         ]
         expected_ids = {record.get("id") for record in expected_records}
