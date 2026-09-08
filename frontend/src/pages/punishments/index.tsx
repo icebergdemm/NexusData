@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { toast } from "sonner"
-import { Gavel, Plus, Star, StickyNote, Pencil } from "lucide-react"
+import { Gavel, Plus, Star, StickyNote, Pencil, RefreshCw } from "lucide-react"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
@@ -54,6 +55,7 @@ interface PunishmentsResponse {
   punishment_types: string[]
   can_edit: boolean
   can_delete: boolean
+  can_refresh_issuers: boolean
 }
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
@@ -77,6 +79,7 @@ export function PunishmentsPage() {
   const [editTarget, setEditTarget] = useState<PunishmentRow | null>(null)
   const [editForm, setEditForm] = useState({ reason: "", expires_days: "", notes: "" })
   const [form, setForm] = useState({ player_steamid: "", reason: "", expires_days: "", notes: "", server_name: "" })
+  const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
   const debouncedSearch = useDebouncedValue(search.trim())
 
@@ -134,6 +137,15 @@ export function PunishmentsPage() {
     mutationFn: (id: number) => api.delete(`/api/v1/admin/punishments/${id}`),
     onSuccess: () => { toast.success("Удалено"); invalidate() },
   })
+  const refreshIssuersMutation = useMutation<{ updated: number }>({
+    mutationFn: () => api.post("/api/v1/admin/punishments/refresh-issuers"),
+    onSuccess: (result) => {
+      toast.success(`Обновлено авторов: ${result.updated}`)
+      setRefreshConfirmOpen(false)
+      invalidate()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
   const editMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/admin/punishments/${editTarget?.id}`, {
       reason: editForm.reason, expires_days: editForm.expires_days ? Number(editForm.expires_days) : null, notes: editForm.notes,
@@ -153,48 +165,68 @@ export function PunishmentsPage() {
         title="Наказания"
         description="Предупреждения, выговоры, кики и баны, выданные игрокам"
         icon={Gavel}
-        actions={data?.can_edit && (
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button><Plus className="h-4 w-4" /> Выдать наказание</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Выдать «{data.type_labels[tab] ?? tab}»</DialogTitle>
-                <DialogDescription>Наказание будет привязано к указанному SteamID и записано в историю игрока.</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-3">
-                <div>
-                  <Label className="mb-1.5 block">SteamID</Label>
-                  <Input value={form.player_steamid} onChange={(e) => setForm((f) => ({ ...f, player_steamid: e.target.value }))} />
-                </div>
-                <div>
-                  <Label className="mb-1.5 block">Причина</Label>
-                  <Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
-                  {tab !== "reprimand" && <div className="mt-2"><ModerationTemplatePicker type={tab as "message" | "warning" | "kick" | "ban"} onSelect={(content) => setForm((f) => ({ ...f, reason: content }))} /></div>}
-                </div>
-                <div>
-                  <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
-                  <Input type="number" value={form.expires_days} onChange={(e) => setForm((f) => ({ ...f, expires_days: e.target.value }))} />
-                </div>
-                {(tab === "ban" || tab === "kick") && (
-                  <div>
-                    <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
-                    <Input value={form.server_name} onChange={(e) => setForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
-                  </div>
-                )}
-                <div>
-                  <Label className="mb-1.5 block">Внутренние заметки</Label>
-                  <Textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button disabled={!form.player_steamid.trim()} onClick={() => createMutation.mutate()}>
-                  Выдать
+        actions={(data?.can_refresh_issuers || data?.can_edit) && (
+          <div className="flex flex-wrap gap-2">
+            {data?.can_refresh_issuers && (
+              <>
+                <Button variant="outline" disabled={refreshIssuersMutation.isPending} onClick={() => setRefreshConfirmOpen(true)}>
+                  <RefreshCw className={`h-4 w-4 ${refreshIssuersMutation.isPending ? "animate-spin" : ""}`} /> Обновить 30 имён
                 </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+                <ConfirmDialog
+                  open={refreshConfirmOpen}
+                  onOpenChange={setRefreshConfirmOpen}
+                  title="Обновить имена последних 30 наказаний?"
+                  description="Будут обновлены только записи, выданные через админ-панель и связанные с администратором."
+                  confirmLabel="Обновить"
+                  onConfirm={() => refreshIssuersMutation.mutate()}
+                  confirmDisabled={refreshIssuersMutation.isPending}
+                />
+              </>
+            )}
+            {data?.can_edit && (
+              <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                <DialogTrigger asChild>
+                  <Button><Plus className="h-4 w-4" /> Выдать наказание</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Выдать «{data.type_labels[tab] ?? tab}»</DialogTitle>
+                    <DialogDescription>Наказание будет привязано к указанному SteamID и записано в историю игрока.</DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <div>
+                      <Label className="mb-1.5 block">SteamID</Label>
+                      <Input value={form.player_steamid} onChange={(e) => setForm((f) => ({ ...f, player_steamid: e.target.value }))} />
+                    </div>
+                    <div>
+                      <Label className="mb-1.5 block">Причина</Label>
+                      <Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
+                      {tab !== "reprimand" && <div className="mt-2"><ModerationTemplatePicker type={tab as "message" | "warning" | "kick" | "ban"} onSelect={(content) => setForm((f) => ({ ...f, reason: content }))} /></div>}
+                    </div>
+                    <div>
+                      <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
+                      <Input type="number" value={form.expires_days} onChange={(e) => setForm((f) => ({ ...f, expires_days: e.target.value }))} />
+                    </div>
+                    {(tab === "ban" || tab === "kick") && (
+                      <div>
+                        <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
+                        <Input value={form.server_name} onChange={(e) => setForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
+                      </div>
+                    )}
+                    <div>
+                      <Label className="mb-1.5 block">Внутренние заметки</Label>
+                      <Textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button disabled={!form.player_steamid.trim()} onClick={() => createMutation.mutate()}>
+                      Выдать
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
         )}
       />
 

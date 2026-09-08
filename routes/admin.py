@@ -19,7 +19,7 @@ from services import (
     PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
     ModerationActionTemplateService, MODERATION_TEMPLATE_TYPES,
     MODERATION_TEMPLATE_TYPE_LABELS,
-    format_admin_issuer_name,
+    format_admin_issuer_name, refresh_recent_punishment_issuers,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -6261,7 +6261,32 @@ async def api_punishments_list(
         "punishment_types": list(PUNISHMENT_TYPES),
         "can_edit": check_permission(current_admin, "punishments", "edit"),
         "can_delete": current_admin.is_superuser,
+        "can_refresh_issuers": bool(current_admin.is_superuser),
     }
+
+
+@router.post("/api/v1/admin/punishments/refresh-issuers")
+async def api_refresh_recent_punishment_issuers(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Refresh the 30 latest web punishment author names.
+
+    This temporary superuser-only endpoint exists for the historical backfill
+    and is deliberately separate from punishment creation.  The service
+    excludes game-server rows and is safe to run more than once.
+    """
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только для суперпользователей")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    updated = refresh_recent_punishment_issuers(db, limit=30)
+    log_admin_action(db, current_admin.id, "refresh_punishment_issuers", {
+        "limit": 30,
+        "updated": updated,
+    })
+    return {"status": "ok", "updated": updated, "limit": 30}
 
 
 @router.post("/api/v1/admin/punishments")
