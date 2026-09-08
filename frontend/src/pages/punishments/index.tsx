@@ -58,6 +58,14 @@ interface PunishmentsResponse {
   can_refresh_issuers: boolean
 }
 
+interface DiscordRefreshResponse {
+  database_updated: number
+  matched: number
+  updated: number
+  scanned: number
+  errors: string[]
+}
+
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
   active: "destructive", expired: "secondary", void: "secondary",
 }
@@ -80,6 +88,7 @@ export function PunishmentsPage() {
   const [editForm, setEditForm] = useState({ reason: "", expires_days: "", notes: "" })
   const [form, setForm] = useState({ player_steamid: "", reason: "", expires_days: "", notes: "", server_name: "" })
   const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false)
+  const [refreshDiscordConfirmOpen, setRefreshDiscordConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
   const debouncedSearch = useDebouncedValue(search.trim())
 
@@ -146,6 +155,15 @@ export function PunishmentsPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
+  const refreshDiscordMutation = useMutation<DiscordRefreshResponse>({
+    mutationFn: () => api.post("/api/v1/admin/punishments/refresh-discord-messages"),
+    onSuccess: (result) => {
+      toast.success(`Discord: изменено ${result.updated}, найдено ${result.matched}`)
+      setRefreshDiscordConfirmOpen(false)
+      invalidate()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
   const editMutation = useMutation({
     mutationFn: () => api.post(`/api/v1/admin/punishments/${editTarget?.id}`, {
       reason: editForm.reason, expires_days: editForm.expires_days ? Number(editForm.expires_days) : null, notes: editForm.notes,
@@ -180,6 +198,18 @@ export function PunishmentsPage() {
                   confirmLabel="Обновить"
                   onConfirm={() => refreshIssuersMutation.mutate()}
                   confirmDisabled={refreshIssuersMutation.isPending}
+                />
+                <Button variant="outline" disabled={refreshDiscordMutation.isPending} onClick={() => setRefreshDiscordConfirmOpen(true)}>
+                  <RefreshCw className={`h-4 w-4 ${refreshDiscordMutation.isPending ? "animate-spin" : ""}`} /> Обновить Discord
+                </Button>
+                <ConfirmDialog
+                  open={refreshDiscordConfirmOpen}
+                  onOpenChange={setRefreshDiscordConfirmOpen}
+                  title="Обновить старые Discord-сообщения?"
+                  description="Бот проверит настроенные каналы наказаний и обновит только свои эмбеды для последних 30 наказаний. Остальные сообщения не изменяются."
+                  confirmLabel="Обновить Discord"
+                  onConfirm={() => refreshDiscordMutation.mutate()}
+                  confirmDisabled={refreshDiscordMutation.isPending}
                 />
               </>
             )}

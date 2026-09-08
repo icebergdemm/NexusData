@@ -18,6 +18,7 @@ import hashlib
 import logging
 import json
 import os
+import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1319,6 +1320,176 @@ async def viewer_export_messages(channel_id: int, max_messages: int) -> list:
     async for msg in channel.history(limit=max_messages, oldest_first=True):
         out.append(_serialize_message(msg))
     return out
+
+
+_PUNISHMENT_EMBED_TYPES = {
+    "⚠️ Предупреждение": "warning",
+    "📋 Выговор": "reprimand",
+    "👢 Кик": "kick",
+    "🔨 Бан": "ban",
+}
+
+
+def _punishment_embed_signature(embed_data: dict) -> Optional[tuple[str, str, str]]:
+    """Extract the stable identity fields from a punishment embed.
+
+    Historical punishment messages predate Discord message-id tracking, so
+    backfill deliberately recognises only the exact embed shape emitted by
+    ``routes.game_api._queue_punishment_discord_notification``.
+    """
+    if (embed_data.get("footer") or {}).get("text") != "1984":
+        return None
+    punishment_type = _PUNISHMENT_EMBED_TYPES.get(embed_data.get("title"))
+    if not punishment_type:
+        return None
+
+    fields = {field.get("name"): field.get("value", "") for field in embed_data.get("fields", [])}
+    player_value = str(fields.get("Игрок", ""))
+    steamid_match = re.search(r"`([^`]+)`", player_value)
+    player_steamid = steamid_match.group(1).strip() if steamid_match else player_value.split("(", 1)[0].strip()
+    if not player_steamid or "Выдал" not in fields or "Причина" not in fields:
+        return None
+    return punishment_type, player_steamid, str(fields["Причина"]).strip()
+
+
+def _parse_punishment_issued_at(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(MSK_OFFSET))
+    return parsed.astimezone(timezone.utc)
+
+
+def _find_punishment_record_for_message(
+    embed_data: dict,
+    message_created_at: datetime,
+    records: list[dict],
+    used_record_ids: set[int],
+) -> Optional[dict]:
+    """Find one safe historical DB match for an embed, if there is one."""
+    signature = _punishment_embed_signature(embed_data)
+    if not signature:
+        return None
+    punishment_type, player_steamid, embed_reason = signature
+    candidates = []
+    for record in records:
+        record_id = record.get("id")
+        if record_id in used_record_ids:
+            continue
+        if record.get("type") != punishment_type or str(record.get("player_steamid") or "").strip() != player_steamid:
+            continue
+        issued_at = _parse_punishment_issued_at(record.get("issued_at"))
+        if issued_at is None:
+            continue
+        delta = abs((message_created_at - issued_at).total_seconds())
+        expected_reason = str(record.get("reason") or "Не указана").strip()
+        reason_matches = embed_reason == expected_reason
+        # Exact reason permits a wider window for delayed bot delivery.  If an
+        # admin edited the reason later, only a close timestamp is accepted.
+        if delta > (24 * 60 * 60 if reason_matches else 15 * 60):
+            continue
+        candidates.append((0 if reason_matches else 1, delta, record))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
+def _apply_punishment_record_to_embed(embed_data: dict, record: dict) -> bool:
+    """Apply the denormalised issuer and void status to one embed."""
+    changed = False
+    for field in embed_data.get("fields", []):
+        if field.get("name") == "Выдал" and field.get("value") != record["issued_by_name"]:
+            field["value"] = record["issued_by_name"]
+            changed = True
+
+    if record.get("is_void"):
+        status_field = next((field for field in embed_data.get("fields", []) if field.get("name") == "Статус"), None)
+        if status_field is None:
+            embed_data.setdefault("fields", []).append({
+                "name": "Статус", "value": "Аннулировано", "inline": False,
+            })
+            changed = True
+        elif status_field.get("value") != "Аннулировано":
+            status_field["value"] = "Аннулировано"
+            changed = True
+    return changed
+
+
+async def refresh_punishment_discord_messages(records: list[dict], max_messages: int = 5000) -> dict:
+    """Update issuer fields in historical punishment embeds.
+
+    The caller supplies the already-filtered, linked DB rows.  This function
+    never edits arbitrary channel messages: it restricts itself to configured
+    punishment channels, messages authored by this bot, and embeds carrying
+    the punishment footer marker.
+    """
+    config = await asyncio.to_thread(bot_data.get_bot_config)
+    channel_targets: dict[int, set[str]] = {}
+    for key in ("punishment_channel_id", "ban_channel_id"):
+        raw_channel_id = (config or {}).get(key)
+        if not raw_channel_id:
+            continue
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            continue
+        channel_targets.setdefault(channel_id, set()).add(key)
+
+    result = {"scanned": 0, "matched": 0, "updated": 0, "channels": [], "errors": []}
+    for channel_id, target_keys in channel_targets.items():
+        expected_records = records if "punishment_channel_id" in target_keys else [
+            record for record in records if record.get("type") in ("ban", "warning", "reprimand")
+        ]
+        expected_ids = {record.get("id") for record in expected_records}
+        used_record_ids: set[int] = set()
+        channel_result = {"channel_id": str(channel_id), "scanned": 0, "matched": 0, "updated": 0}
+        try:
+            channel = bot.get_channel(channel_id)
+            if not channel:
+                channel = await bot.fetch_channel(channel_id)
+            async for message in channel.history(limit=max(1, min(max_messages, 20000))):
+                channel_result["scanned"] += 1
+                result["scanned"] += 1
+                if not bot.user or message.author.id != bot.user.id or not message.embeds:
+                    continue
+
+                embed_dicts = [embed.to_dict() for embed in message.embeds]
+                matched_record = None
+                matched_index = None
+                for index, embed_data in enumerate(embed_dicts):
+                    matched_record = _find_punishment_record_for_message(
+                        embed_data, message.created_at, expected_records, used_record_ids,
+                    )
+                    if matched_record:
+                        matched_index = index
+                        break
+                if not matched_record or matched_index is None:
+                    continue
+
+                used_record_ids.add(matched_record["id"])
+                channel_result["matched"] += 1
+                result["matched"] += 1
+                changed = _apply_punishment_record_to_embed(embed_dicts[matched_index], matched_record)
+                if changed:
+                    try:
+                        await message.edit(embeds=[discord.Embed.from_dict(data) for data in embed_dicts])
+                    except discord.HTTPException as exc:
+                        result["errors"].append(f"message {message.id}: {exc.__class__.__name__}")
+                        continue
+                    channel_result["updated"] += 1
+                    result["updated"] += 1
+
+                if expected_ids and used_record_ids >= expected_ids:
+                    break
+        except Exception as exc:
+            result["errors"].append(f"channel {channel_id}: {exc.__class__.__name__}")
+        result["channels"].append(channel_result)
+    return result
 
 
 async def viewer_get_roles() -> list:
