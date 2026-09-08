@@ -353,6 +353,8 @@ def postpone_schedule(
 
 
 def _claim_schedule(db: "Session", row: "ServerRestartSchedule", now: datetime) -> bool:
+    from models import ServerRestartSchedule
+
     fresh = (
         db.query(ServerRestartSchedule)
         .filter(ServerRestartSchedule.id == row.id)

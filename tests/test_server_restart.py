@@ -1,6 +1,8 @@
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import sys
+from unittest.mock import patch
 
 from services_server_restart import (
     PterodactylClient,
@@ -10,6 +12,7 @@ from services_server_restart import (
     evaluate_schedule_tick,
     iso_utc,
     next_daily_run_utc,
+    _claim_schedule,
     validate_daily_time,
 )
 
@@ -137,6 +140,44 @@ class ServerRestartScheduleTests(unittest.TestCase):
 
         with self.assertRaises(PterodactylError):
             PterodactylClient(SimpleNamespace())._target("ASPER1")
+
+    def test_claim_schedule_resolves_orm_model_at_runtime(self):
+        class FakeSchedule:
+            id = object()
+
+        class FakeQuery:
+            def __init__(self, fresh):
+                self.fresh = fresh
+
+            def filter(self, _condition):
+                return self
+
+            def with_for_update(self):
+                return self
+
+            def first(self):
+                return self.fresh
+
+        class FakeDb:
+            def __init__(self, fresh):
+                self.fresh = fresh
+                self.commits = 0
+
+            def query(self, _model):
+                return FakeQuery(self.fresh)
+
+            def commit(self):
+                self.commits += 1
+
+        fresh = SimpleNamespace(id=1, processing_until=None, processing_token=None)
+        db = FakeDb(fresh)
+        row = SimpleNamespace(id=1, processing_until=None, processing_token=None)
+
+        with patch.dict(sys.modules, {"models": SimpleNamespace(ServerRestartSchedule=FakeSchedule)}):
+            self.assertTrue(_claim_schedule(db, row, datetime(2026, 9, 8, 2, 31, tzinfo=timezone.utc)))
+
+        self.assertEqual(db.commits, 1)
+        self.assertIsNotNone(row.processing_token)
 
 
 if __name__ == "__main__":
