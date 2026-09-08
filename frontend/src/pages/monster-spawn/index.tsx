@@ -484,6 +484,7 @@ function ExpressTuning({ global, vanilla, setGlobal, setVanilla }: {
     <CardContent className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
       <SliderField label="Целевая сложность в минуту" value={Number(global.target_difficulty_per_minute ?? 0.8)} min={0.1} max={3} step={0.05} onChange={(value) => setGlobal("target_difficulty_per_minute", value)} />
       <SliderField label="Пауза между спавнами, с" value={Number(global.min_seconds_between_spawns ?? 90)} min={15} max={600} step={5} suffix="с" onChange={(value) => setGlobal("min_seconds_between_spawns", value)} />
+      <SliderField label="Пауза между abyss-волн, мин" value={Number(global.abyss_wave_cooldown_seconds ?? 1800) / 60} min={30} max={120} step={5} suffix=" мин" onChange={(value) => setGlobal("abyss_wave_cooldown_seconds", value * 60)} />
       <SliderField label="Бюджет краткоср. сложности" value={Number(global.max_short_term_difficulty ?? 6)} min={1} max={30} step={0.5} onChange={(value) => setGlobal("max_short_term_difficulty", value)} />
       <SliderField label="Порог интенсивности" value={Number(global.intensity_threshold ?? 0.2)} min={0.05} max={0.9} step={0.01} onChange={(value) => setGlobal("intensity_threshold", value)} />
       <SliderField label="Vanilla: количество" value={Number(vanilla.amount_multiplier ?? 1)} min={0.1} max={3} step={0.05} suffix="x" onChange={(value) => setVanilla("amount_multiplier", value)} />
@@ -992,7 +993,8 @@ export function MonsterSpawnPage() {
         <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Ban className="size-4 text-warning" /> Списки исключений</CardTitle><CardDescription className="text-xs">Подстроки в названиях волн — списки можно пополнять и чистить динамически</CardDescription></CardHeader>
           <CardContent className="grid gap-3 p-4 lg:grid-cols-2">
             <TagListEditor label="Не удерживать перед спавном" description="Волны с этими подстроками запускаются сразу, без hold_seconds (по умолчанию: abyss, moloch, cave)." tags={ignoreList("hold_ignore_names")} onChange={(tags) => setGlobal("hold_ignore_names", tags)} addPlaceholder="например: moloch" />
-            <TagListEditor label="Без схем спавна" description="Волны с этими подстроками спавнятся на структурных точках уровня вместо схем (по умолчанию: cave, abyss)." tags={ignoreList("spawn_scheme_ignore_names")} onChange={(tags) => setGlobal("spawn_scheme_ignore_names", tags)} addPlaceholder="например: cave" />
+             <TagListEditor label="Без схем спавна" description="Волны с этими подстроками спавнятся на структурных точках уровня вместо схем (по умолчанию: cave, abyss)." tags={ignoreList("spawn_scheme_ignore_names")} onChange={(tags) => setGlobal("spawn_scheme_ignore_names", tags)} addPlaceholder="например: cave" />
+             <TagListEditor label="Без множителей количества и HP" description="Волны с этими подстроками не получают adaptive/player amount и HP множители (по умолчанию: abyss)." tags={ignoreList("multiplier_exempt_wave_names")} onChange={(tags) => setGlobal("multiplier_exempt_wave_names", tags)} addPlaceholder="например: abyss" />
           </CardContent></Card>
       </TabsContent>
 

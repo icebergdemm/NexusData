@@ -81,6 +81,7 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "intensity_threshold": 0.2,
         "intensity_threshold_increase": 0.0005,
         "wave_cooldown_seconds": 0,
+        "abyss_wave_cooldown_seconds": 1800,
         "respect_server_monster_settings": True,
         "use_swarm_behavior": True,
         "submarine_adaptive_influence": 0.25,
@@ -116,6 +117,7 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         # 3.5: волны с этими подстроками не используют схемы спавна
         # (пещеры/бездна спавнятся на структурных точках уровня).
         "spawn_scheme_ignore_names": ["cave", "abyss"],
+        "multiplier_exempt_wave_names": ["abyss"],
         "max_wave_tracking_seconds": 600,
         "spawn_start_zone_enabled": True,
         "spawn_start_zone_progress": 0.10,
