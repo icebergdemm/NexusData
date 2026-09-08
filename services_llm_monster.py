@@ -1088,21 +1088,61 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
             "spawned": len(result.get("spawn_plans", []))}
 
 
+def _pending_servers_from_setting(value: Optional[str]) -> set[str]:
+    """Return normalized server keys with a durable pending run."""
+    if not value:
+        return set()
+    try:
+        stored = json.loads(value)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(stored, dict):
+        return set()
+    return {
+        str(server).strip().upper()
+        for server, runtime in stored.items()
+        if isinstance(runtime, dict) and isinstance(runtime.get("pending_run"), dict)
+    }
+
+
 def process_pending_llm_runs() -> List[Dict[str, Any]]:
-    """Worker entry: execute queued manual runs, one per server. Never raises."""
+    """Worker entry: execute queued manual runs, one per server. Never raises.
+
+    The queue is stored in the main DB while controller state is stored in the
+    game DB. Do not use the latter as the queue's index: a server can have a
+    queued run before its controller snapshot exists (or after it was removed).
+    """
     from database import GameSessionLocal, SessionLocal
-    from models import MonsterSpawnControl
+    from models import AppSetting, MonsterSpawnControl
 
     results: List[Dict[str, Any]] = []
     main_db = next(SessionLocal())
     try:
+        # AppSetting contains one JSON object keyed by server. Find queued
+        # servers there first so a missing game-state row cannot strand a run.
+        setting = main_db.query(AppSetting).filter(AppSetting.key == SETTINGS_KEY).first()
+        queued_servers = _pending_servers_from_setting(setting.value if setting is not None else None)
+
         game_db = next(GameSessionLocal())
         try:
             rows = game_db.query(MonsterSpawnControl).all()
-            for row in rows:
-                server = (row.server or "").strip().upper()
+            rows_by_server = {
+                (row.server or "").strip().upper(): row
+                for row in rows
+                if (row.server or "").strip()
+            }
+            servers = set(rows_by_server) | queued_servers
+            for server in servers:
                 if not server:
                     continue
+                row = rows_by_server.get(server)
+                if row is None:
+                    # The admin UI normally creates this row on first load,
+                    # but the worker must also handle a queued run submitted
+                    # during a controller/plugin restart.
+                    row = MonsterSpawnControl(server=server)
+                    game_db.add(row)
+                    game_db.flush()
                 try:
                     outcome = _process_server_llm_queue(main_db, game_db, server, row)
                     if outcome is not None:

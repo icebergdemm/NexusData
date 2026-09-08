@@ -13,6 +13,7 @@ from services_llm_monster import (
     QueueBusyError,
     LLMError,
     _active_run_live,
+    _pending_servers_from_setting,
     _process_server_llm_queue,
     get_llm_runtime,
     queue_llm_run,
@@ -143,6 +144,11 @@ class MonsterLLMQueueTests(unittest.TestCase):
         self.assertFalse(_active_run_live(stale, now))
         self.assertFalse(_active_run_live(None, now))
         self.assertFalse(_active_run_live({}, now))
+
+    def test_pending_servers_are_indexed_from_main_db_setting(self):
+        value = '{"asper1": {"pending_run": {"id": "abc"}}, "ASPER2": {"active_run": {}}}'
+        self.assertEqual(_pending_servers_from_setting(value), {"ASPER1"})
+        self.assertEqual(_pending_servers_from_setting("not-json"), set())
 
     def test_process_executes_pending_and_applies_revision(self):
         db = _main_db()
