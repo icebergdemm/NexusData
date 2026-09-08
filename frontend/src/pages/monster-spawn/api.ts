@@ -10,6 +10,8 @@ export interface MonsterEntry {
   hp_multiplier: number
   hp_scale_with_progress: number
   mobility: number
+  /** null = авто-оценка угрозы вида; число 0.3..2.5 = ручная угроза */
+  threat_override?: number | null
 }
 
 export interface SpawnWave {
@@ -34,6 +36,13 @@ export interface SpawnWave {
   /** null = авто (abyss/moloch/cave в названии), true/false — явная пометка */
   non_blocking?: boolean | null
   learned?: boolean
+  /** null = авто-оценка опасности; число 0.1..5 = ручной множитель веса выбора */
+  danger_override?: number | null
+  /** Связка волн: имя следующей волны (null/"" = без связки) */
+  chain_wave?: string | null
+  chain_delay_seconds?: number
+  chain_same_position?: boolean
+  chain_chance?: number
   monsters: MonsterEntry[]
 }
 
@@ -41,6 +50,15 @@ export interface WaveOverride {
   difficulty_mode: "absolute" | "adjust" | string
   difficulty_value: number
   non_blocking?: boolean | null
+  enabled?: boolean
+  updated_utc?: string
+  /** Ручная коррекция опасности волны (множитель веса выбора) */
+  danger_mode?: "absolute" | "adjust" | string
+  danger_value?: number | null
+}
+
+export interface SpeciesDangerOverride {
+  threat_value: number
   enabled?: boolean
   updated_utc?: string
 }
@@ -176,6 +194,9 @@ export interface ActiveWaveTelemetry {
   monsters_total: number
   monster_counts: Record<string, number>
   effective_difficulty: number
+  base_difficulty?: number
+  crew_power_at_start?: number
+  chain_depth?: number
   modifications: string[]
   blocking?: boolean
   engaged?: boolean
@@ -225,6 +246,8 @@ export interface LearnedWaveTelemetry {
 export interface SpeciesThreatTelemetry {
   species: string
   threat_ema: number
+  effective_threat?: number
+  manual_override?: boolean
   samples: number
 }
 
@@ -306,7 +329,13 @@ const normalizeWave = (value: unknown): SpawnWave | null => {
       amount_min: typeof monster.amount_min === "number" ? monster.amount_min : 0,
       amount_max: typeof monster.amount_max === "number" ? monster.amount_max : 0,
       max_amount_per_level: typeof monster.max_amount_per_level === "number" ? monster.max_amount_per_level : 0,
+      threat_override: typeof monster.threat_override === "number" ? monster.threat_override : null,
     })),
+    danger_override: typeof value.danger_override === "number" ? value.danger_override : null,
+    chain_wave: typeof value.chain_wave === "string" ? value.chain_wave : null,
+    chain_delay_seconds: typeof value.chain_delay_seconds === "number" ? value.chain_delay_seconds : 0,
+    chain_same_position: typeof value.chain_same_position === "boolean" ? value.chain_same_position : true,
+    chain_chance: typeof value.chain_chance === "number" ? value.chain_chance : 1,
   } as unknown as SpawnWave
 }
 

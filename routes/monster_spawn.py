@@ -74,6 +74,22 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "spawn_min_distance_meters": 100,
         # 0 = без ограничений; null = по single_wave_mode.
         "max_simultaneous_waves": None,
+        # Стартовая задержка: волны запрещены, пока корабль не продвинется
+        # дальше initial_grace_min_progress по уровню или не пройдёт
+        # initial_grace_min_round_seconds с начала раунда (require_both=True —
+        # нужны оба условия).
+        "initial_grace_enabled": True,
+        "initial_grace_min_progress": 0.05,
+        "initial_grace_min_round_seconds": 1200,
+        "initial_grace_require_both": True,
+        # Связка волн: максимальная глубина цепочки chain-спавнов.
+        "chain_max_depth": 3,
+        # Адаптация к количеству/силе игроков.
+        "balance_baseline_players": 4,
+        "player_count_scale_per_extra": 0.15,
+        "player_hp_scale_per_extra": 0.08,
+        "player_power_exponent": 0.85,
+        "player_scale_max": 2.5,
         # Схемы позиционирования спавна (перед/сверху/снизу, не сзади).
         "spawn_scheme_enabled": True,
         # 3.1: волны с этими подстроками не удерживаются hold_seconds.
@@ -102,6 +118,13 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
             "play_dead_probability": -1,
             # null = авто: abyss/moloch/cave в названии => неблокирующая.
             "non_blocking": None,
+            # null = авто-оценка опасности; число = ручной множитель веса.
+            "danger_override": None,
+            # Связка волн: chain_wave=null = без связки.
+            "chain_wave": None,
+            "chain_delay_seconds": 0,
+            "chain_same_position": True,
+            "chain_chance": 1.0,
             **raw_wave,
         }
         monsters = wave.get("monsters") if isinstance(wave.get("monsters"), list) else []
@@ -110,6 +133,8 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
                 "amount_min": 0,
                 "amount_max": 0,
                 "max_amount_per_level": 0,
+                # null = авто-оценка угрозы вида; число = ручная угроза 0.3..2.5.
+                "threat_override": None,
                 **monster,
             }
             for monster in monsters
