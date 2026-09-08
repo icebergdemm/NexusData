@@ -57,7 +57,7 @@ ws_router = APIRouter(prefix="/api/v1/replays", tags=["replays-stream"])
 
 STREAM_ROOT = os.path.join(settings.replays_upload_dir, ".streaming")
 STREAM_MAX_CHUNK = 2 * 1024 * 1024
-STREAM_STALE_SECONDS = 3600
+STREAM_STALE_SECONDS = 60
 _live_cache = {}
 _live_cache_lock = threading.Lock()
 
