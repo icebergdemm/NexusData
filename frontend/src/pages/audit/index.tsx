@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import { useInfiniteQuery } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
@@ -72,6 +73,9 @@ function initials(name: string | null, id: number): string {
 }
 
 export function AuditPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const adminIdFilter = Number(searchParams.get("admin_id"))
+  const hasAdminFilter = Number.isInteger(adminIdFilter) && adminIdFilter > 0
   const [source, setSource] = useState<"" | "discord" | "all">("")
   const [searchInput, setSearchInput] = useState("")
   const debouncedSearch = useDebouncedValue(searchInput.trim(), 400)
@@ -80,13 +84,14 @@ export function AuditPage() {
   const debouncedAction = useDebouncedValue(actionFilter.trim(), 400)
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
-  const hasActiveFilters = !!debouncedSearch || category !== "all" || !!debouncedAction || !!dateFrom || !!dateTo || source !== ""
+  const hasActiveFilters = hasAdminFilter || !!debouncedSearch || category !== "all" || !!debouncedAction || !!dateFrom || !!dateTo || source !== ""
 
   const { data: infiniteData, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage, isFetching } = useInfiniteQuery({
-    queryKey: ["audit-logs", source, debouncedSearch, category, debouncedAction, dateFrom, dateTo],
+    queryKey: ["audit-logs", source, adminIdFilter, debouncedSearch, category, debouncedAction, dateFrom, dateTo],
     queryFn: ({ pageParam = 1 }) => {
       const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
       if (source === "discord" || source === "") params.set("source", source)
+      if (hasAdminFilter) params.set("admin_id", String(adminIdFilter))
       // source === "all" — не отправляем параметр, бэкенд вернёт все
       if (debouncedSearch) params.set("q", debouncedSearch)
       if (category !== "all") params.set("category", category)
@@ -160,6 +165,7 @@ export function AuditPage() {
                       setDateFrom("")
                       setDateTo("")
                       setSource("")
+                      setSearchParams({})
                     }}
                   >
                     <RotateCcw className="size-3.5" /> Сбросить
@@ -174,6 +180,7 @@ export function AuditPage() {
               <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => setSource("discord")}>Discord</Button>
               <Button size="sm" variant={source === "all" ? "default" : "outline"} onClick={() => setSource("all")}>Все</Button>
             </div>
+            {hasAdminFilter && <Badge variant="outline">Только админ #{adminIdFilter}</Badge>}
             <div className="flex items-end gap-2">
               <div>
                 <Label className="mb-1.5 block text-xs flex items-center gap-1"><CalendarClock className="size-3" /> С даты</Label>

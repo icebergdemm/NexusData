@@ -41,6 +41,7 @@ const ErrorLogPage = lazy(() => import("@/pages/error-log").then(({ ErrorLogPage
 const PerfMonitorPage = lazy(() => import("@/pages/perf-monitor").then(({ PerfMonitorPage }) => ({ default: PerfMonitorPage })))
 const LabelCategoriesPage = lazy(() => import("@/pages/label-categories").then(({ LabelCategoriesPage }) => ({ default: LabelCategoriesPage })))
 const UsersPage = lazy(() => import("@/pages/users").then(({ UsersPage }) => ({ default: UsersPage })))
+const UserDetailPage = lazy(() => import("@/pages/users/detail").then(({ UserDetailPage }) => ({ default: UserDetailPage })))
 const KitsPage = lazy(() => import("@/pages/kits").then(({ KitsPage }) => ({ default: KitsPage })))
 const ServerPrivilegesPage = lazy(() => import("@/pages/server-privileges").then(({ ServerPrivilegesPage }) => ({ default: ServerPrivilegesPage })))
 const DiscordBotPage = lazy(() => import("@/pages/discord-bot").then(({ DiscordBotPage }) => ({ default: DiscordBotPage })))
@@ -133,6 +134,7 @@ export default function App() {
           <Route path="tickets" element={<TicketsListPage />} />
           <Route path="tickets/:ticketId" element={<TicketDetailPage />} />
           <Route path="users" element={<UsersPage />} />
+          <Route path="users/:adminId" element={<UserDetailPage />} />
           <Route path="administration" element={<AdministrationPage />} />
           <Route path="ai-center" element={<AICenterPage />} />
           <Route path="server-privileges" element={<ServerPrivilegesPage />} />

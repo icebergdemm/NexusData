@@ -9,12 +9,26 @@ export function cyclePermissionState(value: PermissionState): PermissionState {
   return undefined
 }
 
+export function permissionStatusLabel(value: boolean): string {
+  return value ? "Разрешено" : "Запрещено"
+}
+
+export function setPermissionOverride(value: PermissionValue, page: string, action: string, next: PermissionState): PermissionValue {
+  const nextPage = { ...value[page] }
+  if (next === undefined) delete nextPage[action]
+  else nextPage[action] = next
+  const nextValue = { ...value }
+  if (Object.keys(nextPage).length === 0) delete nextValue[page]
+  else nextValue[page] = nextPage
+  return nextValue
+}
+
 export function TriStatePermissionButton({ value, onChange, label }: {
   value: PermissionState
   onChange: () => void
   label: string
 }) {
-  const text = value === true ? "✓" : value === false ? "×" : "—"
+  const text = value === true ? "Разрешено" : value === false ? "Запрещено" : "Наследовать"
   const tone = value === true
     ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300"
     : value === false
@@ -23,10 +37,10 @@ export function TriStatePermissionButton({ value, onChange, label }: {
   return (
     <button
       type="button"
-      className={`inline-flex size-6 items-center justify-center rounded border text-xs font-semibold transition-colors hover:brightness-125 ${tone}`}
+      className={`inline-flex min-h-6 items-center justify-center rounded border px-1.5 text-[10px] font-semibold transition-colors hover:brightness-125 ${tone}`}
       onClick={onChange}
-      aria-label={`${label}: ${value === true ? "разрешено" : value === false ? "запрещено" : "не задано"}`}
-      title={`${label}: ${value === true ? "разрешено" : value === false ? "запрещено" : "не задано"}`}
+      aria-label={`${label}: ${value === true ? "разрешено" : value === false ? "запрещено" : "наследовать"}`}
+      title={`${label}: ${value === true ? "разрешено" : value === false ? "запрещено" : "наследовать"}`}
     >
       {text}
     </button>
@@ -43,13 +57,7 @@ export function PermissionMatrixEditor({ registry, value, onChange }: {
 }) {
   const toggle = (page: string, action: string) => {
     const nextState = cyclePermissionState(value[page]?.[action])
-    const nextPage = { ...value[page] }
-    if (nextState === undefined) delete nextPage[action]
-    else nextPage[action] = nextState
-    const next = { ...value }
-    if (Object.keys(nextPage).length === 0) delete next[page]
-    else next[page] = nextPage
-    onChange(next)
+    onChange(setPermissionOverride(value, page, action, nextState))
   }
 
   return (
