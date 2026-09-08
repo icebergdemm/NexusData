@@ -256,7 +256,7 @@ function PermissionSourceInspector({ decision, conflict }: { decision: Authoriza
             </div>
             <div className="mt-1 text-muted-foreground">{sourceContribution(source, active)}</div>
             {sourceReason(source) && <div className="mt-1 text-muted-foreground">{sourceReason(source)}</div>}
-            {source.kind === "individual" && <div className="mt-1 text-muted-foreground">Имеет приоритет над группой и департаментом. После сброса будут учитываться доступные разрешения группы и департамента.</div>}
+            {source.kind === "individual" && <div className="mt-1 text-muted-foreground">Текущее значение: {permissionStatusLabel(source.value)}. Имеет приоритет над группой и департаментом. После сброса будут учитываться их доступные разрешения; если их нет, доступ не будет выдан.</div>}
             {href && <Link className="mt-2 inline-flex text-primary hover:underline" to={href}>{sourceLinkLabel(source.kind)} <ExternalLink className="ml-1 size-3" /></Link>}
           </div>
         })}
@@ -274,7 +274,11 @@ function sourceContribution(source: { kind: string; value: boolean; [key: string
 }
 
 function sourceReason(source: { kind: string; reason?: unknown; [key: string]: unknown }): string | null {
-  if (source.applies === false && source.reason === "individual_permission_has_priority") return "Не применяется: индивидуальное правило имеет приоритет над группой и департаментом."
+  if (source.applies === false && source.reason === "individual_permission_has_priority") {
+    if (source.kind === "group") return "Не применяется: индивидуальное правило имеет приоритет. Группа только добавляет доступ; её запрет не применяется."
+    if (source.kind === "department_access_level" || source.kind === "department_site") return "Не применяется: индивидуальное правило имеет приоритет. Департамент только добавляет доступ; его запрет не применяется."
+    return "Не применяется: индивидуальное правило имеет приоритет над этим источником."
+  }
   if (source.kind === "group") return "Группа только добавляет доступ; её запрет не применяется."
   if (source.kind === "department_access_level" || source.kind === "department_site") return "Департамент только добавляет доступ; его запрет не применяется."
   if (source.reason === "group_permissions_are_grant_only") return "Группа только добавляет доступ; запрет группы не применяется."
