@@ -2123,6 +2123,9 @@ class WorldRound(Base):
     level_type = Column(String(50), nullable=True)
     level_w = Column(Integer, nullable=True)
     level_h = Column(Integer, nullable=True)
+    start_x = Column(Float, nullable=True)
+    end_x = Column(Float, nullable=True)
+    abyss_start_y = Column(Float, nullable=True)
     sub_name = Column(String(255), nullable=True)
     submarines = Column(JSON, nullable=True)  # [{id, name}]
     hulls = Column(JSON, nullable=True)       # [{id, sub, r:[x,y,w,h]}] — sub-local

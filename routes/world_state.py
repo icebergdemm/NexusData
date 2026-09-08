@@ -142,6 +142,9 @@ async def world_init(request: Request, db: Session = Depends(get_game_db)):
     row.level_type = body.get("level_type")
     row.level_w = body.get("level_w")
     row.level_h = body.get("level_h")
+    row.start_x = body.get("start_x")
+    row.end_x = body.get("end_x")
+    row.abyss_start_y = body.get("abyss_start_y")
     row.sub_name = body.get("sub_name")
     row.submarines = body.get("submarines") or []
     row.hulls = body.get("hulls") or []
@@ -634,6 +637,9 @@ async def api_get_world_geometry(round_id: str, request: Request, db: Session = 
         "level_type": r.level_type,
         "level_w": r.level_w,
         "level_h": r.level_h,
+        "start_x": r.start_x,
+        "end_x": r.end_x,
+        "abyss_start_y": r.abyss_start_y,
         "sub_name": r.sub_name,
         "submarines": r.submarines or [],
         "hulls": r.hulls or [],

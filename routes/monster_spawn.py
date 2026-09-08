@@ -116,6 +116,11 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         # 3.5: волны с этими подстроками не используют схемы спавна
         # (пещеры/бездна спавнятся на структурных точках уровня).
         "spawn_scheme_ignore_names": ["cave", "abyss"],
+        "max_wave_tracking_seconds": 600,
+        "spawn_start_zone_enabled": True,
+        "spawn_start_zone_progress": 0.10,
+        "spawn_start_zone_forward_shift_min_meters": 50,
+        "spawn_start_zone_forward_shift_max_meters": 100,
         # Learned target pace is correlated by ship profile, hull size and
         # effective crew power instead of using one global fixed threshold.
         "pace_adaptive_enabled": True,

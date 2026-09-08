@@ -44,6 +44,9 @@ export interface WorldGeometry {
   level_type: string | null
   level_w: number | null
   level_h: number | null
+  start_x?: number | null
+  end_x?: number | null
+  abyss_start_y?: number | null
   sub_name: string | null
   submarines: WorldSubmarine[]
   hulls: WorldHullGeometry[]

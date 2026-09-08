@@ -77,8 +77,8 @@ function getWorldBounds(geometry: WorldGeometry): WorldBounds {
 export function WorldCanvas({
   geometry, state, selectedCharacterId, onSelectCharacter,
   targetMode = false, targetPoint = null, onPickTarget,
-  markers = [], selectedMarkerId = null, onSelectMarker, onMoveMarker,
-  onMapContextMenu,
+   markers = [], selectedMarkerId = null, onSelectMarker, onMoveMarker,
+   onMapContextMenu, startZone = null, abyssStartY = null,
 }: {
   geometry: WorldGeometry
   state: WorldState
@@ -92,6 +92,8 @@ export function WorldCanvas({
   onSelectMarker?: (id: string | null) => void
   onMoveMarker?: (id: string, x: number, y: number) => void
   onMapContextMenu?: (info: { wx: number; wy: number; markerId: string | null; screenX: number; screenY: number }) => void
+  startZone?: { startX: number; endX: number; progress: number; enabled: boolean; left: boolean } | null
+  abyssStartY?: number | null
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -211,6 +213,38 @@ export function WorldCanvas({
     const subPosById = new Map(renderState.subs.map((s) => [s.id, s]))
     const hullStateById = new Map(renderState.hulls_state.map((h) => [h.id, h]))
     const doorStateById = new Map(renderState.doors_state.map((d) => [d.id, d]))
+
+    const bounds = getWorldBounds(geometry)
+    if (startZone?.enabled && Number.isFinite(startZone.startX) && Number.isFinite(startZone.endX)) {
+      const zoneEnd = startZone.startX + (startZone.endX - startZone.startX) * Math.max(0, Math.min(1, startZone.progress))
+      const [x1] = toScreen(startZone.startX, 0, view)
+      const [x2, top] = toScreen(zoneEnd, bounds.maxY, view)
+      const [, bottom] = toScreen(zoneEnd, bounds.minY, view)
+      ctx.fillStyle = startZone.left ? "rgba(230, 80, 70, 0.16)" : "rgba(246, 196, 83, 0.10)"
+      ctx.fillRect(Math.min(x1, x2), top, Math.abs(x2 - x1), bottom - top)
+      ctx.strokeStyle = startZone.left ? "#F05B5B" : "#F6C453"
+      ctx.setLineDash([7, 5])
+      ctx.beginPath(); ctx.moveTo(x2, top); ctx.lineTo(x2, bottom); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.fillStyle = startZone.left ? "#F05B5B" : "#F6C453"
+      ctx.font = "11px sans-serif"
+      ctx.textAlign = "left"
+      ctx.fillText(startZone.left ? "Стартовая зона закрыта" : "Стартовая зона", Math.min(x1, x2) + 6, top + 15)
+    }
+    if (Number.isFinite(abyssStartY ?? NaN)) {
+      const [x1, sy] = toScreen(bounds.minX, abyssStartY as number, view)
+      const [x2] = toScreen(bounds.maxX, abyssStartY as number, view)
+      ctx.strokeStyle = "#8B5CF6"
+      ctx.setLineDash([10, 5])
+      ctx.lineWidth = 2
+      ctx.beginPath(); ctx.moveTo(x1, sy); ctx.lineTo(x2, sy); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.fillStyle = "#B794F4"
+      ctx.font = "11px sans-serif"
+      ctx.textAlign = "right"
+      ctx.fillText("Черта бездны", x2 - 6, sy - 6)
+      ctx.lineWidth = 1
+    }
 
     // Static level outline (world coords, no sub offset).
     ctx.fillStyle = "#141a22"
@@ -336,7 +370,7 @@ export function WorldCanvas({
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId])
+  }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId, startZone, abyssStartY])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
