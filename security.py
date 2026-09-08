@@ -196,6 +196,25 @@ def _permission_value(raw, page: str, action: str):
     return value if isinstance(value, bool) else None
 
 
+def grant_only_permissions(raw) -> dict:
+    """Keep only explicit grants in a department access-level matrix.
+
+    Department permissions are additive by design: they can open a module or
+    site action, but cannot revoke access granted by another source.
+    """
+    pages = raw.get("pages", raw) if isinstance(raw, dict) else {}
+    cleaned = {}
+    if not isinstance(pages, dict):
+        return {"pages": {}}
+    for page, actions in pages.items():
+        if not isinstance(actions, dict):
+            continue
+        grants = {key: True for key, value in actions.items() if value is True}
+        if grants:
+            cleaned[page] = grants
+    return {"pages": cleaned}
+
+
 def _explicit_permission_values(admin, page: str, action: str):
     individual = getattr(admin, "individual_permissions", None)
     value = _permission_value(individual, page, action)
@@ -207,8 +226,10 @@ def _explicit_permission_values(admin, page: str, action: str):
     if value is not None:
         yield value
 
+    # Department site permissions are grant-only.  A department-level false
+    # must never become a deny-v2 veto over an individual/group grant.
     value = _permission_value(getattr(admin, "_department_site_permissions", None), page, action)
-    if value is not None:
+    if value is True:
         yield value
 
 
@@ -376,13 +397,12 @@ def compute_department_site_permissions(db, admin_id: int) -> dict:
                     continue
                 for page, actions in (level.site_permissions or {}).get("pages", {}).items():
                     for action, allowed in (actions or {}).items():
-                        if not isinstance(allowed, bool):
+                        # Departments can grant a site permission, but they
+                        # cannot revoke one.  In particular, false must not
+                        # participate in deny_v2's explicit-deny merge.
+                        if allowed is not True:
                             continue
-                        current = merged.setdefault(page, {}).get(action)
-                        if allowed is False or current is None:
-                            merged[page][action] = allowed
-                        elif current is not False:
-                            merged[page][action] = True
+                        merged.setdefault(page, {})[action] = True
             result = {"pages": merged} if merged else {}
 
     with _dept_site_perms_cache_lock:
@@ -429,13 +449,11 @@ def check_department_permission(admin, department, member, page: str, action: st
         if level.key in held:
             pages = (level.permissions or {}).get("pages", {})
             if page in pages and isinstance(pages[page], dict) and isinstance(pages[page].get(action), bool):
-                decisions.append(pages[page][action])
-
-    if getattr(admin, "_permission_policy_mode", LEGACY_PERMISSION_POLICY) == DENY_PERMISSION_POLICY:
-        if False in decisions:
-            return False
-        if True in decisions:
-            return True
+                if pages[page][action] is True:
+                    # Department module permissions are grant-only.  Stored
+                    # false values from the old editor are inert, just like
+                    # an absent permission.
+                    decisions.append(True)
 
     if member.is_head:
         return True

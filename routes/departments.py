@@ -16,7 +16,7 @@ import secrets
 import logging
 
 from database import get_db
-from security import check_permission, check_department_permission
+from security import check_permission, check_department_permission, grant_only_permissions
 from models import (
     AdminUser, AdminSession, Department, DepartmentAccessLevel, DepartmentMember, DepartmentRatingEntry,
     DepartmentChatChannel, DepartmentChatMessage,
@@ -619,7 +619,7 @@ async def api_create_access_level(department_id: int, request: Request, db: Sess
     level = DepartmentAccessLevel(
         department_id=dept.id, key=key, name=name,
         discord_role_id=(body.get("discord_role_id") or "").strip() or None,
-        kind=kind, permissions=body.get("permissions") or {},
+        kind=kind, permissions=grant_only_permissions(body.get("permissions") or {}),
     )
     db.add(level)
     db.commit()
@@ -642,16 +642,7 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
     # and site-wide hybrid grants (item 3) stay superuser-only — the latter
     # reaches beyond this department, so a head can't self-escalate via it.
     if "permissions" in body:
-        raw_perms = body.get("permissions") or {}
-        # "news":"edit" is never delegable through an access level — write
-        # access to the news module is hardcoded head/superuser-only
-        # (see get_document_access / require_document_write_access), so
-        # strip it here too rather than let it sit in stored state and
-        # mislead the "my_access" summary shown to the frontend.
-        pages = raw_perms.get("pages") if isinstance(raw_perms, dict) else None
-        if isinstance(pages, dict) and isinstance(pages.get("news"), dict):
-            pages["news"] = {**pages["news"], "edit": False}
-        level.permissions = raw_perms
+        level.permissions = grant_only_permissions(body.get("permissions") or {})
     # Rename – allowed for head/deputy/superuser
     if "name" in body:
         new_name = (body.get("name") or "").strip() if isinstance(body.get("name"), str) else ""
@@ -693,9 +684,11 @@ async def api_update_access_level(department_id: int, level_id: int, request: Re
                 continue
             valid_actions = {a["key"] for a in PERMISSION_REGISTRY[page]["actions"]}
             cleaned[page] = {
-                k: v for k, v in actions.items()
-                if k in valid_actions and isinstance(v, bool)
+                k: True for k, v in actions.items()
+                if k in valid_actions and v is True
             }
+            if not cleaned[page]:
+                del cleaned[page]
         if not current_admin.is_superuser:
             if not is_head_or_deputy_or_superuser(current_admin, member):
                 raise HTTPException(status_code=403, detail="Только суперпользователь может выдавать права сайта")

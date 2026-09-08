@@ -29,7 +29,7 @@ import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PlatformIcon, PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api, ApiError } from "@/lib/api"
 import { useCurrentAdmin, usePermissionRegistry } from "@/lib/auth"
-import { PermissionMatrixEditor, TriStatePermissionButton, cyclePermissionState, type PermissionValue } from "@/pages/users/PermissionMatrixEditor"
+import { PermissionMatrixEditor, TriStatePermissionButton, setPermissionOverride, type PermissionValue } from "@/pages/users/PermissionMatrixEditor"
 import {
   departmentsApi, OPTIONAL_MODULE_KEYS, MODULE_KEYS, MODULE_LABELS,
   type DepartmentDetail, type DepartmentAccessLevel, type DepartmentMemberRow, type DepartmentModule,
@@ -446,12 +446,18 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
     for (const mod of MODULE_KEYS) {
       const modulePages: Record<string, boolean> = {}
       for (const action of ["view", "edit"]) {
-        if (typeof pages[mod]?.[action] === "boolean") modulePages[action] = pages[mod][action]
+        if (pages[mod]?.[action] === true) modulePages[action] = true
       }
       if (Object.keys(modulePages).length > 0) next[mod] = modulePages
     }
     setPerms(next)
-    setSitePerms((level.site_permissions?.pages as PermissionValue) ?? {})
+    const rawSitePerms = (level.site_permissions?.pages as PermissionValue) ?? {}
+    const grants: PermissionValue = {}
+    for (const [page, actions] of Object.entries(rawSitePerms)) {
+      const pageGrants = Object.fromEntries(Object.entries(actions).filter(([, value]) => value === true))
+      if (Object.keys(pageGrants).length) grants[page] = pageGrants
+    }
+    setSitePerms(grants)
     setKitBindingKey(level.kit_binding ? `${level.kit_binding.job_id}::${level.kit_binding.kit_level}` : "none")
     setServerPrivGroupId(level.server_privilege_group_id)
     setCanBind(level.can_bind_server_privilege ?? false)
@@ -463,14 +469,8 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
 
   const toggleModulePermission = (module: string, action: string) => {
     setPerms((current) => {
-      const nextState = cyclePermissionState(current[module]?.[action])
-      const nextModule = { ...current[module] }
-      if (nextState === undefined) delete nextModule[action]
-      else nextModule[action] = nextState
-      const next = { ...current }
-      if (Object.keys(nextModule).length === 0) delete next[module]
-      else next[module] = nextModule
-      return next
+      const nextState = current[module]?.[action] === true ? undefined : true
+      return setPermissionOverride(current, module, action, nextState)
     })
   }
 
@@ -542,9 +542,9 @@ function AccessLevelPermissionsDialog({ open, onOpenChange, department, level, i
               Дополнительные права на весь сайт {isSuperuser ? "(суперпользователь)" : "(только те, что есть у вас)"}
             </div>
             <p className="text-xs text-muted-foreground">
-              Применяются ко всем, кто держит этот уровень доступа. «—» не задаёт правило, ✓ разрешает, × запрещает; в режиме deny_v2 любой явный запрет побеждает разрешение.
+              Применяются ко всем, кто держит этот уровень доступа. Права департамента только добавляют доступ: «Разрешено» выдаёт его, «Наследовать» не задаёт правило. Запреты настраиваются у пользователя или группы.
             </p>
-            <PermissionMatrixEditor registry={registryData.pages} value={sitePerms} onChange={setSitePerms} />
+            <PermissionMatrixEditor registry={registryData.pages} value={sitePerms} onChange={setSitePerms} grantOnly />
           </div>
         )}
 

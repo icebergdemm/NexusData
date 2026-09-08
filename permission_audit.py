@@ -68,11 +68,19 @@ def effective_permission(admin, page: str, action: str, department_sources: Iter
         if (item.get("module") == "site" and item.get("page") == page
                 and item.get("action") == action and isinstance(item.get("value"), bool)):
             has_department_detail = True
-            sources.append({"kind": "department_access_level", **item})
+            if item["value"] is True:
+                sources.append({"kind": "department_access_level", "applies": True, **item})
+            else:
+                sources.append({
+                    "kind": "department_access_level",
+                    "applies": False,
+                    "reason": "department_permissions_are_grant_only",
+                    **item,
+                })
     if merged_department_value is not None and not has_department_detail:
         sources.append(_source("department_site", merged_department_value))
 
-    explicit_values = [item["value"] for item in sources]
+    explicit_values = [item["value"] for item in sources if item.get("applies", True)]
     deny_mode = getattr(admin, "_permission_policy_mode", "legacy_additive") == "deny_v2"
     if deny_mode and False in explicit_values:
         value, state = False, "deny"
@@ -342,7 +350,7 @@ def permission_summary(db, admin: AdminUser) -> dict:
     for page in PERMISSION_REGISTRY:
         for action in PERMISSION_REGISTRY[page]["actions"]:
             source_values = snapshot["pages"][page][action["key"]]["sources"]
-            values = {source["value"] for source in source_values if isinstance(source.get("value"), bool)}
+            values = {source["value"] for source in source_values if source.get("applies", True) and isinstance(source.get("value"), bool)}
             if values == {True, False}:
                 conflict_count += 1
     return {

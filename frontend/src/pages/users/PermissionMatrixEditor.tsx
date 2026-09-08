@@ -50,13 +50,16 @@ export function TriStatePermissionButton({ value, onChange, label }: {
 /** Registry-driven permission grid: one block per page, one checkbox per
  * that page's own registered actions — replaces the old fixed
  * view/edit/delete-for-every-page table. */
-export function PermissionMatrixEditor({ registry, value, onChange }: {
+export function PermissionMatrixEditor({ registry, value, onChange, grantOnly = false }: {
   registry: PermissionRegistry
   value: PermissionValue
   onChange: (next: PermissionValue) => void
+  grantOnly?: boolean
 }) {
   const toggle = (page: string, action: string) => {
-    const nextState = cyclePermissionState(value[page]?.[action])
+    const nextState = grantOnly
+      ? value[page]?.[action] === true ? undefined : true
+      : cyclePermissionState(value[page]?.[action])
     onChange(setPermissionOverride(value, page, action, nextState))
   }
 
@@ -70,7 +73,7 @@ export function PermissionMatrixEditor({ registry, value, onChange }: {
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
             {def.actions.map((a) => (
               <label key={a.key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <TriStatePermissionButton value={value[page]?.[a.key]} onChange={() => toggle(page, a.key)} label={`${def.label}: ${a.label}`} />
+                <TriStatePermissionButton value={grantOnly && value[page]?.[a.key] === false ? undefined : value[page]?.[a.key]} onChange={() => toggle(page, a.key)} label={`${def.label}: ${a.label}`} />
                 {a.label}
               </label>
             ))}
