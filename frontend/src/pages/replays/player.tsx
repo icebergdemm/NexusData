@@ -5,6 +5,7 @@ import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { ReplayLogsPanel } from "./ReplayLogsPanel"
 import { ReplayTimelineWorkbench } from "./ReplayTimelineWorkbench"
+import { ReplayEntityInventory } from "./ReplayEntityInventory"
 import { Camera, Clapperboard, Download, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { IS_V2 } from "@/lib/ui-version"
@@ -286,6 +287,7 @@ export function ReplayPlayerPage() {
             <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="💬" icon={MessageSquare} />Чат</h3>
             <div className="rpv-chat" id="rpvChat" />
           </div>
+          {replayId && <ReplayEntityInventory replayId={replayId} />}
           {!IS_V2 && replayId && <ReplayLogsPanel replayId={replayId} />}
         </div>
       </div>

@@ -490,6 +490,23 @@ class PlayerLabel(Base):
     assigned_at = Column(DateTime, default=func.now())
 
 
+class ModerationActionTemplate(Base):
+    """Reusable text for player-facing moderation actions."""
+    __tablename__ = "moderation_action_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String(20), nullable=False, index=True)  # message|warning|kick|ban
+    name = Column(String(128), nullable=False)
+    content = Column(String(2000), nullable=False)
+    created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("action_type", "name", name="uq_moderation_action_template_name"),
+    )
+
+
 class PlayerTrap(Base):
     """Trap set on a player — fires Discord webhook when they join the server."""
     __tablename__ = "player_traps"
@@ -682,6 +699,159 @@ class RatingHistory(Base):
     created_at = Column(DateTime, default=func.now(), index=True)
 
 
+class ServerRestartSchedule(Base):
+    """Durable daily restart state for each production Barotrauma server."""
+
+    __tablename__ = "server_restart_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(20), unique=True, nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    daily_time = Column(String(5), nullable=False, default="05:30")
+    message_text = Column(
+        Text,
+        nullable=False,
+        default="Сервер будет перезапущен через 15 секунд.",
+    )
+    require_no_online = Column(Boolean, nullable=False, default=True)
+    require_round_finished = Column(Boolean, nullable=False, default=True)
+
+    # All timestamps are stored as naive UTC, matching the existing database
+    # convention. The API adds the explicit Z suffix before returning them.
+    scheduled_for = Column(DateTime, nullable=True, index=True)
+    warning_sent_at = Column(DateTime, nullable=True)
+    execution_due_at = Column(DateTime, nullable=True, index=True)
+    processing_until = Column(DateTime, nullable=True, index=True)
+    processing_token = Column(String(64), nullable=True)
+
+    last_status = Column(String(30), nullable=False, default="disabled")
+    last_action = Column(String(30), nullable=True)
+    last_action_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class RatingEventLedger(Base):
+    """Immutable v2 rating input accepted from an external game source."""
+    __tablename__ = "rating_event_ledger"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String(128), nullable=False, unique=True, index=True)
+    version = Column(Integer, nullable=False)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False)
+    raw_value = Column(Float, nullable=False, default=0.0)
+    points_delta = Column(Float, nullable=False)
+    mapping_status = Column(String(16), nullable=False, default="mapped")
+    formula_version = Column(String(64), nullable=False, default="rating-v2-ledger-v1")
+    config_version = Column(String(64), nullable=False, default="default")
+    occurred_at = Column(DateTime, nullable=False, index=True)
+    source_context = Column(JSON, nullable=False)
+    round_context = Column(JSON, nullable=False)
+    event_metadata = Column("metadata", JSON, nullable=False, default=dict)
+    # Stable semantic fingerprint used to reject accidental replays that carry
+    # a fresh event_id. It is nullable for old/imported rows whose provenance
+    # must remain untouched.
+    dedup_key = Column(String(64), nullable=True, index=True)
+    received_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    projected_at = Column(DateTime, nullable=True, index=True)
+
+
+class RatingProjectionState(Base):
+    """Materialized v2 rating total for one player, mode, and role."""
+    __tablename__ = "rating_projection_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    cumulative_points = Column(Float, nullable=False, default=0.0)
+    current_rating = Column(Float, nullable=False, default=0.0)
+    last_event_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    action_counts = Column(JSON, nullable=False, default=dict)
+    round_tokens = Column(JSON, nullable=False, default=list)
+    qualified_rounds = Column(Integer, nullable=False, default=0)
+    unmapped_events = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "mode", "role", name="uq_rating_projection_state_key"),
+    )
+
+
+class RatingRankHistory(Base):
+    """Periodic leaderboard snapshots used to explain position changes."""
+    __tablename__ = "rating_rank_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    rank = Column(Integer, nullable=False)
+    rating = Column(Float, nullable=False)
+    cumulative_points = Column(Float, nullable=False)
+    captured_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class RatingCalculationRun(Base):
+    """Reproducibility record for a projection/rebuild calculation."""
+    __tablename__ = "rating_calculation_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    formula_version = Column(String(64), nullable=False)
+    config_version = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, default="completed")
+    event_count = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, default=func.now(), nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(String(1000), nullable=True)
+
+
+class RatingConfigVersion(Base):
+    """Append-only configuration history; saving never destroys a prior config."""
+    __tablename__ = "rating_config_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    version = Column(String(64), nullable=False, index=True)
+    config = Column(JSON, nullable=False)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class RatingAdjustment(Base):
+    """Auditable manual adjustment, kept outside raw game events."""
+    __tablename__ = "rating_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, index=True)
+    role = Column(String(32), nullable=False, index=True)
+    delta = Column(Float, nullable=False)
+    reason = Column(String(1000), nullable=False)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class RatingDeliveryLog(Base):
+    """Per-event ingest status for delivery latency and rejection diagnostics."""
+    __tablename__ = "rating_delivery_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String(128), nullable=True, index=True)
+    mode = Column(String(16), nullable=True, index=True)
+    role = Column(String(32), nullable=True, index=True)
+    status = Column(String(16), nullable=False, index=True)
+    reason = Column(String(1000), nullable=True)
+    received_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
 class RatingRewardHolder(Base):
     """Текущий держатель награды за место в рейтинге — по одной строке на
     (rule_id, place). Это то, чего не хватало старой системе: без записи
@@ -846,6 +1016,27 @@ class PlayerPunishment(Base):
     expires_at = Column(DateTime, nullable=True)           # NULL = permanent
     is_active = Column(Integer, default=1, index=True)      # 1 = active, 0 = void/overridden
     notes = Column(String(2000), nullable=True)            # internal admin notes
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class PlayerPunishmentDiscordMessage(Base):
+    """Durable link between one web punishment and one Discord embed."""
+    __tablename__ = "player_punishment_discord_messages"
+    __table_args__ = (
+        UniqueConstraint("punishment_id", "channel_id", name="uq_punishment_discord_channel"),
+        Index("ix_punishment_discord_message", "channel_id", "message_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    punishment_id = Column(Integer, ForeignKey("player_punishments.id", ondelete="CASCADE"), nullable=False, index=True)
+    channel_id = Column(String(50), nullable=False)
+    message_id = Column(String(64), nullable=False)
+    state_hash = Column(String(64), nullable=True)
+    sync_status = Column(String(16), nullable=False, default="synced")  # synced | error | missing
+    last_attempt_at = Column(DateTime, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

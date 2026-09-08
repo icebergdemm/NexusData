@@ -75,7 +75,7 @@
   // без копирования); значение, пересекающее границу страницы (редкость —
   // страница держит десятки мегабайт, а любое поле формата — единицы-сотни
   // байт), собирается через маленький временный буфер.
-  const PAGE_SIZE = 32 * 1024 * 1024; // 32 МБ — с большим запасом ниже потолка ArrayBuffer в любом браузере
+  const PAGE_SIZE = 4 * 1024 * 1024; // Smaller pages reduce idle RAM for short demos.
 
   function readU16(dv, o) { return dv.getUint16(o, true); }
   function readI16(dv, o) { return dv.getInt16(o, true); }
@@ -172,22 +172,29 @@
     };
     r.u32();
     const hasVoice = (header.flags & 1) !== 0;
-    if (header.version !== 4) {
-      throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4). Файл может быть повреждён.");
+    if (header.version !== 4 && header.version !== 5 && header.version !== 6 && header.version !== 7) {
+      throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4–7). Файл может быть повреждён.");
     }
+    // v7: entity +1 oxygen byte, spawn +job string, sparse hull-assign 0x0A,
+    // inventory direct owner kind + coords for unowned items only.
+    const isV7 = header.version >= 7;
     const geometry = { hulls: [], walls: [], doors: [] };
     const world = { w: 0, h: 0, polys: [] };
     const chat = [], events = [], spawnEvents = [], healthDrops = [];
     const spawns = new Map();
     const activeSpawns = new Map();
+    const hullEvents = [];
+    const hullByChar = new Map();
     const sampledHealth = new Map();
     const healthSampleIntervalMs = Math.max(50, Math.round(1000 / Math.max(1, header.tickRate || 10)));
     let nextHealthSampleMs = 0;
     let origin = { x: 0, y: 0 }, durationMs = 0;
     // Lazy snapshot index: parallel arrays (time, byte-offset, origin at that point)
     const snapTimes = [], snapOffsets = [], snapOx = [], snapOy = [];
+    const inventories = [];
     // Voice: collect compact offset records (no per-packet Uint8Array allocations)
-    const voiceT = [], voiceSid = [], voiceOff = [], voiceLen = [];
+    const voiceT = [], voiceSid = [], voiceOff = [], voiceLen = [], voiceRadio = [];
+    let lastSnapshotTime = 0;
 
     while (r.o < r.len) {
       const type = r.u8();
@@ -208,26 +215,33 @@
       } else if (type === 0x02) { origin={x:r.i32(),y:r.i32()}; }
       else if (type === 0x03) {
         const t=r.u32(),id=r.u16(),species=r.str(),name=r.str(),teamId=r.i8();
-        const spawn={id,species,name,teamId};spawns.set(id,spawn);activeSpawns.set(id,spawn);sampledHealth.delete(id);
+        const job=isV7?r.str():null;
+        const spawn={id,species,name,teamId,job};spawns.set(id,spawn);activeSpawns.set(id,spawn);sampledHealth.delete(id);
         if(collectTimeline)spawnEvents.push({timeMs:t,kind:"spawn",...spawn});
         if(t>durationMs)durationMs=t;
       }
       else if (type === 0x04) {
         const t=r.u32(),id=r.u16(),known=collectTimeline?activeSpawns.get(id):null;
-        if(collectTimeline)spawnEvents.push({timeMs:t,kind:"despawn",id,species:known?.species||"",name:known?.name||"",teamId:known?.teamId??0});
-        activeSpawns.delete(id);sampledHealth.delete(id);
+        if(collectTimeline)spawnEvents.push({timeMs:t,kind:"despawn",id,species:known?.species||"",name:known?.name||"",teamId:known?.teamId??0,job:known?.job||null});
+        activeSpawns.delete(id);sampledHealth.delete(id);hullByChar.delete(id);
+        if(t>durationMs)durationMs=t;
+      }
+      else if (type === 0x0A) { // HULL ASSIGN (v7+) — sparse, only changed hulls
+        const t=r.u32(),ac=r.u16();if(ac>LIM.ent)throw new Error("Битый счётчик hullAssign="+ac);
+        for(let i=0;i<ac;i++){const id=r.u16(),hull=r.u16();hullEvents.push({timeMs:t,id,hull});if(hull)hullByChar.set(id,hull);else hullByChar.delete(id);}
         if(t>durationMs)durationMs=t;
       }
       else if (type === 0x01) { // SNAPSHOT — INDEX ONLY (lazy decode at render)
         const snapStart = r.o - 1; // include the frame-type byte
         const timeMs=r.u32(); const ec=r.u16();
+        lastSnapshotTime = timeMs;
         if(ec>LIM.ent)throw new Error("Битый счётчик entities="+ec+" — рассинхрон парсера");
         if(collectTimeline&&timeMs>=nextHealthSampleMs){
           // Real recordings repeat every active affliction as damage telemetry.
           // Sample the authoritative health byte at the advertised tick rate;
           // later only a real health decrease can become an audit event.
           for(let i=0;i<ec;i++){
-            const id=r.u16();r.skip(4);r.u8();const healthByte=r.u8();
+            const id=r.u16();r.skip(4);r.u8();const healthByte=r.u8();if(isV7)r.skip(1); // oxygen
             const spawn=activeSpawns.get(id);
             if(!isHumanSpecies(spawn?.species))continue;
             const previous=sampledHealth.get(id);
@@ -241,7 +255,7 @@
           }
           nextHealthSampleMs=timeMs+healthSampleIntervalMs;
         }else{
-          r.skip(ec*8); // entity = u16 id + i16 x + i16 y + u8 flags + u8 health = 8 bytes
+          r.skip(ec*(isV7?9:8)); // entity = u16 id + i16 x + i16 y + u8 flags + u8 health [+ u8 oxygen v7]
         }
         const ddc=r.u16();if(ddc>LIM.door)throw new Error("Битый счётчик doors="+ddc);
         r.skip(ddc*3); // u16 id + u8 open
@@ -258,8 +272,29 @@
         const e=events[events.length-1];if(e.timeMs>durationMs)durationMs=e.timeMs;
       } else if (type === 0x07) { // VOICE — record offset, keep bytes in the paged buffer
         const t=r.u32(); const sid=r.u16(); const len=r.u16();
-        voiceT.push(t); voiceSid.push(sid); voiceOff.push(r.o); voiceLen.push(len);
+        voiceT.push(t); voiceSid.push(sid); voiceRadio.push(0); voiceOff.push(r.o); voiceLen.push(len);
         r.skip(len); // do not copy now — slice lazily during playback
+      } else if (type === 0x09) { // VOICE WITH CHANNEL: 0 local, 1 radio
+        const t=r.u32(); const sid=r.u16(); const radio=r.u8(); const len=r.u16();
+        voiceT.push(t); voiceSid.push(sid); voiceRadio.push(radio ? 1 : 0); voiceOff.push(r.o); voiceLen.push(len);
+        r.skip(len);
+      } else if (type === 0x08) { // INVENTORY — indexed state, not needed for map rendering
+        const count = r.u16();
+        if (count > 65535) throw new Error("Битый счётчик inventory=" + count);
+        const items = [];
+        for (let i = 0; i < count; i++) {
+          const id=r.u16();
+          // v7: direct owner kind (0 world, 1 character, 2 item, 3 hull);
+          // coords (origin-relative i16) only for unowned kinds 0/3.
+          const ownerKind=isV7?r.u8():null;
+          const ownerId=r.u16();
+          const identifier=r.str(),condition=r.u8();
+          let x=0,y=0;
+          const kind=isV7?ownerKind:(ownerId?1:0);
+          if(isV7&&(kind===0||kind===3)){x=origin.x+r.i16()*POS_SCALE;y=origin.y+r.i16()*POS_SCALE;}
+          items.push({id,ownerId,identifier,condition,ownerKind:kind,x,y});
+        }
+        inventories.push({timeMs:lastSnapshotTime,items});
       } else if (type === 0xFF) { const t=r.u32();if(t>durationMs)durationMs=t;break; }
       else { throw new Error("Неизвестный тип фрейма 0x"+type.toString(16)+" — формат несовместим или файл повреждён"); }
     }
@@ -269,6 +304,7 @@
       count: voiceT.length,
       t: Int32Array.from(voiceT),
       sid: Uint16Array.from(voiceSid),
+      radio: Uint8Array.from(voiceRadio),
       // Файл теперь может быть сколь угодно большим (PagedBuffer больше не
       // упирается в потолок одного ArrayBuffer — см. выше), а voice-пакеты
       // разбросаны по всему файлу и попадаются позже снапшотов. Int32Array
@@ -283,13 +319,14 @@
     };
     const snaps = {
       count: snapTimes.length,
+      v: header.version,
       t: Int32Array.from(snapTimes),
       off: (snapOffsets.length && snapOffsets[snapOffsets.length-1] < 2**31) ? Int32Array.from(snapOffsets) : Float64Array.from(snapOffsets),
       ox: Int32Array.from(snapOx),
       oy: Int32Array.from(snapOy),
       store: pagedBuffer,
     };
-    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,durationMs,voice};
+    return {header,hasVoice,geometry,world,snaps,chat,events,spawns,spawnEvents,healthDrops,inventories,hullEvents,durationMs,voice};
   }
 
   function indexAtTime(snaps, t) {
@@ -303,6 +340,7 @@
   function decodeSnapshot(snaps, idx) {
     if (idx < 0 || idx >= snaps.count) return null;
     const s = snaps.store;
+    const v7 = (snaps.v || 4) >= 7;
     let o = snaps.off[idx];
     const ox = snaps.ox[idx], oy = snaps.oy[idx];
     o += 1; // skip frame-type byte (0x01)
@@ -315,7 +353,8 @@
       const py=s.i16(o);o+=2;
       const fl=s.u8(o);o+=1;
       const hb=s.u8(o);o+=1;
-      ents[i]={id,x:ox+px*POS_SCALE,y:oy+py*POS_SCALE,flags:fl,healthPct:hb*200/255};
+      const oxy=v7?s.u8(o):0;if(v7)o+=1;
+      ents[i]={id,x:ox+px*POS_SCALE,y:oy+py*POS_SCALE,flags:fl,healthPct:hb*200/255,oxygen:oxy};
     }
     const doors=new Map();const ddc=s.u16(o);o+=2;
     for(let i=0;i<ddc;i++){const id=s.u16(o);o+=2;doors.set(id,s.u8(o)/255);o+=1;}
@@ -494,6 +533,26 @@
     if (idx !== _curSnapIdx) { _curSnap = API.decodeSnapshot(demo.snaps, idx); _curSnapIdx = idx; }
     return _curSnap;
   }
+  let _nextSnap = null, _nextSnapIdx = -1;
+  function snapAtInterpolated(t){
+    const idx=API.indexAtTime(demo.snaps,t);
+    const current=snapAt(t);
+    if(!current||idx>=demo.snaps.count-1)return current;
+    if(_nextSnapIdx!==idx+1){_nextSnap=API.decodeSnapshot(demo.snaps,idx+1);_nextSnapIdx=idx+1;}
+    if(!_nextSnap)return current;
+    const span=Math.max(1,_nextSnap.timeMs-current.timeMs);
+    const alpha=Math.max(0,Math.min(1,(t-current.timeMs)/span));
+    const nextEntities=new Map(_nextSnap.ents.map(e=>[e.id,e]));
+    const ents=current.ents.map(e=>{
+      const n=nextEntities.get(e.id);if(!n)return e;
+      return {...e,x:e.x+(n.x-e.x)*alpha,y:e.y+(n.y-e.y)*alpha,healthPct:e.healthPct+(n.healthPct-e.healthPct)*alpha};
+    });
+    const subPos=new Map();
+    for(const [id,p] of current.subPos){const n=_nextSnap.subPos.get(id);subPos.set(id,n?{x:p.x+(n.x-p.x)*alpha,y:p.y+(n.y-p.y)*alpha}:p);}
+    const doors=new Map();
+    for(const [id,p] of current.doors){const n=_nextSnap.doors.get(id);doors.set(id,n===undefined?p:p+(n-p)*alpha);}
+    return {...current,ents,subPos,doors};
+  }
 
   // ── Voice state ──────────────────────────────────────────────────────────
   let audioCtx = null, voiceEnabled = false, masterVol = 1.0;
@@ -501,6 +560,7 @@
   let voicePtr = 0, opusSupported = false;
   const speakerState = new Map();   // sid -> {mute, vol}
   const speakingNow = new Set();    // sids speaking within window
+  const speakingRadio = new Set();  // sids currently using the radio channel
   // Per-speaker Opus decoders (stateful codec — must NOT be shared between speakers)
   const decoders = new Map();       // sid -> {decoder, queue:[], gainNode}
 
@@ -582,7 +642,7 @@
   function render(){
     const W=cw(),H=ch();ctx.fillStyle=C.bg;ctx.fillRect(0,0,W,H);
     if(!demo)return;
-    const snap=snapAt(currentTimeMs);if(!snap)return;
+    const snap=snapAtInterpolated(currentTimeMs);if(!snap)return;
     // World outline (compact flat polygons)
     ctx.strokeStyle=C.worldOutline;ctx.lineWidth=1;
     for(const poly of demo.world.polys){
@@ -629,7 +689,7 @@
       const sz=Math.max(4,8*cam.zoom*6);
       ctx.fillStyle=dead?C.dead:teamColor(sp);ctx.fillRect(X-sz/2,Y-sz/2,sz,sz);
       if(!dead){ctx.strokeStyle="#fff";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(X,Y);ctx.lineTo(X+(facingLeft?-sz:sz),Y);ctx.stroke();}
-      if(speakingNow.has(e.id)){ctx.strokeStyle="#22d06f";ctx.lineWidth=2;ctx.beginPath();ctx.arc(X,Y,sz,0,Math.PI*2);ctx.stroke();}
+      if(speakingNow.has(e.id)){ctx.strokeStyle=speakingRadio.has(e.id)?"#ffd23f":"#63d9f2";ctx.lineWidth=2;ctx.beginPath();ctx.arc(X,Y,sz,0,Math.PI*2);ctx.stroke();}
       if(sp&&isHumanSpecies(sp.species)&&!dead){
         const bw=sz*1.5,bh=2;ctx.fillStyle="#333";ctx.fillRect(X-bw/2,Y-sz/2-6,bw,bh);
         ctx.fillStyle=lerpColor("#5ADC5A","#DC4646",1-e.healthPct/200);ctx.fillRect(X-bw/2,Y-sz/2-6,bw*Math.max(0,Math.min(1,e.healthPct/200)),bh);
@@ -653,6 +713,68 @@
     if(visible.length===lastChatLen)return;lastChatLen=visible.length;
     box.innerHTML=visible.map(c=>`<div class="rpv-chat-line"><b>${esc(c.author||"—")}</b>: ${esc(c.text||"")}</div>`).join("");
     box.scrollTop=box.scrollHeight;
+  }
+  let lastInventoryBucket=-1, lastRadioBucket=-1;
+  function inventoryAt(t){
+    const list=demo?.inventories||[];let result=null;
+    for(const frame of list){if(frame.timeMs<=t)result=frame;else break;}
+    return result;
+  }
+  // Entity inventory at a timestamp — same ownership model as "Обзор мира"
+  // (see world-overview/api.ts resolveCharacterItems): direct holdings
+  // (ownerKind 1 = character) plus one level of nested container contents
+  // (ownerKind 2 = item pointing at a directly held item). ownerKind 0/3 are
+  // world floor / hull floor and never belong to an entity.
+  function resolveEntityInventory(entityId, t){
+    if(!demo||entityId==null)return[];
+    const frame=inventoryAt(t==null?currentTimeMs:t);
+    if(!frame||!frame.items)return[];
+    const id=Number(entityId);
+    const direct=frame.items.filter((it)=>it.ownerKind===1&&it.ownerId===id);
+    if(!direct.length)return[];
+    const containerIds=new Set(direct.map((it)=>it.id));
+    const nested=frame.items.filter((it)=>it.ownerKind===2&&containerIds.has(it.ownerId));
+    return [...direct.map((it)=>({...it,nested:false})),...nested.map((it)=>({...it,nested:true}))];
+  }
+  function listInventoryEntities(){
+    if(!demo)return[];
+    const seen=new Map();
+    for(const frame of (demo.inventories||[])){
+      for(const it of (frame.items||[])){
+        if(it.ownerKind===1&&it.ownerId&&!seen.has(it.ownerId)){
+          const sp=demo.spawns.get(it.ownerId);
+          seen.set(it.ownerId,{id:it.ownerId,name:(sp&&sp.name)||("Сущность #"+it.ownerId),species:(sp&&sp.species)||"",teamId:(sp&&sp.teamId!=null)?sp.teamId:0,job:(sp&&sp.job)||null});
+        }
+      }
+    }
+    return[...seen.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),"ru"));
+  }
+  function updateInventory(){
+    if(!demo)return;
+    const bucket=Math.floor(currentTimeMs/150);if(bucket===lastInventoryBucket)return;lastInventoryBucket=bucket;
+    const box=document.getElementById("rpvInventory");if(!box)return;
+    const frame=inventoryAt(currentTimeMs);
+    if(!frame||!frame.items.length){box.innerHTML='<span style="color:var(--gray);">Инвентари пусты</span>';return;}
+    const groups=new Map();
+    for(const item of frame.items){if(!item.ownerId)continue;if(!groups.has(item.ownerId))groups.set(item.ownerId,[]);groups.get(item.ownerId).push(item);}
+    box.innerHTML=[...groups].map(([id,items])=>{
+      const sp=demo.spawns.get(id);const name=esc(sp?.name||("Игрок #"+id));
+      return '<div class="rpv-inventory-player">'+name+'</div>'+items.map(i=>
+        '<div class="rpv-inventory-item">'+esc(i.identifier||"?")+" · "+Math.round(i.condition*100/255)+"%</div>").join("");
+    }).join("")||'<span style="color:var(--gray);">Инвентари пусты</span>';
+  }
+  function updateRadioPanel(){
+    if(!demo||!demo.voice)return;
+    const bucket=Math.floor(currentTimeMs/120);if(bucket===lastRadioBucket)return;lastRadioBucket=bucket;
+    const box=document.getElementById("rpvRadio");if(!box)return;
+    const from=currentTimeMs-2500, seen=new Set(), rows=[];
+    for(let i=demo.voice.count-1;i>=0;i--){
+      const t=demo.voice.t[i];if(t>currentTimeMs)continue;if(t<from)break;
+      const sid=demo.voice.sid[i], radio=!!demo.voice.radio[i], key=sid+":"+radio;if(seen.has(key))continue;seen.add(key);
+      const sp=demo.spawns.get(sid);rows.push('<div class="rpv-radio-line '+(radio?"":"local")+'">'+
+        (radio?"📻 Радиоэфир":"◌ Локальный")+" · "+esc(sp?.name||("Игрок #"+sid))+" · общий канал</div>");
+    }
+    box.innerHTML=rows.length?rows.reverse().join(""):'<span style="color:var(--gray);">Нет голосовой активности</span>';
   }
   function esc(t){const d=document.createElement("span");d.textContent=t;return d.innerHTML;}
   function fmtTime(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60);return String(m).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
@@ -691,6 +813,8 @@
     if(!demo)return;
     const label=document.getElementById("rpvTimeLabel");if(!label)return; // страница уже ушла со плеера
     label.textContent=fmtTime(currentTimeMs)+" / "+fmtTime(demo.durationMs);
+    const rateLabel=document.getElementById("rpvRateLabel");
+    if(rateLabel)rateLabel.textContent=(demo.header.tickRate||10)+" Гц";
     const seek=document.getElementById("rpvSeek");
     if(seek){
       if(collectTimeline){
@@ -718,6 +842,7 @@
     voicePtr=voiceIndexAtTime(currentTimeMs);
     while(voicePtr<demo.voice.count&&demo.voice.t[voicePtr]<currentTimeMs)voicePtr++;
     speakingNow.clear();
+    speakingRadio.clear();
     updateSpeakingIndicators();
   }
   function applySeek(ms,syncVoice=true){
@@ -856,7 +981,10 @@
     speakingNow.clear();
     const si=voiceIndexAtTime(currentTimeMs);
     for(let k=Math.max(0,si-30);k<Math.min(V.count,si+30);k++){
-      if(Math.abs(V.t[k]-currentTimeMs)<=150)speakingNow.add(V.sid[k]);
+      if(Math.abs(V.t[k]-currentTimeMs)<=150){
+        speakingNow.add(V.sid[k]);
+        if(V.radio[k])speakingRadio.add(V.sid[k]);
+      }
     }
     // Schedule near-live packets to each speaker's own decoder
     while(voicePtr<V.count&&V.t[voicePtr]<=currentTimeMs){
@@ -880,6 +1008,8 @@
     document.querySelectorAll(".rpv-player").forEach(row=>{
       const sid=parseInt(row.dataset.sid);
       row.classList.toggle("speaking",speakingNow.has(sid));
+      row.classList.toggle("speaking-radio",speakingNow.has(sid)&&speakingRadio.has(sid));
+      row.classList.toggle("speaking-local",speakingNow.has(sid)&&!speakingRadio.has(sid));
     });
   }
 
@@ -890,7 +1020,7 @@
     const prev=currentTimeMs;
     if(playing&&demo){currentTimeMs+=dt*speed;if(currentTimeMs>=demo.durationMs){currentTimeMs=demo.durationMs;setPlaying(false);}}
     if(followSub&&demo&&followSubId!=null){const c=subCenterAt(snapAt(currentTimeMs),followSubId);cam.x=c.x;cam.y=c.y;}
-    render();updateChat();updateTimeUI();
+    render();updateChat();updateInventory();updateRadioPanel();updateTimeUI();
     if(voiceEnabled){updateVoice(prev);updateSpeakingIndicators();}
     requestAnimationFrame(loop);
   }
@@ -1061,7 +1191,7 @@
   }
 
   function timelineBridgeData(){
-    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[]};
+    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[],entities:[]};
     // Entity ids may be reused after a despawn. Resolve the actor at the
     // event's own timestamp instead of consulting only the final spawn map,
     // otherwise an early action can be attributed to a later character.
@@ -1131,7 +1261,7 @@
     for(const sp of demo.spawnEvents){
       if(sp.kind!=="spawn")continue;
       if(!isHumanSpawn(sp)||!sp.name||seenNames.has(sp.name))continue;
-      seenNames.add(sp.name);players.push({id:sp.id,name:sp.name,species:sp.species,teamId:sp.teamId});
+      seenNames.add(sp.name);players.push({id:sp.id,name:sp.name,species:sp.species,teamId:sp.teamId,job:sp.job??null});
     }
     for(const chat of demo.chat){
       if(!chat.author||seenNames.has(chat.author))continue;
@@ -1244,7 +1374,7 @@
       });
     });
     timelineEvents.sort((a,b)=>a.offset_ms-b.offset_ms||a.id.localeCompare(b.id));
-    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents};
+    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents,entities:listInventoryEntities()};
   }
 
   function broadcastReady(){
@@ -1280,6 +1410,9 @@
     setSeekWindow(startMs,endMs){setSeekWindow(startMs,endMs);},
     clearSeekWindow(){clearSeekWindow();},
     getTimelineData(){return timelineBridgeData();},
+    getInventoryEntities(){return listInventoryEntities();},
+    getEntityInventory(entityId,timeMs){return resolveEntityInventory(entityId,timeMs==null?currentTimeMs:timeMs);},
+    getInventoryAt(timeMs){const frame=inventoryAt(timeMs==null?currentTimeMs:timeMs);return frame?{timeMs:frame.timeMs,items:frame.items.map((it)=>({...it}))}:null;},
     setPlaying(p){setPlaying(!!p);},
     selectPlayer(name){applyPlayerSelection(name||null,false);},
     getSelectedPlayer(){return selectedPlayerName;},

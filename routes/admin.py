@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from database import get_db
-from security import check_permission
+from security import check_permission, check_moderation_action_permission, csrf_token_from_request
 from services import (
     AdminService, DiscordAuthService, PlayerService,
     PlayerKillService, PlayerRoleActionService, PlayerIPService,
@@ -17,6 +17,9 @@ from services import (
     PlayerNoteService, PlayerLabelService, PlayerTrapService,
     LabelCategoryService, TwinkDetectionService, ServerModerationService,
     PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
+    ModerationActionTemplateService, MODERATION_TEMPLATE_TYPES,
+    MODERATION_TEMPLATE_TYPE_LABELS,
+    format_admin_issuer_name,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -195,28 +198,15 @@ async def api_me_set_forced_nickname(request: Request, db: Session = Depends(get
 
 
 async def ensure_csrf_or_valid_admin_session(request: Request, db: Session):
-    """Validate CSRF token with a safe fallback to a valid server-side admin session.
-
-    Primary protection is still CSRF token equality.
-    Fallback is used only when a valid `admin_token` cookie maps to an active DB session.
-    """
-    form = await request.form()
-    csrf_token = form.get("csrf_token")
+    """Validate the CSRF header used by JSON clients or the legacy form field."""
+    csrf_token = csrf_token_from_request(request)
+    if not csrf_token:
+        form = await request.form()
+        csrf_token = form.get("csrf_token")
     session_csrf = request.session.get("csrf_token")
 
     if csrf_token and session_csrf and secrets.compare_digest(str(csrf_token), str(session_csrf)):
         return
-
-    token = request.cookies.get("admin_token")
-    if token:
-        now = datetime.utcnow()
-        admin_session = db.query(AdminSession).filter(
-            AdminSession.token == token,
-            AdminSession.revoked == 0
-        ).first()
-        if admin_session and (admin_session.expires_at is None or admin_session.expires_at > now):
-            logger.warning("CSRF mismatch accepted via valid admin session fallback for %s", request.url.path)
-            return
 
     raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
@@ -1729,6 +1719,18 @@ def _serialize_label_pair(pair) -> dict:
     }
 
 
+def _serialize_moderation_template(row) -> dict:
+    return {
+        "id": row.id,
+        "action_type": row.action_type,
+        "action_label": MODERATION_TEMPLATE_TYPE_LABELS.get(row.action_type, row.action_type),
+        "name": row.name,
+        "content": row.content,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
 def _serialize_trap(t) -> dict:
     return {
         "id": t.id, "target_steamid": t.target_steamid, "reason": t.reason,
@@ -1770,11 +1772,12 @@ async def api_player_detail(
         AdminUser.discord_id == player.discord_id,
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
+    special_access = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
     # Профиль, привязанный к аккаунту СУПЕРПОЛЬЗОВАТЕЛЯ, и is_secret
     # открываются правом players_special:view (или статусом суперпользователя).
-    if linked_admin and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
+    if linked_admin and not special_access:
         return {"classified": True}
-    if is_secret and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
+    if is_secret and not special_access:
         return {"classified": True}
 
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
@@ -1923,6 +1926,7 @@ async def api_player_detail(
         "can_edit_discord_id": check_permission(current_admin, "players", "edit_discord_id"),
         "can_manage_notes": check_permission(current_admin, "players", "manage_notes"),
         "can_manage_labels": check_permission(current_admin, "players", "manage_labels"),
+        "can_send_message": check_moderation_action_permission(current_admin, "message"),
         "can_manage_traps": check_permission(current_admin, "players", "manage_traps"),
         "can_manage_achievements": check_permission(current_admin, "players", "manage_achievements"),
         "can_manage_rewards": check_permission(current_admin, "players", "manage_rewards"),
@@ -2250,6 +2254,54 @@ async def api_delete_player_note(
 
     log_admin_action(db, current_admin.id, "player_note_delete", {"player_id": player_id, "note_id": note_id})
     return {"status": "ok"}
+@router.post("/api/v1/admin/players/{player_id}/message")
+async def api_send_player_message(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_moderation_action_permission(current_admin, "message"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    await ensure_csrf_or_valid_admin_session(request, db)
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    special_access = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
+    if not check_permission(current_admin, "players", "view") and not special_access:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    linked_admin = db.query(AdminUser).filter(
+        AdminUser.discord_id == player.discord_id,
+        AdminUser.is_superuser == True,
+    ).first() if player.discord_id else None
+    if not special_access and (getattr(player, "is_secret", 0) == 1 or linked_admin):
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await request.json()
+    message_text = (body.get("message_text") or "").strip()
+    if not message_text:
+        raise HTTPException(status_code=400, detail="message_text required")
+    from routes.moderation import _effective_server_name, _prefix_admin_message, _queued_action_type
+    from schemas import QueueActionIn
+
+    try:
+        prepared_message = _prefix_admin_message(message_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    action_in = QueueActionIn(
+        action_type=_queued_action_type("message"),
+        target_steamid=player.player_steamid,
+        message_text=prepared_message,
+        server_name=_effective_server_name(db, "message", player.player_steamid, body.get("server_name")),
+    )
+    action = ServerModerationService(db).enqueue_action(action_in, admin_id=current_admin.id)
+    log_admin_action(db, current_admin.id, "player_message_queue", {
+        "player_id": player_id, "action_id": action.id,
+    })
+    return {"status": "queued", "action_id": action.id}
 
 
 @router.post("/api/v1/admin/players/{player_id}/labels")
@@ -2266,8 +2318,36 @@ async def api_assign_player_label(
     category_id = body.get("category_id")
     if not category_id:
         raise HTTPException(status_code=400, detail="category_id required")
-    label = PlayerLabelService(db).assign(player_id, int(category_id), body.get("note"), current_admin.id)
+    try:
+        label = PlayerLabelService(db).assign(player_id, int(category_id), body.get("note"), current_admin.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     category = db.query(LabelCategory).filter(LabelCategory.id == label.category_id).first()
+    return {"status": "ok", "label": _serialize_label_pair((label, category))}
+
+
+@router.patch("/api/v1/admin/players/{player_id}/labels/{label_id}")
+async def api_update_player_label(
+    request: Request,
+    player_id: int,
+    label_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "players", "manage_labels"):
+        raise HTTPException(status_code=403)
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    try:
+        label = PlayerLabelService(db).update_note(label_id, player_id, body.get("note"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not label:
+        raise HTTPException(status_code=404, detail="Метка не найдена")
+    category = db.query(LabelCategory).filter(LabelCategory.id == label.category_id).first()
+    log_admin_action(db, current_admin.id, "update_player_label", {
+        "player_id": player_id, "label_id": label_id,
+    })
     return {"status": "ok", "label": _serialize_label_pair((label, category))}
 
 
@@ -2282,7 +2362,9 @@ async def api_remove_player_label(
     if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
-    PlayerLabelService(db).remove(label_id)
+    if not PlayerLabelService(db).remove(label_id, player_id=player_id):
+        raise HTTPException(status_code=404, detail="Метка не найдена")
+    log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
     return {"status": "ok"}
 
 
@@ -5007,10 +5089,98 @@ async def remove_label(
     if not check_permission(current_admin, "players", "manage_labels"):
         raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
-    PlayerLabelService(db).remove(label_id)
+    if not PlayerLabelService(db).remove(label_id, player_id=player_id):
+        raise HTTPException(status_code=404, detail="Метка не найдена")
     log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
     push_flash(request, "success", "Метка снята")
     return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
+
+
+def _allowed_moderation_template_types(admin: AdminUser) -> set[str]:
+    allowed: set[str] = set()
+    if check_moderation_action_permission(admin, "message"):
+        allowed.add("message")
+    if check_permission(admin, "punishments", "issue") or check_permission(admin, "punishments", "edit"):
+        allowed.update(("warning", "kick", "ban"))
+    if check_moderation_action_permission(admin, "kick"):
+        allowed.add("kick")
+    if check_moderation_action_permission(admin, "ban"):
+        allowed.add("ban")
+    return allowed
+
+
+@router.get("/api/v1/admin/moderation-templates")
+async def api_moderation_templates_list(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    allowed_types = (
+        set(MODERATION_TEMPLATE_TYPES)
+        if check_permission(current_admin, "moderation_templates", "manage")
+        else _allowed_moderation_template_types(current_admin)
+    )
+    if not allowed_types:
+        raise HTTPException(status_code=403, detail="Нет прав на использование шаблонов модерации")
+    return {"templates": [_serialize_moderation_template(row) for row in ModerationActionTemplateService(db).list(allowed_types)]}
+
+
+@router.post("/api/v1/admin/moderation-templates")
+async def api_moderation_template_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "moderation_templates", "manage"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав: управление шаблонами")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    try:
+        row = ModerationActionTemplateService(db).create(
+            body.get("action_type"), body.get("name"), body.get("content"), current_admin.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_admin_action(db, current_admin.id, "moderation_template_create", {"template_id": row.id, "action_type": row.action_type})
+    return {"status": "ok", "template": _serialize_moderation_template(row)}
+
+
+@router.patch("/api/v1/admin/moderation-templates/{template_id}")
+async def api_moderation_template_update(
+    template_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "moderation_templates", "manage"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав: управление шаблонами")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    body = await request.json()
+    try:
+        row = ModerationActionTemplateService(db).update(
+            template_id, name=body.get("name"), content=body.get("content"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    log_admin_action(db, current_admin.id, "moderation_template_update", {"template_id": template_id})
+    return {"status": "ok", "template": _serialize_moderation_template(row)}
+
+
+@router.delete("/api/v1/admin/moderation-templates/{template_id}")
+async def api_moderation_template_delete(
+    template_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "moderation_templates", "manage"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав: управление шаблонами")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    if not ModerationActionTemplateService(db).delete(template_id):
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    log_admin_action(db, current_admin.id, "moderation_template_delete", {"template_id": template_id})
+    return {"status": "ok"}
 
 
 def _has_label_category_perm(admin: AdminUser, action: str) -> bool:
@@ -5849,7 +6019,7 @@ async def admin_punishment_create(
         ptype=ptype,
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
-        issued_by_name=f"ND. {current_admin.discord_username}",
+        issued_by_name=format_admin_issuer_name(db, current_admin),
         issued_by_was_superuser=current_admin.is_superuser,
         expires_at=expires_at,
         notes=notes or None,
@@ -5973,7 +6143,7 @@ async def admin_punishment_unban(
     action = ServerAction(
         action_type="unban",
         target_steamid=steam2 or steamid,
-        reason=f"Unban by ND. {current_admin.discord_username}",
+        reason=f"Unban by {format_admin_issuer_name(db, current_admin)}",
         target_server=server_name or None,
         queued_by_admin_id=current_admin.id,
     )
@@ -6133,7 +6303,7 @@ async def api_punishment_create(
         ptype=ptype,
         reason=reason or None,
         issued_by_admin_id=current_admin.id,
-        issued_by_name=f"ND. {current_admin.discord_username}",
+        issued_by_name=format_admin_issuer_name(db, current_admin),
         issued_by_was_superuser=current_admin.is_superuser,
         expires_at=expires_at,
         notes=notes or None,
@@ -6254,7 +6424,7 @@ async def api_punishment_unban(
     action = ServerAction(
         action_type="unban",
         target_steamid=steam2 or steamid,
-        reason=f"Unban by ND. {current_admin.discord_username}",
+        reason=f"Unban by {format_admin_issuer_name(db, current_admin)}",
         target_server=server_name or None,
         queued_by_admin_id=current_admin.id,
     )
@@ -6292,249 +6462,3 @@ async def api_punishment_delete(
     return {"status": "ok"}
 
 
-# ── DEBUG DIAGNOSTICS ────────────────────────────────────────────────────────
-
-@router.get("/debug")
-async def admin_debug(
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Detailed permission diagnostics for troubleshooting access issues."""
-    import json
-    
-    # Build diagnostic info
-    diagnostics = {
-        "admin_id": current_admin.id,
-        "discord_username": current_admin.discord_username,
-        "is_superuser": current_admin.is_superuser,
-        "privilege_group_id": current_admin.privilege_group_id,
-        "individual_permissions": current_admin.individual_permissions or {},
-    }
-    
-    # Include detailed group info
-    grp_info = None
-    grp_raw_permissions = None
-    if current_admin.privilege_group:
-        grp = current_admin.privilege_group
-        grp_raw_permissions = grp.permissions
-        grp_info = {
-            "id": grp.id,
-            "name": grp.name,
-            "description": grp.description,
-            "permissions_type": str(type(grp_raw_permissions).__name__),
-            "permissions_is_none": grp_raw_permissions is None,
-            "permissions_is_empty": not grp_raw_permissions if grp_raw_permissions else True,
-            "permissions_raw": grp_raw_permissions,
-            "permissions_formatted": json.dumps(grp_raw_permissions, ensure_ascii=False, indent=2) if grp_raw_permissions else "null",
-            "rate_limit_count": grp.rate_limit_count,
-            "rate_limit_window_secs": grp.rate_limit_window_secs,
-        }
-    
-    diagnostics["privilege_group"] = grp_info
-    
-    # Test all permission checks with detailed tracing — sourced from the
-    # single permissions_registry.py instead of a hand-maintained page/action
-    # list that had already drifted from the real page set (missing/extra
-    # pages, and a fixed view/edit/delete triad that doesn't reflect the
-    # custom actions several pages actually use).
-    from permissions_registry import PERMISSION_REGISTRY
-
-    permission_tests = {}
-    permission_traces = {}
-    for page, page_def in PERMISSION_REGISTRY.items():
-        permission_tests[page] = {}
-        permission_traces[page] = {}
-        for action_def in page_def["actions"]:
-            action = action_def["key"]
-            result = check_permission(current_admin, page, action)
-            permission_tests[page][action] = result
-            
-            # Trace why it returned False (if False)
-            trace = []
-            if current_admin.is_superuser:
-                trace.append("✓ Is superuser → TRUE")
-            else:
-                trace.append("- Not superuser")
-            
-            # Check individual permissions
-            ind = current_admin.individual_permissions or {}
-            ind_pages = ind.get("pages", {})
-            if page in ind_pages and action in ind_pages[page]:
-                trace.append(f"✓ Found in individual_permissions[{page}][{action}] = {ind_pages[page][action]}")
-            else:
-                trace.append(f"- Not in individual_permissions")
-            
-            # Check group permissions
-            if current_admin.privilege_group and current_admin.privilege_group.permissions:
-                grp_pages = current_admin.privilege_group.permissions.get("pages", {})
-                if page in grp_pages and action in grp_pages[page]:
-                    trace.append(f"✓ Found in group.permissions[{page}][{action}] = {grp_pages[page][action]}")
-                else:
-                    trace.append(f"- Not in group.permissions (available pages: {list(grp_pages.keys())})")
-            else:
-                trace.append("- No privilege group or permissions is empty/null")
-            
-            permission_traces[page][action] = " → ".join(trace)
-    
-    diagnostics["permission_checks"] = permission_tests
-    diagnostics["permission_traces"] = permission_traces
-    
-    # Return as HTML for browser viewing
-    html_content = """
-    <html>
-    <head>
-        <title>Admin Permission Diagnostics</title>
-        <style>
-            body { font-family: monospace; margin: 20px; background: #f5f5f5; }
-            .section { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-            h2 { border-bottom: 2px solid #333; padding-bottom: 10px; }
-            .info-row { display: flex; margin: 8px 0; flex-wrap: wrap; }
-            .label { font-weight: bold; width: 220px; }
-            .value { flex: 1; min-width: 200px; word-break: break-all; }
-            .true { color: green; font-weight: bold; }
-            .false { color: red; font-weight: bold; }
-            .warning { color: orange; font-weight: bold; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-            th { background: #f0f0f0; }
-            .pre { background: #f9f9f9; padding: 10px; border-left: 3px solid #ddd; overflow-x: auto; max-height: 300px; }
-            .trace { background: #fffbea; padding: 8px; border-left: 3px solid #ffd700; font-size: 12px; margin: 4px 0; }
-        </style>
-    </head>
-    <body>
-        <h1>Admin Permission Diagnostics</h1>
-        
-        <div class="section">
-            <h2>Admin Info</h2>
-            <div class="info-row">
-                <span class="label">Admin ID:</span>
-                <span class="value">""" + str(diagnostics["admin_id"]) + """</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Discord Username:</span>
-                <span class="value">""" + diagnostics["discord_username"] + """</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Superuser:</span>
-                <span class="value """ + ('class="true"' if diagnostics["is_superuser"] else 'class="false"') + """>
-                    """ + str(diagnostics["is_superuser"]) + """
-                </span>
-            </div>
-            <div class="info-row">
-                <span class="label">Privilege Group ID:</span>
-                <span class="value">""" + str(diagnostics["privilege_group_id"]) + """</span>
-            </div>
-        </div>
-        
-        <div class="section">
-            <h2>Privilege Group Details</h2>
-    """
-    
-    if grp_info:
-        html_content += f"""
-            <div class="info-row">
-                <span class="label">Group ID:</span>
-                <span class="value">{grp_info["id"]}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Group Name:</span>
-                <span class="value">{grp_info["name"]}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Description:</span>
-                <span class="value">{grp_info["description"] or "N/A"}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Permissions Type:</span>
-                <span class="value">{grp_info["permissions_type"]}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Permissions Is None:</span>
-                <span class="value """ + ('class="warning"' if grp_info["permissions_is_none"] else '') + """>{str(grp_info["permissions_is_none"])}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Permissions Is Empty:</span>
-                <span class="value """ + ('class="warning"' if grp_info["permissions_is_empty"] else '') + """>{str(grp_info["permissions_is_empty"])}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Raw Permissions:</span>
-                <div class="value"><div class="pre">{grp_info["permissions_formatted"]}</div></div>
-            </div>
-            <div class="info-row">
-                <span class="label">Rate Limit Count:</span>
-                <span class="value">{grp_info["rate_limit_count"]}</span>
-            </div>
-            <div class="info-row">
-                <span class="label">Rate Limit Window (secs):</span>
-                <span class="value">{grp_info["rate_limit_window_secs"]}</span>
-            </div>
-        """
-    else:
-        html_content += "<p><strong style='color: red;'>⚠️ No privilege group assigned!</strong></p>"
-    
-    html_content += """
-        </div>
-        
-        <div class="section">
-            <h2>Individual Permission Overrides</h2>
-    """
-    
-    if diagnostics["individual_permissions"]:
-        html_content += f"<div class='pre'>{json.dumps(diagnostics['individual_permissions'], ensure_ascii=False, indent=2)}</div>"
-    else:
-        html_content += "<p>None (using group defaults)</p>"
-    
-    html_content += """
-        </div>
-        
-        <div class="section">
-            <h2>Permission Check Results</h2>
-            <table>
-                <tr>
-                    <th>Page</th>
-                    <th>View</th>
-                    <th>Edit</th>
-                    <th>Delete</th>
-                </tr>
-    """
-    
-    for page in pages:
-        html_content += f"<tr><td><strong>{page}</strong></td>"
-        for action in actions:
-            result = permission_tests[page][action]
-            html_content += f"<td class='{'true' if result else 'false'}'>{str(result)}</td>"
-        html_content += "</tr>"
-    
-    html_content += """
-            </table>
-        </div>
-        
-        <div class="section">
-            <h2>Permission Resolution Trace (for view action)</h2>
-            <p>Shows step-by-step why each permission check returns True/False:</p>
-    """
-    
-    for page in pages:
-        trace = permission_traces[page].get("view", "N/A")
-        result = permission_tests[page].get("view", False)
-        html_content += f"<div class='trace' style='color: {"green" if result else "red"}'><strong>{page}:</strong> {trace}</div>"
-    
-    html_content += """
-        </div>
-        
-        <div class="section">
-            <h2>Troubleshooting Checklist</h2>
-            <ul>
-                <li><strong>Permissions Is Empty: True</strong> → Group has no permissions defined. Go to /admin/users → Groups → Edit group → set permissions</li>
-                <li><strong>Permissions Is None: True</strong> → Same as above</li>
-                <li><strong>All permission tests False</strong> → Either no group, or group.permissions is empty/null</li>
-                <li><strong>Specific pages False</strong> → Check the trace to see which step failed (likely not in group.permissions dict)</li>
-                <li>Expected format: <code>{"pages": {"players": {"view": true, "edit": true}}}</code></li>
-                <li>If permissions look correct but still False → Try <strong>refreshing the page</strong> (F5)</li>
-            </ul>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return HTMLResponse(content=html_content)

@@ -21,6 +21,7 @@ import queue
 import threading
 import time
 import zipfile
+import shutil
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Iterator, Optional, List
@@ -561,6 +562,43 @@ class ReplayService:
         self.db.commit()
         self.db.refresh(replay)
         logger.info(f"Saved replay {replay.id} (streamed): {stored_name} ({file_size} bytes)")
+        return replay
+
+    def save_staged_demo(self, demo_path: str, filename: str,
+                         server_name: Optional[str] = None,
+                         notes: Optional[str] = None) -> RoundReplay:
+        """Register a raw demo assembled by streaming ingest without RAM copies."""
+        import uuid
+        from fastapi import HTTPException
+        if not os.path.isfile(demo_path):
+            raise HTTPException(status_code=404, detail="Поток демки не найден")
+        with open(demo_path, "rb") as f:
+            if f.read(4) != _MAGIC_DEMO:
+                raise HTTPException(status_code=400, detail="Поток не является .barodemo")
+
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+        stored_name = f"replay_{ts}.barodemo.zip"
+        stored_path = os.path.join(self.upload_dir, stored_name)
+        inner_name = filename if filename.endswith(".barodemo") else "round.barodemo"
+        with zipfile.ZipFile(stored_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            with zf.open(inner_name, "w") as dst, open(demo_path, "rb") as src:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+
+        meta = self._extract_metadata(stored_path)
+        replay = RoundReplay(
+            server_name=server_name or meta.get("server_name"),
+            submarine_name=meta.get("sub_name"),
+            level_name=meta.get("level_name"),
+            filename=filename or stored_name,
+            stored_filename=stored_name,
+            file_size=os.path.getsize(stored_path),
+            has_voice=meta.get("has_voice", 0),
+            recorded_at=meta.get("recorded_at"),
+            notes=notes,
+        )
+        self.db.add(replay)
+        self.db.commit()
+        self.db.refresh(replay)
         return replay
 
     # ── Retention cleanup ──────────────────────────────────────────────────────

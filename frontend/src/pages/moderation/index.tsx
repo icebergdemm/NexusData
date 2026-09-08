@@ -33,6 +33,7 @@ import type { DossierTriageMarker, ModerationOverview, OfflinePlayer, OnlinePlay
 import { formatSessionDuration, formatSessionStart, getJobColor } from "./formatters"
 import { AnomaliesTab } from "./AnomaliesTab"
 import { ConsoleTab } from "./ConsoleTab"
+import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 
 function copyToClipboard(text: string, label: string) {
   navigator.clipboard.writeText(text).then(() => toast.success(`${label} скопирован`)).catch(() => toast.error("Не удалось скопировать"))
@@ -341,7 +342,7 @@ export function ModerationPage() {
                     <TableHead>Пинг</TableHead>
                     <TableHead>Сессия</TableHead>
                     <TableHead>Наиграно</TableHead>
-                    {(data.can_edit || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
+                    {(data.can_message || data.can_kick || data.can_ban || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -357,11 +358,9 @@ export function ModerationPage() {
                         ...(data.can_issue_punishment ? [
                           { label: "Выдать предупреждение", separatorBefore: true, onSelect: () => setWarnTarget({ steamid: p.player_steamid, name }) },
                         ] : []),
-                        ...(data.can_edit ? [
-                          { label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) },
-                          { label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) },
-                          { label: "Бан", destructive: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "ban" as const }) },
-                        ] : []),
+                        ...(data.can_message ? [{ label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) }] : []),
+                        ...(data.can_kick ? [{ label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) }] : []),
+                        ...(data.can_ban ? [{ label: "Бан", destructive: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "ban" as const }) }] : []),
                       ]}
                     >
                       <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
@@ -380,17 +379,15 @@ export function ModerationPage() {
                         <TableCell>{p.ping ?? "-"}</TableCell>
                         <TableCell><SessionDurationCell joinTime={p.join_time} /></TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtPlayTime(p.total_play_time != null ? p.total_play_time / 3600 : null)}</TableCell>
-                        {(data.can_edit || data.can_issue_punishment) && (
+                        {(data.can_message || data.can_kick || data.can_ban || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
                               {data.can_issue_punishment && (
                                 <Button size="sm" variant="outline" onClick={() => setWarnTarget({ steamid: p.player_steamid, name })}>Предупреждение</Button>
                               )}
-                              {data.can_edit && <>
-                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
-                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
-                                <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
-                              </>}
+                              {data.can_message && <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>}
+                              {data.can_kick && <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>}
+                              {data.can_ban && <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>}
                             </div>
                           </TableCell>
                         )}
@@ -429,7 +426,7 @@ export function ModerationPage() {
                     <TableHead>Наиграно</TableHead>
                     <TableHead>Первый вход</TableHead>
                     <TableHead>Последний вход</TableHead>
-                    {(data.can_edit || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
+                    {(data.can_message || data.can_kick || data.can_ban || data.can_issue_punishment) && <TableHead className="text-right">Действия</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -445,11 +442,9 @@ export function ModerationPage() {
                         ...(data.can_issue_punishment ? [
                           { label: "Выдать предупреждение", separatorBefore: true, onSelect: () => setWarnTarget({ steamid: p.player_steamid, name }) },
                         ] : []),
-                        ...(data.can_edit ? [
-                          { label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) },
-                          { label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) },
-                          { label: "Бан", destructive: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "ban" as const }) },
-                        ] : []),
+                        ...(data.can_message ? [{ label: "Сообщение", separatorBefore: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "message" as const }) }] : []),
+                        ...(data.can_kick ? [{ label: "Кик", onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "kick" as const }) }] : []),
+                        ...(data.can_ban ? [{ label: "Бан", destructive: true, onSelect: () => setActionTarget({ steamid: p.player_steamid, name, type: "ban" as const }) }] : []),
                       ]}
                     >
                       <TableRow className={p.is_new_player ? "bg-warning/10 hover:bg-warning/15" : undefined}>
@@ -464,17 +459,15 @@ export function ModerationPage() {
                         <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.first_login)}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{fmtDate(p.last_login_time)}</TableCell>
-                        {(data.can_edit || data.can_issue_punishment) && (
+                        {(data.can_message || data.can_kick || data.can_ban || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
                               {data.can_issue_punishment && (
                                 <Button size="sm" variant="outline" onClick={() => setWarnTarget({ steamid: p.player_steamid, name })}>Предупреждение</Button>
                               )}
-                              {data.can_edit && <>
-                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>
-                                <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>
-                                <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>
-                              </>}
+                              {data.can_message && <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "message" })}>Сообщение</Button>}
+                              {data.can_kick && <Button size="sm" variant="outline" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "kick" })}>Кик</Button>}
+                              {data.can_ban && <Button size="sm" variant="destructive" onClick={() => setActionTarget({ steamid: p.player_steamid, name, type: "ban" })}>Бан</Button>}
                             </div>
                           </TableCell>
                         )}
@@ -560,6 +553,7 @@ export function ModerationPage() {
             <div>
               <Label className="mb-1.5 block">{actionTarget?.type === "message" ? "Текст сообщения" : "Причина"}</Label>
               <Textarea value={actionReason} onChange={(e) => setActionReason(e.target.value)} />
+              {actionTarget?.type && <div className="mt-2"><ModerationTemplatePicker type={actionTarget.type} onSelect={setActionReason} /></div>}
             </div>
             <div>
               <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
@@ -584,6 +578,7 @@ export function ModerationPage() {
           <div>
             <Label className="mb-1.5 block">Причина</Label>
             <Textarea value={warnReason} onChange={(e) => setWarnReason(e.target.value)} placeholder="За что выдано предупреждение" />
+            <div className="mt-2"><ModerationTemplatePicker type="warning" onSelect={setWarnReason} /></div>
           </div>
           <DialogFooter>
             <Button

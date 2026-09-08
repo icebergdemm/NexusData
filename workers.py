@@ -16,12 +16,12 @@ import logging
 import os
 import platform
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
+from database import GameSessionLocal, SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,129 @@ def task_compensate_playtime() -> dict:
         db.close()
 
 
+def task_sync_punishment_discord() -> dict:
+    """Reconcile linked web punishment names and Discord embeds."""
+    from models import AdminUser, DiscordMember, PlayerPunishment, PlayerPunishmentDiscordMessage
+    from services import (
+        format_admin_issuer_name_from_member,
+        punishment_discord_state,
+        punishment_discord_state_hash,
+    )
+
+    db = SessionLocal()
+    try:
+        punishments = db.query(PlayerPunishment).filter(
+            PlayerPunishment.issued_by_admin_id.isnot(None),
+        ).order_by(PlayerPunishment.id).all()
+        if not punishments:
+            return {"issuer_updated": 0, "discord_synced": 0, "discord_missing": 0, "discord_errors": 0}
+
+        admin_ids = {punishment.issued_by_admin_id for punishment in punishments}
+        admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()
+        discord_ids = {str(admin.discord_id) for admin in admins if admin.discord_id}
+        members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+        members_by_discord_id = {str(member.discord_id): member for member in members}
+        issuer_by_admin_id = {
+            admin.id: format_admin_issuer_name_from_member(
+                admin, members_by_discord_id.get(str(admin.discord_id)),
+            )
+            for admin in admins
+        }
+
+        issuer_updated = 0
+        for punishment in punishments:
+            current_name = issuer_by_admin_id.get(punishment.issued_by_admin_id)
+            if current_name and punishment.issued_by_name != current_name:
+                punishment.issued_by_name = current_name
+                issuer_updated += 1
+        db.commit()
+
+        link_rows = (
+            db.query(PlayerPunishmentDiscordMessage, PlayerPunishment)
+            .join(PlayerPunishment, PlayerPunishment.id == PlayerPunishmentDiscordMessage.punishment_id)
+            .filter(PlayerPunishment.issued_by_admin_id.isnot(None))
+            .all()
+        )
+        changes = []
+        for link, punishment in link_rows:
+            if link.sync_status == "missing":
+                continue
+            issuer_name = issuer_by_admin_id.get(punishment.issued_by_admin_id)
+            if not issuer_name:
+                continue
+            state = punishment_discord_state(punishment, issuer_name)
+            state_hash = punishment_discord_state_hash(state)
+            if link.sync_status == "synced" and link.state_hash == state_hash:
+                continue
+            changes.append({
+                "link_id": link.id,
+                "channel_id": link.channel_id,
+                "message_id": link.message_id,
+                "state": state,
+                "state_hash": state_hash,
+            })
+
+        if not changes:
+            return {"issuer_updated": issuer_updated, "discord_synced": 0, "discord_missing": 0, "discord_errors": 0}
+
+        from discord_bot import bot as discord_bot
+        sync_coro = discord_bot.sync_punishment_discord_messages(changes)
+        try:
+            future = discord_bot.schedule(
+                sync_coro,
+                description="Синхронизация наказаний с Discord",
+            )
+        except RuntimeError as exc:
+            sync_coro.close()
+            logger.warning("Punishment Discord sync deferred: %s", type(exc).__name__)
+            return {"issuer_updated": issuer_updated, "discord_synced": 0, "discord_missing": 0, "discord_errors": len(changes)}
+        try:
+            outcomes = future.result(timeout=90)
+        except TimeoutError as exc:
+            logger.warning("Punishment Discord sync deferred: %s", type(exc).__name__)
+            return {"issuer_updated": issuer_updated, "discord_synced": 0, "discord_missing": 0, "discord_errors": len(changes)}
+
+        links_by_id = {link.id: link for link, _ in link_rows}
+        changes_by_link_id = {change["link_id"]: change for change in changes}
+        now = datetime.utcnow()
+        discord_synced = discord_missing = discord_errors = 0
+        for outcome in outcomes:
+            link = links_by_id.get(outcome.get("link_id"))
+            if not link:
+                continue
+            link.last_attempt_at = now
+            status = outcome.get("status")
+            if status == "synced":
+                change = changes_by_link_id.get(link.id)
+                if not change:
+                    continue
+                link.state_hash = change["state_hash"]
+                link.sync_status = "synced"
+                link.synced_at = now
+                link.last_error = None
+                discord_synced += 1
+            elif status == "missing":
+                link.sync_status = "missing"
+                link.last_error = (outcome.get("error") or "Discord message not found")[:500]
+                discord_missing += 1
+            else:
+                link.sync_status = "error"
+                link.last_error = (outcome.get("error") or "Discord message sync failed")[:500]
+                discord_errors += 1
+        db.commit()
+        return {
+            "issuer_updated": issuer_updated,
+            "discord_synced": discord_synced,
+            "discord_missing": discord_missing,
+            "discord_errors": discord_errors,
+        }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 # 8 часов — порог, выше которого сессия считается битой (зависший logout,
 # сбой часов, незакрытая сессия). Такие сессии искажают play_time.
 _BROKEN_SESSION_THRESHOLD_SECS = 8 * 3600  # 28800
@@ -190,6 +313,176 @@ def task_recalculate_ratings() -> dict:
         raise
     finally:
         db.close()
+
+
+def task_server_restarts() -> dict:
+    """Advance the durable daily restart state for ASPER1 and ASPER2."""
+    from services_server_restart import (
+        PterodactylClient,
+        PterodactylError,
+        _condition_state,
+        _claim_schedule,
+        _next_schedule,
+        _utc_aware,
+        build_msg_box_command,
+        ensure_restart_schedules,
+        evaluate_schedule_tick,
+        server_state_allows_restart,
+        suspend_schedule_for_offline,
+    )
+    from models import AdminActionLog
+
+    db = SessionLocal()
+    current = datetime.now(timezone.utc)
+    result = {"checked": 0, "warnings": 0, "restarts": 0, "errors": 0}
+    try:
+        rows = ensure_restart_schedules(db)
+        client = PterodactylClient()
+        for row in rows:
+            if not row.enabled:
+                continue
+            result["checked"] += 1
+            if row.processing_until and row.processing_until > current.replace(tzinfo=None):
+                continue
+
+            try:
+                server_state = client.get_state(row.server_name)
+            except PterodactylError as exc:
+                row.last_status = "error"
+                row.last_error = str(exc)
+                db.commit()
+                result["errors"] += 1
+                continue
+            if not server_state_allows_restart(server_state):
+                suspend_schedule_for_offline(row, current)
+                db.commit()
+                continue
+
+            online_count, round_active = _condition_state(db, row.server_name)
+            decision = evaluate_schedule_tick(
+                enabled=bool(row.enabled),
+                scheduled_for=_utc_aware(row.scheduled_for),
+                execution_due_at=_utc_aware(row.execution_due_at),
+                warning_sent_at=_utc_aware(row.warning_sent_at),
+                no_online=bool(row.require_no_online),
+                round_finished=bool(row.require_round_finished),
+                online_count=online_count,
+                round_active=round_active,
+                now=current,
+            )
+
+            if decision.action == "wait_conditions":
+                row.last_status = "waiting_conditions"
+                db.commit()
+                continue
+            if decision.action == "noop":
+                if row.execution_due_at is None:
+                    row.last_status = "scheduled"
+                    db.commit()
+                continue
+            if not _claim_schedule(db, row, current):
+                continue
+
+            if decision.action == "send_warning":
+                warning_error = None
+                try:
+                    client.send_console_command(row.server_name, build_msg_box_command(row.message_text))
+                except (PterodactylError, ValueError) as exc:
+                    # A warning failure must not prevent the actual restart.
+                    warning_error = str(exc)
+                row.warning_sent_at = current.replace(tzinfo=None)
+                row.execution_due_at = decision.execution_due_at.replace(tzinfo=None) if decision.execution_due_at else None
+                row.last_status = "warning_sent"
+                row.last_error = warning_error
+                row.processing_until = None
+                row.processing_token = None
+                db.add(AdminActionLog(
+                    admin_id=None,
+                    action="server_restart_automatic_warning",
+                    details={
+                        "server": row.server_name,
+                        "warning_error": warning_error,
+                    },
+                ))
+                db.commit()
+                result["warnings"] += 1
+                continue
+
+            if decision.action == "restart":
+                try:
+                    client.restart(row.server_name)
+                except PterodactylError as exc:
+                    row.last_status = "error"
+                    row.last_error = str(exc)
+                    row.last_action = "automatic_restart_failed"
+                    row.last_action_at = current.replace(tzinfo=None)
+                    row.execution_due_at = (current + timedelta(minutes=1)).replace(tzinfo=None)
+                    row.processing_until = None
+                    row.processing_token = None
+                    db.add(AdminActionLog(
+                        admin_id=None,
+                        action="server_restart_automatic_failed",
+                        details={
+                            "server": row.server_name,
+                            "error": str(exc),
+                        },
+                    ))
+                    db.commit()
+                    result["errors"] += 1
+                    continue
+
+                row.scheduled_for = _next_schedule(current, row.daily_time)
+                row.warning_sent_at = None
+                row.execution_due_at = None
+                row.last_status = "scheduled"
+                row.last_error = None
+                row.last_action = "automatic_restart"
+                row.last_action_at = current.replace(tzinfo=None)
+                row.processing_until = None
+                row.processing_token = None
+                db.add(AdminActionLog(
+                    admin_id=None,
+                    action="server_restart_automatic",
+                    details={"server": row.server_name},
+                ))
+                db.commit()
+                result["restarts"] += 1
+        return result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def task_project_rating_events() -> dict:
+    """Retry accepted but not-yet-projected v2 events after transient DB errors."""
+    from models import RatingEventLedger
+    from routes.rating_events import _project_rating_events
+
+    db = GameSessionLocal()
+    try:
+        ids = [row.id for row in db.query(RatingEventLedger.id).filter(
+            RatingEventLedger.projected_at.is_(None),
+        ).order_by(RatingEventLedger.id).limit(500).all()]
+    finally:
+        db.close()
+    if ids:
+        _project_rating_events(ids)
+    return {"pending_events": len(ids)}
+
+
+def task_migrate_legacy_rating() -> dict:
+    """Import the frozen legacy role-action aggregate once on startup."""
+    from rating_legacy_migration import import_legacy_rating_once
+
+    source_db = SessionLocal()
+    target_db = GameSessionLocal()
+    try:
+        return import_legacy_rating_once(source_db, target_db)
+    finally:
+        source_db.close()
+        target_db.close()
 
 
 def task_check_rating_reward_schedules() -> dict:
@@ -1214,6 +1507,8 @@ def _start_simple_workers():
     periodic_tasks = [
         (task_compensate_playtime, 30 * 60),
         (task_recalculate_ratings, 24 * 60 * 60),
+        (task_migrate_legacy_rating, 30),
+        (task_project_rating_events, 10),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
         (task_cleanup_communications, 6 * 60 * 60),
@@ -1225,6 +1520,7 @@ def _start_simple_workers():
         (task_cleanup_deleted_tickets, 30 * 60),
         (task_cleanup_ticket_media_orphans, 6 * 60 * 60),
         (task_sync_auto_server_privileges, 5 * 60),
+        (task_sync_punishment_discord, 10 * 60),
         (task_reconcile_department_discord_roles, 30 * 60),
         (task_cleanup_online_snapshots, 6 * 60 * 60),
         (task_cleanup_server_actions, 6 * 60 * 60),
@@ -1267,6 +1563,24 @@ def _start_scheduler():
         task_id="rating_recalc",
     )
 
+    # The old role-action aggregate has no round/mode context. Import it once
+    # as explicitly tagged Mission history before new v2 events accumulate.
+    scheduler.register_periodic(
+        task_migrate_legacy_rating,
+        interval_secs=30,
+        priority=Priority.NORMAL,
+        task_id="rating_legacy_migration",
+    )
+
+    # Accepted v2 events are durable before projection. This short retry loop
+    # makes a transient DB lock or worker exception observable and recoverable.
+    scheduler.register_periodic(
+        task_project_rating_events,
+        interval_secs=10,
+        priority=Priority.NORMAL,
+        task_id="rating_v2_projection",
+    )
+
     # Награды за место в рейтинге: правило само решает по своему расписанию
     # (день недели + время МСК), проверка — раз в 5 мин, LOW priority.
     scheduler.register_periodic(
@@ -1297,6 +1611,17 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="world_rounds_cleanup",
+    )
+
+    # Daily production-server restart controller. It is deliberately a short
+    # poll: the warning window is 15 seconds, and the durable lease prevents
+    # duplicate commands if a tick overlaps or the process has multiple loops.
+    scheduler.register_periodic(
+        task_server_restarts,
+        interval_secs=5,
+        priority=Priority.NORMAL,
+        task_id="server_restarts",
+        timeout=30,
     )
 
     # Anomaly scan (twinks + behavior outliers): BACKGROUND priority, every
@@ -1390,6 +1715,14 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.BACKGROUND,
         task_id="auto_server_privileges_sync",
+    )
+
+    scheduler.register_periodic(
+        task_sync_punishment_discord,
+        interval_secs=10 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="punishment_discord_sync",
+        timeout=120,
     )
 
     # Soft, additive-only safety net for site -> Discord department role

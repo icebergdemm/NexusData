@@ -18,6 +18,28 @@ export interface WorldMarker { id: string; x: number; y: number; label: string; 
 
 const POPUP_WIDTH = 260
 
+function interpolateState(from: WorldState, to: WorldState, alpha: number): WorldState {
+  const lerp = (a: number, b: number) => a + (b - a) * alpha
+  const previousCharacters = new Map(from.characters.map((c) => [c.id, c]))
+  const previousSubs = new Map(from.subs.map((s) => [s.id, s]))
+  const previousDoors = new Map(from.doors_state.map((d) => [d.id, d]))
+  return {
+    ...to,
+    characters: to.characters.map((c) => {
+      const p = previousCharacters.get(c.id)
+      return p ? { ...c, x: lerp(p.x, c.x), y: lerp(p.y, c.y) } : c
+    }),
+    subs: to.subs.map((s) => {
+      const p = previousSubs.get(s.id)
+      return p ? { ...s, x: lerp(p.x, s.x), y: lerp(p.y, s.y) } : s
+    }),
+    doors_state: to.doors_state.map((d) => {
+      const p = previousDoors.get(d.id)
+      return p ? { ...d, open: lerp(p.open, d.open) } : d
+    }),
+  }
+}
+
 function getWorldBounds(geometry: WorldGeometry): WorldBounds {
   let minX = Number.POSITIVE_INFINITY
   let maxX = Number.NEGATIVE_INFINITY
@@ -80,6 +102,30 @@ export function WorldCanvas({
   const markerDragRef = useRef<string | null>(null)
   const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null)
   const [fittedFor, setFittedFor] = useState<string | null>(null)
+  const previousStateRef = useRef(state)
+  const transitionRef = useRef<{ from: WorldState; to: WorldState; started: number } | null>(null)
+  const [animationNow, setAnimationNow] = useState(0)
+  const renderState = (() => {
+    const transition = transitionRef.current
+    if (!transition) return state
+    const alpha = Math.min(1, Math.max(0, (animationNow - transition.started) / 333))
+    return interpolateState(transition.from, transition.to, alpha)
+  })()
+
+  useEffect(() => {
+    if (previousStateRef.current !== state) {
+      transitionRef.current = { from: previousStateRef.current, to: state, started: performance.now() }
+      previousStateRef.current = state
+    }
+    let frame = 0
+    const animate = (now: number) => {
+      setAnimationNow(now)
+      if (transitionRef.current && now - transitionRef.current.started < 333) frame = requestAnimationFrame(animate)
+      else transitionRef.current = null
+    }
+    frame = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(frame)
+  }, [state])
   // Tracks which character we've already auto-centered on, so re-selecting
   // the SAME character on every ~3s poll doesn't keep snapping the camera
   // back if the user has since panned away manually.
@@ -162,9 +208,9 @@ export function WorldCanvas({
     ctx.fillStyle = "#0A0E14"
     ctx.fillRect(0, 0, cw, ch)
 
-    const subPosById = new Map(state.subs.map((s) => [s.id, s]))
-    const hullStateById = new Map(state.hulls_state.map((h) => [h.id, h]))
-    const doorStateById = new Map(state.doors_state.map((d) => [d.id, d]))
+    const subPosById = new Map(renderState.subs.map((s) => [s.id, s]))
+    const hullStateById = new Map(renderState.hulls_state.map((h) => [h.id, h]))
+    const doorStateById = new Map(renderState.doors_state.map((d) => [d.id, d]))
 
     // Static level outline (world coords, no sub offset).
     ctx.fillStyle = "#141a22"
@@ -225,7 +271,7 @@ export function WorldCanvas({
       ctx.globalAlpha = 1
     }
 
-    for (const c of state.characters) {
+    for (const c of renderState.characters) {
       const [sx, sy] = toScreen(c.x, c.y, view)
       const radius = c.human ? 5 : 7
       ctx.beginPath()
@@ -290,7 +336,7 @@ export function WorldCanvas({
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, state, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId])
+  }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()

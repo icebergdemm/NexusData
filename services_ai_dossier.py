@@ -341,12 +341,17 @@ def _severity_for_score(score: Any) -> str:
     return "high" if score >= 10 else "medium" if score >= 5 else "low"
 
 
-def require_dossier_generation(admin: Any) -> None:
-    """Manual dossier generation is a superuser-only operation."""
+def require_ai_center_access(admin: Any) -> None:
+    """The AI center is intentionally restricted to superusers."""
     from fastapi import HTTPException
 
     if not getattr(admin, "is_superuser", False):
         raise HTTPException(status_code=403, detail="Только для суперпользователей")
+
+
+def require_dossier_generation(admin: Any) -> None:
+    """Manual dossier generation is a superuser-only operation."""
+    require_ai_center_access(admin)
 
 
 def _finding(category: str, severity: str, title: str, details: str, reason: str,

@@ -24,6 +24,7 @@ import { SearchInput } from "@/components/layout/SearchInput"
 import { PlayerHoverLink } from "@/components/layout/PlayerHoverTooltip"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
+import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 
 interface PunishmentRow {
   id: number
@@ -153,46 +154,49 @@ export function PunishmentsPage() {
         description="Предупреждения, выговоры, кики и баны, выданные игрокам"
         icon={Gavel}
         actions={data?.can_edit && (
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button><Plus className="h-4 w-4" /> Выдать наказание</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Выдать «{data.type_labels[tab] ?? tab}»</DialogTitle>
-                <DialogDescription>Наказание будет привязано к указанному SteamID и записано в историю игрока.</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-3">
-                <div>
-                  <Label className="mb-1.5 block">SteamID</Label>
-                  <Input value={form.player_steamid} onChange={(e) => setForm((f) => ({ ...f, player_steamid: e.target.value }))} />
-                </div>
-                <div>
-                  <Label className="mb-1.5 block">Причина</Label>
-                  <Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
-                </div>
-                <div>
-                  <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
-                  <Input type="number" value={form.expires_days} onChange={(e) => setForm((f) => ({ ...f, expires_days: e.target.value }))} />
-                </div>
-                {(tab === "ban" || tab === "kick") && (
-                  <div>
-                    <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
-                    <Input value={form.server_name} onChange={(e) => setForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
+          <div className="flex flex-wrap gap-2">
+            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                <DialogTrigger asChild>
+                  <Button><Plus className="h-4 w-4" /> Выдать наказание</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Выдать «{data.type_labels[tab] ?? tab}»</DialogTitle>
+                    <DialogDescription>Наказание будет привязано к указанному SteamID и записано в историю игрока.</DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3">
+                    <div>
+                      <Label className="mb-1.5 block">SteamID</Label>
+                      <Input value={form.player_steamid} onChange={(e) => setForm((f) => ({ ...f, player_steamid: e.target.value }))} />
+                    </div>
+                    <div>
+                      <Label className="mb-1.5 block">Причина</Label>
+                      <Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} />
+                      {tab !== "reprimand" && <div className="mt-2"><ModerationTemplatePicker type={tab as "message" | "warning" | "kick" | "ban"} onSelect={(content) => setForm((f) => ({ ...f, reason: content }))} /></div>}
+                    </div>
+                    <div>
+                      <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
+                      <Input type="number" value={form.expires_days} onChange={(e) => setForm((f) => ({ ...f, expires_days: e.target.value }))} />
+                    </div>
+                    {(tab === "ban" || tab === "kick") && (
+                      <div>
+                        <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
+                        <Input value={form.server_name} onChange={(e) => setForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
+                      </div>
+                    )}
+                    <div>
+                      <Label className="mb-1.5 block">Внутренние заметки</Label>
+                      <Textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
+                    </div>
                   </div>
-                )}
-                <div>
-                  <Label className="mb-1.5 block">Внутренние заметки</Label>
-                  <Textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button disabled={!form.player_steamid.trim()} onClick={() => createMutation.mutate()}>
-                  Выдать
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+                  <DialogFooter>
+                    <Button disabled={!form.player_steamid.trim()} onClick={() => createMutation.mutate()}>
+                      Выдать
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+            </Dialog>
+          </div>
         )}
       />
 

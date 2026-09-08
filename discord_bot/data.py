@@ -12,6 +12,7 @@ the rest of this app's run_in_threadpool usage).
 """
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -350,6 +351,41 @@ def set_bot_config(key: str, value: str) -> None:
         db.close()
 
 
+def record_punishment_discord_message(
+    punishment_id: int,
+    channel_id: int | str,
+    message_id: int | str,
+    state_hash: str | None,
+) -> None:
+    """Persist the Discord message created for one web punishment."""
+    from models import PlayerPunishmentDiscordMessage
+
+    now = datetime.utcnow()
+    db = SessionLocal()
+    try:
+        link = db.query(PlayerPunishmentDiscordMessage).filter(
+            PlayerPunishmentDiscordMessage.punishment_id == int(punishment_id),
+            PlayerPunishmentDiscordMessage.channel_id == str(channel_id),
+        ).first()
+        if link is None:
+            link = PlayerPunishmentDiscordMessage(
+                punishment_id=int(punishment_id),
+                channel_id=str(channel_id),
+                message_id=str(message_id),
+            )
+            db.add(link)
+        else:
+            link.message_id = str(message_id)
+        link.state_hash = state_hash
+        link.sync_status = "synced"
+        link.last_attempt_at = now
+        link.synced_at = now
+        link.last_error = None
+        db.commit()
+    finally:
+        db.close()
+
+
 def get_json_bot_config(key: str, default):
     """Read structured bot settings while keeping the simple key/value config table."""
     import json
@@ -537,22 +573,88 @@ def set_document_message_id(document_id: int, message_id: str, channel_id: str) 
 
 # ── Ratings leaderboards (published as embeds) ───────────────────────────
 
-def get_ratings_leaderboard(role: str = "captain", limit: int = 10) -> dict:
+def _aggregate_rating_records(records, limit: int):
+    """Collapse role projections into one public board row per player."""
+    grouped = {}
+    for record in records:
+        current = grouped.setdefault(record.steam_id, {
+            "current_rating": 0.0,
+            "cumulative_points": 0.0,
+        })
+        current["current_rating"] += float(record.current_rating or 0.0)
+        current["cumulative_points"] += float(record.cumulative_points or 0.0)
+    aggregated = [
+        SimpleNamespace(
+            steam_id=steam_id,
+            current_rating=values["current_rating"],
+            cumulative_points=values["cumulative_points"],
+        )
+        for steam_id, values in grouped.items()
+    ]
+    aggregated.sort(key=lambda item: (-item.current_rating, item.steam_id))
+    return aggregated[:limit]
+
+def get_ratings_leaderboard(role: str = "captain", limit: int = 10, mode: str = "mission") -> dict:
+    """Return a role leaderboard for one rating mode.
+
+    Older deployments have one PlayerRating table without a mode column. It
+    remains the Mission source, but it must never be recycled as PvP data:
+    a separate empty PvP board is more useful than a convincing lie.
+    """
     from sqlalchemy import desc
     from rating_constants import ROLES
     from models import PlayerRating, PlayerData
 
     db = SessionLocal()
     try:
-        if role not in ROLES:
+        if role != "all" and role not in ROLES:
             role = "captain"
-        records = (
-            db.query(PlayerRating)
-            .filter(PlayerRating.role == role, PlayerRating.current_rating > 0)
-            .order_by(desc(PlayerRating.current_rating))
-            .limit(limit)
-            .all()
-        )
+        mode = mode if mode in {"mission", "pvp"} else "mission"
+        try:
+            from models import RatingProjectionState
+        except ImportError:
+            RatingProjectionState = None
+
+        if RatingProjectionState is not None:
+            query = db.query(RatingProjectionState).filter(
+                RatingProjectionState.mode == mode,
+                RatingProjectionState.current_rating > 0,
+            )
+            if role != "all":
+                query = query.filter(RatingProjectionState.role == role)
+            records = query.order_by(desc(RatingProjectionState.current_rating)).all()
+            if role == "all":
+                # PvP is one public board. Keep the calculation per role in
+                # the admin UI, then aggregate the already-calculated role
+                # totals here so Discord does not invent a second formula.
+                records = _aggregate_rating_records(records, limit)
+            else:
+                records = records[:limit]
+            # Keep the existing Mission board alive during the staged dev
+            # rollout. An empty v2 projection is not proof that the old board
+            # has been migrated; treating it as one would blank Discord for
+            # no good reason.
+            if not records and mode == "mission":
+                legacy_query = db.query(PlayerRating).filter(PlayerRating.current_rating > 0)
+                if role != "all":
+                    legacy_query = legacy_query.filter(PlayerRating.role == role)
+                legacy_records = legacy_query.order_by(desc(PlayerRating.current_rating)).all()
+                if role == "all":
+                    records = _aggregate_rating_records(legacy_records, limit)
+                else:
+                    records = legacy_records[:limit]
+        else:
+            # Pre-v2 fallback: legacy totals are Mission-only, never PvP.
+            if mode == "pvp":
+                return {"mode": mode, "role": role, "leaderboard": []}
+            legacy_query = db.query(PlayerRating).filter(PlayerRating.current_rating > 0)
+            if role != "all":
+                legacy_query = legacy_query.filter(PlayerRating.role == role)
+            legacy_records = legacy_query.order_by(desc(PlayerRating.current_rating)).all()
+            if role == "all":
+                records = _aggregate_rating_records(legacy_records, limit)
+            else:
+                records = legacy_records[:limit]
         steam_ids = [r.steam_id for r in records]
         players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steam_ids)).all() if steam_ids else []
         pmap = {p.player_steamid: p for p in players}
@@ -568,7 +670,7 @@ def get_ratings_leaderboard(role: str = "captain", limit: int = 10) -> dict:
                 "rating": round(r.current_rating, 2),
                 "cumulative_points": round(r.cumulative_points, 1),
             })
-        return {"role": role, "leaderboard": result}
+        return {"mode": mode, "role": role, "leaderboard": result}
     finally:
         db.close()
 

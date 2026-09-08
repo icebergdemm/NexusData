@@ -3,6 +3,7 @@ import { api, setCsrfToken } from "@/lib/api"
 
 export const PERMISSION_PAGES = [
   "admin", "players", "players_special", "moderation", "dispatch", "replays",
+  "moderation_templates",
   "sessions", "audit", "privileges", "kits", "punishments", "sub_projects",
   "ratings", "discord_bot", "tickets", "analytics", "documents", "departments",
   "tasks", "world_state", "monster_spawn", "sounds", "respawn_dolls", "sub_checker", "achievements",
@@ -64,7 +65,12 @@ export function useCurrentAdmin() {
       setCsrfToken(me.csrf_token)
       return me
     },
-    staleTime: 5 * 60 * 1000,
+    // Permissions may be changed by another admin while this SPA tab stays
+    // open. Keep the identity query fresh so navigation reacts after the tab
+    // regains focus instead of serving a five-minute-old permission snapshot.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
     retry: false,
   })
 }

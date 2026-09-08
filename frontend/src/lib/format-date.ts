@@ -14,3 +14,18 @@ export function formatBrowserDate(iso: string | null | undefined, opts?: Intl.Da
 export function formatBrowserDateOnly(iso: string | null | undefined): string {
   return formatBrowserDate(iso, { day: "2-digit", month: "2-digit", year: "numeric" })
 }
+
+/**
+ * Rating API dates are UTC: event timestamps carry an offset, while older
+ * SQLAlchemy datetime fields can arrive as naive UTC. Keep the older generic
+ * helper's MSK compatibility behavior intact and make the rating page
+ * unambiguously browser-local.
+ */
+export function formatRatingDate(iso: string | null | undefined, opts?: Intl.DateTimeFormatOptions): string {
+  if (!iso) return "-"
+  const hasTz = iso.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(iso)
+  const normalized = hasTz ? iso : iso.replace(" ", "T") + "Z"
+  const d = new Date(normalized)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString("ru-RU", opts)
+}

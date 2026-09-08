@@ -21,6 +21,7 @@ from models import (
     PlayerData, PlayerPunishment,
     ServerPrivilegeGroup, ServerPlayerPrivilege, ServerAction,
 )
+from services import build_punishment_discord_embed
 
 settings = get_settings()
 
@@ -454,84 +455,17 @@ def get_player_ratings_endpoint(steam_id: str, db: Session = Depends(get_game_db
 # DISCORD PUNISHMENT NOTIFICATIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-import re as _re
-
-# Причина, которую подставляет сам игровой сервер при бане через встроенную
-# консольную команду — это не причина, а служебная метка "кто банил"
-# (initiator), продублированная в other-поле "Выдал". Показывать её как
-# причину только запутывает: выглядит как объяснение, а на деле имя того же
-# инициатора. Регэксп вытаскивает имя на случай, если issued_by_name пуст
-# (когда бан пришёл не через сайт, а прямо из игры), а сама причина в этом
-# случае заменяется на прочерк.
-_BANNED_BY_INITIATOR_RE = _re.compile(r'^ServerMessage\.BannedBy~\[initiator\]=(.*)$')
-
-
-def _clean_punishment_reason(reason: Optional[str], issued_by_name: Optional[str]) -> tuple[str, Optional[str]]:
-    """Возвращает (текст_причины_для_эмбеда, имя_инициатора_если_извлечено)."""
-    if reason:
-        m = _BANNED_BY_INITIATOR_RE.match(reason.strip())
-        if m:
-            extracted_name = m.group(1).strip() or None
-            return "-", extracted_name
-    return (reason or "Не указана"), None
-
-
 def _queue_punishment_discord_notification(db, punishment):
     """Notify the Discord bot directly about a new punishment."""
     from discord_bot import bot as discord_bot
 
-    type_labels = {
-        "warning": "⚠️ Предупреждение",
-        "reprimand": "📋 Выговор",
-        "kick": "👢 Кик",
-        "ban": "🔨 Бан",
-    }
-    type_colors = {
-        "warning": 0xffaa00,
-        "reprimand": 0xff8800,
-        "kick": 0xff4400,
-        "ban": 0xcc0000,
-    }
-
-    player = db.query(PlayerData).filter(PlayerData.player_steamid == punishment.player_steamid).first()
-    player_name = (player.forced_display_name or player.player_last_time_name) if player else None
-    player_value = f"`{punishment.player_steamid}`" + (f" ({player_name})" if player_name else "")
-
-    clean_reason, extracted_initiator = _clean_punishment_reason(punishment.reason, punishment.issued_by_name)
-    issued_by = punishment.issued_by_name or extracted_initiator or "—"
-
-    embed = {
-        "title": type_labels.get(punishment.type, punishment.type),
-        "color": type_colors.get(punishment.type, 0xff0000),
-        "fields": [
-            {"name": "Игрок", "value": player_value, "inline": True},
-            {"name": "Выдал", "value": issued_by, "inline": True},
-            {"name": "Причина", "value": clean_reason, "inline": False},
-        ],
-        "footer": {"text": "1984"},
-        "timestamp": datetime.now(tz=timezone(timedelta(hours=3))).isoformat(),
-    }
-
-    if punishment.expires_at:
-        embed["fields"].append({
-            "name": "Истекает",
-            "value": punishment.expires_at.strftime("%d.%m.%Y %H:%M"),
-            "inline": True,
-        })
-
-    # Send to all-punishments channel (uses bot config key)
-    discord_bot.schedule(discord_bot.execute_bot_action("send_embed", {
-        "channel_config_key": "punishment_channel_id",
+    embed, state_hash = build_punishment_discord_embed(db, punishment)
+    discord_bot.schedule(discord_bot.execute_bot_action("send_punishment_embed", {
+        "punishment_id": punishment.id,
+        "state_hash": state_hash,
         "embed": embed,
+        "include_ban_channel": punishment.type in ("ban", "warning", "reprimand"),
     }))
-
-    # Канал "блокировок игроков" — раньше только баны, теперь и
-    # предупреждения/выговоры (кик туда не идёт: это не блокировка).
-    if punishment.type in ("ban", "warning", "reprimand"):
-        discord_bot.schedule(discord_bot.execute_bot_action("send_embed", {
-            "channel_config_key": "ban_channel_id",
-            "embed": embed,
-        }))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

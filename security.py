@@ -239,6 +239,16 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
     return False
 
 
+def check_moderation_action_permission(admin, action: str) -> bool:
+    """Keep the pre-split moderation:edit grant compatible with action keys."""
+    return check_permission(admin, "moderation", action) or check_permission(admin, "moderation", "edit")
+
+
+def csrf_token_from_request(request, form_token: Optional[str] = None) -> Optional[str]:
+    """Read the CSRF token used by both JSON headers and legacy forms."""
+    return request.headers.get("X-CSRF-Token") or form_token
+
+
 def _has_ai_dispatcher_management_rank(admin) -> bool:
     """Return True for the project's curator-or-higher panel ranks.
 

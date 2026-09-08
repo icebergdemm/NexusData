@@ -18,6 +18,7 @@ import hashlib
 import logging
 import json
 import os
+import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from discord import app_commands
 
 from config import get_settings
 from discord_bot import data as bot_data
+from services import apply_punishment_discord_state
 from services_ticket_media import (
     TicketMediaQuotaExceeded,
     new_storage_key,
@@ -392,7 +394,7 @@ async def publish_rating_task():
     }
 
     for role in roles:
-        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10)
+        data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, role, 10, "mission")
         if not data or not data.get("leaderboard"):
             await asyncio.sleep(15)
             continue
@@ -454,6 +456,50 @@ async def publish_rating_task():
 
         # Wait 15 seconds between messages to avoid rate limits
         await asyncio.sleep(15)
+
+    # Mission keeps its existing per-role messages above. PvP is deliberately
+    # a separate message: merging it into those embeds makes the two scoring
+    # systems look comparable when they are not, and quickly runs into the
+    # embed field limit once the boards grow.
+    pvp_data = await asyncio.to_thread(bot_data.get_ratings_leaderboard, "all", 10, "pvp")
+    pvp_lb = (pvp_data or {}).get("leaderboard") or []
+    pvp_lines = []
+    for entry in pvp_lb:
+        if entry["rank"] == 1:
+            medal = "🥇"
+        elif entry["rank"] == 2:
+            medal = "🥈"
+        elif entry["rank"] == 3:
+            medal = "🥉"
+        else:
+            medal = f"**{entry['rank']}.**"
+        name = f"<@{entry['discord_id']}>" if entry.get("discord_id") else entry["player_name"]
+        pvp_lines.append(f"{medal}  {name}  -  **{entry['rating']}**")
+
+    pvp_embed = discord.Embed(
+        title="⚔ PvP рейтинг",
+        description="\n\n".join(pvp_lines) if pvp_lines else "Нет данных",
+        color=0xb33939,
+    )
+    pvp_embed.set_footer(text=f"Сделано за сухарики | Обновлено {format_msk(datetime.utcnow())} МСК")
+
+    pvp_message_id = _rating_message_ids.get("pvp")
+    if pvp_message_id:
+        try:
+            message = await channel.fetch_message(int(pvp_message_id))
+            await message.edit(embed=pvp_embed)
+            return
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            logger.warning(f"Не удалось обновить PvP рейтинг, попробуем в следующий раз: {e}")
+            return
+    try:
+        message = await channel.send(embed=pvp_embed)
+        _rating_message_ids["pvp"] = message.id
+        _save_rating_ids(_rating_message_ids)
+    except Exception as e:
+        logger.error(f"Failed to send PvP rating embed: {e}")
 
 
 # Department rating message IDs (persisted to their own JSON file, same
@@ -1277,6 +1323,114 @@ async def viewer_export_messages(channel_id: int, max_messages: int) -> list:
     return out
 
 
+_PUNISHMENT_EMBED_TYPES = {
+    "⚠️ Предупреждение": "warning",
+    "📋 Выговор": "reprimand",
+    "👢 Кик": "kick",
+    "🔨 Бан": "ban",
+}
+
+
+def _punishment_embed_signature(embed_data: dict) -> Optional[tuple[str, str, str]]:
+    """Extract the stable identity fields from a punishment embed.
+
+    Only the exact embed shape emitted by the punishment renderer is managed.
+    """
+    if (embed_data.get("footer") or {}).get("text") != "1984":
+        return None
+    punishment_type = _PUNISHMENT_EMBED_TYPES.get(embed_data.get("title"))
+    if not punishment_type:
+        return None
+
+    fields = {field.get("name"): field.get("value", "") for field in embed_data.get("fields", [])}
+    player_value = str(fields.get("Игрок", ""))
+    steamid_match = re.search(r"`([^`]+)`", player_value)
+    player_steamid = steamid_match.group(1).strip() if steamid_match else player_value.split("(", 1)[0].strip()
+    if not player_steamid or "Выдал" not in fields or "Причина" not in fields:
+        return None
+    return punishment_type, player_steamid, str(fields["Причина"]).strip()
+
+
+async def send_punishment_embed(punishment_id: int, embed_data: dict, state_hash: str, include_ban_channel: bool) -> dict:
+    """Send one punishment to configured channels and persist message IDs."""
+    config = await asyncio.to_thread(bot_data.get_bot_config)
+    keys = ["punishment_channel_id"] + (["ban_channel_id"] if include_ban_channel else [])
+    channel_ids = []
+    for key in keys:
+        raw_channel_id = (config or {}).get(key)
+        if not raw_channel_id:
+            continue
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            logger.warning("Invalid punishment channel config key %s", key)
+            continue
+        if channel_id not in channel_ids:
+            channel_ids.append(channel_id)
+
+    sent = []
+    for channel_id in channel_ids:
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning("Punishment channel %s unavailable: %s", channel_id, type(exc).__name__)
+                continue
+        message = await channel.send(embed=discord.Embed.from_dict(embed_data))
+        await asyncio.to_thread(
+            bot_data.record_punishment_discord_message,
+            punishment_id, channel_id, message.id, state_hash,
+        )
+        sent.append({"channel_id": str(channel_id), "message_id": str(message.id)})
+    return {"sent": sent}
+
+
+async def sync_punishment_discord_messages(changes: list[dict]) -> list[dict]:
+    """Edit tracked punishment messages and report per-message outcomes."""
+    outcomes = []
+    for change in changes:
+        channel_id = str(change["channel_id"])
+        message_id = str(change["message_id"])
+        outcome = {
+            "link_id": change["link_id"],
+            "status": "error",
+            "error": None,
+        }
+        try:
+            channel = bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await bot.fetch_channel(int(channel_id))
+            message = await channel.fetch_message(int(message_id))
+            if not bot.user or message.author.id != bot.user.id:
+                outcome["error"] = "message is not authored by this bot"
+                outcomes.append(outcome)
+                continue
+
+            embed_dicts = [embed.to_dict() for embed in message.embeds]
+            matched = False
+            for embed_data in embed_dicts:
+                if _punishment_embed_signature(embed_data):
+                    matched = True
+                    if apply_punishment_discord_state(embed_data, change["state"]):
+                        await message.edit(embeds=[discord.Embed.from_dict(data) for data in embed_dicts])
+                    break
+            if not matched:
+                outcome["error"] = "unexpected punishment embed format"
+                outcomes.append(outcome)
+                continue
+            outcome["status"] = "synced"
+        except discord.NotFound:
+            outcome["status"] = "missing"
+            outcome["error"] = "message or channel not found"
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            outcome["error"] = type(exc).__name__
+        except Exception as exc:
+            outcome["error"] = type(exc).__name__
+        outcomes.append(outcome)
+    return outcomes
+
+
 async def viewer_get_roles() -> list:
     guild = _viewer_guild()
     return [
@@ -1351,6 +1505,15 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
             server_name = payload.get("server_name")
             if server_name:
                 await refresh_round_status_embed(server_name)
+            return True, None
+
+        elif action_type == "send_punishment_embed":
+            await send_punishment_embed(
+                int(payload["punishment_id"]),
+                payload.get("embed", {}),
+                payload.get("state_hash"),
+                bool(payload.get("include_ban_channel")),
+            )
             return True, None
 
         elif action_type == "send_embed":

@@ -27,6 +27,13 @@ test("session duration floors incomplete minutes", () => {
   )
 })
 
+test("session duration uses hours after 60 minutes", () => {
+  assert.equal(
+    formatSessionDuration("2026-09-04T12:00:00", atMsk("2026-09-04T13:32:59")),
+    "1 ч 32 мин",
+  )
+})
+
 test("future session start is clamped to zero minutes", () => {
   assert.equal(
     formatSessionDuration("2026-09-04T12:30:00", atMsk("2026-09-04T12:25:00")),

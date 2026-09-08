@@ -30,6 +30,7 @@ Deploy workflow this unlocks:
   maintenance off          (console)
 """
 import html
+import asyncio
 import logging
 import os
 import subprocess
@@ -43,7 +44,9 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
+import websockets
 
 import runtime_control
 from console import start_console_thread
@@ -212,9 +215,67 @@ async def _proxy(request: Request) -> Response:
     return response
 
 
+async def _proxy_websocket(websocket: WebSocket):
+    """Tunnel a game-server WebSocket through the always-up HTTP proxy."""
+    state = runtime_control.read_state()
+    if not state.backend_enabled:
+        await websocket.close(code=1013, reason="backend disabled")
+        return
+
+    path = websocket.url.path
+    if websocket.url.query:
+        path += "?" + websocket.url.query
+    upstream_url = f"ws://{BACKEND_HOST}:{BACKEND_PORT}{path}"
+    excluded = {"host", "connection", "upgrade", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions"}
+    headers = [(key, value) for key, value in websocket.headers.items() if key.lower() not in excluded]
+    try:
+        async with websockets.connect(
+            upstream_url,
+            extra_headers=headers,
+            max_size=2 * 1024 * 1024,
+            ping_interval=20,
+            ping_timeout=20,
+        ) as upstream:
+            await websocket.accept()
+
+            async def client_to_backend():
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        return
+                    if message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+                    elif message.get("text") is not None:
+                        await upstream.send(message["text"])
+
+            async def backend_to_client():
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = [asyncio.create_task(client_to_backend()), asyncio.create_task(backend_to_client())]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
+    except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
+        return
+    except Exception as exc:
+        logger.warning("WebSocket proxy failed: %s", exc)
+        try:
+            await websocket.close(code=1013, reason="websocket backend unavailable")
+        except Exception:
+            pass
+
+
 routes = [
     Route("/", _proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]),
     Route("/{path:path}", _proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]),
+    WebSocketRoute("/{path:path}", _proxy_websocket),
 ]
 
 app = Starlette(routes=routes, lifespan=lifespan)

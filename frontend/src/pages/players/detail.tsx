@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2, Sparkles,
-  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole,
+  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole, MessageSquare,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
@@ -25,6 +26,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription,
   AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
@@ -32,14 +34,17 @@ import {
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { useCurrentAdmin } from "@/lib/auth"
-import type { AIDossierResponse, PlayerDetailResponse, Note, PunishmentRow } from "./detail-types"
+import type { AIDossierResponse, PlayerDetailResponse, Note, LabelPair, PunishmentRow } from "./detail-types"
 import { DossierResultView } from "../ai-center/dossier-result"
 import { RewardsSection } from "./rewards-section"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
+import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 import { useDiscordProfile } from "@/lib/use-discord-profile"
 
 interface AdminOption { id: number; discord_username: string | null }
+
+type PlayerActionType = "message" | "warning" | "reprimand" | "kick" | "ban"
 
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
@@ -75,6 +80,7 @@ export function PlayerDetailPage() {
   const [noteDraft, setNoteDraft] = useState("")
   const [trapReason, setTrapReason] = useState("")
   const [labelCategoryId, setLabelCategoryId] = useState<string>("")
+  const [labelNoteDraft, setLabelNoteDraft] = useState("")
   const [linkDialogOpen, setLinkDialogOpen] = useState(false)
   const [linkAdminId, setLinkAdminId] = useState<string>("none")
   const [linkForcedName, setLinkForcedName] = useState("")
@@ -82,10 +88,14 @@ export function PlayerDetailPage() {
   const [forcedNameDraft, setForcedNameDraft] = useState("")
   const [discordIdDraft, setDiscordIdDraft] = useState("")
   const [punishDialogOpen, setPunishDialogOpen] = useState(false)
+  const [messageDialogOpen, setMessageDialogOpen] = useState(false)
+  const [messageDraft, setMessageDraft] = useState("")
+  const [messageServer, setMessageServer] = useState("")
+  const [selectedPunishment, setSelectedPunishment] = useState<PunishmentRow | null>(null)
   /** Наказание, для которого открыт диалог подтверждения отмены, и режим:
    *  "void" — просто пометить отменённым, "unban" — плюс снять бан на серверах. */
   const [revokeTarget, setRevokeTarget] = useState<{ row: PunishmentRow; mode: "void" | "unban" } | null>(null)
-  const [punishForm, setPunishForm] = useState({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
+  const [punishForm, setPunishForm] = useState<{ ptype: PlayerActionType; reason: string; expires_days: string; notes: string; server_name: string }>({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
 
   const queryKey = ["player-detail", playerId]
 
@@ -188,8 +198,14 @@ export function PlayerDetailPage() {
   })
 
   const assignLabelMutation = useMutation({
-    mutationFn: (category_id: number) => api.post(`/api/v1/admin/players/${playerId}/labels`, { category_id }),
-    onSuccess: () => { toast.success("Метка назначена"); invalidate() },
+    mutationFn: ({ category_id, note }: { category_id: number; note: string }) => api.post(`/api/v1/admin/players/${playerId}/labels`, { category_id, note: note.trim() || null }),
+    onSuccess: () => { toast.success("Метка назначена"); setLabelCategoryId(""); setLabelNoteDraft(""); invalidate() },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const updateLabelMutation = useMutation({
+    mutationFn: ({ labelId, note }: { labelId: number; note: string | null }) => api.patch(`/api/v1/admin/players/${playerId}/labels/${labelId}`, { note }),
+    onSuccess: () => { toast.success("Комментарий к метке обновлён"); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
 
@@ -253,6 +269,22 @@ export function PlayerDetailPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const sendMessageMutation = useMutation({
+    mutationFn: ({ text, server }: { text: string; server: string }) => api.post(`/api/v1/admin/players/${playerId}/message`, {
+      message_text: text,
+      server_name: server || null,
+    }),
+    onSuccess: () => {
+      toast.success("Сообщение поставлено в очередь")
+      setMessageDialogOpen(false)
+      setPunishDialogOpen(false)
+      setMessageDraft("")
+      setMessageServer("")
+      setPunishForm({ ptype: "warning", reason: "", expires_days: "", notes: "", server_name: "" })
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   if (isLoading || !data) {
     return <div className="space-y-2"><Skeleton className="h-40" /><Skeleton className="h-64" /></div>
   }
@@ -304,6 +336,11 @@ export function PlayerDetailPage() {
                 )}
                 {data.is_online && <Badge className="bg-success text-white">В сети</Badge>}
                 {player.is_secret && <Badge variant="outline" className="gap-1 border-warning/40 text-warning"><AdaptiveIcon emoji="🔒" icon={LockKeyhole} />Секретно</Badge>}
+                {data.can_send_message && (
+                  <Button size="sm" variant="outline" onClick={() => setMessageDialogOpen(true)}>
+                    <MessageSquare className="size-3.5" /> Сообщение
+                  </Button>
+                )}
                 {admin?.is_superuser && (
                   <Button
                     size="sm"
@@ -555,7 +592,7 @@ export function PlayerDetailPage() {
           <Card>
             <CardContent className="space-y-3">
               {data.can_manage_labels && (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Select value={labelCategoryId} onValueChange={setLabelCategoryId}>
                     <SelectTrigger className="w-64"><SelectValue placeholder="Выбрать метку" /></SelectTrigger>
                     <SelectContent>
@@ -564,9 +601,10 @@ export function PlayerDetailPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  <Input value={labelNoteDraft} onChange={(event) => setLabelNoteDraft(event.target.value)} placeholder="Комментарий к метке (необязательно)" className="min-w-64 flex-1" maxLength={500} />
                   <Button
                     disabled={!labelCategoryId || assignLabelMutation.isPending}
-                    onClick={() => assignLabelMutation.mutate(Number(labelCategoryId))}
+                    onClick={() => assignLabelMutation.mutate({ category_id: Number(labelCategoryId), note: labelNoteDraft })}
                   >
                     Назначить
                   </Button>
@@ -574,20 +612,15 @@ export function PlayerDetailPage() {
               )}
               <div className="flex flex-wrap gap-2">
                 {data.label_pairs.map((lp) => (
-                  <Badge key={lp.id} style={{ backgroundColor: lp.category.color }} className="gap-1.5 text-white">
-                    <span aria-hidden="true">{lp.category.icon || "🏷"}</span>{lp.category.name}
-                    {data.can_manage_labels && (
-                      <button
-                        type="button"
-                        onClick={() => removeLabelMutation.mutate(lp.id)}
-                        disabled={removeLabelMutation.isPending}
-                        className="ml-1 inline-flex"
-                        aria-label={`Снять метку ${lp.category.name}`}
-                      >
-                        <X className="size-3" aria-hidden="true" />
-                      </button>
-                    )}
-                  </Badge>
+                  <PlayerLabelBadge
+                    key={lp.id}
+                    label={lp}
+                    canManage={data.can_manage_labels}
+                    onSave={(note) => updateLabelMutation.mutate({ labelId: lp.id, note })}
+                    onRemove={() => removeLabelMutation.mutate(lp.id)}
+                    saving={updateLabelMutation.isPending}
+                    deleting={removeLabelMutation.isPending}
+                  />
                 ))}
                 {!data.label_pairs.length && <div className="text-muted-foreground">Меток нет</div>}
               </div>
@@ -624,9 +657,9 @@ export function PlayerDetailPage() {
         </TabsContent>
 
         <TabsContent value="punishments" className="space-y-3">
-          {data.can_issue_punishment && (
+          {(data.can_issue_punishment || data.can_send_message) && (
             <div className="flex justify-end">
-              <Button onClick={() => setPunishDialogOpen(true)}><Plus className="h-4 w-4" /> Выдать наказание</Button>
+              <Button onClick={() => { setPunishForm((form) => ({ ...form, ptype: data.can_issue_punishment ? "warning" : "message" })); setPunishDialogOpen(true) }}><Plus className="h-4 w-4" /> Выдать наказание</Button>
             </div>
           )}
           <Card className="overflow-hidden py-0">
@@ -644,9 +677,9 @@ export function PlayerDetailPage() {
                 </TableHeader>
                 <TableBody>
                   {data.punishments.map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-medium">{p.type}</TableCell>
-                      <TableCell>{p.reason || "-"}</TableCell>
+                    <TableRow key={p.id} className="cursor-pointer align-top" onClick={() => setSelectedPunishment(p)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedPunishment(p) } }} tabIndex={0}>
+                      <TableCell className="font-medium">{data.punishment_type_labels[p.type] ?? p.type}</TableCell>
+                      <TableCell><div className="max-w-[20rem] truncate" title={p.reason ?? undefined}>{p.reason || "-"}</div></TableCell>
                       <TableCell className="text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
                           {p.issued_by_name || "-"}
@@ -669,11 +702,11 @@ export function PlayerDetailPage() {
                           {p.status === "active" ? (
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">
                               {p.type === "ban" && (
-                                <Button size="sm" variant="outline" onClick={() => setRevokeTarget({ row: p, mode: "unban" })}>
+                                <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); setRevokeTarget({ row: p, mode: "unban" }) }}>
                                   Разбан
                                 </Button>
                               )}
-                              <Button size="sm" variant="outline" onClick={() => setRevokeTarget({ row: p, mode: "void" })}>
+                              <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); setRevokeTarget({ row: p, mode: "void" }) }}>
                                 Отменить
                               </Button>
                             </div>
@@ -820,47 +853,89 @@ export function PlayerDetailPage() {
         </TabsContent>
       </Tabs>
 
+      <Dialog open={messageDialogOpen} onOpenChange={setMessageDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Отправить сообщение — {player.player_last_time_name}</DialogTitle>
+            <DialogDescription>Сообщение покажется игроку отдельным окном при следующем опросе сервера. Отправка требует отдельного подтверждения.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="mb-1.5 block">Текст сообщения</Label>
+              <Textarea maxLength={2000} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder="Текст для игрока" autoFocus />
+              <div className="mt-2"><ModerationTemplatePicker type="message" onSelect={setMessageDraft} /></div>
+            </div>
+            <div><Label className="mb-1.5 block">Сервер (пусто — определить автоматически)</Label><Input value={messageServer} onChange={(event) => setMessageServer(event.target.value)} placeholder="ASPER1 / ASPER2" /></div>
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setMessageDialogOpen(false)}>Отмена</Button><Button disabled={!messageDraft.trim() || sendMessageMutation.isPending} onClick={() => sendMessageMutation.mutate({ text: messageDraft, server: messageServer })}>Отправить</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Sheet open={selectedPunishment != null} onOpenChange={(open) => !open && setSelectedPunishment(null)}>
+        <SheetContent side="right" className="flex w-[min(96vw,38rem)] flex-col gap-0 p-0 sm:max-w-none">
+          {selectedPunishment && (
+            <>
+              <SheetHeader className="border-b px-5 py-4 text-left">
+                <SheetTitle>{data.punishment_type_labels[selectedPunishment.type] ?? selectedPunishment.type}</SheetTitle>
+                <SheetDescription>{selectedPunishment.issued_by_name || "Неизвестный администратор"} · {fmtDate(selectedPunishment.issued_at)}</SheetDescription>
+              </SheetHeader>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+                <div><div className="mb-1 text-xs text-muted-foreground">Причина</div><div className="whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-sm">{selectedPunishment.reason || "Причина не указана"}</div></div>
+                <div><div className="mb-1 text-xs text-muted-foreground">Внутренняя заметка</div><div className="whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-sm">{selectedPunishment.notes || "Нет внутренней заметки"}</div></div>
+                <div className="grid grid-cols-2 gap-3 rounded-md border bg-muted/20 p-3 text-sm"><div><div className="text-xs text-muted-foreground">Статус</div><div>{STATUS_LABEL[selectedPunishment.status]?.label ?? selectedPunishment.status}</div></div><div><div className="text-xs text-muted-foreground">Истекает</div><div>{selectedPunishment.expires_at ? fmtDate(selectedPunishment.expires_at) : "Навсегда"}</div></div><div><div className="text-xs text-muted-foreground">Выдал</div><div>{selectedPunishment.issued_by_name || "-"}</div></div><div><div className="text-xs text-muted-foreground">Дата</div><div>{fmtDate(selectedPunishment.issued_at)}</div></div></div>
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
       <Dialog open={punishDialogOpen} onOpenChange={setPunishDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Выдать «{data.punishment_type_labels[punishForm.ptype] ?? punishForm.ptype}»</DialogTitle>
-            <DialogDescription>Наказание будет привязано к {player.player_steamid} и записано в историю игрока.</DialogDescription>
+            <DialogTitle>{punishForm.ptype === "message" ? "Отправить сообщение" : `Выдать «${data.punishment_type_labels[punishForm.ptype] ?? punishForm.ptype}»`}</DialogTitle>
+            <DialogDescription>{punishForm.ptype === "message" ? "Сообщение покажется игроку отдельным окном при следующем опросе сервера. Отправка требует отдельного подтверждения." : `Наказание будет привязано к ${player.player_steamid} и записано в историю игрока.`}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
               <Label className="mb-1.5 block">Тип</Label>
-              <Select value={punishForm.ptype} onValueChange={(v) => setPunishForm((f) => ({ ...f, ptype: v }))}>
+              <Select value={punishForm.ptype} onValueChange={(v) => setPunishForm((f) => ({ ...f, ptype: v as PlayerActionType }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {data.punishment_types.map((t) => (
+                  {data.can_send_message && <SelectItem value="message">Сообщение</SelectItem>}
+                  {data.can_issue_punishment && data.punishment_types.map((t) => (
                     <SelectItem key={t} value={t}>{data.punishment_type_labels[t] ?? t}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label className="mb-1.5 block">Причина</Label>
-              <Input value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} />
+              <Label className="mb-1.5 block">{punishForm.ptype === "message" ? "Текст сообщения" : "Причина"}</Label>
+              {punishForm.ptype === "message" ? (
+                <Textarea maxLength={2000} value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Текст для игрока" autoFocus />
+              ) : (
+                <Input value={punishForm.reason} onChange={(e) => setPunishForm((f) => ({ ...f, reason: e.target.value }))} />
+              )}
+              {punishForm.ptype !== "reprimand" && <div className="mt-2"><ModerationTemplatePicker type={punishForm.ptype as "message" | "warning" | "kick" | "ban"} onSelect={(content) => setPunishForm((f) => ({ ...f, reason: content }))} /></div>}
             </div>
-            <div>
+            {punishForm.ptype !== "message" && <div>
               <Label className="mb-1.5 block">Срок (дней, пусто = навсегда)</Label>
               <Input type="number" value={punishForm.expires_days} onChange={(e) => setPunishForm((f) => ({ ...f, expires_days: e.target.value }))} />
-            </div>
-            {(punishForm.ptype === "ban" || punishForm.ptype === "kick") && (
+            </div>}
+            {(punishForm.ptype === "ban" || punishForm.ptype === "kick" || punishForm.ptype === "message") && (
               <div>
-                <Label className="mb-1.5 block">Сервер (пусто = оба)</Label>
+                <Label className="mb-1.5 block">Сервер (пусто — определить автоматически)</Label>
                 <Input value={punishForm.server_name} onChange={(e) => setPunishForm((f) => ({ ...f, server_name: e.target.value }))} placeholder="ASPER1 / ASPER2" />
               </div>
             )}
-            <div>
+            {punishForm.ptype !== "message" && <div>
               <Label className="mb-1.5 block">Внутренние заметки</Label>
               <Textarea value={punishForm.notes} onChange={(e) => setPunishForm((f) => ({ ...f, notes: e.target.value }))} />
-            </div>
+            </div>}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPunishDialogOpen(false)}>Отмена</Button>
-            <Button disabled={createPunishmentMutation.isPending} onClick={() => createPunishmentMutation.mutate()}>
-              Выдать
+            <Button disabled={!punishForm.reason.trim() || createPunishmentMutation.isPending || sendMessageMutation.isPending} onClick={() => punishForm.ptype === "message" ? sendMessageMutation.mutate({ text: punishForm.reason, server: punishForm.server_name }) : createPunishmentMutation.mutate()}>
+              {punishForm.ptype === "message" ? "Отправить" : "Выдать"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -989,6 +1064,55 @@ function Stat({ label, value, icon: Icon, accent }: { label: string; value: numb
         <div className="mt-1 text-xs text-muted-foreground">{label}</div>
       </div>
     </div>
+  )
+}
+
+function PlayerLabelBadge({ label, canManage, onSave, onRemove, saving, deleting }: {
+  label: LabelPair
+  canManage: boolean
+  onSave: (note: string | null) => void
+  onRemove: () => void
+  saving: boolean
+  deleting: boolean
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(label.note ?? "")
+
+  const startEdit = () => { setDraft(label.note ?? ""); setEditing(true) }
+  const save = () => { onSave(draft.trim() || null); setEditing(false) }
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          style={{ backgroundColor: label.category.color }}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-white shadow-xs transition hover:brightness-110 focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={`Метка ${label.category.name}${label.note ? `: ${label.note}` : ""}`}
+        >
+          <span aria-hidden="true">{label.category.icon || "🏷"}</span>
+          {label.category.name}
+          {label.note && <StickyNote className="size-3" aria-label="Есть комментарий" />}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[min(92vw,22rem)]">
+        <PopoverHeader>
+          <PopoverTitle>{label.category.icon || "🏷"} {label.category.name}</PopoverTitle>
+          <PopoverDescription>Комментарий к метке</PopoverDescription>
+        </PopoverHeader>
+        {editing ? (
+          <div className="mt-3 space-y-2">
+            <Textarea maxLength={500} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Зачем поставили эту метку?" autoFocus />
+            <div className="flex gap-2"><Button size="sm" onClick={save} disabled={saving}>Сохранить</Button><Button size="sm" variant="outline" onClick={() => setEditing(false)}>Отмена</Button></div>
+          </div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            <div className="whitespace-pre-wrap rounded-md border bg-muted/30 p-2 text-sm">{label.note || "Комментария пока нет."}</div>
+            {canManage && <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={startEdit}><Pencil className="size-3.5" /> {label.note ? "Изменить" : "Добавить комментарий"}</Button><Button size="sm" variant="ghost" className="text-destructive" onClick={onRemove} disabled={deleting}><Trash2 className="size-3.5" /> Снять метку</Button></div>}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 

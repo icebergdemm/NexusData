@@ -10,21 +10,26 @@ which unpacks and parses it client-side (minimal server load).
 import os
 import secrets
 import logging
+import asyncio
+import shutil
+import struct
+import threading
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import (
-    APIRouter, Depends, HTTPException, Request, Query, Form, UploadFile, File,
+    APIRouter, Depends, HTTPException, Request, Query, Form, UploadFile, File, WebSocket,
 )
+from starlette.websockets import WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session, aliased, joinedload
 
-from database import get_db
+from database import get_db, GameSessionLocal
 from security import verify_external_api_key_dependency, check_permission
 from config import get_settings
 from models import AdminUser, AdminSession, RoundEvent, RoundReplay
@@ -47,6 +52,652 @@ api_router = APIRouter(
     tags=["replays"],
     dependencies=[Depends(verify_external_api_key_dependency)] if settings.require_auth else [],
 )
+ws_router = APIRouter(prefix="/api/v1/replays", tags=["replays-stream"])
+
+STREAM_ROOT = os.path.join(settings.replays_upload_dir, ".streaming")
+STREAM_MAX_CHUNK = 2 * 1024 * 1024
+_live_cache = {}
+_live_cache_lock = threading.Lock()
+
+
+def _safe_stream_id(value: str) -> str:
+    value = (value or "").strip()
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    if not value or len(value) > 100 or any(c not in allowed for c in value):
+        raise HTTPException(status_code=400, detail="Некорректный stream_id")
+    return value
+
+
+def _stream_dir(stream_id: str) -> str:
+    return os.path.join(STREAM_ROOT, _safe_stream_id(stream_id))
+
+
+async def _read_stream_chunk(request: Request) -> bytes:
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Пустой бинарный чанк")
+    if len(body) > STREAM_MAX_CHUNK:
+        raise HTTPException(status_code=413, detail="Чанк слишком большой")
+    return body
+
+
+@api_router.post("/stream/start")
+async def start_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    data = await _read_stream_chunk(request)
+    directory = _stream_dir(stream_id)
+    await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
+    await asyncio.to_thread(os.makedirs, directory, exist_ok=True)
+    await asyncio.to_thread(_write_stream_file, os.path.join(directory, "00000000.bin"), data)
+    await asyncio.to_thread(_consume_stream_chunk, stream_id, data, server_name)
+    return {"status": "ok"}
+
+
+@api_router.post("/stream/chunk")
+async def append_replay_stream(request: Request, stream_id: str = Query(...), seq: int = Query(..., ge=1)):
+    data = await _read_stream_chunk(request)
+    directory = _stream_dir(stream_id)
+    if not os.path.isdir(directory):
+        raise HTTPException(status_code=404, detail="Поток не запущен")
+    await asyncio.to_thread(_write_stream_file, os.path.join(directory, f"{seq:08d}.bin"), data)
+    await asyncio.to_thread(_consume_stream_chunk, stream_id, data, None)
+    return {"status": "ok", "seq": seq}
+
+
+@api_router.post("/stream/finish")
+async def finish_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    end = await _read_stream_chunk(request)
+    directory = _stream_dir(stream_id)
+    if not os.path.isdir(directory):
+        raise HTTPException(status_code=404, detail="Поток не запущен")
+    await asyncio.to_thread(_consume_stream_chunk, stream_id, end, server_name)
+    return await asyncio.to_thread(_assemble_stream, directory, end, server_name)
+
+
+def _websocket_api_key_is_valid(websocket: WebSocket) -> bool:
+    if not settings.require_auth:
+        return True
+    supplied = websocket.headers.get("x-api-key", "")
+    expected = getattr(settings, "api_key", "") or ""
+    return bool(expected and secrets.compare_digest(supplied, expected))
+
+
+@ws_router.websocket("/stream/ws")
+async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+    """Ordered binary replay transport.
+
+    The first binary message is the .barodemo header/static section. Every
+    following binary message is one frame batch. The final text message must
+    be ``finish``; the last binary batch already contains FRAME_END.
+    """
+    if not _websocket_api_key_is_valid(websocket):
+        await websocket.close(code=1008, reason="invalid api key")
+        return
+    try:
+        safe_id = _safe_stream_id(stream_id)
+    except HTTPException:
+        await websocket.close(code=1008, reason="invalid stream id")
+        return
+
+    await websocket.accept()
+    directory = _stream_dir(safe_id)
+    await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
+    await asyncio.to_thread(os.makedirs, directory, exist_ok=True)
+    seq = 0
+    started = False
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
+            if message.get("bytes") is not None:
+                data = message["bytes"]
+                if not data or len(data) > STREAM_MAX_CHUNK:
+                    await websocket.close(code=1009, reason="chunk too large")
+                    return
+                await asyncio.to_thread(
+                    _write_stream_file,
+                    os.path.join(directory, f"{seq:08d}.bin"),
+                    data,
+                )
+                await asyncio.to_thread(_consume_stream_chunk, safe_id, data, server_name)
+                started = True
+                seq += 1
+                continue
+            text = (message.get("text") or "").strip().lower()
+            if text == "finish":
+                if not started:
+                    await websocket.close(code=1008, reason="empty stream")
+                    return
+                result = await asyncio.to_thread(_assemble_stream, directory, b"", server_name)
+                await websocket.send_json(result)
+                await websocket.close(code=1000)
+                return
+            await websocket.close(code=1003, reason="expected binary chunk or finish")
+            return
+    except WebSocketDisconnect:
+        return
+
+
+def _write_stream_file(path: str, data: bytes) -> None:
+    if os.path.exists(path):
+        return
+    try:
+        with open(path, "xb") as f:
+            f.write(data)
+    except FileExistsError:
+        # A retried HTTP request may race with the original request.  Chunks
+        # are addressed by sequence number, so accepting the existing file is
+        # safe and keeps the transport idempotent.
+        return
+
+
+class _DemoTruncated(Exception):
+    """A chunk ended mid-frame.
+
+    Huge static frames (geometry/outline) may span several HTTP chunks, so a
+    single chunk is not always self-contained. The replay file itself is still
+    preserved verbatim; only the live extraction stops at the cut point.
+    """
+
+
+def _need(data: bytes, offset: int, size: int) -> None:
+    if size < 0 or offset + size > len(data):
+        raise _DemoTruncated()
+
+
+def _read_u16(data: bytes, offset: int) -> tuple[int, int]:
+    _need(data, offset, 2)
+    return struct.unpack_from("<H", data, offset)[0], offset + 2
+
+
+def _read_u32(data: bytes, offset: int) -> tuple[int, int]:
+    _need(data, offset, 4)
+    return struct.unpack_from("<I", data, offset)[0], offset + 4
+
+
+def _read_i32(data: bytes, offset: int) -> tuple[int, int]:
+    _need(data, offset, 4)
+    return struct.unpack_from("<i", data, offset)[0], offset + 4
+
+
+def _read_str(data: bytes, offset: int) -> tuple[str, int]:
+    length, offset = _read_u16(data, offset)
+    _need(data, offset, length)
+    return data[offset:offset + length].decode("utf-8", errors="replace"), offset + length
+
+
+def _read_bytes(data: bytes, offset: int, size: int) -> tuple[bytes, int]:
+    _need(data, offset, size)
+    return data[offset:offset + size], offset + size
+
+
+# Mirror of the game plugin's outline cap (WorldDemoStreamer/DemoRecorder):
+# static geometry beyond this is dropped from live state, never from the file.
+_DEMO_STATIC_POLY_CAP = 20000
+
+
+def _parse_demo_chunk(data: bytes, demo_version: int = 7, base_origin: tuple = (0, 0)) -> dict:
+    """Extract live state from a demo frame batch.
+
+    Never raises: truncation (a static frame split across chunks) yields
+    whatever was fully decoded; anything else unexpected skips the chunk.
+    The assembled replay file is always preserved verbatim by the caller.
+
+    `demo_version` selects version-dependent layouts (entity oxygen byte,
+    spawn job, inventory owner kinds, hull-assign frame — all v7+); it is
+    overridden by the stream header whenever the chunk carries one.
+    `base_origin` resolves coords in chunks that start mid-stream, before
+    their first 0x02 origin frame.
+
+    Keys produced: header, static (hulls/walls/doors/outline), origin,
+    spawns, despawns, hull_assign, t, characters, doors, subs, items.
+    """
+    result: dict = {}
+    try:
+        _parse_demo_chunk_into(data, result, demo_version, base_origin)
+    except _DemoTruncated:
+        pass
+    except Exception:
+        logger.warning("Demo live parse failed, chunk skipped", exc_info=True)
+        return {}
+    return result
+
+
+def _parse_demo_chunk_into(data: bytes, result: dict, demo_version: int, base_origin: tuple) -> None:
+    offset = 0
+    origin_x, origin_y = base_origin
+    version = demo_version
+    if data[:4] == b"BDMO":
+        _need(data, 0, 17)
+        version, offset = _read_u16(data, 4)
+        flags, offset = _read_u16(data, offset)
+        _need(data, offset, 1 + 8)
+        tick_rate = data[offset]
+        offset += 1
+        start_ms = struct.unpack_from("<q", data, offset)[0]
+        offset += 8
+        server, offset = _read_str(data, offset)
+        seed, offset = _read_str(data, offset)
+        level, offset = _read_str(data, offset)
+        sub, offset = _read_str(data, offset)
+        _need(data, offset, 4)
+        offset += 4
+        result["header"] = {
+            "version": version, "flags": flags, "tick_rate": tick_rate,
+            "start_ms": start_ms, "server": server, "seed": seed,
+            "level": level, "sub": sub,
+        }
+        # `version` above came from the header itself and now governs the
+        # version-dependent frame layouts below for the rest of this chunk.
+    while offset < len(data):
+        _need(data, offset, 1)
+        frame = data[offset]
+        offset += 1
+        if frame == 0x10:
+            hulls, offset = _read_u16(data, offset)
+            _need(data, offset, hulls * 20)
+            hull_rows = []
+            for _ in range(hulls):
+                sub_id, p = _read_u16(data, offset)
+                hull_id, p = _read_u16(data, p)
+                x, p = _read_i32(data, p)
+                y, p = _read_i32(data, p)
+                w, p = _read_i32(data, p)
+                h, p = _read_i32(data, p)
+                offset = p
+                hull_rows.append({"id": hull_id, "sub": sub_id, "r": [x, y, w, h]})
+            walls, offset = _read_u16(data, offset)
+            _need(data, offset, walls * 19)
+            wall_rows = []
+            for _ in range(walls):
+                sub_id, p = _read_u16(data, offset)
+                x, p = _read_i32(data, p)
+                y, p = _read_i32(data, p)
+                w, p = _read_i32(data, p)
+                h, p = _read_i32(data, p)
+                _need(data, p, 1)
+                wall_flags = data[p]
+                offset = p + 1
+                wall_rows.append({"sub": sub_id, "r": [x, y, w, h],
+                                  "h": bool(wall_flags & 1), "p": bool(wall_flags & 2)})
+            door_count, offset = _read_u16(data, offset)
+            _need(data, offset, door_count * 21)
+            door_rows = []
+            for _ in range(door_count):
+                sub_id, p = _read_u16(data, offset)
+                door_id, p = _read_u16(data, p)
+                x, p = _read_i32(data, p)
+                y, p = _read_i32(data, p)
+                w, p = _read_i32(data, p)
+                h, p = _read_i32(data, p)
+                _need(data, p, 1)
+                door_flags = data[p]
+                offset = p + 1
+                door_rows.append({"id": door_id, "sub": sub_id, "r": [x, y, w, h],
+                                  "h": bool(door_flags & 1)})
+            result.setdefault("static", {}).update(
+                {"hulls": hull_rows, "walls": wall_rows, "doors": door_rows})
+        elif frame == 0x11:
+            level_w, offset = _read_i32(data, offset)
+            level_h, offset = _read_i32(data, offset)
+            polygons, offset = _read_u16(data, offset)
+            outline = []
+            for _ in range(min(polygons, _DEMO_STATIC_POLY_CAP)):
+                points, offset = _read_u16(data, offset)
+                _need(data, offset, points * 8)
+                poly = []
+                for _ in range(points):
+                    x, p = _read_i32(data, offset)
+                    y, p = _read_i32(data, p)
+                    offset = p
+                    poly.append([x, y])
+                if len(poly) >= 3:
+                    outline.append(poly)
+            result.setdefault("static", {}).update(
+                {"outline": outline, "outline_w": level_w, "outline_h": level_h})
+        elif frame == 0x02:
+            _need(data, offset, 8)
+            origin_x, origin_y = struct.unpack_from("<ii", data, offset)
+            offset += 8
+            result["origin"] = (origin_x, origin_y)
+        elif frame == 0x03:
+            _need(data, offset, 4)
+            offset += 4
+            character_id, offset = _read_u16(data, offset)
+            species, offset = _read_str(data, offset)
+            name, offset = _read_str(data, offset)
+            _need(data, offset, 1)
+            team = struct.unpack_from("<b", data, offset)[0]
+            offset += 1
+            # v7+: job identifier, sent once per entity (2 bytes when empty).
+            job, offset = _read_str(data, offset) if version >= 7 else ("", offset)
+            result.setdefault("spawns", {})[character_id] = {
+                "name": name, "species": species,
+                "team": {1: "Team1", 2: "Team2", 3: "FriendlyNPC"}.get(team, "None"),
+                "job": job or None,
+            }
+        elif frame == 0x04:
+            # Despawn (format v6+): stale spawn/name entries must go, otherwise
+            # recycled entity IDs keep showing the wrong name on the live page.
+            _need(data, offset, 4 + 2)
+            offset += 4
+            despawn_id, offset = _read_u16(data, offset)
+            result.setdefault("despawns", []).append(despawn_id)
+        elif frame == 0x0A:
+            # v7+ sparse hull assignments: only characters whose hull changed
+            # since the previous snapshot are listed (usually a few or zero).
+            _need(data, offset, 4)
+            offset += 4
+            assign_count, offset = _read_u16(data, offset)
+            _need(data, offset, assign_count * 4)
+            assign = {}
+            for _ in range(assign_count):
+                assign_id, offset = _read_u16(data, offset)
+                assign_hull, offset = _read_u16(data, offset)
+                assign[assign_id] = assign_hull
+            result.setdefault("hull_assign", {}).update(assign)
+        elif frame == 0x01:
+            time_ms, offset = _read_u32(data, offset)
+            count, offset = _read_u16(data, offset)
+            ent_size = 7 if version >= 7 else 6  # v7 appends 1 oxygen byte
+            _need(data, offset, count * ent_size)
+            characters = []
+            for _ in range(count):
+                character_id, offset = _read_u16(data, offset)
+                _need(data, offset, ent_size)
+                x, y, flags, health = struct.unpack_from("<hhBB", data, offset)
+                offset += 6
+                if version >= 7:
+                    oxygen = data[offset]
+                    offset += 1
+                else:
+                    oxygen = 0
+                characters.append({
+                    "id": character_id,
+                    "name": "",
+                    "species": "",
+                    "human": bool(flags & 4),
+                    "team": "None",
+                    "job": None,
+                    "steamid": None,
+                    "x": origin_x + x * 4,
+                    "y": origin_y + y * 4,
+                    "hp": health * 200.0 / 255.0,
+                    "oxygen": oxygen,
+                    "dead": bool(flags & 1),
+                    "water": bool(flags & 8),
+                    "ragdoll": bool(flags & 16),
+                    "dir": -1 if flags & 2 else 1,
+                    "hull": None,
+                })
+            door_count, offset = _read_u16(data, offset)
+            _need(data, offset, door_count * 3)
+            doors = []
+            for _ in range(door_count):
+                door_id, offset = _read_u16(data, offset)
+                opened = data[offset]
+                offset += 1
+                doors.append({"id": door_id, "open": opened * 100.0 / 255.0})
+            water_count, offset = _read_u16(data, offset)
+            _need(data, offset, water_count * 3)
+            offset += water_count * 3
+            sub_count, offset = _read_u16(data, offset)
+            _need(data, offset, sub_count * 10)
+            subs = []
+            for _ in range(sub_count):
+                sub_id, offset = _read_u16(data, offset)
+                _need(data, offset, 8)
+                x, y = struct.unpack_from("<ii", data, offset)
+                offset += 8
+                subs.append({"id": sub_id, "x": x, "y": y})
+            result.update({"t": time_ms / 1000.0, "characters": characters, "doors": doors, "subs": subs})
+        elif frame == 0x06:
+            _need(data, offset, 4 + 1 + 2 + 2 + 4 + 4 + 4)
+            offset += 4 + 1 + 2 + 2 + 4 + 4 + 4
+            _, offset = _read_str(data, offset)
+        elif frame == 0x05:
+            # Chat (DemoRecorder): time + sender + type + author + text.
+            _need(data, offset, 4 + 2 + 1)
+            offset += 4 + 2 + 1
+            _, offset = _read_str(data, offset)
+            _, offset = _read_str(data, offset)
+        elif frame == 0x07:
+            _need(data, offset, 4 + 2)
+            offset += 4 + 2
+            length, offset = _read_u16(data, offset)
+            _need(data, offset, length)
+            offset += length
+        elif frame == 0x09:
+            # Voice with channel marker (WorldDemoStreamer): time + speaker +
+            # radio + payload. Previously fell into the unknown-frame branch
+            # and silently dropped the whole rest of the chunk from live state
+            # on every voice-active tick.
+            _need(data, offset, 4 + 2 + 1)
+            offset += 4 + 2 + 1
+            length, offset = _read_u16(data, offset)
+            _need(data, offset, length)
+            offset += length
+        elif frame == 0x08:
+            count, offset = _read_u16(data, offset)
+            items = []
+            for _ in range(count):
+                item_id, offset = _read_u16(data, offset)
+                if version >= 7:
+                    # v7: direct owner kind (0 world, 1 character, 2 item
+                    # container, 3 hull floor). Coords only for unowned items,
+                    # origin-relative i16 like entities (4 bytes, not 8).
+                    _need(data, offset, 1)
+                    owner_kind = data[offset]
+                    offset += 1
+                    owner_id, offset = _read_u16(data, offset)
+                else:
+                    owner_id, offset = _read_u16(data, offset)
+                    owner_kind = 1 if owner_id else 0
+                identifier, offset = _read_str(data, offset)
+                _need(data, offset, 1)
+                condition = data[offset]
+                offset += 1
+                if version >= 7 and owner_kind in (0, 3):
+                    _need(data, offset, 4)
+                    ix, iy = struct.unpack_from("<hh", data, offset)
+                    offset += 4
+                    ix = origin_x + ix * 4
+                    iy = origin_y + iy * 4
+                else:
+                    ix, iy = 0, 0
+                items.append({
+                    "id": item_id, "item": identifier, "x": ix, "y": iy,
+                    "cond": condition * 100.0 / 255.0,
+                    "owner_t": {0: "world", 1: "character", 2: "item", 3: "hull"}.get(owner_kind, "world"),
+                    "owner_id": owner_id or None,
+                })
+            result["items"] = items
+        elif frame == 0xFF:
+            _need(data, offset, 4)
+            offset += 4
+            break
+        else:
+            # Genuinely newer frame type: stop this chunk, keep the file.
+            break
+
+
+def _apply_parsed_to_state(state: dict, parsed: dict) -> None:
+    """Merge one parsed chunk into the per-stream live cache (pure, no I/O)."""
+    if "header" in parsed:
+        state["header"] = parsed["header"]
+        state["demo_version"] = parsed["header"].get("version", 7)
+    if "origin" in parsed:
+        state["origin"] = parsed["origin"]
+    if "spawns" in parsed:
+        state.setdefault("spawns", {}).update(parsed["spawns"])
+    despawns = parsed.get("despawns") or []
+    if despawns:
+        gone = set(despawns)
+        spawns = state.get("spawns")
+        if spawns:
+            for character_id in gone:
+                spawns.pop(character_id, None)
+        hulls = state.get("hull_by_char")
+        if hulls:
+            for character_id in gone:
+                hulls.pop(character_id, None)
+        if isinstance(state.get("characters"), list):
+            state["characters"] = [c for c in state["characters"] if c.get("id") not in gone]
+    if "hull_assign" in parsed:
+        state.setdefault("hull_by_char", {}).update(parsed["hull_assign"])
+    if "characters" in parsed:
+        spawns = state.get("spawns", {})
+        hulls = state.get("hull_by_char", {})
+        for character in parsed["characters"]:
+            character.update(spawns.get(character["id"], {}))
+            hull_id = hulls.get(character["id"])
+            character["hull"] = hull_id if hull_id else None
+    for key in ("t", "characters", "doors", "subs", "items"):
+        if key in parsed:
+            state[key] = parsed[key]
+    if "static" in parsed:
+        state["static"] = parsed["static"]
+
+
+def _fill_static_from_demo(row, parsed: dict, payload: dict) -> bool:
+    """Fill empty static-geometry columns from the demo stream itself.
+
+    `/world/init` stays authoritative and always overwrites these columns;
+    this is only a fallback so live monitoring works even when init was lost.
+    Returns True when anything was filled.
+    """
+    filled = False
+    static = parsed.get("static") or {}
+    header = parsed.get("header") or {}
+
+    def _fill(attr: str, value) -> None:
+        nonlocal filled
+        if value is not None and not getattr(row, attr, None):
+            setattr(row, attr, value)
+            filled = True
+
+    if static:
+        _fill("hulls", static.get("hulls"))
+        _fill("walls", static.get("walls"))
+        _fill("doors", static.get("doors"))
+        _fill("outline", static.get("outline"))
+        if static.get("outline") and (not row.outline_w or not row.outline_h):
+            row.outline_w = static.get("outline_w")
+            row.outline_h = static.get("outline_h")
+            filled = True
+    if header:
+        _fill("sub_name", (header.get("sub") or "").strip() or None)
+        _fill("level_seed", (header.get("seed") or "").strip() or None)
+        _fill("level_name", (header.get("level") or "").strip() or None)
+        if not getattr(row, "submarines", None):
+            sub_ids = {h.get("sub") for h in (static.get("hulls") or []) if h.get("sub")}
+            sub_ids.update(s.get("id") for s in (payload.get("subs") or []) if s.get("id") is not None)
+            if sub_ids:
+                row.submarines = [{"id": sid, "name": ""} for sid in sorted(sub_ids)]
+                filled = True
+    return filled
+
+
+# Bound the per-stream live cache: one small entry per round, but rounds are
+# unbounded over process lifetime.
+_LIVE_CACHE_MAX_STREAMS = 64
+
+
+def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str] = None) -> None:
+    # Version and origin are per-stream incremental state: the header and
+    # 0x02 frames only ride the first chunks, later chunks need them for
+    # the v7 layouts and origin-relative coords.
+    with _live_cache_lock:
+        cached = _live_cache.get(stream_id, {})
+        demo_version = cached.get("demo_version", 7)
+        base_origin = cached.get("origin", (0, 0))
+    parsed = _parse_demo_chunk(data, demo_version, base_origin)
+    if not parsed:
+        return
+    now = datetime.utcnow()
+    with _live_cache_lock:
+        state = _live_cache.get(stream_id)
+        if state is None:
+            if len(_live_cache) >= _LIVE_CACHE_MAX_STREAMS:
+                _live_cache.pop(next(iter(_live_cache)))
+            state = _live_cache.setdefault(stream_id, {"pending": 0, "seq": 0})
+        _apply_parsed_to_state(state, parsed)
+        if "t" in parsed:
+            state["seq"] += 1
+        # Live "Обзор мира" polls state at 3 Hz and must see every ingested
+        # tick: persist on EVERY chunk carrying new live data, never batch
+        # several ticks into one DB write. The old `pending < 3` gate turned
+        # a ~3s ingest cadence into a ~10s visible refresh rate.
+        static_pending = "static" in parsed or "header" in parsed
+        payload = dict(state)
+        payload["__static"] = static_pending
+    db = GameSessionLocal()
+    try:
+        from models import WorldRound
+        row = db.query(WorldRound).filter(WorldRound.round_id == stream_id).first()
+        if row is None:
+            row = WorldRound(round_id=stream_id, server_name=server_name)
+            db.add(row)
+        if row:
+            if payload.pop("__static", False):
+                _fill_static_from_demo(row, parsed, payload)
+            row.last_seq = payload.get("seq")
+            row.last_t = payload.get("t", 0)
+            row.last_sent_at = now
+            row.last_subs = payload.get("subs", [])
+            row.last_hulls_state = []
+            row.last_doors_state = payload.get("doors", [])
+            row.last_reactors = []
+            row.last_characters = payload.get("characters", [])
+            row.last_items = payload.get("items", [])
+            row.last_update_at = now
+            db.commit()
+    except Exception:
+        # Live monitoring is auxiliary to replay ingest.  Never turn a DB,
+        # serialization, or schema problem here into a failed binary chunk:
+        # the chunk has already been persisted and can still be assembled.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception("Replay live state update failed for stream %s", stream_id)
+    finally:
+        db.close()
+
+
+def _assemble_stream(directory: str, end: bytes, server_name: Optional[str]) -> dict:
+    import uuid
+    from database import SessionLocal
+    chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
+    expected = [f"{index:08d}.bin" for index in range(len(chunk_names))]
+    if chunk_names != expected:
+        missing = [name for name in expected if name not in chunk_names]
+        raise HTTPException(status_code=409, detail={
+            "message": "Поток демки содержит пропущенные чанки",
+            "missing": missing[:20],
+            "received": chunk_names[-5:],
+        })
+    if sum(os.path.getsize(os.path.join(directory, name)) for name in chunk_names) + len(end) > 500 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Демка превышает лимит 500 МБ")
+    raw_path = os.path.join(
+        directory,
+        f"round_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.barodemo",
+    )
+    with open(raw_path, "wb") as out:
+        for name in chunk_names:
+            with open(os.path.join(directory, name), "rb") as src:
+                shutil.copyfileobj(src, out, length=1024 * 1024)
+        out.write(end)
+    db = SessionLocal()
+    try:
+        replay = ReplayService(db).save_staged_demo(
+            raw_path, os.path.basename(raw_path), server_name=server_name,
+            notes="Собрано потоковым WorldDemoStreamer",
+        )
+        return {"success": True, "replay_id": replay.id, "stored_filename": replay.stored_filename}
+    finally:
+        db.close()
+        shutil.rmtree(directory, ignore_errors=True)
 
 # ── Admin panel router (session protected) ────────────────────────────────────
 panel_router = APIRouter()

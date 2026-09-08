@@ -46,7 +46,7 @@ function RawResponsePanel({ value }: { value: string }) {
 }
 
 export function AICenterPage() {
-  const { data: me } = useCurrentAdmin()
+  const { data: me, isLoading: isAdminLoading } = useCurrentAdmin()
   const queryClient = useQueryClient()
   const isSuperuser = !!me?.is_superuser
   const [search, setSearch] = useState("")
@@ -56,11 +56,12 @@ export function AICenterPage() {
   const [connection, setConnection] = useState<ConnectionDraft | null>(null)
   const debouncedSearch = useDebouncedValue(search, 350)
   const { data: overview, isLoading: overviewLoading, refetch: refetchOverview } = useQuery({
-    queryKey: ["ai-center-overview"], queryFn: () => api.get<Overview>("/api/v1/admin/ai-dossiers/overview"), refetchInterval: 5000,
+    queryKey: ["ai-center-overview"], queryFn: () => api.get<Overview>("/api/v1/admin/ai-dossiers/overview"), enabled: isSuperuser, refetchInterval: 5000,
   })
   const { data: players } = useQuery({
     queryKey: ["ai-center-players", debouncedSearch],
     queryFn: () => api.get<{ players: Player[] }>(`/api/v1/admin/ai-dossiers/players?q=${encodeURIComponent(debouncedSearch)}`),
+    enabled: isSuperuser,
   })
   const { data: dossier } = useQuery({
     queryKey: ["ai-center-dossier", selected?.player_id],
@@ -68,7 +69,7 @@ export function AICenterPage() {
     enabled: !!selected, refetchInterval: selected ? 5000 : false,
   })
   const { data: runs } = useQuery({
-    queryKey: ["ai-center-runs"], queryFn: () => api.get<{ runs: Run[] }>("/api/v1/admin/ai-dossiers/runs?limit=30"), refetchInterval: 5000,
+    queryKey: ["ai-center-runs"], queryFn: () => api.get<{ runs: Run[] }>("/api/v1/admin/ai-dossiers/runs?limit=30"), enabled: isSuperuser, refetchInterval: 5000,
   })
   const { data: config } = useQuery({
     queryKey: ["ai-center-config"], queryFn: () => api.get<Config>("/api/v1/admin/ai-dossiers/config"), enabled: isSuperuser,
@@ -145,6 +146,9 @@ export function AICenterPage() {
     onSuccess: (result) => { toast.success(`В очередь поставлено ${result.queued} из ${result.selected}`); refetchOverview(); queryClient.invalidateQueries({ queryKey: ["ai-center-runs"] }) },
     onError: (error: Error) => toast.error(error.message),
   })
+
+  if (isAdminLoading) return <div className="text-sm text-muted-foreground">Загрузка…</div>
+  if (!isSuperuser) return <Card><CardContent className="py-10 text-center text-muted-foreground">Доступ к AI-центру есть только у суперпользователей.</CardContent></Card>
 
   return <div className="space-y-4">
     <PageHeader title="AI-центр" description="Qwen/KoboldCpp: проверка подключения, контролируемые досье и журнал запусков" icon={Bot} actions={<Button variant="outline" size="sm" onClick={() => refetchOverview()}><RefreshCw className="mr-1.5 size-3.5" /> Обновить</Button>} />

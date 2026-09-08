@@ -77,6 +77,9 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
         {"key": "console_server1", "label": "Консоль Сервера 1 (ASPER1, Pterodactyl)"},
         {"key": "console_server2", "label": "Консоль Сервера 2 (ASPER2, Pterodactyl)"},
     ]},
+    "moderation_templates": {"label": "Шаблоны модерации", "actions": [
+        {"key": "manage", "label": "Управление шаблонами"},
+    ]},
     # Диспетчерская: раньше ОДИН ключ "edit" открывал сразу всё — от реплики
     # в эфир до торпедного удара по координатам и правки склада, хотя это
     # разные по последствиям вещи (сообщение можно опровергнуть, залп — нет).

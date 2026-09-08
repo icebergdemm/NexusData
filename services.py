@@ -6,12 +6,206 @@ import os
 import httpx
 import threading
 from datetime import datetime, timezone, timedelta
+import hashlib
+import json
+import re
+
+ADMIN_MESSAGE_MAX_LENGTH = 2000
+ADMIN_MESSAGE_PREFIX = "[Администрация]: "
+
+
+def prepare_admin_message(text: Optional[str]) -> Optional[str]:
+    """Normalize an admin message and enforce the queue column limit."""
+    if not text:
+        return text
+    text = text.strip()
+    prepared = text if text.startswith(ADMIN_MESSAGE_PREFIX) else f"{ADMIN_MESSAGE_PREFIX}{text}"
+    if len(prepared) > ADMIN_MESSAGE_MAX_LENGTH:
+        raise ValueError(f"Текст сообщения не должен превышать {ADMIN_MESSAGE_MAX_LENGTH - len(ADMIN_MESSAGE_PREFIX)} символов")
+    return prepared
 
 MSK = timezone(timedelta(hours=3))
 
 def _now_msk() -> datetime:
     """Current time in Moscow timezone (naive datetime for display)."""
     return datetime.now(tz=MSK).replace(tzinfo=None)
+
+
+def format_admin_issuer_name(db: Session, admin) -> str:
+    """Return the stable, human-readable issuer label for web punishments.
+
+    ``AdminUser.discord_username`` is populated by OAuth and contains the
+    global Discord display name.  The moderation audience sees the member's
+    server nickname instead, which is already maintained by the bot in
+    ``discord_members``.
+    """
+    from models import DiscordMember
+
+    discord_id = str(getattr(admin, "discord_id", "") or "").strip()
+    member = None
+    if discord_id:
+        member = (
+            db.query(DiscordMember)
+            .filter(DiscordMember.discord_id == discord_id)
+            .first()
+        )
+
+    return format_admin_issuer_name_from_member(admin, member)
+
+
+def format_admin_issuer_name_from_member(admin, member=None) -> str:
+    """Format an admin issuer when the Discord member row is already loaded."""
+    discord_id = str(getattr(admin, "discord_id", "") or "").strip()
+    server_name = (getattr(member, "display_name", None) or "").strip()
+    fallback = (getattr(admin, "discord_username", None) or "").strip()
+    if not fallback:
+        fallback = f"User_{discord_id or 'unknown'}"
+    return f"ND. {server_name or fallback}"
+
+
+_BANNED_BY_INITIATOR_RE = re.compile(r'^ServerMessage\.BannedBy~\[initiator\]=(.*)$')
+
+
+def clean_punishment_reason(reason: Optional[str]) -> tuple[str, Optional[str]]:
+    """Return the public reason and any legacy game initiator marker."""
+    if reason:
+        match = _BANNED_BY_INITIATOR_RE.match(reason.strip())
+        if match:
+            return "-", match.group(1).strip() or None
+    return (reason or "Не указана"), None
+
+
+def punishment_effective_status(punishment) -> str:
+    if not punishment.is_active:
+        return "void"
+    if punishment.expires_at and punishment.expires_at < _now_msk():
+        return "expired"
+    return "active"
+
+
+def punishment_discord_state(punishment, issuer_name: str) -> dict:
+    """Return the mutable Discord fields for a web punishment."""
+    status = punishment_effective_status(punishment)
+    return {
+        "issuer": issuer_name,
+        "reason": clean_punishment_reason(punishment.reason)[0],
+        "expires_at": punishment.expires_at.strftime("%d.%m.%Y %H:%M") if punishment.expires_at else None,
+        "status": {"expired": "Истекло", "void": "Аннулировано"}.get(status),
+    }
+
+
+def punishment_discord_state_hash(state: dict) -> str:
+    payload = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def apply_punishment_discord_state(embed_data: dict, state: dict) -> bool:
+    """Apply managed punishment fields without touching the rest of an embed."""
+    changed = False
+    fields = embed_data.setdefault("fields", [])
+
+    def set_field(name: str, value: Optional[str], inline: bool) -> None:
+        nonlocal changed
+        matching = [field for field in fields if field.get("name") == name]
+        if value is None:
+            if matching:
+                fields[:] = [field for field in fields if field.get("name") != name]
+                changed = True
+            return
+        if matching:
+            if matching[0].get("value") != value:
+                matching[0]["value"] = value
+                changed = True
+            return
+        fields.append({"name": name, "value": value, "inline": inline})
+        changed = True
+
+    set_field("Выдал", state.get("issuer"), True)
+    set_field("Причина", state.get("reason") or "Не указана", False)
+    set_field("Истекает", state.get("expires_at"), True)
+    set_field("Статус", state.get("status"), False)
+    return changed
+
+
+def build_punishment_discord_embed(db: Session, punishment) -> tuple[dict, str]:
+    """Build a punishment embed and its mutable-state fingerprint."""
+    from models import PlayerData
+
+    type_labels = {
+        "warning": "⚠️ Предупреждение",
+        "reprimand": "📋 Выговор",
+        "kick": "👢 Кик",
+        "ban": "🔨 Бан",
+    }
+    type_colors = {"warning": 0xffaa00, "reprimand": 0xff8800, "kick": 0xff4400, "ban": 0xcc0000}
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == punishment.player_steamid).first()
+    player_name = (player.forced_display_name or player.player_last_time_name) if player else None
+
+    issuer_name = punishment.issued_by_name or "—"
+    if punishment.issued_by_admin_id:
+        from models import AdminUser
+        admin = db.query(AdminUser).filter(AdminUser.id == punishment.issued_by_admin_id).first()
+        if admin:
+            issuer_name = format_admin_issuer_name(db, admin)
+    clean_reason, extracted_initiator = clean_punishment_reason(punishment.reason)
+    if not punishment.issued_by_admin_id:
+        issuer_name = punishment.issued_by_name or extracted_initiator or "—"
+
+    state = punishment_discord_state(punishment, issuer_name)
+    # Punishments written directly by a game server are outside the web
+    # punishment lifecycle. Keep their legacy embed shape untouched; the
+    # worker also excludes them because they have no admin foreign key.
+    if not punishment.issued_by_admin_id:
+        state["status"] = None
+    fields = [
+        {
+            "name": "Игрок",
+            "value": f"`{punishment.player_steamid}`" + (f" ({player_name})" if player_name else ""),
+            "inline": True,
+        },
+        {"name": "Выдал", "value": issuer_name, "inline": True},
+        {"name": "Причина", "value": clean_reason, "inline": False},
+    ]
+    if state["expires_at"]:
+        fields.append({"name": "Истекает", "value": state["expires_at"], "inline": True})
+    if state["status"]:
+        fields.append({"name": "Статус", "value": state["status"], "inline": False})
+
+    embed = {
+        "title": type_labels.get(punishment.type, punishment.type),
+        "color": type_colors.get(punishment.type, 0xff0000),
+        "fields": fields,
+        "footer": {"text": "1984"},
+        "timestamp": datetime.now(tz=timezone(timedelta(hours=3))).isoformat(),
+    }
+    return embed, punishment_discord_state_hash(state)
+
+
+def _session_login_time_to_msk(login_time: Optional[datetime]) -> Optional[datetime]:
+    """Convert a stored player-session login time to the display timezone.
+
+    Login events are stored as naive UTC after ``parse_iso_datetime`` strips
+    the incoming ``Z`` offset. The online cache stores naive MSK timestamps.
+    """
+    if login_time is None:
+        return None
+    if login_time.tzinfo is not None:
+        return login_time.astimezone(MSK).replace(tzinfo=None)
+    return login_time + timedelta(hours=3)
+
+
+def _resolve_online_join_time(
+    existing: Optional[dict],
+    active_session_login_time: Optional[datetime],
+    now: datetime,
+) -> datetime:
+    """Prefer the real login event while keeping snapshot compatibility."""
+    if active_session_login_time is not None:
+        return active_session_login_time
+    if existing is not None:
+        return existing.get("join_time", now)
+    return now
+
 
 from models import (
     PlayerData, PlayerStats, AdminUser, PlayerKill, PlayerRoleAction,
@@ -1202,6 +1396,33 @@ class ServerModerationService:
                 for r in self.db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
             }
 
+        # The login event is recorded when the client actually connects,
+        # unlike this periodic snapshot. Use its open session for the online
+        # duration, but keep the snapshot timestamp as a compatibility
+        # fallback if the login event has not arrived or is unavailable.
+        active_session_login_times = {}
+        player_ids = {
+            pd.player_id for pd in pd_rows.values()
+            if pd is not None and pd.player_id is not None
+        }
+        if player_ids:
+            try:
+                active_sessions = (
+                    self.db.query(PlayerSession.player_id, PlayerSession.login_time)
+                    .filter(
+                        PlayerSession.player_id.in_(player_ids),
+                        PlayerSession.logout_time.is_(None),
+                    )
+                    .order_by(PlayerSession.id.desc())
+                    .all()
+                )
+                for player_id, login_time in active_sessions:
+                    active_session_login_times.setdefault(
+                        player_id, _session_login_time_to_msk(login_time)
+                    )
+            except Exception as exc:
+                logger.warning("Could not resolve active player sessions: %s", exc)
+
         newly_joined = set()
 
         with _online_players_lock:
@@ -1221,12 +1442,14 @@ class ServerModerationService:
                 character_name = db_name if db_name and db_name != player_name else None
 
                 existing = _online_players.get(steamid)
+                active_session_login_time = active_session_login_times.get(player_id)
+                join_time = _resolve_online_join_time(
+                    existing, active_session_login_time, now
+                )
+
                 # Detect newly joined (not previously online OR was on a different server)
                 if existing is None:
                     newly_joined.add(steamid)
-                    join_time = now
-                else:
-                    join_time = existing.get("join_time", now)
 
                 _online_players[steamid] = {
                     "player_steamid": steamid,
@@ -1788,6 +2011,10 @@ class PlayerLabelService:
                 .all())
 
     def assign(self, player_id: int, category_id: int, note: Optional[str], admin_id: int) -> PlayerLabel:
+        note = note.strip() if isinstance(note, str) else None
+        note = note or None
+        if note and len(note) > 500:
+            raise ValueError("Комментарий к метке слишком длинный")
         # prevent duplicate
         existing = (self.db.query(PlayerLabel)
                     .filter(PlayerLabel.player_id == player_id,
@@ -1805,8 +2032,26 @@ class PlayerLabelService:
         self.db.refresh(lbl)
         return lbl
 
-    def remove(self, label_id: int) -> bool:
-        lbl = self.db.query(PlayerLabel).filter(PlayerLabel.id == label_id).first()
+    def update_note(self, label_id: int, player_id: int, note: Optional[str]) -> Optional[PlayerLabel]:
+        note = note.strip() if isinstance(note, str) else None
+        note = note or None
+        if note and len(note) > 500:
+            raise ValueError("Комментарий к метке слишком длинный")
+        lbl = (self.db.query(PlayerLabel)
+               .filter(PlayerLabel.id == label_id, PlayerLabel.player_id == player_id)
+               .first())
+        if not lbl:
+            return None
+        lbl.note = note
+        self.db.commit()
+        self.db.refresh(lbl)
+        return lbl
+
+    def remove(self, label_id: int, player_id: Optional[int] = None) -> bool:
+        query = self.db.query(PlayerLabel).filter(PlayerLabel.id == label_id)
+        if player_id is not None:
+            query = query.filter(PlayerLabel.player_id == player_id)
+        lbl = query.first()
         if not lbl:
             return False
         self.db.delete(lbl)
@@ -1827,6 +2072,94 @@ class PlayerLabelService:
                 PlayerData.player_steamid.ilike(f"%{search}%")
             )
         return q.order_by(PlayerLabel.assigned_at.desc()).all()
+
+
+MODERATION_TEMPLATE_TYPES = ("message", "warning", "kick", "ban")
+MODERATION_TEMPLATE_TYPE_LABELS = {
+    "message": "Сообщение",
+    "warning": "Предупреждение",
+    "kick": "Кик",
+    "ban": "Бан",
+}
+
+
+class ModerationActionTemplateService:
+    """CRUD for reusable moderation text snippets."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        from models import ModerationActionTemplate
+        self._model = ModerationActionTemplate
+
+    def list(self, allowed_types: Optional[set[str]] = None):
+        query = self.db.query(self._model)
+        if allowed_types is not None:
+            if not allowed_types:
+                return []
+            query = query.filter(self._model.action_type.in_(sorted(allowed_types)))
+        return query.order_by(self._model.action_type, self._model.name, self._model.id).all()
+
+    def get(self, template_id: int):
+        return self.db.query(self._model).filter(self._model.id == template_id).first()
+
+    @staticmethod
+    def _validate(action_type: str, name: str, content: str) -> tuple[str, str, str]:
+        action_type = (action_type or "").strip().lower()
+        name = (name or "").strip()
+        content = (content or "").strip()
+        if action_type not in MODERATION_TEMPLATE_TYPES:
+            raise ValueError("Недопустимый тип шаблона")
+        if not name:
+            raise ValueError("Название шаблона обязательно")
+        if len(name) > 128:
+            raise ValueError("Название шаблона слишком длинное")
+        max_content_length = 2000 if action_type == "message" else 1000
+        if not content:
+            raise ValueError("Текст шаблона обязателен")
+        if len(content) > max_content_length:
+            raise ValueError(f"Текст шаблона не должен превышать {max_content_length} символов")
+        return action_type, name, content
+
+    def create(self, action_type: str, name: str, content: str, admin_id: int):
+        action_type, name, content = self._validate(action_type, name, content)
+        duplicate = (self.db.query(self._model)
+                     .filter(self._model.action_type == action_type, self._model.name == name)
+                     .first())
+        if duplicate:
+            raise ValueError("Шаблон с таким названием уже существует для этого типа")
+        row = self._model(action_type=action_type, name=name, content=content, created_by_admin_id=admin_id)
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def update(self, template_id: int, *, name: Optional[str] = None, content: Optional[str] = None):
+        row = self.get(template_id)
+        if not row:
+            return None
+        next_name = row.name if name is None else name
+        next_content = row.content if content is None else content
+        _, next_name, next_content = self._validate(row.action_type, next_name, next_content)
+        duplicate = (self.db.query(self._model)
+                     .filter(self._model.action_type == row.action_type,
+                             self._model.name == next_name,
+                             self._model.id != template_id)
+                     .first())
+        if duplicate:
+            raise ValueError("Шаблон с таким названием уже существует для этого типа")
+        row.name = next_name
+        row.content = next_content
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
+    def delete(self, template_id: int) -> bool:
+        row = self.get(template_id)
+        if not row:
+            return False
+        self.db.delete(row)
+        self.db.commit()
+        return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2262,8 +2595,4 @@ class PunishmentService:
 
     def effective_status(self, punishment) -> str:
         """'active' | 'expired' | 'void'"""
-        if not punishment.is_active:
-            return "void"
-        if self.is_expired(punishment):
-            return "expired"
-        return "active"
+        return punishment_effective_status(punishment)

@@ -10,12 +10,14 @@ from .sub_projects_polygon import router as sub_projects_polygon_router
 from .sub_checker import router as sub_checker_router
 from .game_api import router as game_api_router, public_router as game_public_router
 from .ratings import router as ratings_router
+from .rating_events import router as rating_events_router
+from .rating_admin_v2 import router as rating_admin_v2_router
 from .discord_bot_api import panel_router as discord_bot_panel_router
 from .discord_viewer_api import router as discord_viewer_router
 from .tickets_api import panel_router as tickets_panel_router
 from .logs import router as logs_router
 from .dispatch import api_router as dispatch_api_router, panel_router as dispatch_panel_router, client_router as dispatch_client_router
-from .replays import api_router as replays_api_router, panel_router as replays_panel_router
+from .replays import api_router as replays_api_router, panel_router as replays_panel_router, ws_router as replays_ws_router
 from .analytics import router as analytics_router
 from .notifications import router as notifications_router
 from .documents import router as documents_router
@@ -33,6 +35,7 @@ from .perf_monitor import router as perf_monitor_router
 from .monster_spawn import game_router as monster_spawn_game_router, admin_router as monster_spawn_admin_router
 from .ai_dossier import router as ai_dossier_router
 from .communications import router as communications_router
+from .server_restart import router as server_restart_router
 
 __all__ = [
     "status_router",
@@ -49,6 +52,8 @@ __all__ = [
     "game_api_router",
     "game_public_router",
     "ratings_router",
+    "rating_events_router",
+    "rating_admin_v2_router",
     "discord_bot_panel_router",
     "discord_viewer_router",
     "tickets_panel_router",
@@ -57,6 +62,7 @@ __all__ = [
     "dispatch_panel_router",
     "dispatch_client_router",
     "replays_api_router",
+    "replays_ws_router",
     "replays_panel_router",
     "analytics_router",
     "notifications_router",
@@ -81,4 +87,5 @@ __all__ = [
     "monster_spawn_admin_router",
     "ai_dossier_router",
     "communications_router",
+    "server_restart_router",
 ]

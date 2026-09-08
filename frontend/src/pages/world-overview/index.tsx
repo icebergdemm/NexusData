@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Globe2, Users2, Zap, Clock, Wind, Flame, Droplets } from "lucide-react"
+import { Globe2, Users2, Clock, Wind, Droplets } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { ApiError } from "@/lib/api"
@@ -87,7 +86,11 @@ export function WorldOverviewPage() {
     queryKey: ["world-state", selectedRoundId],
     queryFn: () => worldStateApi.getState(selectedRoundId as string),
     enabled: !!selectedRoundId,
-    refetchInterval: 3000,
+    // Live state is persisted on every ingested demo-stream chunk
+    // (routes/replays.py::_consume_stream_chunk, no batching), so polling
+    // here at 3 Hz shows fresh data. WorldCanvas interpolates positions
+    // between responses, so the map remains smooth.
+    refetchInterval: 333,
   })
 
   useEffect(() => { setSelectedCharacterId(null) }, [selectedRoundId])
@@ -194,52 +197,20 @@ export function WorldOverviewPage() {
               </CardContent>
             </Card>
 
-            <Tabs defaultValue="characters" className="min-h-0 flex-1 gap-2">
-              <TabsList className="w-full shrink-0">
-                <TabsTrigger value="characters" className="gap-1.5">
-                  <Users2 className="size-3.5" /> Персонажи ({state.characters.length})
-                </TabsTrigger>
-                <TabsTrigger value="reactors" className="gap-1.5">
-                  <Zap className="size-3.5" /> Реакторы ({state.reactors.length})
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="characters" className="min-h-0 flex-1 overflow-y-auto">
-                <div className="flex flex-col gap-1.5 pr-0.5">
-                  {state.characters.map((c) => (
-                    <CharacterRow key={c.id} c={c} selected={c.id === selectedCharacterId} onSelect={() => setSelectedCharacterId(c.id)} />
-                  ))}
-                  {!state.characters.length && <p className="py-4 text-center text-xs text-muted-foreground">Никого нет</p>}
-                </div>
-              </TabsContent>
-
-              <TabsContent value="reactors" className="min-h-0 flex-1 overflow-y-auto">
-                <div className="flex flex-col gap-1.5 pr-0.5">
-                  {state.reactors.map((r) => (
-                    <div key={r.id} className="rounded-md border px-2.5 py-1.5 text-xs">
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className="font-medium">Реактор #{r.id}</span>
-                        <div className="flex gap-1">
-                          {r.melted && <Badge variant="destructive" className="text-[9px]">Расплавлен</Badge>}
-                          {r.critical && !r.melted && <Badge variant="destructive" className="gap-1 text-[9px]"><Flame className="size-2.5" /> Критично</Badge>}
-                          {!r.power_on && <Badge variant="outline" className="text-[9px]">Выключен</Badge>}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1 text-muted-foreground">
-                        <span>Деление: {r.fission.toFixed(0)}%</span>
-                        <span>Турбина: {r.turbine.toFixed(0)}%</span>
-                        <span>Темп.: {r.temp.toFixed(0)}%</span>
-                        <span>Топливо: {r.fuel.toFixed(0)}</span>
-                      </div>
-                    </div>
-                  ))}
-                  {!state.reactors.length && <p className="py-4 text-center text-xs text-muted-foreground">Реакторов нет</p>}
-                </div>
-              </TabsContent>
-            </Tabs>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+                <Users2 className="size-3.5" /> Персонажи ({state.characters.length})
+              </div>
+              <div className="flex flex-col gap-1.5 pr-0.5">
+                {state.characters.map((c) => (
+                  <CharacterRow key={c.id} c={c} selected={c.id === selectedCharacterId} onSelect={() => setSelectedCharacterId(c.id)} />
+                ))}
+                {!state.characters.length && <p className="py-4 text-center text-xs text-muted-foreground">Никого нет</p>}
+              </div>
+            </div>
 
             <p className="flex shrink-0 items-center gap-1 px-1 text-[10px] text-muted-foreground">
-              <Wind className="size-3" /> Обновляется каждые ~3с · seq {state.seq ?? "-"}
+              <Wind className="size-3" /> Обновляется 3 раза/с · seq {state.seq ?? "-"}
             </p>
           </div>
         </div>
