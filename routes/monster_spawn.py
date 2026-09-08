@@ -553,43 +553,26 @@ def admin_llm_run(
     payload: LLMRunRequest,
     server: str = Query(...),
     admin: AdminUser = Depends(_current_admin),
-    db: Session = Depends(get_game_db),
 ):
-    """Run one LLM cycle. analyze = analyzer text only (situation + crew
-    summary + recommendations, no config writes); apply = validated config
-    changes bump desired_revision; spawn = also queues spawn plans."""
+    """Queue one LLM cycle and return HTTP 202 immediately.
+
+    analyze = analyzer text only (situation + crew summary +
+    recommendations, no config writes); apply = validated config changes
+    bump desired_revision; spawn = also queues spawn plans. The cycle runs
+    in a scheduler worker (shared AI-aggregator queue) and the result
+    appears in llm/runtime — the UI polls it. Never blocks the request:
+    a generation behind the queue outlives the proxy read timeout."""
+    from fastapi.responses import JSONResponse
+
+    from services_llm_monster import queue_llm_run, QueueBusyError, LLMError
+
     _require(admin, "edit")
-    from services_llm_monster import run_llm_cycle, LLMError
-
     server_key = _normalize_server(server)
-    row = _get_or_create(db, server_key)
-    db.commit()
-    db.refresh(row)
-    state = _serialize(row)
-
     try:
-        result = run_llm_cycle(_get_main_db(), server_key, state,
-                               mode=payload.mode, instruction=payload.instruction)
+        run = queue_llm_run(_get_main_db(), server_key, mode=payload.mode,
+                            instruction=payload.instruction, admin_id=admin.id)
+    except QueueBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Ошибка LLM-цикла: {exc}")
-
-    # Apply validated changes through the same revision channel as the admin UI.
-    changed = False
-    if result.get("applied_changes"):
-        row.config = state["config"]
-        changed = True
-    if result.get("spawn_plans"):
-        plans = row.plans if isinstance(row.plans, list) else []
-        plans.extend(result["spawn_plans"])
-        row.plans = plans
-        changed = True
-    if changed:
-        row.desired_revision = (row.desired_revision or 0) + 1
-        row.updated_by_admin_id = admin.id
-        row.updated_at = datetime.utcnow()
-
-    db.commit()
-    db.refresh(row)
-    return {"status": "ok", "result": result, "desired_revision": row.desired_revision}
+    return JSONResponse(status_code=202, content={"status": "queued", "run": run})

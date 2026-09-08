@@ -620,7 +620,7 @@ function LLMPanel({ server }: { server: string }) {
   })
   const run = useMutation({
     mutationFn: () => monsterSpawnApi.runLLM(server, { mode, instruction: instruction.trim() || undefined }),
-    onSuccess: () => { toast.success("LLM-цикл выполнен"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }) },
+    onSuccess: () => { toast.success("Цикл поставлен в очередь — результат появится ниже"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
 
@@ -628,6 +628,9 @@ function LLMPanel({ server }: { server: string }) {
   const deployment = runtime.data?.deployment
   const last = r?.last_result
   const history = r?.history ?? []
+  const queued = r?.pending_run ?? null
+  const active = r?.active_run ?? null
+  const busy = run.isPending || queued !== null || active !== null
 
   return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3">
     <CardTitle className="flex items-center gap-2 text-sm"><Bot className="size-4 text-primary" /> LLM-ассистент</CardTitle>
@@ -647,8 +650,11 @@ function LLMPanel({ server }: { server: string }) {
             <SelectItem value="apply">apply · применить настройки</SelectItem>
             <SelectItem value="spawn">spawn · настройки + спавн</SelectItem>
           </SelectContent></Select>
-          <Button disabled={run.isPending || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" /> {run.isPending ? "Модель думает…" : "Запустить LLM-цикл"}</Button>
+          <Button disabled={busy || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" /> {active ? "Модель думает…" : queued ? "В очереди…" : run.isPending ? "Отправка…" : "Запустить LLM-цикл"}</Button>
         </div>
+        {(queued || active) && <div className="text-[11px] text-muted-foreground">
+          {active ? `Выполняется ${active.mode} (запущен ${active.started_at.slice(0, 16).replace("T", " ")}, попытка ${active.attempts}) — страница опрашивает статус, её можно закрыть.` : `В очереди ${queued!.mode} (запрошен ${queued!.requested_at.slice(0, 16).replace("T", " ")}) — выполняется воркером, результат появится ниже.`}
+        </div>}
       </div>
       {last && <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
         <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{last.at}</Badge><Badge variant="secondary">{last.mode}</Badge><span className="text-muted-foreground">уверенность {Math.round((last.confidence ?? 0) * 100)}% · {last.duration_ms}мс</span></div>

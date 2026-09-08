@@ -285,6 +285,15 @@ export interface PlannedActionTelemetry {
   next_spawn_possible_at?: number
 }
 
+export interface LLMRun {
+  id: string
+  mode: string
+  instruction: string
+  requested_at: string
+  requested_by: number | null
+  attempts: number
+}
+
 export interface LLMRuntime {
   enabled: boolean
   auto_apply: boolean
@@ -304,6 +313,8 @@ export interface LLMRuntime {
     plan_ids: string[]
   } | null
   history: { at: string; mode: string; summary: string; applied: number; rejected: number; confidence: number }[]
+  pending_run: LLMRun | null
+  active_run: (LLMRun & { started_at: string; lease_expires_at: string }) | null
 }
 
 export interface LLMDeployment {
@@ -411,5 +422,5 @@ export const monsterSpawnApi = {
   updateLLMRuntime: (server: string, body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) =>
     api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
   runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>
-    api.post<{ status: string; result: LLMRuntime["last_result"] & { spawn_plans?: SpawnPlan[] }; desired_revision: number }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
+    api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
 }

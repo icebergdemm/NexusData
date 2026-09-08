@@ -109,9 +109,16 @@ MONSTER_LLM_AUTO_INTERVAL_MINUTES=0   # 0 = только ручные запус
 - спавн — только при явной необходимости или прямой команде оператора;
 - запрещено выдумывать данные, которых нет в состоянии.
 
-## 6. Ручные команды оператора
+## 6. Ручные команды оператора (асинхронно)
 
-POST `/api/v1/admin/monster-spawn/llm/run?server=ASPER1` с телом:
+POST `/api/v1/admin/monster-spawn/llm/run?server=ASPER1` только СТАВИТ цикл
+в очередь и сразу возвращает **HTTP 202** `{"status": "queued", "run": {...}}`
+— HTTP-запрос никогда не ждёт генерацию: цикл за общим локом агрегатора
+плюс до двух таймаутов модели легко переживает 180-секундный read-таймаут
+прокси (раньше это выглядело как зависшая кнопка «Модель думает…» и HTTP 504).
+Если цикл уже стоит в очереди или выполняется — **HTTP 409**. Исполняет
+воркер `monster_llm_runs` (раз в 10 с), результат появляется в `llm/runtime`
+(`last_result`, `pending_run`/`active_run`) — UI опрашивает его раз в 10 с.
 
 ```json
 {"mode": "spawn", "instruction": "Заспавни 2 мадрэпторов впереди по курсу, экипаж скучает"}
@@ -127,6 +134,6 @@ POST `/api/v1/admin/monster-spawn/llm/run?server=ASPER1` с телом:
 |---|---|---|
 | GET | `/api/v1/admin/monster-spawn/llm/runtime?server=` | статус ассистента + deployment |
 | PUT | `/api/v1/admin/monster-spawn/llm/runtime?server=` | включить/выключить, интервал автопилота |
-| POST | `/api/v1/admin/monster-spawn/llm/run?server=` | один LLM-цикл (analyze/apply/spawn) |
+| POST | `/api/v1/admin/monster-spawn/llm/run?server=` | поставить LLM-цикл в очередь (202; 409 если занято) |
 
 Права: просмотр — `monster_spawn:view`, запуск/настройка — `monster_spawn:edit`.

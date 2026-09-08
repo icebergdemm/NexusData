@@ -40,7 +40,7 @@ import logging
 import math
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import get_settings
@@ -140,6 +140,10 @@ DEFAULT_RUNTIME = {
     "last_run_at": None,
     "last_result": None,
     "history": [],             # last 20 runs: {at, mode, applied, rejected, summary}
+    # Async manual runs (POST /llm/run returns 202 immediately, a worker
+    # executes, the UI polls runtime): at most one pending + one active.
+    "pending_run": None,       # {id, mode, instruction, requested_at, requested_by, attempts}
+    "active_run": None,        # pending + {started_at, lease_expires_at}
 }
 
 
@@ -728,6 +732,250 @@ def get_llm_deployment_info() -> Dict[str, Any]:
     }
 
 
+def get_llm_deployment_info() -> Dict[str, Any]:
+    """Non-secret info for the admin UI (transport = shared AI aggregator)."""
+    settings = get_settings()
+    return {
+        "base_url": settings.ai_dossier_url,
+        "model": settings.monster_llm_model,
+        "temperature": settings.monster_llm_temperature,
+        "top_p": settings.monster_llm_top_p,
+        "timeout_seconds": settings.monster_llm_timeout_seconds,
+        "api_key_set": bool(settings.ai_dossier_api_key),
+        "has_base_url": bool((settings.ai_dossier_url or "").strip()),
+        "via": "ai-aggregator",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Async manual runs: POST /llm/run only queues (HTTP 202), a scheduler worker
+# executes, the UI polls runtime. A synchronous cycle (queue wait on the
+# shared aggregator lock + up to two model timeouts) easily outlives the
+# 180 s proxy read timeout, which is exactly the stuck "Модель думает…" +
+# HTTP 504 operators saw. Never block an HTTP request on a generation.
+# ---------------------------------------------------------------------------
+
+class QueueBusyError(LLMError):
+    """A manual LLM run is already queued or running for this server."""
+    pass
+
+
+MAX_RUN_ATTEMPTS = 3
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _active_run_live(active: Any, now: datetime) -> bool:
+    """True if a claimed run still holds a valid lease (worker alive)."""
+    if not isinstance(active, dict):
+        return False
+    lease = _parse_iso(active.get("lease_expires_at"))
+    return lease is not None and lease > now
+
+
+def _run_lease_seconds() -> float:
+    """An active run holds the aggregator lock for at most two model
+    timeouts; the lease covers that plus queue/DB overhead."""
+    return float(get_settings().monster_llm_timeout_seconds) * 2.0 + 120.0
+
+
+def _reap_stale_active(runtime: dict, now: datetime) -> bool:
+    """Reclaim an active run whose worker died (lease expired).
+
+    Returns True if the runtime changed. A run that already burned all
+    attempts is dropped with a history entry, otherwise it goes back to
+    pending so the next worker tick retries it."""
+    active = runtime.get("active_run")
+    if not isinstance(active, dict):
+        runtime.pop("active_run", None)
+        return False
+    if _active_run_live(active, now):
+        return False
+    attempts = active.get("attempts", 0)
+    try:
+        attempts = int(attempts)
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts >= MAX_RUN_ATTEMPTS:
+        _record_history(runtime, {
+            "at": datetime.utcnow().isoformat(),
+            "mode": str(active.get("mode") or "?"),
+            "summary": "Запуск прерван: воркер не завершил работу",
+            "applied": 0,
+            "rejected": 0,
+            "confidence": 0.0,
+        })
+        runtime.pop("active_run", None)
+        return True
+    pending = dict(active)
+    pending.pop("started_at", None)
+    pending.pop("lease_expires_at", None)
+    runtime["pending_run"] = pending
+    runtime.pop("active_run", None)
+    return True
+
+
+def queue_llm_run(db, server: str, mode: str = "analyze",
+                  instruction: Optional[str] = None,
+                  admin_id: Optional[int] = None) -> Dict[str, Any]:
+    """Enqueue one manual LLM run and return immediately (HTTP 202).
+
+    Raises QueueBusyError if a run is already queued/running, LLMError if
+    the mode is unknown or the aggregator is not configured (fail fast
+    instead of queueing work that can never run)."""
+    import uuid
+
+    if mode not in ("analyze", "apply", "spawn"):
+        raise LLMError(f"Неизвестный режим LLM-цикла: {mode}")
+    settings = get_settings()
+    if not (settings.ai_dossier_url or "").strip() or not settings.ai_dossier_api_key:
+        raise LLMError("AI-агрегатор не настроен: задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY")
+
+    runtime = get_llm_runtime(db, server)
+    now = datetime.utcnow()
+    if _reap_stale_active(runtime, now):
+        save_llm_runtime(db, server, runtime)
+        runtime = get_llm_runtime(db, server)
+    if isinstance(runtime.get("pending_run"), dict) or _active_run_live(runtime.get("active_run"), now):
+        raise QueueBusyError("LLM-цикл уже стоит в очереди или выполняется — дождитесь результата")
+
+    run = {
+        "id": uuid.uuid4().hex[:12],
+        "mode": mode,
+        "instruction": str(instruction or "")[:2000],
+        "requested_at": now.isoformat(),
+        "requested_by": admin_id,
+        "attempts": 0,
+    }
+    runtime["pending_run"] = run
+    save_llm_runtime(db, server, runtime)
+    return run
+
+
+def _apply_llm_result(game_db, row, state: dict, result: dict, admin_id: Optional[int]) -> bool:
+    """Write validated changes through the revision channel. Returns True if
+    the desired revision was bumped."""
+    changed = False
+    if result.get("applied_changes"):
+        row.config = state["config"]
+        changed = True
+    if result.get("spawn_plans"):
+        plans = row.plans if isinstance(row.plans, list) else []
+        plans.extend(result["spawn_plans"])
+        row.plans = plans
+        changed = True
+    if changed:
+        row.desired_revision = (row.desired_revision or 0) + 1
+        if admin_id is not None:
+            row.updated_by_admin_id = admin_id
+        row.updated_at = datetime.utcnow()
+    return changed
+
+
+def _record_run_failure(main_db, server: str, active: dict, error: str) -> None:
+    runtime = get_llm_runtime(main_db, server)
+    runtime["active_run"] = None
+    _record_history(runtime, {
+        "at": datetime.utcnow().isoformat(),
+        "mode": str(active.get("mode") or "?"),
+        "summary": f"Ошибка: {error}"[:150],
+        "applied": 0,
+        "rejected": 0,
+        "confidence": 0.0,
+    })
+    save_llm_runtime(main_db, server, runtime)
+
+
+def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Dict[str, Any]]:
+    """Claim and execute at most one queued manual run for a server."""
+    runtime = get_llm_runtime(main_db, server)
+    now = datetime.utcnow()
+    if _reap_stale_active(runtime, now):
+        save_llm_runtime(main_db, server, runtime)
+    if _active_run_live(runtime.get("active_run"), now):
+        return None
+    pending = runtime.get("pending_run")
+    if not isinstance(pending, dict):
+        return None
+
+    active = dict(pending)
+    try:
+        active["attempts"] = int(pending.get("attempts", 0)) + 1
+    except (TypeError, ValueError):
+        active["attempts"] = 1
+    active["started_at"] = now.isoformat()
+    active["lease_expires_at"] = (now + timedelta(seconds=_run_lease_seconds())).isoformat()
+    runtime["active_run"] = active
+    runtime["pending_run"] = None
+    save_llm_runtime(main_db, server, runtime)
+
+    game_db.commit()
+    game_db.refresh(row)
+    state = {
+        "config": row.config if isinstance(row.config, dict) else {},
+        "memory": row.memory if isinstance(row.memory, dict) else {},
+        "telemetry": row.telemetry if isinstance(row.telemetry, dict) else {},
+        "dashboard": {},
+    }
+    mode = active.get("mode") or "analyze"
+    instruction = active.get("instruction") or None
+    try:
+        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction)
+    except LLMError as exc:
+        _record_run_failure(main_db, server, active, str(exc))
+        return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM manual run failed for %s: %s", server, exc)
+        _record_run_failure(main_db, server, active, f"Ошибка LLM-цикла: {exc}")
+        return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
+
+    admin_id = active.get("requested_by")
+    _apply_llm_result(game_db, row, state, result, admin_id)
+    game_db.commit()
+
+    # run_llm_cycle already persisted last_result/history; just clear active.
+    runtime = get_llm_runtime(main_db, server)
+    runtime["active_run"] = None
+    save_llm_runtime(main_db, server, runtime)
+    return {"server": server, "status": "ok", "run_id": active.get("id"),
+            "applied": len(result.get("applied_changes", [])),
+            "spawned": len(result.get("spawn_plans", []))}
+
+
+def process_pending_llm_runs() -> List[Dict[str, Any]]:
+    """Worker entry: execute queued manual runs, one per server. Never raises."""
+    from database import GameSessionLocal, SessionLocal
+    from models import MonsterSpawnControl
+
+    results: List[Dict[str, Any]] = []
+    main_db = next(SessionLocal())
+    try:
+        game_db = next(GameSessionLocal())
+        try:
+            rows = game_db.query(MonsterSpawnControl).all()
+            for row in rows:
+                server = (row.server or "").strip().upper()
+                if not server:
+                    continue
+                try:
+                    outcome = _process_server_llm_queue(main_db, game_db, server, row)
+                    if outcome is not None:
+                        results.append(outcome)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("LLM manual run failed for %s: %s", server, exc)
+                    results.append({"server": server, "status": "error", "error": str(exc)})
+        finally:
+            game_db.close()
+    finally:
+        main_db.close()
+    return results
+
+
 def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
     """Called periodically by the scheduler: runs apply-cycles for servers
     whose LLM runtime is enabled and due. Never raises."""
@@ -746,6 +994,11 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
                     continue
                 runtime = get_llm_runtime(main_db, server)
                 if not check_auto_cycle_due(runtime):
+                    continue
+                # A queued/running manual run owns this server right now; the
+                # worker will handle it — don't pile a second cycle behind it.
+                if isinstance(runtime.get("pending_run"), dict) \
+                        or _active_run_live(runtime.get("active_run"), datetime.utcnow()):
                     continue
                 game_db.commit()
                 game_db.refresh(row)
