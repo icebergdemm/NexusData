@@ -4528,6 +4528,23 @@ async def setup_hook():
     used to be) since this module is now imported, not exec'd as a script."""
     bot.add_view(TicketPanelView())
     bot.add_view(TicketCloseView())
+    # A global sync propagates lazily: for up to an hour after a command's
+    # signature changes, clients keep the old definition and Discord answers a
+    # click on it with "this command is outdated" instead of running it. The
+    # same commands copied into the configured guild take effect immediately
+    # and hide the global duplicates of the same name inside that guild, so a
+    # restart makes the new definition usable at once.
+    if GUILD_ID:
+        guild = discord.Object(id=GUILD_ID)
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            synced_guild = await bot.tree.sync(guild=guild)
+            logger.info(
+                "Synced %s slash command(s) to guild %s", len(synced_guild), GUILD_ID,
+            )
+        except Exception as e:
+            # Never fail startup over this: the global sync below still lands.
+            logger.error(f"Failed to sync guild slash commands: {e}")
     try:
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} slash command(s)")
