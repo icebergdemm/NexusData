@@ -100,7 +100,7 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "initial_grace_enabled": True,
         "initial_grace_min_progress": 0.05,
         "initial_grace_min_round_seconds": 1200,
-        "initial_grace_require_both": True,
+        "initial_grace_require_both": False,
         # Связка волн: максимальная глубина цепочки chain-спавнов.
         "chain_max_depth": 3,
         # Адаптация к количеству/силе игроков.
