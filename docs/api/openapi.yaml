@@ -5,8 +5,9 @@ info:
   description: |
     API для автоматизаций NexusData. Аутентификация через slogin-ключ
     связанного администратора. Ключ не повышает права аккаунта.
-    Department permissions работают только как grants: deny из департамента
-    не отнимает доступ и не участвует в deny_v2-конфликтах.
+    Individual permission имеет наивысший приоритет и может разрешить или
+    запретить действие. Group и department permissions работают только как
+    grants: их deny не отнимает доступ и не участвует в конфликтах.
 servers:
   - url: /
 security:

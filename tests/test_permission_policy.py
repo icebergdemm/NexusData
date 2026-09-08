@@ -25,6 +25,24 @@ def test_explicit_deny_beats_individual_group_and_department_allow():
     assert check_permission(subject, "ratings", "view") is False
 
 
+def test_individual_allow_beats_group_and_department_denies():
+    subject = admin(
+        individual={"pages": {"ratings": {"view": True}}},
+        group=SimpleNamespace(permissions={"pages": {"ratings": {"view": False}}}),
+        department_pages={"pages": {"ratings": {"view": False}}},
+    )
+
+    assert check_permission(subject, "ratings", "view") is True
+
+
+def test_group_deny_is_ignored_because_groups_only_grant():
+    subject = admin(
+        group=SimpleNamespace(permissions={"pages": {"ratings": {"view": False}}}),
+    )
+
+    assert check_permission(subject, "ratings", "view") is False
+
+
 def test_missing_permission_is_neutral_and_allows_department_grant():
     subject = admin(
         individual={"pages": {}},
@@ -45,7 +63,7 @@ def test_department_deny_is_ignored_because_department_permissions_only_grant():
     assert check_permission(subject, "ratings", "view") is True
 
 
-def test_legacy_mode_keeps_false_additive_behavior():
+def test_individual_deny_beats_department_grant_in_legacy_mode_too():
     subject = admin(
         mode="legacy_additive",
         individual={"pages": {"ratings": {"view": False}}},
@@ -53,7 +71,7 @@ def test_legacy_mode_keeps_false_additive_behavior():
         department_pages={"pages": {"ratings": {"view": True}}},
     )
 
-    assert check_permission(subject, "ratings", "view") is True
+    assert check_permission(subject, "ratings", "view") is False
 
 
 def test_department_module_deny_is_ignored_and_head_fallback_still_grants():

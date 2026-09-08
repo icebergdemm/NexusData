@@ -197,10 +197,12 @@ def _permission_value(raw, page: str, action: str):
 
 
 def grant_only_permissions(raw) -> dict:
-    """Keep only explicit grants in a department access-level matrix.
+    """Keep only explicit grants in a non-individual permission matrix.
 
-    Department permissions are additive by design: they can open a module or
-    site action, but cannot revoke access granted by another source.
+    Group and department permissions are additive by design: they can open a
+    module or site action, but cannot revoke access granted by another source.
+    Individual permissions are intentionally not passed through this helper;
+    they are the only layer allowed to contain an explicit deny.
     """
     pages = raw.get("pages", raw) if isinstance(raw, dict) else {}
     cleaned = {}
@@ -215,36 +217,18 @@ def grant_only_permissions(raw) -> dict:
     return {"pages": cleaned}
 
 
-def _explicit_permission_values(admin, page: str, action: str):
-    individual = getattr(admin, "individual_permissions", None)
-    value = _permission_value(individual, page, action)
-    if value is not None:
-        yield value
-
-    group = getattr(admin, "privilege_group", None)
-    value = _permission_value(getattr(group, "permissions", None), page, action)
-    if value is not None:
-        yield value
-
-    # Department site permissions are grant-only.  A department-level false
-    # must never become a deny-v2 veto over an individual/group grant.
-    value = _permission_value(getattr(admin, "_department_site_permissions", None), page, action)
-    if value is True:
-        yield value
-
-
 def check_permission(admin, page: str, action: str = "view") -> bool:
     """Check if admin has a specific page permission.
 
-    Resolution order (hybrid — "Пользователи ND" is the primary source of
-    truth, department access is a secondary, additive layer):
+    Resolution order (hybrid — individual permissions are the primary source
+    of truth, while group and department access are secondary, additive
+    layers):
     1. is_superuser → always True
-    2. baseline: every authenticated admin can view Documents and create
+    2. individual_permissions override (if key present), including deny
+    3. baseline: every authenticated admin can view Documents and create
        personal documents, and can view the Departments tab (scoped to
-       their own memberships — see api_list_departments/api_get_department),
-       regardless of group/individual grants
-    3. individual_permissions override (if key present)
-    4. privilege_group.permissions
+       their own memberships — see api_list_departments/api_get_department)
+    4. privilege_group.permissions grants only
     5. department site-wide grants (superuser-authored only — see
        compute_department_site_permissions, attached to `admin` by each
        router's get_current_admin as `_department_site_permissions`)
@@ -252,12 +236,11 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
     if admin.is_superuser:
         return True
 
-    if getattr(admin, "_permission_policy_mode", LEGACY_PERMISSION_POLICY) == DENY_PERMISSION_POLICY:
-        explicit = list(_explicit_permission_values(admin, page, action))
-        if False in explicit:
-            return False
-        if True in explicit:
-            return True
+    # An explicit individual rule is the only non-superuser veto and the
+    # highest-priority decision. Group and department rules cannot override it.
+    individual_value = _permission_value(getattr(admin, "individual_permissions", None), page, action)
+    if individual_value is not None:
+        return individual_value
 
     if page == "documents" and action in ("create_personal", "view"):
         return True
@@ -265,22 +248,14 @@ def check_permission(admin, page: str, action: str = "view") -> bool:
     if page == "departments" and action == "view":
         return True
 
-    # Individual overrides. Note: an explicit False here must NOT short-circuit
-    # the function — it only means "Пользователи ND" isn't the source granting
-    # this action. The hybrid (department) tier below is additive and must
-    # still get a chance to grant it; only an explicit True can return early.
-    ind = admin.individual_permissions or {}
-    ind_pages = ind.get("pages", {})
-    if page in ind_pages and action in ind_pages[page] and bool(ind_pages[page][action]):
-        return True
-
-    # Group permissions — same rule: only a granting True short-circuits.
+    # Group permissions are grant-only. Stored false values from the old
+    # editor are inert and intentionally do not participate in policy mode.
     grp = getattr(admin, "privilege_group", None)
     if grp and grp.permissions:
         raw = grp.permissions
         # Support both {"pages": {page: {action: bool}}} and flat {page: {action: bool}}
         grp_pages = raw.get("pages", raw)
-        if page in grp_pages and action in grp_pages[page] and bool(grp_pages[page][action]):
+        if page in grp_pages and action in grp_pages[page] and grp_pages[page][action] is True:
             return True
 
     # Hybrid tier: additive site-wide grants from a department access level,

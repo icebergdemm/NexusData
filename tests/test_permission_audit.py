@@ -99,3 +99,26 @@ def test_department_deny_is_reported_as_ignored_and_cannot_create_conflict():
     assert decision["state"] == "allow"
     ignored = next(source for source in decision["sources"] if source["kind"] == "department_access_level")
     assert ignored["applies"] is False
+
+
+def test_group_deny_is_reported_as_ignored_and_individual_rule_wins():
+    subject = SimpleNamespace(
+        id=1,
+        is_superuser=False,
+        individual_permissions={"pages": {"ratings": {"view": True}}},
+        privilege_group=SimpleNamespace(
+            id=3,
+            name="Модераторы",
+            permissions={"pages": {"ratings": {"view": False}}},
+        ),
+        _permission_policy_mode="deny_v2",
+        _department_site_permissions={},
+    )
+
+    decision = effective_permission(subject, "ratings", "view", [])
+
+    assert decision["value"] is True
+    assert decision["state"] == "allow"
+    ignored = next(source for source in decision["sources"] if source["kind"] == "group")
+    assert ignored["applies"] is False
+    assert ignored["reason"] == "group_permissions_are_grant_only"

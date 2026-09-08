@@ -1076,7 +1076,7 @@ async def api_admin_user_assign_group(user_id: int, request: Request, db: Sessio
 
 @router.post("/api/v1/admin/privilege-groups")
 async def api_privilege_group_create(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    from security import enforce_rate_limit
+    from security import enforce_rate_limit, grant_only_permissions
     if not check_permission(current_admin, "admin", "edit"):
         raise HTTPException(status_code=403)
     enforce_rate_limit(db, current_admin, "group_create")
@@ -1091,7 +1091,7 @@ async def api_privilege_group_create(request: Request, db: Session = Depends(get
 
     grp = AdminPrivilegeGroup(
         name=name, description=(body.get("description") or "").strip() or None,
-        permissions=body.get("permissions") or {},
+        permissions=grant_only_permissions(body.get("permissions") or {}),
         rate_limit_count=int(body.get("rate_limit_count") or 0),
         rate_limit_window_secs=int(body.get("rate_limit_window_secs") or 3600),
     )
@@ -1103,7 +1103,7 @@ async def api_privilege_group_create(request: Request, db: Session = Depends(get
 
 @router.post("/api/v1/admin/privilege-groups/{group_id}")
 async def api_privilege_group_edit(group_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    from security import enforce_rate_limit
+    from security import enforce_rate_limit, grant_only_permissions
     if not check_permission(current_admin, "admin", "edit"):
         raise HTTPException(status_code=403)
     enforce_rate_limit(db, current_admin, "group_edit")
@@ -1119,7 +1119,7 @@ async def api_privilege_group_edit(group_id: int, request: Request, db: Session 
         grp.name = name
     grp.description = (body.get("description") or "").strip() or None
     if "permissions" in body:
-        grp.permissions = body.get("permissions") or {}
+        grp.permissions = grant_only_permissions(body.get("permissions") or {})
     grp.rate_limit_count = int(body.get("rate_limit_count") or 0)
     grp.rate_limit_window_secs = int(body.get("rate_limit_window_secs") or 3600)
     db.commit()
@@ -2827,7 +2827,7 @@ async def admin_privilege_group_create(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    from security import enforce_rate_limit
+    from security import enforce_rate_limit, grant_only_permissions
     if not check_permission(current_admin, "admin", "edit"):
         raise HTTPException(status_code=403)
     enforce_rate_limit(db, current_admin, "group_create")
@@ -2854,7 +2854,7 @@ async def admin_privilege_group_create(
     grp = AdminPrivilegeGroup(
         name=name,
         description=(form.get("description") or "").strip() or None,
-        permissions=permissions,
+        permissions=grant_only_permissions(permissions),
         rate_limit_count=int(form.get("rate_limit_count") or 0),
         rate_limit_window_secs=int(form.get("rate_limit_window_secs") or 3600),
     )
@@ -2872,7 +2872,7 @@ async def admin_privilege_group_edit(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    from security import enforce_rate_limit
+    from security import enforce_rate_limit, grant_only_permissions
     if not check_permission(current_admin, "admin", "edit"):
         raise HTTPException(status_code=403)
     enforce_rate_limit(db, current_admin, "group_edit")
@@ -2891,7 +2891,7 @@ async def admin_privilege_group_edit(
     grp.description = (form.get("description") or "").strip() or None
     permissions_str = (form.get("permissions") or "{}").strip()
     try:
-        grp.permissions = _json.loads(permissions_str)
+        grp.permissions = grant_only_permissions(_json.loads(permissions_str))
     except Exception:
         pass
     grp.rate_limit_count = int(form.get("rate_limit_count") or 0)

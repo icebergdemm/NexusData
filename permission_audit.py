@@ -56,7 +56,13 @@ def effective_permission(admin, page: str, action: str, department_sources: Iter
     group = getattr(admin, "privilege_group", None)
     value = _raw_value(getattr(group, "permissions", None), page, action)
     if value is not None:
-        sources.append(_source("group", value, group_id=group.id, group_name=group.name))
+        sources.append(_source(
+            "group", value,
+            applies=value is True,
+            reason=None if value is True else "group_permissions_are_grant_only",
+            group_id=group.id,
+            group_name=group.name,
+        ))
 
     merged_department_value = _raw_value(getattr(admin, "_department_site_permissions", None), page, action)
     has_department_detail = False
@@ -78,19 +84,29 @@ def effective_permission(admin, page: str, action: str, department_sources: Iter
                     **item,
                 })
     if merged_department_value is not None and not has_department_detail:
-        sources.append(_source("department_site", merged_department_value))
+        sources.append(_source(
+            "department_site", merged_department_value,
+            applies=merged_department_value is True,
+            reason=None if merged_department_value is True else "department_permissions_are_grant_only",
+        ))
 
-    explicit_values = [item["value"] for item in sources if item.get("applies", True)]
-    deny_mode = getattr(admin, "_permission_policy_mode", "legacy_additive") == "deny_v2"
-    if deny_mode and False in explicit_values:
-        value, state = False, "deny"
-    elif True in explicit_values:
-        value, state = True, "allow"
-    elif deny_mode and explicit_values:
-        value, state = False, "deny"
+    individual_value = _raw_value(getattr(admin, "individual_permissions", None), page, action)
+    if individual_value is not None:
+        # An individual decision is final. Other sources stay in the trace for
+        # transparency, but are explicitly marked as overridden rather than
+        # being reported as a conflict.
+        for source in sources:
+            if source.get("applies", True):
+                source["applies"] = False
+                source["reason"] = "individual_permission_has_priority"
+        value, state = individual_value, "allow" if individual_value else "deny"
     else:
-        value = check_permission(admin, page, action)
-        state = "allow" if value else "unset"
+        explicit_values = [item["value"] for item in sources if item.get("applies", True)]
+        if True in explicit_values:
+            value, state = True, "allow"
+        else:
+            value = check_permission(admin, page, action)
+            state = "allow" if value else "unset"
         if value and not sources:
             sources.append(_source("baseline", True))
 
