@@ -116,6 +116,15 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         # 3.5: волны с этими подстроками не используют схемы спавна
         # (пещеры/бездна спавнятся на структурных точках уровня).
         "spawn_scheme_ignore_names": ["cave", "abyss"],
+        # Learned target pace is correlated by ship profile, hull size and
+        # effective crew power instead of using one global fixed threshold.
+        "pace_adaptive_enabled": True,
+        "pace_adaptive_ema_alpha": 0.2,
+        "pace_adaptive_min_samples": 2,
+        "pace_adaptive_min_round_seconds": 90,
+        "pace_adaptive_max_progress_per_minute": 25,
+        "pace_crew_influence": 0.65,
+        "pace_size_influence": 0.65,
     }
     config["global"] = {**defaults, **global_config}
     # null = derive from single_wave_mode on the plugin side; materialize the
