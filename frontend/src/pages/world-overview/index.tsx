@@ -86,9 +86,10 @@ export function WorldOverviewPage() {
     queryKey: ["world-state", selectedRoundId],
     queryFn: () => worldStateApi.getState(selectedRoundId as string),
     enabled: !!selectedRoundId,
-    // The game plugin publishes live state at 3 Hz. WorldCanvas interpolates
-    // positions between responses, so the map remains smooth without asking
-    // the game server for a higher-rate JSON stream.
+    // Live state is persisted on every ingested demo-stream chunk
+    // (routes/replays.py::_consume_stream_chunk, no batching), so polling
+    // here at 3 Hz shows fresh data. WorldCanvas interpolates positions
+    // between responses, so the map remains smooth.
     refetchInterval: 333,
   })
 

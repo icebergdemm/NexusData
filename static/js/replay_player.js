@@ -720,6 +720,35 @@
     for(const frame of list){if(frame.timeMs<=t)result=frame;else break;}
     return result;
   }
+  // Entity inventory at a timestamp — same ownership model as "Обзор мира"
+  // (see world-overview/api.ts resolveCharacterItems): direct holdings
+  // (ownerKind 1 = character) plus one level of nested container contents
+  // (ownerKind 2 = item pointing at a directly held item). ownerKind 0/3 are
+  // world floor / hull floor and never belong to an entity.
+  function resolveEntityInventory(entityId, t){
+    if(!demo||entityId==null)return[];
+    const frame=inventoryAt(t==null?currentTimeMs:t);
+    if(!frame||!frame.items)return[];
+    const id=Number(entityId);
+    const direct=frame.items.filter((it)=>it.ownerKind===1&&it.ownerId===id);
+    if(!direct.length)return[];
+    const containerIds=new Set(direct.map((it)=>it.id));
+    const nested=frame.items.filter((it)=>it.ownerKind===2&&containerIds.has(it.ownerId));
+    return [...direct.map((it)=>({...it,nested:false})),...nested.map((it)=>({...it,nested:true}))];
+  }
+  function listInventoryEntities(){
+    if(!demo)return[];
+    const seen=new Map();
+    for(const frame of (demo.inventories||[])){
+      for(const it of (frame.items||[])){
+        if(it.ownerKind===1&&it.ownerId&&!seen.has(it.ownerId)){
+          const sp=demo.spawns.get(it.ownerId);
+          seen.set(it.ownerId,{id:it.ownerId,name:(sp&&sp.name)||("Сущность #"+it.ownerId),species:(sp&&sp.species)||"",teamId:(sp&&sp.teamId!=null)?sp.teamId:0,job:(sp&&sp.job)||null});
+        }
+      }
+    }
+    return[...seen.values()].sort((a,b)=>String(a.name).localeCompare(String(b.name),"ru"));
+  }
   function updateInventory(){
     if(!demo)return;
     const bucket=Math.floor(currentTimeMs/150);if(bucket===lastInventoryBucket)return;lastInventoryBucket=bucket;
@@ -1162,7 +1191,7 @@
   }
 
   function timelineBridgeData(){
-    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[]};
+    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[],entities:[]};
     // Entity ids may be reused after a despawn. Resolve the actor at the
     // event's own timestamp instead of consulting only the final spawn map,
     // otherwise an early action can be attributed to a later character.
@@ -1345,7 +1374,7 @@
       });
     });
     timelineEvents.sort((a,b)=>a.offset_ms-b.offset_ms||a.id.localeCompare(b.id));
-    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents};
+    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents,entities:listInventoryEntities()};
   }
 
   function broadcastReady(){
@@ -1381,6 +1410,9 @@
     setSeekWindow(startMs,endMs){setSeekWindow(startMs,endMs);},
     clearSeekWindow(){clearSeekWindow();},
     getTimelineData(){return timelineBridgeData();},
+    getInventoryEntities(){return listInventoryEntities();},
+    getEntityInventory(entityId,timeMs){return resolveEntityInventory(entityId,timeMs==null?currentTimeMs:timeMs);},
+    getInventoryAt(timeMs){const frame=inventoryAt(timeMs==null?currentTimeMs:timeMs);return frame?{timeMs:frame.timeMs,items:frame.items.map((it)=>({...it}))}:null;},
     setPlaying(p){setPlaying(!!p);},
     selectPlayer(name){applyPlayerSelection(name||null,false);},
     getSelectedPlayer(){return selectedPlayerName;},

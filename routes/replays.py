@@ -624,11 +624,11 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
         _apply_parsed_to_state(state, parsed)
         if "t" in parsed:
             state["seq"] += 1
-            state["pending"] += 1
+        # Live "Обзор мира" polls state at 3 Hz and must see every ingested
+        # tick: persist on EVERY chunk carrying new live data, never batch
+        # several ticks into one DB write. The old `pending < 3` gate turned
+        # a ~3s ingest cadence into a ~10s visible refresh rate.
         static_pending = "static" in parsed or "header" in parsed
-        if state["pending"] < 3 and not static_pending:
-            return
-        state["pending"] = 0
         payload = dict(state)
         payload["__static"] = static_pending
     db = GameSessionLocal()
