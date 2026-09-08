@@ -13,6 +13,17 @@ export function permissionStatusLabel(value: boolean): string {
   return value ? "Разрешено" : "Запрещено"
 }
 
+export function hasPermissionConflict(sources: Array<{ value: boolean; applies?: boolean }>): boolean {
+  const values = new Set(sources.filter((source) => source.applies !== false).map((source) => source.value))
+  return values.has(true) && values.has(false)
+}
+
+export function resolvePermissionValue(sources: Array<{ value: boolean; applies?: boolean }>, policyMode: string): boolean {
+  const active = sources.filter((source) => source.applies !== false)
+  if (policyMode === "deny_v2") return active.some((source) => source.value) && !active.some((source) => !source.value)
+  return active.some((source) => source.value)
+}
+
 export function setPermissionOverride(value: PermissionValue, page: string, action: string, next: PermissionState): PermissionValue {
   const nextPage = { ...value[page] }
   if (next === undefined) delete nextPage[action]

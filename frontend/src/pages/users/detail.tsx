@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 import { useCurrentAdmin, usePermissionRegistry, type PermissionRegistry } from "@/lib/auth"
 import { LoginKeysDialog } from "./LoginKeysDialog"
-import { permissionStatusLabel, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
+import { hasPermissionConflict, permissionStatusLabel, resolvePermissionValue, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
 import type { AuthorizationTrace, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
 
@@ -110,6 +110,7 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<"all" | "allow" | "deny" | "override" | "conflict">("all")
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [expandedConflicts, setExpandedConflicts] = useState<Record<string, boolean>>({})
   const [showSources, setShowSources] = useState(false)
   const save = useMutation({
     mutationFn: (pages: PermissionValue) => api.post(`/api/v1/admin/users/${adminId}/assign-group`, { individual_permissions: { pages } }),
@@ -118,18 +119,29 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
   })
   useEffect(() => setDraft(unwrapPages(trace.sources.individual)), [trace.sources.individual])
 
+  const getDisplayedDecision = (page: string, action: string, decision: AuthorizationTrace["effective"]["pages"][string][string]) => {
+    const override = draft[page]?.[action]
+    const sources = [
+      ...decision.sources.filter((source) => source.kind !== "individual"),
+      ...(override === undefined ? [] : [{ kind: "individual", value: override }]),
+    ]
+    const effective = resolvePermissionValue(sources, trace.admin.policy_mode)
+
+    return { ...decision, value: effective, state: effective ? "allow" as const : "deny" as const, sources }
+  }
+
   const rows = useMemo(() => Object.entries(trace.effective.pages).map(([page, actions]) => ({
     page, actions: Object.entries(actions).filter(([action, decision]) => {
       const query = search.trim().toLowerCase()
       const actionLabel = registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action
       const pageLabel = registry?.[page]?.label ?? page
-      const values = new Set(decision.sources.filter((source) => source.applies !== false).map((source) => source.value))
-      const conflict = values.has(true) && values.has(false)
+      const displayedDecision = getDisplayedDecision(page, action, decision)
+      const conflict = hasPermissionConflict(displayedDecision.sources)
       const hasOverride = draft[page]?.[action] !== undefined
       return (!query || `${pageLabel} ${page} ${actionLabel} ${action}`.toLowerCase().includes(query))
-        && (filter === "all" || (filter === "allow" && decision.value) || (filter === "deny" && !decision.value) || (filter === "override" && hasOverride) || (filter === "conflict" && conflict))
+        && (filter === "all" || (filter === "allow" && displayedDecision.value) || (filter === "deny" && !displayedDecision.value) || (filter === "override" && hasOverride) || (filter === "conflict" && conflict))
     }),
-  })).filter(({ actions }) => actions.length > 0), [trace.effective.pages, registry, search, filter, draft])
+  })).filter(({ actions }) => actions.length > 0), [trace.effective.pages, registry, search, filter, draft, trace.admin.policy_mode])
 
   const mutatePermission = (page: string, action: string, value: boolean | undefined) => {
     const next = setPermissionOverride(draft, page, action, value)
@@ -146,9 +158,15 @@ function PermissionProfile({ trace, registry, canEdit, adminId, onChanged }: { t
     return "Базовое правило"
   }
 
-  return <Card><CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><CardTitle className="text-base">Все page/action permissions</CardTitle><p className="mt-1 text-xs text-muted-foreground">Результат вычислен backend. Источник можно раскрыть, а конкретное право — изменить здесь.</p></div><Button size="sm" variant={showSources ? "secondary" : "outline"} onClick={() => setShowSources((value) => !value)}>{showSources ? "Скрыть источники" : "Показать источники"}</Button></div><div className="flex flex-wrap gap-2"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск страницы или действия..." className="min-w-64 flex-1" /><Select value={filter} onValueChange={(value) => setFilter(value as typeof filter)}><SelectTrigger className="w-52"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все права</SelectItem><SelectItem value="allow">Только разрешённые</SelectItem><SelectItem value="deny">Только запрещённые</SelectItem><SelectItem value="override">С override</SelectItem><SelectItem value="conflict">Только конфликты</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="space-y-2">
-    <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2 text-xs text-muted-foreground">Основной результат: <span className="text-success">Разрешено</span> или <span className="text-destructive">Запрещено</span>. «Сбросить переопределение» возвращает право к группе или департаменту.</div>
-    {rows.map(({ page, actions }) => <div key={page} className="rounded-md border"><button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left font-medium" onClick={() => togglePage(page)}><span>{registry?.[page]?.label ?? page} <span className="font-mono text-xs text-muted-foreground">({page})</span></span><span className="text-xs text-muted-foreground">{actions.length} действий</span></button>{(expanded[page] ?? true) && <div className="border-t px-3 py-2">{actions.map(([action, decision]) => { const values = new Set(decision.sources.filter((source) => source.applies !== false).map((source) => source.value)); const conflict = values.has(true) && values.has(false); const hasOverride = draft[page]?.[action] !== undefined; return <div key={action} className="flex flex-col gap-2 border-b py-2 last:border-0 lg:flex-row lg:items-center"><div className="min-w-40 flex-1"><div className="text-sm">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</div><div className="font-mono text-[10px] text-muted-foreground">{action}</div></div><Badge variant={decision.value ? "default" : "destructive"} className="self-start">{permissionStatusLabel(decision.value)}</Badge><div className="flex min-w-0 flex-1 flex-wrap gap-1">{(showSources ? decision.sources : decision.sources.slice(0, 1)).map((source, index) => <Badge key={`${source.kind}-${index}`} variant="outline" className="max-w-full truncate text-[10px]">{sourceLabel(source)}{showSources && source.kind !== "superuser" && source.applies !== false ? `: ${source.value ? "разрешает" : "запрещает"}` : ""}</Badge>)}{!decision.sources.length && <span className="text-xs text-muted-foreground">Нет явного источника</span>}{conflict && <Badge variant="destructive" className="gap-1 text-[10px]"><AlertTriangle className="size-3" />Конфликт</Badge>}</div><div className="flex flex-wrap gap-1.5 lg:justify-end">{canEdit && !trace.admin.is_superuser && <><Button size="sm" variant="outline" disabled={save.isPending} onClick={() => mutatePermission(page, action, true)}><Check className="size-3.5" />Разрешить</Button><Button size="sm" variant="destructive" disabled={save.isPending} onClick={() => mutatePermission(page, action, false)}>Запретить</Button><Button size="sm" variant="ghost" disabled={!hasOverride || save.isPending} onClick={() => mutatePermission(page, action, undefined)}>Сбросить</Button></>}{trace.admin.is_superuser && <span className="text-xs text-muted-foreground">Superuser bypass</span>}</div></div>})}</div>}</div>)}
+  return <Card><CardHeader className="space-y-3"><div className="flex flex-wrap items-start justify-between gap-2"><div><CardTitle className="text-base">Все page/action permissions</CardTitle><p className="mt-1 text-xs text-muted-foreground">Результат обновляется сразу после нажатия. Источник можно раскрыть, а конкретное право — изменить здесь.</p></div><Button size="sm" variant={showSources ? "secondary" : "outline"} onClick={() => setShowSources((value) => !value)}>{showSources ? "Скрыть источники" : "Показать источники"}</Button></div><div className="flex flex-wrap gap-2"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Поиск страницы или действия..." className="min-w-64 flex-1" /><Select value={filter} onValueChange={(value) => setFilter(value as typeof filter)}><SelectTrigger className="w-52"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все права</SelectItem><SelectItem value="allow">Только разрешённые</SelectItem><SelectItem value="deny">Только запрещённые</SelectItem><SelectItem value="override">С override</SelectItem><SelectItem value="conflict">Только конфликты</SelectItem></SelectContent></Select></div></CardHeader><CardContent className="space-y-2">
+    <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2 text-xs text-muted-foreground">Основной результат: <span className="text-success">Разрешено</span> или <span className="text-destructive">Запрещено</span>. Конфликт означает, что источники дают разные решения. Нажмите на его плашку, чтобы увидеть какие именно. В режиме deny_v2 запрет побеждает разрешение. «Сбросить» убирает только индивидуальное правило.</div>
+    {rows.map(({ page, actions }) => <div key={page} className="rounded-md border"><button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left font-medium" onClick={() => togglePage(page)}><span>{registry?.[page]?.label ?? page} <span className="font-mono text-xs text-muted-foreground">({page})</span></span><span className="text-xs text-muted-foreground">{actions.length} действий</span></button>{(expanded[page] ?? true) && <div className="border-t px-3 py-2">{actions.map(([action, decision]) => {
+      const displayedDecision = getDisplayedDecision(page, action, decision)
+      const conflict = hasPermissionConflict(displayedDecision.sources)
+      const conflictKey = `${page}:${action}`
+      const conflictExpanded = expandedConflicts[conflictKey] ?? false
+      const hasOverride = draft[page]?.[action] !== undefined
+      return <div key={action} className="border-b py-2 last:border-0"><div className="flex flex-col gap-2 lg:flex-row lg:items-center"><div className="min-w-40 flex-1"><div className="text-sm">{registry?.[page]?.actions.find((item) => item.key === action)?.label ?? action}</div><div className="font-mono text-[10px] text-muted-foreground">{action}</div></div><Badge variant={displayedDecision.value ? "default" : "destructive"} className="self-start">{permissionStatusLabel(displayedDecision.value)}</Badge><div className="flex min-w-0 flex-1 flex-wrap gap-1">{(showSources ? displayedDecision.sources : displayedDecision.sources.slice(0, 1)).map((source, index) => <Badge key={`${source.kind}-${index}`} variant="outline" className="max-w-full truncate text-[10px]">{sourceLabel(source)}{showSources && source.kind !== "superuser" && source.applies !== false ? `: ${source.value ? "разрешает" : "запрещает"}` : ""}</Badge>)}{!displayedDecision.sources.length && <span className="text-xs text-muted-foreground">Нет явного источника</span>}{conflict && <button type="button" className="inline-flex items-center gap-1 rounded-full border border-destructive/50 bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/20" aria-expanded={conflictExpanded} title="Нажмите, чтобы увидеть конфликтующие источники" onClick={() => setExpandedConflicts((current) => ({ ...current, [conflictKey]: !conflictExpanded }))}><AlertTriangle className="size-3" />Конфликт</button>}</div><div className="flex flex-wrap gap-1.5 lg:justify-end">{canEdit && !trace.admin.is_superuser && <><Button size="sm" variant="outline" disabled={save.isPending} onClick={() => mutatePermission(page, action, true)}><Check className="size-3.5" />Разрешить</Button><Button size="sm" variant="destructive" disabled={save.isPending} onClick={() => mutatePermission(page, action, false)}>Запретить</Button><Button size="sm" variant="ghost" disabled={!hasOverride || save.isPending} onClick={() => mutatePermission(page, action, undefined)}>Сбросить</Button></>}{trace.admin.is_superuser && <span className="text-xs text-muted-foreground">Superuser bypass</span>}</div></div>{conflict && conflictExpanded && <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs"><div className="font-medium text-destructive">Почему конфликт</div><p className="mt-1 text-muted-foreground">Источники дают разные решения. В режиме deny_v2 эффективным считается запрет.</p><div className="mt-2 space-y-1">{displayedDecision.sources.filter((source) => source.applies !== false).map((source, index) => <div key={`${source.kind}-${index}`} className="flex flex-wrap items-center gap-1.5"><span>{sourceLabel(source)}</span><Badge variant={source.value ? "default" : "destructive"}>{source.value ? "Разрешает" : "Запрещает"}</Badge></div>)}</div><p className="mt-2 text-muted-foreground">Чтобы убрать конфликт, измените или сбросьте один из источников выше. «Сбросить» убирает только индивидуальное правило; группу и департамент меняют в своих разделах.</p></div>}</div>})}</div>}</div>)}
     {!rows.length && <div className="py-10 text-center text-sm text-muted-foreground">По этим фильтрам прав нет.</div>}
   </CardContent></Card>
 }
@@ -170,7 +188,7 @@ function SummaryCard({ label, value, icon: Icon, destructive = false }: { label:
 }
 
 function countConflicts(trace: AuthorizationTrace) {
-  return Object.values(trace.effective.pages).reduce((total, actions) => total + Object.values(actions).filter((decision) => { const values = new Set(decision.sources.filter((source) => source.applies !== false).map((source) => source.value)); return values.has(true) && values.has(false) }).length, 0)
+  return Object.values(trace.effective.pages).reduce((total, actions) => total + Object.values(actions).filter((decision) => hasPermissionConflict(decision.sources)).length, 0)
 }
 
 function invalidateUserQueries(queryClient: ReturnType<typeof useQueryClient>, adminId: number) {

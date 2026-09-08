@@ -4,6 +4,8 @@ import * as permissionMatrix from "../src/pages/users/PermissionMatrixEditor"
 
 const model = permissionMatrix as typeof permissionMatrix & {
   permissionStatusLabel?: (value: boolean) => string
+  hasPermissionConflict?: (sources: Array<{ value: boolean; applies?: boolean }>) => boolean
+  resolvePermissionValue?: (sources: Array<{ value: boolean; applies?: boolean }>, policyMode: string) => boolean
   setPermissionOverride?: (
     value: Record<string, Record<string, boolean | undefined>>,
     page: string,
@@ -32,4 +34,19 @@ test("permission override preserves explicit deny and removes only the selected 
   assert.deepEqual(setOverride(initial, "players", "view", undefined), {
     ratings: { view: true, edit: false },
   })
+})
+
+test("permission conflict ignores non-operative department denies", () => {
+  const hasConflict = model.hasPermissionConflict!
+
+  assert.equal(hasConflict([{ value: true }, { value: false }]), true)
+  assert.equal(hasConflict([{ value: true }, { value: false, applies: false }]), false)
+})
+
+test("deny_v2 resolves the current effective badge from live sources", () => {
+  const resolve = model.resolvePermissionValue!
+
+  assert.equal(resolve([{ value: true }], "deny_v2"), true)
+  assert.equal(resolve([{ value: true }, { value: false }], "deny_v2"), false)
+  assert.equal(resolve([{ value: false, applies: false }, { value: true }], "deny_v2"), true)
 })
