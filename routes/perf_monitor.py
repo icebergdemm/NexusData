@@ -72,6 +72,22 @@ async def api_perf_anomalies(
     }
 
 
+@router.get("/api/v1/admin/perf/task-manager")
+def api_perf_task_manager(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Аналог Диспетчера задач Windows для контейнера (services_task_manager.py).
+
+    Синхронный def (а не async): сборка снимка — миллисекунды работы psutil
+    частого опрашивания страницы лучше держать в threadpool, а не в event
+    loop. Дельты CPU живут в module cache — первый запрос после старта
+    возвращает 0% (нет предыдущего окна)."""
+    _require_superuser(current_admin)
+    import services_task_manager as tm
+    return tm.build_snapshot()
+
+
 @router.delete("/api/v1/admin/perf/anomalies")
 async def api_perf_anomalies_clear(
     db: Session = Depends(get_db),

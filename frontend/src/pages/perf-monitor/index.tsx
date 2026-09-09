@@ -13,12 +13,13 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Line } from "react-chartjs-2"
-import { Activity, AlertTriangle, Cpu, Gauge, MemoryStick, ShieldAlert, Timer, Trash2 } from "lucide-react"
+import { Activity, AlertTriangle, Cpu, Gauge, ListTree, MemoryStick, ShieldAlert, Timer, Trash2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
@@ -38,6 +39,7 @@ interface TaskSummary {
   task_id: string
   status: string
   duration_ms: number | null
+  started_at?: string | null
   finished_at: string | null
   error: string | null
 }
@@ -71,6 +73,105 @@ interface AnomaliesResponse {
   thresholds: { event_loop_lag_s: number; slow_request_s: number; high_cpu_pct: number; high_memory_pct: number }
 }
 
+// ── Диспетчер задач (live) ──────────────────────────────────────────────────
+interface TMProcess {
+  pid: number
+  ppid: number
+  name: string
+  status: string
+  cpu_pct: number
+  cpu_total_s: number
+  mem_rss_mb: number
+  mem_pct: number
+  threads: number
+  cmd: string
+  is_python: boolean
+  is_own: boolean
+  own_child: boolean
+}
+
+interface TMThread {
+  tid: number
+  name: string
+  cpu_pct: number
+  cpu_total_s: number
+  state: string
+  stack: string
+  is_main: boolean
+}
+
+interface TMPeriodic {
+  task_id: string
+  interval_secs: number
+  priority: string
+  timeout_secs: number | null
+  due_in_secs: number
+  running: boolean
+  last_status: string | null
+  last_duration_ms: number | null
+}
+
+interface TMScheduler {
+  available: boolean
+  workers: number
+  queue_size: number
+  active: TaskSummary[]
+  periodic: TMPeriodic[]
+  recent: TaskSummary[]
+}
+
+interface TMSubsystem {
+  name: string
+  running: boolean
+  detail: string
+  source: string
+}
+
+interface TaskManagerResponse {
+  generated_at: string
+  own_pid: number
+  processes: TMProcess[]
+  app_threads: TMThread[]
+  app_rss_mb: number
+  scheduler: TMScheduler
+  subsystems: TMSubsystem[]
+}
+
+const PROC_STATUS_LABEL: Record<string, string> = {
+  running: "выполняется",
+  sleeping: "спит",
+  "disk-sleep": "ожидает диск",
+  stopped: "остановлен",
+  zombie: "зомби",
+  idle: "простой",
+  waiting: "ожидает",
+  wakep: "пробуждение",
+  waking: "пробуждение",
+}
+const PROC_STATUS_VARIANT: Record<string, "destructive" | "secondary" | "default" | "outline"> = {
+  running: "default",
+  sleeping: "secondary",
+  stopped: "destructive",
+  zombie: "destructive",
+  "disk-sleep": "secondary",
+  idle: "outline",
+}
+
+function fmtDue(secs: number): string {
+  if (secs <= 0) return "сейчас"
+  if (secs < 90) return `${Math.round(secs)} с`
+  const m = Math.round(secs / 60)
+  if (m < 100) return `${m} мин`
+  return `${(secs / 3600).toFixed(1)} ч`
+}
+
+function fmtInterval(secs: number): string {
+  if (secs < 90) return `${secs} с`
+  if (secs < 7200) return `${Math.round(secs / 60)} мин`
+  if (secs < 86400 * 2) return `${Math.round(secs / 3600)} ч`
+  return `${Math.round(secs / 86400)} дн.`
+}
+
 const KIND_LABEL: Record<string, string> = {
   event_loop_lag: "Зависание сайта",
   slow_request: "Медленный запрос",
@@ -83,6 +184,210 @@ const KIND_VARIANT: Record<string, "destructive" | "secondary"> = {
 
 function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
+}
+
+function TaskManagerSection({ data, tab, onTab }: {
+  data: TaskManagerResponse
+  tab: string
+  onTab: (v: string) => void
+}) {
+  const activeTasks = data.scheduler.active
+  return (
+    <Card className="mb-4 overflow-hidden py-0" data-v2-taskmanager>
+      <CardHeader className="border-b bg-muted/30 py-3">
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+          <ListTree className="size-4" /> Диспетчер задач (live, обновляется каждые ~2 с)
+          {data.scheduler.available && (
+            <Badge variant="secondary" className="ml-auto font-mono font-normal">
+              {activeTasks.length} выполняется · очередь {data.scheduler.queue_size} · {data.scheduler.workers} воркера
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pt-3">
+        <Tabs value={tab} onValueChange={onTab}>
+          <TabsList className="mb-3">
+            <TabsTrigger value="processes">Процессы ({data.processes.length})</TabsTrigger>
+            <TabsTrigger value="threads">Потоки API ({data.app_threads.length})</TabsTrigger>
+            <TabsTrigger value="scheduler">Планировщик</TabsTrigger>
+            <TabsTrigger value="subsystems">Службы ({data.subsystems.length})</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="processes" className="mt-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>PID</TableHead>
+                  <TableHead>Процесс</TableHead>
+                  <TableHead>Состояние</TableHead>
+                  <TableHead className="text-right">CPU %</TableHead>
+                  <TableHead className="text-right">RAM МБ</TableHead>
+                  <TableHead className="text-right">Потоки</TableHead>
+                  <TableHead>Командная строка</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.processes.map((p) => (
+                  <TableRow key={p.pid} className={p.is_own || p.own_child ? "bg-primary/5" : ""}>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{p.pid}</TableCell>
+                    <TableCell className="max-w-56 truncate text-sm font-medium" title={p.cmd}>
+                      {p.name}
+                      {p.is_own && <Badge variant="default" className="ml-2 font-normal">API</Badge>}
+                      {p.own_child && !p.is_own && <Badge variant="secondary" className="ml-2 font-normal">дочерний</Badge>}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={PROC_STATUS_VARIANT[p.status] ?? "secondary"}>
+                        {PROC_STATUS_LABEL[p.status] ?? p.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className={`text-right font-mono text-sm ${p.cpu_pct > 15 ? "text-warning" : ""}`}>
+                      {p.cpu_pct.toFixed(1)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">
+                      {p.mem_rss_mb.toFixed(1)}
+                      <span className="ml-1 text-xs text-muted-foreground">({p.mem_pct.toFixed(1)}%)</span>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">{p.threads}</TableCell>
+                    <TableCell className="max-w-72 truncate font-mono text-xs text-muted-foreground" title={p.cmd}>
+                      {p.cmd}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!data.processes.length && (
+                  <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">Снимок собирается…</TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TabsContent>
+
+          <TabsContent value="threads" className="mt-0">
+            <p className="mb-2 text-xs text-muted-foreground">
+              Потоки процесса API ({data.own_pid}, RSS {data.app_rss_mb.toFixed(0)} МБ).
+              Нагрузка ниже ~1% в сочетании со статусом «спит» означает ожидание (sleep/queue.get).
+              «Стек» — что поток выполняет прямо сейчас.
+            </p>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>TID</TableHead>
+                  <TableHead>Поток</TableHead>
+                  <TableHead>Состояние</TableHead>
+                  <TableHead className="text-right">CPU %</TableHead>
+                  <TableHead className="text-right">CPU всего</TableHead>
+                  <TableHead>Выполняет сейчас</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.app_threads.map((t) => (
+                  <TableRow key={t.tid}>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{t.tid}</TableCell>
+                    <TableCell className="text-sm">
+                      <span className="font-medium">{t.name || "—"}</span>
+                      {t.is_main && <Badge variant="secondary" className="ml-2 font-normal">event loop</Badge>}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {(PROC_STATUS_LABEL[t.state] ?? t.state) || "—"}
+                    </TableCell>
+                    <TableCell className={`text-right font-mono text-sm ${t.cpu_pct > 25 ? "text-warning" : ""}`}>
+                      {t.cpu_pct.toFixed(1)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">{t.cpu_total_s.toFixed(1)} с</TableCell>
+                    <TableCell className="max-w-md truncate font-mono text-xs text-muted-foreground" title={t.stack || undefined}>
+                      {t.stack || "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TabsContent>
+
+          <TabsContent value="scheduler" className="mt-0">
+            <p className="mb-2 text-xs text-muted-foreground">
+              «Через» — до планового запуска. «сейчас» = тик уже наступил и ждёт воркер
+              (или задачу съел дедуп-ключ предыдущего ещё идущего прогона).
+            </p>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div>
+                <p className="mb-1 text-xs font-semibold text-muted-foreground">Выполняются сейчас ({activeTasks.length})</p>
+                <div className="rounded-xl border">
+                  {activeTasks.map((t) => (
+                    <div key={t.task_id} className="flex items-center gap-2 border-b px-3 py-2 last:border-0">
+                      <span className="truncate font-mono text-xs">{t.task_id}</span>
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {t.started_at ? `с ${new Date(t.started_at).toLocaleTimeString("ru-RU")}` : ""}
+                      </span>
+                    </div>
+                  ))}
+                  {!activeTasks.length && <div className="px-3 py-4 text-xs text-muted-foreground">Ничего не выполняется</div>}
+                </div>
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-semibold text-muted-foreground">Периодические фоновые задачи</p>
+                <div className="max-h-96 overflow-y-auto rounded-xl border">
+                  {data.scheduler.periodic.map((p) => (
+                    <div key={p.task_id} className="flex items-center gap-2 border-b px-3 py-2 text-xs last:border-0">
+                      <span className={`font-mono ${p.running ? "text-success" : "font-medium"}`}>{p.task_id}</span>
+                      {p.running && <Badge variant="default" className="font-normal">выполняется</Badge>}
+                      <span className="ml-auto whitespace-nowrap text-muted-foreground">
+                        {p.priority.toLowerCase()} · каждые {fmtInterval(p.interval_secs)} · через {fmtDue(p.due_in_secs)}
+                      </span>
+                      {p.last_status && (
+                        <Badge variant={p.last_status === "error" || p.last_status === "timeout" ? "destructive" : "secondary"} className="whitespace-nowrap font-normal">
+                          {p.last_status}{p.last_duration_ms != null ? ` ${p.last_duration_ms} мс` : ""}
+                        </Badge>
+                      )}
+                    </div>
+                  ))}
+                  {!data.scheduler.periodic.length && (
+                    <div className="px-3 py-4 text-xs text-muted-foreground">В этом процессе планировщик не запущен (WORKER_ROLE=web)</div>
+                  )}
+                </div>
+              </div>
+            </div>
+            {data.scheduler.recent.length > 0 && (
+              <div className="mt-3">
+                <p className="mb-1 text-xs font-semibold text-muted-foreground">Недавно завершённые</p>
+                <div className="grid gap-1 sm:grid-cols-2 xl:grid-cols-3">
+                  {data.scheduler.recent.map((t) => (
+                    <div key={t.task_id + (t.finished_at ?? "")} className="flex items-center gap-2 rounded-lg border px-2 py-1.5 text-xs">
+                      <span className="truncate font-mono" title={t.task_id}>{t.task_id}</span>
+                      <Badge variant={t.status === "error" || t.status === "timeout" ? "destructive" : "secondary"} className="ml-auto font-normal">{t.status}</Badge>
+                      <span className="whitespace-nowrap text-muted-foreground">{t.duration_ms ?? "-"} мс</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="subsystems" className="mt-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Служба</TableHead>
+                  <TableHead>Состояние</TableHead>
+                  <TableHead>Подробности</TableHead>
+                  <TableHead>Источник</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.subsystems.map((s) => (
+                  <TableRow key={s.name}>
+                    <TableCell className="text-sm font-medium">{s.name}</TableCell>
+                    <TableCell>
+                      <Badge variant={s.running ? "default" : "secondary"}>{s.running ? "работает" : "не запущена"}</Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{s.detail}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{s.source}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TabsContent>
+        </Tabs>
+      </CardContent>
+    </Card>
+  )
 }
 
 function fmtUptime(secs: number): string {
@@ -146,6 +451,16 @@ export function PerfMonitorPage() {
     enabled,
   })
 
+  // Диспетчер задач: живой опрос каждые ~2с (первый ответ после старта
+  // бэкенда покажет 0% — окно дельты ещё не набралось).
+  const { data: taskManager } = useQuery({
+    queryKey: ["perf-task-manager"],
+    queryFn: () => api.get<TaskManagerResponse>("/api/v1/admin/perf/task-manager"),
+    enabled,
+    refetchInterval: 2200,
+    refetchIntervalInBackground: false,
+  })
+
   const clearMutation = useMutation({
     mutationFn: () => api.delete<{ deleted: number }>("/api/v1/admin/perf/anomalies"),
     onSuccess: (res) => {
@@ -155,6 +470,8 @@ export function PerfMonitorPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  const [tmTab, setTmTab] = useState("processes")
 
   if (admin && !admin.is_superuser) {
     return (
@@ -214,6 +531,8 @@ export function PerfMonitorPage() {
           </CardContent>
         </Card>
       )}
+
+      {taskManager && <TaskManagerSection data={taskManager} tab={tmTab} onTab={setTmTab} />}
 
       {health?.scheduler && health.scheduler.recent_tasks.length > 0 && (
         <Card className="mb-4 overflow-hidden py-0">

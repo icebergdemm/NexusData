@@ -329,6 +329,55 @@ class TaskScheduler:
         for tid in to_delete:
             self._results.pop(tid, None)
 
+    def system_snapshot(self) -> dict:
+        """Introspection for the admin "Диспетчер задач" page (routes/perf_monitor.py).
+
+        Reads ONLY this scheduler's in-memory state: no locking of resources
+        beyond the brief _lock guard, no DB, safe to call from any thread.
+        Periodic rows include the planned next run so the UI can show
+        "когда запустится", not just "что запускалось"."""
+        now = time.monotonic()
+        with self._lock:
+            active = []
+            for r in self._results.values():
+                if r.status == "running":
+                    active.append(r.to_dict())
+            active.sort(key=lambda r: r.get("started_at") or "")
+            periodic = []
+            for p in self._periodic:
+                task_id = p["task_id"]
+                last = self._results.get(task_id)
+                last_status = last.status if last else None
+                last_duration = last.duration_ms if last else None
+                running = task_id in self._active_ids
+                periodic.append({
+                    "task_id": task_id,
+                    "interval_secs": p["interval"],
+                    "priority": p["priority"].name if isinstance(p["priority"], Priority) else str(p["priority"]),
+                    "timeout_secs": p["timeout"],
+                    # <=0 means the tick is already due and waiting for a
+                    # worker (or deduplicated away from a previous run).
+                    "due_in_secs": round(p["interval"] - (now - p["last_run"]), 1),
+                    "running": running,
+                    "last_status": last_status,
+                    "last_duration_ms": last_duration,
+                })
+            periodic.sort(key=lambda row: row["due_in_secs"])
+            recent = [
+                r.to_dict() for r in self._results.values()
+                if r.status in ("done", "error", "timeout")
+            ]
+            recent.sort(key=lambda r: r.get("finished_at") or "", reverse=True)
+            recent = recent[:15]
+        return {
+            "available": self._started,
+            "workers": self._worker_count,
+            "queue_size": self._queue.qsize(),
+            "active": active,
+            "periodic": periodic,
+            "recent": recent,
+        }
+
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 
