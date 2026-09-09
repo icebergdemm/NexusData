@@ -567,6 +567,23 @@ def task_cleanup_replays() -> dict:
         db.close()
 
 
+def task_finalize_replay_streams() -> dict:
+    """Pack abandoned replay streams (>5 min without new chunks) into demos.
+
+    Streams idle past STREAM_FINALIZE_SECONDS are assembled as *broken* demos
+    into the common catalog and their chunk directories are deleted (see
+    finalize_expired_streams in routes/replays.py). Restart-resilient by
+    construction: the work set is re-derived from chunk mtimes on disk on
+    every run, so orphans left by a restart or a missed tick are picked up on
+    the next run. Runs every minute at BACKGROUND priority."""
+    from routes.replays import finalize_expired_streams
+    try:
+        return finalize_expired_streams()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Replay stream finalization failed")
+        return {"status": "error", "error": str(e)}
+
+
 def task_cleanup_communications() -> dict:
     """Delete expired chat/voice metadata using the admin-configured retention."""
     from routes.communications import purge_expired_communications
@@ -1497,6 +1514,7 @@ def _start_simple_workers():
         (task_project_rating_events, 10),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
+        (task_finalize_replay_streams, 60),
         (task_cleanup_communications, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
@@ -1582,6 +1600,20 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="replay_cleanup",
+    )
+
+    # Abandoned replay streams: assemble into broken demos in the common
+    # catalog and delete the chunk directories. BACKGROUND priority, every
+    # minute. Restart-resilient: the work set is re-derived from chunk mtimes
+    # on disk on every run, so orphans left by a restart are picked up on the
+    # next tick. timeout=None: assembling a large demo may exceed the default
+    # 120s task limit, same as the dossier worker.
+    scheduler.register_periodic(
+        task_finalize_replay_streams,
+        interval_secs=60,
+        priority=Priority.BACKGROUND,
+        task_id="replay_stream_finalize",
+        timeout=None,
     )
 
     scheduler.register_periodic(

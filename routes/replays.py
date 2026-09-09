@@ -14,6 +14,7 @@ import asyncio
 import shutil
 import struct
 import threading
+import time
 import hashlib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,11 @@ ws_router = APIRouter(prefix="/api/v1/replays", tags=["replays-stream"])
 STREAM_ROOT = os.path.join(settings.replays_upload_dir, ".streaming")
 STREAM_MAX_CHUNK = 2 * 1024 * 1024
 STREAM_STALE_SECONDS = 60
+# A stream that has seen no new chunk for this long is considered abandoned:
+# it is assembled into a *broken* demo in the common catalog and its chunk
+# directory is deleted. The 60s snapshot above keeps the directory for a
+# possible resume; this threshold is the final, irreversible step.
+STREAM_FINALIZE_SECONDS = 5 * 60
 _live_cache = {}
 _live_cache_lock = threading.Lock()
 
@@ -78,7 +84,7 @@ def _expire_stale_streams() -> None:
     """Materialize disconnected streams so they remain playable after an hour."""
     if not os.path.isdir(STREAM_ROOT):
         return
-    cutoff = datetime.utcnow().timestamp() - STREAM_STALE_SECONDS
+    cutoff = time.time() - STREAM_STALE_SECONDS
     for stream_id in os.listdir(STREAM_ROOT):
         directory = os.path.join(STREAM_ROOT, stream_id)
         if not os.path.isdir(directory) or os.path.getmtime(directory) > cutoff:
@@ -92,6 +98,85 @@ def _expire_stale_streams() -> None:
             _assemble_stream(directory, b"", None, broken=True, keep_directory=True)
         except Exception:
             logger.exception("Could not preserve stale replay stream %s", stream_id)
+
+
+def _stream_last_activity(directory: str) -> float:
+    """Newest mtime inside a stream directory — i.e. when the last chunk landed.
+
+    Directory mtime alone is not the signal: creating a chunk bumps it, but a
+    stream whose chunks stopped arriving keeps a stale directory mtime that
+    says nothing about the newest chunk. The max over the *.bin files is the
+    actual "last chunk created" time — including for streams whose watcher
+    tick was never scheduled (missed ticks, restarts, crashes).
+    """
+    try:
+        newest = os.path.getmtime(directory)
+    except OSError:
+        return 0.0
+    try:
+        for name in os.listdir(directory):
+            if not name.endswith(".bin"):
+                continue
+            try:
+                mtime = os.path.getmtime(os.path.join(directory, name))
+            except OSError:
+                continue
+            if mtime > newest:
+                newest = mtime
+    except OSError:
+        pass
+    return newest
+
+
+def finalize_expired_streams(
+    max_age_seconds: float = STREAM_FINALIZE_SECONDS,
+    root: Optional[str] = None,
+) -> dict:
+    """Pack abandoned streams into broken demos and delete their chunk folders.
+
+    A stream directory whose newest chunk is older than `max_age_seconds` is
+    assembled via _assemble_stream(broken=True) — which registers the demo in
+    the common catalog with is_broken — and its chunk directory is removed
+    (keep_directory=False). The mtime check runs immediately before each
+    assembly, so a stream that resumes mid-scan is left alone.
+
+    Restart-resilience is by construction: there is no in-memory queue and no
+    per-stream timer. Every call re-derives the work set from chunk mtimes on
+    disk, so streams orphaned by a restart, a missed tick, or a crashed
+    assembly are picked up on the next run. Failed assemblies are logged with
+    the stream id and reported in "errors".
+    """
+    base = root or STREAM_ROOT
+    if not os.path.isdir(base):
+        return {"finalized": [], "skipped": [], "errors": {}}
+    try:
+        threshold = max(0.0, float(max_age_seconds))
+    except (TypeError, ValueError):
+        threshold = STREAM_FINALIZE_SECONDS
+    cutoff = time.time() - threshold
+    finalized: list = []
+    skipped: list = []
+    errors: dict = {}
+    for stream_id in sorted(os.listdir(base)):
+        directory = os.path.join(base, stream_id)
+        if not os.path.isdir(directory):
+            continue
+        if _stream_last_activity(directory) > cutoff:
+            skipped.append(stream_id)
+            continue
+        # A directory without sequence zero is an orphan, not a playable
+        # stream — same rule as _expire_stale_streams: leave it alone.
+        if not os.path.exists(os.path.join(directory, "00000000.bin")):
+            skipped.append(stream_id)
+            continue
+        try:
+            _assemble_stream(directory, b"", None, broken=True, keep_directory=False)
+        except Exception as exc:
+            logger.exception("Could not finalize expired replay stream %s", stream_id)
+            errors[stream_id] = str(exc)
+            continue
+        finalized.append(stream_id)
+    return {"finalized": finalized, "skipped": skipped, "errors": errors}
 
 
 async def _read_stream_chunk(request: Request) -> bytes:
