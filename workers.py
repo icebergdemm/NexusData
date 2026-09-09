@@ -569,7 +569,29 @@ def task_cleanup_replays() -> dict:
 
 def task_index_replay_voice() -> dict:
     """Queue retained replay voice indexes and retry failed jobs."""
-    from services_voice_index import task_index_pending_voice_replays
+    from services_voice_index import queue_voice_index_backfill, task_index_pending_voice_replays
+    from models import VoiceIndexRun
+
+    # The HTTP tier may be a separate multi-worker process without a running
+    # in-memory scheduler. Manual backfill requests are durable DB rows; the
+    # scheduler process must claim them here instead of waiting forever in
+    # ``pending``.
+    db = SessionLocal()
+    try:
+        pending_run = (
+            db.query(VoiceIndexRun)
+            .filter(VoiceIndexRun.status == "pending")
+            .order_by(VoiceIndexRun.created_at.asc())
+            .first()
+        )
+        if pending_run:
+            task_id = queue_voice_index_backfill(pending_run.id)
+            return {
+                "manual_run_id": pending_run.id,
+                "manual_run_queued": bool(task_id),
+            }
+    finally:
+        db.close()
 
     return task_index_pending_voice_replays()
 

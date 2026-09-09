@@ -1002,13 +1002,20 @@ def _index_replay_task(replay_id: int) -> dict:
 
 def queue_replay_voice_index(replay_id: int) -> str | None:
     """Queue one replay without doing binary work in the HTTP request."""
+    task_id = f"replay_voice_index_{replay_id}_v{VOICE_INDEX_VERSION}"
+    # In multi-worker deployments HTTP processes deliberately do not start a
+    # scheduler. The durable replay row is picked up by the dedicated worker's
+    # periodic scan instead of being placed into a private, never-consumed
+    # in-memory queue in the web process.
+    if os.environ.get("WORKER_ROLE") == "web":
+        return task_id
     try:
         from task_scheduler import Priority, scheduler
 
         return scheduler.submit(
             _index_replay_task,
             priority=Priority.BACKGROUND,
-            task_id=f"replay_voice_index_{replay_id}_v{VOICE_INDEX_VERSION}",
+            task_id=task_id,
             args=(replay_id,),
             timeout=300.0,
         )
@@ -1320,13 +1327,16 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
 
 
 def queue_voice_index_backfill(run_id: int) -> str | None:
+    task_id = f"voice_index_backfill_run_{run_id}"
+    if os.environ.get("WORKER_ROLE") == "web":
+        return task_id
     try:
         from task_scheduler import Priority, scheduler
 
         return scheduler.submit(
             task_run_voice_backfill,
             priority=Priority.BACKGROUND,
-            task_id=f"voice_index_backfill_run_{run_id}",
+            task_id=task_id,
             args=(run_id,),
             timeout=None,
         )

@@ -39,7 +39,8 @@ from routes.voice_index import (
     api_resolve_voice_speakers,
     api_start_voice_index,
 )
-from services_voice_index import get_active_voice_index_run, task_run_voice_backfill
+from services_voice_index import get_active_voice_index_run, queue_voice_index_backfill, task_run_voice_backfill
+from workers import task_index_replay_voice
 
 
 def _db():
@@ -118,6 +119,35 @@ def test_superuser_start_creates_run_and_queues_backfill():
     assert response["status"] == "pending"
     queue.assert_called_once_with(response["id"])
     assert db.query(VoiceIndexRunLog).filter(VoiceIndexRunLog.run_id == response["id"]).count() == 1
+
+
+def test_web_worker_does_not_queue_backfill_into_private_scheduler(monkeypatch):
+    monkeypatch.setenv("WORKER_ROLE", "web")
+
+    with patch("task_scheduler.scheduler.submit") as submit:
+        task_id = queue_voice_index_backfill(123)
+
+    assert task_id == "voice_index_backfill_run_123"
+    submit.assert_not_called()
+
+
+def test_scheduler_scan_claims_pending_manual_backfill():
+    db = _db()
+    try:
+        run = VoiceIndexRun(status="pending", requested_by_admin_id=1)
+        db.add(run)
+        db.commit()
+
+        with patch("workers.SessionLocal", return_value=db), patch(
+            "services_voice_index.queue_voice_index_backfill",
+            return_value="voice_index_backfill_run_1",
+        ) as queue:
+            result = task_index_replay_voice()
+
+        assert result == {"manual_run_id": run.id, "manual_run_queued": True}
+        queue.assert_called_once_with(run.id)
+    finally:
+        db.close()
 
 
 def test_cancel_pending_run_marks_it_cancelled():
