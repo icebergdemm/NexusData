@@ -33,7 +33,7 @@ from routes.voice_index import (
     api_get_voice_index_logs,
     api_start_voice_index,
 )
-from services_voice_index import task_run_voice_backfill
+from services_voice_index import get_active_voice_index_run, task_run_voice_backfill
 
 
 def _db():
@@ -118,7 +118,7 @@ def test_cancel_pending_run_marks_it_cancelled():
     assert run.status == "cancelled"
 
 
-def test_cancel_running_run_requests_stop_after_current_replay():
+def test_cancel_running_run_becomes_terminal_immediately():
     db = _db()
     admin = _admin(True)
     db.add(admin)
@@ -129,9 +129,9 @@ def test_cancel_running_run_requests_stop_after_current_replay():
 
     response = asyncio.run(api_cancel_voice_index(run.id, db=db, current_admin=admin))
 
-    assert response["status"] == "cancelling"
+    assert response["status"] == "cancelled"
     db.refresh(run)
-    assert run.status == "cancelling"
+    assert run.status == "cancelled"
 
 
 def test_cancelled_run_worker_finishes_without_processing_replays():
@@ -146,6 +146,20 @@ def test_cancelled_run_worker_finishes_without_processing_replays():
     result = task_run_voice_backfill(run.id, session_factory=lambda: db)
 
     assert result["status"] == "cancelled"
+    db.refresh(run)
+    assert run.status == "cancelled"
+
+
+def test_restart_recovers_legacy_cancelling_run():
+    db = _db()
+    admin = _admin(True)
+    db.add(admin)
+    db.commit()
+    run = VoiceIndexRun(requested_by_admin_id=admin.id, status="cancelling")
+    db.add(run)
+    db.commit()
+
+    assert get_active_voice_index_run(db) is None
     db.refresh(run)
     assert run.status == "cancelled"
 

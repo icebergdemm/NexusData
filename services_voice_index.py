@@ -669,6 +669,19 @@ def get_active_voice_index_run(db):
         .order_by(VoiceIndexRun.created_at.desc())
         .first()
     )
+    # ``cancelling`` was used by the first stop implementation. It can be
+    # left behind when the process restarts between the HTTP request and the
+    # worker's next database refresh, so recover it as a terminal state rather
+    # than making the page wait for the stale-run timeout.
+    if run and run.status == "cancelling":
+        now = datetime.utcnow()
+        run.status = "cancelled"
+        run.finished_at = run.finished_at or now
+        run.heartbeat_at = now
+        run.last_message = "Индексация остановлена"
+        _voice_run_log(db, run, status="cancelled", message=run.last_message)
+        db.commit()
+        return None
     if run and _mark_stale_voice_run(db, run):
         return None
     return run
@@ -771,7 +784,9 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         service = VoiceIndexService(db)
         for replay_id in replay_ids:
             db.refresh(run)
-            if run.status == "cancelling":
+            if run.status in ("cancelling", "cancelled"):
+                if run.status == "cancelled":
+                    return _voice_run_dict(run)
                 now = datetime.utcnow()
                 run.status = "cancelled"
                 run.finished_at = now
@@ -806,7 +821,9 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
             db.commit()
 
         db.refresh(run)
-        if run.status == "cancelling":
+        if run.status in ("cancelling", "cancelled"):
+            if run.status == "cancelled":
+                return _voice_run_dict(run)
             run.status = "cancelled"
             run.finished_at = datetime.utcnow()
             run.heartbeat_at = run.finished_at

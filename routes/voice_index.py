@@ -104,16 +104,16 @@ async def api_cancel_voice_index(
         return _run_response(run)
 
     now = datetime.utcnow()
-    if run.status == "pending":
-        run.status = "cancelled"
-        run.finished_at = now
-        run.heartbeat_at = now
-        run.last_message = "Индексация остановлена до запуска"
-        log_status = "cancelled"
-    else:
-        run.status = "cancelling"
-        run.last_message = "Остановка запрошена; текущий реплей будет завершён"
-        log_status = "cancelling"
+    previous_status = run.status
+    run.status = "cancelled"
+    run.finished_at = now
+    run.heartbeat_at = now
+    run.last_message = (
+        "Индексация остановлена до запуска"
+        if previous_status == "pending"
+        else "Остановка запрошена; текущий реплей будет завершён"
+    )
+    log_status = "cancelled"
     _voice_run_log(db, run, status=log_status, message=run.last_message)
     db.commit()
 
