@@ -567,35 +567,6 @@ def task_cleanup_replays() -> dict:
         db.close()
 
 
-def task_index_replay_voice() -> dict:
-    """Queue retained replay voice indexes and retry failed jobs."""
-    from services_voice_index import queue_voice_index_backfill, task_index_pending_voice_replays
-    from models import VoiceIndexRun
-
-    # The HTTP tier may be a separate multi-worker process without a running
-    # in-memory scheduler. Manual backfill requests are durable DB rows; the
-    # scheduler process must claim them here instead of waiting forever in
-    # ``pending``.
-    db = SessionLocal()
-    try:
-        pending_run = (
-            db.query(VoiceIndexRun)
-            .filter(VoiceIndexRun.status == "pending")
-            .order_by(VoiceIndexRun.created_at.asc())
-            .first()
-        )
-        if pending_run:
-            task_id = queue_voice_index_backfill(pending_run.id)
-            return {
-                "manual_run_id": pending_run.id,
-                "manual_run_queued": bool(task_id),
-            }
-    finally:
-        db.close()
-
-    return task_index_pending_voice_replays()
-
-
 def task_cleanup_communications() -> dict:
     """Delete expired chat/voice metadata using the admin-configured retention."""
     from routes.communications import purge_expired_communications
@@ -1413,62 +1384,6 @@ def task_memory_maintenance() -> dict:
     }
 
 
-_APP_TMP_MAX_AGE_SECONDS = 24 * 3600
-
-
-def task_cleanup_app_tmp() -> dict:
-    """Delete stale spool files from data/tmp — the app's tempfile.tempdir.
-
-    main.py redirects every tempfile (multipart uploads, document/ONLYOFFICE
-    conversions, ...) into data/tmp. A request that crashed or was abandoned
-    mid-upload used to leave its spool file there FOREVER: nothing in this
-    codebase ever cleaned the directory, and the slow accumulation was one of
-    the causes of the 2026-09-09 "Disk got full" outage. Files younger than
-    _APP_TMP_MAX_AGE_SECONDS belong to in-flight requests and are left alone.
-    Runs hourly (BACKGROUND)."""
-    import time as _time
-
-    tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tmp")
-    if not os.path.isdir(tmp_dir):
-        return {"status": "ok", "deleted_files": 0, "reclaimed_bytes": 0}
-
-    cutoff = _time.time() - _APP_TMP_MAX_AGE_SECONDS
-    deleted = 0
-    reclaimed = 0
-    errors = 0
-    for root, _dirs, files in os.walk(tmp_dir):
-        for name in files:
-            path = os.path.join(root, name)
-            try:
-                stat = os.stat(path)
-            except FileNotFoundError:
-                continue
-            except OSError:
-                errors += 1
-                continue
-            if stat.st_mtime > cutoff:
-                continue
-            try:
-                os.remove(path)
-                deleted += 1
-                reclaimed += stat.st_size
-            except OSError:
-                errors += 1
-
-    # Prune subdirectories that just became empty (tempfile itself only
-    # creates flat files here, but downstream code may nest).
-    for root, dirs, _files in os.walk(tmp_dir, topdown=False):
-        for name in dirs:
-            try:
-                os.rmdir(os.path.join(root, name))
-            except OSError:
-                pass
-
-    if deleted or errors:
-        logger.info("[TmpCleanup] deleted=%s reclaimed_bytes=%s errors=%s", deleted, reclaimed, errors)
-    return {"status": "ok", "deleted_files": deleted, "reclaimed_bytes": reclaimed, "errors": errors}
-
-
 def task_sample_perf_resources() -> dict:
     """CPU/RAM-сэмпл процесса+системы для страницы «Мониторинг
     производительности» — см. services_perf_monitor.py про то, почему это
@@ -1607,7 +1522,6 @@ def _start_simple_workers():
         (task_project_rating_events, 10),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
-        (task_index_replay_voice, 60),
         (task_cleanup_communications, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
@@ -1693,17 +1607,6 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="replay_cleanup",
-    )
-
-    # Voice indexing is intentionally independent from page requests.  The
-    # repeated scan is the recovery mechanism after a worker/process failure;
-    # the per-replay scheduler task remains deduplicated.
-    scheduler.register_periodic(
-        task_index_replay_voice,
-        interval_secs=60,
-        priority=Priority.BACKGROUND,
-        task_id="replay_voice_index_backfill",
-        timeout=30,
     )
 
     scheduler.register_periodic(
@@ -1897,16 +1800,6 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.LOW,
         task_id="memory_maintenance",
-    )
-
-    # Stale tempfile spool files in data/tmp: BACKGROUND priority, hourly.
-    # See task_cleanup_app_tmp — unbounded growth of this directory was one
-    # of the causes of the 2026-09-09 disk-full outage.
-    scheduler.register_periodic(
-        task_cleanup_app_tmp,
-        interval_secs=60 * 60,
-        priority=Priority.BACKGROUND,
-        task_id="app_tmp_cleanup",
     )
 
     scheduler.register_periodic(

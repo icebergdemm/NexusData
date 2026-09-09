@@ -6,7 +6,6 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
-from starlette.concurrency import run_in_threadpool
 
 from database import get_db
 from models import AdminUser, AdminSession
@@ -73,22 +72,6 @@ async def api_perf_anomalies(
     }
 
 
-@router.get("/api/v1/admin/perf/task-manager")
-def api_perf_task_manager(
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Аналог Диспетчера задач Windows для контейнера (services_task_manager.py).
-
-    Синхронный def (а не async): сборка снимка — миллисекунды работы psutil
-    частого опрашивания страницы лучше держать в threadpool, а не в event
-    loop. Дельты CPU живут в module cache — первый запрос после старта
-    возвращает 0% (нет предыдущего окна)."""
-    _require_superuser(current_admin)
-    import services_task_manager as tm
-    return tm.build_snapshot()
-
-
 @router.delete("/api/v1/admin/perf/anomalies")
 async def api_perf_anomalies_clear(
     db: Session = Depends(get_db),
@@ -99,71 +82,3 @@ async def api_perf_anomalies_clear(
     deleted = db.query(PerfAnomaly).delete()
     db.commit()
     return {"status": "ok", "deleted": deleted}
-
-
-@router.post("/api/v1/admin/perf/task-manager/control")
-async def api_perf_task_manager_control(
-    request: Request,
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Управление процессами/службами из Диспетчера задач.
-
-    target: "pid:<pid>" (только API и его дочерние) | "scheduler" |
-    "log_worker" | "replay_worker" | "playtime_worker".
-    action: suspend | resume | kill | terminate | restart | stop | start | cancel_task.
-    Синхронные блокировки (scheduler.stop джойнит до 8с и psutil.wait)
-    выполняются в threadpool."""
-    _require_superuser(current_admin)
-    body = await request.json()
-    target = str(body.get("target") or "").strip()
-    action = str(body.get("action") or "").strip()
-    import services_task_manager as tm
-    try:
-        result = await run_in_threadpool(tm.execute_control, target, action)
-    except tm.ControlError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    tm.invalidate_snapshot_cache()
-    return {"status": "ok", **result}
-
-
-@router.post("/api/v1/admin/perf/task-manager/cpu-capture")
-async def api_perf_task_manager_cpu_capture(
-    request: Request,
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Сэмплирующий CPU-профайлер: N секунд агрегирует стеки всех потоков
-    по верхней функции. request.json(): {"seconds": 6} (1-15)."""
-    _require_superuser(current_admin)
-    import services_task_manager as tm
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-    seconds = body.get("seconds") or 6
-    try:
-        return await run_in_threadpool(tm.capture_cpu_profile, seconds)
-    except tm.ControlError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.post("/api/v1/admin/perf/task-manager/mem-profile")
-async def api_perf_task_manager_mem_profile(
-    request: Request,
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Профайлер памяти (tracemalloc): {"action": "start"|"snapshot"|"stop"}.
-    snapshot возвращает текущие лидеры аллокаций и прирост с прошлого
-    снимка по (файл:строка)."""
-    _require_superuser(current_admin)
-    import services_task_manager as tm
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-    action = str(body.get("action") or "").strip()
-    try:
-        return await run_in_threadpool(tm.mem_profile, action)
-    except tm.ControlError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc

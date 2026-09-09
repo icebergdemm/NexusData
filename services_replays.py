@@ -42,18 +42,6 @@ _MAGIC_DEMO = b"BDMO"
 _MAGIC_ZIP = b"PK\x03\x04"
 
 
-def _queue_voice_index(replay: RoundReplay) -> None:
-    """Hand indexing to the scheduler after the replay row is committed."""
-    if not replay.has_voice:
-        return
-    try:
-        from services_voice_index import queue_replay_voice_index
-
-        queue_replay_voice_index(replay.id)
-    except Exception:
-        logger.exception("Failed to queue voice index for replay %s", replay.id)
-
-
 # Action-specific extraction keeps item resolution deterministic.  Server
 # logs are intentionally stored verbatim, so the replay UI needs a small
 # adapter before it can show an inventory icon next to an event.  We extract
@@ -463,7 +451,6 @@ class ReplayService:
         self.db.add(replay)
         self.db.commit()
         self.db.refresh(replay)
-        _queue_voice_index(replay)
         logger.info(f"Saved replay {replay.id}: {stored_name} ({file_size} bytes)")
         return replay
 
@@ -574,7 +561,6 @@ class ReplayService:
         self.db.add(replay)
         self.db.commit()
         self.db.refresh(replay)
-        _queue_voice_index(replay)
         logger.info(f"Saved replay {replay.id} (streamed): {stored_name} ({file_size} bytes)")
         return replay
 
@@ -643,7 +629,6 @@ class ReplayService:
             self.db.add(replay)
         self.db.commit()
         self.db.refresh(replay)
-        _queue_voice_index(replay)
         return replay
 
     # ── Retention cleanup ──────────────────────────────────────────────────────
@@ -655,32 +640,6 @@ class ReplayService:
         expired = self.db.query(RoundReplay).filter(RoundReplay.uploaded_at < cutoff).all()
         count = 0
         for r in expired:
-            # Materialize any representative clips that still need this replay
-            # while the source bytes exist. The archive tables intentionally do
-            # not cascade from RoundReplay, so selected clips survive below.
-            archive_ready = True
-            try:
-                from models import ReplayVoiceSegment
-                from services_voice_archive import VoiceArchiveService
-
-                steam_ids = {
-                    steam_id
-                    for (steam_id,) in self.db.query(ReplayVoiceSegment.steam_id)
-                    .filter(ReplayVoiceSegment.replay_id == r.id)
-                    .all()
-                    if steam_id
-                }
-                if steam_ids:
-                    with self.db.begin_nested():
-                        VoiceArchiveService(self.db).reconcile_steam_ids(steam_ids)
-                        self.db.flush()
-            except Exception:
-                # Do not delete the only remaining source while the archive
-                # rebuild failed. The next scheduler pass can retry safely.
-                archive_ready = False
-                logger.exception("Voice archive reconciliation failed before deleting replay %s", r.id)
-            if not archive_ready:
-                continue
             path = os.path.join(self.upload_dir, r.stored_filename)
             if os.path.exists(path):
                 try:

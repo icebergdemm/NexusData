@@ -559,9 +559,6 @@
   let spatial = true, falloffDist = 3000;
   let voicePtr = 0, opusSupported = false;
   const speakerState = new Map();   // sid -> {mute, vol}
-  const voiceQuery = new URLSearchParams(window.location.search);
-  const initialVoiceSpeaker = Number(voiceQuery.get("voice_speaker"));
-  const initialVoiceAt = Number(voiceQuery.get("voice_at"));
   const speakingNow = new Set();    // sids speaking within window
   const speakingRadio = new Set();  // sids currently using the radio channel
   // Per-speaker Opus decoders (stateful codec — must NOT be shared between speakers)
@@ -1119,24 +1116,6 @@
     document.querySelectorAll(".rpv-player .rpv-pmute").forEach(b=>{b.innerHTML=speakerSoundIcon(m);});
     syncMuteAllBtn();
   }
-
-  function applyInitialVoiceFocus(){
-    if(!Number.isFinite(initialVoiceSpeaker)||!speakerState.has(initialVoiceSpeaker))return;
-    voiceEnabled=true;
-    const voiceToggle=document.getElementById("rpvVoiceEnable");
-    if(voiceToggle)voiceToggle.checked=true;
-    initAudio();
-    for(const[id,st]of speakerState){
-      st.mute=id!==initialVoiceSpeaker;
-      applyGain(id);
-    }
-    document.querySelectorAll(".rpv-player .rpv-pmute").forEach(button=>{
-      const row=button.closest(".rpv-player");
-      button.innerHTML=speakerSoundIcon(row&&Number(row.dataset.sid)!==initialVoiceSpeaker);
-    });
-    syncMuteAllBtn();
-    if(Number.isFinite(initialVoiceAt)&&initialVoiceAt>=0)applySeek(initialVoiceAt,true);
-  }
   function syncMuteAllBtn(){
     const btn=document.getElementById("rpvMuteAll");
     if(!btn)return;
@@ -1150,17 +1129,7 @@
 
   // ── UI wiring ────────────────────────────────────────────────────────────
   function wireUI(){
-    onGlobal(document.getElementById("rpvPlay"),"click",async()=>{
-      // Deep-links from the voice archive configure the selected speaker
-      // before the user interacts with this page. Browsers keep that
-      // AudioContext suspended until an actual gesture, so the normal play
-      // button must resume it before advancing the replay clock.
-      if(!playing&&voiceEnabled){
-        await initAudio();
-        if(audioCtx&&audioCtx.state==="suspended")await audioCtx.resume();
-      }
-      setPlaying(!playing);
-    });
+    onGlobal(document.getElementById("rpvPlay"),"click",()=>setPlaying(!playing));
     document.querySelectorAll(".rpv-speed").forEach(btn=>{
       onGlobal(btn,"click",()=>{speed=parseFloat(btn.dataset.speed);document.querySelectorAll(".rpv-speed").forEach(b=>b.classList.remove("active"));btn.classList.add("active");});
     });
@@ -1538,7 +1507,7 @@
       // заранее декодировать тысячи мелких пакетов в объекты JS.
 
       setStage("scene", STAGE_LABEL.scene+"…");
-      autoFit();buildPlayersPanel();applyInitialVoiceFocus();
+      autoFit();buildPlayersPanel();
       if(destroyed)return;
 
       loadingEl.style.display="none";

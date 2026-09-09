@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
-from fastapi.responses import RedirectResponse, HTMLResponse, FileResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
@@ -2117,96 +2117,6 @@ async def api_player_detail(
         "punishment_types": PUNISHMENT_TYPES,
         "punishment_type_labels": PUNISHMENT_TYPE_LABELS,
     }
-
-
-@router.get("/api/v1/admin/players/{player_id}/voice-segments")
-async def api_player_voice_segments(
-    player_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Return indexed replay voice fragments for superusers only."""
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только суперпользователь может прослушивать архив голоса")
-
-    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    from services_voice_index import VoiceIndexService, VOICE_INDEX_VERSION
-
-    items, total = VoiceIndexService(db).get_segments_for_player(
-        player.player_steamid,
-        page,
-        page_size,
-    )
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size if total else 0,
-        "index_version": VOICE_INDEX_VERSION,
-    }
-
-
-@router.get("/api/v1/admin/players/{player_id}/voice-clips")
-async def api_player_voice_clips(
-    player_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(8, ge=1, le=25),
-    db: Session = Depends(get_db),
-    current_admin: AdminUser = Depends(get_current_admin),
-):
-    """Return replay-grouped, replay-independent voice clips."""
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только суперпользователь может прослушивать архив голоса")
-
-    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    from services_voice_archive import VoiceArchiveService, VOICE_ARCHIVE_VERSION
-
-    groups, total_groups, total_clips = VoiceArchiveService(db).get_clips_for_steam_id(
-        player.player_steamid,
-        page,
-        page_size,
-    )
-    return {
-        "items": groups,
-        "total_groups": total_groups,
-        "total_clips": total_clips,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total_groups + page_size - 1) // page_size if total_groups else 0,
-        "archive_version": VOICE_ARCHIVE_VERSION,
-    }
-
-
-@router.get("/api/v1/admin/voice-clips/{clip_id}/audio")
-async def api_voice_clip_audio(
-    clip_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """Stream one archived NDVC clip to a superuser's browser."""
-    current_admin = load_current_admin(request, db)
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Только суперпользователь может прослушивать архив голоса")
-
-    from services_voice_archive import VoiceArchiveService
-
-    path = VoiceArchiveService(db).get_audio_path(clip_id)
-    if not path:
-        raise HTTPException(status_code=404, detail="Голосовой фрагмент не найден")
-    return FileResponse(
-        path=path,
-        media_type="application/octet-stream",
-        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
-    )
 
 
 @router.get("/api/v1/admin/discord-profiles/{discord_id}")

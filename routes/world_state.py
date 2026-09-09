@@ -153,12 +153,6 @@ async def world_init(request: Request, db: Session = Depends(get_game_db)):
     row.outline_w = body.get("outline_w")
     row.outline_h = body.get("outline_h")
     row.outline = body.get("outline") or []
-    # WorldDemoStreamer sends this exact character-id -> Steam/EOS mapping at
-    # round start.  It is separate from the demo binary so the replay format
-    # stays backward compatible and voice indexing never has to guess by name.
-    voice_map = body.get("voice_map")
-    if isinstance(voice_map, dict):
-        row.character_steamids = voice_map
     row.init_sent_at = _ms_to_dt(body.get("sent_at"))
     # world/init alone doesn't mean anything is "live" for the viewer yet
     # (no dynamic state), but it does mean the round exists — bump this so
@@ -166,39 +160,6 @@ async def world_init(request: Request, db: Session = Depends(get_game_db)):
     row.last_update_at = datetime.utcnow()
     db.commit()
     _try_queue_ai_world_briefing(db, row)
-    return JSONResponse({"status": "ok"})
-
-
-@router.post("/voice-map")
-async def world_voice_map(request: Request, db: Session = Depends(get_game_db)):
-    """Merge an exact character-id -> Steam/EOS mapping into a live round.
-
-    WorldDemoStreamer sends the initial map in ``/init``.  A player can join
-    later, so the first captured voice packet fills this one mapping entry.
-    No nickname is accepted here; the caller must provide the account ID that
-    came from the connected game client.
-    """
-    body = await _read_json_body(request)
-    round_id = body.get("round_id")
-    speaker_id = body.get("speaker_id")
-    steam_id = str(body.get("steam_id") or "").strip()
-    if not round_id or not steam_id:
-        raise HTTPException(status_code=400, detail="round_id and steam_id required")
-    try:
-        speaker_id = int(speaker_id)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="speaker_id must be an integer")
-    if speaker_id <= 0:
-        raise HTTPException(status_code=400, detail="speaker_id must be positive")
-
-    row = db.query(WorldRound).filter(WorldRound.round_id == round_id).first()
-    if not row:
-        row = WorldRound(round_id=round_id)
-        db.add(row)
-    mapping = dict(row.character_steamids or {})
-    mapping[str(speaker_id)] = steam_id
-    row.character_steamids = mapping
-    db.commit()
     return JSONResponse({"status": "ok"})
 
 

@@ -36,7 +36,6 @@ from .monster_spawn import game_router as monster_spawn_game_router, admin_route
 from .ai_dossier import router as ai_dossier_router
 from .communications import router as communications_router
 from .server_restart import router as server_restart_router
-from .voice_index import router as voice_index_router
 
 __all__ = [
     "status_router",
@@ -89,5 +88,4 @@ __all__ = [
     "ai_dossier_router",
     "communications_router",
     "server_restart_router",
-    "voice_index_router",
 ]

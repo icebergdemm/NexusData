@@ -46,9 +46,6 @@ EVENT_LOOP_LAG_THRESHOLD_S = 0.5     # лаг сверх интервала — 
 SLOW_REQUEST_THRESHOLD_S = 2.0       # HTTP-запрос дольше этого — аномалия
 HIGH_CPU_THRESHOLD_PCT = 85.0        # системный CPU
 HIGH_MEMORY_THRESHOLD_PCT = 90.0     # системная RAM
-LOW_DISK_FREE_MB = 2048              # свободное место — ниже этого шаг до
-                                     # "No space left on device" (инцидент
-                                     # 2026-09-09) начинался именно с этого
 
 RETENTION_DAYS = 14
 HISTORY_MAXLEN = 240                 # ~2 часа при сэмплировании раз в 30с
@@ -62,7 +59,6 @@ _COOLDOWNS = {
     "slow_request": 30,
     "high_cpu": 300,
     "high_memory": 300,
-    "low_disk": 300,
 }
 
 _last_recorded: Dict[str, float] = {}
@@ -249,12 +245,6 @@ def sample_resources() -> dict:
         sys_cpu = psutil.cpu_percent(interval=None)
         sys_ram_pct = psutil.virtual_memory().percent
         threads = proc.num_threads()
-        # Свободное место на томе приложения — shutil из stdlib, вызов
-        # микросекундный. MySQL-временные таблицы, SQLite-вакуум и логи
-        # живут на том же томе, поэтому "места меньше 2 ГБ" — это инцидент,
-        # а не метрика: именно так началось отключение 2026-09-09.
-        import shutil
-        disk_free_mb = shutil.disk_usage(os.path.dirname(os.path.abspath(__file__))).free / 1024 / 1024
     except Exception as e:
         logger.warning("perf_monitor.sample_resources: psutil error: %s", e)
         return {"status": "error", "error": str(e)}
@@ -266,7 +256,6 @@ def sample_resources() -> dict:
         "rss_mb": round(rss_mb, 1),
         "sys_ram_pct": round(sys_ram_pct, 1),
         "threads": threads,
-        "disk_free_mb": round(disk_free_mb),
         "event_loop_lag_ms": round(_latest_event_loop_lag_ms, 1),
     }
     _history.append(sample)
@@ -275,13 +264,6 @@ def sample_resources() -> dict:
         record_anomaly("high_cpu", round(sys_cpu, 1), detail=f"process={round(proc_cpu, 1)}%")
     if sys_ram_pct >= HIGH_MEMORY_THRESHOLD_PCT and _should_record("high_memory", "high_memory"):
         record_anomaly("high_memory", round(sys_ram_pct, 1), detail=f"process_rss_mb={round(rss_mb, 1)}")
-    if disk_free_mb <= LOW_DISK_FREE_MB and _should_record("low_disk", "low_disk"):
-        logger.warning(
-            "[PerfMonitor] Мало места на диске: %.0f МБ свободно (порог %d МБ) — "
-            "временные файлы MySQL/SQLite и логи скоро перестанут писаться",
-            disk_free_mb, LOW_DISK_FREE_MB,
-        )
-        record_anomaly("low_disk", round(disk_free_mb), detail="disk_free_mb")
 
     return {"status": "ok", **sample}
 

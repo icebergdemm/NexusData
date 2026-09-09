@@ -183,13 +183,7 @@ async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(.
                     await websocket.close(code=1009, reason="chunk too large")
                     return
                 path = os.path.join(directory, f"{seq:08d}.bin")
-                try:
-                    await asyncio.to_thread(_write_stream_file, path, data)
-                except HTTPException as exc:
-                    # A genuine same-seq/different-data conflict — close the
-                    # socket cleanly instead of crashing the ASGI task.
-                    await websocket.close(code=1008, reason=str(exc.detail)[:120])
-                    return
+                await asyncio.to_thread(_write_stream_file, path, data)
                 await asyncio.to_thread(_consume_stream_chunk, safe_id, data, server_name)
                 await asyncio.to_thread(_mark_stream_live, safe_id)
                 started = True
@@ -212,50 +206,18 @@ async def replay_stream_websocket(websocket: WebSocket, stream_id: str = Query(.
 
 def _write_stream_file(path: str, data: bytes) -> None:
     if os.path.exists(path):
-        _repair_or_confirm_chunk(path, data)
-        return
+        with open(path, "rb") as existing:
+            if hashlib.sha256(existing.read()).digest() == hashlib.sha256(data).digest():
+                return
+        raise ValueError("sequence number already contains different data")
     try:
         with open(path, "xb") as f:
             f.write(data)
     except FileExistsError:
-        # A retried HTTP request may race with the original request. Chunks
-        # are addressed by sequence number, but "already exists" alone says
-        # nothing about WHICH bytes are there — run the same compare/repair
-        # path instead of silently accepting data we never looked at.
-        _repair_or_confirm_chunk(path, data)
-
-
-def _repair_or_confirm_chunk(path: str, data: bytes) -> None:
-    with open(path, "rb") as existing:
-        existing_data = existing.read()
-    if hashlib.sha256(existing_data).digest() == hashlib.sha256(data).digest():
+        # A retried HTTP request may race with the original request.  Chunks
+        # are addressed by sequence number, so accepting the existing file is
+        # safe and keeps the transport idempotent.
         return
-    if len(existing_data) >= len(data):
-        # Complete-size chunk with different bytes is a genuine conflict.
-        # A plain ValueError here used to surface as a 500 with a full
-        # traceback per retry — an explicit 409 tells the client this is
-        # not a transient failure and stops the unhandled-error log spam.
-        raise HTTPException(status_code=409, detail="sequence number already contains different data")
-    # A SHORTER existing file can only be a partial write (process crash or
-    # a full disk mid-write — production, 2026-09-09). The retry carries the
-    # complete chunk, so repairing the file here is what lets the stream
-    # recover; raising on it failed the whole round's replay forever while
-    # the plugin spammed identical 500s every second.
-    tmp_path = f"{path}.{secrets.token_hex(4)}.tmp"
-    try:
-        with open(tmp_path, "xb") as f:
-            f.write(data)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    logger.warning(
-        "Replay stream: repaired partial chunk %s (had %d bytes, wrote %d)",
-        os.path.basename(path), len(existing_data), len(data),
-    )
 
 
 def _stream_sequence_state(directory: str) -> tuple[int, bool]:
