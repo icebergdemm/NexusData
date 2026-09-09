@@ -198,6 +198,10 @@ async def api_resolve_voice_speakers(
 
     replay.voice_index_status = "partial"
     replay.voice_index_version = 0
+    # Operator-initiated requeue restarts the bounded retry budget (services_
+    # voice_index.VOICE_INDEX_MAX_ATTEMPTS) — an exhausted replay must become
+    # pickable again once a human has fixed something for it.
+    replay.voice_index_attempts = 0
     db.commit()
     task_id = queue_replay_voice_index(replay_id)
     if not task_id:

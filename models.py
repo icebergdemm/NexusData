@@ -1112,6 +1112,11 @@ class RoundReplay(Base):
     voice_archive_version = Column(Integer, nullable=False, default=0)
     voice_indexed_at = Column(DateTime, nullable=True)
     voice_index_error = Column(String(1000), nullable=True)
+    # Bounded retry budget: the 60-second periodic scan used to re-parse an
+    # erroring replay FOREVER (full demo read every minute = constant CPU +
+    # hundreds-of-MB RAM spikes). Past the cap the replay waits for explicit
+    # operator requeue (see routes/voice_index.py).
+    voice_index_attempts = Column(Integer, nullable=False, default=0)
 
 
 class ReplayVoiceSegment(Base):

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import struct
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -369,6 +370,16 @@ class VoiceArchiveService:
 
         selected = select_voice_archive_candidates(candidates.values())
         packet_cache: dict[int, list[VoicePacket]] = {}
+        # Track how many more selected candidates still need each replay's
+        # full voice extraction. Each cached extraction holds the ENTIRE
+        # replay's audio packets in RAM (hundreds of MB on long rounds), so
+        # a replay is evicted as soon as its candidates are done instead of
+        # accumulating every touched replay until the reconcile finishes.
+        remaining_extractions = Counter(
+            int(candidate["source_replay_id"])
+            for candidate in selected
+            if candidate.get("packet_records") is None
+        )
         materialized = 0
         ready: list[tuple[Mapping[str, object], object]] = []
         for candidate in selected:
@@ -377,6 +388,11 @@ class VoiceArchiveService:
                 continue
             materialized += int(created)
             ready.append((candidate, clip))
+            replay_id_key = int(candidate["source_replay_id"])
+            if candidate.get("packet_records") is None:
+                remaining_extractions[replay_id_key] -= 1
+                if remaining_extractions[replay_id_key] <= 0:
+                    packet_cache.pop(replay_id_key, None)
 
         self.db.query(VoiceArchiveSelection).filter(
             VoiceArchiveSelection.steam_id == steam_id

@@ -204,6 +204,8 @@ def _apply_migrations():
         ("round_replays", "stream_id", "VARCHAR(100)"),
         ("round_replays", "is_broken", "TINYINT NOT NULL DEFAULT 0"),
         ("round_replays", "broken_at", "DATETIME"),
+        # Bounded voice-index retry budget (see models.RoundReplay comment).
+        ("round_replays", "voice_index_attempts", "INT NOT NULL DEFAULT 0"),
         # Persistent replay voice archive.  The replay file remains the audio
         # source; these fields only track the asynchronous index lifecycle.
         ("round_replays", "voice_index_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'"),

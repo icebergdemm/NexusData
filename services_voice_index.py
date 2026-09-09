@@ -33,6 +33,11 @@ VOICE_MAP_MEMBER = "voice-map.json"
 VOICE_INDEX_VERSION = 5
 VOICE_INDEX_TEXT_LIMIT = 1000
 VOICE_MERGE_GAP_MS = 1000
+# How many times the 60-second periodic scan may re-parse a replay that
+# keeps failing before the replay needs explicit operator requeue. Without
+# this cap a permanently broken demo is fully re-read (CPU + a large RAM
+# spike from its voice packets) every minute, forever.
+VOICE_INDEX_MAX_ATTEMPTS = 5
 # ServerAsr and the replay recorder observe the same VoIP read on the game
 # server. Their timestamps should be nearly identical; a wider match would
 # start attributing nearby speakers by accident.
@@ -852,6 +857,17 @@ class VoiceIndexService:
             speaker_ids = {speaker_id for _, speaker_id in packets}
             unresolved_speaker_ids = sorted(speaker_ids - set(mapping) - skipped_speakers)
             skipped_speaker_ids = sorted(speaker_ids & skipped_speakers)
+            # Unresolved/skipped speakers are never archived (mapping is a
+            # hard requirement), so their raw audio can be released before
+            # the archive reconcile pass. On long rounds this alone drops
+            # hundreds of MB from the peak RSS of this task.
+            droppable_speakers = set(unresolved_speaker_ids) | set(skipped_speaker_ids)
+            if droppable_speakers:
+                for packet in packet_records:
+                    if packet.speaker_id in droppable_speakers:
+                        # VoicePacket is frozen; bypass __setattr__ to release
+                        # audio the archive can never use.
+                        object.__setattr__(packet, "data", b"")
             segments = self._segments_for_mapping(packets, mapping)
             self._save_speaker_details(
                 replay,
@@ -902,6 +918,7 @@ class VoiceIndexService:
             replay.voice_index_status = status
             replay.voice_index_version = VOICE_INDEX_VERSION
             replay.voice_archive_version = VOICE_ARCHIVE_VERSION
+            replay.voice_index_attempts = 0
             replay.voice_indexed_at = datetime.utcnow()
             replay.voice_index_error = (
                 "unresolved speaker_id(s): " + ", ".join(map(str, unresolved_speaker_ids))
@@ -948,6 +965,13 @@ class VoiceIndexService:
             if replay:
                 replay.voice_index_status = "error"
                 replay.voice_index_error = _bounded_voice_text(exc)
+                replay.voice_index_attempts = int(getattr(replay, "voice_index_attempts", 0) or 0) + 1
+                if replay.voice_index_attempts >= VOICE_INDEX_MAX_ATTEMPTS:
+                    logger.error(
+                        "Voice index: replay %s exhausted %d attempts — excluded from the "
+                        "automatic scan until an operator requeues it",
+                        replay_id, VOICE_INDEX_MAX_ATTEMPTS,
+                    )
                 self.db.commit()
             logger.exception("Voice index failed for replay %s", replay_id)
             return {"status": "error", "replay_id": replay_id, "error": _bounded_voice_text(exc)}
@@ -1061,6 +1085,12 @@ def task_index_pending_voice_replays(limit: int = 1) -> dict:
             .filter(
                 RoundReplay.uploaded_at >= cutoff,
                 RoundReplay.has_voice == 1,
+                # Bounded retry budget: never re-parse a replay that already
+                # exhausted its automatic attempts (see VOICE_INDEX_MAX_ATTEMPTS).
+                or_(
+                    RoundReplay.voice_index_attempts.is_(None),
+                    RoundReplay.voice_index_attempts < VOICE_INDEX_MAX_ATTEMPTS,
+                ),
                 or_(
                     RoundReplay.voice_index_status.in_(["pending", "running", "error"]),
                     RoundReplay.voice_index_version != VOICE_INDEX_VERSION,
@@ -1224,6 +1254,10 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
             .filter(
                 RoundReplay.uploaded_at >= cutoff,
                 RoundReplay.has_voice == 1,
+                or_(
+                    RoundReplay.voice_index_attempts.is_(None),
+                    RoundReplay.voice_index_attempts < VOICE_INDEX_MAX_ATTEMPTS,
+                ),
                 or_(
                     RoundReplay.voice_index_status.in_(["pending", "running", "error", "partial"]),
                     RoundReplay.voice_index_version != VOICE_INDEX_VERSION,
