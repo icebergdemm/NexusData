@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { groupLabelCategories, moveLabelCategory, moveLabelCategoryToGroup } from "../src/pages/label-categories/label-utils"
+import { getLabelDropIndex, groupLabelCategories, moveLabelCategory, moveLabelCategoryToGroup } from "../src/pages/label-categories/label-utils"
 
 const categories = [
   { id: 1, name: "Первая", color: "#111111", icon: "1", is_secret: false, folder_id: 10, sort_order: 0 },
@@ -46,4 +46,18 @@ test("keeps an empty ungrouped bucket as a drop target", () => {
 
   assert.deepEqual(grouped.map((group) => group.label), ["Основные", "Без папки"])
   assert.deepEqual(grouped[1].categories, [])
+})
+
+test("calculates insertion before and after a target row", () => {
+  const group = groupLabelCategories(categories, [{ id: 10, name: "Основные", sort_order: 0 }])[0]
+
+  assert.equal(getLabelDropIndex(group.categories, 1, 3, "before"), 0)
+  assert.equal(getLabelDropIndex(group.categories, 1, 3, "after"), 1)
+  assert.equal(getLabelDropIndex(group.categories, 3, 1, "after"), 1)
+})
+
+test("appends to a group when the drop target is its header", () => {
+  const group = groupLabelCategories(categories, [{ id: 10, name: "Основные", sort_order: 0 }])[0]
+
+  assert.equal(getLabelDropIndex(group.categories, 1, undefined, "after"), 1)
 })

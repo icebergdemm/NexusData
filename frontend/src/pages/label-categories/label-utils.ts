@@ -26,6 +26,8 @@ export interface LabelCategoryPlacement {
   folder_ids: Record<string, number | null>
 }
 
+export type LabelDropPosition = "before" | "after"
+
 export function groupLabelCategories(categories: LabelCategory[], folders: LabelFolder[], includeEmptyFolders = false): LabelCategoryGroup[] {
   const groups = new Map<number | null, LabelCategory[]>()
   for (const category of [...categories].sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))) {
@@ -77,6 +79,19 @@ export function moveLabelCategoryToGroup(
     ordered_ids: ordered.map((item) => item.id),
     folder_ids: Object.fromEntries(ordered.map((item) => [String(item.id), item.folder_id])),
   }
+}
+
+export function getLabelDropIndex(
+  categories: LabelCategory[],
+  draggedId: number,
+  targetId: number | undefined,
+  position: LabelDropPosition,
+): number {
+  const remaining = categories.filter((category) => category.id !== draggedId)
+  if (targetId === undefined) return remaining.length
+  const targetIndex = remaining.findIndex((category) => category.id === targetId)
+  if (targetIndex < 0) return -1
+  return targetIndex + (position === "after" ? 1 : 0)
 }
 
 export function moveLabelCategory(ids: number[], categoryId: number, targetIndex: number): number[] {
