@@ -110,7 +110,7 @@ async def api_perf_task_manager_control(
 
     target: "pid:<pid>" (только API и его дочерние) | "scheduler" |
     "log_worker" | "replay_worker" | "playtime_worker".
-    action: suspend | resume | kill | terminate | restart | stop | start.
+    action: suspend | resume | kill | terminate | restart | stop | start | cancel_task.
     Синхронные блокировки (scheduler.stop джойнит до 8с и psutil.wait)
     выполняются в threadpool."""
     _require_superuser(current_admin)

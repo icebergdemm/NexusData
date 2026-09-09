@@ -89,12 +89,19 @@ class VoicePacket:
 
 
 def _read_exact(stream: BinaryIO, size: int) -> bytes:
+    _raise_if_cancelled()
     if size < 0:
         raise VoiceIndexError("negative replay read size")
     data = stream.read(size)
     if len(data) != size:
         raise VoiceIndexError("truncated replay frame")
     return data
+
+
+def _raise_if_cancelled() -> None:
+    from task_scheduler import raise_if_task_cancelled
+
+    raise_if_task_cancelled()
 
 
 def _u8(stream: BinaryIO) -> int:
@@ -276,6 +283,7 @@ def _iter_replay_frames(stream: BinaryIO) -> Iterator[_ReplayFrame]:
     _skip(stream, 4)
 
     while True:
+        _raise_if_cancelled()
         marker = stream.read(1)
         if not marker:
             raise VoiceIndexError("replay has no end frame")
@@ -336,6 +344,7 @@ def extract_voice_packet_records(
         names_by_character: dict[int, set[str]] = {}
         voice_speakers: set[int] = set()
         for frame in _iter_replay_frames(source.stream):
+            _raise_if_cancelled()
             if frame.kind == "spawn" and frame.speaker_id is not None:
                 if frame.character_name:
                     names_by_character.setdefault(frame.speaker_id, set()).add(frame.character_name)
@@ -804,6 +813,7 @@ class VoiceIndexService:
     def index_replay(self, replay_id: int, _retry: int = 0) -> dict:
         from models import ReplayVoiceSegment, RoundReplay
         from services_voice_archive import VOICE_ARCHIVE_VERSION, VoiceArchiveService
+        from task_scheduler import TaskCancelled
 
         replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
         if not replay:
@@ -937,6 +947,14 @@ class VoiceIndexService:
                 "unresolved_speaker_ids": unresolved_speaker_ids,
                 "skipped_speaker_ids": skipped_speaker_ids,
             }
+        except TaskCancelled:
+            self.db.rollback()
+            replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
+            if replay:
+                replay.voice_index_status = "pending"
+                replay.voice_index_error = "Индексация остановлена оператором"
+                self.db.commit()
+            raise
         except Exception as exc:
             from sqlalchemy.exc import IntegrityError
 

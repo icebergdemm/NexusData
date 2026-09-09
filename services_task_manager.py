@@ -512,6 +512,12 @@ def _subsystem_control(subsystem: str, action: str) -> dict:
 
 def execute_control(target: str, action: str) -> dict:
     """Entry point for the admin route (see routes/perf_monitor.py)."""
+    if action == "cancel_task":
+        from task_scheduler import scheduler
+        task_id = target.removeprefix("task:")
+        if not scheduler.cancel(task_id):
+            raise ControlError(f"Задача уже завершена или не найдена: {task_id}")
+        return {"task_id": task_id, "action": action}
     if action not in ("suspend", "resume", "kill", "terminate", "restart", "stop", "start"):
         raise ControlError(f"Неизвестное действие: {action}")
     if target.startswith("pid:"):
@@ -633,4 +639,3 @@ def mem_profile(action: str) -> dict:
             _memprofile_prev_snapshot = now_snap
             return {"status": "ok", "top": top, "growth": growth, "tracing": True}
         raise ControlError(f"Неизвестное действие профайлера памяти: {action}")
-

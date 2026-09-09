@@ -215,7 +215,7 @@ function TaskManagerSection({ data, tab, onTab, onRefetch }: {
     mutationFn: (arg: { target: string; action: string }) =>
       api.post<{ status: string; warning?: string | null }>("/api/v1/admin/perf/task-manager/control", arg),
     onSuccess: (res, arg) => {
-      toast.success(`${{ suspend: "Приостановлен", resume: "Возобновлён", kill: "Завершён", terminate: "Остановлен", restart: "Перезапуск отправлен", stop: "Остановлена", start: "Запущена" }[arg.action as string] ?? arg.action}: ${arg.target}`)
+      toast.success(`${{ suspend: "Приостановлен", resume: "Возобновлён", kill: "Завершён", terminate: "Остановлен", restart: "Перезапуск отправлен", stop: "Остановлена", start: "Запущена", cancel_task: "Отмена отправлена" }[arg.action as string] ?? arg.action}: ${arg.target}`)
       if (res.warning) toast.warning(res.warning)
       onRefetch()
     },
@@ -241,7 +241,7 @@ function TaskManagerSection({ data, tab, onTab, onRefetch }: {
   })
 
   const control = (target: string, action: string, label: string, danger = true) =>
-    setPending({ target, action, title: `${action === "suspend" ? "Приостановить" : action === "kill" ? "Завершить" : action === "restart" ? "Перезапустить" : action === "resume" ? "Возобновить" : action === "stop" ? "Остановить" : "Запустить"} — ${label}`,
+    setPending({ target, action, title: `${action === "suspend" ? "Приостановить" : action === "kill" ? "Завершить" : action === "restart" ? "Перезапустить" : action === "resume" ? "Возобновить" : action === "stop" || action === "cancel_task" ? "Остановить" : "Запустить"} — ${label}`,
 
       description: danger
         ? "Действие выполняется сразу. Всё, что нужно, будет восстановлено вручную или после перезапуска контейнера."
@@ -422,6 +422,10 @@ function TaskManagerSection({ data, tab, onTab, onRefetch }: {
                       <span className="ml-auto text-xs text-muted-foreground">
                         {t.started_at ? `с ${new Date(t.started_at).toLocaleTimeString("ru-RU")}` : ""}
                       </span>
+                      <Button size="sm" variant="destructive" className="h-7 px-2" disabled={controlMutation.isPending}
+                        onClick={() => control(`task:${t.task_id}`, "cancel_task", t.task_id)} title="Остановить эту задачу">
+                        <Square className="size-3" /> Остановить
+                      </Button>
                     </div>
                   ))}
                   {!activeTasks.length && <div className="px-3 py-4 text-xs text-muted-foreground">Ничего не выполняется</div>}
