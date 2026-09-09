@@ -19,6 +19,7 @@ if sys.platform == "win32" and "fcntl" not in sys.modules:
     fcntl.flock = lambda *_args, **_kwargs: None
     sys.modules["fcntl"] = fcntl
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -107,6 +108,54 @@ def test_index_replaces_segments_and_is_idempotent():
 
             assert db.query(models.ReplayVoiceSegment).count() == 1
             assert db.query(models.RoundReplay).one().voice_index_status == "ready"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_index_retries_after_concurrent_speaker_row_insert():
+    engine, db = _db()
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-retry-") as directory:
+            path = os.path.join(directory, "round.barodemo")
+            with open(path, "wb") as replay_file:
+                replay_file.write(_demo())
+            replay = models.RoundReplay(
+                id=17,
+                filename="round.barodemo",
+                stored_filename="round.barodemo",
+                has_voice=1,
+                voice_index_status="pending",
+            )
+            db.add(replay)
+            db.add(models.WorldRound(round_id="stream-17", character_steamids={"7": "steam-7"}))
+            replay.stream_id = "stream-17"
+            db.commit()
+
+            class FakeReplayService:
+                def __init__(self, _db):
+                    pass
+
+                def get_file_path(self, _replay):
+                    return path
+
+            service = VoiceIndexService(db)
+            original_save = service._save_speaker_details
+            calls = 0
+
+            def flaky_save(*args, **kwargs):
+                nonlocal calls
+                if calls == 0:
+                    calls += 1
+                    raise IntegrityError("INSERT", {}, Exception("uq_replay_voice_speaker"))
+                return original_save(*args, **kwargs)
+
+            service._save_speaker_details = flaky_save
+            with patch("services_replays.ReplayService", FakeReplayService):
+                result = service.index_replay(replay.id)
+
+            assert result["status"] == "ready"
+            assert db.query(models.ReplayVoiceSpeaker).count() == 1
     finally:
         db.close()
         engine.dispose()

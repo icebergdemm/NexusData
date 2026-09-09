@@ -236,6 +236,34 @@ def test_backfill_run_records_ready_and_partial_logs():
     assert db.query(ReplayVoiceSegment).count() == 1
 
 
+def test_backfill_truncates_long_replay_error_in_run_message():
+    db = _db()
+    admin = _admin(True)
+    db.add(admin)
+    db.commit()
+    replay = RoundReplay(
+        filename="broken.barodemo",
+        stored_filename="broken.barodemo",
+        uploaded_at=datetime.utcnow(),
+        has_voice=True,
+        voice_index_status="pending",
+    )
+    db.add(replay)
+    run = VoiceIndexRun(requested_by_admin_id=admin.id)
+    db.add(run)
+    db.commit()
+
+    with patch(
+        "services_voice_index.VoiceIndexService.index_replay",
+        return_value={"status": "error", "replay_id": replay.id, "error": "x" * 6000},
+    ):
+        result = task_run_voice_backfill(run.id, session_factory=lambda: db)
+
+    assert result["status"] == "completed"
+    db.refresh(run)
+    assert len(run.last_message) <= 1000
+
+
 def test_log_list_is_paginated():
     db = _db()
     admin = _admin(True)

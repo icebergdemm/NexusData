@@ -31,6 +31,7 @@ VOICE_MAP_MEMBER = "voice-map.json"
 # v4 persists speaker-resolution details and keeps mapped voice segments when
 # another speaker in the same replay still needs moderator attention.
 VOICE_INDEX_VERSION = 4
+VOICE_INDEX_TEXT_LIMIT = 1000
 VOICE_MERGE_GAP_MS = 1000
 # ServerAsr and the replay recorder observe the same VoIP read on the game
 # server. Their timestamps should be nearly identical; a wider match would
@@ -46,6 +47,14 @@ class VoiceIndexError(ValueError):
 
 class VoiceMappingError(VoiceIndexError):
     """A voice packet has no confirmed Steam/EOS identity."""
+
+
+def _bounded_voice_text(value: object, limit: int = VOICE_INDEX_TEXT_LIMIT) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    suffix = " … [обрезано]"
+    return text[: max(0, limit - len(suffix))] + suffix
 
 
 @dataclass(frozen=True)
@@ -683,9 +692,46 @@ class VoiceIndexService:
 
         stats = self._speaker_stats(packets)
         existing = dict(manual_rows)
+        use_mysql_upsert = self.db.get_bind().dialect.name == "mysql"
         for speaker_id, row_stats in stats.items():
             row = existing.get(speaker_id)
             if row is None:
+                initial_status = "mapped" if speaker_id in mapping else "unresolved"
+                initial_source = mapping_sources.get(speaker_id) if speaker_id in mapping else None
+                initial_steam_id = mapping.get(speaker_id)
+                initial_values = {
+                    "replay_id": replay.id,
+                    "speaker_id": speaker_id,
+                    "names": sorted(speaker_names.get(speaker_id, set())),
+                    "candidate_profiles": candidates.get(speaker_id, []),
+                    "steam_id": initial_steam_id,
+                    "resolution_status": initial_status,
+                    "mapping_source": initial_source,
+                    "packet_count": row_stats["packet_count"],
+                    "start_ms": row_stats["start_ms"],
+                    "end_ms": row_stats["end_ms"],
+                }
+                if speaker_id in skipped_speakers:
+                    initial_values.update(
+                        steam_id=None,
+                        resolution_status="skipped",
+                        mapping_source="manual_skip",
+                    )
+                if use_mysql_upsert:
+                    from sqlalchemy.dialects.mysql import insert as mysql_insert
+
+                    statement = mysql_insert(ReplayVoiceSpeaker).values(**initial_values)
+                    self.db.execute(statement.on_duplicate_key_update(
+                        names=statement.inserted.names,
+                        candidate_profiles=statement.inserted.candidate_profiles,
+                        packet_count=statement.inserted.packet_count,
+                        start_ms=statement.inserted.start_ms,
+                        end_ms=statement.inserted.end_ms,
+                    ))
+                    # Another worker inserted the same speaker between our
+                    # read and write. The unique key is expected here; the
+                    # upsert keeps that race from aborting the replay.
+                    continue
                 row = ReplayVoiceSpeaker(replay_id=replay.id, speaker_id=speaker_id)
                 self.db.add(row)
             row.names = sorted(speaker_names.get(speaker_id, set()))
@@ -722,7 +768,7 @@ class VoiceIndexService:
             .all()
         }
 
-    def index_replay(self, replay_id: int) -> dict:
+    def index_replay(self, replay_id: int, _retry: int = 0) -> dict:
         from models import ReplayVoiceSegment, RoundReplay
 
         replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
@@ -814,14 +860,36 @@ class VoiceIndexService:
                 "skipped_speaker_ids": skipped_speaker_ids,
             }
         except Exception as exc:
+            from sqlalchemy.exc import IntegrityError
+
+            if (
+                _retry < 2
+                and isinstance(exc, IntegrityError)
+                and any(
+                    key in str(exc)
+                    for key in ("uq_replay_voice_speaker", "uq_replay_voice_segment")
+                )
+            ):
+                # A legacy scheduler run or a manual reindex can overlap this
+                # worker. Retry after the competing transaction has committed;
+                # the MySQL upsert above handles speaker rows, while this also
+                # covers segment inserts and deployments where an ORM insert
+                # was already flushed before the upsert path was reached.
+                self.db.rollback()
+                logger.warning("Retrying replay %s after concurrent speaker-row insert", replay_id)
+                try:
+                    return self.index_replay(replay_id, _retry=_retry + 1)
+                except IntegrityError:
+                    # The bounded retry below records the final compact error.
+                    pass
             self.db.rollback()
             replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
             if replay:
                 replay.voice_index_status = "error"
-                replay.voice_index_error = str(exc)[:1000]
+                replay.voice_index_error = _bounded_voice_text(exc)
                 self.db.commit()
             logger.exception("Voice index failed for replay %s", replay_id)
-            return {"status": "error", "replay_id": replay_id, "error": str(exc)}
+            return {"status": "error", "replay_id": replay_id, "error": _bounded_voice_text(exc)}
 
     def get_segments_for_player(self, steam_id: str, page: int, page_size: int) -> tuple[list[dict], int]:
         from sqlalchemy import desc, func
@@ -934,7 +1002,7 @@ def _voice_run_log(db, run, *, status: str, message: str, replay_id: int | None 
             replay_id=replay_id,
             level=level,
             status=status,
-            message=str(message)[:1000],
+            message=_bounded_voice_text(message),
         )
     )
 
@@ -1102,7 +1170,9 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
             seen_profile_ids.update(result.get("profile_ids") or [])
             run.profile_count = len(seen_profile_ids)
             if is_error:
-                run.last_message = f"Реплей #{replay_id}: ошибка — {result.get('error') or 'неизвестная ошибка'}"
+                run.last_message = _bounded_voice_text(
+                    f"Реплей #{replay_id}: ошибка — {result.get('error') or 'неизвестная ошибка'}"
+                )
             elif is_partial:
                 unresolved = result.get("unresolved_speaker_ids") or []
                 skipped = result.get("skipped_speaker_ids") or []
@@ -1161,7 +1231,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         run = db.query(VoiceIndexRun).filter(VoiceIndexRun.id == run_id).first()
         if run:
             run.status = "failed"
-            run.error = str(exc)[:1000]
+            run.error = _bounded_voice_text(exc)
             run.finished_at = datetime.utcnow()
             _voice_run_log(db, run, status="failed", level="error", message=run.error)
             db.commit()
