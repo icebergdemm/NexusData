@@ -39,7 +39,13 @@ from routes.voice_index import (
     api_resolve_voice_speakers,
     api_start_voice_index,
 )
-from services_voice_index import get_active_voice_index_run, queue_voice_index_backfill, task_run_voice_backfill
+from services_voice_index import (
+    _index_replay_task,
+    get_active_voice_index_run,
+    queue_replay_voice_index,
+    queue_voice_index_backfill,
+    task_run_voice_backfill,
+)
 from workers import task_index_replay_voice
 
 
@@ -148,6 +154,35 @@ def test_scheduler_scan_claims_pending_manual_backfill():
         queue.assert_called_once_with(run.id)
     finally:
         db.close()
+
+
+def test_automatic_voice_job_skips_while_manual_backfill_is_active():
+    db = _db()
+    try:
+        db.add(VoiceIndexRun(status="pending", requested_by_admin_id=1))
+        db.commit()
+
+        with patch("database.SessionLocal", return_value=db), patch(
+            "services_voice_index.VoiceIndexService.index_replay"
+        ) as index_replay:
+            result = _index_replay_task(123)
+
+        assert result == {
+            "status": "skipped",
+            "replay_id": 123,
+            "reason": "manual_run_active",
+        }
+        index_replay.assert_not_called()
+    finally:
+        db.close()
+
+
+def test_replay_voice_job_has_no_non_killable_timeout():
+    with patch("task_scheduler.scheduler.submit", return_value="voice-task") as submit:
+        result = queue_replay_voice_index(123)
+
+    assert result == "voice-task"
+    assert submit.call_args.kwargs["timeout"] is None
 
 
 def test_cancel_pending_run_marks_it_cancelled():

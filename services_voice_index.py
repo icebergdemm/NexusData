@@ -995,6 +995,21 @@ def _index_replay_task(replay_id: int) -> dict:
 
     db = SessionLocal()
     try:
+        active_run = get_active_voice_index_run(db)
+        if active_run:
+            # A manual backfill owns the voice index while it is active. Do
+            # not let an already queued automatic replay task parse another
+            # demo beside it and multiply memory pressure.
+            logger.info(
+                "Skipping automatic voice index for replay %s while backfill run %s is active",
+                replay_id,
+                active_run.id,
+            )
+            return {
+                "status": "skipped",
+                "replay_id": replay_id,
+                "reason": "manual_run_active",
+            }
         return VoiceIndexService(db).index_replay(replay_id)
     finally:
         db.close()
@@ -1017,15 +1032,19 @@ def queue_replay_voice_index(replay_id: int) -> str | None:
             priority=Priority.BACKGROUND,
             task_id=task_id,
             args=(replay_id,),
-            timeout=300.0,
+            # Do not wrap replay parsing in the scheduler's timeout helper.
+            # That helper uses a non-killable child thread; on timeout the
+            # worker is released while the parser keeps reading the demo,
+            # allowing later periodic scans to multiply memory usage.
+            timeout=None,
         )
     except Exception:
         logger.exception("Could not queue voice index for replay %s", replay_id)
         return None
 
 
-def task_index_pending_voice_replays(limit: int = 8) -> dict:
-    """Queue retained pending/error replays; safe to run repeatedly."""
+def task_index_pending_voice_replays(limit: int = 1) -> dict:
+    """Queue one retained replay at a time; safe to run repeatedly."""
     from database import SessionLocal
     from models import RoundReplay
     from services_voice_archive import VOICE_ARCHIVE_VERSION
@@ -1335,7 +1354,7 @@ def queue_voice_index_backfill(run_id: int) -> str | None:
 
         return scheduler.submit(
             task_run_voice_backfill,
-            priority=Priority.BACKGROUND,
+            priority=Priority.LOW,
             task_id=task_id,
             args=(run_id,),
             timeout=None,
