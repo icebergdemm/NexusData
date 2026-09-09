@@ -567,6 +567,13 @@ def task_cleanup_replays() -> dict:
         db.close()
 
 
+def task_index_replay_voice() -> dict:
+    """Queue retained replay voice indexes and retry failed jobs."""
+    from services_voice_index import task_index_pending_voice_replays
+
+    return task_index_pending_voice_replays()
+
+
 def task_cleanup_communications() -> dict:
     """Delete expired chat/voice metadata using the admin-configured retention."""
     from routes.communications import purge_expired_communications
@@ -1522,6 +1529,7 @@ def _start_simple_workers():
         (task_project_rating_events, 10),
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
+        (task_index_replay_voice, 60),
         (task_cleanup_communications, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
@@ -1607,6 +1615,17 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="replay_cleanup",
+    )
+
+    # Voice indexing is intentionally independent from page requests.  The
+    # repeated scan is the recovery mechanism after a worker/process failure;
+    # the per-replay scheduler task remains deduplicated.
+    scheduler.register_periodic(
+        task_index_replay_voice,
+        interval_secs=60,
+        priority=Priority.BACKGROUND,
+        task_id="replay_voice_index_backfill",
+        timeout=30,
     )
 
     scheduler.register_periodic(

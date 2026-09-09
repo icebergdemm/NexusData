@@ -1105,6 +1105,88 @@ class RoundReplay(Base):
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.
     manual_round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True)
+    # Voice indexing is deliberately asynchronous.  A replay page must never
+    # parse a several-hundred-megabyte demo just because somebody refreshed it.
+    voice_index_status = Column(String(20), nullable=False, default="pending", index=True)
+    voice_index_version = Column(Integer, nullable=False, default=0)
+    voice_indexed_at = Column(DateTime, nullable=True)
+    voice_index_error = Column(String(1000), nullable=True)
+
+
+class ReplayVoiceSegment(Base):
+    """One continuous voice run in a replay, keyed by stable player ID."""
+
+    __tablename__ = "replay_voice_segments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    replay_id = Column(
+        Integer,
+        ForeignKey("round_replays.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    steam_id = Column(String(50), nullable=False, index=True)
+    speaker_id = Column(Integer, nullable=False)
+    start_ms = Column(Integer, nullable=False)
+    end_ms = Column(Integer, nullable=False)
+    packet_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    replay = relationship("RoundReplay")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "replay_id", "speaker_id", "start_ms", "end_ms",
+            name="uq_replay_voice_segment",
+        ),
+        Index("ix_replay_voice_segments_steam_time", "steam_id", "start_ms"),
+    )
+
+
+class VoiceIndexRun(Base):
+    """One administrator-triggered retained-replay voice index run."""
+
+    __tablename__ = "voice_index_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    requested_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    total = Column(Integer, nullable=False, default=0)
+    processed = Column(Integer, nullable=False, default=0)
+    ready_count = Column(Integer, nullable=False, default=0)
+    error_count = Column(Integer, nullable=False, default=0)
+    last_replay_id = Column(Integer, nullable=True)
+    last_message = Column(String(1000), nullable=True)
+    error = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True, index=True)
+
+
+class VoiceIndexRunLog(Base):
+    """Short-lived operator journal for a voice index run."""
+
+    __tablename__ = "voice_index_run_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(
+        Integer,
+        ForeignKey("voice_index_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    replay_id = Column(Integer, nullable=True, index=True)
+    level = Column(String(10), nullable=False, default="info")
+    status = Column(String(20), nullable=False)
+    message = Column(String(1000), nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+    run = relationship("VoiceIndexRun")
+
+    __table_args__ = (
+        Index("ix_voice_index_run_logs_run_time", "run_id", "created_at"),
+    )
 
 
 class PlayerCommunication(Base):
@@ -2147,6 +2229,9 @@ class WorldRound(Base):
     last_doors_state = Column(JSON, nullable=True)  # [{id, open}]
     last_reactors = Column(JSON, nullable=True)
     last_characters = Column(JSON, nullable=True)
+    # Exact character-id -> Steam/EOS mapping captured at stream start.  This
+    # is the bridge for stream replays; names are never used as identity.
+    character_steamids = Column(JSON, nullable=True)
     last_items = Column(JSON, nullable=True)        # null = IncludeItems:false — never overwritten with null, see routes/world_state.py
     # Persistent once-per-round claim for the automatic AI sector briefing.
     # It prevents duplicate reports across Uvicorn workers and process restarts.

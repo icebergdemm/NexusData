@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2, Sparkles,
-  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole, MessageSquare,
+  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole, MessageSquare, Volume2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -37,6 +37,7 @@ import { useCurrentAdmin } from "@/lib/auth"
 import type { AIDossierResponse, PlayerDetailResponse, Note, LabelPair, PunishmentRow } from "./detail-types"
 import { DossierResultView } from "../ai-center/dossier-result"
 import { RewardsSection } from "./rewards-section"
+import { VoiceSegmentsSection } from "./voice-segments-section"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
@@ -513,6 +514,7 @@ export function PlayerDetailPage() {
           <TabsTrigger value="traps" className="flex-1 gap-1.5"><Radio className="h-3.5 w-3.5" /> Ловушки ({data.traps.length})</TabsTrigger>
           <TabsTrigger value="punishments" className="flex-1 gap-1.5"><Gavel className="h-3.5 w-3.5" /> Наказания ({data.punishments.length})</TabsTrigger>
           <TabsTrigger value="history" className="flex-1 gap-1.5"><HistoryIcon className="h-3.5 w-3.5" /> История</TabsTrigger>
+          {admin?.is_superuser && <TabsTrigger value="voice" className="flex-1 gap-1.5"><Volume2 className="h-3.5 w-3.5" /> Голос</TabsTrigger>}
           <TabsTrigger value="ai" className="flex-1 gap-1.5"><Sparkles className="h-3.5 w-3.5" /> ИИ-сводка</TabsTrigger>
         </TabsList>
 
@@ -813,6 +815,12 @@ export function PlayerDetailPage() {
             )}
           </div>
         </TabsContent>
+
+        {admin?.is_superuser && (
+          <TabsContent value="voice">
+            <VoiceSegmentsSection playerId={playerId!} />
+          </TabsContent>
+        )}
 
         <TabsContent value="ai" className="space-y-4">
           <Card>

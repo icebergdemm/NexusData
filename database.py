@@ -204,6 +204,13 @@ def _apply_migrations():
         ("round_replays", "stream_id", "VARCHAR(100)"),
         ("round_replays", "is_broken", "TINYINT NOT NULL DEFAULT 0"),
         ("round_replays", "broken_at", "DATETIME"),
+        # Persistent replay voice archive.  The replay file remains the audio
+        # source; these fields only track the asynchronous index lifecycle.
+        ("round_replays", "voice_index_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'"),
+        ("round_replays", "voice_index_version", "INT NOT NULL DEFAULT 0"),
+        ("round_replays", "voice_indexed_at", "DATETIME"),
+        ("round_replays", "voice_index_error", "VARCHAR(1000)"),
+        ("world_rounds", "character_steamids", "JSON"),
         # Kit variations + special kits (item 15) — additive; `items` (variation 1)
         # unchanged, so old game-server clients that only read job_id/kit_level/items
         # keep working untouched.

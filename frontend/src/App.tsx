@@ -39,6 +39,7 @@ const SessionsPage = lazy(() => import("@/pages/sessions").then(({ SessionsPage 
 const AuditPage = lazy(() => import("@/pages/audit").then(({ AuditPage }) => ({ default: AuditPage })))
 const ErrorLogPage = lazy(() => import("@/pages/error-log").then(({ ErrorLogPage }) => ({ default: ErrorLogPage })))
 const PerfMonitorPage = lazy(() => import("@/pages/perf-monitor").then(({ PerfMonitorPage }) => ({ default: PerfMonitorPage })))
+const VoiceIndexPage = lazy(() => import("@/pages/voice-index").then(({ VoiceIndexPage }) => ({ default: VoiceIndexPage })))
 const LabelCategoriesPage = lazy(() => import("@/pages/label-categories").then(({ LabelCategoriesPage }) => ({ default: LabelCategoriesPage })))
 const UsersPage = lazy(() => import("@/pages/users").then(({ UsersPage }) => ({ default: UsersPage })))
 const UserDetailPage = lazy(() => import("@/pages/users/detail").then(({ UserDetailPage }) => ({ default: UserDetailPage })))
@@ -143,6 +144,7 @@ export default function App() {
           <Route path="audit" element={<AuditPage />} />
           <Route path="error-log" element={<ErrorLogPage />} />
           <Route path="perf-monitor" element={<PerfMonitorPage />} />
+          <Route path="voice" element={<VoiceIndexPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="documents" element={<DocumentsPage />} />
           <Route path="tasks" element={<TasksListPage />} />

@@ -2119,6 +2119,39 @@ async def api_player_detail(
     }
 
 
+@router.get("/api/v1/admin/players/{player_id}/voice-segments")
+async def api_player_voice_segments(
+    player_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Return indexed replay voice fragments for superusers only."""
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только суперпользователь может прослушивать архив голоса")
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    from services_voice_index import VoiceIndexService, VOICE_INDEX_VERSION
+
+    items, total = VoiceIndexService(db).get_segments_for_player(
+        player.player_steamid,
+        page,
+        page_size,
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total else 0,
+        "index_version": VOICE_INDEX_VERSION,
+    }
+
+
 @router.get("/api/v1/admin/discord-profiles/{discord_id}")
 async def api_discord_profile(
     discord_id: int,
