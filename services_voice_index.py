@@ -858,6 +858,8 @@ class VoiceIndexService:
             and replay.voice_archive_version == VOICE_ARCHIVE_VERSION
         ):
             return {"status": "ready", "replay_id": replay_id}
+        if replay.voice_index_status == "cancelled":
+            return {"status": "cancelled", "replay_id": replay_id}
 
         replay.voice_index_status = "running"
         replay.voice_index_error = None
@@ -1005,7 +1007,11 @@ class VoiceIndexService:
                 archive_service.cleanup_created_files()
             replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
             if replay:
-                replay.voice_index_status = "pending"
+                # A cross-process stop writes ``cancelled`` while the parser
+                # is in progress. Do not turn that durable stop back into a
+                # pending job, or the periodic scan will immediately restart it.
+                if replay.voice_index_status != "cancelled":
+                    replay.voice_index_status = "pending"
                 replay.voice_index_error = "Индексация остановлена оператором"
                 self.db.commit()
             raise
@@ -1090,8 +1096,10 @@ class VoiceIndexService:
 
 def _index_replay_task(replay_id: int) -> dict:
     from database import SessionLocal
+    from models import RoundReplay
 
     db = SessionLocal()
+    cancel_token = None
     try:
         active_run = get_active_voice_index_run(db)
         if active_run:
@@ -1108,8 +1116,28 @@ def _index_replay_task(replay_id: int) -> dict:
                 "replay_id": replay_id,
                 "reason": "manual_run_active",
             }
+        last_cancel_check = 0.0
+
+        def is_cancelled() -> bool:
+            nonlocal last_cancel_check
+            now = time.monotonic()
+            if now - last_cancel_check < 0.5:
+                return False
+            last_cancel_check = now
+            cancel_db = SessionLocal()
+            try:
+                status = cancel_db.query(RoundReplay.voice_index_status).filter(
+                    RoundReplay.id == replay_id
+                ).scalar()
+            finally:
+                cancel_db.close()
+            return status == "cancelled"
+
+        cancel_token = _voice_cancel_check.set(is_cancelled)
         return VoiceIndexService(db).index_replay(replay_id)
     finally:
+        if cancel_token is not None:
+            _voice_cancel_check.reset(cancel_token)
         db.close()
 
 
@@ -1368,7 +1396,8 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
                     VoiceIndexRun.id == run_id
                 ).scalar()
             finally:
-                cancel_db.close()
+                if cancel_db is not db:
+                    cancel_db.close()
             return status in ("cancelling", "cancelled")
 
         cancel_token = _voice_cancel_check.set(is_cancelled)

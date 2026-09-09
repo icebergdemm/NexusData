@@ -510,6 +510,20 @@ def _subsystem_control(subsystem: str, action: str) -> dict:
             cancelled = scheduler.cancel_matching("replay_voice_index_")
         db = SessionLocal()
         try:
+            if action == "stop":
+                from models import RoundReplay
+                from services_voice_index import get_active_voice_index_run
+
+                # The automatic scanner may run in another process, so its
+                # replay cancellation must be durable rather than only a
+                # local scheduler event. Never touch a manual backfill here.
+                if get_active_voice_index_run(db) is None:
+                    cancelled += db.query(RoundReplay).filter(
+                        RoundReplay.voice_index_status == "running"
+                    ).update({
+                        RoundReplay.voice_index_status: "cancelled",
+                        RoundReplay.voice_index_error: "Индексация остановлена оператором",
+                    }, synchronize_session=False)
             enabled = set_voice_auto_index_enabled(db, action == "start")
         finally:
             db.close()
@@ -522,9 +536,30 @@ def execute_control(target: str, action: str) -> dict:
     if action == "cancel_task":
         from task_scheduler import scheduler
         task_id = target.removeprefix("task:")
-        if not scheduler.cancel(task_id):
+        cancelled = scheduler.cancel(task_id)
+        persistent = False
+        if task_id.startswith("replay_voice_index_"):
+            import re
+            from database import SessionLocal
+            from models import RoundReplay
+
+            match = re.fullmatch(r"replay_voice_index_(\d+)_v\d+", task_id)
+            if match:
+                db = SessionLocal()
+                try:
+                    row = db.query(RoundReplay).filter(
+                        RoundReplay.id == int(match.group(1))
+                    ).first()
+                    if row and row.voice_index_status in ("pending", "running"):
+                        row.voice_index_status = "cancelled"
+                        row.voice_index_error = "Индексация остановлена оператором"
+                        db.commit()
+                        persistent = True
+                finally:
+                    db.close()
+        if not cancelled and not persistent:
             raise ControlError(f"Задача уже завершена или не найдена: {task_id}")
-        return {"task_id": task_id, "action": action}
+        return {"task_id": task_id, "action": action, "persistent": persistent}
     if action not in ("suspend", "resume", "kill", "terminate", "restart", "stop", "start"):
         raise ControlError(f"Неизвестное действие: {action}")
     if target.startswith("pid:"):
