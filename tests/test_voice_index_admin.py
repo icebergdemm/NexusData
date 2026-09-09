@@ -306,6 +306,51 @@ def test_log_list_is_paginated():
     assert exc.value.status_code == 403
 
 
+def test_log_list_hides_resolved_replay_from_review_button_state():
+    db = _db()
+    admin = _admin(True)
+    db.add(admin)
+    db.commit()
+    run = VoiceIndexRun(requested_by_admin_id=admin.id, status="completed")
+    replay = RoundReplay(
+        filename="round.barodemo",
+        stored_filename="round.barodemo",
+        voice_index_status="partial",
+    )
+    db.add_all([run, replay])
+    db.flush()
+    db.add(VoiceIndexRunLog(run_id=run.id, replay_id=replay.id, status="partial", message="needs mapping"))
+    speaker = ReplayVoiceSpeaker(
+        replay_id=replay.id,
+        speaker_id=383,
+        resolution_status="unresolved",
+    )
+    db.add(speaker)
+    db.commit()
+
+    response = asyncio.run(api_get_voice_index_logs(
+        run_id=run.id,
+        page=1,
+        page_size=20,
+        db=db,
+        current_admin=admin,
+    ))
+    assert response["items"][0]["needs_resolution"] is True
+    assert response["items"][0]["unresolved_count"] == 1
+
+    speaker.resolution_status = "mapped"
+    db.commit()
+    response = asyncio.run(api_get_voice_index_logs(
+        run_id=run.id,
+        page=1,
+        page_size=20,
+        db=db,
+        current_admin=admin,
+    ))
+    assert response["items"][0]["needs_resolution"] is False
+    assert response["items"][0]["unresolved_count"] == 0
+
+
 def test_non_superuser_cannot_view_voice_speaker_details():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(api_get_voice_speaker_details(

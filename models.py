@@ -1109,6 +1109,7 @@ class RoundReplay(Base):
     # parse a several-hundred-megabyte demo just because somebody refreshed it.
     voice_index_status = Column(String(20), nullable=False, default="pending", index=True)
     voice_index_version = Column(Integer, nullable=False, default=0)
+    voice_archive_version = Column(Integer, nullable=False, default=0)
     voice_indexed_at = Column(DateTime, nullable=True)
     voice_index_error = Column(String(1000), nullable=True)
 
@@ -1125,6 +1126,8 @@ class ReplayVoiceSegment(Base):
         nullable=False,
         index=True,
     )
+
+
     steam_id = Column(String(50), nullable=False, index=True)
     speaker_id = Column(Integer, nullable=False)
     start_ms = Column(Integer, nullable=False)
@@ -1140,6 +1143,63 @@ class ReplayVoiceSegment(Base):
             name="uq_replay_voice_segment",
         ),
         Index("ix_replay_voice_segments_steam_time", "steam_id", "start_ms"),
+    )
+
+
+class VoiceArchiveClip(Base):
+    """One durable Opus voice fragment independent from replay retention."""
+
+    __tablename__ = "voice_archive_clips"
+
+    id = Column(Integer, primary_key=True, index=True)
+    archive_key = Column(String(64), nullable=False, unique=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    # Intentionally not a foreign key: the source replay may be deleted after
+    # the clip is archived, while the clip must remain playable.
+    source_replay_id = Column(Integer, nullable=False, index=True)
+    source_replay_filename = Column(String(500), nullable=False)
+    server_name = Column(String(100), nullable=True)
+    recorded_at = Column(DateTime, nullable=True, index=True)
+    uploaded_at = Column(DateTime, nullable=True)
+    speaker_id = Column(Integer, nullable=False)
+    start_ms = Column(Integer, nullable=False)
+    end_ms = Column(Integer, nullable=False)
+    packet_count = Column(Integer, nullable=False, default=0)
+    storage_filename = Column(String(500), nullable=False, unique=True)
+    storage_size = Column(Integer, nullable=False, default=0)
+    archive_version = Column(Integer, nullable=False, default=0, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_voice_archive_clips_steam_time", "steam_id", "recorded_at", "start_ms"),
+        Index("ix_voice_archive_clips_source", "source_replay_id", "speaker_id"),
+    )
+
+
+class VoiceArchiveSelection(Base):
+    """The current 25 representative slots for one Steam/EOS profile."""
+
+    __tablename__ = "voice_archive_selections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    slot = Column(Integer, nullable=False)
+    band = Column(String(16), nullable=False)
+    clip_id = Column(
+        Integer,
+        ForeignKey("voice_archive_clips.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    clip = relationship("VoiceArchiveClip")
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "slot", name="uq_voice_archive_selection_slot"),
+        UniqueConstraint("steam_id", "clip_id", name="uq_voice_archive_selection_clip"),
+        Index("ix_voice_archive_selections_steam_slot", "steam_id", "slot"),
     )
 
 
@@ -1192,6 +1252,7 @@ class VoiceIndexRun(Base):
     error_count = Column(Integer, nullable=False, default=0)
     segment_count = Column(Integer, nullable=False, default=0)
     profile_count = Column(Integer, nullable=False, default=0)
+    archive_clip_count = Column(Integer, nullable=False, default=0)
     last_replay_id = Column(Integer, nullable=True)
     last_message = Column(String(1000), nullable=True)
     error = Column(String(1000), nullable=True)

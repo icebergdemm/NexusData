@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Check, History, Loader2, Play, ShieldAlert, SkipForward, Square, Volume2 } from "lucide-react"
@@ -24,6 +24,7 @@ interface VoiceRun {
   error_count: number
   segment_count: number
   profile_count: number
+  archive_clip_count: number
   last_replay_id: number | null
   last_message: string | null
   error: string | null
@@ -67,6 +68,7 @@ interface VoiceStatus {
   latest: VoiceRun | null
   log_retention_days: number
   index_version: number
+  archive_version: number
 }
 
 interface VoiceLogResponse {
@@ -77,6 +79,9 @@ interface VoiceLogResponse {
     status: string
     message: string
     created_at: string | null
+    unresolved_count: number
+    needs_resolution: boolean
+    replay_status: string | null
   }>
   total: number
   page: number
@@ -113,6 +118,7 @@ export function VoiceIndexPage() {
   const [activeSpeakerSearch, setActiveSpeakerSearch] = useState<number | null>(null)
   const [profileSearch, setProfileSearch] = useState("")
   const [debouncedProfileSearch, setDebouncedProfileSearch] = useState("")
+  const autoResolvedSpeakers = useRef(new Set<string>())
 
   const statusQuery = useQuery({
     queryKey: ["voice-index-status"],
@@ -183,8 +189,8 @@ export function VoiceIndexPage() {
   })
 
   const resolveMutation = useMutation({
-    mutationFn: (decision: { speaker_id: number; action: "map" | "skip"; steam_id?: string }) => {
-      return api.post(`/api/v1/admin/voice-index/replays/${selectedReplayId}/speakers/resolve`, { decisions: [decision] })
+    mutationFn: (decisions: Array<{ speaker_id: number; action: "map" | "skip"; steam_id?: string }>) => {
+      return api.post(`/api/v1/admin/voice-index/replays/${selectedReplayId}/speakers/resolve`, { decisions })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["voice-index-speakers", selectedReplayId] })
@@ -194,6 +200,45 @@ export function VoiceIndexPage() {
     },
     onError: (error: Error) => toast.error(error.message),
   })
+
+  useEffect(() => {
+    if (!detailsOpen || !selectedReplayId || !speakerDetailsQuery.data || resolveMutation.isPending) return
+    const decisions = speakerDetailsQuery.data.items
+      .filter((item) => item.resolution_status === "unresolved" && item.candidate_profiles.length === 1)
+      .filter((item) => {
+        const key = `${selectedReplayId}:${item.speaker_id}`
+        if (autoResolvedSpeakers.current.has(key)) return false
+        autoResolvedSpeakers.current.add(key)
+        return true
+      })
+      .map((item) => ({
+        speaker_id: item.speaker_id,
+        action: "map" as const,
+        steam_id: item.candidate_profiles[0].steam_id,
+      }))
+    if (decisions.length) resolveMutation.mutate(decisions)
+  }, [detailsOpen, selectedReplayId, speakerDetailsQuery.data, resolveMutation])
+
+  useEffect(() => {
+    if (!detailsOpen || activeSpeakerSearch == null || !selectedReplayId || resolveMutation.isPending) return
+    if (!profileSearchQuery.data || profileSearchQuery.data.players.length !== 1) return
+    const speaker = speakerDetailsQuery.data?.items.find((item) => item.speaker_id === activeSpeakerSearch)
+    const player = profileSearchQuery.data.players[0]
+    if (!speaker || speaker.resolution_status !== "unresolved") return
+    const key = `${selectedReplayId}:${activeSpeakerSearch}:search:${player.player_id}`
+    if (autoResolvedSpeakers.current.has(key)) return
+    autoResolvedSpeakers.current.add(key)
+    setDecisionSteamIds((current) => ({ ...current, [String(activeSpeakerSearch)]: player.player_steamid }))
+    setProfileSearchInputs((current) => ({
+      ...current,
+      [String(activeSpeakerSearch)]: player.forced_display_name || player.player_last_time_name,
+    }))
+    resolveMutation.mutate([{
+      speaker_id: activeSpeakerSearch,
+      action: "map",
+      steam_id: player.player_steamid,
+    }])
+  }, [activeSpeakerSearch, detailsOpen, profileSearchQuery.data, resolveMutation, selectedReplayId, speakerDetailsQuery.data])
 
   const openSpeakerDetails = (replayId: number) => {
     setSelectedReplayId(replayId)
@@ -206,11 +251,11 @@ export function VoiceIndexPage() {
       toast.error("Сначала выберите профиль или укажите Steam/EOS ID")
       return
     }
-    resolveMutation.mutate({
+    resolveMutation.mutate([{
       speaker_id: speakerId,
       action,
       ...(action === "map" ? { steam_id: steamId } : {}),
-    })
+    }])
   }
 
   if (admin && !admin.is_superuser) {
@@ -227,7 +272,7 @@ export function VoiceIndexPage() {
     <div>
       <PageHeader
         title="Голос"
-        description="Индекс голосовых фрагментов из сохранённых replay. Аудио остаётся внутри .barodemo."
+        description="Индекс голосовых фрагментов из сохранённых replay. Выбранные фрагменты сохраняются отдельно и переживают удаление replay."
         icon={Volume2}
         actions={statusQuery.data?.active ? (
           <Button variant="destructive" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending || statusQuery.data.active.status === "cancelling"}>
@@ -243,12 +288,13 @@ export function VoiceIndexPage() {
       />
 
       <Card className="mb-4">
-        <CardContent className="grid gap-4 p-4 md:grid-cols-3 lg:grid-cols-6">
+        <CardContent className="grid gap-4 p-4 md:grid-cols-3 lg:grid-cols-7">
           <div><div className="text-xs text-muted-foreground">Состояние</div><div className="mt-1"><Badge variant={run ? statusVariant(run.status) : "outline"}>{run ? statusLabel(run.status) : "Не запускалась"}</Badge></div></div>
           <div><div className="text-xs text-muted-foreground">Прогресс</div><div className="mt-1 text-lg font-semibold">{run ? `${run.processed} / ${run.total}` : "—"}{run?.total ? <span className="ml-2 text-sm font-normal text-muted-foreground">({progress}%)</span> : null}</div></div>
           <div><div className="text-xs text-muted-foreground">Готово</div><div className="mt-1 text-lg font-semibold text-emerald-500">{run ? run.ready_count : "—"}</div></div>
           <div><div className="text-xs text-muted-foreground">Частично</div><div className="mt-1 text-lg font-semibold text-amber-500">{run ? run.partial_count : "—"}</div></div>
           <div><div className="text-xs text-muted-foreground">Фрагменты / профили</div><div className="mt-1 text-lg font-semibold">{run ? `${run.segment_count} / ${run.profile_count}` : "—"}</div></div>
+          <div><div className="text-xs text-muted-foreground">Новых архивных клипов</div><div className="mt-1 text-lg font-semibold text-sky-400">{run ? run.archive_clip_count : "—"}</div></div>
           <div><div className="text-xs text-muted-foreground">Ошибки</div><div className="mt-1 text-lg font-semibold text-destructive">{run ? run.error_count : "—"}</div></div>
           <div><div className="text-xs text-muted-foreground">Последнее сообщение</div><div className="mt-1 truncate text-sm" title={run?.last_message ?? undefined}>{run?.last_message ?? "—"}</div></div>
         </CardContent>
@@ -261,7 +307,7 @@ export function VoiceIndexPage() {
             <div key={item.id} className="flex items-start gap-3 border-b px-4 py-2.5 text-sm last:border-0">
               <Badge variant={item.level === "error" ? "destructive" : item.status === "partial" ? "secondary" : "outline"}>{item.status}</Badge>
               <div className="min-w-0 flex-1"><div>{item.message}</div>{item.replay_id && <div className="text-xs text-muted-foreground">replay #{item.replay_id}</div>}</div>
-              {item.replay_id && (item.status === "partial" || item.status === "error") && <Button size="xs" variant="outline" onClick={() => openSpeakerDetails(item.replay_id!)}>Разобрать</Button>}
+              {item.replay_id && item.needs_resolution && <Button size="xs" variant="outline" onClick={() => openSpeakerDetails(item.replay_id!)}>Разобрать ({item.unresolved_count})</Button>}
               <span className="shrink-0 text-xs text-muted-foreground">{formatBrowserDate(item.created_at)}</span>
             </div>
           )) : <div className="py-10 text-center text-sm text-muted-foreground">Журнал пуст. Пока даже ошибки не успели организоваться.</div>}

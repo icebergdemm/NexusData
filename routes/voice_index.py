@@ -44,6 +44,7 @@ def _run_response(run: VoiceIndexRun | None):
         "error_count": run.error_count,
         "segment_count": run.segment_count,
         "profile_count": run.profile_count,
+        "archive_clip_count": run.archive_clip_count,
         "last_replay_id": run.last_replay_id,
         "last_message": run.last_message,
         "error": run.error,

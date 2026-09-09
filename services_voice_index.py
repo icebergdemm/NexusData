@@ -28,9 +28,9 @@ VOICE_MAP_MEMBER = "voice-map.json"
 # v2 fixes snapshot entity widths for the v4 DemoRecorder and v7
 # WorldDemoStreamer formats.  Existing ready rows must be rebuilt once so a
 # segment produced by the old misaligned parser is never treated as valid.
-# v4 persists speaker-resolution details and keeps mapped voice segments when
-# another speaker in the same replay still needs moderator attention.
-VOICE_INDEX_VERSION = 4
+# v5 keeps the metadata index compatible with the replay parser while also
+# materializing selected Opus packets into the replay-independent archive.
+VOICE_INDEX_VERSION = 5
 VOICE_INDEX_TEXT_LIMIT = 1000
 VOICE_MERGE_GAP_MS = 1000
 # ServerAsr and the replay recorder observe the same VoIP read on the game
@@ -69,6 +69,18 @@ class _ReplayFrame:
     time_ms: int
     speaker_id: int | None = None
     character_name: str | None = None
+    voice_data: bytes | None = None
+    voice_radio: bool = False
+
+
+@dataclass(frozen=True)
+class VoicePacket:
+    """One encoded Opus packet read from a replay."""
+
+    time_ms: int
+    speaker_id: int
+    data: bytes
+    radio: bool = False
 
 
 def _read_exact(stream: BinaryIO, size: int) -> bytes:
@@ -238,11 +250,12 @@ def _skip_frame(stream: BinaryIO, frame: int, version: int) -> _ReplayFrame | No
     elif frame in (0x07, 0x09):
         time_ms = _u32(stream)
         speaker_id = _u16(stream)
+        radio = False
         if frame == 0x09:
-            _skip(stream, 1)
+            radio = bool(_u8(stream))
         length = _u16(stream)
-        _skip(stream, length)
-        return _ReplayFrame("voice", time_ms, speaker_id)
+        payload = _read_exact(stream, length)
+        return _ReplayFrame("voice", time_ms, speaker_id, voice_data=payload, voice_radio=radio)
     else:
         raise VoiceIndexError(f"unsupported replay frame 0x{frame:02x}")
     return None
@@ -309,12 +322,12 @@ def extract_voice_packets(path: str) -> tuple[list[tuple[int, int]], dict[int, s
     return packets, mapping
 
 
-def extract_voice_packets_with_names(
+def extract_voice_packet_records(
     path: str,
-) -> tuple[list[tuple[int, int]], dict[int, str], dict[int, set[str]]]:
-    """Read voice packets, sidecar identity, and names seen before each packet."""
+) -> tuple[list[VoicePacket], dict[int, str], dict[int, set[str]]]:
+    """Read encoded voice packets, replay identity data, and observed names."""
     with _open_demo(path) as source:
-        packets: list[tuple[int, int]] = []
+        packets: list[VoicePacket] = []
         names_by_character: dict[int, set[str]] = {}
         voice_speakers: set[int] = set()
         for frame in _iter_replay_frames(source.stream):
@@ -322,9 +335,16 @@ def extract_voice_packets_with_names(
                 if frame.character_name:
                     names_by_character.setdefault(frame.speaker_id, set()).add(frame.character_name)
                 continue
-            if frame.kind != "voice" or frame.speaker_id is None:
+            if frame.kind != "voice" or frame.speaker_id is None or frame.voice_data is None:
                 continue
-            packets.append((frame.time_ms, frame.speaker_id))
+            packets.append(
+                VoicePacket(
+                    time_ms=frame.time_ms,
+                    speaker_id=frame.speaker_id,
+                    data=frame.voice_data,
+                    radio=frame.voice_radio,
+                )
+            )
             voice_speakers.add(frame.speaker_id)
         mapping = dict(source.speaker_map)
     names_by_speaker = {
@@ -333,6 +353,14 @@ def extract_voice_packets_with_names(
         if speaker_id in names_by_character
     }
     return packets, mapping, names_by_speaker
+
+
+def extract_voice_packets_with_names(
+    path: str,
+) -> tuple[list[tuple[int, int]], dict[int, str], dict[int, set[str]]]:
+    """Read voice packets, sidecar identity, and names seen before each packet."""
+    records, mapping, names_by_speaker = extract_voice_packet_records(path)
+    return [(packet.time_ms, packet.speaker_id) for packet in records], mapping, names_by_speaker
 
 
 def _segments_from_packets(
@@ -770,6 +798,7 @@ class VoiceIndexService:
 
     def index_replay(self, replay_id: int, _retry: int = 0) -> dict:
         from models import ReplayVoiceSegment, RoundReplay
+        from services_voice_archive import VOICE_ARCHIVE_VERSION, VoiceArchiveService
 
         replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
         if not replay:
@@ -777,6 +806,7 @@ class VoiceIndexService:
         if (
             replay.voice_index_status == "ready"
             and replay.voice_index_version == VOICE_INDEX_VERSION
+            and replay.voice_archive_version == VOICE_ARCHIVE_VERSION
         ):
             return {"status": "ready", "replay_id": replay_id}
 
@@ -789,7 +819,8 @@ class VoiceIndexService:
             path = ReplayService(self.db).get_file_path(replay)
             if not os.path.isfile(path):
                 raise VoiceIndexError("replay file is missing")
-            packets, embedded_mapping, speaker_names = extract_voice_packets_with_names(path)
+            packet_records, embedded_mapping, speaker_names = extract_voice_packet_records(path)
+            packets = [(packet.time_ms, packet.speaker_id) for packet in packet_records]
             inferred_mapping, mapping_sources, candidates = self._mapping_for_replay_with_sources(
                 replay, packets, speaker_names
             )
@@ -804,10 +835,17 @@ class VoiceIndexService:
                 if row.resolution_status == "skipped"
             }
             for speaker_id, row in manual_rows.items():
-                if row.resolution_status == "mapped" and row.steam_id:
+                is_manual_mapping = (
+                    row.mapping_source == "manual"
+                    or row.decided_by_admin_id is not None
+                )
+                if row.resolution_status == "mapped" and row.steam_id and is_manual_mapping:
                     mapping[speaker_id] = row.steam_id
                     mapping_sources_for_segments[speaker_id] = "manual"
-                elif row.resolution_status == "skipped":
+                elif row.resolution_status == "skipped" and (
+                    row.mapping_source == "manual_skip"
+                    or row.decided_by_admin_id is not None
+                ):
                     mapping.pop(speaker_id, None)
                     mapping_sources_for_segments.pop(speaker_id, None)
 
@@ -826,6 +864,14 @@ class VoiceIndexService:
                 skipped_speakers,
             )
 
+            previous_steam_ids = {
+                steam_id
+                for (steam_id,) in self.db.query(ReplayVoiceSegment.steam_id)
+                .filter(ReplayVoiceSegment.replay_id == replay.id)
+                .all()
+                if steam_id
+            }
+
             self.db.query(ReplayVoiceSegment).filter(
                 ReplayVoiceSegment.replay_id == replay.id
             ).delete(synchronize_session=False)
@@ -840,22 +886,37 @@ class VoiceIndexService:
                 )
                 for segment in segments
             )
+            self.db.flush()
+            archive_service = VoiceArchiveService(self.db)
+            removed_archive_paths = archive_service.remove_replay_clips(replay.id)
+            affected_steam_ids = previous_steam_ids | {
+                segment["steam_id"] for segment in segments
+            }
+            archive_result = archive_service.reconcile_steam_ids(
+                affected_steam_ids,
+                current_replay_id=replay.id,
+                current_packets=packet_records,
+            )
             partial = bool(unresolved_speaker_ids or skipped_speaker_ids)
             status = "partial" if partial else "ready"
             replay.voice_index_status = status
             replay.voice_index_version = VOICE_INDEX_VERSION
+            replay.voice_archive_version = VOICE_ARCHIVE_VERSION
             replay.voice_indexed_at = datetime.utcnow()
             replay.voice_index_error = (
                 "unresolved speaker_id(s): " + ", ".join(map(str, unresolved_speaker_ids))
                 if unresolved_speaker_ids else None
             )
             self.db.commit()
+            archive_service.remove_unreferenced_files(removed_archive_paths)
             return {
                 "status": status,
                 "replay_id": replay.id,
                 "segments": len(segments),
                 "profile_count": len({segment["steam_id"] for segment in segments}),
                 "profile_ids": sorted({segment["steam_id"] for segment in segments}),
+                "archive_clips": archive_result["materialized"],
+                "archive_selected": archive_result["selected"],
                 "unresolved_speaker_ids": unresolved_speaker_ids,
                 "skipped_speaker_ids": skipped_speaker_ids,
             }
@@ -960,6 +1021,7 @@ def task_index_pending_voice_replays(limit: int = 8) -> dict:
     """Queue retained pending/error replays; safe to run repeatedly."""
     from database import SessionLocal
     from models import RoundReplay
+    from services_voice_archive import VOICE_ARCHIVE_VERSION
     from services_replays import get_retention_days
     from sqlalchemy import or_
 
@@ -976,6 +1038,7 @@ def task_index_pending_voice_replays(limit: int = 8) -> dict:
                 or_(
                     RoundReplay.voice_index_status.in_(["pending", "running", "error"]),
                     RoundReplay.voice_index_version != VOICE_INDEX_VERSION,
+                    RoundReplay.voice_archive_version != VOICE_ARCHIVE_VERSION,
                     RoundReplay.voice_index_status.is_(None),
                 ),
             )
@@ -1060,6 +1123,7 @@ def _voice_run_dict(run) -> dict:
         "error_count": run.error_count,
         "segment_count": run.segment_count,
         "profile_count": run.profile_count,
+        "archive_clip_count": run.archive_clip_count,
         "last_replay_id": run.last_replay_id,
         "last_message": run.last_message,
         "error": run.error,
@@ -1072,6 +1136,7 @@ def _voice_run_dict(run) -> dict:
 
 def get_voice_index_status(db) -> dict:
     from models import VoiceIndexRun
+    from services_voice_archive import VOICE_ARCHIVE_VERSION
 
     active = get_active_voice_index_run(db)
     latest = (
@@ -1084,6 +1149,7 @@ def get_voice_index_status(db) -> dict:
         "latest": _voice_run_dict(latest),
         "log_retention_days": VOICE_RUN_LOG_RETENTION_DAYS,
         "index_version": VOICE_INDEX_VERSION,
+        "archive_version": VOICE_ARCHIVE_VERSION,
     }
 
 
@@ -1091,6 +1157,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
     """Index all retained voice replays for one operator-visible run."""
     from database import SessionLocal
     from models import RoundReplay, VoiceIndexRun, VoiceIndexRunLog
+    from services_voice_archive import VOICE_ARCHIVE_VERSION
     from services_replays import get_retention_days
     from sqlalchemy import or_
 
@@ -1134,6 +1201,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
                 or_(
                     RoundReplay.voice_index_status.in_(["pending", "running", "error", "partial"]),
                     RoundReplay.voice_index_version != VOICE_INDEX_VERSION,
+                    RoundReplay.voice_archive_version != VOICE_ARCHIVE_VERSION,
                     RoundReplay.voice_index_status.is_(None),
                 ),
             )
@@ -1167,6 +1235,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
             run.processed += 1
             run.last_replay_id = replay_id
             run.segment_count += int(result.get("segments") or 0)
+            run.archive_clip_count += int(result.get("archive_clips") or 0)
             seen_profile_ids.update(result.get("profile_ids") or [])
             run.profile_count = len(seen_profile_ids)
             if is_error:
@@ -1184,12 +1253,17 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
                     suffix += f"; пропущено: {len(skipped)}"
                 run.last_message = (
                     f"Реплей #{replay_id}: частично — {result.get('segments', 0)} фрагм., "
-                    f"{result.get('profile_count', 0)} профилей{suffix}"
+                    f"{result.get('profile_count', 0)} профилей, "
+                    f"в архиве {result.get('archive_selected', 0)} клип. "
+                    f"Новых: {result.get('archive_clips', 0)}."
+                    f"{suffix}"
                 )
             else:
                 run.last_message = (
                     f"Реплей #{replay_id}: готов — {result.get('segments', 0)} фрагм., "
-                    f"{result.get('profile_count', 0)} профилей"
+                    f"{result.get('profile_count', 0)} профилей, "
+                    f"в архиве {result.get('archive_selected', 0)} клип. "
+                    f"Новых: {result.get('archive_clips', 0)}."
                 )
             run.heartbeat_at = datetime.utcnow()
             if is_error:
@@ -1223,7 +1297,10 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         run.status = "completed"
         run.finished_at = datetime.utcnow()
         run.heartbeat_at = run.finished_at
-        run.last_message = "Индексация завершена"
+        run.last_message = (
+            f"Индексация завершена: готово {run.ready_count}, частично {run.partial_count}, "
+            f"ошибок {run.error_count}, новых архивных клипов {run.archive_clip_count}"
+        )
         db.commit()
         return _voice_run_dict(run)
     except Exception as exc:
@@ -1259,7 +1336,7 @@ def queue_voice_index_backfill(run_id: int) -> str | None:
 
 
 def list_voice_index_run_logs(db, run_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
-    from models import VoiceIndexRunLog
+    from models import ReplayVoiceSpeaker, RoundReplay, VoiceIndexRunLog
 
     query = db.query(VoiceIndexRunLog).filter(VoiceIndexRunLog.run_id == run_id)
     total = query.count()
@@ -1269,8 +1346,19 @@ def list_voice_index_run_logs(db, run_id: int, page: int, page_size: int) -> tup
         .limit(page_size)
         .all()
     )
-    return [
-        {
+    result = []
+    for row in rows:
+        unresolved_count = 0
+        replay_status = None
+        if row.replay_id is not None:
+            unresolved_count = db.query(ReplayVoiceSpeaker).filter(
+                ReplayVoiceSpeaker.replay_id == row.replay_id,
+                ReplayVoiceSpeaker.resolution_status == "unresolved",
+            ).count()
+            replay_status = db.query(RoundReplay.voice_index_status).filter(
+                RoundReplay.id == row.replay_id,
+            ).scalar()
+        result.append({
             "id": row.id,
             "run_id": row.run_id,
             "replay_id": row.replay_id,
@@ -1278,6 +1366,8 @@ def list_voice_index_run_logs(db, run_id: int, page: int, page_size: int) -> tup
             "status": row.status,
             "message": row.message,
             "created_at": row.created_at.isoformat() if row.created_at else None,
-        }
-        for row in rows
-    ], total
+            "unresolved_count": unresolved_count,
+            "needs_resolution": unresolved_count > 0,
+            "replay_status": replay_status,
+        })
+    return result, total

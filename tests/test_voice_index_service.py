@@ -52,12 +52,15 @@ def _db():
     engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     models.Base.metadata.create_all(engine, tables=[
         models.RoundReplay.__table__,
+        models.AppSetting.__table__,
         models.ReplayVoiceSegment.__table__,
         models.WorldRound.__table__,
         models.PlayerCommunication.__table__,
         models.PlayerData.__table__,
         models.PlayerName.__table__,
         models.ReplayVoiceSpeaker.__table__,
+        models.VoiceArchiveClip.__table__,
+        models.VoiceArchiveSelection.__table__,
     ])
     return engine, Session(engine)
 
@@ -108,6 +111,58 @@ def test_index_replaces_segments_and_is_idempotent():
 
             assert db.query(models.ReplayVoiceSegment).count() == 1
             assert db.query(models.RoundReplay).one().voice_index_status == "ready"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_reindex_removes_archive_clip_after_manual_mapping_changes_profile():
+    engine, db = _db()
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-remap-") as directory:
+            path = os.path.join(directory, "round.barodemo")
+            with open(path, "wb") as replay_file:
+                replay_file.write(_demo())
+            replay = models.RoundReplay(
+                id=18,
+                filename="round.barodemo",
+                stored_filename="round.barodemo",
+                has_voice=1,
+                voice_index_status="pending",
+                stream_id="stream-18",
+            )
+            db.add(replay)
+            db.add(models.WorldRound(round_id="stream-18", character_steamids={"7": "steam-old"}))
+            db.commit()
+
+            class FakeReplayService:
+                def __init__(self, _db):
+                    pass
+
+                def get_file_path(self, _replay):
+                    return path
+
+            with patch("services_replays.ReplayService", FakeReplayService), patch(
+                "services_voice_archive.get_upload_dir", return_value=directory
+            ):
+                service = VoiceIndexService(db)
+                assert service.index_replay(replay.id)["status"] == "ready"
+                assert db.query(models.VoiceArchiveClip).filter_by(steam_id="steam-old").count() == 1
+
+                world_round = db.query(models.WorldRound).filter_by(round_id="stream-18").one()
+                world_round.character_steamids = {"7": "steam-new"}
+                replay.voice_index_version = 0
+                replay.voice_archive_version = 0
+                db.commit()
+                db.expire_all()
+                assert service._mapping_for_replay(replay, [(100, 7)]) == {7: "steam-new"}
+
+                result = service.index_replay(replay.id)
+                assert result["status"] == "ready"
+                assert result["profile_ids"] == ["steam-new"]
+
+                assert db.query(models.VoiceArchiveClip).filter_by(steam_id="steam-old").count() == 0
+            assert db.query(models.VoiceArchiveClip).filter_by(steam_id="steam-new").count() == 1
     finally:
         db.close()
         engine.dispose()

@@ -208,11 +208,13 @@ def _apply_migrations():
         # source; these fields only track the asynchronous index lifecycle.
         ("round_replays", "voice_index_status", "VARCHAR(20) NOT NULL DEFAULT 'pending'"),
         ("round_replays", "voice_index_version", "INT NOT NULL DEFAULT 0"),
+        ("round_replays", "voice_archive_version", "INT NOT NULL DEFAULT 0"),
         ("round_replays", "voice_indexed_at", "DATETIME"),
         ("round_replays", "voice_index_error", "VARCHAR(1000)"),
         ("voice_index_runs", "partial_count", "INT NOT NULL DEFAULT 0"),
         ("voice_index_runs", "segment_count", "INT NOT NULL DEFAULT 0"),
         ("voice_index_runs", "profile_count", "INT NOT NULL DEFAULT 0"),
+        ("voice_index_runs", "archive_clip_count", "INT NOT NULL DEFAULT 0"),
         ("world_rounds", "character_steamids", "JSON"),
         # Kit variations + special kits (item 15) — additive; `items` (variation 1)
         # unchanged, so old game-server clients that only read job_id/kit_level/items
