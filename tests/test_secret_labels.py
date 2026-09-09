@@ -6,6 +6,7 @@ from services import (
     filter_visible_label_categories,
     filter_visible_label_folders,
     filter_visible_label_pairs,
+    merge_visible_label_category_order,
 )
 from database import Base
 from models import LabelFolder
@@ -117,3 +118,40 @@ def test_player_flags_only_include_label_ids_visible_to_current_admin():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_reorder_keeps_hidden_categories_at_their_existing_positions():
+    public_one = _category(1, "Одна")
+    secret = _category(2, "Секретная", secret=True)
+    public_two = _category(3, "Две")
+
+    ordered = merge_visible_label_category_order(
+        [public_one, secret, public_two],
+        visible_ids={public_one.id, public_two.id},
+        requested_ids=[public_two.id, public_one.id],
+    )
+
+    assert ordered == [public_two.id, secret.id, public_one.id]
+
+
+def test_reorder_rejects_missing_or_duplicate_visible_categories():
+    public_one = _category(1, "Одна")
+    public_two = _category(2, "Две")
+
+    try:
+        merge_visible_label_category_order(
+            [public_one, public_two],
+            visible_ids={public_one.id, public_two.id},
+            requested_ids=[public_one.id, public_one.id],
+        )
+    except ValueError as exc:
+        assert "ровно по одному" in str(exc)
+    else:
+        raise AssertionError("duplicate reorder payload must be rejected")
+
+
+def test_label_reorder_route_precedes_dynamic_category_route():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "routes" / "admin.py").read_text(encoding="utf-8")
+    assert source.index('@router.post("/api/v1/admin/label-categories/reorder")') < source.index('@router.post("/api/v1/admin/label-categories/{cat_id}")')

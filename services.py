@@ -52,6 +52,20 @@ def filter_visible_label_pairs(label_pairs, admin) -> list:
     ]
 
 
+def merge_visible_label_category_order(all_categories, visible_ids, requested_ids) -> list:
+    """Merge a visible order into the persisted global order without moving hidden rows."""
+    visible_ids = set(visible_ids)
+    requested_ids = list(requested_ids)
+    if len(requested_ids) != len(visible_ids) or set(requested_ids) != visible_ids:
+        raise ValueError("ordered_ids должен содержать все доступные метки ровно по одному разу")
+
+    requested_iter = iter(requested_ids)
+    return [
+        next(requested_iter) if category.id in visible_ids else category.id
+        for category in all_categories
+    ]
+
+
 def prepare_admin_message(text: Optional[str]) -> Optional[str]:
     """Normalize an admin message and enforce the queue column limit."""
     if not text:

@@ -5530,6 +5530,57 @@ async def api_create_label_category(request: Request, db: Session = Depends(get_
     return {"status": "ok", "category": _label_category_payload(cat, current_admin)}
 
 
+@router.post("/api/v1/admin/label-categories/reorder")
+async def api_reorder_label_categories(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    if not _can_manage_label_organization(current_admin, "edit_label_category"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    body = await request.json()
+    try:
+        requested_ids = [int(value) for value in (body.get("ordered_ids") or [])]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="ordered_ids должен содержать числа") from exc
+
+    all_categories = LabelCategoryService(db).get_all()
+    visible_categories = filter_visible_label_categories(all_categories, current_admin)
+    visible_ids = {category.id for category in visible_categories}
+    from services import merge_visible_label_category_order
+    try:
+        ordered_ids = merge_visible_label_category_order(all_categories, visible_ids, requested_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    raw_folder_ids = body.get("folder_ids")
+    if raw_folder_ids is not None:
+        if not isinstance(raw_folder_ids, dict):
+            raise HTTPException(status_code=400, detail="folder_ids должен быть объектом")
+        try:
+            folder_ids = {
+                int(category_id): (None if folder_id is None else int(folder_id))
+                for category_id, folder_id in raw_folder_ids.items()
+            }
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="folder_ids содержит некорректные идентификаторы") from exc
+        if set(folder_ids) != visible_ids:
+            raise HTTPException(status_code=400, detail="folder_ids должен содержать все доступные метки ровно по одному разу")
+        _, visible_folders = _visible_label_data(db, current_admin)
+        allowed_folder_ids = {None, *(folder.id for folder in visible_folders)}
+        if any(folder_id not in allowed_folder_ids for folder_id in folder_ids.values()):
+            raise HTTPException(status_code=400, detail="Недопустимая папка для метки")
+        for category in visible_categories:
+            can_edit_category = (
+                can_manage_secret_labels(current_admin)
+                if category.is_secret
+                else _has_label_category_perm(current_admin, "edit_label_category")
+            )
+            if not can_edit_category and folder_ids[category.id] != category.folder_id:
+                raise HTTPException(status_code=403, detail="Недостаточно прав для перемещения этой метки")
+            category.folder_id = folder_ids[category.id]
+        db.flush()
+
+    LabelCategoryService(db).reorder(ordered_ids)
+    return {"status": "ok"}
+
+
 @router.post("/api/v1/admin/label-categories/{cat_id}")
 async def api_update_label_category(cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     body = await request.json()
@@ -5560,29 +5611,6 @@ async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), 
     ok = LabelCategoryService(db).delete(cat_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Категория не найдена")
-    return {"status": "ok"}
-
-
-@router.post("/api/v1/admin/label-categories/reorder")
-async def api_reorder_label_categories(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    if not _can_manage_label_organization(current_admin, "edit_label_category"):
-        raise HTTPException(status_code=403, detail="Недостаточно прав")
-    body = await request.json()
-    try:
-        requested_ids = [int(value) for value in (body.get("ordered_ids") or [])]
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="ordered_ids должен содержать числа") from exc
-    all_categories = LabelCategoryService(db).get_all()
-    visible_categories = filter_visible_label_categories(all_categories, current_admin)
-    visible_ids = {category.id for category in visible_categories}
-    if set(requested_ids) != visible_ids or len(requested_ids) != len(visible_ids):
-        raise HTTPException(status_code=400, detail="ordered_ids должен содержать все доступные метки ровно по одному разу")
-    if can_manage_secret_labels(current_admin):
-        ordered_ids = requested_ids
-    else:
-        requested_iter = iter(requested_ids)
-        ordered_ids = [next(requested_iter) if category.id in visible_ids else category.id for category in all_categories]
-    LabelCategoryService(db).reorder(ordered_ids)
     return {"status": "ok"}
 
 
