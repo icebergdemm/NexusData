@@ -1143,6 +1143,40 @@ class ReplayVoiceSegment(Base):
     )
 
 
+class ReplayVoiceSpeaker(Base):
+    """Resolution details for one speaker ID observed in one replay."""
+
+    __tablename__ = "replay_voice_speakers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    replay_id = Column(
+        Integer,
+        ForeignKey("round_replays.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    speaker_id = Column(Integer, nullable=False)
+    names = Column(JSON, default=lambda: [])
+    candidate_profiles = Column(JSON, default=lambda: [])
+    steam_id = Column(String(50), nullable=True, index=True)
+    resolution_status = Column(String(20), nullable=False, default="unresolved")
+    mapping_source = Column(String(32), nullable=True)
+    packet_count = Column(Integer, nullable=False, default=0)
+    start_ms = Column(Integer, nullable=True)
+    end_ms = Column(Integer, nullable=True)
+    decided_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    replay = relationship("RoundReplay")
+
+    __table_args__ = (
+        UniqueConstraint("replay_id", "speaker_id", name="uq_replay_voice_speaker"),
+        Index("ix_replay_voice_speakers_replay_status", "replay_id", "resolution_status"),
+    )
+
+
 class VoiceIndexRun(Base):
     """One administrator-triggered retained-replay voice index run."""
 
@@ -1154,7 +1188,10 @@ class VoiceIndexRun(Base):
     total = Column(Integer, nullable=False, default=0)
     processed = Column(Integer, nullable=False, default=0)
     ready_count = Column(Integer, nullable=False, default=0)
+    partial_count = Column(Integer, nullable=False, default=0)
     error_count = Column(Integer, nullable=False, default=0)
+    segment_count = Column(Integer, nullable=False, default=0)
+    profile_count = Column(Integer, nullable=False, default=0)
     last_replay_id = Column(Integer, nullable=True)
     last_message = Column(String(1000), nullable=True)
     error = Column(String(1000), nullable=True)

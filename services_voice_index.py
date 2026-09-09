@@ -28,9 +28,9 @@ VOICE_MAP_MEMBER = "voice-map.json"
 # v2 fixes snapshot entity widths for the v4 DemoRecorder and v7
 # WorldDemoStreamer formats.  Existing ready rows must be rebuilt once so a
 # segment produced by the old misaligned parser is never treated as valid.
-# v3 adds historical nickname recovery from replay spawn frames. Existing
-# ready rows must be rebuilt so old errors get another mapping pass.
-VOICE_INDEX_VERSION = 3
+# v4 persists speaker-resolution details and keeps mapped voice segments when
+# another speaker in the same replay still needs moderator attention.
+VOICE_INDEX_VERSION = 4
 VOICE_MERGE_GAP_MS = 1000
 # ServerAsr and the replay recorder observe the same VoIP read on the game
 # server. Their timestamps should be nearly identical; a wider match would
@@ -426,17 +426,12 @@ def _normalise_player_name(value: object) -> str:
     return " ".join(text.split())
 
 
-def _mapping_from_player_names(
+def _player_name_candidates(
     db,
     replay,
     speaker_names: Mapping[int | str, set[str]],
-) -> dict[int, str]:
-    """Recover old mappings when one replay nickname has one Nexus profile.
-
-    This is deliberately a unique-match fallback. A historical nickname shared
-    by two profiles, or a character that changed to conflicting names, remains
-    unmapped for an administrator instead of becoming false evidence.
-    """
+) -> dict[int, list[dict]]:
+    """Return Nexus profiles matching names observed in one replay."""
     normalized_names = {
         _normalise_player_name(name)
         for names in speaker_names.values()
@@ -466,13 +461,18 @@ def _mapping_from_player_names(
     )
 
     recorded_at = _as_naive_utc(getattr(replay, "recorded_at", None))
-    candidates_by_name: dict[str, set[str]] = {}
+    candidates_by_name: dict[str, dict[str, dict]] = {}
 
     def add_candidate(name: object, player: PlayerData) -> None:
         identity = str(getattr(player, "player_steamid", None) or "").strip()
         normalized = _normalise_player_name(name)
-        if identity and normalized in normalized_names:
-            candidates_by_name.setdefault(normalized, set()).add(identity)
+        if not identity or normalized not in normalized_names:
+            return
+        candidates_by_name.setdefault(normalized, {})[identity] = {
+            "player_id": player.player_id,
+            "steam_id": identity,
+            "name": getattr(player, "display_name", None) or name,
+        }
 
     for history, player in historical_rows:
         first_seen = _as_naive_utc(getattr(history, "first_seen", None))
@@ -487,13 +487,35 @@ def _mapping_from_player_names(
         add_candidate(getattr(player, "player_last_time_name", None), player)
         add_candidate(getattr(player, "forced_display_name", None), player)
 
+    return {
+        int(speaker_id): sorted(
+            {
+                identity: candidate
+                for name in names
+                for identity, candidate in candidates_by_name.get(
+                    _normalise_player_name(name), {}
+                ).items()
+            }.values(),
+            key=lambda candidate: (str(candidate.get("name") or "").casefold(), candidate["steam_id"]),
+        )
+        for speaker_id, names in speaker_names.items()
+    }
+
+
+def _mapping_from_player_names(
+    db,
+    replay,
+    speaker_names: Mapping[int | str, set[str]],
+) -> dict[int, str]:
+    """Recover old mappings when one replay nickname has one Nexus profile.
+
+    This is deliberately a unique-match fallback. A historical nickname shared
+    by two profiles, or a character that changed to conflicting names, remains
+    unmapped for an administrator instead of becoming false evidence.
+    """
     mapping: dict[int, str] = {}
-    for speaker_id, names in speaker_names.items():
-        identities = {
-            identity
-            for name in names
-            for identity in candidates_by_name.get(_normalise_player_name(name), ())
-        }
+    for speaker_id, candidates in _player_name_candidates(db, replay, speaker_names).items():
+        identities = {candidate["steam_id"] for candidate in candidates}
         if len(identities) == 1:
             mapping[int(speaker_id)] = next(iter(identities))
     return mapping
@@ -579,27 +601,126 @@ class VoiceIndexService:
     def __init__(self, db):
         self.db = db
 
+    def _mapping_for_replay_with_sources(
+        self,
+        replay,
+        packets: list[tuple[int, int]] | None = None,
+        speaker_names: Mapping[int | str, set[str]] | None = None,
+    ) -> tuple[dict[int, str], dict[int, str], dict[int, list[dict]]]:
+        mapping: dict[int, str] = {}
+        sources: dict[int, str] = {}
+        exact_mappings = (
+            ("world_round", _mapping_from_world_round(self.db, replay)),
+            ("round_event", _mapping_from_round_event(self.db, replay)),
+        )
+        for source, resolved in exact_mappings:
+            for speaker_id, steam_id in resolved.items():
+                mapping[speaker_id] = steam_id
+                sources[speaker_id] = source
+
+        if packets:
+            for speaker_id, steam_id in _mapping_from_voice_communications(
+                self.db, replay, packets
+            ).items():
+                mapping.setdefault(speaker_id, steam_id)
+                sources.setdefault(speaker_id, "asr_time")
+        candidates = _player_name_candidates(self.db, replay, speaker_names or {})
+        for speaker_id, profiles in candidates.items():
+            identities = {profile["steam_id"] for profile in profiles}
+            if len(identities) != 1:
+                continue
+            steam_id = next(iter(identities))
+            mapping.setdefault(speaker_id, steam_id)
+            sources.setdefault(speaker_id, "nickname")
+        return mapping, sources, candidates
+
     def _mapping_for_replay(
         self,
         replay,
         packets: list[tuple[int, int]] | None = None,
         speaker_names: Mapping[int | str, set[str]] | None = None,
     ) -> dict[int, str]:
-        mapping = {
-            **_mapping_from_world_round(self.db, replay),
-            **_mapping_from_round_event(self.db, replay),
-        }
-        if packets:
-            for speaker_id, steam_id in _mapping_from_voice_communications(
-                self.db, replay, packets
-            ).items():
-                mapping.setdefault(speaker_id, steam_id)
-        if speaker_names:
-            for speaker_id, steam_id in _mapping_from_player_names(
-                self.db, replay, speaker_names
-            ).items():
-                mapping.setdefault(speaker_id, steam_id)
+        mapping, _, _ = self._mapping_for_replay_with_sources(
+            replay, packets, speaker_names
+        )
         return mapping
+
+    @staticmethod
+    def _speaker_stats(packets: list[tuple[int, int]]) -> dict[int, dict]:
+        stats: dict[int, dict] = {}
+        for time_ms, speaker_id in packets:
+            row = stats.setdefault(
+                speaker_id,
+                {"packet_count": 0, "start_ms": time_ms, "end_ms": time_ms},
+            )
+            row["packet_count"] += 1
+            row["start_ms"] = min(row["start_ms"], time_ms)
+            row["end_ms"] = max(row["end_ms"], time_ms)
+        return stats
+
+    @staticmethod
+    def _segments_for_mapping(
+        packets: list[tuple[int, int]], mapping: Mapping[int, str]
+    ) -> list[dict]:
+        mapped_packets = [packet for packet in packets if packet[1] in mapping]
+        return [
+            {"steam_id": mapping[row["speaker_id"]], **row}
+            for row in group_voice_packets(mapped_packets)
+        ]
+
+    def _save_speaker_details(
+        self,
+        replay,
+        packets: list[tuple[int, int]],
+        speaker_names: Mapping[int | str, set[str]],
+        candidates: Mapping[int, list[dict]],
+        mapping: Mapping[int, str],
+        mapping_sources: Mapping[int, str],
+        manual_rows: Mapping[int, object],
+        skipped_speakers: set[int],
+    ) -> None:
+        from models import ReplayVoiceSpeaker
+
+        stats = self._speaker_stats(packets)
+        existing = dict(manual_rows)
+        for speaker_id, row_stats in stats.items():
+            row = existing.get(speaker_id)
+            if row is None:
+                row = ReplayVoiceSpeaker(replay_id=replay.id, speaker_id=speaker_id)
+                self.db.add(row)
+            row.names = sorted(speaker_names.get(speaker_id, set()))
+            row.candidate_profiles = candidates.get(speaker_id, [])
+            row.packet_count = row_stats["packet_count"]
+            row.start_ms = row_stats["start_ms"]
+            row.end_ms = row_stats["end_ms"]
+
+            is_manual = row.resolution_status in ("mapped", "skipped") and row.mapping_source in (
+                "manual",
+                "manual_skip",
+            )
+            if is_manual:
+                if row.resolution_status == "skipped":
+                    skipped_speakers.add(speaker_id)
+                continue
+
+            if speaker_id in mapping:
+                row.steam_id = mapping[speaker_id]
+                row.resolution_status = "mapped"
+                row.mapping_source = mapping_sources.get(speaker_id)
+            else:
+                row.steam_id = None
+                row.resolution_status = "unresolved"
+                row.mapping_source = None
+
+    def _manual_speaker_rows(self, replay_id: int) -> dict[int, object]:
+        from models import ReplayVoiceSpeaker
+
+        return {
+            row.speaker_id: row
+            for row in self.db.query(ReplayVoiceSpeaker)
+            .filter(ReplayVoiceSpeaker.replay_id == replay_id)
+            .all()
+        }
 
     def index_replay(self, replay_id: int) -> dict:
         from models import ReplayVoiceSegment, RoundReplay
@@ -623,11 +744,41 @@ class VoiceIndexService:
             if not os.path.isfile(path):
                 raise VoiceIndexError("replay file is missing")
             packets, embedded_mapping, speaker_names = extract_voice_packets_with_names(path)
-            mapping = {
-                **embedded_mapping,
-                **self._mapping_for_replay(replay, packets, speaker_names),
+            inferred_mapping, mapping_sources, candidates = self._mapping_for_replay_with_sources(
+                replay, packets, speaker_names
+            )
+            manual_rows = self._manual_speaker_rows(replay.id)
+            mapping = dict(embedded_mapping)
+            mapping_sources_for_segments = {speaker_id: "embedded" for speaker_id in mapping}
+            mapping.update(inferred_mapping)
+            mapping_sources_for_segments.update(mapping_sources)
+            skipped_speakers = {
+                speaker_id
+                for speaker_id, row in manual_rows.items()
+                if row.resolution_status == "skipped"
             }
-            segments = _segments_from_packets(packets, mapping)
+            for speaker_id, row in manual_rows.items():
+                if row.resolution_status == "mapped" and row.steam_id:
+                    mapping[speaker_id] = row.steam_id
+                    mapping_sources_for_segments[speaker_id] = "manual"
+                elif row.resolution_status == "skipped":
+                    mapping.pop(speaker_id, None)
+                    mapping_sources_for_segments.pop(speaker_id, None)
+
+            speaker_ids = {speaker_id for _, speaker_id in packets}
+            unresolved_speaker_ids = sorted(speaker_ids - set(mapping) - skipped_speakers)
+            skipped_speaker_ids = sorted(speaker_ids & skipped_speakers)
+            segments = self._segments_for_mapping(packets, mapping)
+            self._save_speaker_details(
+                replay,
+                packets,
+                speaker_names,
+                candidates,
+                mapping,
+                mapping_sources_for_segments,
+                manual_rows,
+                skipped_speakers,
+            )
 
             self.db.query(ReplayVoiceSegment).filter(
                 ReplayVoiceSegment.replay_id == replay.id
@@ -643,12 +794,25 @@ class VoiceIndexService:
                 )
                 for segment in segments
             )
-            replay.voice_index_status = "ready"
+            partial = bool(unresolved_speaker_ids or skipped_speaker_ids)
+            status = "partial" if partial else "ready"
+            replay.voice_index_status = status
             replay.voice_index_version = VOICE_INDEX_VERSION
             replay.voice_indexed_at = datetime.utcnow()
-            replay.voice_index_error = None
+            replay.voice_index_error = (
+                "unresolved speaker_id(s): " + ", ".join(map(str, unresolved_speaker_ids))
+                if unresolved_speaker_ids else None
+            )
             self.db.commit()
-            return {"status": "ready", "replay_id": replay.id, "segments": len(segments)}
+            return {
+                "status": status,
+                "replay_id": replay.id,
+                "segments": len(segments),
+                "profile_count": len({segment["steam_id"] for segment in segments}),
+                "profile_ids": sorted({segment["steam_id"] for segment in segments}),
+                "unresolved_speaker_ids": unresolved_speaker_ids,
+                "skipped_speaker_ids": skipped_speaker_ids,
+            }
         except Exception as exc:
             self.db.rollback()
             replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
@@ -742,7 +906,7 @@ def task_index_pending_voice_replays(limit: int = 8) -> dict:
                 RoundReplay.uploaded_at >= cutoff,
                 RoundReplay.has_voice == 1,
                 or_(
-                    RoundReplay.voice_index_status != "ready",
+                    RoundReplay.voice_index_status.in_(["pending", "running", "error"]),
                     RoundReplay.voice_index_version != VOICE_INDEX_VERSION,
                     RoundReplay.voice_index_status.is_(None),
                 ),
@@ -824,7 +988,10 @@ def _voice_run_dict(run) -> dict:
         "total": run.total,
         "processed": run.processed,
         "ready_count": run.ready_count,
+        "partial_count": run.partial_count,
         "error_count": run.error_count,
+        "segment_count": run.segment_count,
+        "profile_count": run.profile_count,
         "last_replay_id": run.last_replay_id,
         "last_message": run.last_message,
         "error": run.error,
@@ -897,7 +1064,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
                 RoundReplay.uploaded_at >= cutoff,
                 RoundReplay.has_voice == 1,
                 or_(
-                    RoundReplay.voice_index_status != "ready",
+                    RoundReplay.voice_index_status.in_(["pending", "running", "error", "partial"]),
                     RoundReplay.voice_index_version != VOICE_INDEX_VERSION,
                     RoundReplay.voice_index_status.is_(None),
                 ),
@@ -910,6 +1077,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         db.commit()
 
         service = VoiceIndexService(db)
+        seen_profile_ids = set()
         for replay_id in replay_ids:
             db.refresh(run)
             if run.status in ("cancelling", "cancelled"):
@@ -926,16 +1094,38 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
 
             result = service.index_replay(replay_id)
             status = result.get("status", "error")
-            is_error = status != "ready"
+            is_error = status == "error"
+            is_partial = status == "partial"
             run.processed += 1
             run.last_replay_id = replay_id
-            run.last_message = (
-                f"Реплей #{replay_id}: {status}"
-                + (f" — {result.get('error')}" if result.get("error") else "")
-            )
+            run.segment_count += int(result.get("segments") or 0)
+            seen_profile_ids.update(result.get("profile_ids") or [])
+            run.profile_count = len(seen_profile_ids)
+            if is_error:
+                run.last_message = f"Реплей #{replay_id}: ошибка — {result.get('error') or 'неизвестная ошибка'}"
+            elif is_partial:
+                unresolved = result.get("unresolved_speaker_ids") or []
+                skipped = result.get("skipped_speaker_ids") or []
+                unresolved_text = ", ".join(str(value) for value in unresolved[:8])
+                if len(unresolved) > 8:
+                    unresolved_text += ", …"
+                suffix = f"; ждёт сопоставления: {unresolved_text}" if unresolved else ""
+                if skipped:
+                    suffix += f"; пропущено: {len(skipped)}"
+                run.last_message = (
+                    f"Реплей #{replay_id}: частично — {result.get('segments', 0)} фрагм., "
+                    f"{result.get('profile_count', 0)} профилей{suffix}"
+                )
+            else:
+                run.last_message = (
+                    f"Реплей #{replay_id}: готов — {result.get('segments', 0)} фрагм., "
+                    f"{result.get('profile_count', 0)} профилей"
+                )
             run.heartbeat_at = datetime.utcnow()
             if is_error:
                 run.error_count += 1
+            elif is_partial:
+                run.partial_count += 1
             else:
                 run.ready_count += 1
             _voice_run_log(
@@ -943,7 +1133,7 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
                 run,
                 replay_id=replay_id,
                 status=status,
-                level="error" if is_error else "info",
+                level="error" if is_error else ("warning" if is_partial else "info"),
                 message=run.last_message,
             )
             db.commit()

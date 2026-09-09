@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import asyncio
+import json
 import os
 import struct
 import sys
@@ -12,6 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
 
 if sys.platform == "win32" and "fcntl" not in sys.modules:
     fcntl = types.ModuleType("fcntl")
@@ -23,7 +25,9 @@ if sys.platform == "win32" and "fcntl" not in sys.modules:
 from models import (
     AdminUser,
     Base,
+    PlayerData,
     ReplayVoiceSegment,
+    ReplayVoiceSpeaker,
     RoundReplay,
     VoiceIndexRun,
     VoiceIndexRunLog,
@@ -31,6 +35,8 @@ from models import (
 from routes.voice_index import (
     api_cancel_voice_index,
     api_get_voice_index_logs,
+    api_get_voice_speaker_details,
+    api_resolve_voice_speakers,
     api_start_voice_index,
 )
 from services_voice_index import get_active_voice_index_run, task_run_voice_backfill
@@ -50,6 +56,18 @@ def _admin(superuser: bool):
     return AdminUser(
         discord_username="admin" if superuser else "moderator",
         is_superuser=superuser,
+    )
+
+
+def _json_request(payload: dict) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {"type": "http", "method": "POST", "path": "/api/v1/admin/voice-index", "headers": []},
+        receive,
     )
 
 
@@ -164,7 +182,7 @@ def test_restart_recovers_legacy_cancelling_run():
     assert run.status == "cancelled"
 
 
-def test_backfill_run_records_success_and_error_logs():
+def test_backfill_run_records_ready_and_partial_logs():
     db = _db()
     admin = _admin(True)
     db.add(admin)
@@ -210,9 +228,11 @@ def test_backfill_run_records_success_and_error_logs():
 
     db.refresh(run)
     assert result["status"] == "completed"
-    assert (run.total, run.processed, run.ready_count, run.error_count) == (2, 2, 1, 1)
+    assert (run.total, run.processed, run.ready_count, run.partial_count, run.error_count) == (2, 2, 1, 1, 0)
+    assert run.segment_count == 1
+    assert run.profile_count == 1
     logs = db.query(VoiceIndexRunLog).filter(VoiceIndexRunLog.run_id == run.id).all()
-    assert {log.status for log in logs} == {"ready", "error"}
+    assert {log.status for log in logs} == {"ready", "partial"}
     assert db.query(ReplayVoiceSegment).count() == 1
 
 
@@ -256,3 +276,64 @@ def test_log_list_is_paginated():
             )
         )
     assert exc.value.status_code == 403
+
+
+def test_non_superuser_cannot_view_voice_speaker_details():
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(api_get_voice_speaker_details(
+            replay_id=1,
+            db=None,
+            current_admin=_admin(False),
+        ))
+    assert exc.value.status_code == 403
+
+
+def test_superuser_can_view_and_resolve_voice_speakers():
+    db = _db()
+    admin = _admin(True)
+    db.add(admin)
+    db.add(PlayerData(player_id=7, player_last_time_name="Alice", player_steamid="steam-alice"))
+    replay = RoundReplay(
+        filename="round.barodemo",
+        stored_filename="round.barodemo",
+        voice_index_status="partial",
+    )
+    db.add(replay)
+    db.flush()
+    db.add(ReplayVoiceSpeaker(
+        replay_id=replay.id,
+        speaker_id=383,
+        names=["Alice"],
+        candidate_profiles=[{"player_id": 7, "steam_id": "steam-alice", "name": "Alice"}],
+        resolution_status="unresolved",
+        packet_count=4,
+        start_ms=100,
+        end_ms=900,
+    ))
+    db.commit()
+
+    details = asyncio.run(api_get_voice_speaker_details(
+        replay_id=replay.id,
+        db=db,
+        current_admin=admin,
+    ))
+    assert details["items"][0]["speaker_id"] == 383
+    assert details["items"][0]["candidate_profiles"][0]["steam_id"] == "steam-alice"
+
+    request = _json_request({
+        "decisions": [{"speaker_id": 383, "action": "map", "steam_id": "steam-alice"}]
+    })
+    with patch("routes.voice_index.queue_replay_voice_index", return_value="voice-383") as queue:
+        response = asyncio.run(api_resolve_voice_speakers(
+            replay_id=replay.id,
+            request=request,
+            db=db,
+            current_admin=admin,
+        ))
+
+    assert response["status"] == "queued"
+    queue.assert_called_once_with(replay.id)
+    row = db.query(ReplayVoiceSpeaker).one()
+    assert row.resolution_status == "mapped"
+    assert row.mapping_source == "manual"
+    assert row.steam_id == "steam-alice"

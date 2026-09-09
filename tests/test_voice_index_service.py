@@ -56,6 +56,7 @@ def _db():
         models.PlayerCommunication.__table__,
         models.PlayerData.__table__,
         models.PlayerName.__table__,
+        models.ReplayVoiceSpeaker.__table__,
     ])
     return engine, Session(engine)
 
@@ -111,7 +112,7 @@ def test_index_replaces_segments_and_is_idempotent():
         engine.dispose()
 
 
-def test_unmapped_speaker_marks_replay_as_error_without_creating_segment():
+def test_unmapped_speaker_keeps_replay_partial_without_creating_segment():
     engine, db = _db()
     try:
         with tempfile.TemporaryDirectory(prefix="voice-service-") as directory:
@@ -139,9 +140,12 @@ def test_unmapped_speaker_marks_replay_as_error_without_creating_segment():
             with patch("services_replays.ReplayService", FakeReplayService):
                 result = VoiceIndexService(db).index_replay(12)
 
-            assert result["status"] == "error"
+            assert result["status"] == "partial"
             assert db.query(models.ReplayVoiceSegment).count() == 0
-            assert db.query(models.RoundReplay).one().voice_index_status == "error"
+            assert db.query(models.RoundReplay).one().voice_index_status == "partial"
+            speaker = db.query(models.ReplayVoiceSpeaker).one()
+            assert speaker.speaker_id == 99
+            assert speaker.resolution_status == "unresolved"
     finally:
         db.close()
         engine.dispose()
@@ -187,6 +191,22 @@ def _demo_with_spawn(speaker_id: int, nickname: str) -> bytes:
         + bytes([0x03]) + struct.pack("<IH", 0, speaker_id)
         + _str("human") + _str(nickname) + bytes([0])
         + bytes([0x07]) + struct.pack("<IHH", 100, speaker_id, 3) + b"abc"
+        + bytes([0xFF]) + struct.pack("<I", 1000)
+    )
+
+
+def _demo_with_two_spawns() -> bytes:
+    return (
+        b"BDMO"
+        + struct.pack("<HHBq", 4, 1, 10, 1753000000000)
+        + _str("ASPER1") + _str("seed") + _str("Ridge") + _str("Orca")
+        + struct.pack("<I", 0)
+        + bytes([0x03]) + struct.pack("<IH", 0, 7)
+        + _str("human") + _str("Alice") + bytes([0])
+        + bytes([0x03]) + struct.pack("<IH", 0, 8)
+        + _str("human") + _str("Unknown") + bytes([0])
+        + bytes([0x07]) + struct.pack("<IHH", 100, 7, 3) + b"abc"
+        + bytes([0x07]) + struct.pack("<IHH", 200, 8, 3) + b"def"
         + bytes([0xFF]) + struct.pack("<I", 1000)
     )
 
@@ -300,6 +320,102 @@ def test_index_replay_uses_unique_nickname_fallback_for_old_archive():
 
             assert result["status"] == "ready"
             assert db.query(models.ReplayVoiceSegment).one().steam_id == "steam-alice"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_index_replay_keeps_mapped_segments_when_other_speakers_are_unresolved():
+    engine, db = _db()
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-partial-") as directory:
+            path = os.path.join(directory, "round.barodemo")
+            with open(path, "wb") as replay_file:
+                replay_file.write(_demo_with_two_spawns())
+
+            db.add(models.PlayerData(player_id=1, player_last_time_name="Alice", player_steamid="steam-alice"))
+            db.add(models.PlayerName(
+                player_id=1,
+                nickname="Alice",
+                first_seen=datetime(2024, 1, 1),
+                last_seen=datetime(2026, 12, 31),
+            ))
+            db.add(models.RoundReplay(
+                id=15,
+                filename="round.barodemo",
+                stored_filename="round.barodemo",
+                has_voice=1,
+                recorded_at=datetime(2026, 9, 1),
+                voice_index_status="pending",
+            ))
+            db.commit()
+
+            class FakeReplayService:
+                def __init__(self, _db):
+                    pass
+
+                def get_file_path(self, _replay):
+                    return path
+
+            with patch("services_replays.ReplayService", FakeReplayService):
+                result = VoiceIndexService(db).index_replay(15)
+
+            assert result["status"] == "partial"
+            assert result["segments"] == 1
+            assert result["unresolved_speaker_ids"] == [8]
+            assert db.query(models.ReplayVoiceSegment).one().steam_id == "steam-alice"
+            rows = {
+                row.speaker_id: row
+                for row in db.query(models.ReplayVoiceSpeaker).all()
+            }
+            assert rows[7].resolution_status == "mapped"
+            assert rows[7].steam_id == "steam-alice"
+            assert rows[8].resolution_status == "unresolved"
+            assert rows[8].names == ["Unknown"]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_index_replay_honours_manual_skip_for_unresolved_speaker():
+    engine, db = _db()
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-skip-") as directory:
+            path = os.path.join(directory, "round.barodemo")
+            with open(path, "wb") as replay_file:
+                replay_file.write(_demo_with_spawn(8, "Unknown"))
+            replay = models.RoundReplay(
+                id=16,
+                filename="round.barodemo",
+                stored_filename="round.barodemo",
+                has_voice=1,
+                voice_index_status="partial",
+            )
+            db.add(replay)
+            db.flush()
+            db.add(models.ReplayVoiceSpeaker(
+                replay_id=replay.id,
+                speaker_id=8,
+                names=["Unknown"],
+                resolution_status="skipped",
+                mapping_source="manual_skip",
+            ))
+            db.commit()
+
+            class FakeReplayService:
+                def __init__(self, _db):
+                    pass
+
+                def get_file_path(self, _replay):
+                    return path
+
+            with patch("services_replays.ReplayService", FakeReplayService):
+                result = VoiceIndexService(db).index_replay(16)
+
+            assert result["status"] == "partial"
+            assert result["unresolved_speaker_ids"] == []
+            assert result["skipped_speaker_ids"] == [8]
+            assert db.query(models.ReplayVoiceSegment).count() == 0
     finally:
         db.close()
         engine.dispose()
