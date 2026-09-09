@@ -1413,6 +1413,62 @@ def task_memory_maintenance() -> dict:
     }
 
 
+_APP_TMP_MAX_AGE_SECONDS = 24 * 3600
+
+
+def task_cleanup_app_tmp() -> dict:
+    """Delete stale spool files from data/tmp — the app's tempfile.tempdir.
+
+    main.py redirects every tempfile (multipart uploads, document/ONLYOFFICE
+    conversions, ...) into data/tmp. A request that crashed or was abandoned
+    mid-upload used to leave its spool file there FOREVER: nothing in this
+    codebase ever cleaned the directory, and the slow accumulation was one of
+    the causes of the 2026-09-09 "Disk got full" outage. Files younger than
+    _APP_TMP_MAX_AGE_SECONDS belong to in-flight requests and are left alone.
+    Runs hourly (BACKGROUND)."""
+    import time as _time
+
+    tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tmp")
+    if not os.path.isdir(tmp_dir):
+        return {"status": "ok", "deleted_files": 0, "reclaimed_bytes": 0}
+
+    cutoff = _time.time() - _APP_TMP_MAX_AGE_SECONDS
+    deleted = 0
+    reclaimed = 0
+    errors = 0
+    for root, _dirs, files in os.walk(tmp_dir):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                stat = os.stat(path)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                errors += 1
+                continue
+            if stat.st_mtime > cutoff:
+                continue
+            try:
+                os.remove(path)
+                deleted += 1
+                reclaimed += stat.st_size
+            except OSError:
+                errors += 1
+
+    # Prune subdirectories that just became empty (tempfile itself only
+    # creates flat files here, but downstream code may nest).
+    for root, dirs, _files in os.walk(tmp_dir, topdown=False):
+        for name in dirs:
+            try:
+                os.rmdir(os.path.join(root, name))
+            except OSError:
+                pass
+
+    if deleted or errors:
+        logger.info("[TmpCleanup] deleted=%s reclaimed_bytes=%s errors=%s", deleted, reclaimed, errors)
+    return {"status": "ok", "deleted_files": deleted, "reclaimed_bytes": reclaimed, "errors": errors}
+
+
 def task_sample_perf_resources() -> dict:
     """CPU/RAM-сэмпл процесса+системы для страницы «Мониторинг
     производительности» — см. services_perf_monitor.py про то, почему это
@@ -1841,6 +1897,16 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.LOW,
         task_id="memory_maintenance",
+    )
+
+    # Stale tempfile spool files in data/tmp: BACKGROUND priority, hourly.
+    # See task_cleanup_app_tmp — unbounded growth of this directory was one
+    # of the causes of the 2026-09-09 disk-full outage.
+    scheduler.register_periodic(
+        task_cleanup_app_tmp,
+        interval_secs=60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="app_tmp_cleanup",
     )
 
     scheduler.register_periodic(

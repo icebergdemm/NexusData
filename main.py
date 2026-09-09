@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import PlainTextResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from fastapi import HTTPException
@@ -214,16 +215,31 @@ def create_app() -> FastAPI:
             )
         return _serve_spa_or_fallback(status_code, message)
 
+    def _short_db_error(exc: Exception) -> str:
+        """Exception text WITHOUT the full SQL statement/params.
+
+        str(SQLAlchemyError) embeds the complete statement (often ~10 KB).
+        During the 2026-09-09 disk-full outage the game servers' 1-second
+        ingest retries made db_exception_handler rewrite that whole blob into
+        error.log twice per second — pure log amplification exactly when the
+        disk was already the problem. The DBAPI-level message (e.g.
+        "(1021, 'Disk got full...')") plus the exception type is what a
+        human needs; the full SQL stays available in the code/queries.
+        """
+        orig = getattr(exc, "orig", None)
+        text = f"{type(exc).__name__}: {orig if orig is not None else exc}"
+        return text[:500]
+
     @app.exception_handler(IntegrityError)
     async def integrity_exception_handler(request, exc):
-        logger.error(f"Integrity error: {exc}")
+        logger.error("Integrity error on %s %s: %s", request.method, request.url.path, _short_db_error(exc))
         return _error_response(request, 409, "Ошибка целостности данных",
                                "Данный элемент уже существует или нарушены ограничения целостности.",
                                "integrity_error")
 
     @app.exception_handler(SQLAlchemyError)
     async def db_exception_handler(request, exc):
-        logger.error(f"Database error: {exc}")
+        logger.error("Database error on %s %s: %s", request.method, request.url.path, _short_db_error(exc))
         return _error_response(request, 500, "Ошибка базы данных",
                                "Не удалось выполнить операцию с базой данных. Пожалуйста, попробуйте позже.",
                                "database_error")
@@ -569,7 +585,12 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown():
         if os.environ.get("WORKER_ROLE") != "web":
-            stop_all_workers()
+            # stop_all_workers() joins scheduler worker threads for up to 8s
+            # (task_scheduler.stop). Run it via run_in_threadpool so the event
+            # loop keeps servicing requests while shutdown waits — the perf
+            # watchdog recorded a 7.6s "event loop lag" purely from this
+            # synchronous join in the old shutdown handler.
+            await run_in_threadpool(stop_all_workers)
 
     # HTTP exception handler — JSON for API clients, the SPA shell for
     # everything else except the /login redirect (see _error_response's

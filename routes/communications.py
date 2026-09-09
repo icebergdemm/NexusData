@@ -34,6 +34,7 @@ RETENTION_SETTING = "communications_retention_days"
 DEFAULT_RETENTION_DAYS = 90
 MAX_RETENTION_DAYS = 3650
 STALE_PENDING_AFTER = timedelta(minutes=5)
+_PURGE_CHUNK = 1000
 
 
 @api_router.get("/communications/config")
@@ -493,18 +494,42 @@ def purge_expired_communications(db: Session) -> int:
     row = db.query(AppSetting).filter(AppSetting.key == RETENTION_SETTING).first()
     days = int(row.value) if row and row.value else DEFAULT_RETENTION_DAYS
     cutoff = datetime.utcnow() - timedelta(days=max(1, min(days, MAX_RETENTION_DAYS)))
-    expired_ids = [row[0] for row in db.query(PlayerCommunication.id).filter(PlayerCommunication.occurred_at < cutoff).all()]
-    if not expired_ids:
-        return 0
-    # Explicit child deletion keeps the cleanup deterministic on local SQLite
-    # test databases too; MySQL's ON DELETE CASCADE remains the safety net for
-    # direct parent deletion elsewhere.
-    db.query(PlayerCommunicationRecipient).filter(
-        PlayerCommunicationRecipient.communication_id.in_(expired_ids)
-    ).delete(synchronize_session=False)
-    deleted = db.query(PlayerCommunication).filter(PlayerCommunication.id.in_(expired_ids)).delete(synchronize_session=False)
-    db.commit()
-    return int(deleted or 0)
+    # Chunked by id, never "every expired id in one IN(...)": after a long
+    # backlog (retention lowered, cleanup stalled by a full disk — see the
+    # 2026-09-09 incident) the old all-ids-at-once approach loaded millions
+    # of ids into RAM and built a placeholder list MySQL could refuse.
+    # `id > last_id` keeps each pass monotonic, so there is no infinite loop
+    # even if a commit partially fails.
+    deleted_total = 0
+    last_id = 0
+    while True:
+        expired_ids = [
+            r[0] for r in db.query(PlayerCommunication.id)
+            .filter(
+                PlayerCommunication.occurred_at < cutoff,
+                PlayerCommunication.id > last_id,
+            )
+            .order_by(PlayerCommunication.id)
+            .limit(_PURGE_CHUNK)
+            .all()
+        ]
+        if not expired_ids:
+            break
+        last_id = expired_ids[-1]
+        # Explicit child deletion keeps the cleanup deterministic on local
+        # SQLite test databases too; MySQL's ON DELETE CASCADE remains the
+        # safety net for direct parent deletion elsewhere.
+        db.query(PlayerCommunicationRecipient).filter(
+            PlayerCommunicationRecipient.communication_id.in_(expired_ids)
+        ).delete(synchronize_session=False)
+        deleted = db.query(PlayerCommunication).filter(
+            PlayerCommunication.id.in_(expired_ids)
+        ).delete(synchronize_session=False)
+        db.commit()
+        deleted_total += int(deleted or 0)
+        if len(expired_ids) < _PURGE_CHUNK:
+            break
+    return deleted_total
 
 
 router.include_router(api_router)
