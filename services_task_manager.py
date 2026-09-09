@@ -193,10 +193,25 @@ def _thread_state(tid: int) -> str:
 
 
 def _stack_summary(tid: int) -> str:
+    """What a thread is executing right now (top frames).
+
+    sys._current_frames() is keyed by the PYTHON thread ident, while
+    psutil.threads() (and /proc) use the OS thread id — those are different
+    numbering spaces. This is exactly why the "Выполняет сейчас" column was
+    always empty: the dict lookup never matched. Map native_id → ident via
+    threading.enumerate() first."""
     try:
-        frame = sys._current_frames().get(tid)
+        try:
+            ident_map = {t.native_id: t.ident for t in
+                         (th for th in threading.enumerate() if getattr(th, "native_id", None) is not None)}
+        except Exception:
+            ident_map = {}
+        ident = ident_map.get(tid)
+        if ident is None:
+            return ""
+        frame = sys._current_frames().get(ident)
     except Exception:
-        frame = None
+        return ""
     if frame is None:
         return ""
     parts = []
@@ -253,7 +268,10 @@ def collect_app_threads() -> dict:
 
 
 def collect_subsystems() -> list[dict]:
-    """Long-lived background subsystem loops and whether they run now."""
+    """Long-lived background subsystem loops and whether they run now.
+
+    ``control`` is the actionable target id for execute_control(); null for
+    services without a start/stop API (they live as short-lived writers)."""
     rows = []
     try:
         import task_scheduler
@@ -262,9 +280,10 @@ def collect_subsystems() -> list[dict]:
             "running": task_scheduler.scheduler._started,
             "detail": f"{task_scheduler.scheduler._worker_count} воркера фоновых задач",
             "source": "task_scheduler.py",
+            "control": "scheduler",
         })
     except Exception:
-        rows.append({"name": "TaskScheduler", "running": False, "detail": "не загружен", "source": "task_scheduler.py"})
+        rows.append({"name": "TaskScheduler", "running": False, "detail": "не загружен", "source": "task_scheduler.py", "control": None})
     try:
         import services_logs
         rows.append({
@@ -272,6 +291,7 @@ def collect_subsystems() -> list[dict]:
             "running": bool(getattr(services_logs, "_log_worker_running", False)),
             "detail": f"интервал {getattr(services_logs, '_log_refresh_interval', '?')} с",
             "source": "services_logs.py",
+            "control": "log_worker",
         })
     except Exception:
         pass
@@ -282,6 +302,7 @@ def collect_subsystems() -> list[dict]:
             "running": bool(getattr(services_replays, "_replay_worker_running", False)),
             "detail": f"каждые {getattr(services_replays, '_REPLAY_CLEANUP_INTERVAL', '?') // 3600} ч",
             "source": "services_replays.py",
+            "control": "replay_worker",
         })
     except Exception:
         pass
@@ -292,6 +313,7 @@ def collect_subsystems() -> list[dict]:
             "running": bool(getattr(services_playtime_stats, "_playtime_stats_worker_running", False)),
             "detail": "агрегация игрового времени",
             "source": "services_playtime_stats.py",
+            "control": "playtime_worker",
         })
     except Exception:
         pass
@@ -302,6 +324,7 @@ def collect_subsystems() -> list[dict]:
             "running": bool(getattr(services_error_log, "_worker_started", False)),
             "detail": " персистентный журнал ошибок",
             "source": "services_error_log.py",
+            "control": None,
         })
     except Exception:
         pass
@@ -312,6 +335,7 @@ def collect_subsystems() -> list[dict]:
             "running": bool(getattr(services_perf_monitor, "_anomaly_worker_started", False)),
             "detail": "аномалии перф-монитора",
             "source": "services_perf_monitor.py",
+            "control": None,
         })
     except Exception:
         pass
@@ -349,3 +373,233 @@ def build_snapshot() -> dict:
         _snapshot_cache = data
         _snapshot_at = time.monotonic()
     return data
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Control: process / subsystem actions from the admin UI (superuser only)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ControlError(RuntimeError):
+    """Raised with the HTTP detail text for a rejected control action."""
+
+
+def _own_lineage_pids() -> set[int]:
+    pids = {os.getpid()}
+    try:
+        for child in psutil.Process().children(recursive=True):
+            pids.add(child.pid)
+    except Exception:
+        pass
+    return pids
+
+
+def _process_control(pid: int, action: str) -> dict:
+    if pid not in _own_lineage_pids():
+        raise ControlError(
+            "Управлять можно только процессами приложения (API и его дочерние)."
+        )
+    is_self = pid == os.getpid()
+    try:
+        proc = psutil.Process(pid)
+        if action == "suspend":
+            proc.suspend()
+        elif action == "resume":
+            proc.resume()
+        elif action in ("kill", "terminate", "restart"):
+            # terminate() relies on the supervisor (proxy_server's watcher
+            # for api_server.py, api_server's watcher for scheduler_process.py)
+            # to respawn the same role via runtime_control flags.
+            proc.terminate()
+        else:
+            raise ControlError(f"Неизвестное действие процесса: {action}")
+        if action in ("kill", "terminate", "restart"):
+            try:
+                proc.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                if action == "kill":
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except psutil.TimeoutExpired:
+                        pass
+    except psutil.Error as exc:
+        raise ControlError(f"Процесс {pid} недоступен: {type(exc).__name__}") from exc
+    return {
+        "pid": pid,
+        "action": action,
+        "is_self": is_self,
+        # A suspended API process stops answering HTTP: only a console
+        # restart (update restart) can bring it back.
+        "warning": (
+            "Приостановлен сам процесс API — сайт не отвечает, вернуться можно только перезапуском (update restart)."
+            if is_self and action == "suspend" else None
+        ),
+    }
+
+
+def _subsystem_control(subsystem: str, action: str) -> dict:
+    """stop persists until manual start or process restart (flags only live
+    in-process) — exactly the "выключить до обратного включения" semantics."""
+    if subsystem == "scheduler":
+        from task_scheduler import scheduler
+        if action == "stop":
+            scheduler.stop()
+        elif action == "start":
+            scheduler.start()
+        else:
+            raise ControlError(f"Неизвестное действие: {action}")
+        return {"subsystem": subsystem, "running": scheduler._started}
+    if subsystem == "log_worker":
+        import services_logs
+        if action == "stop":
+            services_logs.stop_log_worker()
+        elif action == "start":
+            services_logs.start_log_worker()
+        else:
+            raise ControlError(f"Неизвестное действие: {action}")
+        return {"subsystem": subsystem, "running": services_logs._log_worker_running}
+    if subsystem == "replay_worker":
+        import services_replays
+        if action == "stop":
+            services_replays.stop_replay_worker()
+        elif action == "start":
+            services_replays.start_replay_worker()
+        else:
+            raise ControlError(f"Неизвестное действие: {action}")
+        return {"subsystem": subsystem, "running": services_replays._replay_worker_running}
+    if subsystem == "playtime_worker":
+        import services_playtime_stats
+        if action == "stop":
+            services_playtime_stats.stop_playtime_stats_worker()
+        elif action == "start":
+            services_playtime_stats.start_playtime_stats_worker()
+        else:
+            raise ControlError(f"Неизвестное действие: {action}")
+        return {"subsystem": subsystem, "running": services_playtime_stats._playtime_stats_worker_running}
+    raise ControlError(f"Управляемая служба не найдена: {subsystem}")
+
+
+def execute_control(target: str, action: str) -> dict:
+    """Entry point for the admin route (see routes/perf_monitor.py)."""
+    if action not in ("suspend", "resume", "kill", "terminate", "restart", "stop", "start"):
+        raise ControlError(f"Неизвестное действие: {action}")
+    if target.startswith("pid:"):
+        return _process_control(int(target[4:]), action)
+    return _subsystem_control(target, action)
+
+
+def invalidate_snapshot_cache() -> None:
+    """Force the next task-manager build to refresh (after a control action)."""
+    global _snapshot_cache, _snapshot_at
+    with _snapshot_lock:
+        _snapshot_cache = None
+        _snapshot_at = 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Profilers (on demand, superuser only, never writing anything to disk)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_cpu_capture_lock = threading.Lock()
+_cpu_capture_running = False
+
+_memprofile_lock = threading.Lock()
+_memprofile_prev_snapshot = None
+
+
+def capture_cpu_profile(seconds: float = 6.0, interval: float = 0.02) -> dict:
+    """Sample every running Python thread's stack for N seconds and aggregate
+    per top-level frame — py-spy-lite: proportional sample counts approximate
+    where CPU time goes. Bounded: 1-15 s, no disk writes, single run at a time."""
+    global _cpu_capture_running
+    seconds = max(1.0, min(float(seconds), 15.0))
+    interval = max(0.01, min(float(interval), 0.05))
+    with _cpu_capture_lock:
+        if _cpu_capture_running:
+            raise ControlError("Срез уже снимается — подождите завершения.")
+        _cpu_capture_running = True
+    own_ident = threading.get_ident()
+    counts: dict[tuple[str, str], int] = {}
+    total = 0
+    try:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            try:
+                frames = sys._current_frames()
+            except Exception:
+                break
+            for ident, frame in frames.items():
+                if ident == own_ident:
+                    continue
+                observed = frame
+                if observed is not None and "services_task_manager" in observed.f_code.co_filename:
+                    # skip the sampler's own leaf frames
+                    observed = observed.f_back
+                while observed is not None and "services_task_manager" in observed.f_code.co_filename:
+                    observed = observed.f_back
+                if observed is None:
+                    continue
+                code = observed.f_code
+                key = (code.co_name, os.path.basename(code.co_filename))
+                counts[key] = counts.get(key, 0) + 1
+                total += 1
+            time.sleep(interval)
+    finally:
+        with _cpu_capture_lock:
+            _cpu_capture_running = False
+    top = [
+        {"function": name, "file": fname, "samples": n, "pct": round(n / total * 100.0, 1)}
+        for (name, fname), n in sorted(counts.items(), key=lambda kv: -kv[1])[:40]
+    ] if total else []
+    return {"seconds": seconds, "samples_total": total, "top": top}
+
+
+def mem_profile(action: str) -> dict:
+    """Tracemalloc control: start / snapshot / stop.
+
+    snapshot returns the CURRENT top allocation sites by (file, line) plus
+    the growth versus the previous snapshot — the closest answer to
+    "какая функция сколько съела RAM"."""
+    global _memprofile_prev_snapshot
+    with _memprofile_lock:
+        import tracemalloc
+        if action == "start":
+            if not tracemalloc.is_tracing():
+                tracemalloc.start(25)
+            else:
+                tracemalloc.clear_traces()
+            _memprofile_prev_snapshot = tracemalloc.take_snapshot()
+            return {"status": "tracing", "hint": "Дальше снимки показывают и текущее, и прирост с момента предыдущего снимка."}
+        if action == "stop":
+            if tracemalloc.is_tracing():
+                tracemalloc.stop()
+            _memprofile_prev_snapshot = None
+            return {"status": "stopped"}
+        if action == "snapshot":
+            if not tracemalloc.is_tracing():
+                raise ControlError("Профайлер памяти не запущен — сначала включите его.")
+            now_snap = tracemalloc.take_snapshot()
+            top = []
+            for stat in now_snap.statistics("lineno")[:40]:
+                frame = stat.traceback[0]
+                top.append({
+                    "location": f"{os.path.basename(frame.filename)}:{frame.lineno}",
+                    "size_mb": round(stat.size / 1024 / 1024, 2),
+                    "count": stat.count,
+                })
+            growth = []
+            if _memprofile_prev_snapshot is not None:
+                try:
+                    diffs = now_snap.compare_to(_memprofile_prev_snapshot, "lineno")
+                except Exception:
+                    diffs = []
+                for diff in diffs[:40]:
+                    frame = diff.traceback[0]
+                    growth.append({
+                        "location": f"{os.path.basename(frame.filename)}:{frame.lineno}",
+                        "delta_mb": round(diff.size_diff / 1024 / 1024, 2),
+                    })
+            _memprofile_prev_snapshot = now_snap
+            return {"status": "ok", "top": top, "growth": growth, "tracing": True}
+        raise ControlError(f"Неизвестное действие профайлера памяти: {action}")
+

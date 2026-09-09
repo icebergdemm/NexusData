@@ -13,7 +13,7 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Line } from "react-chartjs-2"
-import { Activity, AlertTriangle, Cpu, Gauge, ListTree, MemoryStick, ShieldAlert, Timer, Trash2 } from "lucide-react"
+import { Activity, AlertTriangle, Cpu, Gauge, ListTree, MemoryStick, Pause, Play, RotateCcw, ShieldAlert, Square, Timer, Trash2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -125,6 +125,7 @@ interface TMSubsystem {
   running: boolean
   detail: string
   source: string
+  control?: string | null
 }
 
 interface TaskManagerResponse {
@@ -186,17 +187,77 @@ function fmtDate(iso: string | null): string {
   return formatBrowserDate(iso)
 }
 
-function TaskManagerSection({ data, tab, onTab }: {
+interface CpuCaptureResult {
+  seconds: number
+  samples_total: number
+  top: { function: string; file: string; samples: number; pct: number }[]
+}
+
+interface MemProfileResult {
+  status: string
+  hint?: string
+  top?: { location: string; size_mb: number; count: number }[]
+  growth?: { location: string; delta_mb: number }[]
+}
+
+function TaskManagerSection({ data, tab, onTab, onRefetch }: {
   data: TaskManagerResponse
   tab: string
   onTab: (v: string) => void
+  onRefetch: () => void
 }) {
   const activeTasks = data.scheduler.active
+  const [pending, setPending] = useState<{ target: string; action: string; title: string; description: string } | null>(null)
+  const [profilerSeconds, setProfilerSeconds] = useState("6")
+
+  // HTTP control mutation — reuses one endpoint for process + subsystem rows.
+  const controlMutation = useMutation({
+    mutationFn: (arg: { target: string; action: string }) =>
+      api.post<{ status: string; warning?: string | null }>("/api/v1/admin/perf/task-manager/control", arg),
+    onSuccess: (res, arg) => {
+      toast.success(`${{ suspend: "Приостановлен", resume: "Возобновлён", kill: "Завершён", terminate: "Остановлен", restart: "Перезапуск отправлен", stop: "Остановлена", start: "Запущена" }[arg.action as string] ?? arg.action}: ${arg.target}`)
+      if (res.warning) toast.warning(res.warning)
+      onRefetch()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const cpuMutation = useMutation({
+    mutationFn: () =>
+      api.post<CpuCaptureResult>("/api/v1/admin/perf/task-manager/cpu-capture", { seconds: Number(profilerSeconds) || 6 }),
+    onSuccess: (res) => toast.success(`Срез снят: ${res.samples_total} сэмплов за ${res.seconds} с`),
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const memMutation = useMutation({
+    mutationFn: (action: string) =>
+      api.post<MemProfileResult>("/api/v1/admin/perf/task-manager/mem-profile", { action }),
+    onSuccess: (_res, action) => {
+      if (action === "start") toast.success("Профайлер памяти включён — снимок чуть позже покажет и прирост")
+      else if (action === "stop") toast.success("Профайлер памяти остановлен")
+      else toast.success("Снимок памяти готов")
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const control = (target: string, action: string, label: string, danger = true) =>
+    setPending({ target, action, title: `${action === "suspend" ? "Приостановить" : action === "kill" ? "Завершить" : action === "restart" ? "Перезапустить" : action === "resume" ? "Возобновить" : action === "stop" ? "Остановить" : "Запустить"} — ${label}`,
+
+      description: danger
+        ? "Действие выполняется сразу. Всё, что нужно, будет восстановлено вручную или после перезапуска контейнера."
+        : "Действие на службе: остановку нужно вернуть вручную кнопкой, либо после перезапуска бэкенда." })
+
+  const act = () => {
+    if (!pending) return
+    controlMutation.mutate({ target: pending.target, action: pending.action })
+    setPending(null)
+  }
+
   return (
     <Card className="mb-4 overflow-hidden py-0" data-v2-taskmanager>
       <CardHeader className="border-b bg-muted/30 py-3">
         <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-          <ListTree className="size-4" /> Диспетчер задач (live, обновляется каждые ~2 с)
+          <ListTree className="size-4" /> Диспетчер задач (live, ~2 с)
           {data.scheduler.available && (
             <Badge variant="secondary" className="ml-auto font-mono font-normal">
               {activeTasks.length} выполняется · очередь {data.scheduler.queue_size} · {data.scheduler.workers} воркера
@@ -206,11 +267,12 @@ function TaskManagerSection({ data, tab, onTab }: {
       </CardHeader>
       <CardContent className="pt-3">
         <Tabs value={tab} onValueChange={onTab}>
-          <TabsList className="mb-3">
+          <TabsList className="mb-3 flex-wrap">
             <TabsTrigger value="processes">Процессы ({data.processes.length})</TabsTrigger>
             <TabsTrigger value="threads">Потоки API ({data.app_threads.length})</TabsTrigger>
             <TabsTrigger value="scheduler">Планировщик</TabsTrigger>
             <TabsTrigger value="subsystems">Службы ({data.subsystems.length})</TabsTrigger>
+            <TabsTrigger value="profiler">Профайлер</TabsTrigger>
           </TabsList>
 
           <TabsContent value="processes" className="mt-0">
@@ -223,36 +285,64 @@ function TaskManagerSection({ data, tab, onTab }: {
                   <TableHead className="text-right">CPU %</TableHead>
                   <TableHead className="text-right">RAM МБ</TableHead>
                   <TableHead className="text-right">Потоки</TableHead>
-                  <TableHead>Командная строка</TableHead>
+                  <TableHead className="text-right">Управление</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.processes.map((p) => (
-                  <TableRow key={p.pid} className={p.is_own || p.own_child ? "bg-primary/5" : ""}>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{p.pid}</TableCell>
-                    <TableCell className="max-w-56 truncate text-sm font-medium" title={p.cmd}>
-                      {p.name}
-                      {p.is_own && <Badge variant="default" className="ml-2 font-normal">API</Badge>}
-                      {p.own_child && !p.is_own && <Badge variant="secondary" className="ml-2 font-normal">дочерний</Badge>}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={PROC_STATUS_VARIANT[p.status] ?? "secondary"}>
-                        {PROC_STATUS_LABEL[p.status] ?? p.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className={`text-right font-mono text-sm ${p.cpu_pct > 15 ? "text-warning" : ""}`}>
-                      {p.cpu_pct.toFixed(1)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-sm">
-                      {p.mem_rss_mb.toFixed(1)}
-                      <span className="ml-1 text-xs text-muted-foreground">({p.mem_pct.toFixed(1)}%)</span>
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs text-muted-foreground">{p.threads}</TableCell>
-                    <TableCell className="max-w-72 truncate font-mono text-xs text-muted-foreground" title={p.cmd}>
-                      {p.cmd}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {data.processes.map((p) => {
+                  const manageable = p.is_own || p.own_child
+                  const suspended = p.status === "stopped"
+                  return (
+                    <TableRow key={p.pid} className={p.is_own || p.own_child ? "bg-primary/5" : ""}>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{p.pid}</TableCell>
+                      <TableCell className="max-w-56 truncate text-sm font-medium" title={p.cmd}>
+                        {p.name}
+                        {p.is_own && <Badge variant="default" className="ml-2 font-normal">API</Badge>}
+                        {p.own_child && !p.is_own && <Badge variant="secondary" className="ml-2 font-normal">дочерний</Badge>}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={PROC_STATUS_VARIANT[p.status] ?? "secondary"}>
+                          {PROC_STATUS_LABEL[p.status] ?? p.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className={`text-right font-mono text-sm ${p.cpu_pct > 15 ? "text-warning" : ""}`}>
+                        {p.cpu_pct.toFixed(1)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm">
+                        {p.mem_rss_mb.toFixed(1)}
+                        <span className="ml-1 text-xs text-muted-foreground">({p.mem_pct.toFixed(1)}%)</span>
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs text-muted-foreground">{p.threads}</TableCell>
+                      <TableCell className="text-right">
+                        {manageable && (
+                          <div className="inline-flex gap-1">
+                            {suspended ? (
+                              <Button size="sm" variant="outline" className="h-7 px-2" disabled={controlMutation.isPending}
+                                onClick={() => control(`pid:${p.pid}`, "resume", `PID ${p.pid}`)}>
+                                <Play className="size-3" />
+                              </Button>
+                            ) : (
+                              <Button size="sm" variant="outline" className="h-7 px-2" disabled={controlMutation.isPending}
+                                onClick={() => control(`pid:${p.pid}`, "suspend", `PID ${p.pid}`)}
+                                title={p.is_own ? "API перестанет отвечать; вернёт только «update restart»" : "Пауза"}>
+                                <Pause className="size-3" />
+                              </Button>
+                            )}
+                            <Button size="sm" variant="outline" className="h-7 px-2" disabled={controlMutation.isPending}
+                              onClick={() => control(`pid:${p.pid}`, "restart", `PID ${p.pid}`)}
+                              title="Остановить — супервизор родителя поднимет тот же процесс">
+                              <RotateCcw className="size-3" />
+                            </Button>
+                            <Button size="sm" variant="destructive" className="h-7 px-2" disabled={controlMutation.isPending}
+                              onClick={() => control(`pid:${p.pid}`, "kill", `PID ${p.pid}`)}>
+                              <Square className="size-3" />
+                            </Button>
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
                 {!data.processes.length && (
                   <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">Снимок собирается…</TableCell></TableRow>
                 )}
@@ -262,9 +352,8 @@ function TaskManagerSection({ data, tab, onTab }: {
 
           <TabsContent value="threads" className="mt-0">
             <p className="mb-2 text-xs text-muted-foreground">
-              Потоки процесса API ({data.own_pid}, RSS {data.app_rss_mb.toFixed(0)} МБ).
-              Нагрузка ниже ~1% в сочетании со статусом «спит» означает ожидание (sleep/queue.get).
-              «Стек» — что поток выполняет прямо сейчас.
+              Потоки процесса API ({data.own_pid}, RSS {data.app_rss_mb.toFixed(0)} МБ). CPU потока нормализован
+              на одно ядро (как top): «спит» = ~0%, busy = до 100%. Нажать на стек — полная трасса секунды снимка.
             </p>
             <Table>
               <TableHeader>
@@ -302,10 +391,27 @@ function TaskManagerSection({ data, tab, onTab }: {
           </TabsContent>
 
           <TabsContent value="scheduler" className="mt-0">
-            <p className="mb-2 text-xs text-muted-foreground">
-              «Через» — до планового запуска. «сейчас» = тик уже наступил и ждёт воркер
-              (или задачу съел дедуп-ключ предыдущего ещё идущего прогона).
-            </p>
+            <div className="mb-3 flex items-center gap-2">
+              <Badge variant={data.scheduler.available ? "default" : "secondary"} className="font-normal">
+                {data.scheduler.available ? "работает" : "не запущен"}
+              </Badge>
+              <Badge variant="secondary" className="font-mono font-normal">очередь {data.scheduler.queue_size}</Badge>
+              {data.scheduler.available && (
+                <div className="ml-auto inline-flex gap-1">
+                  {data.scheduler.available ? (
+                    <Button size="sm" variant="outline" disabled={controlMutation.isPending}
+                      onClick={() => control("scheduler", "stop", "Планировщик фоновых задач")}
+                      title="Прекратить запуск новых и новых периодических тиков; текущие дорабатывают">
+                      <Pause className="size-3" /> Пауза запусков
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="outline" disabled={controlMutation.isPending || data.scheduler.available}
+                    onClick={() => control("scheduler", "start", "Планировщик фоновых задач")}>
+                    <Play className="size-3" /> Возобновить
+                  </Button>
+                </div>
+              )}
+            </div>
             <div className="grid gap-4 xl:grid-cols-2">
               <div>
                 <p className="mb-1 text-xs font-semibold text-muted-foreground">Выполняются сейчас ({activeTasks.length})</p>
@@ -326,7 +432,7 @@ function TaskManagerSection({ data, tab, onTab }: {
                 <div className="max-h-96 overflow-y-auto rounded-xl border">
                   {data.scheduler.periodic.map((p) => (
                     <div key={p.task_id} className="flex items-center gap-2 border-b px-3 py-2 text-xs last:border-0">
-                      <span className={`font-mono ${p.running ? "text-success" : "font-medium"}`}>{p.task_id}</span>
+                      <span className={`font-mono ${p.running ? "text-success" : ""}`}>{p.task_id}</span>
                       {p.running && <Badge variant="default" className="font-normal">выполняется</Badge>}
                       <span className="ml-auto whitespace-nowrap text-muted-foreground">
                         {p.priority.toLowerCase()} · каждые {fmtInterval(p.interval_secs)} · через {fmtDue(p.due_in_secs)}
@@ -367,29 +473,158 @@ function TaskManagerSection({ data, tab, onTab }: {
                   <TableHead>Служба</TableHead>
                   <TableHead>Состояние</TableHead>
                   <TableHead>Подробности</TableHead>
-                  <TableHead>Источник</TableHead>
+                  <TableHead className="text-right">Управление</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.subsystems.map((s) => (
-                  <TableRow key={s.name}>
-                    <TableCell className="text-sm font-medium">{s.name}</TableCell>
+                {data.subsystems.map((sub) => (
+                  <TableRow key={sub.name}>
+                    <TableCell className="text-sm font-medium">{sub.name}</TableCell>
                     <TableCell>
-                      <Badge variant={s.running ? "default" : "secondary"}>{s.running ? "работает" : "не запущена"}</Badge>
+                      <Badge variant={sub.running ? "default" : "secondary"}>{sub.running ? "работает" : "не запущена"}</Badge>
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{s.detail}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{s.source}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{sub.detail}</TableCell>
+                    <TableCell className="text-right">
+                      {sub.control ? (
+                        <div className="inline-flex gap-1">
+                          <Button size="sm" variant="outline" className="h-7 px-2" disabled={controlMutation.isPending || !sub.running}
+                            onClick={() => control(sub.control!, "stop", sub.name)}>
+                            <Pause className="size-3" /> Стоп
+                          </Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2" disabled={controlMutation.isPending || sub.running}
+                            onClick={() => control(sub.control!, "start", sub.name)}>
+                            <Play className="size-3" /> Пуск
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </TabsContent>
+
+          <TabsContent value="profiler" className="mt-0 space-y-4">
+            <Card>
+              <CardHeader className="py-3 pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Cpu className="size-4" /> CPU по функциям
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Select value={profilerSeconds} onValueChange={setProfilerSeconds}>
+                    <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="3">3 секунды</SelectItem>
+                      <SelectItem value="6">6 секунд</SelectItem>
+                      <SelectItem value="15">15 секунд</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" disabled={cpuMutation.isPending}
+                    onClick={() => cpuMutation.mutate()}>
+                    {cpuMutation.isPending ? "Снимаю…" : `Снять срез (${profilerSeconds} с)`}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">Сэмплирующий профайлер: пропорция сэмплов ≈ доля CPU</span>
+                </div>
+                {cpuMutation.data && (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Функция</TableHead>
+                        <TableHead className="text-right">Доля</TableHead>
+                        <TableHead className="text-right">Сэмплов</TableHead>
+                        <TableHead>Файл</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {cpuMutation.data.top.map((r, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="font-mono text-xs">{r.function}</TableCell>
+                          <TableCell className={`text-right font-mono text-sm ${r.pct > 15 ? "text-warning" : ""}`}>{r.pct}%</TableCell>
+                          <TableCell className="text-right font-mono text-xs text-muted-foreground">{r.samples}</TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">{r.file}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="py-3 pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <MemoryStick className="size-4" /> RAM по функциям (tracemalloc)
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" disabled={memMutation.isPending}
+                    onClick={() => memMutation.mutate("start")}>Включить</Button>
+                  <Button size="sm" disabled={memMutation.isPending || !memMutation.data?.status}
+                    onClick={() => memMutation.mutate("snapshot")}>Снимок</Button>
+                  <Button size="sm" variant="outline" disabled={memMutation.isPending || !memMutation.data?.status}
+                    onClick={() => memMutation.mutate("stop")}>Выключить</Button>
+                  <span className="text-xs text-muted-foreground">При включении бэкенд начинает отслеживать аллокации (~10-15% накладных расходов), снимок показывает: лидеров текущей памяти и прирост с прошлого снимка.</span>
+                </div>
+                {memMutation.data && ((memMutation.data.top?.length ?? 0) > 0 || (memMutation.data.growth?.length ?? 0) > 0) ? (
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-xs font-semibold text-muted-foreground">Топ уровней памяти сейчас</p>
+                      <Table>
+                        <TableHeader>
+                          <TableRow><TableHead>Место</TableHead><TableHead className="text-right">МБ</TableHead><TableHead className="text-right">Объектов</TableHead></TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(memMutation.data.top ?? []).slice(0, 20).map((r, i) => (
+                            <TableRow key={i}>
+                              <TableCell className="font-mono text-xs">{r.location}</TableCell>
+                              <TableCell className="text-right font-mono text-sm">{r.size_mb}</TableCell>
+                              <TableCell className="text-right font-mono text-xs text-muted-foreground">{r.count}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-xs font-semibold text-muted-foreground">Прирост с прошлого снимка</p>
+                      <Table>
+                        <TableHeader>
+                          <TableRow><TableHead>Место</TableHead><TableHead className="text-right">Δ МБ</TableHead></TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(memMutation.data.growth ?? []).slice(0, 20).map((r, i) => (
+                            <TableRow key={i} className={r.delta_mb > 0.5 ? "text-warning" : ""}>
+                              <TableCell className="font-mono text-xs">{r.location}</TableCell>
+                              <TableCell className="text-right font-mono text-sm">{r.delta_mb > 0 ? "+" : ""}{r.delta_mb}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                ) : memMutation.data ? (
+                  <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">Данные снимка пусты</div>
+                ) : null}
+              </CardContent>
+            </Card>
+          </TabsContent>
         </Tabs>
       </CardContent>
+
+      <ConfirmDialog
+        open={!!pending}
+        onOpenChange={(o) => { if (!o) setPending(null) }}
+        title={pending?.title ?? ""}
+        description={pending?.description ?? ""}
+        confirmLabel="Выполнить"
+        onConfirm={act}
+      />
     </Card>
   )
 }
-
 function fmtUptime(secs: number): string {
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
@@ -532,7 +767,7 @@ export function PerfMonitorPage() {
         </Card>
       )}
 
-      {taskManager && <TaskManagerSection data={taskManager} tab={tmTab} onTab={setTmTab} />}
+      {taskManager && <TaskManagerSection data={taskManager} tab={tmTab} onTab={setTmTab} onRefetch={() => queryClient.invalidateQueries({ queryKey: ["perf-task-manager"] })} />}
 
       {health?.scheduler && health.scheduler.recent_tasks.length > 0 && (
         <Card className="mb-4 overflow-hidden py-0">
