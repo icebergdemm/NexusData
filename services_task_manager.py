@@ -339,6 +339,25 @@ def collect_subsystems() -> list[dict]:
         })
     except Exception:
         pass
+    try:
+        import services_voice_index
+        from database import SessionLocal
+
+        db = SessionLocal()
+        auto_enabled = False
+        try:
+            auto_enabled = services_voice_index.voice_auto_index_enabled(db)
+        finally:
+            db.close()
+        rows.append({
+            "name": "VoiceIndexAutoScan (раз в 60 с)",
+            "running": auto_enabled,
+            "detail": "авто-скан реплеев для озвучки; ручной run им не управляется",
+            "source": "services_voice_index.py",
+            "control": "voice_auto_index",
+        })
+    except Exception:
+        pass
     return rows
 
 
@@ -439,7 +458,7 @@ def _process_control(pid: int, action: str) -> dict:
 
 def _subsystem_control(subsystem: str, action: str) -> dict:
     """stop persists until manual start or process restart (flags only live
-    in-process) — exactly the "выключить до обратного включения" semantics."""
+    in-process) — except voice_auto_index, which is a durable AppSetting."""
     if subsystem == "scheduler":
         from task_scheduler import scheduler
         if action == "stop":
@@ -476,6 +495,18 @@ def _subsystem_control(subsystem: str, action: str) -> dict:
         else:
             raise ControlError(f"Неизвестное действие: {action}")
         return {"subsystem": subsystem, "running": services_playtime_stats._playtime_stats_worker_running}
+    if subsystem == "voice_auto_index":
+        from database import SessionLocal
+        from services_voice_index import set_voice_auto_index_enabled
+
+        if action not in ("stop", "start"):
+            raise ControlError(f"Неизвестное действие: {action}")
+        db = SessionLocal()
+        try:
+            enabled = set_voice_auto_index_enabled(db, action == "start")
+        finally:
+            db.close()
+        return {"subsystem": subsystem, "running": enabled}
     raise ControlError(f"Управляемая служба не найдена: {subsystem}")
 
 

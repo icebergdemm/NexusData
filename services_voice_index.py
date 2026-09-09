@@ -1068,7 +1068,13 @@ def queue_replay_voice_index(replay_id: int) -> str | None:
 
 
 def task_index_pending_voice_replays(limit: int = 1) -> dict:
-    """Queue one retained replay at a time; safe to run repeatedly."""
+    """Queue one retained replay at a time; safe to run repeatedly.
+
+    Honours the operator switch (AppSetting voice_auto_index_enabled, shown
+    and controlled in the perf-monitor Task Manager's "Службы" tab): the
+    panel's run cancel/pause only stops the manual run — without this gate
+    the recovery scan kept queueing one replay per minute and kept parsing
+    demos forever after the operator believed indexing was paused."""
     from database import SessionLocal
     from models import RoundReplay
     from services_voice_archive import VOICE_ARCHIVE_VERSION
@@ -1077,6 +1083,8 @@ def task_index_pending_voice_replays(limit: int = 1) -> dict:
 
     db = SessionLocal()
     try:
+        if not voice_auto_index_enabled(db):
+            return {"queued": 0, "candidates": 0, "skipped": "auto_scan_paused"}
         if get_active_voice_index_run(db):
             return {"queued": 0, "candidates": 0, "skipped": "manual_run_active"}
         cutoff = datetime.utcnow() - timedelta(days=get_retention_days(db))
@@ -1110,6 +1118,33 @@ def task_index_pending_voice_replays(limit: int = 1) -> dict:
 
 VOICE_RUN_LOG_RETENTION_DAYS = 7
 VOICE_RUN_STALE_SECONDS = 3600
+
+# Operator switch for the AUTOMATIC recovery scan (workers.py's
+# replay_voice_index_backfill task). Manual backfill runs — explicitly
+# started by a superuser — ignore this flag on purpose.
+VOICE_AUTO_INDEX_SETTING = "voice_auto_index_enabled"
+VOICE_AUTO_INDEX_DEFAULT = True
+
+
+def voice_auto_index_enabled(db) -> bool:
+    from models import AppSetting
+
+    row = db.query(AppSetting).filter(AppSetting.key == VOICE_AUTO_INDEX_SETTING).first()
+    if row is None or not str(row.value or "").strip():
+        return VOICE_AUTO_INDEX_DEFAULT
+    return str(row.value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def set_voice_auto_index_enabled(db, enabled: bool) -> bool:
+    from models import AppSetting
+
+    row = db.query(AppSetting).filter(AppSetting.key == VOICE_AUTO_INDEX_SETTING).first()
+    if row is None:
+        row = AppSetting(key=VOICE_AUTO_INDEX_SETTING)
+        db.add(row)
+    row.value = "1" if enabled else "0"
+    db.commit()
+    return enabled
 
 
 def _voice_run_log(db, run, *, status: str, message: str, replay_id: int | None = None, level: str = "info"):
