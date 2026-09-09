@@ -2,7 +2,8 @@
 
 The replay remains the audio source.  This module only walks the binary frame
 stream and stores enough metadata to find a speaker's continuous fragments;
-it never writes WAV/MP3 derivatives and never attributes a speaker by name.
+it never writes WAV/MP3 derivatives. Historical replays may use a unique
+nickname from NexusData as a fallback identity hint.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import BinaryIO
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,9 @@ VOICE_MAP_MEMBER = "voice-map.json"
 # v2 fixes snapshot entity widths for the v4 DemoRecorder and v7
 # WorldDemoStreamer formats.  Existing ready rows must be rebuilt once so a
 # segment produced by the old misaligned parser is never treated as valid.
-VOICE_INDEX_VERSION = 2
+# v3 adds historical nickname recovery from replay spawn frames. Existing
+# ready rows must be rebuilt so old errors get another mapping pass.
+VOICE_INDEX_VERSION = 3
 VOICE_MERGE_GAP_MS = 1000
 # ServerAsr and the replay recorder observe the same VoIP read on the game
 # server. Their timestamps should be nearly identical; a wider match would
@@ -48,6 +52,14 @@ class VoiceMappingError(VoiceIndexError):
 class _DemoSource:
     stream: BinaryIO
     speaker_map: dict[int, str]
+
+
+@dataclass(frozen=True)
+class _ReplayFrame:
+    kind: str
+    time_ms: int
+    speaker_id: int | None = None
+    character_name: str | None = None
 
 
 def _read_exact(stream: BinaryIO, size: int) -> bytes:
@@ -150,8 +162,8 @@ def _open_demo(path: str) -> Iterator[_DemoSource]:
     raise VoiceIndexError("unsupported replay container")
 
 
-def _skip_frame(stream: BinaryIO, frame: int, version: int) -> tuple[int, int] | None:
-    """Consume one non-voice frame and return (time, speaker) for voice."""
+def _skip_frame(stream: BinaryIO, frame: int, version: int) -> _ReplayFrame | None:
+    """Consume one frame and retain identity metadata needed by voice indexing."""
     if frame == 0x10:  # geometry
         hulls = _u16(stream)
         _skip(stream, hulls * 20)
@@ -178,12 +190,14 @@ def _skip_frame(stream: BinaryIO, frame: int, version: int) -> tuple[int, int] |
     elif frame == 0x02:  # origin
         _skip(stream, 8)
     elif frame == 0x03:  # spawn
-        _skip(stream, 6)
+        time_ms = _u32(stream)
+        character_id = _u16(stream)
         _read_string(stream)
-        _read_string(stream)
+        character_name = _read_string(stream)
         _skip(stream, 1)
         if version >= 7:
             _read_string(stream)
+        return _ReplayFrame("spawn", time_ms, character_id, character_name)
     elif frame == 0x04:  # despawn
         _skip(stream, 6)
     elif frame == 0x05:  # chat
@@ -211,7 +225,7 @@ def _skip_frame(stream: BinaryIO, frame: int, version: int) -> tuple[int, int] |
         _skip(stream, 4)
         _skip(stream, _u16(stream) * 4)
     elif frame == 0xFF:
-        return (_u32(stream), -1)
+        return _ReplayFrame("end", _u32(stream))
     elif frame in (0x07, 0x09):
         time_ms = _u32(stream)
         speaker_id = _u16(stream)
@@ -219,13 +233,13 @@ def _skip_frame(stream: BinaryIO, frame: int, version: int) -> tuple[int, int] |
             _skip(stream, 1)
         length = _u16(stream)
         _skip(stream, length)
-        return (time_ms, speaker_id)
+        return _ReplayFrame("voice", time_ms, speaker_id)
     else:
         raise VoiceIndexError(f"unsupported replay frame 0x{frame:02x}")
     return None
 
 
-def _iter_voice_packets(stream: BinaryIO) -> Iterator[tuple[int, int]]:
+def _iter_replay_frames(stream: BinaryIO) -> Iterator[_ReplayFrame]:
     if _read_exact(stream, 4) != _MAGIC_DEMO:
         raise VoiceIndexError("invalid replay header")
     version = _u16(stream)
@@ -241,10 +255,15 @@ def _iter_voice_packets(stream: BinaryIO) -> Iterator[tuple[int, int]]:
         parsed = _skip_frame(stream, marker[0], version)
         if parsed is None:
             continue
-        time_ms, speaker_id = parsed
-        if speaker_id == -1:
+        if parsed.kind == "end":
             return
-        yield time_ms, speaker_id
+        yield parsed
+
+
+def _iter_voice_packets(stream: BinaryIO) -> Iterator[tuple[int, int]]:
+    for frame in _iter_replay_frames(stream):
+        if frame.kind == "voice":
+            yield frame.time_ms, frame.speaker_id
 
 
 def group_voice_packets(
@@ -277,10 +296,34 @@ def group_voice_packets(
 
 def extract_voice_packets(path: str) -> tuple[list[tuple[int, int]], dict[int, str]]:
     """Read voice packet timestamps and any identity sidecar from a replay."""
-    with _open_demo(path) as source:
-        packets = list(_iter_voice_packets(source.stream))
-        mapping = dict(source.speaker_map)
+    packets, mapping, _ = extract_voice_packets_with_names(path)
     return packets, mapping
+
+
+def extract_voice_packets_with_names(
+    path: str,
+) -> tuple[list[tuple[int, int]], dict[int, str], dict[int, set[str]]]:
+    """Read voice packets, sidecar identity, and names seen before each packet."""
+    with _open_demo(path) as source:
+        packets: list[tuple[int, int]] = []
+        names_by_character: dict[int, set[str]] = {}
+        voice_speakers: set[int] = set()
+        for frame in _iter_replay_frames(source.stream):
+            if frame.kind == "spawn" and frame.speaker_id is not None:
+                if frame.character_name:
+                    names_by_character.setdefault(frame.speaker_id, set()).add(frame.character_name)
+                continue
+            if frame.kind != "voice" or frame.speaker_id is None:
+                continue
+            packets.append((frame.time_ms, frame.speaker_id))
+            voice_speakers.add(frame.speaker_id)
+        mapping = dict(source.speaker_map)
+    names_by_speaker = {
+        speaker_id: names_by_character[speaker_id]
+        for speaker_id in voice_speakers
+        if speaker_id in names_by_character
+    }
+    return packets, mapping, names_by_speaker
 
 
 def _segments_from_packets(
@@ -377,6 +420,85 @@ def _as_naive_utc(value: datetime | None) -> datetime | None:
     return value
 
 
+def _normalise_player_name(value: object) -> str:
+    """Normalise display names without making different names look alike."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return " ".join(text.split())
+
+
+def _mapping_from_player_names(
+    db,
+    replay,
+    speaker_names: Mapping[int | str, set[str]],
+) -> dict[int, str]:
+    """Recover old mappings when one replay nickname has one Nexus profile.
+
+    This is deliberately a unique-match fallback. A historical nickname shared
+    by two profiles, or a character that changed to conflicting names, remains
+    unmapped for an administrator instead of becoming false evidence.
+    """
+    normalized_names = {
+        _normalise_player_name(name)
+        for names in speaker_names.values()
+        for name in names
+        if _normalise_player_name(name)
+    }
+    if not normalized_names:
+        return {}
+
+    from sqlalchemy import func
+    from models import PlayerData, PlayerName
+
+    sql_names = {name.lower() for name in normalized_names}
+    historical_rows = (
+        db.query(PlayerName, PlayerData)
+        .join(PlayerData, PlayerData.player_id == PlayerName.player_id)
+        .filter(func.lower(PlayerName.nickname).in_(sql_names))
+        .all()
+    )
+    current_rows = (
+        db.query(PlayerData)
+        .filter(
+            (func.lower(PlayerData.player_last_time_name).in_(sql_names))
+            | (func.lower(PlayerData.forced_display_name).in_(sql_names))
+        )
+        .all()
+    )
+
+    recorded_at = _as_naive_utc(getattr(replay, "recorded_at", None))
+    candidates_by_name: dict[str, set[str]] = {}
+
+    def add_candidate(name: object, player: PlayerData) -> None:
+        identity = str(getattr(player, "player_steamid", None) or "").strip()
+        normalized = _normalise_player_name(name)
+        if identity and normalized in normalized_names:
+            candidates_by_name.setdefault(normalized, set()).add(identity)
+
+    for history, player in historical_rows:
+        first_seen = _as_naive_utc(getattr(history, "first_seen", None))
+        last_seen = _as_naive_utc(getattr(history, "last_seen", None))
+        if recorded_at and first_seen and recorded_at < first_seen:
+            continue
+        if recorded_at and last_seen and recorded_at > last_seen:
+            continue
+        add_candidate(history.nickname, player)
+
+    for player in current_rows:
+        add_candidate(getattr(player, "player_last_time_name", None), player)
+        add_candidate(getattr(player, "forced_display_name", None), player)
+
+    mapping: dict[int, str] = {}
+    for speaker_id, names in speaker_names.items():
+        identities = {
+            identity
+            for name in names
+            for identity in candidates_by_name.get(_normalise_player_name(name), ())
+        }
+        if len(identities) == 1:
+            mapping[int(speaker_id)] = next(iter(identities))
+    return mapping
+
+
 def _mapping_from_voice_communications(
     db,
     replay,
@@ -461,6 +583,7 @@ class VoiceIndexService:
         self,
         replay,
         packets: list[tuple[int, int]] | None = None,
+        speaker_names: Mapping[int | str, set[str]] | None = None,
     ) -> dict[int, str]:
         mapping = {
             **_mapping_from_world_round(self.db, replay),
@@ -469,6 +592,11 @@ class VoiceIndexService:
         if packets:
             for speaker_id, steam_id in _mapping_from_voice_communications(
                 self.db, replay, packets
+            ).items():
+                mapping.setdefault(speaker_id, steam_id)
+        if speaker_names:
+            for speaker_id, steam_id in _mapping_from_player_names(
+                self.db, replay, speaker_names
             ).items():
                 mapping.setdefault(speaker_id, steam_id)
         return mapping
@@ -494,10 +622,10 @@ class VoiceIndexService:
             path = ReplayService(self.db).get_file_path(replay)
             if not os.path.isfile(path):
                 raise VoiceIndexError("replay file is missing")
-            packets, embedded_mapping = extract_voice_packets(path)
+            packets, embedded_mapping, speaker_names = extract_voice_packets_with_names(path)
             mapping = {
                 **embedded_mapping,
-                **self._mapping_for_replay(replay, packets),
+                **self._mapping_for_replay(replay, packets, speaker_names),
             }
             segments = _segments_from_packets(packets, mapping)
 

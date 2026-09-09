@@ -23,7 +23,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import models
-from services_voice_index import VoiceIndexService, _mapping_from_voice_communications
+from services_voice_index import (
+    VoiceIndexService,
+    _mapping_from_player_names,
+    _mapping_from_voice_communications,
+    extract_voice_packets_with_names,
+)
 
 
 def _str(value: str) -> bytes:
@@ -49,6 +54,8 @@ def _db():
         models.ReplayVoiceSegment.__table__,
         models.WorldRound.__table__,
         models.PlayerCommunication.__table__,
+        models.PlayerData.__table__,
+        models.PlayerName.__table__,
     ])
     return engine, Session(engine)
 
@@ -166,6 +173,133 @@ def test_old_replay_recovers_speaker_mapping_from_server_asr_event_time():
         mapping = _mapping_from_voice_communications(db, replay, [(100, 7), (300, 7)])
 
         assert mapping == {7: "76561198000000013"}
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def _demo_with_spawn(speaker_id: int, nickname: str) -> bytes:
+    return (
+        b"BDMO"
+        + struct.pack("<HHBq", 4, 1, 10, 1753000000000)
+        + _str("ASPER1") + _str("seed") + _str("Ridge") + _str("Orca")
+        + struct.pack("<I", 0)
+        + bytes([0x03]) + struct.pack("<IH", 0, speaker_id)
+        + _str("human") + _str(nickname) + bytes([0])
+        + bytes([0x07]) + struct.pack("<IHH", 100, speaker_id, 3) + b"abc"
+        + bytes([0xFF]) + struct.pack("<I", 1000)
+    )
+
+
+def test_old_replay_uses_unique_historical_nickname_to_recover_mapping():
+    engine, db = _db()
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-name- service-") as directory:
+            path = os.path.join(directory, "round.barodemo")
+            with open(path, "wb") as replay_file:
+                replay_file.write(_demo_with_spawn(383, "  Alice  "))
+
+            packets, embedded, names = extract_voice_packets_with_names(path)
+            assert packets == [(100, 383)]
+            assert embedded == {}
+            assert names == {383: {"  Alice  "}}
+
+            db.add(models.PlayerData(player_id=1, player_last_time_name="Alice", player_steamid="steam-alice"))
+            db.add(models.PlayerName(
+                player_id=1,
+                nickname="Alice",
+                first_seen=datetime(2024, 1, 1),
+                last_seen=datetime(2026, 12, 31),
+            ))
+            db.commit()
+            replay = models.RoundReplay(recorded_at=datetime(2026, 9, 1))
+
+            assert _mapping_from_player_names(db, replay, names) == {383: "steam-alice"}
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_old_replay_uses_spawn_name_even_when_voice_packet_precedes_spawn_frame():
+    with tempfile.TemporaryDirectory(prefix="voice-name-order-") as directory:
+        path = os.path.join(directory, "round.barodemo")
+        with open(path, "wb") as replay_file:
+            replay_file.write(
+                b"BDMO"
+                + struct.pack("<HHBq", 4, 1, 10, 1753000000000)
+                + _str("ASPER1") + _str("seed") + _str("Ridge") + _str("Orca")
+                + struct.pack("<I", 0)
+                + bytes([0x07]) + struct.pack("<IHH", 100, 383, 3) + b"abc"
+                + bytes([0x03]) + struct.pack("<IH", 200, 383)
+                + _str("human") + _str("Alice") + bytes([0])
+                + bytes([0xFF]) + struct.pack("<I", 1000)
+            )
+
+        assert extract_voice_packets_with_names(path)[2] == {383: {"Alice"}}
+
+
+def test_old_replay_does_not_guess_when_nickname_matches_multiple_profiles():
+    engine, db = _db()
+    try:
+        for player_id, steam_id in ((1, "steam-alice-1"), (2, "steam-alice-2")):
+            db.add(models.PlayerData(
+                player_id=player_id,
+                player_last_time_name="Alice",
+                player_steamid=steam_id,
+            ))
+            db.add(models.PlayerName(
+                player_id=player_id,
+                nickname="Alice",
+                first_seen=datetime(2024, 1, 1),
+                last_seen=datetime(2026, 12, 31),
+            ))
+        db.commit()
+        replay = models.RoundReplay(recorded_at=datetime(2026, 9, 1))
+
+        assert _mapping_from_player_names(db, replay, {383: {"Alice"}}) == {}
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_index_replay_uses_unique_nickname_fallback_for_old_archive():
+    engine, db = _db()
+    try:
+        with tempfile.TemporaryDirectory(prefix="voice-name-index-") as directory:
+            path = os.path.join(directory, "round.barodemo")
+            with open(path, "wb") as replay_file:
+                replay_file.write(_demo_with_spawn(383, "Alice"))
+
+            db.add(models.PlayerData(player_id=1, player_last_time_name="Alice", player_steamid="steam-alice"))
+            db.add(models.PlayerName(
+                player_id=1,
+                nickname="Alice",
+                first_seen=datetime(2024, 1, 1),
+                last_seen=datetime(2026, 12, 31),
+            ))
+            replay = models.RoundReplay(
+                id=14,
+                filename="round.barodemo",
+                stored_filename="round.barodemo",
+                has_voice=1,
+                recorded_at=datetime(2026, 9, 1),
+                voice_index_status="pending",
+            )
+            db.add(replay)
+            db.commit()
+
+            class FakeReplayService:
+                def __init__(self, _db):
+                    pass
+
+                def get_file_path(self, _replay):
+                    return path
+
+            with patch("services_replays.ReplayService", FakeReplayService):
+                result = VoiceIndexService(db).index_replay(14)
+
+            assert result["status"] == "ready"
+            assert db.query(models.ReplayVoiceSegment).one().steam_id == "steam-alice"
     finally:
         db.close()
         engine.dispose()
