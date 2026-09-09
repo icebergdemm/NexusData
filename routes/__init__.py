@@ -32,7 +32,6 @@ from .respawn_dolls import game_router as dolls_game_router, admin_router as dol
 from .achievements import game_router as achievements_game_router, admin_router as achievements_admin_router
 from .error_log import router as error_log_router
 from .perf_monitor import router as perf_monitor_router
-from .monster_spawn import game_router as monster_spawn_game_router, admin_router as monster_spawn_admin_router
 from .ai_dossier import router as ai_dossier_router
 from .communications import router as communications_router
 from .server_restart import router as server_restart_router
@@ -83,8 +82,6 @@ __all__ = [
     "achievements_admin_router",
     "error_log_router",
     "perf_monitor_router",
-    "monster_spawn_game_router",
-    "monster_spawn_admin_router",
     "ai_dossier_router",
     "communications_router",
     "server_restart_router",

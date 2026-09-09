@@ -197,7 +197,7 @@ async def get_ai_task_log(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Stage-by-stage progress log of AI tasks (dossier, monster LLM, health)."""
+    """Stage-by-stage progress log of AI tasks (dossier, health)."""
     if not current_admin.is_superuser:
         raise HTTPException(status_code=403, detail="Только для суперпользователей")
     from services_ai_tasklog import recent_ai_task_entries

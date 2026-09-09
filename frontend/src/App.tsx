@@ -14,7 +14,6 @@ const DashboardPage = lazy(() => import("@/pages/dashboard").then(({ DashboardPa
 const RoundStatusPage = lazy(() => import("@/pages/round-status").then(({ RoundStatusPage }) => ({ default: RoundStatusPage })))
 const DispatchPage = lazy(() => import("@/pages/dispatch").then(({ DispatchPage }) => ({ default: DispatchPage })))
 const WorldOverviewPage = lazy(() => import("@/pages/world-overview").then(({ WorldOverviewPage }) => ({ default: WorldOverviewPage })))
-const MonsterSpawnPage = lazy(() => import("@/pages/monster-spawn").then(({ MonsterSpawnPage }) => ({ default: MonsterSpawnPage })))
 const PlayersListPage = lazy(() => import("@/pages/players").then(({ PlayersListPage }) => ({ default: PlayersListPage })))
 const PlayerDetailPage = lazy(() => import("@/pages/players/detail").then(({ PlayerDetailPage }) => ({ default: PlayerDetailPage })))
 const ModerationPage = lazy(() => import("@/pages/moderation").then(({ ModerationPage }) => ({ default: ModerationPage })))
@@ -105,7 +104,6 @@ export default function App() {
           <Route path="round-status" element={<RoundStatusPage />} />
           <Route path="dispatch" element={<DispatchPage />} />
           <Route path="world-overview" element={<WorldOverviewPage />} />
-          <Route path="monster-spawn" element={<MonsterSpawnPage />} />
           <Route path="players" element={<PlayersListPage />} />
           <Route path="players/:playerId" element={<PlayerDetailPage />} />
           <Route path="label-categories" element={<LabelCategoriesPage />} />
