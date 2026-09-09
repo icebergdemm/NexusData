@@ -46,9 +46,13 @@ _cpu_cache_lock = threading.Lock()
 _cid_cpu_cache: dict = {}
 
 
-def _cpu_pct_for(key: str, total_cpu_seconds: float, now: float) -> tuple[float, float]:
-    """Returns (cpu_pct_normalized_to_all_cores, cached_before) — pct over the
-    time since the previous call with the same key."""
+def _cpu_pct_for(key: str, total_cpu_seconds: float, now: float, per_core: bool = False) -> tuple[float, float]:
+    """Returns (cpu_pct, cached_before).
+
+    per_core=True (thread rows): normalize to ONE core — a busy thread then
+    reads ~100 %, like top / Task Manager Details. per_core=False (process
+    rows): normalize to all cores — the system-wide Task Manager convention.
+    Pct is a delta over the time since the previous call with the same key."""
     with _cpu_cache_lock:
         prev = _cid_cpu_cache.get(key)
         _cid_cpu_cache[key] = (now, total_cpu_seconds)
@@ -59,14 +63,19 @@ def _cpu_pct_for(key: str, total_cpu_seconds: float, now: float) -> tuple[float,
     if dt <= 0.05:
         return 0.0, total_cpu_seconds
     delta = max(0.0, total_cpu_seconds - prev_total)
-    cores = psutil.cpu_count() or 1
+    cores = 1 if per_core else (psutil.cpu_count() or 1)
     return delta / dt / cores * 100.0, total_cpu_seconds
 
 
-def _prune_cpu_cache(alive_keys: set) -> None:
+def _prune_cpu_cache(prefix: str, alive_keys: set) -> None:
+    """Drop history only within ONE namespace ("pid:"/"tid:").
+
+    The two collectors run in the same build; pruning globally would wipe
+    the other dataset's history — deltas need two consecutive samples for
+    every key, so a global prune made every CPU% read 0.0 forever."""
     with _cpu_cache_lock:
         for key in list(_cid_cpu_cache.keys()):
-            if key not in alive_keys:
+            if key.startswith(prefix) and key not in alive_keys:
                 del _cid_cpu_cache[key]
 
 
@@ -81,9 +90,47 @@ def _short_cmdline(proc) -> tuple[str, bool]:
     return (line[:_CMDLINE_LIMIT] + ("…" if len(line) > _CMDLINE_LIMIT else "")), is_python
 
 
+def _build_process_row(proc, now: float) -> dict | None:
+    try:
+        with proc.oneshot():
+            pid = proc.pid
+            ppid = proc.ppid()
+            name = proc.name()
+            status = proc.status()
+            cpu_times = proc.cpu_times()
+            rss = proc.memory_info().rss
+            mem_pct = proc.memory_percent()
+            threads = proc.num_threads()
+            cmd, is_python = _short_cmdline(proc)
+    except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+        return None
+    except Exception:
+        return None
+    cpu_pct, total_cpu = _cpu_pct_for(f"pid:{pid}", cpu_times.user + cpu_times.system, now)
+    return {
+        "pid": pid,
+        "ppid": ppid,
+        "name": name,
+        "status": status,
+        "cpu_pct": round(cpu_pct, 1),
+        "cpu_total_s": round(total_cpu, 1),
+        "mem_rss_mb": round(rss / 1024 / 1024, 1),
+        "mem_pct": round(mem_pct, 1),
+        "threads": threads,
+        "cmd": cmd,
+        "is_python": is_python,
+        "is_own": False,
+        "own_child": False,
+    }
+
+
 def collect_processes() -> list[dict]:
     """Every visible process, newest CPU first. Own process and all its
-    descendants are flagged so the UI can highlight the app lineage."""
+    descendants are flagged so the UI can highlight the app lineage.
+
+    Own process + children are collected EXPLICITLY first: the generic
+    iteration may be capped (_MAX_PROCESSES yields arbitrary host order)
+    and then the app itself silently vanishes from the page."""
     try:
         me = psutil.Process()
     except psutil.Error:
@@ -91,55 +138,40 @@ def collect_processes() -> list[dict]:
     own_pid = me.pid if me else os.getpid()
     now = time.monotonic()
     entries: list[dict] = []
+
+    own_row = _build_process_row(me, now) if me is not None else None
+    child_rows: list[dict] = []
+    try:
+        child_procs = me.children(recursive=True) if me is not None else []
+    except Exception:
+        child_procs = []
+    for child in child_procs:
+        row = _build_process_row(child, now)
+        if row is not None:
+            row["own_child"] = True
+            child_rows.append(row)
+    if own_row is not None:
+        own_row["is_own"] = True
+        child_pids = {row["pid"] for row in child_rows}
+        own_row["own_child"] = own_row["pid"] in child_pids
+        child_rows.append(own_row)  # keep all of ours together
+    entries.extend(child_rows)
+
+    seen = {row["pid"] for row in entries}
     for proc in psutil.process_iter(None):
-        try:
-            with proc.oneshot():
-                pid = proc.pid
-                ppid = proc.ppid()
-                name = proc.name()
-                status = proc.status()
-                cpu_times = proc.cpu_times()
-                rss = proc.memory_info().rss
-                mem_pct = proc.memory_percent()
-                threads = proc.num_threads()
-                cmd, is_python = _short_cmdline(proc)
-        except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
-            continue
-        except Exception:
-            continue
-        cpu_pct, total_cpu = _cpu_pct_for(f"pid:{pid}", cpu_times.user + cpu_times.system, now)
-        entries.append({
-            "pid": pid,
-            "ppid": ppid,
-            "name": name,
-            "status": status,
-            "cpu_pct": round(cpu_pct, 1),
-            "cpu_total_s": round(total_cpu, 1),
-            "mem_rss_mb": round(rss / 1024 / 1024, 1),
-            "mem_pct": round(mem_pct, 1),
-            "threads": threads,
-            "cmd": cmd,
-            "is_python": is_python,
-            "is_own": False,
-            "own_child": False,
-        })
         if len(entries) >= _MAX_PROCESSES:
             break
-
-    # Mark our lineage: the API process itself plus any descendant
-    # (scheduler_process.py / uvicorn workers in multi-worker mode).
-    children: set[int] = set()
-    if me is not None:
         try:
-            frontier = me.children(recursive=True)
-            for child in frontier:
-                children.add(child.pid)
+            if proc.pid in seen:
+                continue
+            seen.add(proc.pid)
         except Exception:
-            pass
-    for row in entries:
-        row["is_own"] = row["pid"] == own_pid
-        row["own_child"] = row["pid"] in children
-    _prune_cpu_cache({f"pid:{row['pid']}" for row in entries})
+            continue
+        row = _build_process_row(proc, now)
+        if row is not None:
+            entries.append(row)
+
+    _prune_cpu_cache("pid:", {f"pid:{row['pid']}" for row in entries})
     entries.sort(key=lambda row: -row["cpu_pct"])
     return entries
 
@@ -197,8 +229,11 @@ def collect_app_threads() -> dict:
         proc_threads = []
     for stat in proc_threads:
         key = f"tid:{stat.id}"
+        # psutil's thread namedtuple exposes user_time/system_time (NOT the
+        # user/system fields of the process-level cpu_times).
         cpu_pct, total_cpu = _cpu_pct_for(
-            key, getattr(stat, "user", 0.0) + getattr(stat, "system", 0.0), now,
+            key, getattr(stat, "user_time", 0.0) + getattr(stat, "system_time", 0.0), now,
+            per_core=True,
         )
         rows.append({
             "tid": stat.id,
@@ -209,7 +244,7 @@ def collect_app_threads() -> dict:
             "stack": _stack_summary(stat.id),
             "is_main": thread_names.get(stat.id) == "MainThread",
         })
-    _prune_cpu_cache({f"tid:{row['tid']}" for row in rows} | set())
+    _prune_cpu_cache("tid:", {f"tid:{row['tid']}" for row in rows})
     rows.sort(key=lambda row: (-row["cpu_pct"], -row["cpu_total_s"]))
     return {
         "threads": rows[:_MAX_THREADS],
