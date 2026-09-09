@@ -245,7 +245,10 @@ export function ModerationPage() {
   const filteredOnlinePlayers = filterAndSortPlayers(data.online_players, filters, onlineSort)
   const filteredOfflineRows = filterAndSortPlayers(offlineRows, filters, offlineSort)
   const labelOptions = [
-    ...data.label_categories.map((category) => ({ value: String(category.id), label: category.name, icon: category.icon })),
+    ...data.label_categories.map((category) => ({
+      value: String(category.id), label: category.name, icon: category.icon,
+      folder: data.label_folders.find((folder) => folder.id === category.folder_id)?.name ?? "Без папки",
+    })),
   ]
   const rankOptions = [
     { value: "all", label: "Все звания" },

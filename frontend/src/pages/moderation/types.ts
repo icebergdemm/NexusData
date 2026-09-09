@@ -88,7 +88,8 @@ export interface ModerationOverview {
   search_query: string | null
   ac_events: AnticheatEvent[]
   ranks: Record<string, string>
-  label_categories: { id: number; name: string; color: string; icon: string }[]
+  label_categories: { id: number; name: string; color: string; icon: string; is_secret: boolean; folder_id: number | null; sort_order: number }[]
+  label_folders: { id: number; name: string; sort_order: number }[]
   can_edit: boolean
   can_delete: boolean
   can_issue_punishment: boolean

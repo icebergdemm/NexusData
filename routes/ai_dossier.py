@@ -10,9 +10,10 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import AIPlayerDossier, AdminUser, AppSetting, PlayerData
+from models import AIPlayerDossier, AdminUser, AppSetting, LabelCategory, PlayerData, PlayerLabel
 from routes.admin import get_current_admin, log_admin_action
 from security import check_permission
+from services import can_manage_secret_labels
 from services_ai_dossier import (
     dossier_response_with_run,
     enqueue_dossier,
@@ -51,6 +52,28 @@ def _require_player_access(db: Session, player: PlayerData, admin: AdminUser) ->
         raise HTTPException(status_code=403, detail="Профиль засекречен")
 
 
+def _has_secret_label(db: Session, player_id: int) -> bool:
+    return db.query(PlayerLabel.id).join(
+        LabelCategory, PlayerLabel.category_id == LabelCategory.id,
+    ).filter(
+        PlayerLabel.player_id == player_id,
+        LabelCategory.is_secret.is_(True),
+    ).first() is not None
+
+
+def _dossier_response_for_admin(db: Session, report: AIPlayerDossier | None, admin: AdminUser) -> dict:
+    response = dossier_response_with_run(db, report, include_raw=admin.is_superuser)
+    if report and not can_manage_secret_labels(admin) and _has_secret_label(db, report.player_id):
+        # Dossiers are durable and shared between admins. A cached result made
+        # before the label was hidden can still contain its name or evidence.
+        # Returning no result is deliberately boring, but it does not leak an
+        # old secret through summary, facts, links, or raw model output.
+        response["result"] = None
+        response["summary"] = None
+        response["run"] = None
+    return response
+
+
 def _as_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -82,7 +105,7 @@ async def get_player_ai_dossier(
         raise HTTPException(status_code=404, detail="Player not found")
     _require_player_access(db, player, current_admin)
     report = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id).first()
-    return dossier_response_with_run(db, report, include_raw=current_admin.is_superuser)
+    return _dossier_response_for_admin(db, report, current_admin)
 
 
 @router.post("/api/v1/admin/players/{player_id}/ai-dossier", status_code=202)
@@ -103,7 +126,7 @@ async def request_player_ai_dossier(
     if queued:
         log_admin_action(db, current_admin.id, "queue_ai_player_dossier", {"target": {"player_id": player_id}, "force": force})
         _wake_worker()
-    return {"queued": queued, "dossier": dossier_response_with_run(db, report, include_raw=current_admin.is_superuser)}
+    return {"queued": queued, "dossier": _dossier_response_for_admin(db, report, current_admin)}
 
 
 @router.post("/api/v1/admin/ai-dossiers/test-run", status_code=202)

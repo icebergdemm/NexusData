@@ -42,6 +42,21 @@ def test_player_label_updates_and_removal_are_scoped_to_player():
         engine.dispose()
 
 
+def test_label_categories_are_public_by_default_and_support_secret_flag():
+    engine, db = _database()
+    try:
+        public = LabelCategory(name="Обычная")
+        secret = LabelCategory(name="Секретная", is_secret=True)
+        db.add_all([public, secret])
+        db.flush()
+
+        assert public.is_secret is False
+        assert secret.is_secret is True
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_moderation_action_templates_support_crud_and_type_filtering():
     engine, db = _database()
     try:

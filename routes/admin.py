@@ -22,11 +22,13 @@ from services import (
     PlayerKillService, PlayerRoleActionService, PlayerIPService,
     PlayerNameService, PlayerRoleStatService, PlayerSessionService,
     PlayerNoteService, PlayerLabelService, PlayerTrapService,
-    LabelCategoryService, TwinkDetectionService, ServerModerationService,
+    LabelCategoryService, LabelFolderService, TwinkDetectionService, ServerModerationService,
     PunishmentService, PUNISHMENT_TYPES, PUNISHMENT_TYPE_LABELS,
     ModerationActionTemplateService, MODERATION_TEMPLATE_TYPES,
     MODERATION_TEMPLATE_TYPE_LABELS,
     format_admin_issuer_name,
+    can_manage_secret_labels, filter_visible_label_categories,
+    filter_visible_label_folders, filter_visible_label_pairs,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -1335,9 +1337,14 @@ async def admin_players_list(
     # Load all label categories for filter UI
     from models import LabelCategory, PlayerLabel
     from services import LabelCategoryService
-    label_categories = LabelCategoryService(db).get_all()
+    all_label_categories = LabelCategoryService(db).get_all()
+    label_categories = filter_visible_label_categories(all_label_categories, current_admin)
+    label_folders = filter_visible_label_folders(LabelFolderService(db).get_all(), all_label_categories, current_admin)
+    visible_label_ids = {category.id for category in label_categories}
     selected_label = None
     if label_id:
+        if label_id not in visible_label_ids:
+            raise HTTPException(status_code=404, detail="Метка не найдена")
         selected_label = db.query(LabelCategory).filter(LabelCategory.id == label_id).first()
 
     # Label filter: join directly instead of materializing all ids + unbounded IN()
@@ -1519,9 +1526,9 @@ async def admin_player_detail(
     punishment_svc = PunishmentService(db)
 
     notes = note_svc.get_notes(player_id)
-    label_pairs = label_svc.get_labels(player_id)  # list of (PlayerLabel, LabelCategory)
+    label_pairs = filter_visible_label_pairs(label_svc.get_labels(player_id), current_admin)
     traps = trap_svc.get_traps(player_id)
-    label_categories = cat_svc.get_all()
+    label_categories = filter_visible_label_categories(cat_svc.get_all(), current_admin)
     punishments_raw = punishment_svc.get_for_player(player_id)
     punishments = [{"p": p, "status": punishment_svc.effective_status(p)} for p in punishments_raw]
 
@@ -1765,8 +1772,15 @@ async def api_players_list(
     from services import LabelCategoryService
 
     player_service = PlayerService(db)
-    label_categories = LabelCategoryService(db).get_all()
+    all_label_categories = LabelCategoryService(db).get_all()
+    label_categories = filter_visible_label_categories(all_label_categories, current_admin)
+    label_folders = filter_visible_label_folders(
+        LabelFolderService(db).get_all(), all_label_categories, current_admin
+    )
+    visible_label_ids = {category.id for category in label_categories}
     selected_label_ids = _parse_label_ids(label_ids, label_id)
+    if any(category_id not in visible_label_ids for category_id in selected_label_ids):
+        raise HTTPException(status_code=404, detail="Метка не найдена")
     effective_label_mode = "any" if selected_label_ids else label_mode
     if search:
         raw_players, total = player_service.player_repo.search_paginated(
@@ -1777,7 +1791,10 @@ async def api_players_list(
             name_history=name_history, ip_history=ip_history, activity=activity,
         )
         outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in raw_players]
-        flags = player_service.player_repo.get_player_flags([player.player_id for player in raw_players])
+        flags = player_service.player_repo.get_player_flags(
+            [player.player_id for player in raw_players],
+            visible_label_ids=visible_label_ids,
+        )
         for player_out in outs:
             for key, value in flags.get(player_out.player_id, {}).items():
                 setattr(player_out, key, value)
@@ -1788,6 +1805,7 @@ async def api_players_list(
             label_mode=effective_label_mode, label_ids=selected_label_ids,
             notes=notes, sanctions=sanctions, anomalies=anomalies,
             name_history=name_history, ip_history=ip_history, activity=activity,
+            visible_label_ids=visible_label_ids,
         )
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
@@ -1798,7 +1816,8 @@ async def api_players_list(
         "page_size": page_size,
         "total": total,
         "total_pages": total_pages,
-        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
+        "label_categories": _label_category_payloads(label_categories, current_admin),
+        "label_folders": _label_folder_payloads(label_folders, current_admin),
         "selected_label_id": label_id,
         "selected_label_ids": selected_label_ids,
         "selected_label_mode": effective_label_mode or "all",
@@ -1862,7 +1881,15 @@ def _serialize_label_pair(pair) -> dict:
         "id": label.id,
         "note": label.note,
         "assigned_at": label.assigned_at.isoformat() if label.assigned_at else None,
-        "category": {"id": category.id, "name": category.name, "color": category.color, "icon": category.icon},
+        "category": {
+            "id": category.id,
+            "name": category.name,
+            "color": category.color,
+            "icon": category.icon,
+            "is_secret": bool(category.is_secret),
+            "folder_id": category.folder_id,
+            "sort_order": category.sort_order,
+        },
     }
 
 
@@ -1954,9 +1981,11 @@ async def api_player_detail(
         note_admin_names = {
             a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(note_admin_ids)).all()
         }
-    label_pairs = PlayerLabelService(db).get_labels(player_id)
+    label_pairs = filter_visible_label_pairs(PlayerLabelService(db).get_labels(player_id), current_admin)
     traps = PlayerTrapService(db).get_traps(player_id)
-    label_categories = LabelCategoryService(db).get_all()
+    all_label_categories = LabelCategoryService(db).get_all()
+    label_categories = filter_visible_label_categories(all_label_categories, current_admin)
+    label_folders = filter_visible_label_folders(LabelFolderService(db).get_all(), all_label_categories, current_admin)
     punishment_svc = PunishmentService(db)
     punishments_raw = punishment_svc.get_for_player(player_id)
     punishments = [{"p": p, "status": punishment_svc.effective_status(p)} for p in punishments_raw]
@@ -2044,7 +2073,8 @@ async def api_player_detail(
         "notes": [_serialize_note(n, note_admin_names.get(n.admin_id)) for n in notes],
         "label_pairs": [_serialize_label_pair(p) for p in label_pairs],
         "traps": [_serialize_trap(t) for t in traps],
-        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
+        "label_categories": _label_category_payloads(label_categories, current_admin),
+        "label_folders": _label_folder_payloads(label_folders, current_admin),
         "punishments": [_serialize_punishment_row(row) for row in punishments],
         "ranks": settings.ranks_mapping,
         "kits": settings.kits_mapping,
@@ -2073,6 +2103,7 @@ async def api_player_detail(
         "can_edit_discord_id": check_permission(current_admin, "players", "edit_discord_id"),
         "can_manage_notes": check_permission(current_admin, "players", "manage_notes"),
         "can_manage_labels": check_permission(current_admin, "players", "manage_labels"),
+        "can_manage_secret_labels": can_manage_secret_labels(current_admin),
         "can_send_message": check_moderation_action_permission(current_admin, "message"),
         "can_manage_traps": check_permission(current_admin, "players", "manage_traps"),
         "can_manage_achievements": check_permission(current_admin, "players", "manage_achievements"),
@@ -2458,13 +2489,13 @@ async def api_assign_player_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_labels"):
-        raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
     body = await request.json()
     category_id = body.get("category_id")
     if not category_id:
         raise HTTPException(status_code=400, detail="category_id required")
+    category = db.query(LabelCategory).filter(LabelCategory.id == int(category_id)).first()
+    _require_player_label_access(current_admin, category)
     try:
         label = PlayerLabelService(db).assign(player_id, int(category_id), body.get("note"), current_admin.id)
     except ValueError as exc:
@@ -2481,9 +2512,12 @@ async def api_update_player_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_labels"):
-        raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
+    existing_label = db.query(PlayerLabel).filter(
+        PlayerLabel.id == label_id, PlayerLabel.player_id == player_id,
+    ).first()
+    category = db.query(LabelCategory).filter(LabelCategory.id == existing_label.category_id).first() if existing_label else None
+    _require_player_label_access(current_admin, category)
     body = await request.json()
     try:
         label = PlayerLabelService(db).update_note(label_id, player_id, body.get("note"))
@@ -2506,9 +2540,12 @@ async def api_remove_player_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_labels"):
-        raise HTTPException(status_code=403)
     await ensure_csrf_or_valid_admin_session(request, db)
+    existing_label = db.query(PlayerLabel).filter(
+        PlayerLabel.id == label_id, PlayerLabel.player_id == player_id,
+    ).first()
+    category = db.query(LabelCategory).filter(LabelCategory.id == existing_label.category_id).first() if existing_label else None
+    _require_player_label_access(current_admin, category)
     if not PlayerLabelService(db).remove(label_id, player_id=player_id):
         raise HTTPException(status_code=404, detail="Метка не найдена")
     log_admin_action(db, current_admin.id, "remove_label", {"player_id": player_id, "label_id": label_id})
@@ -5216,8 +5253,8 @@ async def assign_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_labels"):
-        raise HTTPException(status_code=403)
+    category = db.query(LabelCategory).filter(LabelCategory.id == category_id).first()
+    _require_player_label_access(current_admin, category)
     await ensure_csrf_or_valid_admin_session(request, db)
     PlayerLabelService(db).assign(player_id, category_id, note, current_admin.id)
     log_admin_action(db, current_admin.id, "assign_label", {"player_id": player_id, "category_id": category_id})
@@ -5233,8 +5270,11 @@ async def remove_label(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    if not check_permission(current_admin, "players", "manage_labels"):
-        raise HTTPException(status_code=403)
+    label_row = db.query(PlayerLabel).filter(
+        PlayerLabel.id == label_id, PlayerLabel.player_id == player_id,
+    ).first()
+    category = db.query(LabelCategory).filter(LabelCategory.id == label_row.category_id).first() if label_row else None
+    _require_player_label_access(current_admin, category)
     await ensure_csrf_or_valid_admin_session(request, db)
     if not PlayerLabelService(db).remove(label_id, player_id=player_id):
         raise HTTPException(status_code=404, detail="Метка не найдена")
@@ -5343,6 +5383,69 @@ def _require_label_category_perm(admin: AdminUser, action: str):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
 
+def _can_manage_label_organization(admin: AdminUser, action: str) -> bool:
+    return can_manage_secret_labels(admin) or _has_label_category_perm(admin, action)
+
+
+def _require_category_access(admin: AdminUser, category: Optional[LabelCategory], action: str):
+    if category is not None and getattr(category, "is_secret", False):
+        if not can_manage_secret_labels(admin):
+            # Do not turn an opaque label id into an existence oracle.
+            raise HTTPException(status_code=404, detail="Категория не найдена")
+        return
+    _require_label_category_perm(admin, action)
+
+
+def _require_player_label_access(admin: AdminUser, category: Optional[LabelCategory]):
+    if category is None:
+        raise HTTPException(status_code=404, detail="Метка не найдена")
+    if category.is_secret:
+        if not can_manage_secret_labels(admin):
+            raise HTTPException(status_code=404, detail="Метка не найдена")
+        return
+    if not check_permission(admin, "players", "manage_labels"):
+        raise HTTPException(status_code=403)
+
+
+def _label_category_payload(category: LabelCategory, admin: Optional[AdminUser] = None, display_sort_order: Optional[int] = None) -> dict:
+    sort_order = category.sort_order
+    if admin is not None and not can_manage_secret_labels(admin):
+        # Do not expose gaps in the global order: they reveal hidden rows.
+        sort_order = display_sort_order if display_sort_order is not None else 0
+    return {
+        "id": category.id,
+        "name": category.name,
+        "color": category.color,
+        "icon": category.icon,
+        "is_secret": bool(category.is_secret),
+        "folder_id": category.folder_id,
+        "sort_order": sort_order,
+        "description": category.description,
+    }
+
+
+def _label_category_payloads(categories, admin: AdminUser) -> list[dict]:
+    return [_label_category_payload(category, admin, index) for index, category in enumerate(categories)]
+
+
+def _label_folder_payload(folder, admin: Optional[AdminUser] = None, display_sort_order: Optional[int] = None) -> dict:
+    sort_order = folder.sort_order
+    if admin is not None and not can_manage_secret_labels(admin):
+        sort_order = display_sort_order if display_sort_order is not None else 0
+    return {"id": folder.id, "name": folder.name, "sort_order": sort_order}
+
+
+def _label_folder_payloads(folders, admin: AdminUser) -> list[dict]:
+    return [_label_folder_payload(folder, admin, index) for index, folder in enumerate(folders)]
+
+
+def _visible_label_data(db: Session, admin: AdminUser):
+    categories = LabelCategoryService(db).get_all()
+    visible_categories = filter_visible_label_categories(categories, admin)
+    folders = filter_visible_label_folders(LabelFolderService(db).get_all(), categories, admin)
+    return visible_categories, folders
+
+
 @router.get("/adminold/label-categories")
 async def label_categories_page(
     request: Request,
@@ -5353,14 +5456,14 @@ async def label_categories_page(
     if not any(
         _has_label_category_perm(current_admin, a)
         for a in ("create_label_category", "edit_label_category", "delete_label_category")
-    ):
+    ) and not can_manage_secret_labels(current_admin):
         raise HTTPException(status_code=403)
     if "csrf_token" not in request.session:
         request.session["csrf_token"] = secrets.token_urlsafe(32)
-    cats = LabelCategoryService(db).get_all()
+    cats, folders = _visible_label_data(db, current_admin)
     return templates.TemplateResponse("admin/label_categories.html", {
         "request": request, "admin": current_admin,
-        "categories": cats, "flashes": pop_flashes(request),
+        "categories": cats, "folders": folders, "flashes": pop_flashes(request),
     })
 
 
@@ -5387,8 +5490,9 @@ async def delete_label_category(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    _require_label_category_perm(current_admin, "delete_label_category")
     await ensure_csrf_or_valid_admin_session(request, db)
+    category = db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
+    _require_category_access(current_admin, category, "delete_label_category")
     ok = LabelCategoryService(db).delete(cat_id)
     push_flash(request, "success" if ok else "error",
                "Категория удалена" if ok else "Категория не найдена")
@@ -5400,39 +5504,59 @@ async def api_label_categories_list(db: Session = Depends(get_db), current_admin
     if not any(
         _has_label_category_perm(current_admin, a)
         for a in ("create_label_category", "edit_label_category", "delete_label_category")
-    ) and not check_permission(current_admin, "players", "manage_labels") and not check_permission(current_admin, "players", "view"):
+    ) and not can_manage_secret_labels(current_admin) and not check_permission(current_admin, "players", "manage_labels") and not check_permission(current_admin, "players", "view"):
         raise HTTPException(status_code=403)
-    cats = LabelCategoryService(db).get_all()
-    from services import LabelFolderService
-    folders = LabelFolderService(db).get_all()
-    return {"categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon, "folder_id": c.folder_id, "sort_order": c.sort_order, "description": c.description} for c in cats],
-            "folders": [{"id": f.id, "name": f.name, "sort_order": f.sort_order} for f in folders]}
+    cats, folders = _visible_label_data(db, current_admin)
+    return {"categories": _label_category_payloads(cats, current_admin),
+            "folders": _label_folder_payloads(folders, current_admin)}
 
 
 @router.post("/api/v1/admin/label-categories")
 async def api_create_label_category(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "create_label_category")
     body = await request.json()
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name required")
-    cat = LabelCategoryService(db).create(name, body.get("color") or "#888888", body.get("icon") or "🏷", current_admin.id, folder_id=body.get("folder_id"), description=body.get("description"))
-    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon, "folder_id": cat.folder_id, "sort_order": cat.sort_order, "description": cat.description}}
+    is_secret = bool(body.get("is_secret"))
+    if is_secret:
+        if not can_manage_secret_labels(current_admin):
+            raise HTTPException(status_code=403, detail="Недостаточно прав для секретной метки")
+    else:
+        _require_label_category_perm(current_admin, "create_label_category")
+    cat = LabelCategoryService(db).create(
+        name, body.get("color") or "#888888", body.get("icon") or "🏷", current_admin.id,
+        folder_id=body.get("folder_id"), description=body.get("description"), is_secret=is_secret,
+    )
+    return {"status": "ok", "category": _label_category_payload(cat, current_admin)}
 
 
 @router.post("/api/v1/admin/label-categories/{cat_id}")
 async def api_update_label_category(cat_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "edit_label_category")
     body = await request.json()
-    cat = LabelCategoryService(db).update(cat_id, body.get("name"), body.get("color"), body.get("icon"), folder_id=body.get("folder_id"), description=body.get("description"), has_folder="folder_id" in body, has_desc="description" in body)
+    cat = db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="Категория не найдена")
-    return {"status": "ok", "category": {"id": cat.id, "name": cat.name, "color": cat.color, "icon": cat.icon, "folder_id": cat.folder_id, "sort_order": cat.sort_order, "description": cat.description}}
+    wants_secret = bool(body.get("is_secret", cat.is_secret))
+    if cat.is_secret or wants_secret:
+        if not can_manage_secret_labels(current_admin):
+            raise HTTPException(status_code=404, detail="Категория не найдена")
+    else:
+        _require_label_category_perm(current_admin, "edit_label_category")
+    cat = LabelCategoryService(db).update(
+        cat_id, body.get("name"), body.get("color"), body.get("icon"),
+        folder_id=body.get("folder_id"), description=body.get("description"),
+        has_folder="folder_id" in body, has_desc="description" in body,
+        is_secret=wants_secret, has_secret="is_secret" in body,
+    )
+    return {"status": "ok", "category": _label_category_payload(cat, current_admin)}
 
 
 @router.delete("/api/v1/admin/label-categories/{cat_id}")
 async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "delete_label_category")
+    cat = db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Категория не найдена")
+    _require_category_access(current_admin, cat, "delete_label_category")
     ok = LabelCategoryService(db).delete(cat_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Категория не найдена")
@@ -5441,44 +5565,68 @@ async def api_delete_label_category(cat_id: int, db: Session = Depends(get_db), 
 
 @router.post("/api/v1/admin/label-categories/reorder")
 async def api_reorder_label_categories(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "edit_label_category")
+    if not _can_manage_label_organization(current_admin, "edit_label_category"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
     body = await request.json()
-    ordered_ids = body.get("ordered_ids") or []
+    try:
+        requested_ids = [int(value) for value in (body.get("ordered_ids") or [])]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="ordered_ids должен содержать числа") from exc
+    all_categories = LabelCategoryService(db).get_all()
+    visible_categories = filter_visible_label_categories(all_categories, current_admin)
+    visible_ids = {category.id for category in visible_categories}
+    if set(requested_ids) != visible_ids or len(requested_ids) != len(visible_ids):
+        raise HTTPException(status_code=400, detail="ordered_ids должен содержать все доступные метки ровно по одному разу")
+    if can_manage_secret_labels(current_admin):
+        ordered_ids = requested_ids
+    else:
+        requested_iter = iter(requested_ids)
+        ordered_ids = [next(requested_iter) if category.id in visible_ids else category.id for category in all_categories]
     LabelCategoryService(db).reorder(ordered_ids)
     return {"status": "ok"}
 
 
 @router.get("/api/v1/admin/label-folders")
 async def api_label_folders_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    from services import LabelFolderService
-    folders = LabelFolderService(db).get_all()
-    return {"folders": [{"id": f.id, "name": f.name, "sort_order": f.sort_order} for f in folders]}
+    categories, folders = _visible_label_data(db, current_admin)
+    return {"folders": _label_folder_payloads(folders, current_admin)}
 
 
 @router.post("/api/v1/admin/label-folders")
 async def api_create_label_folder(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "create_label_category")
+    if not _can_manage_label_organization(current_admin, "create_label_category"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
     body = await request.json()
     name = (body.get("name") or "").strip()
     if not name: raise HTTPException(status_code=400, detail="name required")
     from services import LabelFolderService
     folder = LabelFolderService(db).create(name, current_admin.id)
-    return {"status": "ok", "folder": {"id": folder.id, "name": folder.name, "sort_order": folder.sort_order}}
+    return {"status": "ok", "folder": _label_folder_payload(folder, current_admin)}
 
 
 @router.post("/api/v1/admin/label-folders/{folder_id}")
 async def api_update_label_folder(folder_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "edit_label_category")
+    if not _can_manage_label_organization(current_admin, "edit_label_category"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    if not can_manage_secret_labels(current_admin):
+        _, visible_folders = _visible_label_data(db, current_admin)
+        if folder_id not in {folder.id for folder in visible_folders}:
+            raise HTTPException(status_code=404, detail="Папка не найдена")
     body = await request.json()
     from services import LabelFolderService
     folder = LabelFolderService(db).update(folder_id, body.get("name"))
     if not folder: raise HTTPException(status_code=404, detail="Папка не найдена")
-    return {"status": "ok", "folder": {"id": folder.id, "name": folder.name}}
+    return {"status": "ok", "folder": _label_folder_payload(folder, current_admin)}
 
 
 @router.delete("/api/v1/admin/label-folders/{folder_id}")
 async def api_delete_label_folder(folder_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "delete_label_category")
+    if not _can_manage_label_organization(current_admin, "delete_label_category"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    if not can_manage_secret_labels(current_admin):
+        _, visible_folders = _visible_label_data(db, current_admin)
+        if folder_id not in {folder.id for folder in visible_folders}:
+            raise HTTPException(status_code=404, detail="Папка не найдена")
     from services import LabelFolderService
     ok = LabelFolderService(db).delete(folder_id)
     if not ok: raise HTTPException(status_code=404, detail="Папка не найдена")
@@ -5487,10 +5635,25 @@ async def api_delete_label_folder(folder_id: int, db: Session = Depends(get_db),
 
 @router.post("/api/v1/admin/label-folders/reorder")
 async def api_reorder_label_folders(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_label_category_perm(current_admin, "edit_label_category")
+    if not _can_manage_label_organization(current_admin, "edit_label_category"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
     body = await request.json()
     from services import LabelFolderService
-    LabelFolderService(db).reorder(body.get("ordered_ids") or [])
+    try:
+        requested_ids = [int(value) for value in (body.get("ordered_ids") or [])]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="ordered_ids должен содержать числа") from exc
+    all_folders = LabelFolderService(db).get_all()
+    _, visible_folders = _visible_label_data(db, current_admin)
+    visible_ids = {folder.id for folder in visible_folders}
+    if set(requested_ids) != visible_ids or len(requested_ids) != len(visible_ids):
+        raise HTTPException(status_code=400, detail="ordered_ids должен содержать все доступные папки ровно по одному разу")
+    if can_manage_secret_labels(current_admin):
+        ordered_ids = requested_ids
+    else:
+        requested_iter = iter(requested_ids)
+        ordered_ids = [next(requested_iter) if folder.id in visible_ids else folder.id for folder in all_folders]
+    LabelFolderService(db).reorder(ordered_ids)
     return {"status": "ok"}
 
 

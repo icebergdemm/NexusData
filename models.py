@@ -471,6 +471,7 @@ class LabelCategory(Base):
     name = Column(String(128), unique=True, nullable=False)
     color = Column(String(16), default="#888888")  # hex color for UI
     icon = Column(String(8), default="🏷")         # emoji icon
+    is_secret = Column(Boolean, nullable=False, default=False, index=True)
     description = Column(String(500), nullable=True)
     folder_id = Column(Integer, ForeignKey("label_folders.id", ondelete="SET NULL"), nullable=True, index=True)
     sort_order = Column(Integer, nullable=False, default=0)

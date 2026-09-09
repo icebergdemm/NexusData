@@ -42,6 +42,9 @@ export interface LabelCategory {
   name: string
   color: string
   icon: string
+  is_secret: boolean
+  folder_id: number | null
+  sort_order: number
 }
 
 export interface LabelPair {
@@ -116,6 +119,7 @@ export interface PlayerDetailResponse {
   label_pairs: LabelPair[]
   traps: Trap[]
   label_categories: LabelCategory[]
+  label_folders: { id: number; name: string; sort_order: number }[]
   punishments: PunishmentRow[]
   ranks: Record<string, string>
   kits: Record<string, string>
@@ -149,6 +153,7 @@ export interface PlayerDetailResponse {
   can_manage_notes: boolean
   /** players:manage_labels — назначение и снятие меток в профиле игрока. */
   can_manage_labels: boolean
+  can_manage_secret_labels: boolean
   /** moderation:message — отправка сообщения игроку из профиля. */
   can_send_message: boolean
   has_delete: boolean

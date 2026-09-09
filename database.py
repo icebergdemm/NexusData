@@ -281,6 +281,7 @@ def _apply_migrations():
         # label folders/sorting + department access level sorting/description + superuser bind flag
         ("label_categories", "folder_id", "INT"),
         ("label_categories", "sort_order", "INT NOT NULL DEFAULT 0"),
+        ("label_categories", "is_secret", "TINYINT NOT NULL DEFAULT 0"),
         ("label_categories", "description", "VARCHAR(500)"),
         ("label_folders", "sort_order", "INT NOT NULL DEFAULT 0"),
         ("department_access_levels", "sort_order", "INT NOT NULL DEFAULT 0"),

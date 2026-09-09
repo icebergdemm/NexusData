@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from database import Base
 from config import Settings, snapshot_env_file
-from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, PlayerData, PlayerIP, PlayerRoleAction, PlayerSession
+from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, LabelCategory, PlayerData, PlayerIP, PlayerLabel, PlayerRoleAction, PlayerSession
 from services_ai_dossier import (
     DOSSIER_RULES_VERSION,
     build_kobold_request,
@@ -497,6 +497,33 @@ class AIDossierContractTests(unittest.TestCase):
             self.assertEqual(payload["logs"][0]["action"], "kick")
             self.assertEqual(payload["rating_negative_actions"][0]["action_type"], "player_killed")
             self.assertEqual(payload["rating_negative_actions"][0]["count"], 1)
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_shared_ai_payload_excludes_secret_labels(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        try:
+            player = PlayerData(player_id=7, player_steamid="76561198000000007", player_last_time_name="Тест")
+            public = LabelCategory(name="Публичная")
+            secret = LabelCategory(name="Закрытая", is_secret=True)
+            db.add_all([player, public, secret])
+            db.flush()
+            db.add_all([
+                PlayerLabel(player_id=7, category_id=public.id),
+                PlayerLabel(player_id=7, category_id=secret.id),
+            ])
+            db.commit()
+            with (
+                patch("services_logs.search_logs", return_value=SimpleNamespace(events=[])),
+                patch("services_logs.get_log_stats", return_value={}),
+            ):
+                payload = services_ai_dossier.build_player_dossier_payload(db, 7, datetime(2026, 9, 4, 12, 0))
+
+            self.assertEqual([row["name"] for row in payload["labels"]], ["Публичная"])
+            self.assertNotIn("Закрытая", json.dumps(payload, ensure_ascii=False))
         finally:
             db.close()
             engine.dispose()

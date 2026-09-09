@@ -43,7 +43,8 @@ export const NAV_GROUPS: NavGroup[] = [
           canDo(admin, "players", "manage_label_categories") ||
           canDo(admin, "players", "create_label_category") ||
           canDo(admin, "players", "edit_label_category") ||
-          canDo(admin, "players", "delete_label_category"),
+          canDo(admin, "players", "delete_label_category") ||
+          canDo(admin, "players", "manage_secret_labels"),
       },
       { label: "Модерирование", to: "/moderation", icon: ShieldAlert, permission: "moderation" },
       { label: "Логи сервера", to: "/logs", icon: FileText, permission: "moderation" },

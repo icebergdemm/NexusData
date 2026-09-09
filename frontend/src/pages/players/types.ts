@@ -26,6 +26,9 @@ export interface LabelCategory {
   name: string
   color: string
   icon: string
+  is_secret: boolean
+  folder_id: number | null
+  sort_order: number
 }
 
 export interface PlayersListResponse {
@@ -35,6 +38,7 @@ export interface PlayersListResponse {
   total: number
   total_pages: number
   label_categories: LabelCategory[]
+  label_folders: { id: number; name: string; sort_order: number }[]
   selected_label_id: number | null
   selected_rank_id: number | null
   selected_discord_link?: string

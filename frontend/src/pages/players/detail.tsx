@@ -18,7 +18,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -41,6 +41,7 @@ import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 import { useDiscordProfile } from "@/lib/use-discord-profile"
+import { groupLabelCategories } from "../label-categories/label-utils"
 
 interface AdminOption { id: number; discord_username: string | null }
 
@@ -118,6 +119,10 @@ export function PlayerDetailPage() {
     onError: (e: Error) => toast.error(e.message),
   })
   const { data: discordProfile } = useDiscordProfile(data?.player?.discord_profile_id)
+  const labelGroups = data ? groupLabelCategories(
+    data.label_categories.filter((category) => category.is_secret ? data.can_manage_secret_labels : data.can_manage_labels),
+    data.label_folders,
+  ) : []
 
   useEffect(() => {
     setDiscordIdDraft(data?.player.discord_id ?? "")
@@ -591,14 +596,14 @@ export function PlayerDetailPage() {
         <TabsContent value="labels">
           <Card>
             <CardContent className="space-y-3">
-              {data.can_manage_labels && (
+              {(data.can_manage_labels || data.can_manage_secret_labels) && (
                 <div className="flex flex-wrap gap-2">
                   <Select value={labelCategoryId} onValueChange={setLabelCategoryId}>
                     <SelectTrigger className="w-64"><SelectValue placeholder="Выбрать метку" /></SelectTrigger>
                     <SelectContent>
-                      {data.label_categories.map((c) => (
+                      {labelGroups.map((group) => <SelectGroup key={group.folderId ?? "none"}><SelectLabel>{group.label}</SelectLabel>{group.categories.map((c) => (
                         <SelectItem key={c.id} value={String(c.id)}><span className="flex items-center gap-2"><span aria-hidden="true">{c.icon || "🏷"}</span>{c.name}</span></SelectItem>
-                      ))}
+                      ))}</SelectGroup>)}
                     </SelectContent>
                   </Select>
                   <Input value={labelNoteDraft} onChange={(event) => setLabelNoteDraft(event.target.value)} placeholder="Комментарий к метке (необязательно)" className="min-w-64 flex-1" maxLength={500} />
@@ -615,7 +620,7 @@ export function PlayerDetailPage() {
                   <PlayerLabelBadge
                     key={lp.id}
                     label={lp}
-                    canManage={data.can_manage_labels}
+                    canManage={data.can_manage_labels || (lp.category.is_secret && data.can_manage_secret_labels)}
                     onSave={(note) => updateLabelMutation.mutate({ labelId: lp.id, note })}
                     onRemove={() => removeLabelMutation.mutate(lp.id)}
                     saving={updateLabelMutation.isPending}
@@ -1091,6 +1096,7 @@ function PlayerLabelBadge({ label, canManage, onSave, onRemove, saving, deleting
           aria-label={`Метка ${label.category.name}${label.note ? `: ${label.note}` : ""}`}
         >
           <span aria-hidden="true">{label.category.icon || "🏷"}</span>
+          {label.category.is_secret && <LockKeyhole className="size-3" aria-label="Секретная метка" />}
           {label.category.name}
           {label.note && <StickyNote className="size-3" aria-label="Есть комментарий" />}
         </button>

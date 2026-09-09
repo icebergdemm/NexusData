@@ -243,7 +243,10 @@ export function PlayersListPage() {
           tabLabel="Игроки"
           filters={filters}
           labelOptions={[
-            ...(data?.label_categories.map((category) => ({ value: String(category.id), label: category.name, icon: category.icon })) ?? []),
+            ...(data?.label_categories.map((category) => ({
+              value: String(category.id), label: category.name, icon: category.icon,
+              folder: data.label_folders.find((folder) => folder.id === category.folder_id)?.name ?? "Без папки",
+            })) ?? []),
           ]}
           rankOptions={[
             { value: "all", label: "Все звания" },

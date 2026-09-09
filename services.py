@@ -14,6 +14,44 @@ ADMIN_MESSAGE_MAX_LENGTH = 2000
 ADMIN_MESSAGE_PREFIX = "[Администрация]: "
 
 
+def can_manage_secret_labels(admin) -> bool:
+    """Return whether an administrator may see and manage secret labels."""
+    if getattr(admin, "is_superuser", False):
+        return True
+    from security import check_permission
+
+    return check_permission(admin, "players", "manage_secret_labels")
+
+
+def filter_visible_label_categories(categories, admin) -> list:
+    """Remove secret label categories the current admin cannot see."""
+    if can_manage_secret_labels(admin):
+        return list(categories)
+    return [category for category in categories if not getattr(category, "is_secret", False)]
+
+
+def filter_visible_label_folders(folders, categories, admin) -> list:
+    """Hide folders that contain no categories visible to the current admin."""
+    if can_manage_secret_labels(admin):
+        return list(folders)
+    visible_folder_ids = {
+        category.folder_id
+        for category in filter_visible_label_categories(categories, admin)
+        if getattr(category, "folder_id", None) is not None
+    }
+    return [folder for folder in folders if folder.id in visible_folder_ids]
+
+
+def filter_visible_label_pairs(label_pairs, admin) -> list:
+    """Remove secret player-label assignments before response serialization."""
+    if can_manage_secret_labels(admin):
+        return list(label_pairs)
+    return [
+        pair for pair in label_pairs
+        if not getattr(pair[1], "is_secret", False)
+    ]
+
+
 def prepare_admin_message(text: Optional[str]) -> Optional[str]:
     """Normalize an admin message and enforce the queue column limit."""
     if not text:
@@ -552,6 +590,7 @@ class PlayerService:
         anomalies: Optional[str] = None, name_history: Optional[str] = None,
         ip_history: Optional[str] = None,
         activity: Optional[str] = None,
+        visible_label_ids: Optional[set[int]] = None,
     ) -> Tuple[List[PlayerDataOut], int]:
         """Get all players with pagination, optional rank filter and sort order."""
         if page < 1:
@@ -564,7 +603,10 @@ class PlayerService:
             activity=activity,
         )
         player_outs = [PlayerDataOut.from_orm_with_mappings(p, settings.ranks_mapping, settings.kits_mapping) for p in players]
-        flags = self.player_repo.get_player_flags([player.player_id for player in players])
+        flags = self.player_repo.get_player_flags(
+            [player.player_id for player in players],
+            visible_label_ids=visible_label_ids,
+        )
         for player_out in player_outs:
             for key, value in flags.get(player_out.player_id, {}).items():
                 if key != "label_ids":
@@ -1958,16 +2000,20 @@ class LabelCategoryService:
     def get_all(self) -> List[LabelCategory]:
         return self.db.query(LabelCategory).order_by(LabelCategory.sort_order, LabelCategory.name).all()
 
-    def create(self, name: str, color: str, icon: str, admin_id: int, folder_id=None, description=None) -> LabelCategory:
+    def create(self, name: str, color: str, icon: str, admin_id: int, folder_id=None, description=None, is_secret=False) -> LabelCategory:
         max_order = self.db.query(LabelCategory).order_by(LabelCategory.sort_order.desc()).first()
         order = (max_order.sort_order + 1) if max_order and max_order.sort_order is not None else 0
-        cat = LabelCategory(name=name, color=color, icon=icon, created_by_admin_id=admin_id, folder_id=folder_id, sort_order=order, description=description)
+        cat = LabelCategory(
+            name=name, color=color, icon=icon, created_by_admin_id=admin_id,
+            folder_id=folder_id, sort_order=order, description=description,
+            is_secret=bool(is_secret),
+        )
         self.db.add(cat)
         self.db.commit()
         self.db.refresh(cat)
         return cat
 
-    def update(self, cat_id: int, name: str = None, color: str = None, icon: str = None, folder_id=None, description=None, has_folder=False, has_desc=False) -> Optional[LabelCategory]:
+    def update(self, cat_id: int, name: str = None, color: str = None, icon: str = None, folder_id=None, description=None, has_folder=False, has_desc=False, is_secret=None, has_secret=False) -> Optional[LabelCategory]:
         cat = self.db.query(LabelCategory).filter(LabelCategory.id == cat_id).first()
         if not cat:
             return None
@@ -1976,6 +2022,7 @@ class LabelCategoryService:
         if icon is not None: cat.icon = icon
         if has_folder: cat.folder_id = folder_id
         if has_desc: cat.description = description
+        if has_secret and is_secret is not None: cat.is_secret = bool(is_secret)
         self.db.commit()
         return cat
 

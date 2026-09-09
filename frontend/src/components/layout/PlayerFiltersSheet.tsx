@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { ListFilter, RotateCcw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,7 +20,7 @@ import {
   type SortDirection,
 } from "@/lib/player-filters"
 
-export interface PlayerFilterOption { value: string; label: string; icon?: string | null }
+export interface PlayerFilterOption { value: string; label: string; icon?: string | null; folder?: string | null }
 export interface PlayerFilterSortOption { key: PlayerSortKey; label: string }
 
 type PlayerFiltersChange = (filters: PlayerFilterState | ((current: PlayerFilterState) => PlayerFilterState)) => void
@@ -75,6 +75,14 @@ export function PlayerFiltersSheet({ tabLabel, filters, labelOptions, rankOption
   const [open, setOpen] = useState(false)
   const activeCount = countActivePlayerFilters(filters, sort, defaultSort)
   const availableLabelOptions = labelOptions.filter((option) => option.value !== "all")
+  const labelGroups = useMemo(() => {
+    const groups = new Map<string, PlayerFilterOption[]>()
+    for (const option of availableLabelOptions) {
+      const key = option.folder || "Без папки"
+      groups.set(key, [...(groups.get(key) ?? []), option])
+    }
+    return [...groups.entries()]
+  }, [availableLabelOptions])
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -87,10 +95,10 @@ export function PlayerFiltersSheet({ tabLabel, filters, labelOptions, rankOption
             <legend className="text-sm font-semibold">Метки</legend>
             <ChoiceField label="Как учитывать метки" value={filters.labelMode} options={LABEL_MODE_OPTIONS.filter((option) => option.value !== "any" || filters.labelIds.length > 0)} onChange={(labelMode) => onFiltersChange((current) => ({ ...current, labelMode, labelIds: labelMode === "any" ? current.labelIds : [] }))} />
             <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border p-2">
-              {availableLabelOptions.map((option) => {
+              {labelGroups.map(([folder, options]) => <div key={folder} className="space-y-1"><div className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{folder}</div>{options.map((option) => {
                 const selected = filters.labelIds.includes(option.value)
                 return <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted"><input type="checkbox" checked={selected} onChange={() => onFiltersChange((current) => { const nextLabelIds = current.labelIds.includes(option.value) ? current.labelIds.filter((id) => id !== option.value) : [...current.labelIds, option.value]; return { ...current, labelMode: nextLabelIds.length > 0 ? "any" : "all", labelIds: nextLabelIds } })} className="size-4 accent-primary" /><PlatformIcon value={option.icon} fallback={ListFilter} className="size-3.5" /><span className="truncate">{option.label}</span></label>
-              })}
+              })}</div>)}
               {availableLabelOptions.length === 0 && <div className="px-1.5 py-1 text-xs text-muted-foreground">Метки ещё не созданы</div>}
             </div>
             {filters.labelMode === "any" && filters.labelIds.length > 0 && <div className="text-xs text-muted-foreground">Покажем игроков с любой из выбранных меток. Выбрано: {filters.labelIds.length}.</div>}

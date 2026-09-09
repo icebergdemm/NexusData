@@ -393,7 +393,7 @@ class PlayerRepository(BaseRepository):
         players = search_query.offset((page - 1) * page_size).limit(page_size).all()
         return players, total
 
-    def get_player_flags(self, player_ids: List[int]) -> dict[int, dict[str, object]]:
+    def get_player_flags(self, player_ids: List[int], visible_label_ids: Optional[set[int]] = None) -> dict[int, dict[str, object]]:
         """Bulk-load safe moderation flags without exposing note or punishment contents."""
         if not player_ids:
             return {}
@@ -410,6 +410,8 @@ class PlayerRepository(BaseRepository):
             for player_id in player_ids
         }
         for label in self.db.query(PlayerLabel).filter(PlayerLabel.player_id.in_(player_ids)).all():
+            if visible_label_ids is not None and label.category_id not in visible_label_ids:
+                continue
             label_ids = flags[label.player_id]["label_ids"]
             if label.category_id not in label_ids:
                 label_ids.append(label.category_id)

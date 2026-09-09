@@ -1134,6 +1134,9 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
             ticket_messages_missing = True
     labels = (db.query(PlayerLabel, LabelCategory)
               .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
+              # AI dossiers are shared durable output, not per-admin views.
+              # Secret labels therefore must never enter the model context.
+              .filter(LabelCategory.is_secret.is_(False))
               .filter(PlayerLabel.player_id == player_id)
               .limit(100).all())
     traps = db.query(PlayerTrap).filter(PlayerTrap.player_id == player_id).order_by(PlayerTrap.set_at.desc()).limit(100).all()

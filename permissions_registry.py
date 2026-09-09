@@ -45,6 +45,7 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
         {"key": "edit_discord_id", "label": "Привязка/подтверждение Discord ID"},
         {"key": "manage_notes", "label": "Заметки в личном деле"},
         {"key": "manage_labels", "label": "Назначение меток игрокам"},
+        {"key": "manage_secret_labels", "label": "Полное управление секретными метками"},
         {"key": "manage_label_categories", "label": "Управление категориями меток (совместимость / все операции)"},
         {"key": "create_label_category", "label": "Создание категорий меток"},
         {"key": "edit_label_category", "label": "Изменение категорий меток"},

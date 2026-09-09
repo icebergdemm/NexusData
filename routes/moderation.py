@@ -31,6 +31,8 @@ from services import (
     PlayerService,
     prepare_admin_message,
     format_admin_issuer_name,
+    LabelCategoryService, can_manage_secret_labels,
+    LabelFolderService, filter_visible_label_categories, filter_visible_label_folders,
 )
 from services_ai_dossier import get_dossier_triage_map
 from schemas import (
@@ -39,7 +41,7 @@ from schemas import (
     ServerActionOut, ServerActionAck,
     QueueActionIn, QueueActionResult,
 )
-from models import AdminUser, AdminSession
+from models import AdminUser, AdminSession, LabelCategory, PlayerLabel
 import logging
 
 settings = get_settings()
@@ -610,14 +612,30 @@ async def api_moderation_overview(
         raw_results = PlayerService(db).search_players(search, limit=50)
         search_results = raw_results
 
-    from services import LabelCategoryService
-    label_categories = LabelCategoryService(db).get_all()
+    all_label_categories = LabelCategoryService(db).get_all()
+    label_categories = filter_visible_label_categories(all_label_categories, current_admin)
+    label_folders = filter_visible_label_folders(LabelFolderService(db).get_all(), all_label_categories, current_admin)
+    visible_label_ids = {category.id for category in label_categories}
     from repositories import PlayerRepository
     all_player_ids = [p.get("player_id") for p in online_players if p.get("player_id")]
     all_player_ids.extend(p.player_id for p in recent_offline if p.player_id)
     all_player_ids.extend(p.player_id for p in search_results if p.player_id)
-    player_flags = PlayerRepository(db).get_player_flags(list(dict.fromkeys(all_player_ids)))
-    dossier_triage = get_dossier_triage_map(db, list(dict.fromkeys(all_player_ids)))
+    player_flags = PlayerRepository(db).get_player_flags(
+        list(dict.fromkeys(all_player_ids)),
+        visible_label_ids=visible_label_ids,
+    )
+    dossier_player_ids = list(dict.fromkeys(all_player_ids))
+    if not can_manage_secret_labels(current_admin) and dossier_player_ids:
+        secret_player_ids = {
+            player_id for player_id, in db.query(PlayerLabel.player_id).join(
+                LabelCategory, PlayerLabel.category_id == LabelCategory.id,
+            ).filter(
+                PlayerLabel.player_id.in_(dossier_player_ids),
+                LabelCategory.is_secret.is_(True),
+            ).distinct().all()
+        }
+        dossier_player_ids = [player_id for player_id in dossier_player_ids if player_id not in secret_player_ids]
+    dossier_triage = get_dossier_triage_map(db, dossier_player_ids)
     for info in online_players:
         flags = player_flags.get(info.get("player_id"), {})
         info["player_flags"] = flags
@@ -644,7 +662,8 @@ async def api_moderation_overview(
         "search_query": search,
         "ac_events": ac_enriched,
         "ranks": settings.ranks_mapping,
-        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon} for c in label_categories],
+        "label_categories": [{"id": c.id, "name": c.name, "color": c.color, "icon": c.icon, "is_secret": bool(c.is_secret), "folder_id": c.folder_id, "sort_order": c.sort_order if can_manage_secret_labels(current_admin) else index} for index, c in enumerate(label_categories)],
+        "label_folders": [{"id": folder.id, "name": folder.name, "sort_order": folder.sort_order if can_manage_secret_labels(current_admin) else index} for index, folder in enumerate(label_folders)],
         "can_edit": check_permission(current_admin, "moderation", "edit"),
         "can_delete": check_permission(current_admin, "moderation", "delete"),
         "can_message": check_moderation_action_permission(current_admin, "message"),
