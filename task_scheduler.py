@@ -237,6 +237,15 @@ class TaskScheduler:
                 cancel_event.set()
             return True
 
+    def cancel_matching(self, prefix: str) -> int:
+        """Cancel every queued/running task whose ID starts with ``prefix``."""
+        with self._lock:
+            task_ids = [
+                task_id for task_id in self._active_ids
+                if task_id.startswith(prefix)
+            ]
+        return sum(1 for task_id in task_ids if self.cancel(task_id))
+
     def get_result(self, task_id: str) -> Optional[TaskResult]:
         """Return TaskResult for task_id, or None if unknown."""
         return self._results.get(task_id)

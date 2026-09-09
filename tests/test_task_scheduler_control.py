@@ -18,7 +18,7 @@ def test_running_task_can_be_cancelled_without_killing_scheduler():
     try:
         task_id = scheduler.submit(work, task_id="replay_voice_index_1052_v5", timeout=None)
         assert started.wait(1)
-        assert scheduler.cancel(task_id)
+        assert scheduler.cancel_matching("replay_voice_index_") == 1
         deadline = time.monotonic() + 1
         while scheduler.status(task_id) == "running" and time.monotonic() < deadline:
             time.sleep(0.005)

@@ -213,9 +213,12 @@ function TaskManagerSection({ data, tab, onTab, onRefetch }: {
   // HTTP control mutation — reuses one endpoint for process + subsystem rows.
   const controlMutation = useMutation({
     mutationFn: (arg: { target: string; action: string }) =>
-      api.post<{ status: string; warning?: string | null }>("/api/v1/admin/perf/task-manager/control", arg),
-    onSuccess: (res, arg) => {
-      toast.success(`${{ suspend: "Приостановлен", resume: "Возобновлён", kill: "Завершён", terminate: "Остановлен", restart: "Перезапуск отправлен", stop: "Остановлена", start: "Запущена", cancel_task: "Отмена отправлена" }[arg.action as string] ?? arg.action}: ${arg.target}`)
+      api.post<{ status: string; warning?: string | null; cancelled?: number }>("/api/v1/admin/perf/task-manager/control", arg),
+     onSuccess: (res, arg) => {
+       toast.success(`${{ suspend: "Приостановлен", resume: "Возобновлён", kill: "Завершён", terminate: "Остановлен", restart: "Перезапуск отправлен", stop: "Остановлена", start: "Запущена", cancel_task: "Отмена отправлена" }[arg.action as string] ?? arg.action}: ${arg.target}`)
+       if (arg.target === "voice_auto_index" && arg.action === "stop" && res.cancelled) {
+         toast.info(`Остановлено voice-index задач: ${res.cancelled}`)
+       }
       if (res.warning) toast.warning(res.warning)
       onRefetch()
     },

@@ -498,15 +498,22 @@ def _subsystem_control(subsystem: str, action: str) -> dict:
     if subsystem == "voice_auto_index":
         from database import SessionLocal
         from services_voice_index import set_voice_auto_index_enabled
+        from task_scheduler import scheduler
 
         if action not in ("stop", "start"):
             raise ControlError(f"Неизвестное действие: {action}")
+        cancelled = 0
+        if action == "stop":
+            # Turning off the automatic scan must also release a replay that
+            # is already decompressing. Otherwise the UI says "off" while a
+            # long/corrupt demo keeps consuming CPU and RAM indefinitely.
+            cancelled = scheduler.cancel_matching("replay_voice_index_")
         db = SessionLocal()
         try:
             enabled = set_voice_auto_index_enabled(db, action == "start")
         finally:
             db.close()
-        return {"subsystem": subsystem, "running": enabled}
+        return {"subsystem": subsystem, "running": enabled, "cancelled": cancelled}
     raise ControlError(f"Управляемая служба не найдена: {subsystem}")
 
 
