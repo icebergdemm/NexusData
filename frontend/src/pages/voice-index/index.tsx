@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { History, Loader2, Play, ShieldAlert, Volume2 } from "lucide-react"
+import { History, Loader2, Play, ShieldAlert, Square, Volume2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -13,7 +13,7 @@ import { useCurrentAdmin } from "@/lib/auth"
 
 interface VoiceRun {
   id: number
-  status: "pending" | "running" | "completed" | "failed"
+  status: "pending" | "running" | "cancelling" | "cancelled" | "completed" | "failed"
   total: number
   processed: number
   ready_count: number
@@ -51,13 +51,13 @@ interface VoiceLogResponse {
 }
 
 function statusLabel(status: VoiceRun["status"]): string {
-  return ({ pending: "В очереди", running: "Выполняется", completed: "Завершена", failed: "Ошибка" })[status]
+  return ({ pending: "В очереди", running: "Выполняется", cancelling: "Останавливается", completed: "Завершена", cancelled: "Остановлена", failed: "Ошибка" })[status]
 }
 
 function statusVariant(status: VoiceRun["status"]): "default" | "secondary" | "destructive" | "outline" {
   if (status === "failed") return "destructive"
   if (status === "completed") return "default"
-  if (status === "running") return "secondary"
+  if (status === "running" || status === "cancelling") return "secondary"
   return "outline"
 }
 
@@ -91,6 +91,15 @@ export function VoiceIndexPage() {
     onError: (error: Error) => toast.error(error.message),
   })
 
+  const cancelMutation = useMutation({
+    mutationFn: () => api.post<VoiceRun>(`/api/v1/admin/voice-index/runs/${statusQuery.data?.active?.id}/cancel`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["voice-index-status"] })
+      toast.success("Остановка индексации запрошена")
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
+
   if (admin && !admin.is_superuser) {
     return (
       <Card><CardContent className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
@@ -107,10 +116,17 @@ export function VoiceIndexPage() {
         title="Голос"
         description="Индекс голосовых фрагментов из сохранённых replay. Аудио остаётся внутри .barodemo."
         icon={Volume2}
-        actions={<Button onClick={() => startMutation.mutate()} disabled={!!statusQuery.data?.active || startMutation.isPending}>
-          {startMutation.isPending ? <Loader2 className="animate-spin" /> : <Play />}
-          {statusQuery.data?.active ? "Индексация идёт" : "Запустить индексацию"}
-        </Button>}
+        actions={statusQuery.data?.active ? (
+          <Button variant="destructive" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending || statusQuery.data.active.status === "cancelling"}>
+            {cancelMutation.isPending || statusQuery.data.active.status === "cancelling" ? <Loader2 className="animate-spin" /> : <Square />}
+            {statusQuery.data.active.status === "cancelling" ? "Останавливается" : "Остановить"}
+          </Button>
+        ) : (
+          <Button onClick={() => startMutation.mutate()} disabled={startMutation.isPending}>
+            {startMutation.isPending ? <Loader2 className="animate-spin" /> : <Play />}
+            Запустить индексацию
+          </Button>
+        )}
       />
 
       <Card className="mb-4">

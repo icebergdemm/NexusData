@@ -1,5 +1,7 @@
 """Superuser controls for the durable replay voice index."""
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
@@ -84,6 +86,41 @@ async def api_voice_index_status(
 ):
     _require_superuser(current_admin)
     return get_voice_index_status(db)
+
+
+@router.post("/api/v1/admin/voice-index/runs/{run_id}/cancel")
+async def api_cancel_voice_index(
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    run = db.query(VoiceIndexRun).filter(VoiceIndexRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Запуск индексации не найден")
+    if run.status not in ("pending", "running", "cancelling"):
+        raise HTTPException(status_code=409, detail="Индексация уже завершена")
+    if run.status == "cancelling":
+        return _run_response(run)
+
+    now = datetime.utcnow()
+    if run.status == "pending":
+        run.status = "cancelled"
+        run.finished_at = now
+        run.heartbeat_at = now
+        run.last_message = "Индексация остановлена до запуска"
+        log_status = "cancelled"
+    else:
+        run.status = "cancelling"
+        run.last_message = "Остановка запрошена; текущий реплей будет завершён"
+        log_status = "cancelling"
+    _voice_run_log(db, run, status=log_status, message=run.last_message)
+    db.commit()
+
+    from routes.admin import log_admin_action
+
+    log_admin_action(db, current_admin.id, "voice_index_backfill_cancel", {"run_id": run.id})
+    return _run_response(run)
 
 
 @router.get("/api/v1/admin/voice-index/runs/{run_id}/logs")

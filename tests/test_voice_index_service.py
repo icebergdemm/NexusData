@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 import models
-from services_voice_index import VoiceIndexService
+from services_voice_index import VoiceIndexService, _mapping_from_voice_communications
 
 
 def _str(value: str) -> bytes:
@@ -48,6 +48,7 @@ def _db():
         models.RoundReplay.__table__,
         models.ReplayVoiceSegment.__table__,
         models.WorldRound.__table__,
+        models.PlayerCommunication.__table__,
     ])
     return engine, Session(engine)
 
@@ -134,6 +135,37 @@ def test_unmapped_speaker_marks_replay_as_error_without_creating_segment():
             assert result["status"] == "error"
             assert db.query(models.ReplayVoiceSegment).count() == 0
             assert db.query(models.RoundReplay).one().voice_index_status == "error"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_old_replay_recovers_speaker_mapping_from_server_asr_event_time():
+    engine, db = _db()
+    try:
+        recorded_at = datetime(2025, 1, 1, 12, 0, 0)
+        replay = models.RoundReplay(
+            id=13,
+            filename="round.barodemo",
+            stored_filename="round.barodemo",
+            server_name="ASPER1",
+            recorded_at=recorded_at,
+        )
+        db.add(replay)
+        db.add(models.PlayerCommunication(
+            event_uid="voice-event-13",
+            source="voice",
+            channel="default",
+            server_name="ASPER1",
+            server_session_id="session-1",
+            player_steamid="76561198000000013",
+            occurred_at=recorded_at.replace(microsecond=100000),
+        ))
+        db.commit()
+
+        mapping = _mapping_from_voice_communications(db, replay, [(100, 7), (300, 7)])
+
+        assert mapping == {7: "76561198000000013"}
     finally:
         db.close()
         engine.dispose()

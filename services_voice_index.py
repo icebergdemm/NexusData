@@ -15,7 +15,7 @@ import zipfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import BinaryIO
 
@@ -28,6 +28,10 @@ VOICE_MAP_MEMBER = "voice-map.json"
 # segment produced by the old misaligned parser is never treated as valid.
 VOICE_INDEX_VERSION = 2
 VOICE_MERGE_GAP_MS = 1000
+# ServerAsr and the replay recorder observe the same VoIP read on the game
+# server. Their timestamps should be nearly identical; a wider match would
+# start attributing nearby speakers by accident.
+VOICE_COMMUNICATION_MATCH_TOLERANCE_MS = 1500
 _MAGIC_DEMO = b"BDMO"
 _MAGIC_ZIP = b"PK\x03\x04"
 
@@ -271,16 +275,19 @@ def group_voice_packets(
     return sorted(segments, key=lambda row: (row["start_ms"], row["speaker_id"]))
 
 
-def extract_voice_segments(
-    path: str,
+def extract_voice_packets(path: str) -> tuple[list[tuple[int, int]], dict[int, str]]:
+    """Read voice packet timestamps and any identity sidecar from a replay."""
+    with _open_demo(path) as source:
+        packets = list(_iter_voice_packets(source.stream))
+        mapping = dict(source.speaker_map)
+    return packets, mapping
+
+
+def _segments_from_packets(
+    packets: list[tuple[int, int]],
     speaker_map: Mapping[int | str, str] | None = None,
 ) -> list[dict]:
-    """Extract mapped voice fragments from a raw, gzip, or ZIP replay."""
-    with _open_demo(path) as source:
-        mapping = dict(source.speaker_map)
-        if speaker_map:
-            mapping.update(_normalise_mapping(speaker_map))
-        packets = list(_iter_voice_packets(source.stream))
+    mapping = _normalise_mapping(speaker_map)
 
     if not packets:
         return []
@@ -299,6 +306,16 @@ def extract_voice_segments(
         }
         for row in group_voice_packets(packets)
     ]
+
+
+def extract_voice_segments(
+    path: str,
+    speaker_map: Mapping[int | str, str] | None = None,
+) -> list[dict]:
+    """Extract mapped voice fragments from a raw, gzip, or ZIP replay."""
+    packets, embedded_mapping = extract_voice_packets(path)
+    mapping = {**embedded_mapping, **_normalise_mapping(speaker_map)}
+    return _segments_from_packets(packets, mapping)
 
 
 def _mapping_from_world_round(db, replay) -> dict[int, str]:
@@ -352,17 +369,109 @@ def _mapping_from_round_event(db, replay) -> dict[int, str]:
     return mapping
 
 
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _mapping_from_voice_communications(
+    db,
+    replay,
+    packets: list[tuple[int, int]],
+) -> dict[int, str]:
+    """Recover old mappings from ServerAsr's exact voice event timestamps.
+
+    Before ``voice-map.json`` existed, the replay still had the packet stream
+    but no character-id identity. ServerAsr independently recorded the first
+    packet time and the real Steam/EOS ID. Both observers run from the same
+    VoIP read, so a narrow timestamp match is safe enough to use as a
+    historical recovery path. Ambiguous or conflicting matches are discarded;
+    a false profile attribution is worse than a visible indexing error.
+    """
+    recorded_at = _as_naive_utc(getattr(replay, "recorded_at", None))
+    server_name = str(getattr(replay, "server_name", None) or "").strip()
+    if not recorded_at or not server_name or not packets:
+        return {}
+
+    from models import PlayerCommunication
+
+    packet_times: dict[int, list[int]] = {}
+    for time_ms, speaker_id in packets:
+        if speaker_id <= 0:
+            continue
+        packet_times.setdefault(speaker_id, []).append(time_ms)
+    if not packet_times:
+        return {}
+
+    max_packet_ms = max(time_ms for time_ms, _ in packets)
+    window_start = recorded_at - timedelta(seconds=10)
+    window_end = recorded_at + timedelta(milliseconds=max_packet_ms + 10000)
+    events = (
+        db.query(PlayerCommunication)
+        .filter(
+            PlayerCommunication.source == "voice",
+            PlayerCommunication.server_name == server_name,
+            PlayerCommunication.player_steamid.isnot(None),
+            PlayerCommunication.occurred_at >= window_start,
+            PlayerCommunication.occurred_at <= window_end,
+        )
+        .order_by(PlayerCommunication.occurred_at.asc(), PlayerCommunication.id.asc())
+        .all()
+    )
+
+    candidates: dict[int, set[str]] = {}
+    for event in events:
+        occurred_at = _as_naive_utc(event.occurred_at)
+        steam_id = str(event.player_steamid or "").strip()
+        if not occurred_at or not steam_id:
+            continue
+        offset_ms = int(round((occurred_at - recorded_at).total_seconds() * 1000))
+        nearest: list[tuple[int, int]] = []
+        for speaker_id, times in packet_times.items():
+            distance = min(abs(time_ms - offset_ms) for time_ms in times)
+            if distance <= VOICE_COMMUNICATION_MATCH_TOLERANCE_MS:
+                nearest.append((distance, speaker_id))
+        if not nearest:
+            continue
+        nearest.sort()
+        best_distance, best_speaker = nearest[0]
+        # Two speakers close to the same ASR event mean the timestamp cannot
+        # identify the source reliably. Do not manufacture a winner.
+        if len(nearest) > 1 and nearest[1][0] - best_distance <= 250:
+            continue
+        candidates.setdefault(best_speaker, set()).add(steam_id)
+
+    return {
+        speaker_id: next(iter(steam_ids))
+        for speaker_id, steam_ids in candidates.items()
+        if len(steam_ids) == 1
+    }
+
+
 class VoiceIndexService:
     """Build and read the durable replay voice index."""
 
     def __init__(self, db):
         self.db = db
 
-    def _mapping_for_replay(self, replay) -> dict[int, str]:
-        return {
+    def _mapping_for_replay(
+        self,
+        replay,
+        packets: list[tuple[int, int]] | None = None,
+    ) -> dict[int, str]:
+        mapping = {
             **_mapping_from_world_round(self.db, replay),
             **_mapping_from_round_event(self.db, replay),
         }
+        if packets:
+            for speaker_id, steam_id in _mapping_from_voice_communications(
+                self.db, replay, packets
+            ).items():
+                mapping.setdefault(speaker_id, steam_id)
+        return mapping
 
     def index_replay(self, replay_id: int) -> dict:
         from models import ReplayVoiceSegment, RoundReplay
@@ -385,7 +494,12 @@ class VoiceIndexService:
             path = ReplayService(self.db).get_file_path(replay)
             if not os.path.isfile(path):
                 raise VoiceIndexError("replay file is missing")
-            segments = extract_voice_segments(path, self._mapping_for_replay(replay))
+            packets, embedded_mapping = extract_voice_packets(path)
+            mapping = {
+                **embedded_mapping,
+                **self._mapping_for_replay(replay, packets),
+            }
+            segments = _segments_from_packets(packets, mapping)
 
             self.db.query(ReplayVoiceSegment).filter(
                 ReplayVoiceSegment.replay_id == replay.id
@@ -551,7 +665,7 @@ def get_active_voice_index_run(db):
 
     run = (
         db.query(VoiceIndexRun)
-        .filter(VoiceIndexRun.status.in_(["pending", "running"]))
+        .filter(VoiceIndexRun.status.in_(["pending", "running", "cancelling"]))
         .order_by(VoiceIndexRun.created_at.desc())
         .first()
     )
@@ -611,8 +725,20 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         run = db.query(VoiceIndexRun).filter(VoiceIndexRun.id == run_id).first()
         if not run:
             return {"status": "missing", "run_id": run_id}
-        if run.status not in ("pending", "running"):
+        if run.status == "cancelled":
+            return {"status": "cancelled", "run_id": run_id}
+        if run.status not in ("pending", "running", "cancelling"):
             return {"status": run.status, "run_id": run_id}
+
+        if run.status == "cancelling":
+            now = datetime.utcnow()
+            run.status = "cancelled"
+            run.finished_at = now
+            run.heartbeat_at = now
+            run.last_message = "Индексация остановлена до начала следующего реплея"
+            _voice_run_log(db, run, status="cancelled", message=run.last_message)
+            db.commit()
+            return _voice_run_dict(run)
 
         now = datetime.utcnow()
         run.status = "running"
@@ -644,6 +770,17 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
 
         service = VoiceIndexService(db)
         for replay_id in replay_ids:
+            db.refresh(run)
+            if run.status == "cancelling":
+                now = datetime.utcnow()
+                run.status = "cancelled"
+                run.finished_at = now
+                run.heartbeat_at = now
+                run.last_message = "Индексация остановлена до начала следующего реплея"
+                _voice_run_log(db, run, status="cancelled", message=run.last_message)
+                db.commit()
+                return _voice_run_dict(run)
+
             result = service.index_replay(replay_id)
             status = result.get("status", "error")
             is_error = status != "ready"
@@ -667,6 +804,16 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
                 message=run.last_message,
             )
             db.commit()
+
+        db.refresh(run)
+        if run.status == "cancelling":
+            run.status = "cancelled"
+            run.finished_at = datetime.utcnow()
+            run.heartbeat_at = run.finished_at
+            run.last_message = "Индексация остановлена"
+            _voice_run_log(db, run, status="cancelled", message=run.last_message)
+            db.commit()
+            return _voice_run_dict(run)
 
         run.status = "completed"
         run.finished_at = datetime.utcnow()
