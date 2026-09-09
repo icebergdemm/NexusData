@@ -109,7 +109,10 @@ export function VoiceIndexPage() {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [selectedReplayId, setSelectedReplayId] = useState<number | null>(null)
   const [decisionSteamIds, setDecisionSteamIds] = useState<Record<string, string>>({})
-  const [resolutionActions, setResolutionActions] = useState<Record<string, "map" | "skip">>({})
+  const [profileSearchInputs, setProfileSearchInputs] = useState<Record<string, string>>({})
+  const [activeSpeakerSearch, setActiveSpeakerSearch] = useState<number | null>(null)
+  const [profileSearch, setProfileSearch] = useState("")
+  const [debouncedProfileSearch, setDebouncedProfileSearch] = useState("")
 
   const statusQuery = useQuery({
     queryKey: ["voice-index-status"],
@@ -126,11 +129,31 @@ export function VoiceIndexPage() {
   })
 
   useEffect(() => {
+    const timeout = setTimeout(() => setDebouncedProfileSearch(profileSearch.trim()), 300)
+    return () => clearTimeout(timeout)
+  }, [profileSearch])
+
+  const profileSearchQuery = useQuery({
+    queryKey: ["voice-index-profile-search", debouncedProfileSearch],
+    queryFn: () => api.get<{ players: Array<{ player_id: number; player_last_time_name: string; forced_display_name: string | null; player_steamid: string; steam_avatar_url: string | null }> }>(`/api/v1/admin/players/search-suggestions?q=${encodeURIComponent(debouncedProfileSearch)}`),
+    enabled: !!activeSpeakerSearch && debouncedProfileSearch.length >= 2,
+  })
+
+  useEffect(() => {
     if (!speakerDetailsQuery.data) return
     const nextIds: Record<string, string> = {}
-    speakerDetailsQuery.data.items.forEach((item) => { nextIds[String(item.speaker_id)] = item.steam_id ?? "" })
+    const nextSearchInputs: Record<string, string> = {}
+    speakerDetailsQuery.data.items.forEach((item) => {
+      const key = String(item.speaker_id)
+      const soleCandidate = item.resolution_status === "unresolved" && item.candidate_profiles.length === 1
+        ? item.candidate_profiles[0]
+        : null
+      nextIds[key] = item.steam_id ?? soleCandidate?.steam_id ?? ""
+      nextSearchInputs[key] = soleCandidate?.name ?? item.names[0] ?? ""
+    })
     setDecisionSteamIds(nextIds)
-    setResolutionActions({})
+    setProfileSearchInputs(nextSearchInputs)
+    setActiveSpeakerSearch(null)
   }, [speakerDetailsQuery.data])
 
   const logsQuery = useQuery({
@@ -160,13 +183,8 @@ export function VoiceIndexPage() {
   })
 
   const resolveMutation = useMutation({
-    mutationFn: () => {
-      const decisions = Object.entries(resolutionActions).map(([speakerId, action]) => ({
-        speaker_id: Number(speakerId),
-        action,
-        ...(action === "map" ? { steam_id: decisionSteamIds[speakerId]?.trim() } : {}),
-      }))
-      return api.post(`/api/v1/admin/voice-index/replays/${selectedReplayId}/speakers/resolve`, { decisions })
+    mutationFn: (decision: { speaker_id: number; action: "map" | "skip"; steam_id?: string }) => {
+      return api.post(`/api/v1/admin/voice-index/replays/${selectedReplayId}/speakers/resolve`, { decisions: [decision] })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["voice-index-speakers", selectedReplayId] })
@@ -180,6 +198,19 @@ export function VoiceIndexPage() {
   const openSpeakerDetails = (replayId: number) => {
     setSelectedReplayId(replayId)
     setDetailsOpen(true)
+  }
+
+  const submitSpeakerDecision = (speakerId: number, action: "map" | "skip") => {
+    const steamId = decisionSteamIds[String(speakerId)]?.trim()
+    if (action === "map" && !steamId) {
+      toast.error("Сначала выберите профиль или укажите Steam/EOS ID")
+      return
+    }
+    resolveMutation.mutate({
+      speaker_id: speakerId,
+      action,
+      ...(action === "map" ? { steam_id: steamId } : {}),
+    })
   }
 
   if (admin && !admin.is_superuser) {
@@ -254,10 +285,10 @@ export function VoiceIndexPage() {
                 {speakerDetailsQuery.data.replay_filename || `replay #${speakerDetailsQuery.data.replay_id}`}
                 {speakerDetailsQuery.data.voice_index_error ? ` · ${speakerDetailsQuery.data.voice_index_error}` : ""}
               </div>
-              {speakerDetailsQuery.data.items.map((item) => {
+              {speakerDetailsQuery.data.items.filter((item) => item.resolution_status === "unresolved").map((item) => {
                 const key = String(item.speaker_id)
-                const selectedAction = resolutionActions[key]
                 const steamId = decisionSteamIds[key] ?? ""
+                const soleCandidate = item.candidate_profiles.length === 1 ? item.candidate_profiles[0] : null
                 return (
                   <div key={item.id} className="space-y-3 rounded-lg border p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -265,37 +296,73 @@ export function VoiceIndexPage() {
                         <div className="font-medium">speaker_id: <span className="font-mono">{item.speaker_id}</span></div>
                         <div className="text-xs text-muted-foreground">{item.names.length ? `Ники: ${item.names.join(", ")}` : "Ник в replay не найден"} · {item.packet_count} пакетов · {formatDuration((item.end_ms ?? 0) - (item.start_ms ?? 0))}</div>
                       </div>
-                      <Badge variant={item.resolution_status === "mapped" ? "default" : item.resolution_status === "skipped" ? "secondary" : "destructive"}>
+                        <Badge variant={item.resolution_status === "mapped" ? "default" : item.resolution_status === "skipped" ? "secondary" : "destructive"}>
                         {item.resolution_status === "mapped" ? `сопоставлен (${item.mapping_source ?? ""})` : item.resolution_status === "skipped" ? "пропущен" : "нужно решение"}
                       </Badge>
                     </div>
-                    {item.candidate_profiles.length > 0 && (
-                      <Select value={steamId || undefined} onValueChange={(value) => { setDecisionSteamIds((current) => ({ ...current, [key]: value })); setResolutionActions((current) => ({ ...current, [key]: "map" })) }}>
+                    {soleCandidate && (
+                      <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+                        Единственный кандидат выбран автоматически: <span className="font-medium">{soleCandidate.name}</span>
+                        <span className="ml-1 font-mono text-xs text-muted-foreground">{soleCandidate.steam_id}</span>
+                      </div>
+                    )}
+                    {item.candidate_profiles.length > 1 && (
+                      <Select value={steamId || undefined} onValueChange={(value) => setDecisionSteamIds((current) => ({ ...current, [key]: value }))}>
                         <SelectTrigger><SelectValue placeholder="Выбрать профиль по нику" /></SelectTrigger>
                         <SelectContent>
                           {item.candidate_profiles.map((candidate) => <SelectItem key={candidate.steam_id} value={candidate.steam_id}>{candidate.name} · {candidate.steam_id}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     )}
-                    <Input value={steamId} placeholder="Steam/EOS ID профиля" onChange={(event) => { setDecisionSteamIds((current) => ({ ...current, [key]: event.target.value })); setResolutionActions((current) => ({ ...current, [key]: "map" })) }} />
+                    <div className="relative">
+                      <Input
+                        value={profileSearchInputs[key] ?? ""}
+                        placeholder="Поиск профиля по нику, Steam/EOS ID…"
+                        onFocus={() => { setActiveSpeakerSearch(item.speaker_id); setProfileSearch(profileSearchInputs[key] ?? "") }}
+                        onChange={(event) => {
+                          setActiveSpeakerSearch(item.speaker_id)
+                          setProfileSearchInputs((current) => ({ ...current, [key]: event.target.value }))
+                          setProfileSearch(event.target.value)
+                        }}
+                      />
+                      {activeSpeakerSearch === item.speaker_id && profileSearchQuery.data?.players.length ? (
+                        <div className="absolute top-full left-0 z-30 mt-1 w-full overflow-hidden rounded-md border bg-popover shadow-md">
+                          {profileSearchQuery.data.players.map((player) => (
+                            <button
+                              key={player.player_id}
+                              type="button"
+                              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setDecisionSteamIds((current) => ({ ...current, [key]: player.player_steamid }))
+                                setProfileSearchInputs((current) => ({ ...current, [key]: player.forced_display_name || player.player_last_time_name }))
+                                setProfileSearch("")
+                                setActiveSpeakerSearch(null)
+                              }}
+                            >
+                              <span className="min-w-0 flex-1 truncate">{player.forced_display_name || player.player_last_time_name}</span>
+                              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{player.player_steamid}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                    <Input value={steamId} placeholder="Или введите Steam/EOS ID вручную" onChange={(event) => setDecisionSteamIds((current) => ({ ...current, [key]: event.target.value }))} />
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">{selectedAction === "skip" ? "Будет пропущен" : selectedAction === "map" ? `Будет сопоставлен: ${steamId || "ID не указан"}` : "Решение ещё не выбрано"}</span>
+                      <span className="text-xs text-muted-foreground">Будет сопоставлен: {steamId || "ID не указан"}</span>
                       <div className="flex gap-2">
-                        <Button size="sm" variant={selectedAction === "skip" ? "secondary" : "outline"} onClick={() => setResolutionActions((current) => ({ ...current, [key]: "skip" }))}><SkipForward /> Пропустить</Button>
-                        <Button size="sm" variant={selectedAction === "map" ? "default" : "outline"} disabled={!steamId.trim()} onClick={() => setResolutionActions((current) => ({ ...current, [key]: "map" }))}><Check /> Сопоставить</Button>
+                        <Button size="sm" variant="outline" disabled={resolveMutation.isPending} onClick={() => submitSpeakerDecision(item.speaker_id, "skip")}><SkipForward /> Пропустить</Button>
+                        <Button size="sm" variant="default" disabled={!steamId.trim() || resolveMutation.isPending} onClick={() => submitSpeakerDecision(item.speaker_id, "map")}><Check /> Сопоставить</Button>
                       </div>
                     </div>
                   </div>
                 )
               })}
-              {!speakerDetailsQuery.data.items.length && <div className="py-8 text-center text-sm text-muted-foreground">Для этого реплея детали ещё не записаны.</div>}
+              {!speakerDetailsQuery.data.items.some((item) => item.resolution_status === "unresolved") && <div className="py-8 text-center text-sm text-muted-foreground">Все говорящие уже сопоставлены или пропущены.</div>}
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailsOpen(false)}>Закрыть</Button>
-            <Button disabled={!Object.keys(resolutionActions).length || resolveMutation.isPending} onClick={() => resolveMutation.mutate()}>
-              {resolveMutation.isPending ? <Loader2 className="animate-spin" /> : <Check />} Сохранить решения
-            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
