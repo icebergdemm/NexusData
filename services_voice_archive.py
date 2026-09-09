@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import struct
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,8 @@ VOICE_ARCHIVE_LIMIT = 25
 VOICE_ARCHIVE_EARLY_COUNT = 5
 VOICE_ARCHIVE_LATEST_COUNT = 10
 VOICE_ARCHIVE_MIDDLE_COUNT = 10
+VOICE_ARCHIVE_MAX_PACKETS = 100_000
+VOICE_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
 
 
 class VoiceArchiveError(ValueError):
@@ -44,23 +47,33 @@ def _read_exact(file, size: int) -> bytes:
 
 def write_ndvc(path: str | os.PathLike[str], packets: Sequence[VoicePacket]) -> int:
     """Write packets to an NDVC file and return its byte size."""
-    if len(packets) > 0xFFFFFFFF:
+    if len(packets) > VOICE_ARCHIVE_MAX_PACKETS:
         raise VoiceArchiveError("too many packets")
+    payload_bytes = sum(len(packet.data) for packet in packets)
+    if payload_bytes > VOICE_ARCHIVE_MAX_BYTES:
+        raise VoiceArchiveError("voice archive is too large")
     first_time = packets[0].time_ms if packets else 0
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("wb") as file:
-        file.write(NDVC_MAGIC)
-        file.write(struct.pack("<BI", NDVC_VERSION, len(packets)))
-        for packet in packets:
-            relative_time = max(0, packet.time_ms - first_time)
-            if relative_time > 0xFFFFFFFF:
-                raise VoiceArchiveError("packet timestamp is too large")
-            if len(packet.data) > 0xFFFF:
-                raise VoiceArchiveError("voice packet is too large")
-            file.write(struct.pack("<IH", relative_time, len(packet.data)))
-            file.write(packet.data)
-    return destination.stat().st_size
+    try:
+        with destination.open("wb") as file:
+            file.write(NDVC_MAGIC)
+            file.write(struct.pack("<BI", NDVC_VERSION, len(packets)))
+            for packet in packets:
+                relative_time = max(0, packet.time_ms - first_time)
+                if relative_time > 0xFFFFFFFF:
+                    raise VoiceArchiveError("packet timestamp is too large")
+                if len(packet.data) > 0xFFFF:
+                    raise VoiceArchiveError("voice packet is too large")
+                file.write(struct.pack("<IH", relative_time, len(packet.data)))
+                file.write(packet.data)
+        return destination.stat().st_size
+    except Exception:
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def read_ndvc(path: str | os.PathLike[str]) -> list[tuple[int, bytes]]:
@@ -177,6 +190,7 @@ class VoiceArchiveService:
     def __init__(self, db, root: str | None = None):
         self.db = db
         self.paths = VoiceArchivePath(root or get_upload_dir(db))
+        self._created_paths: set[str] = set()
 
     def _path_for_clip(self, clip) -> str:
         return self.paths.for_key(clip.archive_key)
@@ -229,9 +243,20 @@ class VoiceArchiveService:
 
         old_file_exists = os.path.isfile(storage_path)
         if not old_file_exists:
-            temporary_path = f"{storage_path}.tmp"
-            write_ndvc(temporary_path, packet_records)
-            os.replace(temporary_path, storage_path)
+            os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+            fd, temporary_path = tempfile.mkstemp(
+                prefix=f".{archive_key}.", suffix=".tmp", dir=os.path.dirname(storage_path)
+            )
+            os.close(fd)
+            try:
+                write_ndvc(temporary_path, packet_records)
+                os.replace(temporary_path, storage_path)
+                self._created_paths.add(storage_path)
+            finally:
+                try:
+                    os.remove(temporary_path)
+                except FileNotFoundError:
+                    pass
         storage_size = os.path.getsize(storage_path)
         if clip is None:
             clip = VoiceArchiveClip(
@@ -257,6 +282,12 @@ class VoiceArchiveService:
         clip.storage_size = storage_size
         clip.archive_version = VOICE_ARCHIVE_VERSION
         return clip, not old_file_exists
+
+    def cleanup_created_files(self) -> None:
+        """Remove files created by this transaction if its DB work rolls back."""
+        if self._created_paths:
+            self.remove_unreferenced_files(self._created_paths)
+            self._created_paths.clear()
 
     def remove_replay_clips(self, replay_id: int) -> list[str]:
         """Drop materialized clips for a replay before its mapping is rebuilt.

@@ -238,17 +238,23 @@ async def api_cancel_voice_index(
 
     now = datetime.utcnow()
     previous_status = run.status
-    run.status = "cancelled"
-    run.finished_at = now
+    run.status = "cancelled" if previous_status == "pending" else "cancelling"
+    if previous_status == "pending":
+        run.finished_at = now
     run.heartbeat_at = now
     run.last_message = (
         "Индексация остановлена до запуска"
         if previous_status == "pending"
-        else "Остановка запрошена; текущий реплей будет завершён"
+        else "Остановка запрошена; текущий реплей будет прерван"
     )
-    log_status = "cancelled"
+    log_status = "cancelled" if previous_status == "pending" else "cancelling"
     _voice_run_log(db, run, status=log_status, message=run.last_message)
     db.commit()
+
+    if previous_status == "running":
+        from task_scheduler import scheduler
+
+        scheduler.cancel(f"voice_index_backfill_run_{run.id}")
 
     from routes.admin import log_admin_action
 

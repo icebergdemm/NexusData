@@ -46,6 +46,7 @@ from services_voice_index import (
     queue_voice_index_backfill,
     task_run_voice_backfill,
 )
+from task_scheduler import TaskCancelled
 from workers import task_index_replay_voice
 
 
@@ -201,7 +202,7 @@ def test_cancel_pending_run_marks_it_cancelled():
     assert run.status == "cancelled"
 
 
-def test_cancel_running_run_becomes_terminal_immediately():
+def test_cancel_running_run_waits_for_worker_confirmation():
     db = _db()
     admin = _admin(True)
     db.add(admin)
@@ -212,9 +213,9 @@ def test_cancel_running_run_becomes_terminal_immediately():
 
     response = asyncio.run(api_cancel_voice_index(run.id, db=db, current_admin=admin))
 
-    assert response["status"] == "cancelled"
+    assert response["status"] == "cancelling"
     db.refresh(run)
-    assert run.status == "cancelled"
+    assert run.status == "cancelling"
 
 
 def test_cancelled_run_worker_finishes_without_processing_replays():
@@ -231,6 +232,38 @@ def test_cancelled_run_worker_finishes_without_processing_replays():
     assert result["status"] == "cancelled"
     db.refresh(run)
     assert run.status == "cancelled"
+
+
+def test_cancelled_backfill_is_not_recorded_as_failed(monkeypatch):
+    db = _db()
+    admin = _admin(True)
+    db.add(admin)
+    db.commit()
+    run = VoiceIndexRun(requested_by_admin_id=admin.id, status="running")
+    db.add(run)
+    replay = RoundReplay(
+        id=901,
+        filename="cancel.barodemo",
+        stored_filename="cancel.barodemo",
+        uploaded_at=datetime.utcnow(),
+        has_voice=1,
+        voice_index_status="pending",
+    )
+    db.add(replay)
+    db.commit()
+
+    def cancel(*_args, **_kwargs):
+        raise TaskCancelled("operator")
+
+    monkeypatch.setattr("services_voice_index.VoiceIndexService.index_replay", cancel)
+    result = task_run_voice_backfill(run.id, session_factory=lambda: db)
+
+    assert result["status"] == "cancelled"
+    db.refresh(run)
+    assert run.status == "cancelled"
+    assert run.error is None
+    assert db.query(VoiceIndexRunLog).filter_by(run_id=run.id, status="failed").count() == 0
+    db.close()
 
 
 def test_restart_recovers_legacy_cancelling_run():

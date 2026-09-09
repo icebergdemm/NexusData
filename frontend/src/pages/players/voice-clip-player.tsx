@@ -11,14 +11,18 @@ interface VoiceClipPlayerProps {
   audioUrl: string
 }
 
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+const MAX_ARCHIVE_PACKETS = 100_000
+
 function parseNdvc(buffer: ArrayBuffer): NdvcPacket[] {
   const view = new DataView(buffer)
-  if (view.byteLength < 9 || new TextDecoder().decode(new Uint8Array(buffer, 0, 4)) !== "NDVC") {
+  if (view.byteLength < 9 || view.byteLength > MAX_ARCHIVE_BYTES || new TextDecoder().decode(new Uint8Array(buffer, 0, 4)) !== "NDVC") {
     throw new Error("Некорректный архив голосового фрагмента")
   }
   const version = view.getUint8(4)
   if (version !== 1) throw new Error(`Неподдерживаемая версия аудио: ${version}`)
   const count = view.getUint32(5, true)
+  if (count > MAX_ARCHIVE_PACKETS) throw new Error("Голосовой архив слишком большой")
   let offset = 9
   const packets: NdvcPacket[] = []
   for (let index = 0; index < count; index += 1) {
@@ -53,10 +57,13 @@ export function VoiceClipPlayer({ audioUrl }: VoiceClipPlayerProps) {
   const tokenRef = useRef(0)
   const contextRef = useRef<AudioContext | null>(null)
   const decoderRef = useRef<any>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const sourcesRef = useRef<AudioBufferSourceNode[]>([])
 
   const stop = () => {
     tokenRef.current += 1
+    abortRef.current?.abort()
+    abortRef.current = null
     sourcesRef.current.forEach((source) => {
       try { source.stop() } catch { /* already stopped */ }
     })
@@ -75,8 +82,10 @@ export function VoiceClipPlayer({ audioUrl }: VoiceClipPlayerProps) {
     const token = tokenRef.current
     setError(null)
     setLoading(true)
+    const controller = new AbortController()
+    abortRef.current = controller
     try {
-      const response = await fetch(audioUrl, { credentials: "include" })
+      const response = await fetch(audioUrl, { credentials: "include", signal: controller.signal })
       if (!response.ok) throw new Error(`Не удалось загрузить аудио (${response.status})`)
       const packets = parseNdvc(await response.arrayBuffer())
       const browser = window as WebCodecsWindow
@@ -95,7 +104,9 @@ export function VoiceClipPlayer({ audioUrl }: VoiceClipPlayerProps) {
 
       const context = new AudioContext({ sampleRate: 48000 })
       contextRef.current = context
-      let playhead = context.currentTime + 0.08
+      const startAt = context.currentTime + 0.08
+      let playhead = startAt
+      let firstFrameTimestamp: number | null = null
       const decoder = new decoderConstructor({
         output: (frame: any) => {
           if (token !== tokenRef.current) {
@@ -112,6 +123,10 @@ export function VoiceClipPlayer({ audioUrl }: VoiceClipPlayerProps) {
           const source = context.createBufferSource()
           source.buffer = audioBuffer
           source.connect(context.destination)
+          const timestampUs = Number(frame.timestamp ?? 0)
+          if (firstFrameTimestamp === null) firstFrameTimestamp = timestampUs
+          const timestampPlayhead = startAt + Math.max(0, (timestampUs - firstFrameTimestamp) / 1_000_000)
+          playhead = Math.max(playhead, timestampPlayhead)
           source.start(playhead)
           sourcesRef.current.push(source)
           playhead += frameCount / sampleRate
@@ -134,11 +149,12 @@ export function VoiceClipPlayer({ audioUrl }: VoiceClipPlayerProps) {
         if (token === tokenRef.current) stop()
       }, Math.max(100, (playhead - context.currentTime) * 1000 + 120))
     } catch (caught) {
-      if (token === tokenRef.current) {
+      if (token === tokenRef.current && !(caught instanceof DOMException && caught.name === "AbortError")) {
         setError(caught instanceof Error ? caught.message : "Не удалось воспроизвести аудио")
         stop()
       }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null
       if (token === tokenRef.current) setLoading(false)
     }
   }

@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
+import time
+from contextvars import ContextVar
 from typing import BinaryIO
 import unicodedata
 
@@ -38,6 +40,15 @@ VOICE_MERGE_GAP_MS = 1000
 # this cap a permanently broken demo is fully re-read (CPU + a large RAM
 # spike from its voice packets) every minute, forever.
 VOICE_INDEX_MAX_ATTEMPTS = 5
+VOICE_INDEX_MAX_FRAME_BYTES = 8 * 1024 * 1024
+VOICE_INDEX_MAX_FRAMES = 5_000_000
+VOICE_INDEX_MAX_PACKETS = 1_000_000
+VOICE_INDEX_MAX_AUDIO_BYTES = 256 * 1024 * 1024
+VOICE_INDEX_MAX_SCAN_SECONDS = 300
+VOICE_MAP_MAX_BYTES = 1 * 1024 * 1024
+_voice_cancel_check: ContextVar[object | None] = ContextVar(
+    "voice_cancel_check", default=None
+)
 # ServerAsr and the replay recorder observe the same VoIP read on the game
 # server. Their timestamps should be nearly identical; a wider match would
 # start attributing nearby speakers by accident.
@@ -92,6 +103,8 @@ def _read_exact(stream: BinaryIO, size: int) -> bytes:
     _raise_if_cancelled()
     if size < 0:
         raise VoiceIndexError("negative replay read size")
+    if size > VOICE_INDEX_MAX_FRAME_BYTES:
+        raise VoiceIndexError(f"replay frame is too large: {size} bytes")
     data = stream.read(size)
     if len(data) != size:
         raise VoiceIndexError("truncated replay frame")
@@ -102,6 +115,11 @@ def _raise_if_cancelled() -> None:
     from task_scheduler import raise_if_task_cancelled
 
     raise_if_task_cancelled()
+    check = _voice_cancel_check.get()
+    if check is not None and check():
+        from task_scheduler import TaskCancelled
+
+        raise TaskCancelled("voice indexing cancelled by operator")
 
 
 def _u8(stream: BinaryIO) -> int:
@@ -173,6 +191,9 @@ def _open_demo(path: str) -> Iterator[_DemoSource]:
                 raise VoiceIndexError("replay archive contains no .barodemo entry")
             mapping = {}
             if VOICE_MAP_MEMBER in names:
+                info = archive.getinfo(VOICE_MAP_MEMBER)
+                if info.file_size > VOICE_MAP_MAX_BYTES:
+                    raise VoiceIndexError(f"{VOICE_MAP_MEMBER} is too large")
                 mapping = _mapping_from_json(archive.read(VOICE_MAP_MEMBER))
             with archive.open(demo_names[0], "r") as entry:
                 # ZipExtFile is a real buffered binary stream and keeps the
@@ -282,8 +303,15 @@ def _iter_replay_frames(stream: BinaryIO) -> Iterator[_ReplayFrame]:
         _read_string(stream)
     _skip(stream, 4)
 
+    started_at = time.monotonic()
+    frame_count = 0
     while True:
         _raise_if_cancelled()
+        frame_count += 1
+        if frame_count > VOICE_INDEX_MAX_FRAMES:
+            raise VoiceIndexError("replay contains too many frames")
+        if time.monotonic() - started_at > VOICE_INDEX_MAX_SCAN_SECONDS:
+            raise VoiceIndexError("replay voice scan exceeded time limit")
         marker = stream.read(1)
         if not marker:
             raise VoiceIndexError("replay has no end frame")
@@ -343,6 +371,7 @@ def extract_voice_packet_records(
         packets: list[VoicePacket] = []
         names_by_character: dict[int, set[str]] = {}
         voice_speakers: set[int] = set()
+        audio_bytes = 0
         for frame in _iter_replay_frames(source.stream):
             _raise_if_cancelled()
             if frame.kind == "spawn" and frame.speaker_id is not None:
@@ -351,6 +380,11 @@ def extract_voice_packet_records(
                 continue
             if frame.kind != "voice" or frame.speaker_id is None or frame.voice_data is None:
                 continue
+            if len(packets) >= VOICE_INDEX_MAX_PACKETS:
+                raise VoiceIndexError("replay contains too many voice packets")
+            audio_bytes += len(frame.voice_data)
+            if audio_bytes > VOICE_INDEX_MAX_AUDIO_BYTES:
+                raise VoiceIndexError("replay contains too much voice audio")
             packets.append(
                 VoicePacket(
                     time_ms=frame.time_ms,
@@ -828,6 +862,7 @@ class VoiceIndexService:
         replay.voice_index_status = "running"
         replay.voice_index_error = None
         self.db.commit()
+        archive_service = None
         try:
             from services_replays import ReplayService
 
@@ -840,6 +875,23 @@ class VoiceIndexService:
                 replay, packets, speaker_names
             )
             manual_rows = self._manual_speaker_rows(replay.id)
+            # A replay sidecar is input data, not an authentication source.
+            # Only IDs already known by NexusData may be used automatically;
+            # otherwise a crafted upload could attribute audio to a victim.
+            if embedded_mapping:
+                from models import PlayerData
+
+                known_ids = {
+                    str(player_id)
+                    for (player_id,) in self.db.query(PlayerData.player_steamid).filter(
+                        PlayerData.player_steamid.in_(set(embedded_mapping.values()))
+                    ).all()
+                }
+                embedded_mapping = {
+                    speaker_id: player_id
+                    for speaker_id, player_id in embedded_mapping.items()
+                    if player_id in known_ids
+                }
             mapping = dict(embedded_mapping)
             mapping_sources_for_segments = {speaker_id: "embedded" for speaker_id in mapping}
             mapping.update(inferred_mapping)
@@ -949,6 +1001,8 @@ class VoiceIndexService:
             }
         except TaskCancelled:
             self.db.rollback()
+            if archive_service is not None:
+                archive_service.cleanup_created_files()
             replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
             if replay:
                 replay.voice_index_status = "pending"
@@ -979,6 +1033,8 @@ class VoiceIndexService:
                     # The bounded retry below records the final compact error.
                     pass
             self.db.rollback()
+            if archive_service is not None:
+                archive_service.cleanup_created_files()
             replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
             if replay:
                 replay.voice_index_status = "error"
@@ -1136,6 +1192,7 @@ def task_index_pending_voice_replays(limit: int = 1) -> dict:
 
 VOICE_RUN_LOG_RETENTION_DAYS = 7
 VOICE_RUN_STALE_SECONDS = 3600
+VOICE_RUN_CANCEL_STALE_SECONDS = 300
 
 # Operator switch for the AUTOMATIC recovery scan (workers.py's
 # replay_voice_index_backfill task). Manual backfill runs — explicitly
@@ -1201,11 +1258,13 @@ def get_active_voice_index_run(db):
         .order_by(VoiceIndexRun.created_at.desc())
         .first()
     )
-    # ``cancelling`` was used by the first stop implementation. It can be
-    # left behind when the process restarts between the HTTP request and the
-    # worker's next database refresh, so recover it as a terminal state rather
-    # than making the page wait for the stale-run timeout.
-    if run and run.status == "cancelling":
+    # Keep a cancelling run active until its worker confirms cancellation. A
+    # process crash is the exception: after a bounded grace period it is safe
+    # to recover the lease and allow a new run.
+    if run and run.status == "cancelling" and (
+        not run.heartbeat_at
+        or (datetime.utcnow() - run.heartbeat_at).total_seconds() > VOICE_RUN_CANCEL_STALE_SECONDS
+    ):
         now = datetime.utcnow()
         run.status = "cancelled"
         run.finished_at = run.finished_at or now
@@ -1269,10 +1328,13 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
     from services_voice_archive import VOICE_ARCHIVE_VERSION
     from services_replays import get_retention_days
     from sqlalchemy import or_
+    from task_scheduler import TaskCancelled
+    from task_scheduler import TaskCancelled
 
     factory = session_factory or SessionLocal
     db = factory()
     run = None
+    cancel_token = None
     try:
         run = db.query(VoiceIndexRun).filter(VoiceIndexRun.id == run_id).first()
         if not run:
@@ -1291,6 +1353,25 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
             _voice_run_log(db, run, status="cancelled", message=run.last_message)
             db.commit()
             return _voice_run_dict(run)
+
+        last_cancel_check = 0.0
+
+        def is_cancelled() -> bool:
+            nonlocal last_cancel_check
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_cancel_check < 0.5:
+                return False
+            last_cancel_check = now_monotonic
+            cancel_db = factory()
+            try:
+                status = cancel_db.query(VoiceIndexRun.status).filter(
+                    VoiceIndexRun.id == run_id
+                ).scalar()
+            finally:
+                cancel_db.close()
+            return status in ("cancelling", "cancelled")
+
+        cancel_token = _voice_cancel_check.set(is_cancelled)
 
         now = datetime.utcnow()
         run.status = "running"
@@ -1416,6 +1497,18 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         )
         db.commit()
         return _voice_run_dict(run)
+    except TaskCancelled:
+        db.rollback()
+        run = db.query(VoiceIndexRun).filter(VoiceIndexRun.id == run_id).first()
+        if run:
+            run.status = "cancelled"
+            run.error = None
+            run.finished_at = datetime.utcnow()
+            run.heartbeat_at = run.finished_at
+            run.last_message = "Индексация остановлена оператором"
+            _voice_run_log(db, run, status="cancelled", message=run.last_message)
+            db.commit()
+        return {"status": "cancelled", "run_id": run_id}
     except Exception as exc:
         db.rollback()
         run = db.query(VoiceIndexRun).filter(VoiceIndexRun.id == run_id).first()
@@ -1428,6 +1521,8 @@ def task_run_voice_backfill(run_id: int, session_factory=None) -> dict:
         logger.exception("Voice index backfill failed for run %s", run_id)
         return {"status": "failed", "run_id": run_id, "error": str(exc)}
     finally:
+        if cancel_token is not None:
+            _voice_cancel_check.reset(cancel_token)
         if session_factory is None:
             db.close()
 
