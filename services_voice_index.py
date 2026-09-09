@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 VOICE_MAP_MEMBER = "voice-map.json"
-VOICE_INDEX_VERSION = 1
+# v2 fixes snapshot entity widths for the v4 DemoRecorder and v7
+# WorldDemoStreamer formats.  Existing ready rows must be rebuilt once so a
+# segment produced by the old misaligned parser is never treated as valid.
+VOICE_INDEX_VERSION = 2
 VOICE_MERGE_GAP_MS = 1000
 _MAGIC_DEMO = b"BDMO"
 _MAGIC_ZIP = b"PK\x03\x04"
@@ -160,7 +163,11 @@ def _skip_frame(stream: BinaryIO, frame: int, version: int) -> tuple[int, int] |
     elif frame == 0x01:  # snapshot
         _skip(stream, 4)
         count = _u16(stream)
-        _skip(stream, count * (7 if version >= 7 else 6))
+        # v4-v6 writers emit id + x + y + flags + health = 8 bytes.
+        # WorldDemoStreamer v7 adds oxygen = 9 bytes.  Using 6/7 here
+        # desynchronises the stream after the first snapshot and turns
+        # arbitrary payload bytes into fake frame types.
+        _skip(stream, count * (9 if version >= 7 else 8))
         _skip(stream, _u16(stream) * 3)  # doors
         _skip(stream, _u16(stream) * 3)  # hull water
         _skip(stream, _u16(stream) * 10)  # submarine positions

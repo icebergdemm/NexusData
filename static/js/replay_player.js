@@ -1150,7 +1150,17 @@
 
   // ── UI wiring ────────────────────────────────────────────────────────────
   function wireUI(){
-    onGlobal(document.getElementById("rpvPlay"),"click",()=>setPlaying(!playing));
+    onGlobal(document.getElementById("rpvPlay"),"click",async()=>{
+      // Deep-links from the voice archive configure the selected speaker
+      // before the user interacts with this page. Browsers keep that
+      // AudioContext suspended until an actual gesture, so the normal play
+      // button must resume it before advancing the replay clock.
+      if(!playing&&voiceEnabled){
+        await initAudio();
+        if(audioCtx&&audioCtx.state==="suspended")await audioCtx.resume();
+      }
+      setPlaying(!playing);
+    });
     document.querySelectorAll(".rpv-speed").forEach(btn=>{
       onGlobal(btn,"click",()=>{speed=parseFloat(btn.dataset.speed);document.querySelectorAll(".rpv-speed").forEach(b=>b.classList.remove("active"));btn.classList.add("active");});
     });
