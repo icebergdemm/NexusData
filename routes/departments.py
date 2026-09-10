@@ -419,7 +419,7 @@ def serialize_department(dept: Department, db: Session, current_admin: AdminUser
 # ── Department CRUD ──────────────────────────────────────────────────────
 
 @router.get("/api/v1/admin/departments")
-async def api_list_departments(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+def api_list_departments(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_departments_page(current_admin, "view")
     q = (
         db.query(Department)
@@ -486,7 +486,7 @@ async def api_create_department(request: Request, db: Session = Depends(get_db),
 
 
 @router.get("/api/v1/admin/departments/{department_id}")
-async def api_get_department(department_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+def api_get_department(department_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_departments_page(current_admin, "view")
     dept = get_department_or_404(db, department_id)
     member = get_member(db, dept.id, current_admin.id)
@@ -1331,7 +1331,7 @@ def serialize_folder_permission(p: DepartmentFolderPermission) -> dict:
 
 
 @router.get("/api/v1/admin/departments/{department_id}/document-folders")
-async def api_list_dept_document_folders(department_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+def api_list_dept_document_folders(department_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     # No require_departments_page gate here (unlike most of this router) —
     # same reasoning as routes/documents.py's department-scoped endpoints:
     # a department member browsing their own department's directory

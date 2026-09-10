@@ -8,7 +8,7 @@ range iteration.
 
 from __future__ import annotations
 
-import fcntl
+from platform_locks import LOCK_EX, LOCK_NB, LOCK_UN, flock
 import json
 import os
 import re
@@ -127,16 +127,21 @@ def _read_active_quota_reservations(
     for entry in entries:
         if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
             continue
+        entry_path = Path(entry.path)
+        lock_path = entry_path.with_suffix(".lock") if os.name == "nt" else entry_path
         try:
-            descriptor = os.open(entry.path, open_flags)
+            descriptor = os.open(lock_path, open_flags)
         except (FileNotFoundError, OSError):
             continue
         try:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(descriptor, LOCK_EX | LOCK_NB)
             except BlockingIOError:
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                raw = os.read(descriptor, _QUOTA_RECORD_LIMIT)
+                if os.name == "nt":
+                    raw = entry_path.read_bytes()[:_QUOTA_RECORD_LIMIT]
+                else:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    raw = os.read(descriptor, _QUOTA_RECORD_LIMIT)
                 try:
                     record = json.loads(raw.decode("utf-8"))
                     ticket_id = int(record["ticket_id"])
@@ -160,13 +165,20 @@ def _read_active_quota_reservations(
                 # No process owns this record anymore. The durable/partial
                 # scan that follows accounts for anything left by a crash.
                 try:
-                    os.unlink(entry.path)
+                    flock(descriptor, LOCK_UN)
+                    os.close(descriptor)
+                    descriptor = -1
+                    os.unlink(entry_path)
+                    if os.name == "nt":
+                        try:
+                            os.unlink(lock_path)
+                        except FileNotFoundError:
+                            pass
                 except FileNotFoundError:
                     pass
-                finally:
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
-            os.close(descriptor)
+            if descriptor >= 0:
+                os.close(descriptor)
     return reserved_global, reserved_by_ticket
 
 
@@ -216,7 +228,7 @@ def _create_quota_reservation(
     lock_descriptor = os.open(root / _QUOTA_LOCK_NAME, lock_flags, 0o600)
     with _quota_process_lock:
         try:
-            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            flock(lock_descriptor, LOCK_EX)
 
             # Read leases first, then scan files. This ordering is essential:
             # if a writer commits while this pass runs, we see either its still
@@ -286,8 +298,8 @@ def _create_quota_reservation(
                 | getattr(os, "O_NOFOLLOW", 0)
             )
             descriptor = os.open(reservation_path, record_flags, 0o600)
+            lock_path = reservation_path
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
                 payload = json.dumps(
                     {
                         "version": 1,
@@ -298,12 +310,24 @@ def _create_quota_reservation(
                 ).encode("utf-8")
                 os.write(descriptor, payload)
                 os.fsync(descriptor)
+                if os.name == "nt":
+                    os.close(descriptor)
+                    descriptor = -1
+                    lock_path = reservation_path.with_suffix(".lock")
+                    descriptor = os.open(lock_path, record_flags, 0o600)
+                flock(descriptor, LOCK_EX)
             except Exception:
                 try:
                     os.unlink(reservation_path)
                 except OSError:
                     pass
-                os.close(descriptor)
+                if os.name == "nt":
+                    try:
+                        os.unlink(lock_path)
+                    except OSError:
+                        pass
+                if descriptor >= 0:
+                    os.close(descriptor)
                 raise
             return TicketMediaReservation(
                 ticket_id=ticket_id,
@@ -316,7 +340,7 @@ def _create_quota_reservation(
             )
         finally:
             try:
-                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+                flock(lock_descriptor, LOCK_UN)
             finally:
                 os.close(lock_descriptor)
 
@@ -386,7 +410,7 @@ class TicketMediaReservation:
         # record: the next authoritative reservation pass removes it while
         # holding the global lock, entirely outside the asyncio event loop.
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            flock(descriptor, LOCK_UN)
         finally:
             os.close(descriptor)
 
@@ -564,7 +588,7 @@ def cleanup_orphaned_ticket_media(
     reclaimed_bytes = 0
     with _quota_process_lock:
         try:
-            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            flock(lock_descriptor, LOCK_EX)
             reservation_dir = configured_root / _QUOTA_RESERVATION_DIR
             active_bytes, _active_by_ticket = _read_active_quota_reservations(
                 reservation_dir
@@ -648,7 +672,7 @@ def cleanup_orphaned_ticket_media(
             }
         finally:
             try:
-                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+                flock(lock_descriptor, LOCK_UN)
             finally:
                 os.close(lock_descriptor)
 

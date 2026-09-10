@@ -219,7 +219,12 @@ export function DocumentsPage() {
   // the current admin belongs to (e.g. scope="all" superuser view, or a
   // shared document from someone else's department) — my_departments wins
   // on overlap since it's already loaded and identical for shared fields.
-  const { data: allDeptsData } = useQuery({ queryKey: ["departments-lite"], queryFn: () => departmentsApi.list() })
+  const { data: allDeptsData } = useQuery({
+    queryKey: ["departments-lite"],
+    queryFn: () => departmentsApi.list(),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
   const deptById: Record<number, { name: string; color: string | null }> = Object.fromEntries([
     ...(allDeptsData?.departments ?? []).map((d) => [d.id, { name: d.name, color: d.color }]),
     ...myDepartments.map((d) => [d.id, { name: d.name, color: d.color }]),
@@ -228,6 +233,8 @@ export function DocumentsPage() {
   const { data: foldersData } = useQuery({
     queryKey: ["document-folders"],
     queryFn: () => documentsApi.folders.list(),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   })
   const folders = foldersData?.folders ?? []
   const rootFolders = folders.filter((f) => f.parent_id === null)
@@ -236,6 +243,8 @@ export function DocumentsPage() {
     queryKey: ["dept-document-folders", deptId],
     queryFn: () => departmentsApi.documentFolders.list(deptId!),
     enabled: deptId != null,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   })
   const deptFolders = deptFoldersData?.folders ?? []
 
@@ -243,6 +252,8 @@ export function DocumentsPage() {
     queryKey: ["department-my-access", deptId],
     queryFn: () => departmentsApi.get(deptId!),
     enabled: deptId != null,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   })
   const deptCanEdit = !!activeDeptDetail?.my_access.documentation?.edit
 
@@ -253,6 +264,8 @@ export function DocumentsPage() {
     queryFn: () => (inDeptView
       ? documentsApi.byDepartment(deptId!, { kind: "documentation", folderId: deptFolderId ?? undefined })
       : documentsApi.list({ scope, folder_id: scope === "mine" ? folderId : undefined, search: search || undefined })),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   })
   const documents = data?.documents ?? []
   const invalidateDocs = () => {

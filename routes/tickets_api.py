@@ -71,7 +71,7 @@ def _ticket_query(db: Session, status: str):
 
 
 @panel_router.get("/adminold/tickets", response_class=HTMLResponse)
-async def admin_tickets_list(request: Request, status: str = Query("open"), db: Session = Depends(get_db)):
+def admin_tickets_list(request: Request, status: str = Query("open"), db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "tickets", "view"):
         raise HTTPException(status_code=403)
@@ -101,7 +101,7 @@ async def admin_tickets_list(request: Request, status: str = Query("open"), db: 
 
 
 @panel_router.get("/adminold/tickets/{ticket_id}", response_class=HTMLResponse)
-async def admin_ticket_detail(request: Request, ticket_id: int, db: Session = Depends(get_db)):
+def admin_ticket_detail(request: Request, ticket_id: int, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
     if not check_permission(admin, "tickets", "view"):
         raise HTTPException(status_code=403)

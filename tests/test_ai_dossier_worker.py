@@ -99,6 +99,48 @@ def test_worker_failure_uses_backoff_and_records_error():
     sleep.assert_called_once_with(30.0)
 
 
+def test_worker_separates_idle_recovery_checks_from_dossier_runs():
+    worker = services_ai_dossier_worker.AIDossierWorker(
+        process=lambda: {"status": "idle"},
+        recovery_interval=0.01,
+        cooldown=0.01,
+    )
+
+    with patch.object(worker, "_wait", return_value=True), \
+         patch.object(worker, "_record_stats") as record:
+        worker._run_once()
+
+    assert record.call_args.kwargs["run_type"] == "recovery_check"
+
+    worker = services_ai_dossier_worker.AIDossierWorker(
+        process=lambda: {"status": "succeeded", "queue_wait_ms": 23},
+        recovery_interval=0.01,
+        cooldown=0.01,
+    )
+    with patch.object(worker, "_wait", return_value=True), \
+         patch.object(worker, "_sleep_cooldown"), \
+         patch.object(worker, "_record_stats") as record:
+        worker._run_once()
+
+    assert record.call_args.kwargs["run_type"] == "dossier_run"
+    assert record.call_args.kwargs["queue_wait_ms"] == 23
+
+
+def test_worker_snapshot_marks_a_run_stuck_without_starting_a_second_thread():
+    worker = services_ai_dossier_worker.AIDossierWorker(
+        process=lambda: {"status": "idle"},
+        stuck_after=0.1,
+    )
+    worker._processing = True
+    worker._processing_started = time.monotonic() - 1
+
+    snapshot = worker.snapshot()
+
+    assert snapshot["stuck"] is True
+    assert snapshot["processing"] is True
+    assert "timeout" in snapshot["stuck_reason"]
+
+
 def test_worker_start_is_idempotent_and_stop_wakes_waiter():
     worker = services_ai_dossier_worker.AIDossierWorker(
         process=lambda: {"status": "idle"},

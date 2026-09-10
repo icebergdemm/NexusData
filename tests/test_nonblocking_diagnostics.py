@@ -85,6 +85,16 @@ class NonBlockingDiagnosticsTests(unittest.TestCase):
         self.assertIn("args=(None,)", rendered)
         self.assertEqual(record.args, (None,))
 
+    def test_active_request_registry_is_bounded_to_live_requests(self):
+        request_id = services_perf_monitor.begin_request("GET", "/api/v1/admin/users")
+        active = services_perf_monitor.get_active_requests()
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["path"], "/api/v1/admin/users")
+        self.assertNotIn("?", active[0]["path"])
+
+        services_perf_monitor.end_request(request_id)
+        self.assertEqual(services_perf_monitor.get_active_requests(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

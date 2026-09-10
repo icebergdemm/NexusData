@@ -118,6 +118,8 @@ export function DepartmentsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["departments"],
     queryFn: () => departmentsApi.list(),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   })
 
   return (

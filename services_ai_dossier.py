@@ -15,6 +15,7 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from sqlalchemy import and_, exists, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from config import get_settings
@@ -1072,12 +1073,14 @@ def should_queue_dossier(report: Optional[AIPlayerDossier], input_hash: str, for
 
 def select_active_player_ids(db: Session, now: datetime, limit: Optional[int] = None) -> list[int]:
     cutoff = now - timedelta(days=get_dossier_config(db)["active_days"])
-    query = db.query(PlayerData.player_id).outerjoin(
-        PlayerSession, PlayerSession.player_id == PlayerData.player_id,
-    ).filter(or_(
-        PlayerData.last_login_time >= cutoff,
+    recent_session = exists().where(
+        PlayerSession.player_id == PlayerData.player_id,
         PlayerSession.login_time >= cutoff,
-    )).distinct().order_by(PlayerData.last_login_time.desc(), PlayerData.player_id.asc())
+    )
+    query = db.query(PlayerData.player_id).filter(or_(
+        PlayerData.last_login_time >= cutoff,
+        recent_session,
+    )).order_by(PlayerData.last_login_time.desc(), PlayerData.player_id.asc())
     if limit is not None:
         query = query.limit(limit)
     rows = query.all()
@@ -1092,29 +1095,258 @@ def _safe_rows(query, serializer):
         return []
 
 
-def build_player_dossier_payload(db: Session, player_id: int, now: Optional[datetime] = None) -> dict:
+class DossierBatchContext:
+    """Bulk-loaded immutable input rows for one exact-hash batch."""
+
+    def __init__(self, db: Session, player_ids: list[int], now: datetime):
+        self.db = db
+        self.player_ids = list(dict.fromkeys(player_ids))
+        self.now = now
+        self.settings = get_settings()
+        self.runtime_config = get_dossier_config(db)
+        self.since = now - timedelta(days=self.runtime_config["active_days"])
+        self.ip_policy = build_analysis_ip_policy(db, now)
+
+        def group(rows):
+            result = {}
+            for row in rows:
+                key = getattr(row, "player_id", None)
+                if isinstance(row, tuple):
+                    key = getattr(row[0], "player_id", None)
+                result.setdefault(key, []).append(row)
+            return result
+
+        self.players = {
+            row.player_id: row
+            for row in db.query(PlayerData).filter(PlayerData.player_id.in_(self.player_ids)).all()
+        }
+        self.names = group(
+            db.query(PlayerName).filter(PlayerName.player_id.in_(self.player_ids)).all()
+        )
+        self.known_names_by_player = {
+            player_id: sorted({name.nickname for name in self.names.get(player_id, []) if name.nickname} |
+                              {self.players[player_id].player_last_time_name} - {None})[:50]
+            for player_id in self.player_ids
+            if player_id in self.players
+        }
+        self.stats = {
+            row.player_id: row
+            for row in db.query(PlayerStats).filter(PlayerStats.player_id.in_(self.player_ids)).all()
+        }
+        self.sessions = group(
+            db.query(PlayerSession)
+            .filter(PlayerSession.player_id.in_(self.player_ids), PlayerSession.login_time >= self.since)
+            .order_by(PlayerSession.login_time.desc())
+            .all()
+        )
+        self.notes = group(
+            db.query(PlayerNote)
+            .filter(PlayerNote.player_id.in_(self.player_ids))
+            .order_by(PlayerNote.created_at.desc())
+            .all()
+        )
+        self.tickets = group(
+            db.query(Ticket)
+            .filter(Ticket.player_id.in_(self.player_ids), Ticket.deleted_at.is_(None))
+            .order_by(Ticket.created_at.desc())
+            .all()
+        )
+
+        ticket_ids = [ticket.id for rows in self.tickets.values() for ticket in rows if ticket.id is not None]
+        self.ticket_messages: dict[int, list[TicketMessage]] = {}
+        self.ticket_messages_missing = False
+        if ticket_ids:
+            try:
+                rows = (
+                    db.query(TicketMessage)
+                    .filter(TicketMessage.ticket_id.in_(ticket_ids))
+                    .order_by(TicketMessage.created_at.desc(), TicketMessage.id.desc())
+                    .all()
+                )
+                for message in rows:
+                    self.ticket_messages.setdefault(message.ticket_id, []).append(message)
+            except Exception as exc:
+                logger.warning("AI dossier batch ticket messages unavailable: %s", exc)
+                self.ticket_messages_missing = True
+
+        self.labels = group(
+            db.query(PlayerLabel, LabelCategory)
+            .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
+            .filter(LabelCategory.is_secret.is_(False), PlayerLabel.player_id.in_(self.player_ids))
+            .all()
+        )
+        self.traps = group(
+            db.query(PlayerTrap)
+            .filter(PlayerTrap.player_id.in_(self.player_ids))
+            .order_by(PlayerTrap.set_at.desc())
+            .all()
+        )
+        self.punishments = group(
+            db.query(PlayerPunishment)
+            .filter(PlayerPunishment.player_id.in_(self.player_ids))
+            .order_by(PlayerPunishment.issued_at.desc())
+            .all()
+        )
+        self.kills = group(
+            db.query(PlayerKill).filter(PlayerKill.player_id.in_(self.player_ids)).all()
+        )
+        role_rows = db.query(PlayerRoleAction).filter(PlayerRoleAction.player_id.in_(self.player_ids)).all()
+        self.role_actions = group(role_rows)
+        self.rating_actions = group(role_rows)
+        self.role_stats = group(
+            db.query(PlayerRoleStat).filter(PlayerRoleStat.player_id.in_(self.player_ids)).all()
+        )
+        self.anticheat = group(
+            db.query(AnticheatEvent)
+            .filter(AnticheatEvent.player_id.in_(self.player_ids), AnticheatEvent.occurred_at >= self.since)
+            .order_by(AnticheatEvent.occurred_at.desc())
+            .all()
+        )
+        self.ips = group(
+            db.query(PlayerIP).filter(PlayerIP.player_id.in_(self.player_ids)).all()
+        )
+        self.anomalies = group(
+            db.query(PlayerAnomaly)
+            .filter(or_(PlayerAnomaly.player_id.in_(self.player_ids), PlayerAnomaly.related_player_id.in_(self.player_ids)))
+            .order_by(PlayerAnomaly.score.desc(), PlayerAnomaly.last_seen_at.desc())
+            .all()
+        )
+        self.related_ids_by_player = {
+            player_id: {
+                row.related_player_id if row.player_id == player_id else row.player_id
+                for row in self.anomalies.get(player_id, [])
+                if (row.related_player_id if row.player_id == player_id else row.player_id)
+            }
+            for player_id in self.player_ids
+        }
+        all_related_ids = set().union(*self.related_ids_by_player.values()) if self.related_ids_by_player else set()
+        self.related_players = {
+            row.player_id: row
+            for row in db.query(PlayerData).filter(PlayerData.player_id.in_(all_related_ids)).all()
+        } if all_related_ids else {}
+        self.related_banned_ids = set(
+            row.player_id for row in db.query(PlayerPunishment).filter(
+                PlayerPunishment.player_id.in_(all_related_ids),
+                PlayerPunishment.type == "ban",
+                PlayerPunishment.is_active == 1,
+                or_(PlayerPunishment.expires_at.is_(None), PlayerPunishment.expires_at >= self.now),
+            ).all()
+        ) if all_related_ids else set()
+
+        all_own_ips = {
+            row.ip for rows in self.ips.values() for row in rows
+            if row.ip and not is_bogon_ip(row.ip) and not self.ip_policy.is_ignored(row.ip)
+        }
+        self.shared_rows_by_player: dict[int, list[tuple[PlayerIP, PlayerData]]] = {player_id: [] for player_id in self.player_ids}
+        self.shared_banned_ids: set[int] = set()
+        if all_own_ips:
+            shared_rows = (db.query(PlayerIP, PlayerData)
+                           .join(PlayerData, PlayerData.player_id == PlayerIP.player_id)
+                           .filter(PlayerIP.ip.in_(all_own_ips), ~PlayerIP.player_id.in_(self.player_ids))
+                           .limit(100 * max(1, len(self.player_ids))).all())
+            for ip_row, other in shared_rows:
+                for player_id in self.player_ids:
+                    if any(own.ip == ip_row.ip for own in self.ips.get(player_id, [])):
+                        self.shared_rows_by_player[player_id].append((ip_row, other))
+            shared_player_ids = {other.player_id for _, other in shared_rows}
+            self.shared_banned_ids = set(
+                row.player_id for row in db.query(PlayerPunishment).filter(
+                    PlayerPunishment.player_id.in_(shared_player_ids),
+                    PlayerPunishment.type == "ban",
+                    PlayerPunishment.is_active == 1,
+                    or_(PlayerPunishment.expires_at.is_(None), PlayerPunishment.expires_at >= self.now),
+                ).all()
+            ) if shared_player_ids else set()
+
+        # One log query covers the whole batch. The global limit is the sum of
+        # per-player limits, so every player's first ``max_log_events`` rows
+        # remain available after partitioning by known name. This preserves
+        # the single-player ordering while removing the worst N+1 source.
+        self.logs_by_player: dict[int, list[Any]] = {player_id: [] for player_id in self.player_ids}
+        self.log_cache: dict = {}
+        self.logs_missing = False
+        try:
+            from services_logs import get_log_stats, search_logs
+            all_names = list(dict.fromkeys(
+                name for names in self.known_names_by_player.values() for name in names
+            ))
+            result = search_logs(
+                names_list=all_names,
+                time_from=self.since,
+                time_to=self.now,
+                player_scope="related",
+                limit=max(1, self.runtime_config["max_log_events"] * max(1, len(self.player_ids))),
+                count_total=False,
+                raise_on_unavailable=True,
+            )
+            folded_names = {
+                player_id: {name.casefold() for name in names}
+                for player_id, names in self.known_names_by_player.items()
+            }
+            for event in result.events:
+                haystack = f"{event.player_name or ''} {event.details or ''}".casefold()
+                for player_id, names in folded_names.items():
+                    if any(name in haystack for name in names):
+                        rows = self.logs_by_player[player_id]
+                        if len(rows) < self.runtime_config["max_log_events"]:
+                            rows.append(event)
+            self.log_cache = get_log_stats()
+        except Exception as exc:
+            logger.warning("AI dossier batch logs unavailable: %s", exc)
+            self.logs_missing = True
+
+    @staticmethod
+    def _limit(rows, limit: int, key=None):
+        if key is None:
+            return list(rows)[:limit]
+        return sorted(rows, key=key, reverse=True)[:limit]
+
+    def rows(self, name: str, player_id: int, limit: int = 100):
+        rows = getattr(self, name).get(player_id, [])
+        if name in {"sessions", "notes", "tickets", "traps", "punishments", "anticheat"}:
+            return list(rows)[:limit]
+        return list(rows)[:limit]
+
+
+def build_player_dossier_payload(
+    db: Session,
+    player_id: int,
+    now: Optional[datetime] = None,
+    batch_context: Optional[DossierBatchContext] = None,
+) -> dict:
     now = now or datetime.utcnow()
-    settings = get_settings()
-    runtime_config = get_dossier_config(db)
+    settings = batch_context.settings if batch_context else get_settings()
+    runtime_config = batch_context.runtime_config if batch_context else get_dossier_config(db)
     active_days = runtime_config["active_days"]
     max_log_events = runtime_config["max_log_events"]
     since = now - timedelta(days=active_days)
-    ip_policy = build_analysis_ip_policy(db, now)
-    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    ip_policy = batch_context.ip_policy if batch_context else build_analysis_ip_policy(db, now)
+    player = batch_context.players.get(player_id) if batch_context else db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
     if not player:
         raise ValueError("Player not found")
 
-    names = db.query(PlayerName).filter(PlayerName.player_id == player_id).all()
+    names = batch_context.rows("names", player_id) if batch_context else db.query(PlayerName).filter(PlayerName.player_id == player_id).all()
     known_names = sorted({name.nickname for name in names if name.nickname} | {player.player_last_time_name} - {None})
     known_names = [_bounded_text(name, 200) for name in known_names[:50]]
-    stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
-    sessions = db.query(PlayerSession).filter(PlayerSession.player_id == player_id, PlayerSession.login_time >= since).order_by(PlayerSession.login_time.desc()).limit(100).all()
-    notes = db.query(PlayerNote).filter(PlayerNote.player_id == player_id).order_by(PlayerNote.created_at.desc()).limit(100).all()
-    tickets = db.query(Ticket).filter(Ticket.player_id == player_id, Ticket.deleted_at.is_(None)).order_by(Ticket.created_at.desc()).limit(100).all()
+    stats = batch_context.stats.get(player_id) if batch_context else db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
+    sessions = batch_context.rows("sessions", player_id) if batch_context else db.query(PlayerSession).filter(PlayerSession.player_id == player_id, PlayerSession.login_time >= since).order_by(PlayerSession.login_time.desc()).limit(100).all()
+    notes = batch_context.rows("notes", player_id) if batch_context else db.query(PlayerNote).filter(PlayerNote.player_id == player_id).order_by(PlayerNote.created_at.desc()).limit(100).all()
+    tickets = batch_context.rows("tickets", player_id) if batch_context else db.query(Ticket).filter(Ticket.player_id == player_id, Ticket.deleted_at.is_(None)).order_by(Ticket.created_at.desc()).limit(100).all()
     ticket_messages_by_id: dict[int, list[dict]] = {}
     ticket_messages_missing = False
     ticket_ids = [row.id for row in tickets if row.id is not None]
-    if ticket_ids:
+    if ticket_ids and batch_context is not None:
+        for ticket in tickets:
+            for message in batch_context.ticket_messages.get(ticket.id, [])[:4]:
+                ticket_message_rows = ticket_messages_by_id.setdefault(ticket.id, [])
+                ticket_message_rows.append({
+                    "id": message.id,
+                    "author": message.author_display_name or message.author_username,
+                    "created_at": _iso(message.created_at),
+                    "content": _bounded_text(message.content, 500),
+                })
+        ticket_messages_missing = batch_context.ticket_messages_missing
+    elif ticket_ids:
         try:
             ticket_message_rows = (db.query(TicketMessage)
                                    .filter(TicketMessage.ticket_id.in_(ticket_ids))
@@ -1132,51 +1364,57 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
         except Exception as exc:
             logger.warning("AI dossier ticket messages unavailable for player %s: %s", player_id, exc)
             ticket_messages_missing = True
-    labels = (db.query(PlayerLabel, LabelCategory)
-              .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
-              # AI dossiers are shared durable output, not per-admin views.
-              # Secret labels therefore must never enter the model context.
-              .filter(LabelCategory.is_secret.is_(False))
-              .filter(PlayerLabel.player_id == player_id)
-              .limit(100).all())
-    traps = db.query(PlayerTrap).filter(PlayerTrap.player_id == player_id).order_by(PlayerTrap.set_at.desc()).limit(100).all()
-    punishments = db.query(PlayerPunishment).filter(PlayerPunishment.player_id == player_id).order_by(PlayerPunishment.issued_at.desc()).limit(100).all()
-    kills = db.query(PlayerKill).filter(PlayerKill.player_id == player_id).limit(100).all()
-    role_actions = db.query(PlayerRoleAction).filter(PlayerRoleAction.player_id == player_id).limit(100).all()
-    rating_action_rows = db.query(PlayerRoleAction.role, PlayerRoleAction.action_type, PlayerRoleAction.value).filter(
+    if batch_context is not None:
+        labels = batch_context.rows("labels", player_id)
+    else:
+        labels = (db.query(PlayerLabel, LabelCategory)
+                  .join(LabelCategory, PlayerLabel.category_id == LabelCategory.id)
+                  # AI dossiers are shared durable output, not per-admin views.
+                  # Secret labels therefore must never enter the model context.
+                  .filter(LabelCategory.is_secret.is_(False))
+                  .filter(PlayerLabel.player_id == player_id)
+                  .limit(100).all())
+    traps = batch_context.rows("traps", player_id) if batch_context else db.query(PlayerTrap).filter(PlayerTrap.player_id == player_id).order_by(PlayerTrap.set_at.desc()).limit(100).all()
+    punishments = batch_context.rows("punishments", player_id) if batch_context else db.query(PlayerPunishment).filter(PlayerPunishment.player_id == player_id).order_by(PlayerPunishment.issued_at.desc()).limit(100).all()
+    kills = batch_context.rows("kills", player_id) if batch_context else db.query(PlayerKill).filter(PlayerKill.player_id == player_id).limit(100).all()
+    role_actions = batch_context.rows("role_actions", player_id) if batch_context else db.query(PlayerRoleAction).filter(PlayerRoleAction.player_id == player_id).limit(100).all()
+    rating_action_rows = (batch_context.rows("rating_actions", player_id) if batch_context else db.query(PlayerRoleAction).filter(
         PlayerRoleAction.player_id == player_id,
-    ).all()
+    ).all())
     rating_negative_actions = build_negative_rating_actions([
-        {"role": role, "action_type": action_type, "value": value}
-        for role, action_type, value in rating_action_rows
+        {"role": row.role, "action_type": row.action_type, "value": row.value}
+        for row in rating_action_rows
     ])
-    role_stats = db.query(PlayerRoleStat).filter(PlayerRoleStat.player_id == player_id).limit(100).all()
-    anticheat = db.query(AnticheatEvent).filter(AnticheatEvent.player_id == player_id, AnticheatEvent.occurred_at >= since).order_by(AnticheatEvent.occurred_at.desc()).limit(100).all()
+    role_stats = batch_context.rows("role_stats", player_id) if batch_context else db.query(PlayerRoleStat).filter(PlayerRoleStat.player_id == player_id).limit(100).all()
+    anticheat = batch_context.rows("anticheat", player_id) if batch_context else db.query(AnticheatEvent).filter(AnticheatEvent.player_id == player_id, AnticheatEvent.occurred_at >= since).order_by(AnticheatEvent.occurred_at.desc()).limit(100).all()
     ips = [
         row for row in db.query(PlayerIP).filter(PlayerIP.player_id == player_id).all()
         if not is_bogon_ip(row.ip) and not ip_policy.is_ignored(row.ip)
+    ] if batch_context is None else [
+        row for row in batch_context.rows("ips", player_id)
+        if not is_bogon_ip(row.ip) and not ip_policy.is_ignored(row.ip)
     ]
-    anomaly_rows = db.query(PlayerAnomaly).filter(
+    anomaly_rows = (batch_context.rows("anomalies", player_id, 50) if batch_context else db.query(PlayerAnomaly).filter(
         or_(PlayerAnomaly.player_id == player_id, PlayerAnomaly.related_player_id == player_id)
-    ).order_by(PlayerAnomaly.score.desc(), PlayerAnomaly.last_seen_at.desc()).limit(50).all()
+    ).order_by(PlayerAnomaly.score.desc(), PlayerAnomaly.last_seen_at.desc()).limit(50).all())
     anomalies = [row for row in anomaly_rows if not _anomaly_has_bogon_ip_evidence(row) and not _anomaly_has_ignored_ip_evidence(row, ip_policy)]
     related_ids = {
         row.related_player_id if row.player_id == player_id else row.player_id
         for row in anomalies
         if (row.related_player_id if row.player_id == player_id else row.player_id)
     }
-    related_players = {
+    related_players = (batch_context.related_players if batch_context is not None else {
         row.player_id: row
         for row in db.query(PlayerData).filter(PlayerData.player_id.in_(related_ids)).all()
-    } if related_ids else {}
-    banned_ids = {
+    } if related_ids else {})
+    banned_ids = (batch_context.related_banned_ids.intersection(related_ids) if batch_context is not None else {
         row.player_id for row in db.query(PlayerPunishment).filter(
             PlayerPunishment.player_id.in_(related_ids),
             PlayerPunishment.type == "ban",
             PlayerPunishment.is_active == 1,
             or_(PlayerPunishment.expires_at.is_(None), PlayerPunishment.expires_at >= now),
         ).all()
-    } if related_ids else set()
+    } if related_ids else set())
     shared_accounts = []
     own_ips = {row.ip for row in ips if row.ip}
     if own_ips:
@@ -1184,19 +1422,20 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
         for own_row in ips:
             if own_row.ip:
                 own_rows_by_ip.setdefault(own_row.ip, []).append(own_row)
-        shared_rows = (db.query(PlayerIP, PlayerData)
+        shared_rows = (batch_context.shared_rows_by_player.get(player_id, []) if batch_context is not None else
+                       db.query(PlayerIP, PlayerData)
                        .join(PlayerData, PlayerData.player_id == PlayerIP.player_id)
                        .filter(PlayerIP.ip.in_(own_ips), PlayerIP.player_id != player_id)
                        .limit(100).all())
         shared_player_ids = {other.player_id for _, other in shared_rows}
-        shared_banned_ids = {
+        shared_banned_ids = (batch_context.shared_banned_ids.intersection(shared_player_ids) if batch_context is not None else {
             row.player_id for row in db.query(PlayerPunishment).filter(
                 PlayerPunishment.player_id.in_(shared_player_ids),
                 PlayerPunishment.type == "ban",
                 PlayerPunishment.is_active == 1,
                 or_(PlayerPunishment.expires_at.is_(None), PlayerPunishment.expires_at >= now),
             ).all()
-        } if shared_player_ids else set()
+        } if shared_player_ids else set())
         per_player: dict[int, dict] = {}
         for ip_row, other in shared_rows:
             item = per_player.setdefault(other.player_id, {
@@ -1291,22 +1530,29 @@ def build_player_dossier_payload(db: Session, player_id: int, now: Optional[date
         "window": {"from": since.isoformat(), "to": now.isoformat(), "days": active_days},
     }
 
-    try:
-        from services_logs import get_log_stats, search_logs
-        result = search_logs(
-            names_list=known_names,
-            time_from=since,
-            time_to=now,
-            player_scope="related",
-            limit=max_log_events,
-            count_total=False,
-            raise_on_unavailable=True,
-        )
-        payload["logs"] = [{"id": event.row_id, "timestamp": _iso(event.timestamp), "player_name": event.player_name, "action": event.action_type, "details": _bounded_text(event.details, 500), "server": event.server_name, "source": event.source_file} for event in result.events]
-        payload["log_cache"] = get_log_stats()
-    except Exception as exc:
-        logger.warning("AI dossier logs unavailable for player %s: %s", player_id, exc)
-        payload["missing"].append("server_logs")
+    if batch_context is not None:
+        if batch_context.logs_missing:
+            payload["missing"].append("server_logs")
+        else:
+            payload["logs"] = [{"id": event.row_id, "timestamp": _iso(event.timestamp), "player_name": event.player_name, "action": event.action_type, "details": _bounded_text(event.details, 500), "server": event.server_name, "source": event.source_file} for event in batch_context.logs_by_player.get(player_id, [])]
+            payload["log_cache"] = batch_context.log_cache
+    else:
+        try:
+            from services_logs import get_log_stats, search_logs
+            result = search_logs(
+                names_list=known_names,
+                time_from=since,
+                time_to=now,
+                player_scope="related",
+                limit=max_log_events,
+                count_total=False,
+                raise_on_unavailable=True,
+            )
+            payload["logs"] = [{"id": event.row_id, "timestamp": _iso(event.timestamp), "player_name": event.player_name, "action": event.action_type, "details": _bounded_text(event.details, 500), "server": event.server_name, "source": event.source_file} for event in result.events]
+            payload["log_cache"] = get_log_stats()
+        except Exception as exc:
+            logger.warning("AI dossier logs unavailable for player %s: %s", player_id, exc)
+            payload["missing"].append("server_logs")
     if ticket_messages_missing:
         payload["missing"].append("ticket_messages")
 
@@ -1341,11 +1587,13 @@ def enqueue_dossier(
     force: bool = False,
     now: Optional[datetime] = None,
     source: str = "manual",
+    commit: bool = True,
 ) -> tuple[AIPlayerDossier, bool]:
     if source not in ALLOWED_RUN_SOURCES - {"health"}:
         raise ValueError("Invalid AI dossier run source")
     now = now or datetime.utcnow()
     report = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id).first()
+    created_new = report is None
     if report is None:
         report = AIPlayerDossier(player_id=player_id, status="queued", requested_at=now, requested_by_admin_id=requested_by_admin_id)
         db.add(report)
@@ -1370,8 +1618,10 @@ def enqueue_dossier(
         requested_at=now,
         model=get_settings().ai_dossier_model,
     ))
-    db.commit()
-    db.refresh(report)
+    if commit:
+        db.commit()
+        db.refresh(report)
+    report._created_in_enqueue = created_new
     return report, True
 
 
@@ -1381,16 +1631,22 @@ def enqueue_dossier_if_needed(
     requested_by_admin_id: Optional[int] = None,
     now: Optional[datetime] = None,
     source: str = "daily",
+    batch_context: Optional[DossierBatchContext] = None,
+    commit: bool = True,
+    lock: bool = False,
 ) -> tuple[Optional[AIPlayerDossier], bool]:
     now = now or datetime.utcnow()
-    report = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id).first()
+    report_query = db.query(AIPlayerDossier).filter(AIPlayerDossier.player_id == player_id)
+    if lock:
+        report_query = report_query.with_for_update()
+    report = report_query.first()
     if report and report.status in {"queued", "running"}:
         return report, False
-    payload = build_player_dossier_payload(db, player_id, now)
+    payload = build_player_dossier_payload(db, player_id, now, batch_context=batch_context)
     packet = build_moderation_packet(payload)
     if not should_queue_dossier(report, dossier_input_hash(packet), False, now, 7):
         return report, False
-    return enqueue_dossier(db, player_id, requested_by_admin_id, force=False, now=now, source=source)
+    return enqueue_dossier(db, player_id, requested_by_admin_id, force=False, now=now, source=source, commit=commit)
 
 
 def _claim_next(db: Session, now: datetime) -> Optional[AIPlayerDossier]:
@@ -1436,14 +1692,27 @@ def _claim_next(db: Session, now: datetime) -> Optional[AIPlayerDossier]:
     return report
 
 
+def _dossier_queue_metrics(db: Session, now: datetime) -> dict:
+    query = db.query(AIPlayerDossier).filter(AIPlayerDossier.status == "queued")
+    count = query.count()
+    oldest = query.order_by(AIPlayerDossier.requested_at.asc(), AIPlayerDossier.id.asc()).first()
+    age_ms = None
+    if oldest and oldest.requested_at:
+        age_ms = max(0, int((now - oldest.requested_at).total_seconds() * 1000))
+    return {"queue_count": count, "oldest_queued_dossier_age_ms": age_ms}
+
+
 def process_one_dossier() -> dict:
     from database import SessionLocal
     from services_ai_tasklog import ai_task_log, TASK_KIND_DOSSIER
     db = SessionLocal()
     try:
-        report = _claim_next(db, datetime.utcnow())
+        now = datetime.utcnow()
+        queue_metrics = _dossier_queue_metrics(db, now)
+        report = _claim_next(db, now)
         if not report:
-            return {"status": "idle"}
+            return {"status": "idle", **queue_metrics}
+        queue_wait_ms = max(0, int(((report.requested_at or now) - now).total_seconds() * -1000))
         settings = get_settings()
         raw_response = None
         usage = {}
@@ -1509,7 +1778,7 @@ def process_one_dossier() -> dict:
                 run.raw_response = raw_response[:MAX_RAW_RESPONSE_CHARS] if isinstance(raw_response, str) else None
             db.commit()
             ai_task_log(db, TASK_KIND_DOSSIER, ref, "succeeded", f"досье для #{report.player_id} записано от {settings.ai_dossier_model}")
-            return {"status": "succeeded", "player_id": report.player_id}
+            return {"status": "succeeded", "player_id": report.player_id, "queue_wait_ms": queue_wait_ms, **queue_metrics}
         except Exception as exc:
             logger.exception("AI dossier generation failed for player %s", report.player_id)
             ai_task_log(db, TASK_KIND_DOSSIER, ref, "failed",
@@ -1535,7 +1804,7 @@ def process_one_dossier() -> dict:
                 run.completion_tokens = usage.get("completion_tokens")
                 run.raw_response = raw_response[:MAX_RAW_RESPONSE_CHARS] if isinstance(raw_response, str) else None
             db.commit()
-            return {"status": "failed", "player_id": report.player_id, "error": report.error_message}
+            return {"status": "failed", "player_id": report.player_id, "error": report.error_message, "queue_wait_ms": queue_wait_ms, **queue_metrics}
     finally:
         db.close()
 
@@ -1546,12 +1815,64 @@ def _run_dossier_batch(*, requested_by_admin_id: Optional[int], limit: Optional[
     try:
         now = datetime.utcnow()
         effective_limit = get_dossier_config(db)["daily_limit"] if limit == "daily" else limit
+        selection_started = time.monotonic()
         ids = select_active_player_ids(db, now, effective_limit)
+        selection_ms = int((time.monotonic() - selection_started) * 1000)
+        try:
+            batch_context = DossierBatchContext(db, ids, now) if ids else None
+        except SQLAlchemyError as exc:
+            # A partially migrated test/development database must still be
+            # able to enqueue dossiers. Production has the full schema; this
+            # fallback is deliberately visible instead of turning a missing
+            # optional table into a batch-wide outage.
+            db.rollback()
+            logger.warning("AI dossier batch context unavailable; using single-player reads: %s", exc)
+            batch_context = None
         queued = 0
-        for player_id in ids:
-            _, created = enqueue_dossier_if_needed(db, player_id, requested_by_admin_id, now, source)
-            queued += int(created)
-        return {"selected": len(ids), "queued": queued, "skipped": len(ids) - queued}
+        new_records = 0
+        hash_checked = 0
+        unchanged = 0
+        skipped_inflight = 0
+        errors = 0
+        enqueue_started = time.monotonic()
+        chunk_size = 10
+        for offset in range(0, len(ids), chunk_size):
+            chunk = ids[offset:offset + chunk_size]
+            for player_id in chunk:
+                try:
+                    # Savepoints isolate one malformed player's optional data;
+                    # the durable transaction still commits per chunk rather
+                    # than once per player.
+                    with db.begin_nested():
+                        report, created = enqueue_dossier_if_needed(
+                            db, player_id, requested_by_admin_id, now, source,
+                            batch_context=batch_context, commit=False, lock=True,
+                        )
+                    hash_checked += 1
+                    queued += int(created)
+                    if created and (report is None or getattr(report, "_created_in_enqueue", False)):
+                        new_records += 1
+                    elif not created and getattr(report, "status", None) in {"queued", "running"}:
+                        skipped_inflight += 1
+                    elif not created:
+                        unchanged += 1
+                except Exception:
+                    errors += 1
+                    logger.exception("AI dossier batch enqueue failed for player %s", player_id)
+            db.commit()
+        enqueue_ms = int((time.monotonic() - enqueue_started) * 1000)
+        return {
+            "selected": len(ids),
+            "queued": queued,
+            "skipped": len(ids) - queued,
+            "selection_ms": selection_ms,
+            "enqueue_ms": enqueue_ms,
+            "new_records": new_records,
+            "hash_checked": hash_checked,
+            "unchanged": unchanged,
+            "skipped_inflight": skipped_inflight,
+            "errors": errors,
+        }
     finally:
         db.close()
 

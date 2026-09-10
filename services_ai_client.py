@@ -30,10 +30,73 @@ logger = logging.getLogger(__name__)
 # this lock while its request is in flight — never POST to the aggregator
 # directly, always go through post_chat_completions().
 AI_REQUEST_LOCK = Lock()
+AI_CLIENT_TTL_SECONDS = 300.0
+_AI_CLIENT = None
+_AI_CLIENT_FINGERPRINT = None
+_AI_CLIENT_CREATED_AT = 0.0
 
 
 class AIClientError(Exception):
     """Transport-level failure talking to the AI aggregator (no secrets)."""
+
+
+def _client_fingerprint(settings) -> tuple:
+    return (
+        (settings.ai_dossier_url or "").strip(),
+        settings.ai_dossier_api_key or "",
+        settings.ai_dossier_tls_ca_file or "",
+        settings.ai_dossier_model or "",
+    )
+
+
+def _build_timeout(timeout: float) -> httpx.Timeout:
+    total = max(0.1, float(timeout))
+    return httpx.Timeout(
+        timeout=total,
+        connect=min(10.0, total),
+        pool=min(5.0, total),
+        write=min(30.0, total),
+    )
+
+
+def _get_ai_client(settings, timeout: float):
+    global _AI_CLIENT, _AI_CLIENT_FINGERPRINT, _AI_CLIENT_CREATED_AT
+    fingerprint = _client_fingerprint(settings)
+    now = time.monotonic()
+    if (
+        _AI_CLIENT is None
+        or _AI_CLIENT_FINGERPRINT != fingerprint
+        or now - _AI_CLIENT_CREATED_AT >= AI_CLIENT_TTL_SECONDS
+    ):
+        if _AI_CLIENT is not None:
+            _AI_CLIENT.close()
+        _AI_CLIENT = httpx.Client(
+            timeout=_build_timeout(timeout),
+            verify=settings.ai_dossier_tls_ca_file or True,
+        )
+        _AI_CLIENT_FINGERPRINT = fingerprint
+        _AI_CLIENT_CREATED_AT = now
+    return _AI_CLIENT
+
+
+def close_ai_client() -> None:
+    """Close the shared transport during worker/application shutdown."""
+    global _AI_CLIENT, _AI_CLIENT_FINGERPRINT, _AI_CLIENT_CREATED_AT
+    with AI_REQUEST_LOCK:
+        if _AI_CLIENT is not None:
+            _AI_CLIENT.close()
+        _AI_CLIENT = None
+        _AI_CLIENT_FINGERPRINT = None
+        _AI_CLIENT_CREATED_AT = 0.0
+
+
+def _invalidate_ai_client(client) -> None:
+    global _AI_CLIENT, _AI_CLIENT_FINGERPRINT, _AI_CLIENT_CREATED_AT
+    if _AI_CLIENT is client:
+        client.close()
+        _AI_CLIENT = None
+        _AI_CLIENT_FINGERPRINT = None
+        _AI_CLIENT_CREATED_AT = 0.0
 
 
 def is_ai_configured() -> bool:
@@ -63,7 +126,6 @@ def post_chat_completions(payload: Dict[str, Any], timeout: float) -> Tuple[Dict
     url = (settings.ai_dossier_url or "").strip()
     if not url or not settings.ai_dossier_api_key:
         raise AIClientError("AI-агрегатор не настроен: задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY")
-    verify: Any = settings.ai_dossier_tls_ca_file or True
     headers = {
         "Authorization": f"Bearer {settings.ai_dossier_api_key}",
         "Content-Type": "application/json",
@@ -71,10 +133,14 @@ def post_chat_completions(payload: Dict[str, Any], timeout: float) -> Tuple[Dict
     started = time.monotonic()
     try:
         with AI_REQUEST_LOCK:
-            with httpx.Client(timeout=timeout, verify=verify) as client:
+            client = _get_ai_client(settings, timeout)
+            try:
                 response = client.post(url, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
+            except httpx.RequestError:
+                _invalidate_ai_client(client)
+                raise
     except AIClientError:
         raise
     except httpx.HTTPStatusError as exc:

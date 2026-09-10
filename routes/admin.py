@@ -3066,6 +3066,37 @@ async def admin_audit_list(request: Request, db: Session = Depends(get_db), curr
     )
 
 
+def build_task_status_payload(scheduler) -> dict:
+    """Serialize scheduler state without exposing its internal objects."""
+    try:
+        from services_ai_dossier_worker import get_ai_dossier_worker_snapshot
+        ai_worker = get_ai_dossier_worker_snapshot()
+    except Exception:
+        ai_worker = {"task_id": "ai_dossier_worker", "thread_alive": False, "stuck": True, "stuck_reason": "snapshot unavailable"}
+    stats = scheduler.task_stats()
+    stats_by_id = {row.get("task_id"): row for row in stats}
+    tasks = []
+    for task in scheduler.list_tasks():
+        metrics = stats_by_id.get(task.get("task_id"), {})
+        tasks.append({
+            **task,
+            "duration_p95_ms": metrics.get("duration_p95_ms"),
+            "duration_p99_ms": metrics.get("duration_p99_ms"),
+            "queue_wait_p95_ms": metrics.get("queue_wait_p95_ms"),
+            "queue_wait_p99_ms": metrics.get("queue_wait_p99_ms"),
+            "sample_count": metrics.get("sample_count", 0),
+            "last_status": metrics.get("last_status", task.get("status")),
+        })
+    return {
+        "queue_size": scheduler.queue_size(),
+        "tasks": tasks,
+        "active_tasks": scheduler.active_tasks(),
+        "overlap": scheduler.overlap_snapshot(),
+        "stats": stats,
+        "ai_worker": ai_worker,
+    }
+
+
 @router.get("/api/v1/admin/tasks")
 async def api_task_status(
     request: Request,
@@ -3078,16 +3109,13 @@ async def api_task_status(
     from fastapi.responses import JSONResponse
     try:
         from task_scheduler import scheduler
-        return JSONResponse({
-            "queue_size": scheduler.queue_size(),
-            "tasks": scheduler.list_tasks(),
-        })
+        return JSONResponse(build_task_status_payload(scheduler))
     except ImportError:
         return JSONResponse({"queue_size": 0, "tasks": [], "note": "task_scheduler not available"})
 
 
 @router.get("/api/v1/admin/health")
-async def api_system_health(
+def api_system_health(
     request: Request,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -3112,7 +3140,7 @@ async def api_system_health(
             "python_version": sys.version.split()[0],
             "memory_rss_mb": round(mem.rss / 1024 / 1024, 1),
             "memory_vms_mb": round(mem.vms / 1024 / 1024, 1),
-            "cpu_percent": proc.cpu_percent(interval=0.1),
+            "cpu_percent": proc.cpu_percent(interval=None),
             "threads": proc.num_threads(),
             "open_files": len(proc.open_files()),
             "connections": len(proc.connections()),
@@ -3125,7 +3153,7 @@ async def api_system_health(
             "used_ram_mb":  round(vm.used  / 1024 / 1024, 1),
             "avail_ram_mb": round(vm.available / 1024 / 1024, 1),
             "ram_pct":      vm.percent,
-            "cpu_pct":      psutil.cpu_percent(interval=0.1),
+            "cpu_pct":      psutil.cpu_percent(interval=None),
             "cpu_cores":    psutil.cpu_count(logical=True),
             "load_avg":     list(psutil.getloadavg()) if hasattr(psutil, "getloadavg") else [],
         }

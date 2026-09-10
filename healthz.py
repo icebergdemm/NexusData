@@ -34,3 +34,15 @@ def build_healthz_response(state: Any) -> JSONResponse:
     )
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+def build_liveness_response() -> JSONResponse:
+    """Process-only probe. It must stay useful while the database is broken."""
+    response = JSONResponse({"status": "ok"}, status_code=200)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def build_readiness_response(state: Any) -> JSONResponse:
+    """Readiness has the same diagnostic body as healthz, with probe semantics."""
+    return build_healthz_response(state)

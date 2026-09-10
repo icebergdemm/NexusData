@@ -19,6 +19,7 @@ import logging
 import json
 import os
 import re
+import sys
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3388,7 +3389,8 @@ async def _archive_ticket_attachments(
         connect=min(15.0, timeout_seconds),
         sock_read=timeout_seconds,
     )
-    connector = aiohttp.TCPConnector(limit=2)
+    resolver = aiohttp.ThreadedResolver() if sys.platform == "win32" else None
+    connector = aiohttp.TCPConnector(limit=2, resolver=resolver)
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for attachment in attachments:
             previous = _existing_attachment(existing or [], attachment)

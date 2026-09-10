@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-import fcntl
+from platform_locks import LOCK_EX, LOCK_NB, LOCK_UN, flock, restrict_mode
 import hashlib
 import json
 import logging
@@ -141,7 +141,7 @@ def validate_backup_settings(settings: Settings) -> dict:
         if configured_key.is_file():
             private_key = configured_key.resolve()
             key_mode = stat.S_IMODE(private_key.stat().st_mode)
-            if key_mode & 0o077:
+            if os.name == "posix" and key_mode & 0o077:
                 raise BackupConfigurationError(
                     "BACKUP_SFTP_PRIVATE_KEY_PATH must not be readable by group/others (use chmod 600)"
                 )
@@ -252,7 +252,7 @@ def decrypt_archive(encrypted_path: Path, output_tar_path: Path, key_value: str 
         decryptor.authenticate_additional_data(ARCHIVE_MAGIC)
         try:
             with output_tar_path.open("xb") as target:
-                os.chmod(output_tar_path, 0o600)
+                restrict_mode(output_tar_path, 0o600)
                 remaining = ciphertext_end - source.tell()
                 while remaining:
                     chunk = source.read(min(CHUNK_SIZE, remaining))
@@ -331,7 +331,7 @@ def _dump_mysql_with_pymysql(url, destination: Path) -> dict:
                     skipped_objects.append(name)
 
         with destination.open("x", encoding="utf-8", newline="\n") as output:
-            os.chmod(destination, 0o600)
+            restrict_mode(destination, 0o600)
             output.write("-- NexusData built-in MySQL/MariaDB backup\n")
             output.write("SET NAMES utf8mb4;\n")
             output.write("SET FOREIGN_KEY_CHECKS=0;\n")
@@ -465,7 +465,7 @@ def _dump_mysql(settings: Settings, destination: Path) -> dict:
     ]
     try:
         with destination.open("xb") as output:
-            os.chmod(destination, 0o600)
+            restrict_mode(destination, 0o600)
             completed = subprocess.run(
                 command,
                 stdin=subprocess.DEVNULL,
@@ -520,7 +520,7 @@ def _snapshot_sqlite(source_path: Path, destination: Path) -> dict:
     finally:
         target.close()
         source.close()
-    os.chmod(destination, 0o600)
+    restrict_mode(destination, 0o600)
     return {"included": True, "bytes": destination.stat().st_size}
 
 
@@ -615,11 +615,11 @@ def _build_encrypted_archive(settings: Settings, work_dir: Path, key: bytes, bac
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    os.chmod(manifest_path, 0o600)
+    restrict_mode(manifest_path, 0o600)
 
     archive_path = work_dir / f"{backup_id}.tar.gz.aes"
     with archive_path.open("xb") as encrypted_file:
-        os.chmod(archive_path, 0o600)
+        restrict_mode(archive_path, 0o600)
         writer = _GCMEncryptingWriter(encrypted_file, key)
         try:
             with tarfile.open(fileobj=writer, mode="w|gz", format=tarfile.PAX_FORMAT) as archive:
@@ -823,7 +823,7 @@ def create_and_upload_backup(
         BACKUP_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
         lock_descriptor = os.open(BACKUP_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flock(lock_descriptor, LOCK_EX | LOCK_NB)
         except BlockingIOError:
             os.close(lock_descriptor)
             lock_descriptor = None
@@ -839,7 +839,7 @@ def create_and_upload_backup(
             dir=str(temp_parent) if temp_parent else None,
         ) as temporary:
             work_dir = Path(temporary)
-            os.chmod(work_dir, 0o700)
+            restrict_mode(work_dir, 0o700)
             archive_path, manifest = _build_encrypted_archive(
                 settings,
                 work_dir,
@@ -874,7 +874,7 @@ def create_and_upload_backup(
     finally:
         if lock_descriptor is not None:
             with suppress(OSError):
-                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+                flock(lock_descriptor, LOCK_UN)
             os.close(lock_descriptor)
         _backup_lock.release()
 

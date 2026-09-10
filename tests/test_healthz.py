@@ -2,7 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from healthz import build_healthz_response
+from healthz import build_healthz_response, build_liveness_response, build_readiness_response
 
 
 class HealthzTests(unittest.TestCase):
@@ -40,6 +40,26 @@ class HealthzTests(unittest.TestCase):
         self.assertEqual(json.loads(degraded_response.body)["status"], "degraded")
         self.assertEqual(maintenance_response.status_code, 503)
         self.assertEqual(json.loads(maintenance_response.body)["status"], "maintenance")
+
+    def test_liveness_does_not_depend_on_database(self):
+        response = build_liveness_response()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.body), {"status": "ok"})
+
+    def test_readiness_preserves_maintenance_message(self):
+        state = SimpleNamespace(
+            maintenance_mode=True,
+            db_healthy=True,
+            api_enabled=True,
+            web_enabled=True,
+            workers_enabled=True,
+            maintenance_message="Плановые работы",
+        )
+        response = build_readiness_response(state)
+        body = json.loads(response.body)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(body["status"], "maintenance")
+        self.assertEqual(body["maintenance_message"], "Плановые работы")
 
 
 if __name__ == "__main__":

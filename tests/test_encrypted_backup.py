@@ -61,7 +61,10 @@ def test_backup_configuration_accepts_compact_password_credentials(tmp_path):
 def test_backup_configuration_requires_private_key_permissions(tmp_path):
     settings = _settings(tmp_path)
     Path(settings.backup_sftp_private_key_path).chmod(0o644)
-    with pytest.raises(services_backup.BackupConfigurationError, match="chmod 600"):
+    if os.name == "posix":
+        with pytest.raises(services_backup.BackupConfigurationError, match="chmod 600"):
+            services_backup.validate_backup_settings(settings)
+    else:
         services_backup.validate_backup_settings(settings)
 
 
@@ -169,7 +172,8 @@ def test_password_connection_enrolls_first_host_key_then_pins_it(tmp_path, monke
     services_backup._connect_sftp(settings, normalized)
 
     assert known_hosts.exists()
-    assert known_hosts.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert known_hosts.stat().st_mode & 0o777 == 0o600
     assert isinstance(captured["policy"], paramiko.AutoAddPolicy)
     assert captured["connect"]["password"] == "password-only"
     assert captured["connect"]["key_filename"] is None
@@ -265,7 +269,8 @@ def test_mysql_password_is_in_mode_600_option_file_not_command_or_environment(tm
     result = services_backup._dump_mysql(settings, destination)
 
     assert result["included"] is True
-    assert captured["option_mode"] == 0o600
+    if os.name == "posix":
+        assert captured["option_mode"] == 0o600
     assert 'password="very-secret"' in captured["option_contents"]
     assert captured["password_env"] is None
     assert all("very-secret" not in part for part in captured["command"])
@@ -357,7 +362,8 @@ def test_builtin_mysql_dump_streams_schema_and_rows_without_system_client(tmp_pa
         "views": 0,
         "skipped_objects": 0,
     }
-    assert destination.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert destination.stat().st_mode & 0o777 == 0o600
     assert captured["connect"]["password"] == "very-secret"
     assert captured["rolled_back"] is True
     assert captured["closed"] is True

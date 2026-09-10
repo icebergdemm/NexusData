@@ -109,5 +109,60 @@ class TaskSchedulerStatsTests(unittest.TestCase):
         assert stats["timeouts"] == 1
         assert stats["last_status"] == "timeout"
 
+    def test_stats_include_rolling_duration_and_queue_wait_percentiles(self):
+        scheduler = task_scheduler.TaskScheduler(worker_count=1, result_ttl=60)
+
+        for duration_ms, queue_wait_ms in ((10, 1), (20, 2), (30, 3), (40, 4)):
+            scheduler.record_external_run(
+                "metrics-task",
+                status="done",
+                duration_ms=duration_ms,
+                queue_wait_ms=queue_wait_ms,
+            )
+
+        stats = scheduler.task_stats()[0]
+        assert stats["duration_p95_ms"] == 40
+        assert stats["duration_p99_ms"] == 40
+        assert stats["queue_wait_p95_ms"] == 4
+        assert stats["queue_wait_p99_ms"] == 4
+        assert stats["sample_count"] == 4
+
+    def test_active_snapshot_reports_running_tasks_and_overlap(self):
+        scheduler = task_scheduler.TaskScheduler(worker_count=2, result_ttl=60)
+        gate = task_scheduler.threading.Event()
+        try:
+            scheduler.start()
+            first = scheduler.submit(lambda: gate.wait(2), task_id="active-one", timeout=None)
+            second = scheduler.submit(lambda: gate.wait(2), task_id="active-two", timeout=None)
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                active = scheduler.active_tasks()
+                if len(active) == 2 and all(item["status"] == "running" for item in active):
+                    break
+                time.sleep(0.01)
+
+            active = scheduler.active_tasks()
+            assert {item["task_id"] for item in active} == {first, second}
+            assert all(item["status"] == "running" for item in active)
+            overlap = scheduler.overlap_snapshot()
+            assert overlap["active_count"] == 2
+            assert overlap["overlap"] is True
+        finally:
+            gate.set()
+            scheduler.stop()
+
+    def test_periodic_task_coalesces_missed_intervals(self):
+        scheduler = task_scheduler.TaskScheduler(worker_count=1, result_ttl=60)
+        scheduler.register_periodic(lambda: None, interval_secs=10, task_id="periodic-task")
+        periodic = scheduler._periodic[0]
+        periodic["last_run"] = time.monotonic() - 35
+
+        with patch.object(scheduler, "submit") as submit:
+            scheduler._periodic_loop_once(time.monotonic())
+
+        assert submit.call_count == 1
+        assert periodic["coalesced_runs"] == 2
+
 if __name__ == "__main__":
     unittest.main()

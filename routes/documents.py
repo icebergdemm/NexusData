@@ -847,7 +847,7 @@ async def api_list_document_children(
 
 
 @router.get("/api/v1/admin/departments/{department_id}/documents")
-async def api_list_department_documents(
+def api_list_department_documents(
     department_id: int,
     kind: str = Query("documentation", pattern="^(documentation|orders|news)$"),
     folder_id: Optional[int] = Query(None),
@@ -1053,7 +1053,7 @@ async def api_share_candidates(
 
 
 @router.get("/api/v1/admin/documents/{document_id}")
-async def api_get_document(
+def api_get_document(
     document_id: int,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),

@@ -15,6 +15,7 @@ from config import Settings, snapshot_env_file
 from models import AIPlayerDossier, AIPlayerDossierRun, AppSetting, LabelCategory, PlayerData, PlayerIP, PlayerLabel, PlayerRoleAction, PlayerSession
 from services_ai_dossier import (
     DOSSIER_RULES_VERSION,
+    DossierBatchContext,
     build_kobold_request,
     build_dossier_analytics,
     build_moderation_packet,
@@ -870,16 +871,72 @@ class AIDossierContractTests(unittest.TestCase):
             calls = []
             with patch("database.SessionLocal", return_value=db), patch.object(
                 services_ai_dossier, "enqueue_dossier_if_needed",
-                side_effect=lambda _db, player_id, admin_id, requested_at, source: calls.append((player_id, admin_id, requested_at, source)) or (None, True),
+                side_effect=lambda _db, player_id, admin_id, requested_at, source, **kwargs: calls.append((player_id, admin_id, requested_at, source)) or (None, True),
             ):
                 result = run_active_dossier_batch(99)
 
-            self.assertEqual(result, {"selected": 2, "queued": 2, "skipped": 0})
+            self.assertEqual(result["selected"], 2)
+            self.assertEqual(result["queued"], 2)
+            self.assertEqual(result["skipped"], 0)
+            self.assertIn("selection_ms", result)
+            self.assertIn("enqueue_ms", result)
+            self.assertIn("new_records", result)
+            self.assertIn("hash_checked", result)
             self.assertEqual([call[0] for call in calls], [1, 2])
             self.assertTrue(all(call[1] == 99 and call[3] == "manual_batch" for call in calls))
         finally:
             db.close()
             engine.dispose()
+
+    def test_batch_context_preserves_single_player_payload_hash(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        try:
+            now = datetime(2026, 9, 4, 12, 0)
+            db.add_all([
+                PlayerData(player_id=1, player_steamid="1", player_last_time_name="one", last_login_time=now),
+                PlayerData(player_id=2, player_steamid="2", player_last_time_name="two", last_login_time=now),
+            ])
+            db.commit()
+            with patch("services_logs.search_logs", return_value=SimpleNamespace(events=[])), \
+                 patch("services_logs.get_log_stats", return_value={}):
+                single = services_ai_dossier.build_player_dossier_payload(db, 1, now)
+                context = DossierBatchContext(db, [1, 2], now)
+                batched = services_ai_dossier.build_player_dossier_payload(db, 1, now, batch_context=context)
+
+            self.assertEqual(
+                dossier_input_hash(build_moderation_packet(single)),
+                dossier_input_hash(build_moderation_packet(batched)),
+            )
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_batch_reports_selection_and_enqueue_metrics(self):
+        with patch("database.SessionLocal") as session_factory, \
+             patch.object(services_ai_dossier, "select_active_player_ids", return_value=[1, 2]), \
+             patch.object(
+                 services_ai_dossier,
+                 "enqueue_dossier_if_needed",
+                 side_effect=[(None, True), (object(), False)],
+             ):
+            db = session_factory.return_value
+            result = services_ai_dossier._run_dossier_batch(
+                requested_by_admin_id=99,
+                limit=None,
+                source="manual_batch",
+            )
+
+        assert result["selected"] == 2
+        assert result["queued"] == 1
+        assert result["new_records"] == 1
+        assert result["hash_checked"] == 2
+        assert result["unchanged"] == 1
+        assert result["skipped"] == 1
+        assert result["errors"] == 0
+        assert result["selection_ms"] >= 0
+        assert result["enqueue_ms"] >= 0
 
     def test_enqueue_is_idempotent_for_running_player(self):
         engine = create_engine("sqlite+pysqlite:///:memory:")

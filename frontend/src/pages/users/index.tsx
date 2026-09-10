@@ -36,7 +36,12 @@ export function UsersPage() {
   const [groupName, setGroupName] = useState("")
   const [groupPerms, setGroupPerms] = useState<PermissionValue>({})
 
-  const { data, isLoading } = useQuery({ queryKey: ["admin-users"], queryFn: () => api.get<UsersResponse>("/api/v1/admin/users") })
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-users"],
+    queryFn: () => api.get<UsersResponse>("/api/v1/admin/users"),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  })
 
   const filteredAdmins = useMemo(() => {
     const query = search.trim().toLowerCase()

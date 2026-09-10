@@ -94,7 +94,7 @@ def _wake_worker() -> None:
 
 
 @router.get("/api/v1/admin/players/{player_id}/ai-dossier")
-async def get_player_ai_dossier(
+def get_player_ai_dossier(
     player_id: int,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -129,7 +129,7 @@ async def request_player_ai_dossier(
 
 
 @router.post("/api/v1/admin/ai-dossiers/test-run", status_code=202)
-async def test_run_ai_dossiers(
+def test_run_ai_dossiers(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -161,7 +161,7 @@ async def run_active_ai_dossiers_now(
 
 
 @router.get("/api/v1/admin/ai-dossiers/config")
-async def get_ai_dossier_config(
+def get_ai_dossier_config(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -171,7 +171,7 @@ async def get_ai_dossier_config(
 
 
 @router.get("/api/v1/admin/ai-dossiers/overview")
-async def get_ai_dossier_overview(
+def get_ai_dossier_overview(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -180,7 +180,7 @@ async def get_ai_dossier_overview(
 
 
 @router.get("/api/v1/admin/ai-dossiers/runs")
-async def get_ai_dossier_runs(
+def get_ai_dossier_runs(
     limit: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -190,7 +190,7 @@ async def get_ai_dossier_runs(
 
 
 @router.get("/api/v1/admin/ai-dossiers/task-log")
-async def get_ai_task_log(
+def get_ai_task_log(
     kind: str = Query("", max_length=30),
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -206,7 +206,7 @@ async def get_ai_task_log(
 
 
 @router.get("/api/v1/admin/ai-dossiers/players")
-async def get_ai_dossier_players(
+def get_ai_dossier_players(
     q: str = Query("", max_length=100),
     limit: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db),

@@ -30,6 +30,7 @@
 import logging
 import os
 import queue
+import sys
 import threading
 import time
 from collections import deque
@@ -69,6 +70,9 @@ _last_recorded_lock = threading.Lock()
 # (GIL), а лёгкая гонка при чтении диагностического буфера не критична.
 _history: Deque[Dict[str, Any]] = deque(maxlen=HISTORY_MAXLEN)
 _latest_event_loop_lag_ms: float = 0.0
+_active_requests: Dict[int, Dict[str, Any]] = {}
+_active_requests_lock = threading.Lock()
+_request_sequence = 0
 
 
 @dataclass(frozen=True)
@@ -184,6 +188,62 @@ def _prune_old(db) -> None:
     db.commit()
 
 
+def begin_request(method: str, path: str) -> int:
+    """Register a request without query parameters or user-controlled data."""
+    global _request_sequence
+    with _active_requests_lock:
+        _request_sequence += 1
+        request_id = _request_sequence
+        _active_requests[request_id] = {
+            "request_id": request_id,
+            "method": method,
+            "path": path,
+            "started_at": time.monotonic(),
+        }
+    return request_id
+
+
+def end_request(request_id: int) -> None:
+    with _active_requests_lock:
+        _active_requests.pop(request_id, None)
+
+
+def get_active_requests() -> list[dict[str, Any]]:
+    now = time.monotonic()
+    with _active_requests_lock:
+        return [
+            {
+                "request_id": item["request_id"],
+                "method": item["method"],
+                "path": item["path"],
+                "age_ms": round((now - item["started_at"]) * 1000, 1),
+            }
+            for item in _active_requests.values()
+        ]
+
+
+def _event_loop_sample() -> dict[str, Any]:
+    frame = sys._current_frames().get(threading.get_ident())
+    stack = []
+    if frame is not None:
+        import traceback
+        stack = traceback.format_stack(frame)[-12:]
+    scheduler_snapshot = {}
+    try:
+        from task_scheduler import scheduler
+        scheduler_snapshot = {
+            "active_tasks": scheduler.active_tasks(),
+            "overlap": scheduler.overlap_snapshot(),
+        }
+    except Exception:
+        pass
+    return {
+        "stack": stack,
+        "active_requests": get_active_requests(),
+        "scheduler": scheduler_snapshot,
+    }
+
+
 # ── 1. Event-loop watchdog ──────────────────────────────────────────────────
 
 async def event_loop_watchdog() -> None:
@@ -203,12 +263,15 @@ async def event_loop_watchdog() -> None:
         _latest_event_loop_lag_ms = max(0.0, lag) * 1000
 
         if lag >= EVENT_LOOP_LAG_THRESHOLD_S:
+            sample = _event_loop_sample()
             logger.warning(
-                "[PerfMonitor] Event loop lag: %.2fs (порог %.2fs) — весь сайт "
-                "не отвечал никому это время", lag, EVENT_LOOP_LAG_THRESHOLD_S,
+                "[PerfMonitor] Event loop lag: %.2fs (порог %.2fs) active_requests=%s scheduler=%s",
+                lag, EVENT_LOOP_LAG_THRESHOLD_S,
+                sample["active_requests"], sample["scheduler"],
             )
             if _should_record("event_loop_lag", "event_loop_lag"):
-                record_anomaly("event_loop_lag", round(lag, 3))
+                import json
+                record_anomaly("event_loop_lag", round(lag, 3), detail=json.dumps(sample, ensure_ascii=False, default=str)[-4000:])
 
 
 # ── 2. Slow HTTP requests ────────────────────────────────────────────────────

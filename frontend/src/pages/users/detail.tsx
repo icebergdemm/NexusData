@@ -28,7 +28,12 @@ export function UserDetailPage() {
   const queryClient = useQueryClient()
   const [keysOpen, setKeysOpen] = useState(false)
 
-  const { data: usersData } = useQuery({ queryKey: ["admin-users"], queryFn: () => api.get<UsersResponse>("/api/v1/admin/users") })
+  const { data: usersData } = useQuery({
+    queryKey: ["admin-users"],
+    queryFn: () => api.get<UsersResponse>("/api/v1/admin/users"),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  })
   const { data: trace, isLoading, isError } = useQuery({
     queryKey: ["admin-authorization", adminId],
     queryFn: () => api.get<AuthorizationTrace>(`/api/v1/admin/users/${adminId}/authorization`),

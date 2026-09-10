@@ -21,6 +21,9 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+_SFTP_NOT_CONFIGURED_COOLDOWN_SECONDS = 900.0
+_sftp_not_configured_last_logged: dict[int, float] = {}
+_sftp_not_configured_lock = threading.Lock()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Data structures
@@ -911,7 +914,12 @@ def refresh_logs_for_server(server_number: int):
 
     mgr = LogSFTPManager(server_number)
     if not mgr.is_configured():
-        logger.debug(f"Logs SFTP not configured for server {server_number}, skipping")
+        now = time.monotonic()
+        with _sftp_not_configured_lock:
+            last_logged = _sftp_not_configured_last_logged.get(server_number, 0.0)
+            if now - last_logged >= _SFTP_NOT_CONFIGURED_COOLDOWN_SECONDS:
+                _sftp_not_configured_last_logged[server_number] = now
+                logger.debug("Logs SFTP not configured for server %s, skipping", server_number)
         return
 
     safe_name = server_name.replace(' ', '_').replace('/', '_')

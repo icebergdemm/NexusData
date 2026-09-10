@@ -26,6 +26,7 @@ import queue
 import time
 import logging
 import traceback
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Callable, Any, Optional, Dict
 from dataclasses import dataclass, field
@@ -34,6 +35,15 @@ from enum import IntEnum
 logger = logging.getLogger(__name__)
 
 SLOW_TASK_WARNING_SECONDS = 5.0
+
+
+def _percentile(samples, percentile: float) -> Optional[int]:
+    """Return a nearest-rank percentile from a bounded sample window."""
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    index = min(len(ordered) - 1, max(0, int(len(ordered) * percentile + 0.999999) - 1))
+    return int(ordered[index])
 
 
 class Priority(IntEnum):
@@ -47,7 +57,9 @@ class Priority(IntEnum):
 @dataclass(order=True)
 class _Task:
     priority: int
+    sequence: int
     submitted_at: float = field(compare=False)
+    submitted_wall_at: datetime = field(compare=False)
     task_id: str = field(compare=False)
     fn: Callable = field(compare=False)
     args: tuple = field(compare=False)
@@ -106,6 +118,9 @@ class TaskScheduler:
         self._periodic_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._task_stats: Dict[str, dict] = {}
+        self._active_tasks: Dict[str, dict] = {}
+        self._sequence = 0
+        self._stats_window_size = 128
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -173,17 +188,33 @@ class TaskScheduler:
         if task_id is None:
             task_id = f"{fn.__name__}_{time.monotonic_ns()}"
 
+        submitted_at = time.monotonic()
+        submitted_wall_at = datetime.utcnow()
         with self._lock:
             if deduplicate and task_id in self._active_ids:
+                stats = self._task_stats.setdefault(task_id, self._new_task_stats(task_id))
+                stats["duplicate_drops"] += 1
                 return task_id  # already scheduled / running
 
             self._active_ids.add(task_id)
             result = TaskResult(task_id)
             self._results[task_id] = result
+            self._sequence += 1
+            self._active_tasks[task_id] = {
+                "task_id": task_id,
+                "priority": int(priority),
+                "status": "pending",
+                "submitted_at": submitted_wall_at,
+                "submitted_monotonic": submitted_at,
+                "started_at": None,
+                "started_monotonic": None,
+            }
 
         task = _Task(
             priority=int(priority),
-            submitted_at=time.monotonic(),
+            sequence=self._sequence,
+            submitted_at=submitted_at,
+            submitted_wall_at=submitted_wall_at,
             task_id=task_id,
             fn=fn,
             args=args,
@@ -213,15 +244,34 @@ class TaskScheduler:
     def task_stats(self) -> list:
         """Return compact lifetime counters for each known task id."""
         with self._lock:
-            public_fields = (
-                "task_id", "runs", "errors", "timeouts", "last_duration_ms",
-                "avg_duration_ms", "max_duration_ms", "last_status",
-                "last_finished_at", "queue_wait_ms",
-            )
-            return [
-                {field: stats[field] for field in public_fields}
-                for stats in self._task_stats.values()
-            ]
+            return [self._public_task_stats(stats) for stats in self._task_stats.values()]
+
+    def active_tasks(self) -> list:
+        """Return pending/running tasks with bounded live timing details."""
+        now = time.monotonic()
+        with self._lock:
+            rows = []
+            for item in self._active_tasks.values():
+                started = item["started_monotonic"]
+                submitted = item["submitted_monotonic"]
+                rows.append({
+                    "task_id": item["task_id"],
+                    "priority": item["priority"],
+                    "status": item["status"],
+                    "submitted_at": item["submitted_at"].isoformat(),
+                    "started_at": item["started_at"].isoformat() if item["started_at"] else None,
+                    "queue_wait_ms": max(0, int(((started or now) - submitted) * 1000)),
+                    "elapsed_ms": max(0, int((now - started) * 1000)) if started else None,
+                })
+            return sorted(rows, key=lambda row: (row["priority"], row["submitted_at"], row["task_id"]))
+
+    def overlap_snapshot(self) -> dict:
+        active = self.active_tasks()
+        return {
+            "active_count": len(active),
+            "task_ids": [item["task_id"] for item in active],
+            "overlap": len(active) > 1,
+        }
 
     def record_external_run(
         self,
@@ -230,6 +280,7 @@ class TaskScheduler:
         status: str,
         duration_ms: int,
         queue_wait_ms: int = 0,
+        run_type: str = "external",
     ) -> None:
         """Record a run performed by a worker outside this scheduler queue.
 
@@ -244,6 +295,7 @@ class TaskScheduler:
                 duration_ms=duration_ms,
                 queue_wait_ms=queue_wait_ms,
                 finished_at=datetime.utcnow(),
+                run_type=run_type,
             )
 
     def register_periodic(
@@ -266,6 +318,7 @@ class TaskScheduler:
             "kwargs": kwargs or {},
             "timeout": timeout,
             "last_run": 0.0,
+            "coalesced_runs": 0,
         })
         logger.info(f"[Scheduler] Registered periodic task '{task_id or fn.__name__}' every {interval_secs}s")
 
@@ -286,9 +339,15 @@ class TaskScheduler:
                 self._queue.task_done()
                 continue
 
+            started_monotonic = time.monotonic()
             result.status = "running"
             result.started_at = datetime.utcnow()
-            started_monotonic = time.monotonic()
+            with self._lock:
+                active = self._active_tasks.get(task.task_id)
+                if active:
+                    active["status"] = "running"
+                    active["started_at"] = result.started_at
+                    active["started_monotonic"] = started_monotonic
             logger.debug(f"[Scheduler] [{thread_name}] Running '{task.task_id}'")
 
             try:
@@ -335,12 +394,14 @@ class TaskScheduler:
                 queue_wait_ms = max(0, int((started_monotonic - task.submitted_at) * 1000))
                 with self._lock:
                     self._active_ids.discard(task.task_id)
+                    self._active_tasks.pop(task.task_id, None)
                     self._record_task_stats_locked(
                         task.task_id,
                         status=result.status,
                         duration_ms=duration_ms,
                         queue_wait_ms=queue_wait_ms,
                         finished_at=result.finished_at,
+                        run_type="scheduled",
                     )
                 self._queue.task_done()
                 if result.status == "done" and duration_ms >= SLOW_TASK_WARNING_SECONDS * 1000:
@@ -359,8 +420,62 @@ class TaskScheduler:
         duration_ms: int,
         queue_wait_ms: int,
         finished_at: Optional[datetime],
+        run_type: str = "scheduled",
     ) -> None:
-        stats = self._task_stats.setdefault(task_id, {
+        stats = self._task_stats.setdefault(task_id, self._new_task_stats(task_id))
+        duration_ms = max(0, int(duration_ms or 0))
+        queue_wait_ms = max(0, int(queue_wait_ms or 0))
+        stats["runs"] += 1
+        stats["errors"] += int(status in {"error", "failed"})
+        stats["timeouts"] += int(status == "timeout")
+        stats["total_duration_ms"] += duration_ms
+        stats["last_duration_ms"] = duration_ms
+        stats["avg_duration_ms"] = round(stats["total_duration_ms"] / stats["runs"], 1)
+        stats["max_duration_ms"] = max(stats["max_duration_ms"] or 0, duration_ms)
+        stats["last_status"] = status
+        stats["last_finished_at"] = finished_at.isoformat() if finished_at else None
+        stats["queue_wait_ms"] = queue_wait_ms
+        stats["duration_samples"].append(duration_ms)
+        stats["queue_wait_samples"].append(queue_wait_ms)
+        stats["duration_p95_ms"] = _percentile(stats["duration_samples"], 0.95)
+        stats["duration_p99_ms"] = _percentile(stats["duration_samples"], 0.99)
+        stats["queue_wait_p95_ms"] = _percentile(stats["queue_wait_samples"], 0.95)
+        stats["queue_wait_p99_ms"] = _percentile(stats["queue_wait_samples"], 0.99)
+        stats["sample_count"] = len(stats["duration_samples"])
+        stats["run_types"].setdefault(run_type, 0)
+        stats["run_types"][run_type] += 1
+
+    def _periodic_loop_once(self, now: Optional[float] = None) -> None:
+        now = time.monotonic() if now is None else now
+        for p in self._periodic:
+            if now - p["last_run"] < p["interval"]:
+                continue
+            if p["last_run"]:
+                missed = max(0, int((now - p["last_run"]) // p["interval"]) - 1)
+                p["coalesced_runs"] += missed
+                if missed:
+                    with self._lock:
+                        stats = self._task_stats.setdefault(p["task_id"], self._new_task_stats(p["task_id"]))
+                        stats["coalesced_runs"] += missed
+            p["last_run"] = now
+            self.submit(
+                p["fn"],
+                priority=p["priority"],
+                task_id=p["task_id"],
+                args=p["args"],
+                kwargs=p["kwargs"],
+                timeout=p["timeout"],
+                deduplicate=True,
+            )
+
+    def _periodic_loop(self):
+        logger.info("[Scheduler] Periodic scheduler started")
+        while not self._stop_event.is_set():
+            self._periodic_loop_once()
+            time.sleep(5)  # check every 5 seconds
+
+    def _new_task_stats(self, task_id: str) -> dict:
+        return {
             "task_id": task_id,
             "runs": 0,
             "errors": 0,
@@ -372,36 +487,25 @@ class TaskScheduler:
             "last_status": None,
             "last_finished_at": None,
             "queue_wait_ms": None,
-        })
-        duration_ms = max(0, int(duration_ms or 0))
-        stats["runs"] += 1
-        stats["errors"] += int(status in {"error", "failed"})
-        stats["timeouts"] += int(status == "timeout")
-        stats["total_duration_ms"] += duration_ms
-        stats["last_duration_ms"] = duration_ms
-        stats["avg_duration_ms"] = round(stats["total_duration_ms"] / stats["runs"], 1)
-        stats["max_duration_ms"] = max(stats["max_duration_ms"] or 0, duration_ms)
-        stats["last_status"] = status
-        stats["last_finished_at"] = finished_at.isoformat() if finished_at else None
-        stats["queue_wait_ms"] = max(0, int(queue_wait_ms or 0))
+            "duration_samples": deque(maxlen=self._stats_window_size),
+            "queue_wait_samples": deque(maxlen=self._stats_window_size),
+            "duration_p95_ms": None,
+            "duration_p99_ms": None,
+            "queue_wait_p95_ms": None,
+            "queue_wait_p99_ms": None,
+            "sample_count": 0,
+            "duplicate_drops": 0,
+            "coalesced_runs": 0,
+            "run_types": {},
+        }
 
-    def _periodic_loop(self):
-        logger.info("[Scheduler] Periodic scheduler started")
-        while not self._stop_event.is_set():
-            now = time.monotonic()
-            for p in self._periodic:
-                if now - p["last_run"] >= p["interval"]:
-                    p["last_run"] = now
-                    self.submit(
-                        p["fn"],
-                        priority=p["priority"],
-                        task_id=p["task_id"],
-                        args=p["args"],
-                        kwargs=p["kwargs"],
-                        timeout=p["timeout"],
-                        deduplicate=True,
-                    )
-            time.sleep(5)  # check every 5 seconds
+    @staticmethod
+    def _public_task_stats(stats: dict) -> dict:
+        return {
+            key: value
+            for key, value in stats.items()
+            if key not in {"total_duration_ms", "duration_samples", "queue_wait_samples"}
+        }
 
     def _evict_old_results(self):
         """Remove completed/errored results older than result_ttl."""

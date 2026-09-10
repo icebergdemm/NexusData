@@ -414,6 +414,16 @@ def create_app() -> FastAPI:
         from healthz import build_healthz_response
         return build_healthz_response(runtime_control.read_state())
 
+    @app.get("/livez")
+    async def livez():
+        from healthz import build_liveness_response
+        return build_liveness_response()
+
+    @app.get("/readyz")
+    async def readyz():
+        from healthz import build_readiness_response
+        return build_readiness_response(runtime_control.read_state())
+
     @app.get("/admin")
     async def spa_root():
         return await _spa_index_response()
@@ -605,8 +615,15 @@ def create_app() -> FastAPI:
         # the threshold is actually exceeded, inside record_slow_request.
         import time as _time_perf
         _req_t0 = _time_perf.monotonic()
+        from services_perf_monitor import begin_request, end_request
+        _perf_request_id = begin_request(request.method, request.url.path)
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except BaseException:
+            end_request(_perf_request_id)
+            raise
+        end_request(_perf_request_id)
 
         try:
             from services_perf_monitor import record_slow_request
@@ -618,7 +635,7 @@ def create_app() -> FastAPI:
         # flood. Keep failed application responses visible through the app
         # logger instead; health polling is intentionally excluded because a
         # deliberate maintenance/degraded 503 is expected and frequent.
-        if response.status_code >= 400 and request.url.path != "/healthz":
+        if response.status_code >= 400 and request.url.path not in {"/healthz", "/livez", "/readyz"}:
             log = logger.error if response.status_code >= 500 else logger.warning
             log("HTTP %s %s -> %s", request.method, request.url.path, response.status_code)
 
@@ -638,7 +655,7 @@ def create_app() -> FastAPI:
     # before security_and_csrf_middleware and every route/DB call above when
     # the site is in maintenance mode, a subsystem was toggled off via the
     # console (see console.py), or the database failed to initialize.
-    _MAINTENANCE_BYPASS_PREFIXES = ("/healthz", "/static", "/admin/assets")
+    _MAINTENANCE_BYPASS_PREFIXES = ("/healthz", "/livez", "/readyz", "/static", "/admin/assets")
 
     @app.middleware("http")
     async def maintenance_gate_middleware(request, call_next):
