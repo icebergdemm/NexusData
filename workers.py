@@ -598,6 +598,25 @@ def task_finalize_replay_streams() -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def task_process_voice_profiles() -> dict:
+    """Process one queued replay voice-profile job when explicitly enabled."""
+    from config import get_settings
+
+    if not get_settings().voice_profiles_enabled:
+        return {"status": "disabled"}
+    from services_voice_profiles import process_voice_profile_job
+
+    db = SessionLocal()
+    try:
+        return process_voice_profile_job(db)
+    except Exception:
+        db.rollback()
+        logger.exception("Voice profile worker failed")
+        raise
+    finally:
+        db.close()
+
+
 def task_cleanup_communications() -> dict:
     """Delete expired chat/voice metadata using the admin-configured retention."""
     from routes.communications import purge_expired_communications
@@ -1523,6 +1542,7 @@ def _start_simple_workers():
         (task_check_rating_reward_schedules, 5 * 60),
         (task_cleanup_replays, 6 * 60 * 60),
         (task_finalize_replay_streams, 60),
+        (task_process_voice_profiles, 60),
         (task_cleanup_communications, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
@@ -1623,6 +1643,16 @@ def _start_scheduler():
         interval_secs=60,
         priority=Priority.BACKGROUND,
         task_id="replay_stream_finalize",
+        timeout=None,
+    )
+
+    # Voice profile backfill/processing is deliberately disabled by config
+    # until historical mappings and audio quality have been reviewed.
+    scheduler.register_periodic(
+        task_process_voice_profiles,
+        interval_secs=60,
+        priority=Priority.BACKGROUND,
+        task_id="voice_profile_worker",
         timeout=None,
     )
 

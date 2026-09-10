@@ -291,6 +291,12 @@ class Settings(BaseSettings):
     replays_upload_dir: str = "uploads/replays"
     replays_retention_days: int = 30  # auto-delete demos older than this
 
+    # Replay-independent voice profile processing. Disabled until the first
+    # historical backfill has been reviewed manually.
+    voice_profiles_enabled: bool = False
+    voice_profiles_process_new_replays: bool = False
+    voice_profile_decoder_path: str = ""
+
     # Steam Web API (avatar auto-fetch) — https://steamcommunity.com/dev/apikey
     steam_api_key: str = ""
 

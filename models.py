@@ -1107,6 +1107,139 @@ class RoundReplay(Base):
     manual_round_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True)
 
 
+class VoiceProfileJob(Base):
+    """Durable backfill/worker run for replay-independent voice profiles."""
+
+    __tablename__ = "voice_profile_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode = Column(String(20), nullable=False, default="backfill")
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    replay_ids = Column(JSON, nullable=True)
+    current_replay_id = Column(Integer, nullable=True, index=True)
+    total_replays = Column(Integer, nullable=False, default=0)
+    processed_replays = Column(Integer, nullable=False, default=0)
+    mapped_speakers = Column(Integer, nullable=False, default=0)
+    unresolved_speakers = Column(Integer, nullable=False, default=0)
+    materialized_clips = Column(Integer, nullable=False, default=0)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(String(2000), nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
+class ReplayVoiceSpeaker(Base):
+    """One local speaker ID and its current identity resolution state."""
+
+    __tablename__ = "replay_voice_speakers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    replay_id = Column(Integer, ForeignKey("round_replays.id", ondelete="CASCADE"), nullable=False, index=True)
+    speaker_id = Column(Integer, nullable=False)
+    names = Column(JSON, nullable=False, default=lambda: [])
+    candidate_profiles = Column(JSON, nullable=False, default=lambda: [])
+    steam_id = Column(String(50), nullable=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True, index=True)
+    resolution_status = Column(String(20), nullable=False, default="unresolved", index=True)
+    mapping_source = Column(String(32), nullable=True)
+    packet_count = Column(Integer, nullable=False, default=0)
+    radio_packet_count = Column(Integer, nullable=False, default=0)
+    start_ms = Column(Integer, nullable=True)
+    end_ms = Column(Integer, nullable=True)
+    decided_by_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    replay = relationship("RoundReplay")
+
+    __table_args__ = (
+        UniqueConstraint("replay_id", "speaker_id", name="uq_replay_voice_speaker"),
+        Index("ix_replay_voice_speakers_replay_status", "replay_id", "resolution_status"),
+    )
+
+
+class ReplayVoiceSegment(Base):
+    """A continuous voice segment discovered in one replay."""
+
+    __tablename__ = "replay_voice_segments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    replay_id = Column(Integer, ForeignKey("round_replays.id", ondelete="CASCADE"), nullable=False, index=True)
+    speaker_id = Column(Integer, nullable=False)
+    steam_id = Column(String(50), nullable=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True, index=True)
+    start_ms = Column(Integer, nullable=False)
+    end_ms = Column(Integer, nullable=False)
+    packet_count = Column(Integer, nullable=False, default=0)
+    radio_packet_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    replay = relationship("RoundReplay")
+
+    __table_args__ = (
+        UniqueConstraint("replay_id", "speaker_id", "start_ms", "end_ms", name="uq_replay_voice_segment"),
+        Index("ix_replay_voice_segments_steam_time", "steam_id", "start_ms"),
+    )
+
+
+class VoiceProfileClip(Base):
+    """A durable materialized clip whose source replay may later be deleted."""
+
+    __tablename__ = "voice_profile_clips"
+
+    id = Column(Integer, primary_key=True, index=True)
+    archive_key = Column(String(64), nullable=False, unique=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True, index=True)
+    source_replay_id = Column(Integer, nullable=True, index=True)
+    source_replay_filename = Column(String(500), nullable=False)
+    source_replay_hash = Column(String(64), nullable=False)
+    speaker_id = Column(Integer, nullable=False)
+    start_ms = Column(Integer, nullable=False)
+    end_ms = Column(Integer, nullable=False)
+    packet_count = Column(Integer, nullable=False, default=0)
+    radio_packet_count = Column(Integer, nullable=False, default=0)
+    ndvc_filename = Column(String(500), nullable=True, unique=True)
+    wav_filename = Column(String(500), nullable=False, unique=True)
+    storage_format = Column(String(32), nullable=False, default="wav-gzip")
+    storage_size = Column(Integer, nullable=False, default=0)
+    archive_version = Column(Integer, nullable=False, default=1)
+    recorded_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    player = relationship("PlayerData", foreign_keys=[player_id])
+
+    __table_args__ = (
+        Index("ix_voice_profile_clips_steam_time", "steam_id", "recorded_at", "start_ms"),
+        Index("ix_voice_profile_clips_source", "source_replay_id", "speaker_id"),
+    )
+
+
+class VoiceProfileSelection(Base):
+    """Current early/middle/latest slots for one stable Steam/EOS identity."""
+
+    __tablename__ = "voice_profile_selections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    slot = Column(Integer, nullable=False)
+    band = Column(String(16), nullable=False)
+    clip_id = Column(Integer, ForeignKey("voice_profile_clips.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    clip = relationship("VoiceProfileClip")
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "slot", name="uq_voice_profile_selection_slot"),
+        UniqueConstraint("steam_id", "clip_id", name="uq_voice_profile_selection_clip"),
+        Index("ix_voice_profile_selections_steam_slot", "steam_id", "slot"),
+    )
+
+
 class PlayerCommunication(Base):
     """A chat message or one final voice utterance from a game server."""
     __tablename__ = "player_communications"

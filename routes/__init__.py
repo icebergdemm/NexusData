@@ -35,6 +35,7 @@ from .perf_monitor import router as perf_monitor_router
 from .ai_dossier import router as ai_dossier_router
 from .communications import router as communications_router
 from .server_restart import router as server_restart_router
+from .voice_profiles import router as voice_profiles_router
 
 __all__ = [
     "status_router",
@@ -85,4 +86,5 @@ __all__ = [
     "ai_dossier_router",
     "communications_router",
     "server_restart_router",
+    "voice_profiles_router",
 ]

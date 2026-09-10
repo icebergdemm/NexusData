@@ -48,6 +48,7 @@ const AdministrationPage = lazy(() => import("@/pages/administration").then(({ A
 const AICenterPage = lazy(() => import("@/pages/ai-center").then(({ AICenterPage }) => ({ default: AICenterPage })))
 const LogsPage = lazy(() => import("@/pages/logs").then(({ LogsPage }) => ({ default: LogsPage })))
 const SoundsPage = lazy(() => import("@/pages/sounds").then(({ SoundsPage }) => ({ default: SoundsPage })))
+const VoiceProfilesPage = lazy(() => import("@/pages/voice-profiles").then(({ VoiceProfilesPage }) => ({ default: VoiceProfilesPage })))
 const RespawnDollsPage = lazy(() => import("@/pages/respawn-dolls").then(({ RespawnDollsPage }) => ({ default: RespawnDollsPage })))
 const AchievementsPage = lazy(() => import("@/pages/achievements").then(({ AchievementsPage }) => ({ default: AchievementsPage })))
 const DocumentsPage = lazy(() => import("@/pages/documents").then(({ DocumentsPage }) => ({ default: DocumentsPage })))
@@ -110,6 +111,7 @@ export default function App() {
           <Route path="moderation" element={<ModerationPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="sounds" element={<SoundsPage />} />
+          <Route path="voice-profiles" element={<VoiceProfilesPage />} />
           <Route path="respawn-dolls" element={<RespawnDollsPage />} />
           <Route path="achievements" element={<AchievementsPage />} />
           <Route path="punishments" element={<PunishmentsPage />} />

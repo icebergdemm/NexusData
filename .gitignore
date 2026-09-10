@@ -67,9 +67,17 @@ data/
 # ── Не нужно на проде (dev-скрипты, миграции, документация) ──────────────
 # Рантайм-миграции живут в database.py (init_db). Эти .sql — исторические,
 # приложением не читаются.
-/migrations/
+/migrations/*
+!/migrations/030_voice_profiles.sql
 # Одноразовые/вспомогательные скрипты и dev-инструменты
-/tools/
+/tools/*
+!/tools/voice_profile_backfill.py
+!/tools/VoiceProfileDecoder/
+!/tools/VoiceProfileDecoder/*
+/tools/VoiceProfileDecoder/bin/
+/tools/VoiceProfileDecoder/obj/
+/tests/VoiceProfileDecoder.Tests/bin/
+/tests/VoiceProfileDecoder.Tests/obj/
 migrate_logs_json_to_sqlite.py
 LevelTransition.cs
 # Проектная документация (dev/API/дизайн). Раннбуки в deploy/*.md остаются.
