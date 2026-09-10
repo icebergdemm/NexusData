@@ -461,6 +461,13 @@ def needs_materialization(clip, wav_path: Path, ndvc_path: Path) -> bool:
     )
 
 
+def stale_profile_clips(clips, candidate_replay_ids: set[int]):
+    """Keep provenance clips whose source replay is no longer available."""
+    if not candidate_replay_ids:
+        return []
+    return [clip for clip in clips if int(clip.source_replay_id) in candidate_replay_ids]
+
+
 def _decoder_command(decoder_path: str | os.PathLike[str], arguments: Sequence[str]) -> list[str]:
     path = str(decoder_path)
     if path.lower().endswith(".dll"):
@@ -746,7 +753,8 @@ class VoiceProfileService:
     def reconcile_steam_id(self, steam_id: str) -> int:
         from models import VoiceProfileClip, VoiceProfileSelection
 
-        selected = select_profile_candidates(self._profile_candidates(steam_id))
+        candidates = self._profile_candidates(steam_id)
+        selected = select_profile_candidates(candidates)
         if not selected:
             return 0
         if not self.decoder_path:
@@ -813,11 +821,12 @@ class VoiceProfileService:
             self.db.add(VoiceProfileSelection(steam_id=steam_id, slot=slot, band=band, clip_id=clip.id))
             selected_ids.add(clip.id)
         self.db.flush()
-        stale = self.db.query(VoiceProfileClip).filter(
+        stale_candidates = self.db.query(VoiceProfileClip).filter(
             VoiceProfileClip.steam_id == steam_id,
             ~VoiceProfileClip.id.in_(selected_ids or {-1}),
         ).all()
-        for clip in stale:
+        candidate_replay_ids = {int(candidate["source_replay_id"]) for candidate in candidates}
+        for clip in stale_profile_clips(stale_candidates, candidate_replay_ids):
             for relative in (clip.wav_filename, clip.ndvc_filename):
                 if relative:
                     try:

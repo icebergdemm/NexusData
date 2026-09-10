@@ -13,6 +13,7 @@ from services_voice_profiles import (
     extract_voice_packet_records,
     group_voice_packets,
     read_vpk1,
+    stale_profile_clips,
     select_profile_candidates,
     write_vpk1,
     write_wave_slice,
@@ -204,6 +205,14 @@ def test_old_profile_archive_version_is_materialized_again(tmp_path):
 
     assert needs_materialization(old_clip, wav_path, ndvc_path) is True
     assert needs_materialization(current_clip, wav_path, ndvc_path) is False
+
+
+def test_stale_cleanup_keeps_clips_from_missing_source_replays():
+    missing = SimpleNamespace(source_replay_id=1060)
+    available = SimpleNamespace(source_replay_id=1061)
+
+    assert stale_profile_clips([missing, available], {1061}) == [available]
+    assert stale_profile_clips([missing], set()) == []
 
 
 def test_extract_voice_packets_supports_v4_and_reads_character_names(tmp_path):
