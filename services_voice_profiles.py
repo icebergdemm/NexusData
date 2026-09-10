@@ -19,6 +19,7 @@ import zipfile
 import wave
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import groupby
 from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator, Mapping, Sequence
 
@@ -729,55 +730,44 @@ class VoiceProfileService:
         )
         candidates = []
         replay_service = __import__("services_replays").ReplayService(self.db)
-        extraction_cache: dict[int, ReplayVoiceExtraction] = {}
-        segment_cache: dict[int, dict[tuple[int, int, int], dict]] = {}
-        speaker_packets_cache: dict[int, dict[int, list[VoicePacket]]] = {}
-        replay_hash_cache: dict[int, str] = {}
-        for segment, replay in rows:
+        rows.sort(key=lambda pair: int(pair[1].id))
+        for replay_id, replay_rows in groupby(rows, key=lambda pair: int(pair[1].id)):
+            replay_rows = list(replay_rows)
+            replay = replay_rows[0][1]
             path = Path(replay_service.get_file_path(replay))
             if not path.is_file():
                 continue
-            extraction = extraction_cache.get(replay.id)
-            if extraction is None:
-                extraction = extract_voice_packet_records(path)
-                extraction_cache[replay.id] = extraction
-                packets_by_speaker: dict[int, list[VoicePacket]] = {}
-                for packet in extraction.packets:
-                    packets_by_speaker.setdefault(packet.speaker_id, []).append(packet)
-                speaker_packets_cache[replay.id] = packets_by_speaker
-                replay_hash_cache[replay.id] = _file_sha256(path)
-                segment_cache[replay.id] = {
-                    (
-                        int(grouped["speaker_id"]),
-                        int(grouped["start_ms"]),
-                        int(grouped["end_ms"]),
-                    ): grouped
-                    for grouped in group_voice_packets(extraction.packets)
-                }
-            segment_data = segment_cache[replay.id].get(
-                (int(segment.speaker_id), int(segment.start_ms), int(segment.end_ms))
-            )
-            if segment_data is None:
-                continue
-            packets = speaker_packets_cache[replay.id].get(segment.speaker_id, [])
-            replay_hash = replay_hash_cache[replay.id]
-            candidate = {
-                "candidate_key": make_archive_key(steam_id, replay.id, segment.speaker_id, segment.start_ms, segment.end_ms),
-                "steam_id": steam_id,
-                "player_id": segment.player_id,
-                "source_replay_id": replay.id,
-                "source_replay_filename": replay.filename,
-                "source_replay_hash": replay_hash,
-                "recorded_at": replay.recorded_at or replay.uploaded_at,
-                "speaker_id": segment.speaker_id,
-                "start_ms": segment.start_ms,
-                "end_ms": segment.end_ms,
-                "packet_count": segment.packet_count,
-                "radio_packet_count": segment.radio_packet_count,
-                "packet_records": list(segment_data["packet_records"]),
+            extraction = extract_voice_packet_records(path)
+            segment_metadata = {
+                (
+                    int(grouped["speaker_id"]),
+                    int(grouped["start_ms"]),
+                    int(grouped["end_ms"]),
+                ): grouped
+                for grouped in group_voice_packets(extraction.packets)
             }
-            candidate["_all_speaker_packets"] = packets
-            candidates.append(candidate)
+            replay_hash = _file_sha256(path)
+            for segment, _ in replay_rows:
+                segment_data = segment_metadata.get(
+                    (int(segment.speaker_id), int(segment.start_ms), int(segment.end_ms))
+                )
+                if segment_data is None:
+                    continue
+                candidates.append({
+                    "candidate_key": make_archive_key(steam_id, replay.id, segment.speaker_id, segment.start_ms, segment.end_ms),
+                    "steam_id": steam_id,
+                    "player_id": segment.player_id,
+                    "source_replay_id": replay.id,
+                    "source_replay_filename": replay.filename,
+                    "source_replay_hash": replay_hash,
+                    "recorded_at": replay.recorded_at or replay.uploaded_at,
+                    "speaker_id": segment.speaker_id,
+                    "start_ms": segment.start_ms,
+                    "end_ms": segment.end_ms,
+                    "packet_count": segment.packet_count,
+                    "radio_packet_count": segment.radio_packet_count,
+                    "_source_replay_path": path,
+                })
         return candidates
 
     def reconcile_steam_id(self, steam_id: str) -> int:
@@ -796,6 +786,7 @@ class VoiceProfileService:
         with tempfile.TemporaryDirectory(prefix="voice-profile-materialize-") as temp_dir:
             temp_path = Path(temp_dir)
             stream_cache: dict[tuple[int, int], tuple[Path, list[dict]]] = {}
+            payload_cache: dict[int, tuple[dict[tuple[int, int, int], dict], dict[int, list[VoicePacket]]]] = {}
             for candidate in selected:
                 key = candidate["candidate_key"]
                 clip = self.db.query(VoiceProfileClip).filter(VoiceProfileClip.archive_key == key).first()
@@ -807,14 +798,38 @@ class VoiceProfileService:
                 wav_path = upload_root / wav_relative
                 ndvc_path = upload_root / ndvc_relative
                 if needs_materialization(clip, wav_path, ndvc_path):
-                    write_ndvc(ndvc_path, candidate["packet_records"])
+                    replay_id = int(candidate["source_replay_id"])
+                    payload = payload_cache.get(replay_id)
+                    if payload is None:
+                        extraction = extract_voice_packet_records(candidate["_source_replay_path"])
+                        grouped = {
+                            (
+                                int(segment["speaker_id"]),
+                                int(segment["start_ms"]),
+                                int(segment["end_ms"]),
+                            ): segment
+                            for segment in group_voice_packets(extraction.packets)
+                        }
+                        by_speaker: dict[int, list[VoicePacket]] = {}
+                        for packet in extraction.packets:
+                            by_speaker.setdefault(packet.speaker_id, []).append(packet)
+                        payload = (grouped, by_speaker)
+                        payload_cache[replay_id] = payload
+                    segment_data = payload[0].get(
+                        (int(candidate["speaker_id"]), int(candidate["start_ms"]), int(candidate["end_ms"]))
+                    )
+                    if segment_data is None:
+                        continue
+                    materialized_candidate = dict(candidate)
+                    materialized_candidate["packet_records"] = segment_data["packet_records"]
+                    write_ndvc(ndvc_path, materialized_candidate["packet_records"])
                     decoded = extract_segment_wav(
                         self.decoder_path,
-                        candidate["_all_speaker_packets"],
-                        candidate,
+                        payload[1].get(int(candidate["speaker_id"]), []),
+                        materialized_candidate,
                         temp_path,
                         stream_cache=stream_cache,
-                        stream_key=(int(candidate["source_replay_id"]), int(candidate["speaker_id"])),
+                        stream_key=(replay_id, int(candidate["speaker_id"])),
                     )
                     if decoded is None:
                         continue

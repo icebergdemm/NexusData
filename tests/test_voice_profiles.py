@@ -166,7 +166,7 @@ def test_extract_segment_wav_reuses_cached_speaker_stream(monkeypatch, tmp_path)
     assert second.read_bytes() == b"2:4"
 
 
-def test_profile_candidate_keeps_segment_packets_separate_from_speaker_stream(monkeypatch, tmp_path):
+def test_profile_candidate_metadata_does_not_retain_packet_payload(monkeypatch, tmp_path):
     first = VoicePacket(100, 42, b"first")
     later = VoicePacket(2_000, 42, b"later")
     replay_path = tmp_path / "replay.barodemo"
@@ -226,11 +226,11 @@ def test_profile_candidate_keeps_segment_packets_separate_from_speaker_stream(mo
     service.db = FakeDb()
     candidates = service._profile_candidates("76561198000000001")
 
-    assert candidates[0]["packet_records"] == [first]
-    assert candidates[0]["_all_speaker_packets"] == [first, later]
+    assert "packet_records" not in candidates[0]
+    assert "_all_speaker_packets" not in candidates[0]
 
 
-def test_profile_candidates_cache_replay_hash_and_speaker_packets(monkeypatch, tmp_path):
+def test_profile_candidates_cache_replay_hash_and_keep_metadata_light(monkeypatch, tmp_path):
     first = VoicePacket(100, 42, b"first")
     second = VoicePacket(2_000, 42, b"second")
     segment_one = SimpleNamespace(
@@ -298,7 +298,7 @@ def test_profile_candidates_cache_replay_hash_and_speaker_packets(monkeypatch, t
 
     assert len(candidates) == 2
     assert len(hash_calls) == 1
-    assert candidates[0]["_all_speaker_packets"] is candidates[1]["_all_speaker_packets"]
+    assert all("_all_speaker_packets" not in candidate for candidate in candidates)
 
 
 def test_old_profile_archive_version_is_materialized_again(tmp_path):
