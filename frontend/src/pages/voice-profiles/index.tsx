@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { HardDrive, Mic2, Play, Radio, RefreshCw, SkipForward, UserCheck } from "lucide-react"
+import { ChevronDown, HardDrive, Mic2, Play, Radio, RefreshCw, SkipForward, UserCheck } from "lucide-react"
 import { toast } from "sonner"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Badge } from "@/components/ui/badge"
@@ -70,40 +70,63 @@ function bandLabel(band: string | null) {
   return "без слота"
 }
 
-export function VoiceProfilePlayerCard({ profile }: { profile: VoiceProfilePlayer }) {
+export function VoiceProfilePlayerCard({
+  profile,
+  initiallyExpanded = false,
+}: {
+  profile: VoiceProfilePlayer
+  initiallyExpanded?: boolean
+}) {
+  const [expanded, setExpanded] = useState(initiallyExpanded)
+  const clipsId = `voice-profile-clips-${profile.steam_id}`
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-          <span>{profile.display_name}</span>
-          <Badge variant="outline">{profile.clips.length} клипов</Badge>
-          <span className="font-mono text-xs font-normal text-muted-foreground">{profile.steam_id}</span>
-        </CardTitle>
+    <Card className="overflow-hidden">
+      <CardHeader className="p-3 sm:p-4">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 text-left"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          aria-controls={clipsId}
+        >
+          <CardTitle className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span className="truncate">{profile.display_name}</span>
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{profile.clips.length} клипов</Badge>
+            <span className="font-mono text-[10px] font-normal text-muted-foreground">{profile.steam_id}</span>
+          </CardTitle>
+          <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+            {expanded ? "Скрыть" : "Показать"}
+            <ChevronDown className={`size-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </span>
+        </button>
       </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {profile.clips.map((clip) => (
-          <div key={clip.id} className="rounded-md border p-3">
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <Badge variant="secondary">slot {(clip.slot ?? 0) + 1}</Badge>
-              <Badge variant="outline">{bandLabel(clip.band)}</Badge>
-              {clip.radio_packet_count > 0 && <Badge variant="outline"><Radio className="size-3" /> radio</Badge>}
+      {expanded && (
+        <CardContent id={clipsId} className="grid gap-2 border-t px-3 pb-3 pt-3 sm:px-4 sm:pb-4 md:grid-cols-2 xl:grid-cols-3">
+          {profile.clips.map((clip) => (
+            <div key={clip.id} className="rounded-md border p-2">
+              <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                <Badge variant="secondary" className="px-1.5 py-0">slot {(clip.slot ?? 0) + 1}</Badge>
+                <Badge variant="outline" className="px-1.5 py-0">{bandLabel(clip.band)}</Badge>
+                {clip.radio_packet_count > 0 && <Badge variant="outline" className="px-1.5 py-0"><Radio className="size-3" /> radio</Badge>}
+              </div>
+              <audio
+                controls
+                preload="none"
+                src={clip.audio_url}
+                aria-label={`Клип ${clip.id}, replay ${clip.source_replay_id ?? "неизвестен"}`}
+                className="mt-2 h-8 w-full"
+              />
+              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                <span>Replay #{clip.source_replay_id ?? "—"}</span>
+                <span>{formatDuration(clip.start_ms, clip.end_ms)}</span>
+                <span>{clip.packet_count} пакетов</span>
+                <span className="inline-flex items-center gap-1"><HardDrive className="size-3" />{formatBytes(clip.storage_size)}</span>
+              </div>
             </div>
-            <audio
-              controls
-              preload="none"
-              src={clip.audio_url}
-              aria-label={`Клип ${clip.id}, replay ${clip.source_replay_id ?? "неизвестен"}`}
-              className="mt-3 h-9 w-full"
-            />
-            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-              <span>Replay #{clip.source_replay_id ?? "—"}</span>
-              <span>{formatDuration(clip.start_ms, clip.end_ms)}</span>
-              <span>{clip.packet_count} пакетов</span>
-              <span className="inline-flex items-center gap-1"><HardDrive className="size-3" />{formatBytes(clip.storage_size)}</span>
-            </div>
-          </div>
-        ))}
-      </CardContent>
+          ))}
+        </CardContent>
+      )}
     </Card>
   )
 }
@@ -201,11 +224,13 @@ export function VoiceProfilesPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-base font-semibold">Готовые профили</h2>
-          <span className="text-xs text-muted-foreground">Нажмите Play на нужном клипе</span>
+          <span className="text-xs text-muted-foreground">Нажмите на игрока, чтобы раскрыть клипы</span>
         </div>
         {profiles.isLoading && <p className="text-sm text-muted-foreground">Загрузка профилей…</p>}
         {!profiles.isLoading && !profiles.data?.players.length && <p className="text-sm text-muted-foreground">Готовых клипов пока нет.</p>}
-        {profiles.data?.players.map((profile) => <VoiceProfilePlayerCard key={profile.steam_id} profile={profile} />)}
+        <div className="space-y-2">
+          {profiles.data?.players.map((profile) => <VoiceProfilePlayerCard key={profile.steam_id} profile={profile} />)}
+        </div>
       </section>
 
       <Card>
