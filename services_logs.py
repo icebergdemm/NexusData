@@ -911,7 +911,7 @@ def refresh_logs_for_server(server_number: int):
 
     mgr = LogSFTPManager(server_number)
     if not mgr.is_configured():
-        logger.info(f"Logs SFTP not configured for server {server_number}, skipping")
+        logger.debug(f"Logs SFTP not configured for server {server_number}, skipping")
         return
 
     safe_name = server_name.replace(' ', '_').replace('/', '_')

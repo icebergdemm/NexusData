@@ -3188,6 +3188,7 @@ async def api_system_health(
             "running": len(running),
             "running_tasks": [t["task_id"] for t in running],
             "recent_tasks": sorted(tasks, key=lambda x: x.get("finished_at") or "", reverse=True)[:10],
+            "task_stats": scheduler.task_stats(),
         }
     except ImportError:
         result["scheduler"] = {"available": False, "note": "task_scheduler.py not deployed"}

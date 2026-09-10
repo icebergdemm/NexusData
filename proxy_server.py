@@ -51,7 +51,11 @@ import websockets
 import runtime_control
 from console import start_console_thread
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [proxy] %(message)s")
+# Keep the front door quiet on successful upstream traffic. Warnings still
+# matter here because they mean the backend or the client actually failed.
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s [proxy] %(message)s")
+for noisy_logger in ("httpx", "httpcore", "uvicorn.access"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 logger = logging.getLogger("proxy")
 
 PROXY_HOST = os.environ.get("PROXY_HOST", "0.0.0.0")
@@ -212,6 +216,9 @@ async def _proxy(request: Request) -> Response:
 
     response = StreamingResponse(_stream_body(), status_code=upstream.status_code)
     response.raw_headers = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in response_headers]
+    if upstream.status_code >= 400 and request.url.path != "/healthz":
+        log = logger.error if upstream.status_code >= 500 else logger.warning
+        log("Backend returned HTTP %s for %s %s", upstream.status_code, request.method, request.url.path)
     return response
 
 

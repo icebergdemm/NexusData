@@ -4,7 +4,7 @@ import { AlertTriangle, RotateCw } from "lucide-react"
 import { AppShell } from "@/components/layout/AppShell"
 import { OnboardingModal } from "@/components/layout/OnboardingModal"
 import { useCurrentAdmin } from "@/lib/auth"
-import { ApiError } from "@/lib/api"
+import { isMaintenanceError } from "@/lib/api"
 import { TicketsListPage } from "@/pages/tickets"
 
 // Keep the ticket inbox on the critical path and split every unrelated route.
@@ -62,7 +62,7 @@ const DocumentEditorPage = lazy(() =>
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isError, error, refetch } = useCurrentAdmin()
 
-  if (isError) {
+  if (isError && !isMaintenanceError(error)) {
     // The api client already hard-redirects to /login on 401 before this
     // ever renders — this only fires for network failures, 500s, or a 503
     // (maintenance/degraded, also caught globally by MaintenanceBanner).
@@ -73,7 +73,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
         <div>
           <p className="font-medium">Не удалось связаться с сервером</p>
           <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-            {error instanceof ApiError ? error.message : "Проверьте соединение и попробуйте снова."}
+            {error instanceof Error ? error.message : "Проверьте соединение и попробуйте снова."}
           </p>
         </div>
         <button

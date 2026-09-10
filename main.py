@@ -411,22 +411,8 @@ def create_app() -> FastAPI:
         (which requires the API key when require_auth is on), this is what
         the frontend's MaintenanceBanner and any external monitor can poll
         without credentials. Deliberately does not touch the database."""
-        state = runtime_control.read_state()
-        if state.maintenance_mode:
-            status = "maintenance"
-        elif not state.db_healthy or not state.api_enabled or not state.web_enabled:
-            status = "degraded"
-        else:
-            status = "ok"
-        return _JSONResponse({
-            "status": status,
-            "db_healthy": state.db_healthy,
-            "api_enabled": state.api_enabled,
-            "web_enabled": state.web_enabled,
-            "workers_enabled": state.workers_enabled,
-            "maintenance_mode": state.maintenance_mode,
-            "maintenance_message": state.maintenance_message or None,
-        })
+        from healthz import build_healthz_response
+        return build_healthz_response(runtime_control.read_state())
 
     @app.get("/admin")
     async def spa_root():
@@ -627,6 +613,14 @@ def create_app() -> FastAPI:
             record_slow_request(request.method, request.url.path, _time_perf.monotonic() - _req_t0)
         except Exception:
             pass
+
+        # Uvicorn access logging is disabled to remove the successful polling
+        # flood. Keep failed application responses visible through the app
+        # logger instead; health polling is intentionally excluded because a
+        # deliberate maintenance/degraded 503 is expected and frequent.
+        if response.status_code >= 400 and request.url.path != "/healthz":
+            log = logger.error if response.status_code >= 500 else logger.warning
+            log("HTTP %s %s -> %s", request.method, request.url.path, response.status_code)
 
         # Add security headers
         response.headers["X-Content-Type-Options"] = "nosniff"

@@ -55,7 +55,10 @@ def setup_logging():
 
     # Console handler (simple format)
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO if not settings.debug else logging.DEBUG)
+    # The console is an operator signal channel, not a packet capture. Full
+    # details remain in api.log; routine successful polling must not drown out
+    # warnings and failures.
+    console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(SIMPLE_FORMAT)
     
     # File handler (detailed format)
@@ -87,6 +90,12 @@ def setup_logging():
 
     for h in (console_handler, file_handler, error_handler, db_handler):
         h._nexusdata_setup = True  # marks this process's handlers for the idempotency guard above
+
+    # These libraries log every successful request at INFO. Keep failures and
+    # retries, but remove the successful health/polling chatter from both the
+    # console and the file log.
+    for noisy_logger in ("uvicorn.access", "httpx", "httpcore"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     # Add handlers
     root_logger.addHandler(console_handler)

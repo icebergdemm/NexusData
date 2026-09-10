@@ -144,6 +144,54 @@ class ServerRestartScheduleTests(unittest.TestCase):
         with self.assertRaises(PterodactylError):
             PterodactylClient(SimpleNamespace())._target("ASPER1")
 
+    def test_cached_state_does_not_poll_until_ttl_expires(self):
+        settings = SimpleNamespace(
+            pterodactyl_panel_url="https://panel.example",
+            pterodactyl_api_key="secret-token",
+            pterodactyl_server1_uuid="uuid-one",
+            pterodactyl_server2_uuid="uuid-two",
+        )
+        client = PterodactylClient(settings)
+        services_server_restart.clear_state_cache()
+
+        with patch.object(client, "_get", return_value={"attributes": {"current_state": "running"}}) as get:
+            self.assertEqual(client.get_state_cached("ASPER1", now=100.0), "running")
+            self.assertEqual(client.get_state_cached("ASPER1", now=100.0 + 1.0), "running")
+            self.assertEqual(get.call_count, 1)
+
+            self.assertEqual(
+                client.get_state_cached("ASPER1", now=100.0 + services_server_restart.STATE_CACHE_TTL_SECONDS + 1.0),
+                "running",
+            )
+            self.assertEqual(get.call_count, 2)
+
+            client.get_state_cached("ASPER1", now=100.0 + 2.0, force=True)
+            self.assertEqual(get.call_count, 3)
+
+    def test_sync_transport_is_reused_for_multiple_requests(self):
+        settings = SimpleNamespace(
+            pterodactyl_panel_url="https://panel.example",
+            pterodactyl_api_key="secret-token",
+            pterodactyl_server1_uuid="uuid-one",
+            pterodactyl_server2_uuid="uuid-two",
+        )
+        client = PterodactylClient(settings)
+        responses = []
+        for state in ("running", "offline"):
+            response = SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda state=state: {"attributes": {"current_state": state}},
+            )
+            responses.append(response)
+
+        with patch("httpx.Client") as factory:
+            factory.return_value.get.side_effect = responses
+            self.assertEqual(client._get("ASPER1", "resources")["attributes"]["current_state"], "running")
+            self.assertEqual(client._get("ASPER1", "resources")["attributes"]["current_state"], "offline")
+            self.assertEqual(factory.call_count, 1)
+            client.close()
+            factory.return_value.close.assert_called_once_with()
+
     def test_claim_schedule_resolves_orm_model_at_runtime(self):
         class FakeSchedule:
             id = object()

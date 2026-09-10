@@ -41,6 +41,7 @@ if __name__ == "__main__":
             reload=settings.debug,
             proxy_headers=True,
             forwarded_allow_ips=_FORWARDED_ALLOW_IPS,
+            access_log=False,
         )
     else:
         # Multi-worker mode: a dedicated side process runs the scheduler
@@ -83,6 +84,7 @@ if __name__ == "__main__":
                 workers=workers,
                 proxy_headers=True,
                 forwarded_allow_ips=_FORWARDED_ALLOW_IPS,
+                access_log=False,
             )
         finally:
             _stop_scheduler_watcher.set()

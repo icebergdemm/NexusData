@@ -33,6 +33,8 @@ from enum import IntEnum
 
 logger = logging.getLogger(__name__)
 
+SLOW_TASK_WARNING_SECONDS = 5.0
+
 
 class Priority(IntEnum):
     CRITICAL   = 0
@@ -103,6 +105,7 @@ class TaskScheduler:
         self._periodic: list = []
         self._periodic_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._task_stats: Dict[str, dict] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -207,6 +210,19 @@ class TaskScheduler:
         with self._lock:
             return [r.to_dict() for r in self._results.values()]
 
+    def task_stats(self) -> list:
+        """Return compact lifetime counters for each known task id."""
+        with self._lock:
+            public_fields = (
+                "task_id", "runs", "errors", "timeouts", "last_duration_ms",
+                "avg_duration_ms", "max_duration_ms", "last_status",
+                "last_finished_at", "queue_wait_ms",
+            )
+            return [
+                {field: stats[field] for field in public_fields}
+                for stats in self._task_stats.values()
+            ]
+
     def register_periodic(
         self,
         fn: Callable,
@@ -249,6 +265,7 @@ class TaskScheduler:
 
             result.status = "running"
             result.started_at = datetime.utcnow()
+            started_monotonic = time.monotonic()
             logger.debug(f"[Scheduler] [{thread_name}] Running '{task.task_id}'")
 
             try:
@@ -291,13 +308,39 @@ class TaskScheduler:
                     result.duration_ms = int(
                         (result.finished_at - result.started_at).total_seconds() * 1000
                     )
+                duration_ms = result.duration_ms or 0
+                queue_wait_ms = max(0, int((started_monotonic - task.submitted_at) * 1000))
                 with self._lock:
                     self._active_ids.discard(task.task_id)
+                    stats = self._task_stats.setdefault(task.task_id, {
+                        "task_id": task.task_id,
+                        "runs": 0,
+                        "errors": 0,
+                        "timeouts": 0,
+                        "total_duration_ms": 0,
+                        "last_duration_ms": None,
+                        "avg_duration_ms": None,
+                        "max_duration_ms": None,
+                        "last_status": None,
+                        "last_finished_at": None,
+                        "queue_wait_ms": None,
+                    })
+                    stats["runs"] += 1
+                    stats["errors"] += int(result.status == "error")
+                    stats["timeouts"] += int(result.status == "timeout")
+                    stats["total_duration_ms"] += duration_ms
+                    stats["last_duration_ms"] = result.duration_ms
+                    stats["avg_duration_ms"] = round(stats["total_duration_ms"] / stats["runs"], 1)
+                    stats["max_duration_ms"] = max(stats["max_duration_ms"] or 0, duration_ms)
+                    stats["last_status"] = result.status
+                    stats["last_finished_at"] = result.finished_at.isoformat() if result.finished_at else None
+                    stats["queue_wait_ms"] = queue_wait_ms
                 self._queue.task_done()
-                logger.info(
-                    f"[Scheduler] [{thread_name}] '{task.task_id}' → {result.status} "
-                    f"({result.duration_ms}ms)"
-                )
+                if result.status == "done" and duration_ms >= SLOW_TASK_WARNING_SECONDS * 1000:
+                    logger.warning(
+                        f"[Scheduler] [{thread_name}] '{task.task_id}' completed slowly "
+                        f"({result.duration_ms}ms)"
+                    )
                 # Evict old results to prevent memory growth
                 self._evict_old_results()
 

@@ -335,6 +335,7 @@ def task_server_restarts() -> dict:
     db = SessionLocal()
     current = datetime.now(timezone.utc)
     result = {"checked": 0, "warnings": 0, "restarts": 0, "errors": 0}
+    client = None
     try:
         rows = ensure_restart_schedules(db)
         client = PterodactylClient()
@@ -345,8 +346,19 @@ def task_server_restarts() -> dict:
             if row.processing_until and row.processing_until > current.replace(tzinfo=None):
                 continue
 
+            scheduled_for = _utc_aware(row.scheduled_for)
+            force_state_refresh = bool(
+                row.execution_due_at is not None
+                or (
+                    scheduled_for is not None
+                    and (scheduled_for - current).total_seconds() <= 60
+                )
+            )
             try:
-                server_state = client.get_state(row.server_name)
+                server_state = client.get_state_cached(
+                    row.server_name,
+                    force=force_state_refresh,
+                )
             except PterodactylError as exc:
                 row.last_status = "error"
                 row.last_error = str(exc)
@@ -361,7 +373,7 @@ def task_server_restarts() -> dict:
             online_count, round_active = _condition_state(db, row.server_name)
             decision = evaluate_schedule_tick(
                 enabled=bool(row.enabled),
-                scheduled_for=_utc_aware(row.scheduled_for),
+                scheduled_for=scheduled_for,
                 execution_due_at=_utc_aware(row.execution_due_at),
                 warning_sent_at=_utc_aware(row.warning_sent_at),
                 no_online=bool(row.require_no_online),
@@ -452,6 +464,8 @@ def task_server_restarts() -> dict:
         db.rollback()
         raise
     finally:
+        if client is not None:
+            client.close()
         db.close()
 
 

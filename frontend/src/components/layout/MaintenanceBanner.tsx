@@ -1,13 +1,6 @@
 import { useEffect, useState } from "react"
 import { ServerCrash, RotateCw } from "lucide-react"
-
-interface HealthzResponse {
-  status: "ok" | "maintenance" | "degraded"
-  db_healthy: boolean
-  api_enabled: boolean
-  web_enabled: boolean
-  maintenance_message: string | null
-}
+import { maintenanceMessageFromHealth, type HealthzState } from "./maintenance-state"
 
 const POLL_INTERVAL_MS = 15_000
 
@@ -43,16 +36,12 @@ export function MaintenanceBanner() {
     async function poll() {
       try {
         const res = await fetch("/healthz", { credentials: "include" })
-        if (!res.ok) return
-        const data = (await res.json()) as HealthzResponse
+        const data = (await res.json().catch(() => null)) as HealthzState | null
         if (cancelled) return
-        if (data.status === "ok") {
-          setMessage(null)
-        } else {
-          setMessage(
-            data.maintenance_message
-            || (!data.db_healthy ? "База данных недоступна. Мы уже работаем над восстановлением." : "Сайт временно недоступен.")
-          )
+        if (data) {
+          setMessage(maintenanceMessageFromHealth(data))
+        } else if (!res.ok) {
+          setMessage("Сайт временно недоступен.")
         }
       } catch {
         // A network-level failure (backend process itself unreachable) is

@@ -16,6 +16,12 @@ export class ApiError extends Error {
   }
 }
 
+export function isMaintenanceError(error: unknown): boolean {
+  return error instanceof ApiError
+    && error.status === 503
+    && Boolean((error.details as { maintenance?: boolean } | undefined)?.maintenance)
+}
+
 let csrfToken: string | null = null
 
 export function setCsrfToken(token: string | null) {

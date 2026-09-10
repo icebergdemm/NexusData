@@ -21,7 +21,12 @@ since it needs its own live asyncio event loop and this is the one process
 import asyncio
 import logging
 
-logging.basicConfig(level=logging.INFO)
+# Use the same WARNING-only console and detailed file logging as the web and
+# proxy processes. This process is otherwise an easy back door for the old
+# INFO-level scheduler/polling flood in multi-worker deployments.
+from logging_config import setup_logging
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
