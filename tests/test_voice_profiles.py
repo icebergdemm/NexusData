@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routes.voice_profiles import _profile_players_payload
 from services_voice_profiles import (
     VOICE_PROFILE_ARCHIVE_VERSION,
     ReplayVoiceExtraction,
@@ -20,6 +21,61 @@ from services_voice_profiles import (
     write_vpk1,
     write_wave_slice,
 )
+
+
+def test_profile_players_payload_groups_clips_and_preserves_playback_metadata():
+    clips = [
+        SimpleNamespace(
+            id=1,
+            archive_key="one",
+            steam_id="76561198000000001",
+            player_id=7,
+            source_replay_id=1062,
+            source_replay_filename="replay.barodemo.zip",
+            source_replay_hash="hash-one",
+            speaker_id=42,
+            start_ms=100,
+            end_ms=900,
+            packet_count=12,
+            radio_packet_count=0,
+            storage_format="wav-gzip",
+            storage_size=1234,
+            recorded_at=datetime(2026, 1, 1),
+        ),
+        SimpleNamespace(
+            id=2,
+            archive_key="two",
+            steam_id="76561198000000002",
+            player_id=8,
+            source_replay_id=1063,
+            source_replay_filename="replay-two.barodemo.zip",
+            source_replay_hash="hash-two",
+            speaker_id=43,
+            start_ms=200,
+            end_ms=1_200,
+            packet_count=14,
+            radio_packet_count=4,
+            storage_format="wav-gzip",
+            storage_size=2345,
+            recorded_at=datetime(2026, 1, 2),
+        ),
+    ]
+    selections = [
+        SimpleNamespace(clip_id=1, slot=0, band="early"),
+        SimpleNamespace(clip_id=2, slot=24, band="latest"),
+    ]
+    players = [
+        SimpleNamespace(player_id=7, player_steamid="76561198000000001", display_name="Alice", player_last_time_name=None),
+        SimpleNamespace(player_id=8, player_steamid="76561198000000002", display_name=None, player_last_time_name="Bob"),
+    ]
+
+    result = _profile_players_payload(clips, selections, players)
+
+    assert [player["display_name"] for player in result] == ["Alice", "Bob"]
+    assert result[0]["clips"][0]["audio_url"] == "/api/v1/admin/voice-profiles/clips/1/audio"
+    assert result[0]["clips"][0]["band"] == "early"
+    assert result[1]["clips"][0]["radio_packet_count"] == 4
+    assert result[1]["clips"][0]["band"] == "latest"
 
 
 def _u16_string(value: str) -> bytes:

@@ -132,6 +132,41 @@ def _clip_payload(clip: VoiceProfileClip, selection: VoiceProfileSelection | Non
     }
 
 
+def _profile_players_payload(
+    clips: list[VoiceProfileClip],
+    selections: list[VoiceProfileSelection],
+    players: list[PlayerData],
+) -> list[dict[str, Any]]:
+    player_by_steam = {
+        str(player.player_steamid): player
+        for player in players
+        if player.player_steamid
+    }
+    selection_by_clip = {selection.clip_id: selection for selection in selections}
+    grouped: dict[str, dict[str, Any]] = {}
+    for clip in clips:
+        steam_id = str(clip.steam_id)
+        player = player_by_steam.get(steam_id)
+        profile = grouped.setdefault(
+            steam_id,
+            {
+                "player_id": player.player_id if player else clip.player_id,
+                "steam_id": steam_id,
+                "display_name": (
+                    (player.display_name or player.player_last_time_name)
+                    if player
+                    else steam_id
+                ),
+                "clips": [],
+            },
+        )
+        profile["clips"].append(_clip_payload(clip, selection_by_clip.get(clip.id)))
+    return sorted(
+        grouped.values(),
+        key=lambda profile: (str(profile["display_name"]).casefold(), profile["steam_id"]),
+    )
+
+
 @router.post("/runs")
 async def create_run(
     body: dict[str, Any],
@@ -153,6 +188,19 @@ async def create_run(
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return _job_payload(job)
+
+
+@router.get("/runs/latest")
+async def get_latest_run(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    job = db.query(VoiceProfileJob).order_by(
+        VoiceProfileJob.created_at.desc(),
+        VoiceProfileJob.id.desc(),
+    ).first()
+    return {"run": _job_payload(job) if job is not None else None}
 
 
 @router.get("/runs/{run_id}")
@@ -260,6 +308,29 @@ async def skip_speaker(
     db.commit()
     result = await _reindex_after_manual_decision(db, row.replay_id)
     return {"speaker": _speaker_payload(row), "reindex": result}
+
+
+@router.get("/players")
+async def list_player_profiles(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    clips = db.query(VoiceProfileClip).order_by(
+        VoiceProfileClip.steam_id,
+        VoiceProfileClip.recorded_at,
+        VoiceProfileClip.start_ms,
+    ).all()
+    steam_ids = sorted({str(clip.steam_id) for clip in clips if clip.steam_id})
+    if not steam_ids:
+        return {"players": []}
+    selections = db.query(VoiceProfileSelection).filter(
+        VoiceProfileSelection.steam_id.in_(steam_ids),
+    ).all()
+    players = db.query(PlayerData).filter(
+        PlayerData.player_steamid.in_(steam_ids),
+    ).all()
+    return {"players": _profile_players_payload(clips, selections, players)}
 
 
 @router.get("/players/{player_id}")
