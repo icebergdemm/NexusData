@@ -223,6 +223,29 @@ class TaskScheduler:
                 for stats in self._task_stats.values()
             ]
 
+    def record_external_run(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        duration_ms: int,
+        queue_wait_ms: int = 0,
+    ) -> None:
+        """Record a run performed by a worker outside this scheduler queue.
+
+        Some durable workers need their own execution lane so a slow external
+        service cannot occupy the scheduler's small critical pool. Their
+        telemetry still belongs in the same admin health surface.
+        """
+        with self._lock:
+            self._record_task_stats_locked(
+                task_id,
+                status=status,
+                duration_ms=duration_ms,
+                queue_wait_ms=queue_wait_ms,
+                finished_at=datetime.utcnow(),
+            )
+
     def register_periodic(
         self,
         fn: Callable,
@@ -312,29 +335,13 @@ class TaskScheduler:
                 queue_wait_ms = max(0, int((started_monotonic - task.submitted_at) * 1000))
                 with self._lock:
                     self._active_ids.discard(task.task_id)
-                    stats = self._task_stats.setdefault(task.task_id, {
-                        "task_id": task.task_id,
-                        "runs": 0,
-                        "errors": 0,
-                        "timeouts": 0,
-                        "total_duration_ms": 0,
-                        "last_duration_ms": None,
-                        "avg_duration_ms": None,
-                        "max_duration_ms": None,
-                        "last_status": None,
-                        "last_finished_at": None,
-                        "queue_wait_ms": None,
-                    })
-                    stats["runs"] += 1
-                    stats["errors"] += int(result.status == "error")
-                    stats["timeouts"] += int(result.status == "timeout")
-                    stats["total_duration_ms"] += duration_ms
-                    stats["last_duration_ms"] = result.duration_ms
-                    stats["avg_duration_ms"] = round(stats["total_duration_ms"] / stats["runs"], 1)
-                    stats["max_duration_ms"] = max(stats["max_duration_ms"] or 0, duration_ms)
-                    stats["last_status"] = result.status
-                    stats["last_finished_at"] = result.finished_at.isoformat() if result.finished_at else None
-                    stats["queue_wait_ms"] = queue_wait_ms
+                    self._record_task_stats_locked(
+                        task.task_id,
+                        status=result.status,
+                        duration_ms=duration_ms,
+                        queue_wait_ms=queue_wait_ms,
+                        finished_at=result.finished_at,
+                    )
                 self._queue.task_done()
                 if result.status == "done" and duration_ms >= SLOW_TASK_WARNING_SECONDS * 1000:
                     logger.warning(
@@ -343,6 +350,40 @@ class TaskScheduler:
                     )
                 # Evict old results to prevent memory growth
                 self._evict_old_results()
+
+    def _record_task_stats_locked(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        duration_ms: int,
+        queue_wait_ms: int,
+        finished_at: Optional[datetime],
+    ) -> None:
+        stats = self._task_stats.setdefault(task_id, {
+            "task_id": task_id,
+            "runs": 0,
+            "errors": 0,
+            "timeouts": 0,
+            "total_duration_ms": 0,
+            "last_duration_ms": None,
+            "avg_duration_ms": None,
+            "max_duration_ms": None,
+            "last_status": None,
+            "last_finished_at": None,
+            "queue_wait_ms": None,
+        })
+        duration_ms = max(0, int(duration_ms or 0))
+        stats["runs"] += 1
+        stats["errors"] += int(status in {"error", "failed"})
+        stats["timeouts"] += int(status == "timeout")
+        stats["total_duration_ms"] += duration_ms
+        stats["last_duration_ms"] = duration_ms
+        stats["avg_duration_ms"] = round(stats["total_duration_ms"] / stats["runs"], 1)
+        stats["max_duration_ms"] = max(stats["max_duration_ms"] or 0, duration_ms)
+        stats["last_status"] = status
+        stats["last_finished_at"] = finished_at.isoformat() if finished_at else None
+        stats["queue_wait_ms"] = max(0, int(queue_wait_ms or 0))
 
     def _periodic_loop(self):
         logger.info("[Scheduler] Periodic scheduler started")

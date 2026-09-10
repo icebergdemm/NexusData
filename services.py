@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List, Tuple, Dict
 from fastapi import HTTPException
 import logging
@@ -1187,7 +1187,7 @@ class AdminService:
     
     def get_all_admins(self) -> List[AdminUser]:
         """Get all admin users (excluding soft-deleted)"""
-        return self.db.query(AdminUser).filter(
+        return self.db.query(AdminUser).options(joinedload(AdminUser.privilege_group)).filter(
             (AdminUser.is_deleted == 0) | (AdminUser.is_deleted.is_(None))
         ).all()
     

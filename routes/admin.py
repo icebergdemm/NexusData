@@ -3,6 +3,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from typing import Optional
 import secrets
 import threading
@@ -748,7 +749,7 @@ def _serialize_privilege_group(g, member_count: int) -> dict:
 
 
 @router.get("/api/v1/admin/users")
-async def api_admin_users_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+def api_admin_users_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     if not check_permission(current_admin, "admin", "view"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
@@ -757,16 +758,23 @@ async def api_admin_users_list(db: Session = Depends(get_db), current_admin: Adm
 
     from models import AdminPrivilegeGroup
     groups = db.query(AdminPrivilegeGroup).order_by(AdminPrivilegeGroup.id).all()
-    groups_data = [_serialize_privilege_group(g, db.query(AdminUser).filter(AdminUser.privilege_group_id == g.id).count()) for g in groups]
+    member_counts = dict(
+        db.query(AdminUser.privilege_group_id, func.count(AdminUser.id))
+        .filter(AdminUser.privilege_group_id.isnot(None))
+        .group_by(AdminUser.privilege_group_id)
+        .all()
+    )
+    groups_data = [_serialize_privilege_group(g, member_counts.get(g.id, 0)) for g in groups]
 
     linked_players = db.query(PlayerData).filter(PlayerData.linked_admin_id.in_([a.id for a in admins])).all()
     linked_by_admin_id = {p.linked_admin_id: p for p in linked_players}
 
-    from permission_audit import permission_summary
+    from permission_audit import permission_summaries
+    summaries = permission_summaries(db, admins)
     admins_data = []
     for a in admins:
         item = _serialize_admin_user(a, linked_by_admin_id.get(a.id))
-        item["permission_summary"] = permission_summary(db, a)
+        item["permission_summary"] = summaries[a.id]
         admins_data.append(item)
 
     return {

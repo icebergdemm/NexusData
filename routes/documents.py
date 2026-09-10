@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_
 from typing import Optional
 from datetime import datetime
+from dataclasses import dataclass
 import os
 import shutil
 import logging
@@ -24,6 +25,7 @@ from models import (
     AdminUser, AdminSession, AdminPrivilegeGroup,
     Document, DocumentFolder, DocumentPermission, DocumentRevision,
     DocumentStar, DocumentTemplate, DepartmentDocumentTag, DocumentTagLink,
+    Department, DepartmentMember, DepartmentDocumentFolder, DepartmentFolderPermission,
 )
 
 settings = get_settings()
@@ -33,6 +35,56 @@ router = APIRouter()
 
 ACCESS_RANK = {"view": 1, "comment": 2, "edit": 3, "owner": 4}
 VALID_LEVELS = {"view", "comment", "edit"}
+
+
+@dataclass
+class DocumentAccessContext:
+    departments: dict[int, Department]
+    memberships: dict[int, DepartmentMember]
+    folders: dict[int, DepartmentDocumentFolder]
+    folder_permissions: dict[int, list[DepartmentFolderPermission]]
+
+
+def build_document_access_context(db: Session, admin: AdminUser, documents) -> DocumentAccessContext:
+    """Load all list-level access inputs in bounded queries."""
+    department_ids = {doc.department_id for doc in documents if doc.department_id}
+    departments = {}
+    memberships = {}
+    folders = {}
+    folder_permissions = {}
+    if department_ids:
+        departments = {
+            department.id: department
+            for department in db.query(Department)
+            .options(joinedload(Department.access_levels))
+            .filter(Department.id.in_(department_ids))
+            .all()
+        }
+        memberships = {
+            member.department_id: member
+            for member in db.query(DepartmentMember)
+            .filter(
+                DepartmentMember.department_id.in_(department_ids),
+                DepartmentMember.admin_id == admin.id,
+            )
+            .all()
+        }
+
+    if department_ids and any(doc.department_folder_id for doc in documents):
+        folders = {
+            folder.id: folder
+            for folder in db.query(DepartmentDocumentFolder)
+            .filter(DepartmentDocumentFolder.department_id.in_(department_ids))
+            .all()
+        }
+        if folders:
+            grants = db.query(DepartmentFolderPermission).filter(
+                DepartmentFolderPermission.folder_id.in_(set(folders.keys()))
+            ).all()
+            for grant in grants:
+                folder_permissions.setdefault(grant.folder_id, []).append(grant)
+
+    return DocumentAccessContext(departments, memberships, folders, folder_permissions)
 FILE_TYPE_EXT = {"word": ".docx", "cell": ".xlsx", "pdf": ".pdf", "image": ".png"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 EXT_FILE_TYPE = {".docx": "word", ".xlsx": "cell", ".pdf": "pdf", **{ext: "image" for ext in IMAGE_EXTS}}
@@ -123,7 +175,12 @@ def require_document_write_access(db: Session, admin: AdminUser, department_id: 
 
 # ── Access-level resolution ──────────────────────────────────────────────────
 
-def get_document_access(db: Session, document: Document, admin: AdminUser) -> Optional[str]:
+def get_document_access(
+    db: Session,
+    document: Document,
+    admin: AdminUser,
+    context: Optional[DocumentAccessContext] = None,
+) -> Optional[str]:
     """Highest access level the admin has on this document, or None.
 
     Every department module ("documentation"/"orders"/"news") carries a
@@ -147,21 +204,23 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
     held_keys: set = set()
     dept = None
     if document.department_id:
-        from models import Department, DepartmentMember
-
-        dept = (
-            db.query(Department)
-            .options(joinedload(Department.access_levels))
-            .filter(Department.id == document.department_id)
-            .first()
-        )
-        if dept:
-            member = (
-                db.query(DepartmentMember)
-                .filter(DepartmentMember.department_id == dept.id, DepartmentMember.admin_id == admin.id)
+        if context is not None:
+            dept = context.departments.get(document.department_id)
+            member = context.memberships.get(document.department_id)
+        else:
+            dept = (
+                db.query(Department)
+                .options(joinedload(Department.access_levels))
+                .filter(Department.id == document.department_id)
                 .first()
             )
-            held_keys = set(member.held_level_keys or []) if member else set()
+            if dept:
+                member = (
+                    db.query(DepartmentMember)
+                    .filter(DepartmentMember.department_id == dept.id, DepartmentMember.admin_id == admin.id)
+                    .first()
+                )
+        held_keys = set(member.held_level_keys or []) if member else set()
 
     # "everyone" means different things depending on where the document
     # lives, matching exactly what the share dialog promises when granting
@@ -226,23 +285,31 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
     # down to nested documents. Live inheritance: resolved fresh on every
     # access check, never copied into a DocumentPermission row.
     if document.department_folder_id:
-        from models import DepartmentFolderPermission, DepartmentDocumentFolder
-
         held_keys = set(member.held_level_keys or []) if member else set()
 
         applicable_folder_ids = [document.department_folder_id]
-        current = (
-            db.query(DepartmentDocumentFolder)
-            .filter(DepartmentDocumentFolder.id == document.department_folder_id, DepartmentDocumentFolder.department_id == document.department_id)
-            .first()
-        )
-        seen = {document.department_folder_id}
-        while current and current.parent_id and current.parent_id not in seen:
-            parent = (
+        if context is not None:
+            current = context.folders.get(document.department_folder_id)
+            if current and current.department_id != document.department_id:
+                current = None
+        else:
+            current = (
                 db.query(DepartmentDocumentFolder)
-                .filter(DepartmentDocumentFolder.id == current.parent_id, DepartmentDocumentFolder.department_id == document.department_id)
+                .filter(DepartmentDocumentFolder.id == document.department_folder_id, DepartmentDocumentFolder.department_id == document.department_id)
                 .first()
             )
+        seen = {document.department_folder_id}
+        while current and current.parent_id and current.parent_id not in seen:
+            if context is not None:
+                parent = context.folders.get(current.parent_id)
+                if parent and parent.department_id != document.department_id:
+                    parent = None
+            else:
+                parent = (
+                    db.query(DepartmentDocumentFolder)
+                    .filter(DepartmentDocumentFolder.id == current.parent_id, DepartmentDocumentFolder.department_id == document.department_id)
+                    .first()
+                )
             if not parent:
                 break
             if parent.auto_apply_permissions:
@@ -256,15 +323,22 @@ def get_document_access(db: Session, document: Document, admin: AdminUser) -> Op
         # folder, but this guards any pre-existing bad data too: without it,
         # an access_level_key string that happens to collide between
         # departments (e.g. every department's "base") would wrongly match.
-        grants = (
-            db.query(DepartmentFolderPermission)
-            .join(DepartmentDocumentFolder, DepartmentDocumentFolder.id == DepartmentFolderPermission.folder_id)
-            .filter(
-                DepartmentFolderPermission.folder_id.in_(applicable_folder_ids),
-                DepartmentDocumentFolder.department_id == document.department_id,
+        if context is not None:
+            grants = [
+                grant
+                for folder_id in applicable_folder_ids
+                for grant in context.folder_permissions.get(folder_id, [])
+            ]
+        else:
+            grants = (
+                db.query(DepartmentFolderPermission)
+                .join(DepartmentDocumentFolder, DepartmentDocumentFolder.id == DepartmentFolderPermission.folder_id)
+                .filter(
+                    DepartmentFolderPermission.folder_id.in_(applicable_folder_ids),
+                    DepartmentDocumentFolder.department_id == document.department_id,
+                )
+                .all()
             )
-            .all()
-        )
         for grant in grants:
             matches = (
                 (grant.grantee_type == "access_level" and grant.access_level_key in held_keys)
@@ -335,7 +409,14 @@ def _document_shared_summary(doc: Document, level_names: dict) -> Optional[str]:
     return "Доступ: " + ", ".join(parts) if parts else "Только вам"
 
 
-def serialize_document_row(db: Session, doc: Document, admin: AdminUser, starred_ids: set, level_names: Optional[dict] = None) -> dict:
+def serialize_document_row(
+    db: Session,
+    doc: Document,
+    admin: AdminUser,
+    starred_ids: set,
+    level_names: Optional[dict] = None,
+    access_context: Optional[DocumentAccessContext] = None,
+) -> dict:
     is_mine = doc.owner_admin_id == admin.id
     return {
         "id": doc.id,
@@ -357,7 +438,7 @@ def serialize_document_row(db: Session, doc: Document, admin: AdminUser, starred
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
         "version": doc.version,
         "is_starred": doc.id in starred_ids,
-        "access_level": get_document_access(db, doc, admin),
+        "access_level": get_document_access(db, doc, admin, access_context),
         "is_mine": is_mine,
         "shared_summary": _document_shared_summary(doc, (level_names or {}).get(doc.department_id, {})) if is_mine else None,
     }
@@ -530,7 +611,7 @@ async def api_delete_folder(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/api/v1/admin/documents")
-async def api_list_documents(
+def api_list_documents(
     scope: str = Query("mine", pattern="^(mine|shared|starred|trash|all)$"),
     folder_id: Optional[int] = Query(None),
     search: Optional[str] = Query(None),
@@ -581,6 +662,8 @@ async def api_list_documents(
     order_col = Document.deleted_at.desc() if scope == "trash" else Document.updated_at.desc()
     docs = q.order_by(order_col).limit(500).all()
 
+    access_context = build_document_access_context(db, current_admin, docs)
+
     # Defense in depth: "shared"/"starred" select rows with plain SQL
     # conditions that can't express the department-membership rule
     # get_document_access applies to "everyone" grants on department
@@ -590,13 +673,18 @@ async def api_list_documents(
     # "trash" are owner-filtered and "all" is the deliberate
     # superuser-equivalent view_all grant, so neither needs it.
     if scope in ("shared", "starred"):
-        docs = [d for d in docs if get_document_access(db, d, current_admin) is not None]
+        docs = [d for d in docs if get_document_access(db, d, current_admin, access_context) is not None]
 
     starred_ids = {
         row[0] for row in db.query(DocumentStar.document_id).filter(DocumentStar.admin_id == current_admin.id).all()
     }
     level_names = _document_access_level_names(db, {d.department_id for d in docs})
-    return JSONResponse({"documents": [serialize_document_row(db, d, current_admin, starred_ids, level_names) for d in docs]})
+    return JSONResponse({
+        "documents": [
+            serialize_document_row(db, d, current_admin, starred_ids, level_names, access_context)
+            for d in docs
+        ]
+    })
 
 
 @router.post("/api/v1/admin/documents")

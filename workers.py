@@ -1463,12 +1463,6 @@ def task_process_ai_dispatcher_reminders() -> dict:
     return _queue_due_ai_dispatcher_reminders()
 
 
-def task_process_ai_dossier() -> dict:
-    """Process at most one durable dossier request; KoboldCpp is serial by design."""
-    from services_ai_dossier import process_one_dossier
-    return process_one_dossier()
-
-
 def task_enqueue_daily_ai_dossiers() -> dict:
     """Queue active profiles once during the configured quiet hour."""
     from zoneinfo import ZoneInfo
@@ -1546,7 +1540,6 @@ def _start_simple_workers():
         (task_sample_perf_resources, 30),
         (task_memory_maintenance, 5 * 60),
         (task_process_ai_dispatcher_reminders, 5),
-        (task_process_ai_dossier, 5),
         (task_enqueue_daily_ai_dossiers, 15 * 60),
         (task_cleanup_broken_sessions, 60 * 60),
     ]
@@ -1556,6 +1549,9 @@ def _start_simple_workers():
         periodic_tasks.append(
             (task_create_encrypted_backup, backup_settings.backup_interval_hours * 60 * 60)
         )
+
+    from services_ai_dossier_worker import start_ai_dossier_worker
+    start_ai_dossier_worker()
 
     for fn, interval in periodic_tasks:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
@@ -1822,14 +1818,6 @@ def _start_scheduler():
     # One task id plus a single durable claim keeps KoboldCpp from receiving
     # concurrent prompts even when a previous generation is slow.
     scheduler.register_periodic(
-        task_process_ai_dossier,
-        interval_secs=5,
-        priority=Priority.NORMAL,
-        task_id="ai_dossier_worker",
-        timeout=None,
-    )
-
-    scheduler.register_periodic(
         task_enqueue_daily_ai_dossiers,
         interval_secs=15 * 60,
         priority=Priority.BACKGROUND,
@@ -1863,6 +1851,8 @@ def _start_scheduler():
         )
 
     scheduler.start()
+    from services_ai_dossier_worker import start_ai_dossier_worker
+    start_ai_dossier_worker()
     logger.info("[Workers] All periodic tasks registered and scheduler started")
 
 
@@ -1882,6 +1872,11 @@ def stop_all_workers() -> None:
     replay workers) without killing the process. Safe to call even if
     task_scheduler isn't available (_HAS_SCHEDULER=False) or workers were
     never started."""
+    try:
+        from services_ai_dossier_worker import stop_ai_dossier_worker
+        stop_ai_dossier_worker()
+    except Exception:
+        logger.exception("[Workers] Failed to stop AI dossier worker")
     if _HAS_SCHEDULER and scheduler is not None:
         scheduler.stop()
     try:
@@ -1908,6 +1903,8 @@ def start_all_workers() -> None:
     startup) rather than re-registering it."""
     if _HAS_SCHEDULER and scheduler is not None:
         scheduler.start()
+        from services_ai_dossier_worker import start_ai_dossier_worker
+        start_ai_dossier_worker()
     from services_logs import start_log_worker
     start_log_worker()
     from services_playtime_stats import start_playtime_stats_worker

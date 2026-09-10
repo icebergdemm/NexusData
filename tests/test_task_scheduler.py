@@ -76,6 +76,38 @@ class TaskSchedulerStatsTests(unittest.TestCase):
         finally:
             scheduler.stop()
 
+    def test_external_run_is_added_to_task_stats(self):
+        scheduler = task_scheduler.TaskScheduler(worker_count=1, result_ttl=60)
+
+        scheduler.record_external_run(
+            "ai_dossier_worker",
+            status="succeeded",
+            duration_ms=8123,
+            queue_wait_ms=30,
+        )
+
+        stats = scheduler.task_stats()
+        assert stats[0]["task_id"] == "ai_dossier_worker"
+        assert stats[0]["runs"] == 1
+        assert stats[0]["errors"] == 0
+        assert stats[0]["timeouts"] == 0
+        assert stats[0]["last_duration_ms"] == 8123
+        assert stats[0]["avg_duration_ms"] == 8123.0
+        assert stats[0]["max_duration_ms"] == 8123
+        assert stats[0]["last_status"] == "succeeded"
+        assert stats[0]["queue_wait_ms"] == 30
+
+    def test_external_errors_and_timeouts_are_counted(self):
+        scheduler = task_scheduler.TaskScheduler(worker_count=1, result_ttl=60)
+
+        scheduler.record_external_run("ai_dossier_worker", status="failed", duration_ms=10)
+        scheduler.record_external_run("ai_dossier_worker", status="timeout", duration_ms=20)
+
+        stats = scheduler.task_stats()[0]
+        assert stats["runs"] == 2
+        assert stats["errors"] == 1
+        assert stats["timeouts"] == 1
+        assert stats["last_status"] == "timeout"
 
 if __name__ == "__main__":
     unittest.main()

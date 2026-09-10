@@ -20,7 +20,6 @@ from services_ai_dossier import (
     get_dossier_overview,
     get_dossier_config,
     list_dossier_runs,
-    process_one_dossier,
     run_ai_health_check,
     run_active_dossier_batch,
     search_dossier_players,
@@ -86,11 +85,11 @@ def _as_bool(value) -> bool:
 
 def _wake_worker() -> None:
     try:
-        from task_scheduler import Priority, scheduler
-        scheduler.submit(process_one_dossier, priority=Priority.NORMAL, task_id="ai_dossier_worker", timeout=None)
+        from services_ai_dossier_worker import wake_ai_dossier_worker
+        wake_ai_dossier_worker()
     except Exception:
-        # Startup may not have the scheduler in a maintenance/test process.
-        # The durable row remains queued and will be picked up on the next run.
+        # Startup may not have the dedicated worker in a maintenance/test
+        # process. The durable row remains queued for the recovery poll.
         return
 
 

@@ -8,7 +8,7 @@ explains.
 
 import hashlib
 import json
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from sqlalchemy.orm import joinedload
 
@@ -143,6 +143,40 @@ def department_sources_for_admin(db, admin_id: int) -> list[dict]:
     for level in levels:
         member = by_dept.get(level.department_id)
         if not member or level.key not in (member.held_level_keys or []):
+            continue
+        for scope, raw in (("module", level.permissions), ("site", level.site_permissions)):
+            pages = raw.get("pages", raw) if isinstance(raw, dict) else {}
+            for page, actions in pages.items():
+                if not isinstance(actions, dict):
+                    continue
+                for action, value in actions.items():
+                    if isinstance(value, bool):
+                        result.append({
+                            "department_id": level.department_id,
+                            "department_name": member.department.name if member.department else None,
+                            "level_id": level.id,
+                            "level_key": level.key,
+                            "level_name": level.name,
+                            "module": scope,
+                            "page": page,
+                            "action": action,
+                            "value": value,
+                        })
+    return result
+
+
+def _department_sources_from_rows(memberships, levels) -> list[dict]:
+    if not memberships:
+        return []
+    by_dept = {member.department_id: member for member in memberships}
+    held_by_dept = {
+        member.department_id: set(member.held_level_keys or [])
+        for member in memberships
+    }
+    result = []
+    for level in levels:
+        member = by_dept.get(level.department_id)
+        if not member or level.key not in held_by_dept.get(level.department_id, set()):
             continue
         for scope, raw in (("module", level.permissions), ("site", level.site_permissions)):
             pages = raw.get("pages", raw) if isinstance(raw, dict) else {}
@@ -354,13 +388,21 @@ def build_policy_impact(db, target_policy: str) -> dict:
     }
 
 
-def permission_summary(db, admin: AdminUser) -> dict:
+def _permission_summary_from_sources(
+    db,
+    admin: AdminUser,
+    sources: list[dict],
+    policy_mode: str,
+    department_count: int,
+) -> dict:
     from permissions_registry import PERMISSION_REGISTRY
-    from security import compute_department_site_permissions, get_permission_policy_mode
 
-    sources = department_sources_for_admin(db, admin.id)
-    admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
-    admin._permission_policy_mode = get_permission_policy_mode(db)
+    site_pages = {}
+    for source in sources:
+        if source["module"] == "site" and source["value"] is True:
+            site_pages.setdefault(source["page"], {})[source["action"]] = True
+    admin._department_site_permissions = {"pages": site_pages} if site_pages else {}
+    admin._permission_policy_mode = policy_mode
     snapshot = build_permission_snapshot(admin, PERMISSION_REGISTRY, sources)
     conflict_count = 0
     for page in PERMISSION_REGISTRY:
@@ -370,7 +412,7 @@ def permission_summary(db, admin: AdminUser) -> dict:
             if values == {True, False}:
                 conflict_count += 1
     return {
-        "department_count": db.query(DepartmentMember).filter(DepartmentMember.admin_id == admin.id).count(),
+        "department_count": department_count,
         "conflict_count": conflict_count,
         "effective": {
             page: snapshot["pages"][page]["view"]["value"]
@@ -378,3 +420,53 @@ def permission_summary(db, admin: AdminUser) -> dict:
             if page in snapshot["pages"] and "view" in snapshot["pages"][page]
         },
     }
+
+
+def permission_summaries(db, admins: Sequence[AdminUser]) -> dict[int, dict]:
+    """Build permission summaries for many admins with fixed-size DB work."""
+    admins = list(admins)
+    if not admins:
+        return {}
+
+    from security import get_permission_policy_mode
+
+    admin_ids = [admin.id for admin in admins]
+    memberships = (
+        db.query(DepartmentMember)
+        .options(joinedload(DepartmentMember.department))
+        .filter(DepartmentMember.admin_id.in_(admin_ids))
+        .all()
+    )
+    dept_ids = {member.department_id for member in memberships}
+    levels = (
+        db.query(DepartmentAccessLevel)
+        .filter(DepartmentAccessLevel.department_id.in_(dept_ids))
+        .all()
+        if dept_ids else []
+    )
+    levels_by_dept = {}
+    for level in levels:
+        levels_by_dept.setdefault(level.department_id, []).append(level)
+    memberships_by_admin = {}
+    for member in memberships:
+        memberships_by_admin.setdefault(member.admin_id, []).append(member)
+    policy_mode = get_permission_policy_mode(db)
+
+    return {
+        admin.id: _permission_summary_from_sources(
+            db,
+            admin,
+            _department_sources_from_rows(
+                memberships_by_admin.get(admin.id, []),
+                [level for member in memberships_by_admin.get(admin.id, [])
+                 for level in levels_by_dept.get(member.department_id, [])],
+            ),
+            policy_mode,
+            len(memberships_by_admin.get(admin.id, [])),
+        )
+        for admin in admins
+    }
+
+
+def permission_summary(db, admin: AdminUser) -> dict:
+    return permission_summaries(db, [admin])[admin.id]
