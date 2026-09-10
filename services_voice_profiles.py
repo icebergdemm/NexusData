@@ -721,6 +721,7 @@ class VoiceProfileService:
         candidates = []
         replay_service = __import__("services_replays").ReplayService(self.db)
         extraction_cache: dict[int, ReplayVoiceExtraction] = {}
+        segment_cache: dict[int, dict[tuple[int, int, int], dict]] = {}
         for segment, replay in rows:
             path = Path(replay_service.get_file_path(replay))
             if not path.is_file():
@@ -729,6 +730,19 @@ class VoiceProfileService:
             if extraction is None:
                 extraction = extract_voice_packet_records(path)
                 extraction_cache[replay.id] = extraction
+                segment_cache[replay.id] = {
+                    (
+                        int(grouped["speaker_id"]),
+                        int(grouped["start_ms"]),
+                        int(grouped["end_ms"]),
+                    ): grouped
+                    for grouped in group_voice_packets(extraction.packets)
+                }
+            segment_data = segment_cache[replay.id].get(
+                (int(segment.speaker_id), int(segment.start_ms), int(segment.end_ms))
+            )
+            if segment_data is None:
+                continue
             packets = [packet for packet in extraction.packets if packet.speaker_id == segment.speaker_id]
             replay_hash = _file_sha256(path)
             candidate = {
@@ -744,7 +758,7 @@ class VoiceProfileService:
                 "end_ms": segment.end_ms,
                 "packet_count": segment.packet_count,
                 "radio_packet_count": segment.radio_packet_count,
-                "packet_records": list(segment.packet_records),
+                "packet_records": list(segment_data["packet_records"]),
             }
             candidate["_all_speaker_packets"] = packets
             candidates.append(candidate)

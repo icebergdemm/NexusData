@@ -142,7 +142,6 @@ def test_profile_candidate_keeps_segment_packets_separate_from_speaker_stream(mo
         packet_count=1,
         radio_packet_count=0,
     )
-    segment.packet_records = [first]
     replay = SimpleNamespace(
         id=7,
         filename="replay.barodemo",
