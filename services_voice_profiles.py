@@ -501,17 +501,26 @@ def extract_segment_wav(
     packets: Sequence[VoicePacket],
     segment: Mapping[str, object],
     temporary_directory: str | os.PathLike[str],
+    *,
+    stream_cache: dict[tuple[int, int], tuple[Path, list[dict]]] | None = None,
+    stream_key: tuple[int, int] | None = None,
 ) -> Path | None:
-    """Decode one speaker stream once and slice one selected segment."""
+    """Decode one speaker stream and slice one selected segment."""
     temporary = Path(temporary_directory)
     temporary.mkdir(parents=True, exist_ok=True)
     prefix = str(segment["candidate_key"])
-    vpk_path = temporary / f"{prefix}.vpk1"
-    stream_wav = temporary / f"{prefix}.stream.wav"
-    index_path = temporary / f"{prefix}.index.json"
-    write_vpk1(vpk_path, packets)
-    decode_vpk1(decoder_path, vpk_path, stream_wav, index_path)
-    index = json.loads(index_path.read_text(encoding="utf-8"))
+    cached_stream = stream_cache.get(stream_key) if stream_cache is not None and stream_key is not None else None
+    if cached_stream is None:
+        vpk_path = temporary / f"{prefix}.vpk1"
+        stream_wav = temporary / f"{prefix}.stream.wav"
+        index_path = temporary / f"{prefix}.index.json"
+        write_vpk1(vpk_path, packets)
+        decode_vpk1(decoder_path, vpk_path, stream_wav, index_path)
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        if stream_cache is not None and stream_key is not None:
+            stream_cache[stream_key] = (stream_wav, index)
+    else:
+        stream_wav, index = cached_stream
     by_timestamp: dict[int, list[dict]] = {}
     for entry in index:
         by_timestamp.setdefault(int(entry["timestamp_ms"]), []).append(entry)
@@ -779,6 +788,7 @@ class VoiceProfileService:
         ready: list[tuple[dict, VoiceProfileClip]] = []
         with tempfile.TemporaryDirectory(prefix="voice-profile-materialize-") as temp_dir:
             temp_path = Path(temp_dir)
+            stream_cache: dict[tuple[int, int], tuple[Path, list[dict]]] = {}
             for candidate in selected:
                 key = candidate["candidate_key"]
                 clip = self.db.query(VoiceProfileClip).filter(VoiceProfileClip.archive_key == key).first()
@@ -796,6 +806,8 @@ class VoiceProfileService:
                         candidate["_all_speaker_packets"],
                         candidate,
                         temp_path,
+                        stream_cache=stream_cache,
+                        stream_key=(int(candidate["source_replay_id"]), int(candidate["speaker_id"])),
                     )
                     if decoded is None:
                         continue

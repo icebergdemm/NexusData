@@ -1,3 +1,4 @@
+import json
 import struct
 import wave
 from datetime import datetime, timedelta
@@ -11,6 +12,7 @@ from services_voice_profiles import (
     VoicePacket,
     VoiceProfileService,
     extract_voice_packet_records,
+    extract_segment_wav,
     group_voice_packets,
     read_vpk1,
     stale_profile_clips,
@@ -125,6 +127,43 @@ def test_write_wave_slice_copies_only_requested_pcm_frames(tmp_path):
     with wave.open(str(destination), "rb") as audio:
         assert audio.getparams() == (1, 2, 48_000, 2, "NONE", "not compressed")
         assert audio.readframes(audio.getnframes()) == struct.pack("<hh", 2, 3)
+
+
+def test_extract_segment_wav_reuses_cached_speaker_stream(monkeypatch, tmp_path):
+    packets = [VoicePacket(100, 42, b"first"), VoicePacket(2_000, 42, b"later")]
+    segment = {"candidate_key": "segment", "packet_records": [packets[0]]}
+    calls = []
+
+    def fake_decode(decoder_path, input_path, output_path, index_path):
+        calls.append((input_path, output_path, index_path))
+        output_path.write_bytes(b"stream")
+        index_path.write_text(
+            json.dumps([
+                {"timestamp_ms": 100, "sample_start": 0, "sample_count": 2},
+                {"timestamp_ms": 2_000, "sample_start": 2, "sample_count": 2},
+            ]),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr("services_voice_profiles.decode_vpk1", fake_decode)
+    monkeypatch.setattr(
+        "services_voice_profiles.write_wave_slice",
+        lambda source, output, start_frame, end_frame: output.write_bytes(
+            f"{start_frame}:{end_frame}".encode()
+        ),
+    )
+    cache = {}
+    first = extract_segment_wav(
+        "decoder", packets, segment, tmp_path, stream_cache=cache, stream_key=(7, 42)
+    )
+    second_segment = {"candidate_key": "segment-2", "packet_records": [packets[1]]}
+    second = extract_segment_wav(
+        "decoder", packets, second_segment, tmp_path, stream_cache=cache, stream_key=(7, 42)
+    )
+
+    assert len(calls) == 1
+    assert first.read_bytes() == b"0:2"
+    assert second.read_bytes() == b"2:4"
 
 
 def test_profile_candidate_keeps_segment_packets_separate_from_speaker_stream(monkeypatch, tmp_path):
