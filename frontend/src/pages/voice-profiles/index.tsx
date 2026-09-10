@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Mic2, Play, RefreshCw, SkipForward, UserCheck } from "lucide-react"
+import { HardDrive, Mic2, Play, Radio, RefreshCw, SkipForward, UserCheck } from "lucide-react"
 import { toast } from "sonner"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Badge } from "@/components/ui/badge"
@@ -13,12 +13,33 @@ interface Job {
   id: number
   status: string
   replay_ids: number[]
+  current_replay_id: number | null
   total_replays: number
   processed_replays: number
   mapped_speakers: number
   unresolved_speakers: number
   materialized_clips: number
   error_message: string | null
+}
+
+export interface VoiceProfileClip {
+  id: number
+  source_replay_id: number | null
+  start_ms: number
+  end_ms: number
+  packet_count: number
+  radio_packet_count: number
+  storage_size: number
+  slot: number | null
+  band: string | null
+  audio_url: string
+}
+
+export interface VoiceProfilePlayer {
+  player_id: number | null
+  steam_id: string
+  display_name: string
+  clips: VoiceProfileClip[]
 }
 
 interface Speaker {
@@ -32,20 +53,82 @@ interface Speaker {
   resolution_status: string
 }
 
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} Б`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} КБ`
+  return `${(value / (1024 * 1024)).toFixed(1)} МБ`
+}
+
+function formatDuration(startMs: number, endMs: number) {
+  return `${Math.max(0, (endMs - startMs) / 1000).toFixed(1)} с`
+}
+
+function bandLabel(band: string | null) {
+  if (band === "early") return "early"
+  if (band === "middle") return "middle"
+  if (band === "latest") return "latest"
+  return "без слота"
+}
+
+export function VoiceProfilePlayerCard({ profile }: { profile: VoiceProfilePlayer }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+          <span>{profile.display_name}</span>
+          <Badge variant="outline">{profile.clips.length} клипов</Badge>
+          <span className="font-mono text-xs font-normal text-muted-foreground">{profile.steam_id}</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {profile.clips.map((clip) => (
+          <div key={clip.id} className="rounded-md border p-3">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <Badge variant="secondary">slot {(clip.slot ?? 0) + 1}</Badge>
+              <Badge variant="outline">{bandLabel(clip.band)}</Badge>
+              {clip.radio_packet_count > 0 && <Badge variant="outline"><Radio className="size-3" /> radio</Badge>}
+            </div>
+            <audio
+              controls
+              preload="none"
+              src={clip.audio_url}
+              aria-label={`Клип ${clip.id}, replay ${clip.source_replay_id ?? "неизвестен"}`}
+              className="mt-3 h-9 w-full"
+            />
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+              <span>Replay #{clip.source_replay_id ?? "—"}</span>
+              <span>{formatDuration(clip.start_ms, clip.end_ms)}</span>
+              <span>{clip.packet_count} пакетов</span>
+              <span className="inline-flex items-center gap-1"><HardDrive className="size-3" />{formatBytes(clip.storage_size)}</span>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function VoiceProfilesPage() {
   const queryClient = useQueryClient()
   const [replayIds, setReplayIds] = useState("")
-  const [runId, setRunId] = useState<number | null>(null)
 
+  const profiles = useQuery({
+    queryKey: ["voice-profile-players"],
+    queryFn: () => api.get<{ players: VoiceProfilePlayer[] }>("/api/v1/admin/voice-profiles/players"),
+    refetchInterval: 5000,
+  })
   const speakers = useQuery({
     queryKey: ["voice-profile-speakers"],
     queryFn: () => api.get<{ speakers: Speaker[] }>("/api/v1/admin/voice-profiles/speakers?status=unresolved"),
+    refetchInterval: 5000,
   })
-  const run = useQuery({
-    queryKey: ["voice-profile-run", runId],
-    queryFn: () => api.get<Job>(`/api/v1/admin/voice-profiles/runs/${runId}`),
-    enabled: runId !== null,
-    refetchInterval: (query) => query.state.data?.status === "queued" || query.state.data?.status === "running" ? 3000 : false,
+  const latestRun = useQuery({
+    queryKey: ["voice-profile-latest-run"],
+    queryFn: () => api.get<{ run: Job | null }>("/api/v1/admin/voice-profiles/runs/latest"),
+    refetchInterval: (query) => {
+      const status = query.state.data?.run?.status
+      return status === "queued" || status === "running" ? 3000 : false
+    },
   })
 
   const start = useMutation({
@@ -53,7 +136,12 @@ export function VoiceProfilesPage() {
       const ids = replayIds.split(/[\s,;]+/).filter(Boolean).map(Number)
       return api.post<Job>("/api/v1/admin/voice-profiles/runs", { replay_ids: ids, mode: "backfill" })
     },
-    onSuccess: (job) => { setRunId(job.id); toast.success(`Backfill #${job.id} поставлен в очередь`); queryClient.invalidateQueries({ queryKey: ["voice-profile-speakers"] }) },
+    onSuccess: () => {
+      setReplayIds("")
+      toast.success("Backfill поставлен в очередь")
+      void queryClient.invalidateQueries({ queryKey: ["voice-profile-latest-run"] })
+      void queryClient.invalidateQueries({ queryKey: ["voice-profile-speakers"] })
+    },
     onError: (error: Error) => toast.error(error.message),
   })
 
@@ -64,9 +152,20 @@ export function VoiceProfilesPage() {
       if (!steamId) throw new Error("SteamID не указан")
       return api.post(`/api/v1/admin/voice-profiles/speakers/${id}/resolve`, { steam_id: steamId })
     },
-    onSuccess: () => { toast.success("Решение сохранено"); queryClient.invalidateQueries({ queryKey: ["voice-profile-speakers"] }) },
+    onSuccess: () => {
+      toast.success("Решение сохранено")
+      void queryClient.invalidateQueries({ queryKey: ["voice-profile-speakers"] })
+      void queryClient.invalidateQueries({ queryKey: ["voice-profile-players"] })
+    },
     onError: (error: Error) => toast.error(error.message),
   })
+
+  const refresh = () => {
+    void profiles.refetch()
+    void speakers.refetch()
+    void latestRun.refetch()
+  }
+  const run = latestRun.data?.run
 
   return (
     <div className="space-y-6">
@@ -74,7 +173,7 @@ export function VoiceProfilesPage() {
         title="Голосовые профили"
         description="Backfill старых реплеев, ручное сопоставление speaker_id и прослушивание выбранных клипов. Новые реплеи здесь пока не сканируются."
         icon={Mic2}
-        actions={<Button variant="outline" onClick={() => { void speakers.refetch(); if (runId !== null) void run.refetch() }}><RefreshCw className="size-4" /> Обновить</Button>}
+        actions={<Button variant="outline" onClick={refresh}><RefreshCw className="size-4" /> Обновить</Button>}
       />
 
       <Card>
@@ -85,18 +184,29 @@ export function VoiceProfilesPage() {
         </CardContent>
       </Card>
 
-      {run.data && (
+      {run && (
         <Card>
-          <CardHeader><CardTitle className="flex items-center gap-2">Запуск #{run.data.id}<Badge variant={run.data.status === "failed" ? "destructive" : "secondary"}>{run.data.status}</Badge></CardTitle></CardHeader>
-          <CardContent className="grid gap-2 text-sm sm:grid-cols-4">
-            <span>Реплеи: {run.data.processed_replays}/{run.data.total_replays}</span>
-            <span>Сопоставлено: {run.data.mapped_speakers}</span>
-            <span>Unresolved: {run.data.unresolved_speakers}</span>
-            <span>Клипы: {run.data.materialized_clips}</span>
-            {run.data.error_message && <span className="text-destructive sm:col-span-4">{run.data.error_message}</span>}
+          <CardHeader><CardTitle className="flex items-center gap-2">Последний запуск #{run.id}<Badge variant={run.status === "failed" ? "destructive" : "secondary"}>{run.status}</Badge></CardTitle></CardHeader>
+          <CardContent className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-5">
+            <span>Реплеи: {run.processed_replays}/{run.total_replays}</span>
+            <span>Текущий: {run.current_replay_id ?? "—"}</span>
+            <span>Сопоставлено: {run.mapped_speakers}</span>
+            <span>Unresolved: {run.unresolved_speakers}</span>
+            <span>Клипы: {run.materialized_clips}</span>
+            {run.error_message && <span className="text-destructive sm:col-span-2 lg:col-span-5">{run.error_message}</span>}
           </CardContent>
         </Card>
       )}
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-semibold">Готовые профили</h2>
+          <span className="text-xs text-muted-foreground">Нажмите Play на нужном клипе</span>
+        </div>
+        {profiles.isLoading && <p className="text-sm text-muted-foreground">Загрузка профилей…</p>}
+        {!profiles.isLoading && !profiles.data?.players.length && <p className="text-sm text-muted-foreground">Готовых клипов пока нет.</p>}
+        {profiles.data?.players.map((profile) => <VoiceProfilePlayerCard key={profile.steam_id} profile={profile} />)}
+      </section>
 
       <Card>
         <CardHeader><CardTitle>Неразрешённые speaker’ы ({speakers.data?.speakers.length ?? 0})</CardTitle></CardHeader>
