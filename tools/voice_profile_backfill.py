@@ -50,20 +50,29 @@ def replay_recorded_at(path: Path) -> datetime:
 
 
 class NexusPlayerLookup:
-    def __init__(self, base_url: str, token: str | None):
-        self.endpoint = base_url.rstrip("/") + "/api/v1/admin/voice-profiles/player-search"
-        self.token = token
+    def __init__(self, base_url: str, token: str | None, admin_token: str | None = None):
+        self.endpoint = base_url.rstrip("/") + (
+            "/api/v1/admin/voice-profiles/player-search"
+            if token
+            else "/api/v1/admin/players/search-suggestions"
+        )
+        self.headers = {"Accept": "application/json"}
+        if token:
+            self.headers["X-API-Key"] = token
+        elif admin_token:
+            self.headers["Cookie"] = f"admin_token={admin_token}"
+        self.authorized = bool(token or admin_token)
         self.cache: dict[str, list[dict]] = {}
 
     def search(self, query: str) -> list[dict]:
         query = query.strip()
-        if len(query) < 2 or not self.token:
+        if len(query) < 2 or not self.authorized:
             return []
         if query in self.cache:
             return self.cache[query]
         request = Request(
             self.endpoint + "?" + urlencode({"q": query}),
-            headers={"X-API-Key": self.token, "Accept": "application/json"},
+            headers=self.headers,
         )
         with urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -227,7 +236,8 @@ def run(args: argparse.Namespace) -> int:
 
     mapping_override = _load_mapping(Path(args.mapping_json) if args.mapping_json else None)
     token = os.environ.get(args.token_env)
-    lookup = NexusPlayerLookup(args.nexus_url, token)
+    admin_token = os.environ.get(args.admin_token_env)
+    lookup = NexusPlayerLookup(args.nexus_url, token, admin_token)
     decoder_dll = _build_decoder(Path(args.decoder_project))
     candidates_by_steam: dict[str, list[dict]] = {}
     player_by_steam: dict[str, dict] = {}
@@ -310,6 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--nexus-url", default=DEFAULT_NEXUS_URL)
     parser.add_argument("--token-env", default="NEXUS_API_TOKEN")
+    parser.add_argument("--admin-token-env", default="NEXUS_ADMIN_TOKEN")
     parser.add_argument("--mapping-json")
     parser.add_argument(
         "--decoder-project",
