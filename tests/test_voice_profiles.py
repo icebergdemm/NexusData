@@ -1,11 +1,15 @@
 import struct
 import wave
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from services_voice_profiles import (
+    VOICE_PROFILE_ARCHIVE_VERSION,
+    ReplayVoiceExtraction,
     VoicePacket,
+    VoiceProfileService,
     extract_voice_packet_records,
     group_voice_packets,
     read_vpk1,
@@ -120,6 +124,86 @@ def test_write_wave_slice_copies_only_requested_pcm_frames(tmp_path):
     with wave.open(str(destination), "rb") as audio:
         assert audio.getparams() == (1, 2, 48_000, 2, "NONE", "not compressed")
         assert audio.readframes(audio.getnframes()) == struct.pack("<hh", 2, 3)
+
+
+def test_profile_candidate_keeps_segment_packets_separate_from_speaker_stream(monkeypatch, tmp_path):
+    first = VoicePacket(100, 42, b"first")
+    later = VoicePacket(2_000, 42, b"later")
+    replay_path = tmp_path / "replay.barodemo"
+    replay_path.write_bytes(b"replay")
+    segment = SimpleNamespace(
+        replay_id=7,
+        speaker_id=42,
+        steam_id="76561198000000001",
+        player_id=101,
+        start_ms=100,
+        end_ms=100,
+        packet_count=1,
+        radio_packet_count=0,
+    )
+    segment.packet_records = [first]
+    replay = SimpleNamespace(
+        id=7,
+        filename="replay.barodemo",
+        recorded_at=None,
+        uploaded_at=None,
+    )
+
+    class Query:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
+        def all(self):
+            return [(segment, replay)]
+
+    class FakeDb:
+        def query(self, *args):
+            return Query()
+
+    class FakeReplayService:
+        def __init__(self, db):
+            pass
+
+        def get_file_path(self, value):
+            return replay_path
+
+    monkeypatch.setattr("services_replays.ReplayService", FakeReplayService)
+    monkeypatch.setattr(
+        "services_voice_profiles.extract_voice_packet_records",
+        lambda path: ReplayVoiceExtraction(
+            version=7,
+            packets=[first, later],
+            mapping={},
+            names_by_speaker={},
+            complete=True,
+            warnings=[],
+        ),
+    )
+
+    service = VoiceProfileService.__new__(VoiceProfileService)
+    service.db = FakeDb()
+    candidates = service._profile_candidates("76561198000000001")
+
+    assert candidates[0]["packet_records"] == [first]
+    assert candidates[0]["_all_speaker_packets"] == [first, later]
+
+
+def test_old_profile_archive_version_is_materialized_again(tmp_path):
+    from services_voice_profiles import needs_materialization
+
+    wav_path = tmp_path / "clip.wav.gz"
+    ndvc_path = tmp_path / "clip.ndvc"
+    wav_path.write_bytes(b"old-wav")
+    ndvc_path.write_bytes(b"old-ndvc")
+
+    old_clip = SimpleNamespace(archive_version=VOICE_PROFILE_ARCHIVE_VERSION - 1)
+    current_clip = SimpleNamespace(archive_version=VOICE_PROFILE_ARCHIVE_VERSION)
+
+    assert needs_materialization(old_clip, wav_path, ndvc_path) is True
+    assert needs_materialization(current_clip, wav_path, ndvc_path) is False
 
 
 def test_extract_voice_packets_supports_v4_and_reads_character_names(tmp_path):

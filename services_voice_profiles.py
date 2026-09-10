@@ -35,6 +35,7 @@ VOICE_PROFILE_LIMIT = 25
 VOICE_PROFILE_EARLY_COUNT = 5
 VOICE_PROFILE_MIDDLE_COUNT = 10
 VOICE_PROFILE_LATEST_COUNT = 10
+VOICE_PROFILE_ARCHIVE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -451,6 +452,15 @@ def gzip_file(source_path: str | os.PathLike[str], destination_path: str | os.Pa
             pass
 
 
+def needs_materialization(clip, wav_path: Path, ndvc_path: Path) -> bool:
+    return (
+        clip is None
+        or not wav_path.is_file()
+        or not ndvc_path.is_file()
+        or int(getattr(clip, "archive_version", 1) or 1) != VOICE_PROFILE_ARCHIVE_VERSION
+    )
+
+
 def _decoder_command(decoder_path: str | os.PathLike[str], arguments: Sequence[str]) -> list[str]:
     path = str(decoder_path)
     if path.lower().endswith(".dll"):
@@ -727,7 +737,7 @@ class VoiceProfileService:
                 "end_ms": segment.end_ms,
                 "packet_count": segment.packet_count,
                 "radio_packet_count": segment.radio_packet_count,
-                "packet_records": packets,
+                "packet_records": list(segment.packet_records),
             }
             candidate["_all_speaker_packets"] = packets
             candidates.append(candidate)
@@ -757,7 +767,7 @@ class VoiceProfileService:
                 upload_root = Path(get_upload_dir(self.db))
                 wav_path = upload_root / wav_relative
                 ndvc_path = upload_root / ndvc_relative
-                if clip is None or not wav_path.is_file() or not ndvc_path.is_file():
+                if needs_materialization(clip, wav_path, ndvc_path):
                     write_ndvc(ndvc_path, candidate["packet_records"])
                     decoded = extract_segment_wav(
                         self.decoder_path,
@@ -785,6 +795,7 @@ class VoiceProfileService:
                             wav_filename=wav_relative,
                             storage_format="wav-gzip",
                             storage_size=storage_size,
+                            archive_version=VOICE_PROFILE_ARCHIVE_VERSION,
                             recorded_at=candidate.get("recorded_at"),
                         )
                         self.db.add(clip)
@@ -792,6 +803,7 @@ class VoiceProfileService:
                     else:
                         clip.storage_size = storage_size
                         clip.player_id = candidate.get("player_id")
+                        clip.archive_version = VOICE_PROFILE_ARCHIVE_VERSION
                 ready.append((candidate, clip))
 
         self.db.query(VoiceProfileSelection).filter(VoiceProfileSelection.steam_id == steam_id).delete(synchronize_session=False)
