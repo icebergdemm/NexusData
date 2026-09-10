@@ -731,6 +731,8 @@ class VoiceProfileService:
         replay_service = __import__("services_replays").ReplayService(self.db)
         extraction_cache: dict[int, ReplayVoiceExtraction] = {}
         segment_cache: dict[int, dict[tuple[int, int, int], dict]] = {}
+        speaker_packets_cache: dict[int, dict[int, list[VoicePacket]]] = {}
+        replay_hash_cache: dict[int, str] = {}
         for segment, replay in rows:
             path = Path(replay_service.get_file_path(replay))
             if not path.is_file():
@@ -739,6 +741,11 @@ class VoiceProfileService:
             if extraction is None:
                 extraction = extract_voice_packet_records(path)
                 extraction_cache[replay.id] = extraction
+                packets_by_speaker: dict[int, list[VoicePacket]] = {}
+                for packet in extraction.packets:
+                    packets_by_speaker.setdefault(packet.speaker_id, []).append(packet)
+                speaker_packets_cache[replay.id] = packets_by_speaker
+                replay_hash_cache[replay.id] = _file_sha256(path)
                 segment_cache[replay.id] = {
                     (
                         int(grouped["speaker_id"]),
@@ -752,8 +759,8 @@ class VoiceProfileService:
             )
             if segment_data is None:
                 continue
-            packets = [packet for packet in extraction.packets if packet.speaker_id == segment.speaker_id]
-            replay_hash = _file_sha256(path)
+            packets = speaker_packets_cache[replay.id].get(segment.speaker_id, [])
+            replay_hash = replay_hash_cache[replay.id]
             candidate = {
                 "candidate_key": make_archive_key(steam_id, replay.id, segment.speaker_id, segment.start_ms, segment.end_ms),
                 "steam_id": steam_id,

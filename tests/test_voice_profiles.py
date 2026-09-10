@@ -230,6 +230,77 @@ def test_profile_candidate_keeps_segment_packets_separate_from_speaker_stream(mo
     assert candidates[0]["_all_speaker_packets"] == [first, later]
 
 
+def test_profile_candidates_cache_replay_hash_and_speaker_packets(monkeypatch, tmp_path):
+    first = VoicePacket(100, 42, b"first")
+    second = VoicePacket(2_000, 42, b"second")
+    segment_one = SimpleNamespace(
+        speaker_id=42,
+        player_id=9,
+        start_ms=100,
+        end_ms=100,
+        packet_count=1,
+        radio_packet_count=0,
+    )
+    segment_two = SimpleNamespace(
+        speaker_id=42,
+        player_id=9,
+        start_ms=2_000,
+        end_ms=2_000,
+        packet_count=1,
+        radio_packet_count=0,
+    )
+    replay_path = tmp_path / "replay.barodemo"
+    replay_path.write_bytes(b"replay")
+    replay = SimpleNamespace(id=7, filename="replay.barodemo", recorded_at=None, uploaded_at=None)
+
+    class Query:
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            return self
+
+        def all(self):
+            return [(segment_one, replay), (segment_two, replay)]
+
+    class FakeDb:
+        def query(self, *args):
+            return Query()
+
+    class FakeReplayService:
+        def __init__(self, db):
+            pass
+
+        def get_file_path(self, value):
+            return replay_path
+
+    hash_calls = []
+    monkeypatch.setattr("services_replays.ReplayService", FakeReplayService)
+    monkeypatch.setattr(
+        "services_voice_profiles.extract_voice_packet_records",
+        lambda path: ReplayVoiceExtraction(
+            version=7,
+            packets=[first, second],
+            mapping={},
+            names_by_speaker={},
+            complete=True,
+            warnings=[],
+        ),
+    )
+    monkeypatch.setattr(
+        "services_voice_profiles._file_sha256",
+        lambda path: hash_calls.append(path) or "hash",
+    )
+
+    service = VoiceProfileService.__new__(VoiceProfileService)
+    service.db = FakeDb()
+    candidates = service._profile_candidates("76561198000000001")
+
+    assert len(candidates) == 2
+    assert len(hash_calls) == 1
+    assert candidates[0]["_all_speaker_packets"] is candidates[1]["_all_speaker_packets"]
+
+
 def test_old_profile_archive_version_is_materialized_again(tmp_path):
     from services_voice_profiles import needs_materialization
 
