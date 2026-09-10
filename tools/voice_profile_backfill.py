@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import ssl
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -50,7 +51,7 @@ def replay_recorded_at(path: Path) -> datetime:
 
 
 class NexusPlayerLookup:
-    def __init__(self, base_url: str, token: str | None, admin_token: str | None = None):
+    def __init__(self, base_url: str, token: str | None, admin_token: str | None = None, insecure: bool = False):
         self.endpoint = base_url.rstrip("/") + (
             "/api/v1/admin/voice-profiles/player-search"
             if token
@@ -62,6 +63,7 @@ class NexusPlayerLookup:
         elif admin_token:
             self.headers["Cookie"] = f"admin_token={admin_token}"
         self.authorized = bool(token or admin_token)
+        self.ssl_context = ssl._create_unverified_context() if insecure else None
         self.cache: dict[str, list[dict]] = {}
 
     def search(self, query: str) -> list[dict]:
@@ -74,7 +76,7 @@ class NexusPlayerLookup:
             self.endpoint + "?" + urlencode({"q": query}),
             headers=self.headers,
         )
-        with urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=30, context=self.ssl_context) as response:
             payload = json.loads(response.read().decode("utf-8"))
         players = payload.get("players") if isinstance(payload, dict) else []
         self.cache[query] = players if isinstance(players, list) else []
@@ -237,7 +239,7 @@ def run(args: argparse.Namespace) -> int:
     mapping_override = _load_mapping(Path(args.mapping_json) if args.mapping_json else None)
     token = os.environ.get(args.token_env)
     admin_token = os.environ.get(args.admin_token_env)
-    lookup = NexusPlayerLookup(args.nexus_url, token, admin_token)
+    lookup = NexusPlayerLookup(args.nexus_url, token, admin_token, args.insecure)
     decoder_dll = _build_decoder(Path(args.decoder_project))
     candidates_by_steam: dict[str, list[dict]] = {}
     player_by_steam: dict[str, dict] = {}
@@ -321,6 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nexus-url", default=DEFAULT_NEXUS_URL)
     parser.add_argument("--token-env", default="NEXUS_API_TOKEN")
     parser.add_argument("--admin-token-env", default="NEXUS_ADMIN_TOKEN")
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="disable TLS certificate verification for a local backfill against an expired internal certificate",
+    )
     parser.add_argument("--mapping-json")
     parser.add_argument(
         "--decoder-project",
