@@ -71,6 +71,17 @@ CREATE TABLE IF NOT EXISTS `replay_voice_segments` (
     CONSTRAINT `fk_replay_voice_segment_player` FOREIGN KEY (`player_id`) REFERENCES `players_data` (`player_id`) ON DELETE SET NULL
 );
 
+-- Older deployments already contain the two replay_voice_* tables from the
+-- first replay index.  CREATE TABLE IF NOT EXISTS deliberately leaves those
+-- tables untouched, so bring their missing columns up to the profile schema.
+ALTER TABLE `replay_voice_speakers`
+    ADD COLUMN IF NOT EXISTS `player_id` INT NULL AFTER `steam_id`,
+    ADD COLUMN IF NOT EXISTS `radio_packet_count` INT NOT NULL DEFAULT 0 AFTER `packet_count`;
+
+ALTER TABLE `replay_voice_segments`
+    ADD COLUMN IF NOT EXISTS `player_id` INT NULL AFTER `steam_id`,
+    ADD COLUMN IF NOT EXISTS `radio_packet_count` INT NOT NULL DEFAULT 0 AFTER `packet_count`;
+
 CREATE TABLE IF NOT EXISTS `voice_profile_clips` (
     `id` INT NOT NULL AUTO_INCREMENT,
     `archive_key` VARCHAR(64) NOT NULL,
