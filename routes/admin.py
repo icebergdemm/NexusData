@@ -3115,6 +3115,18 @@ _DEFAULT_DISGUISE_ALIASES = (
     "Матрос Глеб Корнилов", "Матрос Матвей Савельев", "Матрос Вадим Андреев",
     "Матрос Григорий Харитонов", "Матрос Арсений Никитин", "Матрос Тимур Артемьев",
 )
+_DEFAULT_DISGUISE_PUBLIC_STEAM_IDS = (
+    "76561198296585324", "76561199026002176", "76561199227547906",
+    "76561199038762116", "76561198031417324", "76561198941597015",
+    "76561199198532863", "76561199757386572", "76561199237007371",
+    "76561199348444689", "76561199341609105", "76561199728427224",
+    "76561199028624789", "76561199077991746", "76561199082533359",
+    "76561198991739057", "76561198004785770", "76561198080348694",
+    "76561198059706088", "76561197997509341", "76561199032028276",
+    "76561197993668259", "76561199086311089", "76561198453229105",
+    "76561199376029234", "76561198066249976", "76561199386428610",
+    "76561199839407968", "76561199523932654", "76561199824374240",
+)
 
 
 def _own_disguise_player(db: Session, current_admin: AdminUser) -> PlayerData:
@@ -3145,6 +3157,8 @@ def _normalize_disguise_public_steam_id(value: object) -> Optional[str]:
 
 
 def _ensure_disguise_profiles(db: Session, player: PlayerData) -> list[DisguiseProfile]:
+    default_aliases = {alias.casefold() for alias in _DEFAULT_DISGUISE_ALIASES}
+    default_public_ids = dict(zip((alias.casefold() for alias in _DEFAULT_DISGUISE_ALIASES), _DEFAULT_DISGUISE_PUBLIC_STEAM_IDS))
     profiles = (
         db.query(DisguiseProfile)
         .filter(DisguiseProfile.player_id == player.player_id)
@@ -3152,6 +3166,16 @@ def _ensure_disguise_profiles(db: Session, player: PlayerData) -> list[DisguiseP
         .all()
     )
     if profiles:
+        # Rows created by the first version had the default aliases but no
+        # public IDs. Backfill that exact untouched set once; a deliberately
+        # cleared/customized profile is left alone.
+        if (
+            len(profiles) == len(_DEFAULT_DISGUISE_ALIASES)
+            and all(profile.alias.casefold() in default_aliases and not profile.public_steam_id for profile in profiles)
+        ):
+            for profile in profiles:
+                profile.public_steam_id = default_public_ids.get(profile.alias.casefold())
+            db.flush()
         return profiles
 
     aliases = list(_DEFAULT_DISGUISE_ALIASES)
@@ -3159,7 +3183,12 @@ def _ensure_disguise_profiles(db: Session, player: PlayerData) -> list[DisguiseP
     if legacy_alias and legacy_alias.casefold() not in {alias.casefold() for alias in aliases}:
         aliases.insert(0, legacy_alias)
     profiles = [
-        DisguiseProfile(player_id=player.player_id, alias=alias, sort_order=index)
+        DisguiseProfile(
+            player_id=player.player_id,
+            alias=alias,
+            public_steam_id=default_public_ids.get(alias.casefold()),
+            sort_order=index,
+        )
         for index, alias in enumerate(aliases)
     ]
     db.add_all(profiles)

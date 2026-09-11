@@ -180,7 +180,7 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
       </CardContent>
 
       <Dialog open={profilesOpen} onOpenChange={setProfilesOpen}>
-        <DialogContent className="w-[96vw] max-w-[1000px]">
+        <DialogContent className="w-[96vw] max-w-[1000px] sm:max-w-[1000px]">
           <DialogHeader>
             <DialogTitle>Маскировочные профили</DialogTitle>
             <DialogDescription>Ник видят игроки. Пустой SteamID означает синтетический профиль. Для настоящего публичного профиля укажите SteamID64 и проверьте его ссылкой справа.</DialogDescription>
