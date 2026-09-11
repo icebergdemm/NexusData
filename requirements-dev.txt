@@ -1,0 +1,8 @@
+# Development/test environment. Runtime production dependencies remain in
+# requirements.txt; this file is intentionally the only extra install step
+# needed for local backend checks.
+-r requirements.txt
+
+pytest==8.3.5
+pytest-cov==6.0.0
+tzdata==2025.2

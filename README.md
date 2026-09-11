@@ -73,6 +73,18 @@ python proxy_server.py
 # → http://127.0.0.1:8000
 ```
 
+Для разработки и тестов используйте отдельное окружение и dev-зависимости:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate              # Windows
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+`pytest.ini` фиксирует каталог тестов, поэтому запуск из корня репозитория и
+из CI использует один и тот же набор правил.
+
 Схема БД и миграции создаются автоматически при первом старте (`init_db()` в
 `database.py`) — отдельного шага миграции нет.
 

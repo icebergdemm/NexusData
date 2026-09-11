@@ -734,6 +734,53 @@ class ServerRestartSchedule(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class LobbyAdvertisementConfig(Base):
+    """Per-server settings for the one-shot lobby Discord advertisement."""
+
+    __tablename__ = "lobby_advertisement_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(20), unique=True, nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    delay_seconds = Column(Integer, nullable=False, default=120)
+    message_text = Column(
+        Text,
+        nullable=False,
+        default="[Администрация]: Наш discord сервер: {discord_link} (прямая ссылка) — Вводить в браузере",
+    )
+    fallback_url = Column(String(255), nullable=False, default="ds-asper.ru")
+    keywords = Column(JSON, nullable=False, default=lambda: ["устав", "правила", "дискорд", "сервер"])
+    early_trigger_enabled = Column(Boolean, nullable=False, default=True)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class LobbyAdvertisementCycle(Base):
+    """Durable state for one round-end -> lobby advertisement cycle."""
+
+    __tablename__ = "lobby_advertisement_cycles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String(20), nullable=False, index=True)
+    round_end_event_id = Column(Integer, ForeignKey("round_events.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
+    due_at = Column(DateTime, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    trigger_reason = Column(String(30), nullable=True)
+    discord_link = Column(String(500), nullable=True)
+    discord_source = Column(String(30), nullable=True)
+    last_error = Column(Text, nullable=True)
+    attempted_at = Column(DateTime, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+    skipped_at = Column(DateTime, nullable=True)
+    processing_until = Column(DateTime, nullable=True, index=True)
+    processing_token = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    round_end_event = relationship("RoundEvent", foreign_keys=[round_end_event_id])
+
+
 class RatingEventLedger(Base):
     """Immutable v2 rating input accepted from an external game source."""
     __tablename__ = "rating_event_ledger"

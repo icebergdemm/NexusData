@@ -7,7 +7,14 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- The repository normally lives under LocalMods, while a git worktree
+         lives beside LocalMods. Resolve both layouts without manual junctions. -->
+    <ConcentusProject>../../../LuaCsForBarotrauma/Libraries/Concentus/CSharp/Concentus/Concentus.NetStandard.csproj</ConcentusProject>
+    <ConcentusProject Condition="!Exists('$(ConcentusProject)')">../../../../LocalMods/LuaCsForBarotrauma/Libraries/Concentus/CSharp/Concentus/Concentus.NetStandard.csproj</ConcentusProject>
+  </PropertyGroup>
+
   <ItemGroup>
-    <ProjectReference Include="../../../LuaCsForBarotrauma/Libraries/Concentus/CSharp/Concentus/Concentus.NetStandard.csproj" />
+    <ProjectReference Include="$(ConcentusProject)" Condition="Exists('$(ConcentusProject)')" />
   </ItemGroup>
 </Project>

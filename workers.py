@@ -469,6 +469,13 @@ def task_server_restarts() -> dict:
         db.close()
 
 
+def task_lobby_advertisements() -> dict:
+    """Send at most one Discord advertisement during each completed lobby."""
+    from services_lobby_advertisement_runtime import process_lobby_advertisements
+
+    return process_lobby_advertisements()
+
+
 def task_project_rating_events() -> dict:
     """Retry accepted but not-yet-projected v2 events after transient DB errors."""
     from models import RatingEventLedger
@@ -1562,6 +1569,7 @@ def _start_simple_workers():
         (task_process_ai_dispatcher_reminders, 5),
         (task_enqueue_daily_ai_dossiers, 15 * 60),
         (task_cleanup_broken_sessions, 60 * 60),
+        (task_lobby_advertisements, 5),
     ]
     from config import get_settings
     backup_settings = get_settings()
@@ -1679,6 +1687,14 @@ def _start_scheduler():
         interval_secs=5,
         priority=Priority.NORMAL,
         task_id="server_restarts",
+        timeout=30,
+    )
+
+    scheduler.register_periodic(
+        task_lobby_advertisements,
+        interval_secs=5,
+        priority=Priority.NORMAL,
+        task_id="lobby_advertisements",
         timeout=30,
     )
 

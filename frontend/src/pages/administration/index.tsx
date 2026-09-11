@@ -10,6 +10,7 @@ import { AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { ServerRestartSettings } from "./server-restarts"
+import { LobbyAdvertisementSettings } from "./lobby-advertisements"
 
 // Статистика (онлайн за период, топ игроков) отсюда убрана — она дублировала
 // страницу «Аналитика» неоптимизированной версией расчётов (полный скан
@@ -192,6 +193,7 @@ export function AdministrationPage() {
       </Card>
 
       {me?.is_superuser && <ServerRestartSettings />}
+      {me?.is_superuser && <LobbyAdvertisementSettings />}
 
       {me?.is_superuser && (
         <Card className="overflow-hidden py-0">
