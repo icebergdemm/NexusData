@@ -53,6 +53,7 @@ class PlayerData(Base):
     disguise_mode = Column(String(16), nullable=False, default="random")
     disguise_fixed_alias = Column(String(32), nullable=True)
     disguise_version = Column(Integer, nullable=False, default=0)
+    disguise_profile_id = Column(Integer, nullable=True, index=True)
     # True when the link was created by the confirmed-Discord-ID auto-match
     # worker (task_auto_link_admins, every 10 min) rather than a superuser —
     # the worker only ever fills in an empty link, never overwrites a manual one.
@@ -67,6 +68,12 @@ class PlayerData(Base):
     # auto-detected discord_id match used for profile classification) to
     # avoid confusion — this is the explicit, superuser-managed link.
     linked_admin_user = relationship("AdminUser", foreign_keys=[linked_admin_id])
+    disguise_profiles = relationship(
+        "DisguiseProfile",
+        back_populates="player",
+        cascade="all, delete-orphan",
+        order_by="DisguiseProfile.sort_order, DisguiseProfile.id",
+    )
 
     @property
     def display_name(self) -> str:
@@ -78,6 +85,27 @@ class PlayerData(Base):
         if not self.play_time:
             return 0.0
         return self.play_time / 3600.0
+
+
+class DisguiseProfile(Base):
+    """One public identity available to a linked superuser."""
+
+    __tablename__ = "disguise_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players_data.player_id"), nullable=False, index=True)
+    alias = Column(String(32), nullable=False)
+    public_steam_id = Column(String(50), nullable=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    player = relationship("PlayerData", back_populates="disguise_profiles")
+
+    __table_args__ = (
+        UniqueConstraint("player_id", "alias", name="uq_disguise_profiles_player_alias"),
+    )
 
 
 class PlayerStats(Base):

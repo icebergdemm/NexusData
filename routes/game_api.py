@@ -19,7 +19,7 @@ from security import verify_external_api_key_dependency
 from config import get_settings
 from models import (
     AdminUser, PlayerData, PlayerPunishment,
-    ServerPrivilegeGroup, ServerPlayerPrivilege, ServerAction,
+    ServerPrivilegeGroup, ServerPlayerPrivilege, ServerAction, DisguiseProfile,
 )
 from services import build_punishment_discord_embed
 
@@ -145,10 +145,29 @@ def get_disguise_policy(
     )
     if not player or not admin:
         return {"enabled": False, "mode": "random", "fixed_alias": None, "version": 0}
+    profiles = (
+        db.query(DisguiseProfile)
+        .filter(DisguiseProfile.player_id == player.player_id, DisguiseProfile.enabled.is_(True))
+        .order_by(DisguiseProfile.sort_order, DisguiseProfile.id)
+        .all()
+    )
+    if not profiles:
+        # Old records can exist before the first dashboard visit. Keep the
+        # game API fail-open until the dashboard seeds the profile rows.
+        profiles = []
     return {
         "enabled": bool(player.disguise_enabled),
         "mode": player.disguise_mode or "random",
         "fixed_alias": player.disguise_fixed_alias,
+        "selected_profile_id": player.disguise_profile_id,
+        "profiles": [
+            {
+                "id": profile.id,
+                "alias": profile.alias,
+                "public_steam_id": profile.public_steam_id,
+            }
+            for profile in profiles
+        ],
         "version": int(player.disguise_version or 0),
     }
 

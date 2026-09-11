@@ -6,10 +6,20 @@ export interface DisguiseServer {
   status: DisguiseServerStatus
 }
 
+export interface DisguiseProfile {
+  id: number
+  alias: string
+  public_steam_id: string | null
+  enabled: boolean
+  sort_order: number
+}
+
 export interface DisguiseState {
   enabled: boolean
   mode: DisguiseMode
   fixed_alias: string | null
+  selected_profile_id: number | null
+  profiles: DisguiseProfile[]
   version: number
   servers: DisguiseServer[]
 }
@@ -21,11 +31,19 @@ export function canEditDisguise(
   return admin?.is_superuser === true && Boolean(linkedPlayer?.player_steamid)
 }
 
-export function makeDisguiseUpdate(enabled: boolean, mode: DisguiseMode, fixedAlias: string) {
+export function makeDisguiseUpdate(
+  enabled: boolean,
+  mode: DisguiseMode,
+  fixedAlias: string,
+  selectedProfileId: number | null = null,
+  profiles: DisguiseProfile[] = [],
+) {
   return {
     enabled,
     mode,
     fixed_alias: mode === "fixed" ? fixedAlias.trim() : null,
+    selected_profile_id: selectedProfileId,
+    profiles,
   }
 }
 

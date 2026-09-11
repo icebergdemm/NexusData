@@ -34,7 +34,7 @@ from services import (
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
     LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
-    PlayerPunishment, AppSetting, ServerAction,
+    PlayerPunishment, AppSetting, ServerAction, DisguiseProfile,
 )
 from config import get_settings, update_env_file
 from utils import is_bogon_ip
@@ -3103,6 +3103,18 @@ def build_task_status_payload(scheduler) -> dict:
 
 _DISGUISE_SERVERS = ("ASPER1", "ASPER2")
 _BAROTRAUMA_DISGUISE_DISALLOWED = set(';<>/\\[]"?')
+_DEFAULT_DISGUISE_ALIASES = (
+    "Матрос Алексей Воронов", "Матрос Николай Громов", "Матрос Сергей Лебедев",
+    "Матрос Илья Макаров", "Матрос Дмитрий Орлов", "Матрос Андрей Чернов",
+    "Матрос Павел Романов", "Матрос Иван Крылов", "Матрос Михаил Серов",
+    "Матрос Олег Власов", "Матрос Виктор Зайцев", "Матрос Роман Тихонов",
+    "Матрос Евгений Федотов", "Матрос Антон Миронов", "Матрос Юрий Климов",
+    "Матрос Максим Ершов", "Матрос Артём Беляев", "Матрос Константин Жданов",
+    "Матрос Владислав Баранов", "Матрос Степан Данилов", "Матрос Никита Павлов",
+    "Матрос Фёдор Алексеев", "Матрос Борис Гаврилов", "Матрос Лев Демидов",
+    "Матрос Глеб Корнилов", "Матрос Матвей Савельев", "Матрос Вадим Андреев",
+    "Матрос Григорий Харитонов", "Матрос Арсений Никитин", "Матрос Тимур Артемьев",
+)
 
 
 def _own_disguise_player(db: Session, current_admin: AdminUser) -> PlayerData:
@@ -3123,6 +3135,42 @@ def _normalize_disguise_alias(value: object) -> str:
     return alias
 
 
+def _normalize_disguise_public_steam_id(value: object) -> Optional[str]:
+    steam_id = str(value or "").strip()
+    if not steam_id:
+        return None
+    if len(steam_id) != 17 or not steam_id.isdigit() or not steam_id.startswith("7656119"):
+        raise HTTPException(status_code=422, detail="Публичный SteamID должен быть Steam64 из 17 цифр")
+    return steam_id
+
+
+def _ensure_disguise_profiles(db: Session, player: PlayerData) -> list[DisguiseProfile]:
+    profiles = (
+        db.query(DisguiseProfile)
+        .filter(DisguiseProfile.player_id == player.player_id)
+        .order_by(DisguiseProfile.sort_order, DisguiseProfile.id)
+        .all()
+    )
+    if profiles:
+        return profiles
+
+    aliases = list(_DEFAULT_DISGUISE_ALIASES)
+    legacy_alias = (player.disguise_fixed_alias or "").strip()
+    if legacy_alias and legacy_alias.casefold() not in {alias.casefold() for alias in aliases}:
+        aliases.insert(0, legacy_alias)
+    profiles = [
+        DisguiseProfile(player_id=player.player_id, alias=alias, sort_order=index)
+        for index, alias in enumerate(aliases)
+    ]
+    db.add_all(profiles)
+    db.flush()
+    if legacy_alias:
+        selected = next((profile for profile in profiles if profile.alias.casefold() == legacy_alias.casefold()), None)
+        if selected:
+            player.disguise_profile_id = selected.id
+    return profiles
+
+
 def _assert_disguise_alias_available(db: Session, player: PlayerData, alias: str) -> None:
     normalized = alias.casefold()
     if (
@@ -3141,8 +3189,105 @@ def _assert_disguise_alias_available(db: Session, player: PlayerData, alias: str
         )
         for candidate in candidates
     )
+    if not is_taken:
+        is_taken = (
+            db.query(DisguiseProfile)
+            .join(PlayerData, PlayerData.player_id == DisguiseProfile.player_id)
+            .filter(
+                DisguiseProfile.player_id != player.player_id,
+                DisguiseProfile.enabled.is_(True),
+                PlayerData.disguise_enabled.is_(True),
+                func.lower(DisguiseProfile.alias) == normalized,
+            )
+            .first()
+            is not None
+        )
     if is_taken:
         raise HTTPException(status_code=409, detail="Псевдоним уже занят")
+
+
+def _validate_disguise_profiles(db: Session, player: PlayerData, profiles: list[dict]) -> list[dict]:
+    if not isinstance(profiles, list) or not profiles or len(profiles) > 200:
+        raise HTTPException(status_code=422, detail="Список маскировочных профилей должен содержать от 1 до 200 строк")
+
+    normalized: list[dict] = []
+    aliases: set[str] = set()
+    public_ids: set[str] = set()
+    for index, raw in enumerate(profiles):
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=422, detail=f"Строка профиля {index + 1} имеет неверный формат")
+        alias = _normalize_disguise_alias(raw.get("alias"))
+        alias_key = alias.casefold()
+        if alias_key in aliases:
+            raise HTTPException(status_code=409, detail=f"Псевдоним повторяется: {alias}")
+        aliases.add(alias_key)
+        public_steam_id = _normalize_disguise_public_steam_id(raw.get("public_steam_id"))
+        if public_steam_id and public_steam_id == str(player.player_steamid or ""):
+            raise HTTPException(status_code=409, detail="Публичный SteamID не должен совпадать с вашим настоящим SteamID")
+        if public_steam_id and public_steam_id in public_ids:
+            raise HTTPException(status_code=409, detail=f"Публичный SteamID повторяется: {public_steam_id}")
+        if public_steam_id:
+            public_ids.add(public_steam_id)
+        raw_id = raw.get("id")
+        try:
+            profile_id = int(raw_id) if raw_id is not None and int(raw_id) > 0 else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"Строка профиля {index + 1} имеет неверный идентификатор")
+        normalized.append({
+            "id": profile_id,
+            "alias": alias,
+            "public_steam_id": public_steam_id,
+            "enabled": bool(raw.get("enabled", True)),
+            "sort_order": index,
+        })
+
+    for alias in (item["alias"] for item in normalized):
+        _assert_disguise_alias_available(db, player, alias)
+
+    existing_public = (
+        db.query(DisguiseProfile)
+        .join(PlayerData, PlayerData.player_id == DisguiseProfile.player_id)
+        .filter(
+            DisguiseProfile.player_id != player.player_id,
+            DisguiseProfile.enabled.is_(True),
+            PlayerData.disguise_enabled.is_(True),
+            DisguiseProfile.public_steam_id.isnot(None),
+            DisguiseProfile.public_steam_id.in_(public_ids or {"__none__"}),
+        )
+        .first()
+    )
+    if existing_public:
+        raise HTTPException(status_code=409, detail="Публичный SteamID уже используется активной маскировкой")
+    return normalized
+
+
+def _replace_disguise_profiles(db: Session, player: PlayerData, raw_profiles: list[dict]) -> list[DisguiseProfile]:
+    normalized = _validate_disguise_profiles(db, player, raw_profiles)
+    existing = {
+        profile.id: profile
+        for profile in db.query(DisguiseProfile).filter(DisguiseProfile.player_id == player.player_id).all()
+    }
+    kept_ids = set()
+    result = []
+    for item in normalized:
+        profile = existing.get(item["id"]) if item["id"] is not None else None
+        if item["id"] is not None and profile is None:
+            raise HTTPException(status_code=422, detail="Профиль маскировки принадлежит другому игроку")
+        if profile is None:
+            profile = DisguiseProfile(player_id=player.player_id)
+            db.add(profile)
+        profile.alias = item["alias"]
+        profile.public_steam_id = item["public_steam_id"]
+        profile.enabled = item["enabled"]
+        profile.sort_order = item["sort_order"]
+        db.flush()
+        kept_ids.add(profile.id)
+        result.append(profile)
+    for profile_id, profile in existing.items():
+        if profile_id not in kept_ids:
+            db.delete(profile)
+    db.flush()
+    return sorted(result, key=lambda profile: (profile.sort_order, profile.id))
 
 
 def _disguise_server_rows(db: Session, player: PlayerData) -> list[dict]:
@@ -3176,10 +3321,31 @@ def _disguise_server_rows(db: Session, player: PlayerData) -> list[dict]:
 
 
 def _disguise_response(db: Session, player: PlayerData) -> dict:
+    profiles = _ensure_disguise_profiles(db, player)
+    selected_profile = next(
+        (profile for profile in profiles if profile.id == player.disguise_profile_id), None
+    )
+    if selected_profile is None and player.disguise_fixed_alias:
+        selected_profile = next(
+            (profile for profile in profiles if profile.alias.casefold() == player.disguise_fixed_alias.casefold()), None
+        )
+        if selected_profile:
+            player.disguise_profile_id = selected_profile.id
     return {
         "enabled": bool(player.disguise_enabled),
         "mode": player.disguise_mode or "random",
-        "fixed_alias": player.disguise_fixed_alias,
+        "fixed_alias": selected_profile.alias if selected_profile else player.disguise_fixed_alias,
+        "selected_profile_id": selected_profile.id if selected_profile else None,
+        "profiles": [
+            {
+                "id": profile.id,
+                "alias": profile.alias,
+                "public_steam_id": profile.public_steam_id,
+                "enabled": bool(profile.enabled),
+                "sort_order": profile.sort_order,
+            }
+            for profile in profiles
+        ],
         "version": int(player.disguise_version or 0),
         "servers": _disguise_server_rows(db, player),
     }
@@ -3190,7 +3356,9 @@ async def api_get_own_disguise(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    return _disguise_response(db, _own_disguise_player(db, current_admin))
+    response = _disguise_response(db, _own_disguise_player(db, current_admin))
+    db.commit()
+    return response
 
 
 @router.put("/api/v1/me/disguise")
@@ -3207,15 +3375,31 @@ async def api_update_own_disguise(
     if mode not in {"random", "fixed"}:
         raise HTTPException(status_code=422, detail="Режим маскировки: random или fixed")
 
+    profiles = _ensure_disguise_profiles(db, player)
+    if "profiles" in body:
+        profiles = _replace_disguise_profiles(db, player, body.get("profiles"))
+
+    selected_profile_id = body.get("selected_profile_id", body.get("profile_id"))
+    selected_profile = None
+    if selected_profile_id is not None:
+        try:
+            selected_profile = next(profile for profile in profiles if profile.id == int(selected_profile_id))
+        except (TypeError, ValueError, StopIteration):
+            raise HTTPException(status_code=422, detail="Выбранный профиль маскировки не найден")
+
     fixed_alias = None
     if mode == "fixed":
-        fixed_alias = _normalize_disguise_alias(body.get("fixed_alias"))
-        if enabled:
-            _assert_disguise_alias_available(db, player, fixed_alias)
+        if selected_profile is None:
+            legacy_alias = _normalize_disguise_alias(body.get("fixed_alias"))
+            selected_profile = next((profile for profile in profiles if profile.alias.casefold() == legacy_alias.casefold()), None)
+        if selected_profile is None or not selected_profile.enabled:
+            raise HTTPException(status_code=422, detail="Для fixed выберите активный профиль маскировки")
+        fixed_alias = selected_profile.alias
 
     player.disguise_enabled = enabled
     player.disguise_mode = mode
     player.disguise_fixed_alias = fixed_alias
+    player.disguise_profile_id = selected_profile.id if selected_profile else None
     player.disguise_version = int(player.disguise_version or 0) + 1
     db.flush()
     for server_name in _DISGUISE_SERVERS:

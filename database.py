@@ -149,6 +149,7 @@ def _apply_migrations():
         ("players_data", "disguise_mode", "VARCHAR(16) NOT NULL DEFAULT 'random'"),
         ("players_data", "disguise_fixed_alias", "VARCHAR(32)"),
         ("players_data", "disguise_version", "INT NOT NULL DEFAULT 0"),
+        ("players_data", "disguise_profile_id", "INT"),
         # players_data: cached Steam avatar
         ("players_data", "steam_avatar_url", "VARCHAR(500)"),
         ("players_data", "steam_avatar_fetched_at", "DATETIME"),
