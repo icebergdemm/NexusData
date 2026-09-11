@@ -20,6 +20,7 @@ export interface OnlinePlayer {
   last_seen: string | null
   total_play_time: number | null
   is_new_player: boolean | null
+  is_superuser: boolean
   has_discord_link: boolean
   label_ids: number[]
   has_labels: boolean
@@ -43,6 +44,7 @@ export interface OfflinePlayer {
   last_session_logout: string | null
   play_time_hours: number
   is_new_player: boolean
+  is_superuser: boolean
   has_discord_link: boolean
   label_ids: number[]
   has_labels: boolean

@@ -376,7 +376,7 @@ export function ModerationPage() {
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
-                          <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />
+                          {!p.is_superuser && <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />}
                         </TableCell>
                         <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
                         <TableCell>{p.ping ?? "-"}</TableCell>
@@ -456,7 +456,7 @@ export function ModerationPage() {
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
-                          <RankMismatchBadge nickname={p.player_last_time_name} rankId={p.rank_id} ranks={data.ranks} />
+                          {!p.is_superuser && <RankMismatchBadge nickname={p.player_last_time_name} rankId={p.rank_id} ranks={data.ranks} />}
                           <div className="font-mono text-xs text-muted-foreground">{p.player_steamid}</div>
                         </TableCell>
                         <TableCell>{fmtPlayTime(p.play_time_hours)}</TableCell>

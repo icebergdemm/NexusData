@@ -482,6 +482,7 @@ def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) 
         "last_seen": info["last_seen"].isoformat() if info.get("last_seen") else None,
         "total_play_time": info.get("total_play_time"),
         "is_new_player": info.get("is_new_player"),
+        "is_superuser": bool(info.get("is_superuser")),
         "has_discord_link": bool(info.get("has_discord_link")),
         "label_ids": _serialize_label_ids(info),
         "has_labels": bool(flags.get("has_labels")),
@@ -495,7 +496,7 @@ def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) 
     }
 
 
-def _serialize_offline_player(p, flags: Optional[dict] = None, dossier_triage: Optional[dict] = None) -> dict:
+def _serialize_offline_player(p, flags: Optional[dict] = None, dossier_triage: Optional[dict] = None, is_superuser: bool = False) -> dict:
     flags = flags or {}
     return {
         "player_id": p.player_id,
@@ -508,6 +509,7 @@ def _serialize_offline_player(p, flags: Optional[dict] = None, dossier_triage: O
         "last_session_logout": p.last_session_logout.isoformat() if getattr(p, "last_session_logout", None) else None,
         "play_time_hours": p.play_time_hours,
         "has_discord_link": bool(getattr(p, "discord_id", None)),
+        "is_superuser": bool(is_superuser),
         "label_ids": flags.get("label_ids", _serialize_label_ids(p)),
         "has_labels": bool(flags.get("has_labels")),
         "has_notes": bool(flags.get("has_notes")),
@@ -524,7 +526,7 @@ def _serialize_offline_player(p, flags: Optional[dict] = None, dossier_triage: O
     }
 
 
-def _serialize_search_player(p, flags: Optional[dict] = None, dossier_triage: Optional[dict] = None) -> dict:
+def _serialize_search_player(p, flags: Optional[dict] = None, dossier_triage: Optional[dict] = None, is_superuser: bool = False) -> dict:
     flags = flags or {}
     """Serialize a player search result using the moderation table contract."""
     return {
@@ -538,6 +540,7 @@ def _serialize_search_player(p, flags: Optional[dict] = None, dossier_triage: Op
         "last_session_logout": None,
         "play_time_hours": p.play_time_hours,
         "is_new_player": p.play_time_hours < 2,
+        "is_superuser": bool(is_superuser),
         "has_discord_link": bool(getattr(p, "discord_id", None)),
         "label_ids": flags.get("label_ids", _serialize_label_ids(p)),
         "has_labels": bool(flags.get("has_labels")),
@@ -636,10 +639,34 @@ async def api_moderation_overview(
         }
         dossier_player_ids = [player_id for player_id in dossier_player_ids if player_id not in secret_player_ids]
     dossier_triage = get_dossier_triage_map(db, dossier_player_ids)
+    # The rank warning is useful for ordinary players, but it is noise for a
+    # superuser's linked game profile. Resolve this once for every row instead
+    # of making the frontend guess from the current viewer's permissions.
+    from models import AdminUser, PlayerData
+    moderation_steamids = {
+        str(info.get("player_steamid"))
+        for info in online_players
+        if info.get("player_steamid")
+    }
+    moderation_steamids.update(str(p.player_steamid) for p in recent_offline if p.player_steamid)
+    moderation_steamids.update(str(p.player_steamid) for p in search_results if p.player_steamid)
+    superuser_steamids = set()
+    if moderation_steamids:
+        superuser_steamids = {
+            str(steamid)
+            for steamid, in db.query(PlayerData.player_steamid)
+            .join(AdminUser, PlayerData.linked_admin_id == AdminUser.id)
+            .filter(
+                PlayerData.player_steamid.in_(moderation_steamids),
+                AdminUser.is_superuser.is_(True),
+            )
+            .all()
+        }
     for info in online_players:
         flags = player_flags.get(info.get("player_id"), {})
         info["player_flags"] = flags
         info["label_ids"] = flags.get("label_ids", info.get("label_ids", []))
+        info["is_superuser"] = str(info.get("player_steamid")) in superuser_steamids
 
     ac_events = svc.get_anticheat_events(limit=200, reviewed=None)
     ac_enriched = [
@@ -657,8 +684,8 @@ async def api_moderation_overview(
         "online_servers": online_servers,
         "selected_server": server,
         "round_states": round_states,
-        "recent_offline": [_serialize_offline_player(p, player_flags.get(p.player_id), dossier_triage.get(p.player_id)) for p in recent_offline],
-        "search_results": [_serialize_search_player(p, player_flags.get(p.player_id), dossier_triage.get(p.player_id)) for p in search_results],
+        "recent_offline": [_serialize_offline_player(p, player_flags.get(p.player_id), dossier_triage.get(p.player_id), str(p.player_steamid) in superuser_steamids) for p in recent_offline],
+        "search_results": [_serialize_search_player(p, player_flags.get(p.player_id), dossier_triage.get(p.player_id), str(p.player_steamid) in superuser_steamids) for p in search_results],
         "search_query": search,
         "ac_events": ac_enriched,
         "ranks": settings.ranks_mapping,
