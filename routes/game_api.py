@@ -18,7 +18,7 @@ from database import get_db, get_game_db
 from security import verify_external_api_key_dependency
 from config import get_settings
 from models import (
-    PlayerData, PlayerPunishment,
+    AdminUser, PlayerData, PlayerPunishment,
     ServerPrivilegeGroup, ServerPlayerPrivilege, ServerAction,
 )
 from services import build_punishment_discord_embed
@@ -127,6 +127,30 @@ class UnbanRequest(BaseModel):
     reason: Optional[str] = Field(None, description="Причина разбана")
     issued_by_name: str = Field(default="GameServer", description="Кто инициировал разбан")
     server_name: Optional[str] = Field(None, description="Имя сервера (null = все серверы)")
+
+
+@router.get("/disguise/policy")
+def get_disguise_policy(
+    steamid: str = Query(..., min_length=1, max_length=50),
+    server_name: Optional[str] = Query(None, max_length=20),
+    db: Session = Depends(get_game_db),
+):
+    """Return only the game-facing disguise policy for an authenticated server."""
+    player = db.query(PlayerData).filter(PlayerData.player_steamid == steamid.strip()).first()
+    admin = (
+        db.query(AdminUser)
+        .filter(AdminUser.id == player.linked_admin_id, AdminUser.is_superuser.is_(True))
+        .first()
+        if player and player.linked_admin_id else None
+    )
+    if not player or not admin:
+        return {"enabled": False, "mode": "random", "fixed_alias": None, "version": 0}
+    return {
+        "enabled": bool(player.disguise_enabled),
+        "mode": player.disguise_mode or "random",
+        "fixed_alias": player.disguise_fixed_alias,
+        "version": int(player.disguise_version or 0),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

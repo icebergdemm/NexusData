@@ -34,7 +34,7 @@ from services import (
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
     LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
-    PlayerPunishment, AppSetting,
+    PlayerPunishment, AppSetting, ServerAction,
 )
 from config import get_settings, update_env_file
 from utils import is_bogon_ip
@@ -163,7 +163,11 @@ async def get_me(request: Request, db: Session = Depends(get_db), current_admin:
 
     linked_player_row = db.query(PlayerData).filter(PlayerData.linked_admin_id == current_admin.id).first()
     linked_player = (
-        {"player_id": linked_player_row.player_id, "forced_display_name": linked_player_row.forced_display_name}
+        {
+            "player_id": linked_player_row.player_id,
+            "player_steamid": linked_player_row.player_steamid,
+            "forced_display_name": linked_player_row.forced_display_name,
+        }
         if linked_player_row else None
     )
 
@@ -3095,6 +3099,145 @@ def build_task_status_payload(scheduler) -> dict:
         "stats": stats,
         "ai_worker": ai_worker,
     }
+
+
+_DISGUISE_SERVERS = ("ASPER1", "ASPER2")
+_BAROTRAUMA_DISGUISE_DISALLOWED = set(';<>/\\[]"?')
+
+
+def _own_disguise_player(db: Session, current_admin: AdminUser) -> PlayerData:
+    if not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Маскировка доступна только superuser")
+    player = db.query(PlayerData).filter(PlayerData.linked_admin_id == current_admin.id).first()
+    if not player:
+        raise HTTPException(status_code=400, detail="Сначала привяжите игровой профиль")
+    return player
+
+
+def _normalize_disguise_alias(value: object) -> str:
+    alias = str(value or "").strip()
+    if not alias or len(alias) > 32 or any(ord(char) < 32 for char in alias):
+        raise HTTPException(status_code=422, detail="Псевдоним должен содержать от 1 до 32 печатных символов")
+    if any(char in _BAROTRAUMA_DISGUISE_DISALLOWED for char in alias):
+        raise HTTPException(status_code=422, detail="Псевдоним содержит недопустимые для Barotrauma символы")
+    return alias
+
+
+def _assert_disguise_alias_available(db: Session, player: PlayerData, alias: str) -> None:
+    normalized = alias.casefold()
+    if (
+        (player.player_last_time_name or "").casefold() == normalized
+        or (player.forced_display_name or "").casefold() == normalized
+    ):
+        raise HTTPException(status_code=409, detail="Псевдоним совпадает с вашим настоящим игровым именем")
+    candidates = db.query(PlayerData).filter(PlayerData.player_id != player.player_id).all()
+    is_taken = any(
+        (candidate.player_last_time_name or "").casefold() == normalized
+        or (candidate.forced_display_name or "").casefold() == normalized
+        or (
+            candidate.disguise_enabled
+            and candidate.disguise_mode == "fixed"
+            and (candidate.disguise_fixed_alias or "").casefold() == normalized
+        )
+        for candidate in candidates
+    )
+    if is_taken:
+        raise HTTPException(status_code=409, detail="Псевдоним уже занят")
+
+
+def _disguise_server_rows(db: Session, player: PlayerData) -> list[dict]:
+    actions = (
+        db.query(ServerAction)
+        .filter(ServerAction.action_type == "disguise_policy_sync")
+        .filter(ServerAction.target_steamid == player.player_steamid)
+        .order_by(ServerAction.created_at.desc(), ServerAction.id.desc())
+        .all()
+    )
+    latest_by_server = {}
+    for action in actions:
+        if action.target_server not in _DISGUISE_SERVERS or action.target_server in latest_by_server:
+            continue
+        if (action.payload or {}).get("policy_version") != player.disguise_version:
+            continue
+        latest_by_server[action.target_server] = action
+
+    result = []
+    for server_name in _DISGUISE_SERVERS:
+        action = latest_by_server.get(server_name)
+        if not action:
+            continue
+        status = action.status_asper1 if server_name == "ASPER1" else action.status_asper2
+        result.append({
+            "server_name": server_name,
+            "action_id": action.id,
+            "status": "ready" if status == 1 else "failed" if status == 2 else "pending",
+        })
+    return result
+
+
+def _disguise_response(db: Session, player: PlayerData) -> dict:
+    return {
+        "enabled": bool(player.disguise_enabled),
+        "mode": player.disguise_mode or "random",
+        "fixed_alias": player.disguise_fixed_alias,
+        "version": int(player.disguise_version or 0),
+        "servers": _disguise_server_rows(db, player),
+    }
+
+
+@router.get("/api/v1/me/disguise")
+async def api_get_own_disguise(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    return _disguise_response(db, _own_disguise_player(db, current_admin))
+
+
+@router.put("/api/v1/me/disguise")
+async def api_update_own_disguise(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    await ensure_csrf_or_valid_admin_session(request, db)
+    player = _own_disguise_player(db, current_admin)
+    body = await request.json()
+    enabled = bool(body.get("enabled", False))
+    mode = str(body.get("mode") or "random").strip().lower()
+    if mode not in {"random", "fixed"}:
+        raise HTTPException(status_code=422, detail="Режим маскировки: random или fixed")
+
+    fixed_alias = None
+    if mode == "fixed":
+        fixed_alias = _normalize_disguise_alias(body.get("fixed_alias"))
+        if enabled:
+            _assert_disguise_alias_available(db, player, fixed_alias)
+
+    player.disguise_enabled = enabled
+    player.disguise_mode = mode
+    player.disguise_fixed_alias = fixed_alias
+    player.disguise_version = int(player.disguise_version or 0) + 1
+    db.flush()
+    for server_name in _DISGUISE_SERVERS:
+        db.add(ServerAction(
+            action_type="disguise_policy_sync",
+            target_steamid=player.player_steamid,
+            target_server=server_name,
+            # A policy sync belongs to exactly one server.  Leaving the other
+            # status pending makes both servers consume both actions.
+            status_asper1=0 if server_name == "ASPER1" else 1,
+            status_asper2=0 if server_name == "ASPER2" else 1,
+            queued_by_admin_id=current_admin.id,
+            payload={"policy_version": player.disguise_version, "player_steamid": player.player_steamid},
+        ))
+    db.commit()
+    log_admin_action(db, current_admin.id, "disguise_policy_update", {
+        "player_id": player.player_id,
+        "enabled": enabled,
+        "mode": mode,
+        "policy_version": player.disguise_version,
+    })
+    return _disguise_response(db, player)
 
 
 @router.get("/api/v1/admin/tasks")

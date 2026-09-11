@@ -143,6 +143,12 @@ def _apply_migrations():
         ("players_data", "linked_admin_id", "INT"),
         ("players_data", "forced_display_name", "VARCHAR(255)"),
         ("players_data", "linked_admin_auto", "TINYINT NOT NULL DEFAULT 0"),
+        # Per-player game disguise policy. The true SteamID remains on the
+        # server; these fields only decide its client-facing projection.
+        ("players_data", "disguise_enabled", "TINYINT NOT NULL DEFAULT 0"),
+        ("players_data", "disguise_mode", "VARCHAR(16) NOT NULL DEFAULT 'random'"),
+        ("players_data", "disguise_fixed_alias", "VARCHAR(32)"),
+        ("players_data", "disguise_version", "INT NOT NULL DEFAULT 0"),
         # players_data: cached Steam avatar
         ("players_data", "steam_avatar_url", "VARCHAR(500)"),
         ("players_data", "steam_avatar_fetched_at", "DATETIME"),

@@ -31,6 +31,7 @@ export interface MyDepartmentRef {
 
 export interface LinkedPlayerRef {
   player_id: number
+  player_steamid: string
   forced_display_name: string | null
 }
 

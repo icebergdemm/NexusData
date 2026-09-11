@@ -49,6 +49,10 @@ class PlayerData(Base):
     # the admin panel, since this is resolved at display time, not baked in.
     linked_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
     forced_display_name = Column(String(255), nullable=True)
+    disguise_enabled = Column(Boolean, nullable=False, default=False)
+    disguise_mode = Column(String(16), nullable=False, default="random")
+    disguise_fixed_alias = Column(String(32), nullable=True)
+    disguise_version = Column(Integer, nullable=False, default=0)
     # True when the link was created by the confirmed-Discord-ID auto-match
     # worker (task_auto_link_admins, every 10 min) rather than a superuser —
     # the worker only ever fills in an empty link, never overwrites a manual one.
