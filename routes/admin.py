@@ -3267,7 +3267,7 @@ def _replace_disguise_profiles(db: Session, player: PlayerData, raw_profiles: li
         profile.id: profile
         for profile in db.query(DisguiseProfile).filter(DisguiseProfile.player_id == player.player_id).all()
     }
-    kept_ids = set()
+    kept_existing_ids = set()
     result = []
     for item in normalized:
         profile = existing.get(item["id"]) if item["id"] is not None else None
@@ -3276,15 +3276,15 @@ def _replace_disguise_profiles(db: Session, player: PlayerData, raw_profiles: li
         if profile is None:
             profile = DisguiseProfile(player_id=player.player_id)
             db.add(profile)
+        else:
+            kept_existing_ids.add(profile.id)
         profile.alias = item["alias"]
         profile.public_steam_id = item["public_steam_id"]
         profile.enabled = item["enabled"]
         profile.sort_order = item["sort_order"]
-        db.flush()
-        kept_ids.add(profile.id)
         result.append(profile)
     for profile_id, profile in existing.items():
-        if profile_id not in kept_ids:
+        if profile_id not in kept_existing_ids:
             db.delete(profile)
     db.flush()
     return sorted(result, key=lambda profile: (profile.sort_order, profile.id))
@@ -3414,13 +3414,13 @@ async def api_update_own_disguise(
             queued_by_admin_id=current_admin.id,
             payload={"policy_version": player.disguise_version, "player_steamid": player.player_steamid},
         ))
-    db.commit()
-    log_admin_action(db, current_admin.id, "disguise_policy_update", {
+    db.add(AdminActionLog(admin_id=current_admin.id, action="disguise_policy_update", details={
         "player_id": player.player_id,
         "enabled": enabled,
         "mode": mode,
         "policy_version": player.disguise_version,
-    })
+    }))
+    db.commit()
     return _disguise_response(db, player)
 
 

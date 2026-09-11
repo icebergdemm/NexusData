@@ -48,7 +48,6 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
   })
   const [enabled, setEnabled] = useState(false)
   const [mode, setMode] = useState<DisguiseMode>("random")
-  const [fixedAlias, setFixedAlias] = useState("")
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null)
   const [profiles, setProfiles] = useState<DisguiseProfile[]>([])
   const [draftProfiles, setDraftProfiles] = useState<DisguiseProfile[]>([])
@@ -58,26 +57,30 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
     if (!data) return
     setEnabled(data.enabled)
     setMode(data.mode)
-    setFixedAlias(data.fixed_alias ?? "")
     setSelectedProfileId(data.selected_profile_id)
     setProfiles(data.profiles ?? [])
   }, [data])
 
+  const aliasFor = (profileId: number | null, source = profiles) =>
+    source.find((profile) => profile.id === profileId)?.alias ?? ""
+
   const save = useMutation({
-    mutationFn: (input: { enabled: boolean; profiles: DisguiseProfile[]; selectedProfileId: number | null }) => api.put<DisguiseState>(
+    mutationFn: (input: { enabled: boolean; mode: DisguiseMode; selectedProfileId: number | null; profiles?: DisguiseProfile[] }) => api.put<DisguiseState>(
       "/api/v1/me/disguise",
-      makeDisguiseUpdate(input.enabled, mode, fixedAlias, input.selectedProfileId, input.profiles),
+      makeDisguiseUpdate(input.enabled, input.mode, aliasFor(input.selectedProfileId, input.profiles ?? profiles), input.selectedProfileId, input.profiles),
     ),
     onSuccess: (next) => {
       setEnabled(next.enabled)
       setMode(next.mode)
-      setFixedAlias(next.fixed_alias ?? "")
       setSelectedProfileId(next.selected_profile_id)
       setProfiles(next.profiles ?? [])
       toast.success(next.enabled ? "Маскировка включена для следующего входа" : "Маскировка выключена")
       void refetch()
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      toast.error(error.message)
+      void refetch()
+    },
   })
 
   if (!isSuperuser) return null
@@ -113,14 +116,32 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
     if (selectedProfileId === id) setSelectedProfileId(null)
   }
 
+  const updatePolicy = (next: { enabled: boolean; mode: DisguiseMode; selectedProfileId: number | null; profiles?: DisguiseProfile[] }) => {
+    // The control changes immediately; the server queue receives the policy
+    // independently and must never make this small form feel blocked.
+    setEnabled(next.enabled)
+    setMode(next.mode)
+    setSelectedProfileId(next.selectedProfileId)
+    if (next.profiles) setProfiles(next.profiles)
+    save.mutate(next)
+  }
+
+  const setRandom = (random: boolean) => {
+    const nextSelected = random
+      ? selectedProfileId
+      : (profiles.some((profile) => profile.id === selectedProfileId && profile.enabled)
+        ? selectedProfileId
+        : (profiles.find((profile) => profile.enabled)?.id ?? null))
+    updatePolicy({ enabled, mode: random ? "random" : "fixed", selectedProfileId: nextSelected })
+  }
+
   const saveProfiles = () => {
     const nextSelected = mode === "fixed"
       ? (draftProfiles.some((profile) => profile.id === selectedProfileId && profile.enabled)
         ? selectedProfileId
         : (draftProfiles.find((profile) => profile.enabled)?.id ?? null))
       : selectedProfileId
-    setSelectedProfileId(nextSelected)
-    save.mutate({ enabled, profiles: draftProfiles, selectedProfileId: nextSelected })
+    updatePolicy({ enabled, mode, profiles: draftProfiles, selectedProfileId: nextSelected })
     setProfilesOpen(false)
   }
 
@@ -132,47 +153,41 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
             <div className="flex items-center gap-2 font-semibold"><VenetianMask className="h-5 w-5 text-primary" />Маскировка</div>
             <p className="mt-1 text-xs text-muted-foreground">Меняет публичные имя и SteamID только при следующем входе.</p>
           </div>
-          <Switch checked={enabled} disabled={save.isPending || !data} onCheckedChange={(next) => save.mutate({ enabled: next, profiles, selectedProfileId })} />
+          <Switch checked={enabled} disabled={save.isPending || !data} onCheckedChange={(next) => updatePolicy({ enabled: next, mode, selectedProfileId })} />
         </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-[180px_1fr_auto_auto] sm:items-end">
-          <div className="grid gap-1.5">
-            <Label htmlFor="disguise-mode">Режим</Label>
-            <select id="disguise-mode" className="h-9 rounded-md border bg-background px-3 text-sm" value={mode} onChange={(event) => setMode(event.target.value as DisguiseMode)}>
-              <option value="random">Случайный ник</option>
-              <option value="fixed">Закреплённый ник</option>
-            </select>
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <div className="flex h-9 items-center gap-2 rounded-md border px-3">
+            <Switch id="disguise-random" checked={mode === "random"} disabled={save.isPending || !data} onCheckedChange={setRandom} />
+            <Label htmlFor="disguise-random" className="cursor-pointer text-sm">Случайный профиль</Label>
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="disguise-profile">Закреплённый профиль</Label>
-            <select id="disguise-profile" className="h-9 rounded-md border bg-background px-3 text-sm" disabled={mode !== "fixed"} value={selectedProfileId ?? ""} onChange={(event) => {
+          <div className="grid min-w-[260px] flex-1 gap-1.5">
+            <Label htmlFor="disguise-profile">Псевдоним</Label>
+            <select id="disguise-profile" className="h-9 w-full rounded-md border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50" disabled={mode === "random" || save.isPending} value={selectedProfileId ?? ""} onChange={(event) => {
               const id = event.target.value ? Number(event.target.value) : null
-              setSelectedProfileId(id)
-              setFixedAlias(profiles.find((profile) => profile.id === id)?.alias ?? "")
+              updatePolicy({ enabled, mode: "fixed", selectedProfileId: id })
             }}>
               <option value="">Выберите профиль</option>
               {profiles.filter((profile) => profile.enabled).map((profile) => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}
             </select>
           </div>
-          <Button variant="outline" disabled={save.isPending} onClick={openProfiles}><Settings2 className="mr-2 h-4 w-4" />Профили</Button>
-          <Button variant="outline" disabled={save.isPending} onClick={() => save.mutate({ enabled, profiles, selectedProfileId })}>Сохранить</Button>
+          <Button size="sm" variant="outline" disabled={save.isPending} onClick={openProfiles}><Settings2 className="mr-1.5 h-4 w-4" />Настройки</Button>
         </div>
 
         {data && <div className="mt-3 text-xs text-muted-foreground">
-          Версия {data.version} · {disguiseStatusLabel(data.servers)}
-          {data.servers.length > 0 && ` · ${data.servers.map((server) => `${server.server_name ?? "сервер"}: ${server.status}`).join(", ")}`}
+          Версия {data.version} · {disguiseStatusLabel(data.servers)}. Синхронизация с игровыми серверами идёт в фоне.
         </div>}
       </CardContent>
 
       <Dialog open={profilesOpen} onOpenChange={setProfilesOpen}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="w-[96vw] max-w-[1000px]">
           <DialogHeader>
             <DialogTitle>Маскировочные профили</DialogTitle>
             <DialogDescription>Ник видят игроки. Пустой SteamID означает синтетический профиль. Для настоящего публичного профиля укажите SteamID64 и проверьте его ссылкой справа.</DialogDescription>
           </DialogHeader>
           <div className="max-h-[55vh] overflow-auto rounded-md border">
-            <Table>
-              <TableHeader><TableRow><TableHead>Публичный ник</TableHead><TableHead>SteamID64 (необязательно)</TableHead><TableHead className="w-24">Активен</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
+            <Table className="min-w-[840px] table-fixed">
+              <TableHeader><TableRow><TableHead className="w-[42%]">Публичный ник</TableHead><TableHead className="w-[42%]">SteamID64 (необязательно)</TableHead><TableHead className="w-24">Активен</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
               <TableBody>
                 {draftProfiles.map((profile) => <TableRow key={profile.id}>
                   <TableCell><Input value={profile.alias} maxLength={32} onChange={(event) => updateDraftProfile(profile.id, { alias: event.target.value })} /></TableCell>

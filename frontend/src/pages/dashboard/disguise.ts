@@ -36,14 +36,14 @@ export function makeDisguiseUpdate(
   mode: DisguiseMode,
   fixedAlias: string,
   selectedProfileId: number | null = null,
-  profiles: DisguiseProfile[] = [],
+  profiles?: DisguiseProfile[],
 ) {
   return {
     enabled,
     mode,
     fixed_alias: mode === "fixed" ? fixedAlias.trim() : null,
     selected_profile_id: selectedProfileId,
-    profiles,
+    ...(profiles === undefined ? {} : { profiles }),
   }
 }
 
