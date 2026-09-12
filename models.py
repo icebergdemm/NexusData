@@ -1209,6 +1209,26 @@ class VoiceProfileJob(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
 
 
+class VoiceProfileImport(Base):
+    """A staged local corpus waiting for validation or idempotent commit."""
+
+    __tablename__ = "voice_profile_imports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    import_key = Column(String(120), nullable=False, unique=True, index=True)
+    status = Column(String(20), nullable=False, default="staged", index=True)
+    staging_path = Column(String(500), nullable=False)
+    manifest_sha256 = Column(String(64), nullable=False)
+    total_profiles = Column(Integer, nullable=False, default=0)
+    total_clips = Column(Integer, nullable=False, default=0)
+    imported_profiles = Column(Integer, nullable=False, default=0)
+    imported_clips = Column(Integer, nullable=False, default=0)
+    error_message = Column(String(2000), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
 class ReplayVoiceSpeaker(Base):
     """One local speaker ID and its current identity resolution state."""
 

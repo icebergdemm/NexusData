@@ -69,6 +69,7 @@ data/
 # приложением не читаются.
 /migrations/*
 !/migrations/030_voice_profiles.sql
+!/migrations/031_voice_profile_imports.sql
 # Одноразовые/вспомогательные скрипты и dev-инструменты
 /tools/*
 !/tools/voice_profile_backfill.py

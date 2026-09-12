@@ -57,6 +57,16 @@ class ReplayVoiceExtraction:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class ReplayVoiceSegmentExtraction:
+    version: int
+    segments: list[dict]
+    mapping: dict[int, str]
+    names_by_speaker: dict[int, set[str]]
+    complete: bool
+    warnings: list[str]
+
+
 class VoiceProfileParseError(ValueError):
     pass
 
@@ -387,6 +397,86 @@ def extract_voice_packet_records(path: str | os.PathLike[str]) -> ReplayVoiceExt
             complete=complete,
             warnings=warnings,
         )
+
+
+def extract_voice_segment_metadata(path: str | os.PathLike[str]) -> ReplayVoiceSegmentExtraction:
+    """Extract only voice segment metadata, without retaining Opus payloads."""
+    with _open_replay(path) as (stream, mapping):
+        version, frames = _iter_replay_frames(stream)
+        segments: list[dict] = []
+        active_by_speaker: dict[int, dict] = {}
+        names_by_character: dict[int, set[str]] = {}
+        seen_speakers: set[int] = set()
+        complete = False
+        warnings: list[str] = []
+        for frame in frames:
+            if frame.kind == "spawn" and frame.speaker_id is not None:
+                if frame.character_name and frame.speaker_id > 0:
+                    names_by_character.setdefault(frame.speaker_id, set()).add(frame.character_name)
+                continue
+            if frame.kind == "invalid_voice":
+                warnings.append(f"invalid Opus packet for speaker_id {frame.speaker_id}")
+                continue
+            if frame.kind == "end":
+                complete = True
+                break
+            if frame.kind != "voice" or frame.speaker_id in (None, 0) or frame.voice_data is None:
+                continue
+
+            speaker_id = frame.speaker_id
+            seen_speakers.add(speaker_id)
+            previous = active_by_speaker.get(speaker_id)
+            if previous and frame.time_ms - previous["end_ms"] <= VOICE_MERGE_GAP_MS:
+                previous["end_ms"] = frame.time_ms
+                previous["packet_count"] += 1
+                previous["radio_packet_count"] += int(frame.voice_radio)
+                continue
+
+            segment = {
+                "speaker_id": speaker_id,
+                "start_ms": frame.time_ms,
+                "end_ms": frame.time_ms,
+                "packet_count": 1,
+                "radio_packet_count": int(frame.voice_radio),
+            }
+            segments.append(segment)
+            active_by_speaker[speaker_id] = segment
+
+        if not complete:
+            warnings.append("replay ended before FRAME_END")
+        names_by_speaker = {
+            speaker_id: names_by_character[speaker_id]
+            for speaker_id in seen_speakers
+            if speaker_id in names_by_character
+        }
+        return ReplayVoiceSegmentExtraction(
+            version=version,
+            segments=sorted(segments, key=lambda row: (row["start_ms"], row["speaker_id"])),
+            mapping=mapping,
+            names_by_speaker=names_by_speaker,
+            complete=complete,
+            warnings=warnings,
+        )
+
+
+def extract_voice_packets_for_speaker(
+    path: str | os.PathLike[str],
+    speaker_id: int,
+) -> list[VoicePacket]:
+    """Extract Opus packets for one speaker without retaining other speakers."""
+    with _open_replay(path) as (stream, _mapping):
+        _version, frames = _iter_replay_frames(stream)
+        packets: list[VoicePacket] = []
+        for frame in frames:
+            if frame.kind == "end":
+                break
+            if (
+                frame.kind == "voice"
+                and frame.speaker_id == speaker_id
+                and frame.voice_data is not None
+            ):
+                packets.append(VoicePacket(frame.time_ms, speaker_id, frame.voice_data, frame.voice_radio))
+        return packets
 
 
 def write_wave_slice(

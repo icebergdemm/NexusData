@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -14,13 +16,15 @@ import ssl
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services_voice_profiles import (
     VoicePacket,
-    extract_voice_packet_records,
+    extract_voice_packets_for_speaker,
+    extract_voice_segment_metadata,
     group_voice_packets,
     select_profile_candidates,
     write_ndvc,
@@ -51,7 +55,14 @@ def replay_recorded_at(path: Path) -> datetime:
 
 
 class NexusPlayerLookup:
-    def __init__(self, base_url: str, token: str | None, admin_token: str | None = None, insecure: bool = False):
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None,
+        admin_token: str | None = None,
+        login_key: str | None = None,
+        insecure: bool = False,
+    ):
         self.endpoint = base_url.rstrip("/") + (
             "/api/v1/admin/voice-profiles/player-search"
             if token
@@ -60,9 +71,11 @@ class NexusPlayerLookup:
         self.headers = {"Accept": "application/json"}
         if token:
             self.headers["X-API-Key"] = token
+        elif login_key:
+            self.headers["X-ND-Login-Key"] = login_key
         elif admin_token:
             self.headers["Cookie"] = f"admin_token={admin_token}"
-        self.authorized = bool(token or admin_token)
+        self.authorized = bool(token or login_key or admin_token)
         self.ssl_context = ssl._create_unverified_context() if insecure else None
         self.cache: dict[str, list[dict]] = {}
 
@@ -76,11 +89,64 @@ class NexusPlayerLookup:
             self.endpoint + "?" + urlencode({"q": query}),
             headers=self.headers,
         )
-        with urlopen(request, timeout=30, context=self.ssl_context) as response:
+        try:
+            response_context = self.ssl_context
+            response = urlopen(request, timeout=30, context=response_context)
+        except HTTPError as exc:
+            if exc.code != 403:
+                raise
+            response = _urlopen_ipv6(request, timeout=30, context=self.ssl_context)
+        with response:
             payload = json.loads(response.read().decode("utf-8"))
         players = payload.get("players") if isinstance(payload, dict) else []
         self.cache[query] = players if isinstance(players, list) else []
         return self.cache[query]
+
+
+class _IPv6HTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        addresses = socket.getaddrinfo(
+            self.host,
+            self.port,
+            socket.AF_INET6,
+            socket.SOCK_STREAM,
+        )
+        last_error = None
+        for family, socktype, proto, _canonname, sockaddr in addresses:
+            sock = socket.socket(family, socktype, proto)
+            try:
+                sock.settimeout(self.timeout)
+                sock.connect(sockaddr)
+                if self._tunnel_host:
+                    self.sock = sock
+                    self._tunnel()
+                self.sock = self._context.wrap_socket(
+                    sock,
+                    server_hostname=self._tunnel_host or self.host,
+                )
+                return
+            except OSError as exc:
+                last_error = exc
+                sock.close()
+        raise last_error or OSError(f"unable to connect to IPv6 host {self.host}")
+
+
+class _IPv6HTTPSHandler(HTTPSHandler):
+    def __init__(self, context):
+        super().__init__(context=context)
+
+    def https_open(self, request):
+        return self.do_open(
+            _IPv6HTTPSConnection,
+            request,
+            context=self._context,
+        )
+
+
+def _urlopen_ipv6(request: Request, *, timeout: int, context):
+    if context is None:
+        context = ssl.create_default_context()
+    return build_opener(_IPv6HTTPSHandler(context)).open(request, timeout=timeout)
 
 
 def resolve_speaker(
@@ -124,6 +190,44 @@ def _load_mapping(path: Path | None) -> dict[str, dict]:
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
     return payload if isinstance(payload, dict) else {}
+
+
+def _load_backfill_progress(path: Path) -> dict:
+    if not path.is_file():
+        return {"version": 1, "completed_steam_ids": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {"version": 1, "completed_steam_ids": []}
+    if not isinstance(payload, dict):
+        return {"version": 1, "completed_steam_ids": []}
+    completed = payload.get("completed_steam_ids", [])
+    payload["completed_steam_ids"] = [str(value) for value in completed if value]
+    return payload
+
+
+def _save_backfill_progress(path: Path, progress: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+    temporary.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _profile_checkpoint_matches(profile_dir: Path, selected: list[dict]) -> bool:
+    manifest_path = profile_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    existing = {
+        str(clip.get("candidate_key"))
+        for clip in manifest.get("clips", [])
+        if isinstance(clip, dict) and clip.get("candidate_key")
+    }
+    expected = {str(candidate["candidate_key"]) for candidate in selected}
+    return existing == expected
 
 
 def _mapping_override(mapping: dict[str, dict], name: str) -> dict | None:
@@ -185,6 +289,34 @@ def _decode_speaker_stream(
     return output
 
 
+def _decode_selected_sources(
+    decoder_dll: Path,
+    selected_by_source: dict[tuple[str, int], list[dict]],
+    temp_dir: Path,
+) -> dict[str, Path]:
+    """Re-read only replay/speaker streams needed by the selected clips."""
+    by_replay: dict[str, list[tuple[int, list[dict]]]] = {}
+    for (replay_key, speaker_id), segments in selected_by_source.items():
+        by_replay.setdefault(replay_key, []).append((speaker_id, segments))
+
+    clip_paths: dict[str, Path] = {}
+    for replay_key in sorted(by_replay):
+        for speaker_id, segments in sorted(by_replay[replay_key], key=lambda item: item[0]):
+            packets = extract_voice_packets_for_speaker(replay_key, speaker_id)
+            if packets:
+                packet_records = [
+                    [packet for packet in packets if int(segment["start_ms"]) <= packet.time_ms <= int(segment["end_ms"])]
+                    for segment in segments
+                ]
+                prepared_segments = []
+                for segment, records in zip(segments, packet_records):
+                    prepared = dict(segment)
+                    prepared["packet_records"] = records
+                    prepared_segments.append(prepared)
+                clip_paths.update(_decode_speaker_stream(decoder_dll, packets, prepared_segments, temp_dir))
+    return clip_paths
+
+
 def _write_profile(
     output_dir: Path,
     steam_id: str,
@@ -239,21 +371,20 @@ def run(args: argparse.Namespace) -> int:
     mapping_override = _load_mapping(Path(args.mapping_json) if args.mapping_json else None)
     token = os.environ.get(args.token_env)
     admin_token = os.environ.get(args.admin_token_env)
-    lookup = NexusPlayerLookup(args.nexus_url, token, admin_token, args.insecure)
+    login_key = os.environ.get(args.login_key_env)
+    lookup = NexusPlayerLookup(args.nexus_url, token, admin_token, login_key, args.insecure)
     decoder_dll = _build_decoder(Path(args.decoder_project))
     candidates_by_steam: dict[str, list[dict]] = {}
     player_by_steam: dict[str, dict] = {}
     unresolved: list[dict] = []
-    replay_packets: dict[tuple[str, int], list[VoicePacket]] = {}
-    replay_hashes: dict[str, str] = {}
 
-    for replay_path in files:
+    for replay_index, replay_path in enumerate(files, start=1):
         replay_hash = sha256_file(replay_path)
-        replay_hashes[str(replay_path)] = replay_hash
-        extraction = extract_voice_packet_records(replay_path)
-        grouped = group_voice_packets(extraction.packets)
-        by_speaker = {speaker_id: [packet for packet in extraction.packets if packet.speaker_id == speaker_id] for speaker_id in {packet.speaker_id for packet in extraction.packets}}
-        for speaker_id in sorted(by_speaker):
+        replay_key = str(replay_path)
+        extraction = extract_voice_segment_metadata(replay_path)
+        grouped = extraction.segments
+        speaker_ids = {segment["speaker_id"] for segment in grouped}
+        for speaker_id in sorted(speaker_ids):
             override = next((
                 _mapping_override(mapping_override, name)
                 for name in extraction.names_by_speaker.get(speaker_id, set())
@@ -277,12 +408,14 @@ def run(args: argparse.Namespace) -> int:
             if not steam_id:
                 unresolved.append({"replay_filename": replay_path.name, "speaker_id": speaker_id, "names": sorted(extraction.names_by_speaker.get(speaker_id, set())), "candidates": candidates})
                 continue
-            replay_key = str(replay_path)
-            replay_packets[(replay_key, speaker_id)] = by_speaker[speaker_id]
             for segment in grouped:
                 if segment["speaker_id"] != speaker_id:
                     continue
-                candidate = dict(segment)
+                candidate = {
+                    key: value
+                    for key, value in segment.items()
+                    if key != "packet_records"
+                }
                 candidate.update({
                     "candidate_key": _candidate_key(replay_hash, segment, steam_id),
                     "recorded_at": replay_recorded_at(replay_path),
@@ -295,24 +428,67 @@ def run(args: argparse.Namespace) -> int:
                 })
                 candidates_by_steam.setdefault(steam_id, []).append(candidate)
             player_by_steam[steam_id] = player
+        print(
+            f"scan={replay_index}/{len(files)} replay={replay_path.name} "
+            f"segments={len(grouped)} profiles={len(candidates_by_steam)}",
+            flush=True,
+        )
 
     (output_dir / "unresolved.json").write_text(json.dumps(unresolved, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"replays={len(files)} profiles={len(candidates_by_steam)} unresolved={len(unresolved)}")
     if not candidates_by_steam:
         return 0
 
+    progress_path = output_dir / "backfill_progress.json"
+    progress = _load_backfill_progress(progress_path)
+    completed_steam_ids = set(progress.get("completed_steam_ids", []))
+    progress.update({
+        "version": 1,
+        "replays": len(files),
+        "profile_count": len(candidates_by_steam),
+    })
+    progress.setdefault("failed_profiles", {})
+    _save_backfill_progress(progress_path, progress)
+
     with tempfile.TemporaryDirectory(prefix="voice-profile-") as temporary:
         temp_dir = Path(temporary)
-        for steam_id, candidates in sorted(candidates_by_steam.items()):
+        ordered_profiles = sorted(candidates_by_steam.items())
+        total_profiles = len(ordered_profiles)
+        for profile_index, (steam_id, candidates) in enumerate(ordered_profiles, start=1):
             selected = [dict(row) for row in select_profile_candidates(candidates)]
-            packets_by_source: dict[tuple[str, int], list[dict]] = {}
-            for candidate in selected:
-                packets_by_source.setdefault((candidate["replay_key"], candidate["speaker_id"]), []).append(candidate)
-            clip_paths: dict[str, Path] = {}
-            for source_key, source_segments in packets_by_source.items():
-                packets = replay_packets[source_key]
-                clip_paths.update(_decode_speaker_stream(decoder_dll, packets, source_segments, temp_dir))
-            _write_profile(output_dir, steam_id, player_by_steam[steam_id], selected, clip_paths)
+            profile_dir = output_dir / steam_id
+            if steam_id in completed_steam_ids and _profile_checkpoint_matches(profile_dir, selected):
+                print(f"profile={profile_index}/{total_profiles} steam_id={steam_id} status=checkpointed", flush=True)
+                continue
+
+            try:
+                selected_by_source: dict[tuple[str, int], list[dict]] = {}
+                for candidate in selected:
+                    selected_by_source.setdefault(
+                        (candidate["replay_key"], candidate["speaker_id"]), []
+                    ).append(candidate)
+                clip_paths = _decode_selected_sources(decoder_dll, selected_by_source, temp_dir)
+                _write_profile(output_dir, steam_id, player_by_steam[steam_id], selected, clip_paths)
+            except Exception as exc:
+                progress["failed_profiles"][steam_id] = str(exc)
+                _save_backfill_progress(progress_path, progress)
+                print(
+                    f"profile={profile_index}/{total_profiles} steam_id={steam_id} "
+                    f"status=failed error={exc}",
+                    flush=True,
+                )
+                continue
+
+            completed_steam_ids.add(steam_id)
+            progress["completed_steam_ids"] = sorted(completed_steam_ids)
+            progress["last_completed_steam_id"] = steam_id
+            progress["failed_profiles"].pop(steam_id, None)
+            _save_backfill_progress(progress_path, progress)
+            print(
+                f"profile={profile_index}/{total_profiles} steam_id={steam_id} "
+                f"clips={len(clip_paths)} status=done",
+                flush=True,
+            )
     return 0
 
 
@@ -323,6 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nexus-url", default=DEFAULT_NEXUS_URL)
     parser.add_argument("--token-env", default="NEXUS_API_TOKEN")
     parser.add_argument("--admin-token-env", default="NEXUS_ADMIN_TOKEN")
+    parser.add_argument("--login-key-env", default="NEXUS_LOGIN_KEY")
     parser.add_argument(
         "--insecure",
         action="store_true",

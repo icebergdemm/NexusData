@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from models import (
     PlayerData,
     ReplayVoiceSpeaker,
     VoiceProfileClip,
+    VoiceProfileImport,
     VoiceProfileJob,
     VoiceProfileSelection,
 )
@@ -26,6 +28,7 @@ from security import verify_external_api_key_dependency
 from services import PlayerService
 from services_replays import get_upload_dir
 from services_voice_profiles import VoiceProfileService, enqueue_voice_profile_job
+from services_voice_profile_import import commit_import_package, validate_import_package
 
 
 router = APIRouter(prefix="/api/v1/admin/voice-profiles", tags=["voice-profiles"])
@@ -132,6 +135,34 @@ def _clip_payload(clip: VoiceProfileClip, selection: VoiceProfileSelection | Non
     }
 
 
+def _import_payload(row: VoiceProfileImport) -> dict[str, Any]:
+    """Expose import progress without leaking the server-side staging path."""
+    return {
+        "id": row.id,
+        "import_key": row.import_key,
+        "status": row.status,
+        "manifest_sha256": row.manifest_sha256,
+        "total_profiles": row.total_profiles,
+        "total_clips": row.total_clips,
+        "imported_profiles": row.imported_profiles,
+        "imported_clips": row.imported_clips,
+        "error_message": row.error_message,
+        "created_at": _iso(row.created_at),
+        "started_at": _iso(row.started_at),
+        "finished_at": _iso(row.finished_at),
+    }
+
+
+_IMPORT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+
+
+def _import_key(body: dict[str, Any]) -> str:
+    value = str(body.get("import_key") or "").strip()
+    if not _IMPORT_KEY_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail="Некорректный import_key")
+    return value
+
+
 def _profile_players_payload(
     clips: list[VoiceProfileClip],
     selections: list[VoiceProfileSelection],
@@ -201,6 +232,125 @@ async def get_latest_run(
         VoiceProfileJob.id.desc(),
     ).first()
     return {"run": _job_payload(job) if job is not None else None}
+
+
+@router.post("/imports")
+async def validate_import(
+    body: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Validate an SFTP-staged local corpus without importing any clips."""
+    _require_superuser(current_admin)
+    import_key = _import_key(body)
+    staging_dir = Path(get_upload_dir(db)) / "voice_profile_imports" / import_key
+    try:
+        summary = await run_in_threadpool(validate_import_package, staging_dir, import_key)
+    except ValueError as exc:
+        record = db.query(VoiceProfileImport).filter(
+            VoiceProfileImport.import_key == import_key,
+        ).first()
+        if record is None:
+            record = VoiceProfileImport(
+                import_key=import_key,
+                staging_path=str(staging_dir),
+                manifest_sha256="",
+            )
+            db.add(record)
+        record.status = "failed"
+        record.error_message = str(exc)
+        db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    record = db.query(VoiceProfileImport).filter(
+        VoiceProfileImport.import_key == import_key,
+    ).first()
+    if record is not None and record.status == "committed" and record.manifest_sha256 == summary["manifest_sha256"]:
+        return _import_payload(record)
+    if record is None:
+        record = VoiceProfileImport(
+            import_key=import_key,
+            staging_path=str(staging_dir),
+            manifest_sha256=summary["manifest_sha256"],
+        )
+        db.add(record)
+    record.status = "validated"
+    record.staging_path = str(staging_dir)
+    record.manifest_sha256 = summary["manifest_sha256"]
+    record.total_profiles = summary["total_profiles"]
+    record.total_clips = summary["total_clips"]
+    record.error_message = None
+    db.commit()
+    return _import_payload(record)
+
+
+@router.get("/imports/latest")
+async def get_latest_import(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    row = db.query(VoiceProfileImport).order_by(
+        VoiceProfileImport.created_at.desc(),
+        VoiceProfileImport.id.desc(),
+    ).first()
+    return {"import": _import_payload(row) if row is not None else None}
+
+
+@router.get("/imports/{import_id}")
+async def get_import(
+    import_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    row = db.query(VoiceProfileImport).filter(VoiceProfileImport.id == import_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Импорт не найден")
+    return _import_payload(row)
+
+
+@router.post("/imports/{import_id}/commit")
+async def commit_import(
+    import_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    row = db.query(VoiceProfileImport).filter(VoiceProfileImport.id == import_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Импорт не найден")
+    if row.status == "committed":
+        return _import_payload(row)
+    if row.status not in {"validated", "failed", "staged"}:
+        raise HTTPException(status_code=409, detail="Импорт уже выполняется")
+    try:
+        result = await run_in_threadpool(
+            commit_import_package,
+            db,
+            Path(row.staging_path),
+            row.import_key,
+        )
+    except ValueError as exc:
+        db.rollback()
+        row = db.query(VoiceProfileImport).filter(VoiceProfileImport.id == import_id).first()
+        if row is not None:
+            row.status = "failed"
+            row.error_message = str(exc)
+            db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        row = db.query(VoiceProfileImport).filter(VoiceProfileImport.id == import_id).first()
+        if row is not None:
+            row.status = "failed"
+            row.error_message = str(exc)[:2000]
+            db.commit()
+        raise HTTPException(status_code=500, detail="Импорт завершился ошибкой; состояние сохранено") from exc
+    return result
 
 
 @router.get("/runs/{run_id}")
