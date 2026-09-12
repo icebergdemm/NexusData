@@ -556,7 +556,12 @@ def stale_profile_clips(clips, candidate_replay_ids: set[int]):
     """Keep provenance clips whose source replay is no longer available."""
     if not candidate_replay_ids:
         return []
-    return [clip for clip in clips if int(clip.source_replay_id) in candidate_replay_ids]
+    return [
+        clip
+        for clip in clips
+        if clip.source_replay_id is not None
+        and int(clip.source_replay_id) in candidate_replay_ids
+    ]
 
 
 def _decoder_command(decoder_path: str | os.PathLike[str], arguments: Sequence[str]) -> list[str]:
