@@ -214,6 +214,9 @@ def _apply_migrations():
         ("round_replays", "broken_at", "DATETIME"),
         ("round_replays", "replay_kind", "VARCHAR(16) NOT NULL DEFAULT 'round'"),
         ("round_replays", "after_round_stream_id", "VARCHAR(100)"),
+        ("round_replays", "dump_action_id", "INT"),
+        ("round_replays", "dumped_by_admin_id", "INT"),
+        ("round_replays", "dumped_by_name", "VARCHAR(255)"),
         # Kit variations + special kits (item 15) — additive; `items` (variation 1)
         # unchanged, so old game-server clients that only read job_id/kit_level/items
         # keep working untouched.

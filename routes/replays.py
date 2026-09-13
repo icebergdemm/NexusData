@@ -240,6 +240,31 @@ async def finish_replay_stream(request: Request, stream_id: str = Query(...), se
                                    replay_kind, after_round_stream_id)
 
 
+@api_router.post("/stream/dump")
+async def dump_lobby_stream(request: Request, stream_id: str = Query(...)):
+    directory = _stream_dir(stream_id)
+    if not os.path.isdir(directory):
+        raise HTTPException(status_code=404, detail="Поток лобби не найден")
+    replay_kind, after_round_stream_id = await asyncio.to_thread(_read_stream_meta, directory)
+    if replay_kind != "lobby":
+        raise HTTPException(status_code=409, detail="Текущий поток не является записью лобби")
+    body = await request.json()
+    try:
+        duration_ms = max(0, min(0xFFFFFFFF, int(body.get("duration_ms", 0))))
+        action_id = int(body["action_id"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Некорректные параметры дампа")
+    if action_id <= 0:
+        raise HTTPException(status_code=400, detail="Некорректный action_id")
+    end = struct.pack("<BI", 0xFF, duration_ms)
+    return await asyncio.to_thread(
+        _assemble_stream, directory, end, body.get("server_name"), False, True,
+        "lobby_dump", after_round_stream_id,
+        f"{stream_id}-dump-{action_id}", action_id,
+        body.get("dumped_by_admin_id"), body.get("dumped_by_name"),
+    )
+
+
 def _write_stream_meta(directory: str, replay_kind: str, after_round_stream_id: Optional[str]) -> None:
     with open(os.path.join(directory, "stream-meta.json"), "w", encoding="utf-8") as handle:
         json.dump({"replay_kind": replay_kind, "after_round_stream_id": after_round_stream_id}, handle)
@@ -834,7 +859,11 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
 def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
                     broken: bool = False, keep_directory: bool = False,
                     replay_kind: Optional[str] = None,
-                    after_round_stream_id: Optional[str] = None) -> dict:
+                    after_round_stream_id: Optional[str] = None,
+                    stream_id_override: Optional[str] = None,
+                    dump_action_id: Optional[int] = None,
+                    dumped_by_admin_id: Optional[int] = None,
+                    dumped_by_name: Optional[str] = None) -> dict:
     import uuid
     from database import SessionLocal
     try:
@@ -844,7 +873,7 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
         after_round_stream_id = after_round_stream_id or stream_meta.get("after_round_stream_id")
     except (OSError, ValueError, TypeError):
         pass
-    replay_kind = replay_kind if replay_kind in ("round", "lobby") else "round"
+    replay_kind = replay_kind if replay_kind in ("round", "lobby", "lobby_dump") else "round"
     chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
     expected = [f"{index:08d}.bin" for index in range(len(chunk_names))]
     if chunk_names != expected:
@@ -889,14 +918,21 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
             raw_path, os.path.basename(raw_path), server_name=server_name,
             notes=("Собрано потоковым WorldDemoStreamer; поток прерван более минуты"
                    if broken else "Собрано потоковым WorldDemoStreamer"),
-            stream_id=os.path.basename(directory), is_broken=broken,
+            stream_id=stream_id_override or os.path.basename(directory), is_broken=broken,
             replay_kind=replay_kind, after_round_stream_id=after_round_stream_id,
+            dump_action_id=dump_action_id, dumped_by_admin_id=dumped_by_admin_id,
+            dumped_by_name=dumped_by_name,
         )
         return {"success": True, "replay_id": replay.id, "stored_filename": replay.stored_filename,
                 "broken": broken}
     finally:
         db.close()
-        if not keep_directory:
+        if keep_directory:
+            try:
+                os.remove(raw_path)
+            except OSError:
+                pass
+        else:
             shutil.rmtree(directory, ignore_errors=True)
 
 # ── Admin panel router (session protected) ────────────────────────────────────
@@ -1187,6 +1223,9 @@ def _serialize_replay(r) -> dict:
         "is_broken": bool(getattr(r, "is_broken", False)),
         "replay_kind": getattr(r, "replay_kind", "round") or "round",
         "after_round_stream_id": getattr(r, "after_round_stream_id", None),
+        "dump_action_id": getattr(r, "dump_action_id", None),
+        "dumped_by_admin_id": getattr(r, "dumped_by_admin_id", None),
+        "dumped_by_name": getattr(r, "dumped_by_name", None),
     }
 
 
@@ -1316,9 +1355,9 @@ def _serialize_round(db: Session, end_event: RoundEvent, replay=None) -> dict:
     lobby_replay = None
     if replay and replay.stream_id:
         lobby_replay = db.query(RoundReplay).filter(
-            RoundReplay.replay_kind == "lobby",
+            RoundReplay.replay_kind.in_(("lobby", "lobby_dump")),
             RoundReplay.after_round_stream_id == replay.stream_id,
-        ).order_by(RoundReplay.uploaded_at.desc()).first()
+        ).order_by(RoundReplay.replay_kind.asc(), RoundReplay.uploaded_at.desc()).first()
     return {
         "id": end_event.id,
         "server_name": end_event.server_name,
@@ -1604,6 +1643,7 @@ async def api_rounds_list(
     return {
         "rounds": rounds, "total": total, "page": page, "total_pages": total_pages,
         "selected_server": server, "servers": servers,
+        "can_request_lobby_dump": check_permission(admin, "replays", "edit"),
         # Поиск по игрокам упёрся в потолок выборки — показанный список неполон.
         "truncated": truncated,
     }
@@ -1673,6 +1713,35 @@ async def api_link_replay_to_round(round_id: int, request: Request, db: Session 
     return {"status": "ok"}
 
 
+@panel_router.post("/api/v1/admin/replays/lobby-dump")
+async def api_request_lobby_dump(request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "edit"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    body = await request.json()
+    server_name = str(body.get("server_name") or "").strip().upper()
+    if server_name not in ("ASPER1", "ASPER2"):
+        raise HTTPException(status_code=400, detail="Неизвестный сервер")
+
+    from services import ServerModerationService
+    from routes.admin import log_admin_action
+    requested_by_name = admin.discord_username or f"Администратор #{admin.id}"
+    action = ServerModerationService(db).enqueue_action(
+        {"action_type": "lobby_replay_dump", "target_steamid": "system"},
+        admin_id=admin.id,
+        server_name=server_name,
+        payload={
+            "requested_by_admin_id": admin.id,
+            "requested_by_name": requested_by_name,
+        },
+    )
+    log_admin_action(db, admin.id, "replay_lobby_dump_requested", {
+        "server_name": server_name,
+        "action_id": action.id,
+    })
+    return {"status": "queued", "action_id": action.id, "server_name": server_name}
+
+
 @panel_router.get("/api/v1/admin/replays")
 async def api_replays_list(
     request: Request, page: int = Query(1, ge=1), server: Optional[str] = Query(None), db: Session = Depends(get_db),
@@ -1689,6 +1758,7 @@ async def api_replays_list(
     return {
         "replays": [_serialize_replay(r) for r in rows],
         "total": total, "page": page, "total_pages": total_pages, "selected_server": server,
+        "can_request_lobby_dump": check_permission(admin, "replays", "edit"),
         "retention_days": services_replays.get_retention_days(db),
         "upload_dir": services_replays.get_upload_dir(db),
         "can_delete": check_permission(admin, "replays", "delete"),

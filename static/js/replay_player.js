@@ -523,7 +523,7 @@
   let currentTimeMs = 0, playing = false, speed = 1, lastFrame = 0;
   let selectedEntityId = null;
   let seekWindow = null;
-  let followSub = false, followSubId = null;
+  let followSub = false, followSubId = null, followSubPos = null;
   // Локальные габариты каждой структуры (подлодка, станция, обломки), считаются
   // один раз по геометрии. В геометрии координаты относительные — мировые
   // получаются прибавлением subPos из снапшота.
@@ -613,6 +613,10 @@
       if(d<bestD){bestD=d;best=sid;}
     }
     return best;
+  }
+
+  function resetFollowPosition(){
+    followSubPos=followSub&&followSubId!=null?subCenterAt(snapAt(currentTimeMs),followSubId):null;
   }
 
   function autoFit(){
@@ -852,6 +856,7 @@
   function applySeek(ms,syncVoice=true){
     if(!demo)return;
     currentTimeMs=Math.max(0,Math.min(demo.durationMs,Number(ms)||0));
+    resetFollowPosition();
     if(syncVoice)resyncVoiceAfterSeek();
     lastChatLen=-1;
     updateChat();
@@ -860,6 +865,7 @@
   function applySeekPreview(ms){
     if(!demo)return;
     currentTimeMs=Math.max(0,Math.min(demo.durationMs,Number(ms)||0));
+    resetFollowPosition();
     // Scrubbing can produce hundreds of pointer events per second. Keep this
     // path intentionally cheap: the final commit performs chat and voice
     // resynchronisation once, while UI events retain their normal cadence.
@@ -1023,7 +1029,11 @@
     const dt=lastFrame?(ts-lastFrame):0;lastFrame=ts;
     const prev=currentTimeMs;
     if(playing&&demo){currentTimeMs+=dt*speed;if(currentTimeMs>=demo.durationMs){currentTimeMs=demo.durationMs;setPlaying(false);}}
-    if(followSub&&demo&&followSubId!=null){const c=subCenterAt(snapAt(currentTimeMs),followSubId);cam.x=c.x;cam.y=c.y;}
+    if(followSub&&demo&&followSubId!=null){
+      const c=subCenterAt(snapAt(currentTimeMs),followSubId);
+      if(followSubPos){cam.x+=c.x-followSubPos.x;cam.y+=c.y-followSubPos.y;}
+      followSubPos=c;
+    }
     render();updateChat();updateInventory();updateRadioPanel();updateTimeUI();
     if(voiceEnabled){updateVoice(prev);updateSpeakingIndicators();}
     requestAnimationFrame(loop);
@@ -1156,17 +1166,20 @@
       onGlobal(seek,"lostpointercapture",finishSeek);
     }
     onGlobal(document.getElementById("rpvFollow"),"click",(e)=>{
-      followSub=!followSub;
-      // Цель фиксируется в момент включения — по тому, что сейчас в центре кадра.
-      if(followSub)followSubId=pickFollowTarget();
-      e.target.classList.toggle("active",followSub);
+      if(followSub){followSub=false;followSubId=null;followSubPos=null;}
+      else{
+        followSubId=pickFollowTarget();
+        followSub=followSubId!=null;
+        resetFollowPosition();
+      }
+      e.currentTarget.classList.toggle("active",followSub);
     });
     // Camera
     onGlobal(canvas,"wheel",(e)=>{e.preventDefault();cam.zoom=Math.max(0.005,Math.min(2,cam.zoom*(e.deltaY<0?1.1:0.9)));},{passive:false});
     let dragging=false,didDrag=false,lastX=0,lastY=0;
     onGlobal(canvas,"mousedown",(e)=>{dragging=true;didDrag=false;lastX=e.clientX;lastY=e.clientY;});
     onGlobal(window,"mouseup",()=>{dragging=false;});
-    onGlobal(window,"mousemove",(e)=>{if(!dragging)return;if(Math.abs(e.clientX-lastX)+Math.abs(e.clientY-lastY)>2)didDrag=true;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;followSub=false;document.getElementById("rpvFollow").classList.remove("active");});
+    onGlobal(window,"mousemove",(e)=>{if(!dragging)return;if(Math.abs(e.clientX-lastX)+Math.abs(e.clientY-lastY)>2)didDrag=true;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;});
     onGlobal(canvas,"click",(e)=>{
       if(didDrag||!demo||demo.header.isLobby||!demo.snaps.count)return;
       const rect=canvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,snap=snapAtInterpolated(currentTimeMs);

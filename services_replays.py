@@ -570,7 +570,10 @@ class ReplayService:
                          stream_id: Optional[str] = None,
                          is_broken: bool = False,
                          replay_kind: str = "round",
-                         after_round_stream_id: Optional[str] = None) -> RoundReplay:
+                         after_round_stream_id: Optional[str] = None,
+                         dump_action_id: Optional[int] = None,
+                         dumped_by_admin_id: Optional[int] = None,
+                         dumped_by_name: Optional[str] = None) -> RoundReplay:
         """Register a raw demo assembled by streaming ingest without RAM copies."""
         import uuid
         from fastapi import HTTPException
@@ -614,6 +617,9 @@ class ReplayService:
             replay.broken_at = datetime.utcnow() if is_broken else None
             replay.replay_kind = replay_kind
             replay.after_round_stream_id = after_round_stream_id
+            replay.dump_action_id = dump_action_id
+            replay.dumped_by_admin_id = dumped_by_admin_id
+            replay.dumped_by_name = dumped_by_name
         else:
             replay = RoundReplay(
                 server_name=server_name or meta.get("server_name"),
@@ -630,6 +636,9 @@ class ReplayService:
                 broken_at=datetime.utcnow() if is_broken else None,
                 replay_kind=replay_kind,
                 after_round_stream_id=after_round_stream_id,
+                dump_action_id=dump_action_id,
+                dumped_by_admin_id=dumped_by_admin_id,
+                dumped_by_name=dumped_by_name,
             )
             self.db.add(replay)
         self.db.commit()

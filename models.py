@@ -1185,6 +1185,9 @@ class RoundReplay(Base):
     broken_at = Column(DateTime, nullable=True)
     replay_kind = Column(String(16), nullable=False, default="round", index=True)
     after_round_stream_id = Column(String(100), nullable=True, index=True)
+    dump_action_id = Column(Integer, nullable=True, index=True)
+    dumped_by_admin_id = Column(Integer, nullable=True, index=True)
+    dumped_by_name = Column(String(255), nullable=True)
     # Manual escape hatch when the automatic header-timestamp/server_name
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.

@@ -8,6 +8,7 @@ import { ReplayTimelineWorkbench } from "./ReplayTimelineWorkbench"
 import { ReplayEntityInventory } from "./ReplayEntityInventory"
 import { Camera, Clapperboard, Download, MessageSquare, Pause, Play, Users, Volume2, VolumeX } from "lucide-react"
 import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
+import { Badge } from "@/components/ui/badge"
 import { IS_V2 } from "@/lib/ui-version"
 import { V2ReplayTransport } from "./V2ReplayTransport"
 
@@ -18,7 +19,8 @@ interface ReplayDetail {
     id: number; submarine_name: string | null; level_name: string | null
     recorded_at: string | null; has_voice: boolean; duration_ms: number | null
     filename: string | null; file_size: number | null
-    replay_kind: "round" | "lobby"
+    replay_kind: "round" | "lobby" | "lobby_dump"
+    dumped_by_name: string | null
   }
 }
 
@@ -37,7 +39,8 @@ export function ReplayPlayerPage() {
     queryKey: ["replay-detail", replayId],
     queryFn: () => api.get<ReplayDetail>(`/api/v1/admin/replays/${replayId}`),
   })
-  const isLobby = data?.replay.replay_kind === "lobby"
+  const isLobby = data?.replay.replay_kind === "lobby" || data?.replay.replay_kind === "lobby_dump"
+  const isLobbyDump = data?.replay.replay_kind === "lobby_dump"
 
   useEffect(() => {
     // Wait until the replay metadata (has_voice) is known so the scripts are
@@ -225,6 +228,7 @@ export function ReplayPlayerPage() {
         <h2>
           <AdaptiveIcon emoji="🎬" icon={Clapperboard} /> {isLobby ? "Демо лобби" : (data?.replay.submarine_name ?? "Раунд")} #{replayId}
           {!isLobby && data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
+          {isLobbyDump && <Badge variant="outline" className="border-yellow-500 bg-yellow-500/15 text-yellow-700 dark:text-yellow-300">Принудительный дамп · {data?.replay.dumped_by_name ?? "неизвестный пользователь"}</Badge>}
         </h2>
         <div className="rpv-top-actions">
           <span className="rpv-time">{data?.replay.recorded_at ? formatBrowserDate(data.replay.recorded_at) : ""}</span>
@@ -272,7 +276,7 @@ export function ReplayPlayerPage() {
               <button className="rpv-btn rpv-speed" data-speed="2">2×</button>
               <button className="rpv-btn rpv-speed" data-speed="4">4×</button>
             </div>
-            <button className="rpv-btn" id="rpvFollow" style={isLobby ? { display: "none" } : undefined}><AdaptiveIcon emoji="📷" icon={Camera} /> Следить за лодкой</button>
+            <button className="rpv-btn" id="rpvFollow" style={isLobby ? { display: "none" } : undefined}><AdaptiveIcon emoji="📷" icon={Camera} /> Следить за структурой</button>
           </div>
         </div>
 
@@ -295,7 +299,7 @@ export function ReplayPlayerPage() {
             <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="💬" icon={MessageSquare} />Чат</h3>
             <div className="rpv-chat" id="rpvChat" />
           </div>}
-          {!IS_V2 && replayId && !isLobby && <ReplayLogsPanel replayId={replayId} />}
+          {replayId && !isLobby && <ReplayLogsPanel replayId={replayId} />}
         </div>
       </div>
       {IS_V2 && replayId && !isLobby && (

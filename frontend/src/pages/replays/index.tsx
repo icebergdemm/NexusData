@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/select"
 import {
   History, PlayCircle, MapPin, Ship, Target, Users2, CheckCircle2, XCircle, Video, Crown, LogOut,
-  Filter, X, Volume2,
+  Filter, X, Volume2, FileDown,
 } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
@@ -28,11 +28,13 @@ import { formatBrowserDate } from "@/lib/format-date"
 interface ReplayRow {
   id: number; server_name: string | null; submarine_name: string | null; level_name: string | null
   file_size: number | null; has_voice: boolean; recorded_at: string | null; uploaded_at: string | null
-  replay_kind: "round" | "lobby"
+  replay_kind: "round" | "lobby" | "lobby_dump"
+  dumped_by_name: string | null
 }
 interface ReplaysResponse {
   replays: ReplayRow[]; total: number; page: number; total_pages: number
   retention_days: number; can_delete: boolean; is_superuser: boolean
+  can_request_lobby_dump: boolean
 }
 interface RoundPlayer {
   steamid: string
@@ -65,6 +67,7 @@ interface RoundRow {
 interface RoundsResponse {
   rounds: RoundRow[]; total: number; page: number; total_pages: number
   selected_server: string | null; servers: string[]; truncated: boolean
+  can_request_lobby_dump: boolean
 }
 
 function fmtSize(n: number | null): string {
@@ -94,6 +97,25 @@ function fmtDuration(startIso: string | null, endIso: string | null): string {
 }
 
 const ANY = "__any__"
+
+function LobbyDumpButton({ serverName }: { serverName: string | null }) {
+  const mutation = useMutation({
+    mutationFn: () => api.post<{ action_id: number }>("/api/v1/admin/replays/lobby-dump", { server_name: serverName }),
+    onSuccess: ({ action_id }) => toast.success(`Дамп лобби поставлен в очередь, action #${action_id}`),
+    onError: (error: Error) => toast.error(error.message),
+  })
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="border-yellow-500/70 bg-yellow-500/10 text-yellow-700 hover:bg-yellow-500/20 dark:text-yellow-300"
+      disabled={!serverName || mutation.isPending}
+      onClick={(event) => { event.stopPropagation(); mutation.mutate() }}
+    >
+      <FileDown className="size-3.5" /> {mutation.isPending ? "Запрашиваем..." : "Принудительно получить запись лобби"}
+    </Button>
+  )
+}
 
 interface RoundFilters {
   q: string
@@ -330,8 +352,14 @@ function RoundsTab() {
                       <Button size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.replay!.id}`) }}><Video className="size-3.5" /> Демо раунда</Button>
                     ) : <span className="text-xs text-muted-foreground">Демо не найдено</span>}
                     {r.lobby_replay ? (
-                      <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.lobby_replay!.id}`) }}><Volume2 className="size-3.5" /> Демо лобби</Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className={r.lobby_replay.replay_kind === "lobby_dump" ? "border-yellow-500 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300" : undefined}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.lobby_replay!.id}`) }}
+                      ><Volume2 className="size-3.5" /> {r.lobby_replay.replay_kind === "lobby_dump" ? `Дамп лобби · ${r.lobby_replay.dumped_by_name ?? "неизвестный пользователь"}` : "Демо лобби"}</Button>
                     ) : <span className="text-xs text-muted-foreground">Ожидаем демо лобби...</span>}
+                    {data.can_request_lobby_dump && <LobbyDumpButton serverName={r.server_name} />}
                   </div>
                 </div>
               </CardContent>
@@ -383,25 +411,31 @@ function DemosTab() {
         {isLoading ? <Skeleton className="m-4 h-64" /> : (
           <Table>
             <TableHeader>
-              <TableRow><TableHead>Корабль</TableHead><TableHead>Сервер</TableHead><TableHead>Размер</TableHead><TableHead>Голос</TableHead><TableHead>Загружен</TableHead>{data?.can_delete && <TableHead />}</TableRow>
+              <TableRow><TableHead>Корабль</TableHead><TableHead>Сервер</TableHead><TableHead>Размер</TableHead><TableHead>Голос</TableHead><TableHead>Загружен</TableHead><TableHead /></TableRow>
             </TableHeader>
             <TableBody>
               {data?.replays.map((r) => (
-                <TableRow key={r.id} className="cursor-pointer" onClick={() => navigate(`/replays/${r.id}`)}>
+                <TableRow key={r.id} className={r.replay_kind === "lobby_dump" ? "cursor-pointer bg-yellow-500/10 hover:bg-yellow-500/15" : "cursor-pointer"} onClick={() => navigate(`/replays/${r.id}`)}>
                   <TableCell className="font-medium">
-                    {r.replay_kind === "lobby" ? "Лобби" : (r.submarine_name ?? "Раунд")} #{r.id}
-                    <Badge variant={r.replay_kind === "lobby" ? "outline" : "secondary"} className="ml-2">{r.replay_kind === "lobby" ? "Лобби" : "Раунд"}</Badge>
-                    {r.level_name && r.replay_kind !== "lobby" && <span className="text-xs text-muted-foreground"> · {r.level_name}</span>}
+                    {r.replay_kind === "round" ? (r.submarine_name ?? "Раунд") : "Лобби"} #{r.id}
+                    <Badge variant={r.replay_kind === "round" ? "secondary" : "outline"} className={r.replay_kind === "lobby_dump" ? "ml-2 border-yellow-500 bg-yellow-500/15 text-yellow-700 dark:text-yellow-300" : "ml-2"}>
+                      {r.replay_kind === "lobby_dump" ? "Принудительный дамп" : r.replay_kind === "lobby" ? "Лобби" : "Раунд"}
+                    </Badge>
+                    {r.level_name && r.replay_kind === "round" && <span className="text-xs text-muted-foreground"> · {r.level_name}</span>}
+                    {r.replay_kind === "lobby_dump" && <div className="mt-1 text-xs text-yellow-700 dark:text-yellow-300">Инициировал: {r.dumped_by_name ?? "неизвестный пользователь"}</div>}
                   </TableCell>
                   <TableCell><Badge variant="secondary">{r.server_name ?? "-"}</Badge></TableCell>
                   <TableCell>{fmtSize(r.file_size)}</TableCell>
                   <TableCell>{r.has_voice ? <AdaptiveIcon emoji="🔊" icon={Volume2} /> : "-"}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{fmtDate(r.uploaded_at)}</TableCell>
-                  {data?.can_delete && (
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex justify-end gap-2">
+                      {data?.can_request_lobby_dump && <LobbyDumpButton serverName={r.server_name} />}
+                      {data?.can_delete && (
                       <Button size="sm" variant="destructive" onClick={() => deleteMutation.mutate(r.id)}>Удалить</Button>
-                    </TableCell>
-                  )}
+                      )}
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
               {!data?.replays.length && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Демо-записей нет</TableCell></TableRow>}
