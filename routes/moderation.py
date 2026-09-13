@@ -574,7 +574,7 @@ def _serialize_round_state_json(rs: dict) -> dict:
     }
 
 
-def _enrich_online_disguise(db: Session, online_players: list[dict]) -> None:
+def _enrich_online_disguise(db: Session, online_players: list[dict], *, include_details: bool = False) -> None:
     """Attach moderation-only disguise metadata using the real SteamID key."""
     steamids = [str(info.get("player_steamid")) for info in online_players if info.get("player_steamid")]
     if not steamids:
@@ -627,11 +627,11 @@ def _enrich_online_disguise(db: Session, online_players: list[dict]) -> None:
         )
         info.update({
             "is_disguised": True,
-            "disguise_alias": public_alias,
-            "public_display_name": public_alias,
-            "disguise_mode": player.disguise_mode or "random",
-            "disguise_owner_name": owner_name or f"Пользователь #{player.linked_admin_id}",
-            "disguise_real_name": player.display_name,
+            "disguise_alias": public_alias if include_details else None,
+            "public_display_name": public_alias if include_details else None,
+            "disguise_mode": (player.disguise_mode or "random") if include_details else None,
+            "disguise_owner_name": (owner_name or f"Пользователь #{player.linked_admin_id}") if include_details else None,
+            "disguise_real_name": player.display_name if include_details else None,
         })
 
 
@@ -649,7 +649,11 @@ async def api_moderation_overview(
     online_players = svc.get_online_players(server_name=server)
     online_servers = svc.get_online_servers()
     if check_permission(current_admin, "moderation", "view"):
-        _enrich_online_disguise(db, online_players)
+        _enrich_online_disguise(
+            db,
+            online_players,
+            include_details=check_permission(current_admin, "disguise", "view_details"),
+        )
 
     round_states = {}
     for sn in (["ASPER1", "ASPER2"] if not server else [server]):
@@ -765,6 +769,7 @@ async def api_moderation_overview(
         "can_message": check_moderation_action_permission(current_admin, "message"),
         "can_kick": check_moderation_action_permission(current_admin, "kick"),
         "can_ban": check_moderation_action_permission(current_admin, "ban"),
+        "can_view_disguise_details": check_permission(current_admin, "disguise", "view_details"),
         # Быстрая выдача предупреждения прямо из списка онлайна — право то же,
         # что и на обычную выдачу наказаний, а не moderation:edit.
         "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),

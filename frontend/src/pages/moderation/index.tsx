@@ -93,8 +93,10 @@ function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {
   )
 }
 
-function DisguiseBadge({ player }: { player: OnlinePlayer }) {
+function DisguiseBadge({ player, canViewDetails }: { player: OnlinePlayer; canViewDetails: boolean }) {
   if (!player.is_disguised) return null
+  const badge = <Badge variant="outline" className="ml-1.5 border-primary/40 bg-primary/10 text-[10px] text-primary">Маска</Badge>
+  if (!canViewDetails) return badge
   const details = [
     player.disguise_alias ? `Публичное имя: ${player.disguise_alias}` : player.disguise_mode === "random" ? "Публичное имя: случайный профиль" : null,
     player.disguise_real_name ? `Настоящий профиль: ${player.disguise_real_name}` : null,
@@ -393,7 +395,7 @@ export function ModerationPage() {
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
-                          <DisguiseBadge player={p} />
+                          <DisguiseBadge player={p} canViewDetails={data.can_view_disguise_details} />
                           {!p.is_superuser && <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />}
                         </TableCell>
                         <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>

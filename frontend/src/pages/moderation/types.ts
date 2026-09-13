@@ -104,4 +104,5 @@ export interface ModerationOverview {
   can_message: boolean
   can_kick: boolean
   can_ban: boolean
+  can_view_disguise_details: boolean
 }
