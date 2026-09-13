@@ -568,7 +568,9 @@ class ReplayService:
                          server_name: Optional[str] = None,
                          notes: Optional[str] = None,
                          stream_id: Optional[str] = None,
-                         is_broken: bool = False) -> RoundReplay:
+                         is_broken: bool = False,
+                         replay_kind: str = "round",
+                         after_round_stream_id: Optional[str] = None) -> RoundReplay:
         """Register a raw demo assembled by streaming ingest without RAM copies."""
         import uuid
         from fastapi import HTTPException
@@ -582,10 +584,9 @@ class ReplayService:
         stored_name = f"replay_{ts}.barodemo.zip"
         stored_path = os.path.join(self.upload_dir, stored_name)
         inner_name = filename if filename.endswith(".barodemo") else "round.barodemo"
-        # Demo frames are already compact binary data. ZIP_STORED avoids a
-        # long CPU-bound compression phase while the stream finish request is
-        # holding an HTTP worker.
-        with zipfile.ZipFile(stored_path, "w", zipfile.ZIP_STORED) as zf:
+        # Snapshot streams are highly repetitive; fast deflate saves most of
+        # the disk and transfer cost without a long maximum-compression pass.
+        with zipfile.ZipFile(stored_path, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
             with zf.open(inner_name, "w") as dst, open(demo_path, "rb") as src:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
 
@@ -611,6 +612,8 @@ class ReplayService:
             replay.notes = notes or replay.notes
             replay.is_broken = is_broken
             replay.broken_at = datetime.utcnow() if is_broken else None
+            replay.replay_kind = replay_kind
+            replay.after_round_stream_id = after_round_stream_id
         else:
             replay = RoundReplay(
                 server_name=server_name or meta.get("server_name"),
@@ -625,6 +628,8 @@ class ReplayService:
                 stream_id=stream_id,
                 is_broken=is_broken,
                 broken_at=datetime.utcnow() if is_broken else None,
+                replay_kind=replay_kind,
+                after_round_stream_id=after_round_stream_id,
             )
             self.db.add(replay)
         self.db.commit()

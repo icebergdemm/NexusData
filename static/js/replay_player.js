@@ -172,6 +172,7 @@
     };
     r.u32();
     const hasVoice = (header.flags & 1) !== 0;
+    header.isLobby = (header.flags & 2) !== 0;
     if (header.version !== 4 && header.version !== 5 && header.version !== 6 && header.version !== 7) {
       throw new Error("Версия формата " + header.version + " не поддерживается (ожидается 4–7). Файл может быть повреждён.");
     }
@@ -520,6 +521,7 @@
   let demo = null;
   let cam = { x: 0, y: 0, zoom: 0.05 };
   let currentTimeMs = 0, playing = false, speed = 1, lastFrame = 0;
+  let selectedEntityId = null;
   let seekWindow = null;
   let followSub = false, followSubId = null;
   // Локальные габариты каждой структуры (подлодка, станция, обломки), считаются
@@ -642,6 +644,7 @@
   function render(){
     const W=cw(),H=ch();ctx.fillStyle=C.bg;ctx.fillRect(0,0,W,H);
     if(!demo)return;
+    if(demo.header.isLobby)return;
     const snap=snapAtInterpolated(currentTimeMs);if(!snap)return;
     // World outline (compact flat polygons)
     ctx.strokeStyle=C.worldOutline;ctx.lineWidth=1;
@@ -690,6 +693,7 @@
       ctx.fillStyle=dead?C.dead:teamColor(sp);ctx.fillRect(X-sz/2,Y-sz/2,sz,sz);
       if(!dead){ctx.strokeStyle="#fff";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(X,Y);ctx.lineTo(X+(facingLeft?-sz:sz),Y);ctx.stroke();}
       if(speakingNow.has(e.id)){ctx.strokeStyle=speakingRadio.has(e.id)?"#ffd23f":"#63d9f2";ctx.lineWidth=2;ctx.beginPath();ctx.arc(X,Y,sz,0,Math.PI*2);ctx.stroke();}
+      if(selectedEntityId===e.id){ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.strokeRect(X-sz/2-4,Y-sz/2-4,sz+8,sz+8);}
       if(sp&&isHumanSpecies(sp.species)&&!dead){
         const bw=sz*1.5,bh=2;ctx.fillStyle="#333";ctx.fillRect(X-bw/2,Y-sz/2-6,bw,bh);
         ctx.fillStyle=lerpColor("#5ADC5A","#DC4646",1-e.healthPct/200);ctx.fillRect(X-bw/2,Y-sz/2-6,bw*Math.max(0,Math.min(1,e.healthPct/200)),bh);
@@ -1159,10 +1163,18 @@
     });
     // Camera
     onGlobal(canvas,"wheel",(e)=>{e.preventDefault();cam.zoom=Math.max(0.005,Math.min(2,cam.zoom*(e.deltaY<0?1.1:0.9)));},{passive:false});
-    let dragging=false,lastX=0,lastY=0;
-    onGlobal(canvas,"mousedown",(e)=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
+    let dragging=false,didDrag=false,lastX=0,lastY=0;
+    onGlobal(canvas,"mousedown",(e)=>{dragging=true;didDrag=false;lastX=e.clientX;lastY=e.clientY;});
     onGlobal(window,"mouseup",()=>{dragging=false;});
-    onGlobal(window,"mousemove",(e)=>{if(!dragging)return;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;followSub=false;document.getElementById("rpvFollow").classList.remove("active");});
+    onGlobal(window,"mousemove",(e)=>{if(!dragging)return;if(Math.abs(e.clientX-lastX)+Math.abs(e.clientY-lastY)>2)didDrag=true;cam.x-=(e.clientX-lastX)/cam.zoom;cam.y+=(e.clientY-lastY)/cam.zoom;lastX=e.clientX;lastY=e.clientY;followSub=false;document.getElementById("rpvFollow").classList.remove("active");});
+    onGlobal(canvas,"click",(e)=>{
+      if(didDrag||!demo||demo.header.isLobby||!demo.snaps.count)return;
+      const rect=canvas.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,snap=snapAtInterpolated(currentTimeMs);
+      let picked=null,best=20*20;
+      for(const entity of snap.ents){const dx=sx(entity.x)-x,dy=sy(entity.y)-y,d=dx*dx+dy*dy;if(d<best){best=d;picked=entity.id;}}
+      selectedEntityId=picked;
+      window.dispatchEvent(new CustomEvent("baroreplay:entity-picked",{detail:{id:picked}}));
+    });
 
     // Voice controls
     const ve=document.getElementById("rpvVoiceEnable");
@@ -1502,6 +1514,7 @@
       await new Promise(requestAnimationFrame);
       if(destroyed)return;
       demo=API.parseDemo(store);
+      if(demo.header.isLobby)spatial=false;
       // NOTE: store (PagedBuffer) остаётся жить в demo.voice.store/demo.snaps.store
       // для ленивой распаковки voice-пакетов и снапшотов — так дешевле, чем
       // заранее декодировать тысячи мелких пакетов в объекты JS.

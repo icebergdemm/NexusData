@@ -189,7 +189,8 @@ async def _read_stream_chunk(request: Request) -> bytes:
 
 
 @api_router.post("/stream/start")
-async def start_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+async def start_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None),
+                              replay_kind: str = Query("round"), after_round_stream_id: Optional[str] = Query(None)):
     await asyncio.to_thread(_expire_stale_streams)
     data = await _read_stream_chunk(request)
     directory = _stream_dir(stream_id)
@@ -197,7 +198,11 @@ async def start_replay_stream(request: Request, stream_id: str = Query(...), ser
     # A reconnect is a continuation, not a new stream. The first chunk is
     # sequence zero and is accepted only when it is absent or identical.
     await asyncio.to_thread(_write_stream_file, os.path.join(directory, "00000000.bin"), data)
-    await asyncio.to_thread(_consume_stream_chunk, stream_id, data, server_name)
+    if replay_kind not in ("round", "lobby"):
+        raise HTTPException(status_code=400, detail="Некорректный replay_kind")
+    await asyncio.to_thread(_write_stream_meta, directory, replay_kind, after_round_stream_id)
+    if replay_kind == "round":
+        await asyncio.to_thread(_consume_stream_chunk, stream_id, data, server_name)
     await asyncio.to_thread(_mark_stream_live, stream_id)
     return {"status": "ok"}
 
@@ -210,20 +215,44 @@ async def append_replay_stream(request: Request, stream_id: str = Query(...), se
     if not os.path.isdir(directory):
         raise HTTPException(status_code=404, detail="Поток не запущен")
     await asyncio.to_thread(_write_stream_file, os.path.join(directory, f"{seq:08d}.bin"), data)
-    await asyncio.to_thread(_consume_stream_chunk, stream_id, data, None)
+    replay_kind, _ = await asyncio.to_thread(_read_stream_meta, directory)
+    if replay_kind == "round":
+        await asyncio.to_thread(_consume_stream_chunk, stream_id, data, None)
     await asyncio.to_thread(_mark_stream_live, stream_id)
     return {"status": "ok", "seq": seq}
 
 
 @api_router.post("/stream/finish")
-async def finish_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None)):
+async def finish_replay_stream(request: Request, stream_id: str = Query(...), server_name: Optional[str] = Query(None),
+                               replay_kind: str = Query("round"), after_round_stream_id: Optional[str] = Query(None)):
     await asyncio.to_thread(_expire_stale_streams)
     end = await _read_stream_chunk(request)
     directory = _stream_dir(stream_id)
     if not os.path.isdir(directory):
         raise HTTPException(status_code=404, detail="Поток не запущен")
-    await asyncio.to_thread(_consume_stream_chunk, stream_id, end, server_name)
-    return await asyncio.to_thread(_assemble_stream, directory, end, server_name)
+    stored_kind, stored_after_round = await asyncio.to_thread(_read_stream_meta, directory)
+    replay_kind = stored_kind or replay_kind
+    after_round_stream_id = stored_after_round or after_round_stream_id
+    if replay_kind == "round":
+        await asyncio.to_thread(_consume_stream_chunk, stream_id, end, server_name)
+    return await asyncio.to_thread(_assemble_stream, directory, end, server_name, False, False,
+                                   replay_kind, after_round_stream_id)
+
+
+def _write_stream_meta(directory: str, replay_kind: str, after_round_stream_id: Optional[str]) -> None:
+    with open(os.path.join(directory, "stream-meta.json"), "w", encoding="utf-8") as handle:
+        json.dump({"replay_kind": replay_kind, "after_round_stream_id": after_round_stream_id}, handle)
+
+
+def _read_stream_meta(directory: str) -> tuple[Optional[str], Optional[str]]:
+    try:
+        with open(os.path.join(directory, "stream-meta.json"), encoding="utf-8") as handle:
+            data = json.load(handle)
+        replay_kind = data.get("replay_kind")
+        return (replay_kind if replay_kind in ("round", "lobby") else None,
+                data.get("after_round_stream_id"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None, None
 
 
 def _websocket_api_key_is_valid(websocket: WebSocket) -> bool:
@@ -802,9 +831,19 @@ def _consume_stream_chunk(stream_id: str, data: bytes, server_name: Optional[str
 
 
 def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
-                    broken: bool = False, keep_directory: bool = False) -> dict:
+                    broken: bool = False, keep_directory: bool = False,
+                    replay_kind: Optional[str] = None,
+                    after_round_stream_id: Optional[str] = None) -> dict:
     import uuid
     from database import SessionLocal
+    try:
+        with open(os.path.join(directory, "stream-meta.json"), encoding="utf-8") as handle:
+            stream_meta = json.load(handle)
+        replay_kind = replay_kind or stream_meta.get("replay_kind")
+        after_round_stream_id = after_round_stream_id or stream_meta.get("after_round_stream_id")
+    except (OSError, ValueError, TypeError):
+        pass
+    replay_kind = replay_kind if replay_kind in ("round", "lobby") else "round"
     chunk_names = sorted(n for n in os.listdir(directory) if n.endswith(".bin"))
     expected = [f"{index:08d}.bin" for index in range(len(chunk_names))]
     if chunk_names != expected:
@@ -850,6 +889,7 @@ def _assemble_stream(directory: str, end: bytes, server_name: Optional[str],
             notes=("Собрано потоковым WorldDemoStreamer; поток прерван более минуты"
                    if broken else "Собрано потоковым WorldDemoStreamer"),
             stream_id=os.path.basename(directory), is_broken=broken,
+            replay_kind=replay_kind, after_round_stream_id=after_round_stream_id,
         )
         return {"success": True, "replay_id": replay.id, "stored_filename": replay.stored_filename,
                 "broken": broken}
@@ -1144,6 +1184,8 @@ def _serialize_replay(r) -> dict:
         "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
         "notes": r.notes,
         "is_broken": bool(getattr(r, "is_broken", False)),
+        "replay_kind": getattr(r, "replay_kind", "round") or "round",
+        "after_round_stream_id": getattr(r, "after_round_stream_id", None),
     }
 
 
@@ -1270,6 +1312,12 @@ def _serialize_round(db: Session, end_event: RoundEvent, replay=None) -> dict:
     start = end_event.paired_start
     players = _merge_round_players(db, start, end_event)
     players = _resolve_round_players(db, players)
+    lobby_replay = None
+    if replay and replay.stream_id:
+        lobby_replay = db.query(RoundReplay).filter(
+            RoundReplay.replay_kind == "lobby",
+            RoundReplay.after_round_stream_id == replay.stream_id,
+        ).order_by(RoundReplay.uploaded_at.desc()).first()
     return {
         "id": end_event.id,
         "server_name": end_event.server_name,
@@ -1284,6 +1332,8 @@ def _serialize_round(db: Session, end_event: RoundEvent, replay=None) -> dict:
         "player_count": len(players),
         "player_left_count": sum(1 for p in players if isinstance(p, dict) and p.get("left")),
         "replay": _serialize_replay(replay) if replay else None,
+        "lobby_replay": _serialize_replay(lobby_replay) if lobby_replay else None,
+        "lobby_replay_status": "ready" if lobby_replay else "waiting",
     }
 
 
@@ -1322,6 +1372,7 @@ def _find_matching_replay(db: Session, end_event: RoundEvent, start: Optional[Ro
         db.query(RoundReplay)
         .filter(
             RoundReplay.server_name == end_event.server_name,
+            or_(RoundReplay.replay_kind.is_(None), RoundReplay.replay_kind == "round"),
             RoundReplay.uploaded_at >= window_start,
             RoundReplay.uploaded_at <= window_end,
         )
@@ -1334,6 +1385,7 @@ def _find_matching_replay(db: Session, end_event: RoundEvent, start: Optional[Ro
     return (
         db.query(RoundReplay)
         .filter(
+            or_(RoundReplay.replay_kind.is_(None), RoundReplay.replay_kind == "round"),
             RoundReplay.uploaded_at >= window_start,
             RoundReplay.uploaded_at <= window_end,
         )
@@ -1612,6 +1664,8 @@ async def api_link_replay_to_round(round_id: int, request: Request, db: Session 
         replay = db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
         if not replay:
             raise HTTPException(status_code=404, detail="Демозапись не найдена")
+        if getattr(replay, "replay_kind", "round") == "lobby":
+            raise HTTPException(status_code=400, detail="Демо лобби нельзя назначить демо раунда")
         replay.manual_round_event_id = round_id
 
     db.commit()

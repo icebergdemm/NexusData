@@ -28,6 +28,7 @@ import { formatBrowserDate } from "@/lib/format-date"
 interface ReplayRow {
   id: number; server_name: string | null; submarine_name: string | null; level_name: string | null
   file_size: number | null; has_voice: boolean; recorded_at: string | null; uploaded_at: string | null
+  replay_kind: "round" | "lobby"
 }
 interface ReplaysResponse {
   replays: ReplayRow[]; total: number; page: number; total_pages: number
@@ -58,6 +59,8 @@ interface RoundRow {
   player_count: number
   player_left_count: number
   replay: ReplayRow | null
+  lobby_replay: ReplayRow | null
+  lobby_replay_status: "ready" | "waiting"
 }
 interface RoundsResponse {
   rounds: RoundRow[]; total: number; page: number; total_pages: number
@@ -322,11 +325,14 @@ function RoundsTab() {
                     ))}
                     {r.players.length > 8 && <Badge variant="outline" className="text-xs">+{r.players.length - 8}</Badge>}
                   </div>
-                  {r.replay ? (
-                    <Button size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.replay!.id}`) }}><Video className="size-3.5" /> Смотреть демо</Button>
-                  ) : (
-                    <span className="shrink-0 text-xs text-muted-foreground">Демо не найдено</span>
-                  )}
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    {r.replay ? (
+                      <Button size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.replay!.id}`) }}><Video className="size-3.5" /> Демо раунда</Button>
+                    ) : <span className="text-xs text-muted-foreground">Демо не найдено</span>}
+                    {r.lobby_replay ? (
+                      <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.lobby_replay!.id}`) }}><Volume2 className="size-3.5" /> Демо лобби</Button>
+                    ) : <span className="text-xs text-muted-foreground">Ожидаем демо лобби...</span>}
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -382,7 +388,11 @@ function DemosTab() {
             <TableBody>
               {data?.replays.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer" onClick={() => navigate(`/replays/${r.id}`)}>
-                  <TableCell className="font-medium">{r.submarine_name ?? "Раунд"} #{r.id}{r.level_name && <span className="text-xs text-muted-foreground"> · {r.level_name}</span>}</TableCell>
+                  <TableCell className="font-medium">
+                    {r.replay_kind === "lobby" ? "Лобби" : (r.submarine_name ?? "Раунд")} #{r.id}
+                    <Badge variant={r.replay_kind === "lobby" ? "outline" : "secondary"} className="ml-2">{r.replay_kind === "lobby" ? "Лобби" : "Раунд"}</Badge>
+                    {r.level_name && r.replay_kind !== "lobby" && <span className="text-xs text-muted-foreground"> · {r.level_name}</span>}
+                  </TableCell>
                   <TableCell><Badge variant="secondary">{r.server_name ?? "-"}</Badge></TableCell>
                   <TableCell>{fmtSize(r.file_size)}</TableCell>
                   <TableCell>{r.has_voice ? <AdaptiveIcon emoji="🔊" icon={Volume2} /> : "-"}</TableCell>

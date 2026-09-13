@@ -1183,6 +1183,8 @@ class RoundReplay(Base):
     stream_id = Column(String(100), nullable=True, unique=True, index=True)
     is_broken = Column(Boolean, nullable=False, default=False, index=True)
     broken_at = Column(DateTime, nullable=True)
+    replay_kind = Column(String(16), nullable=False, default="round", index=True)
+    after_round_stream_id = Column(String(100), nullable=True, index=True)
     # Manual escape hatch when the automatic header-timestamp/server_name
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.

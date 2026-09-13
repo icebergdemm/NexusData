@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import { Package } from "lucide-react"
+import { Package, X } from "lucide-react"
 import { ItemIcon } from "@/components/layout/ItemIcon"
 import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useItemCatalog, itemDisplayName } from "@/lib/items"
 import { formatTimecode } from "./replay-timeline-utils"
 
@@ -60,7 +59,7 @@ export function ReplayEntityInventory({ replayId }: { replayId: string }) {
       if (list.length) {
         setEntities(list)
         setReady(true)
-        setSelectedId((current) => (current != null && list.some((e) => e.id === current) ? current : list[0].id))
+        setSelectedId((current) => (current != null && list.some((e) => e.id === current) ? current : null))
       }
     }
 
@@ -82,9 +81,14 @@ export function ReplayEntityInventory({ replayId }: { replayId: string }) {
         return list
       })
     }
+    const onEntityPicked = (raw: Event) => {
+      const detail = (raw as CustomEvent<{ id: number | null }>).detail
+      setSelectedId(detail?.id ?? null)
+    }
     window.addEventListener("baroreplay:ready", onReady)
     window.addEventListener("baroreplay:time", onTime)
     window.addEventListener("baroreplay:player-picked", onPlayerPicked)
+    window.addEventListener("baroreplay:entity-picked", onEntityPicked)
     // Классический UI не шлёт baroreplay:ready (только V2) — забираем список
     // напрямую с моста, когда плеер уже распарсил демо.
     const timer = window.setInterval(() => pullEntities(), 1000)
@@ -93,6 +97,7 @@ export function ReplayEntityInventory({ replayId }: { replayId: string }) {
       window.removeEventListener("baroreplay:ready", onReady)
       window.removeEventListener("baroreplay:time", onTime)
       window.removeEventListener("baroreplay:player-picked", onPlayerPicked)
+      window.removeEventListener("baroreplay:entity-picked", onEntityPicked)
       window.clearInterval(timer)
     }
   }, [replayId])
@@ -115,40 +120,19 @@ export function ReplayEntityInventory({ replayId }: { replayId: string }) {
     [entities, selectedId],
   )
 
+  if (!ready || !selected) return null
+
   return (
-    <div className="rpv-panel" aria-label="Инвентарь сущности в демозаписи">
+    <div className="rpv-panel absolute right-3 top-3 z-[4] w-[min(320px,calc(100%-24px))] shadow-xl" aria-label="Инвентарь сущности в демозаписи">
       <h3 className="flex items-center gap-1.5">
         <Package className="size-3.5" aria-hidden="true" /> Инвентарь сущности
-        {selected && (
-          <Badge variant="outline" className="ml-auto text-[10px]">
-            {formatTimecode(timeMs).replace(/^00:/, "").replace(/\.000$/, "")}
-          </Badge>
-        )}
+        <Badge variant="outline" className="ml-auto text-[10px]">{formatTimecode(timeMs).replace(/^00:/, "").replace(/\.000$/, "")}</Badge>
+        <button type="button" onClick={() => setSelectedId(null)} title="Закрыть" aria-label="Закрыть"><X className="size-4" /></button>
       </h3>
-      {!ready ? (
-        <div className="text-xs text-muted-foreground">Ожидаю разбор демозаписи…</div>
-      ) : !entities.length ? (
-        <div className="text-xs text-muted-foreground">В этой демозаписи инвентарей нет</div>
-      ) : (
-        <div className="space-y-2">
-          <Select value={selectedId != null ? String(selectedId) : undefined} onValueChange={(v) => setSelectedId(Number(v))}>
-            <SelectTrigger aria-label="Сущность для просмотра инвентаря">
-              <SelectValue placeholder="Выберите сущность…" />
-            </SelectTrigger>
-            <SelectContent className="max-h-72">
-              {entities.map((e) => (
-                <SelectItem key={e.id} value={String(e.id)}>
-                  {e.name} · #{e.id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {selected && (
-            <div className="text-[11px] text-muted-foreground">
-              {selected.species || "сущность"} · ID {selected.id}
-              {selected.job ? ` · ${selected.job}` : ""}
-            </div>
-          )}
+      <div className="space-y-2">
+          <div className="text-[11px] text-muted-foreground">
+            {selected.name} · {selected.species || "сущность"} · ID {selected.id}{selected.job ? ` · ${selected.job}` : ""}
+          </div>
           {items.length ? (
             <>
               <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -187,8 +171,7 @@ export function ReplayEntityInventory({ replayId }: { replayId: string }) {
               {selected ? "У сущности сейчас ничего нет" : "Выберите сущность"}
             </div>
           )}
-        </div>
-      )}
+      </div>
     </div>
   )
 }

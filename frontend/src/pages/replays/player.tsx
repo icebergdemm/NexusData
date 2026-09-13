@@ -18,6 +18,7 @@ interface ReplayDetail {
     id: number; submarine_name: string | null; level_name: string | null
     recorded_at: string | null; has_voice: boolean; duration_ms: number | null
     filename: string | null; file_size: number | null
+    replay_kind: "round" | "lobby"
   }
 }
 
@@ -36,6 +37,7 @@ export function ReplayPlayerPage() {
     queryKey: ["replay-detail", replayId],
     queryFn: () => api.get<ReplayDetail>(`/api/v1/admin/replays/${replayId}`),
   })
+  const isLobby = data?.replay.replay_kind === "lobby"
 
   useEffect(() => {
     // Wait until the replay metadata (has_voice) is known so the scripts are
@@ -119,7 +121,7 @@ export function ReplayPlayerPage() {
   }, [replayId, data])
 
   return (
-    <div>
+    <div className={isLobby ? "rpv-lobby" : undefined}>
       <style>{`
         .rpv-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;}
         .rpv-top h2{display:flex;align-items:center;gap:6px;font-size:18px;font-weight:700;color:var(--foreground);margin:0;}
@@ -211,13 +213,18 @@ export function ReplayPlayerPage() {
         html[data-ui-version="v2"] #rpvDirectTimeError{position:absolute;z-index:4;top:calc(100% + 5px);left:0;padding:4px 6px;border:1px solid var(--destructive);background:var(--background);color:var(--destructive);font-size:10px;}
         @media(prefers-reduced-motion:reduce){html[data-ui-version="v2"] .rpv-seek-shell,html[data-ui-version="v2"] .rpv-seek-shell .rpv-seek,html[data-ui-version="v2"] .rpv-precision-panel{transition-duration:1ms;}html[data-ui-version="v2"] .rpv-seek-shell[data-holding="true"] .rpv-hold-progress{animation-timing-function:steps(1,end);}}
         @media(max-width:1000px){html[data-ui-version="v2"] .rpv-layout{grid-template-columns:1fr;}html[data-ui-version="v2"] .rpv-side{max-height:none;}}
+        .rpv-lobby .rpv-layout{grid-template-columns:minmax(0,900px);justify-content:center;}
+        .rpv-lobby .rpv-canvas-wrap{position:absolute;width:1px;height:1px;clip-path:inset(50%);}
+        .rpv-lobby .rpv-side{display:grid;grid-template-columns:minmax(260px,1fr) minmax(320px,2fr);max-height:none;overflow:visible;}
+        .rpv-lobby .rpv-controls{margin-top:0;}
+        @media(max-width:700px){.rpv-lobby .rpv-side{grid-template-columns:1fr;}}
       `}</style>
 
       <Link to="/replays" className="rpv-back">← Назад к списку</Link>
       <div className="rpv-top">
         <h2>
-          <AdaptiveIcon emoji="🎬" icon={Clapperboard} /> {data?.replay.submarine_name ?? "Раунд"} #{replayId}
-          {data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
+          <AdaptiveIcon emoji="🎬" icon={Clapperboard} /> {isLobby ? "Демо лобби" : (data?.replay.submarine_name ?? "Раунд")} #{replayId}
+          {!isLobby && data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
         </h2>
         <div className="rpv-top-actions">
           <span className="rpv-time">{data?.replay.recorded_at ? formatBrowserDate(data.replay.recorded_at) : ""}</span>
@@ -238,6 +245,7 @@ export function ReplayPlayerPage() {
         <div>
           <div className="rpv-canvas-wrap">
             <canvas id="rpvCanvas" />
+            {!isLobby && replayId && <ReplayEntityInventory replayId={replayId} />}
             <div className="rpv-loading" id="rpvLoading">
               <div className="rpv-spinner" />
               <div id="rpvLoadingText">{scriptsReady ? "Загрузка реплея..." : "Загрузка плеера..."}</div>
@@ -264,7 +272,7 @@ export function ReplayPlayerPage() {
               <button className="rpv-btn rpv-speed" data-speed="2">2×</button>
               <button className="rpv-btn rpv-speed" data-speed="4">4×</button>
             </div>
-            <button className="rpv-btn" id="rpvFollow"><AdaptiveIcon emoji="📷" icon={Camera} /> Следить за лодкой</button>
+            <button className="rpv-btn" id="rpvFollow" style={isLobby ? { display: "none" } : undefined}><AdaptiveIcon emoji="📷" icon={Camera} /> Следить за лодкой</button>
           </div>
         </div>
 
@@ -273,8 +281,8 @@ export function ReplayPlayerPage() {
             <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="🔊" icon={Volume2} />Звук</h3>
             <div className="rpv-row"><label><input type="checkbox" id="rpvVoiceEnable" /> Включить голос</label></div>
             <div className="rpv-row"><span>Общая громкость</span><input type="range" className="rpv-slider" id="rpvMasterVol" min={0} max={100} defaultValue={100} /></div>
-            <div className="rpv-row"><label><input type="checkbox" id="rpvSpatial" defaultChecked /> Затухание по расстоянию</label></div>
-            <div className="rpv-row"><span title="Дистанция, на которой голос затухает до нуля">Радиус слышимости</span><input type="range" className="rpv-slider" id="rpvFalloff" min={500} max={8000} step={100} defaultValue={3000} /></div>
+            <div className="rpv-row" style={isLobby ? { display: "none" } : undefined}><label><input type="checkbox" id="rpvSpatial" defaultChecked={!isLobby} /> Затухание по расстоянию</label></div>
+            <div className="rpv-row" style={isLobby ? { display: "none" } : undefined}><span title="Дистанция, на которой голос затухает до нуля">Радиус слышимости</span><input type="range" className="rpv-slider" id="rpvFalloff" min={500} max={8000} step={100} defaultValue={3000} /></div>
           </div>
           <div className="rpv-panel">
             <h3 className="rpv-panel-head">
@@ -283,15 +291,14 @@ export function ReplayPlayerPage() {
             </h3>
             <div className="rpv-players" id="rpvPlayers" />
           </div>
-          <div className="rpv-panel">
+          {!isLobby && <div className="rpv-panel">
             <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="💬" icon={MessageSquare} />Чат</h3>
             <div className="rpv-chat" id="rpvChat" />
-          </div>
-          {replayId && <ReplayEntityInventory replayId={replayId} />}
-          {!IS_V2 && replayId && <ReplayLogsPanel replayId={replayId} />}
+          </div>}
+          {!IS_V2 && replayId && !isLobby && <ReplayLogsPanel replayId={replayId} />}
         </div>
       </div>
-      {IS_V2 && replayId && (
+      {IS_V2 && replayId && !isLobby && (
         <ReplayTimelineWorkbench replayId={replayId} initialDurationMs={data?.replay.duration_ms} />
       )}
     </div>
