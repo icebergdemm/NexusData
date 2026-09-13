@@ -3,7 +3,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from typing import Optional
 import secrets
 import threading
@@ -3155,6 +3155,11 @@ def _disguise_owner_for_alias(db: Session, player: PlayerData, alias: str) -> Op
             DisguiseProfile.player_id != player.player_id,
             DisguiseProfile.enabled.is_(True),
             PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_mode == "fixed",
+            or_(
+                DisguiseProfile.id == PlayerData.disguise_profile_id,
+                func.lower(DisguiseProfile.alias) == func.lower(PlayerData.disguise_fixed_alias),
+            ),
             func.lower(DisguiseProfile.alias) == normalized,
         )
         .order_by(DisguiseProfile.id)
@@ -3199,7 +3204,15 @@ def _disguise_reserved_aliases(db: Session, player: PlayerData) -> list[dict]:
         db.query(DisguiseProfile, PlayerData, AdminUser)
         .join(PlayerData, PlayerData.player_id == DisguiseProfile.player_id)
         .outerjoin(AdminUser, AdminUser.id == PlayerData.linked_admin_id)
-        .filter(DisguiseProfile.enabled.is_(True), PlayerData.disguise_enabled.is_(True))
+        .filter(
+            DisguiseProfile.enabled.is_(True),
+            PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_mode == "fixed",
+            or_(
+                DisguiseProfile.id == PlayerData.disguise_profile_id,
+                func.lower(DisguiseProfile.alias) == func.lower(PlayerData.disguise_fixed_alias),
+            ),
+        )
         .order_by(func.lower(DisguiseProfile.alias), DisguiseProfile.id)
         .all()
     )
@@ -3349,6 +3362,11 @@ def _validate_disguise_profiles(db: Session, player: PlayerData, profiles: list[
             DisguiseProfile.player_id != player.player_id,
             DisguiseProfile.enabled.is_(True),
             PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_mode == "fixed",
+            or_(
+                DisguiseProfile.id == PlayerData.disguise_profile_id,
+                func.lower(DisguiseProfile.alias) == func.lower(PlayerData.disguise_fixed_alias),
+            ),
             DisguiseProfile.public_steam_id.isnot(None),
             DisguiseProfile.public_steam_id.in_(public_ids or {"__none__"}),
         )
