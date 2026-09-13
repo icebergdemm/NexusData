@@ -28,6 +28,7 @@ from typing import Optional, Tuple
 import aiofiles
 import aiohttp
 import discord
+from discord.channel import VocalGuildChannel
 from discord.ext import commands, tasks
 from discord import app_commands
 
@@ -1260,15 +1261,26 @@ def _serialize_message(msg: discord.Message) -> dict:
     }
 
 
+def _viewer_channel_type(channel) -> Optional[str]:
+    if isinstance(channel, discord.TextChannel):
+        return "text"
+    if isinstance(channel, VocalGuildChannel):
+        return "stage" if isinstance(channel, discord.StageChannel) else "voice"
+    return None
+
+
 async def viewer_get_tree() -> dict:
     """Категории/каналы, доступные для просмотра именно этому боту (иначе
     список выглядел бы полным, а половина каналов при открытии падала бы
     403-й ошибкой Discord). Голосовые и форумные каналы не отдаются — вьюер
-    работает только с текстовыми (в т.ч. announcement-каналами)."""
+    работает с каналами, у которых Discord поддерживает текстовый чат."""
     guild = _viewer_guild()
     me = guild.me
     channels = []
-    for ch in guild.text_channels:
+    for ch in guild.channels:
+        channel_type = _viewer_channel_type(ch)
+        if channel_type is None:
+            continue
         perms = ch.permissions_for(me)
         if not perms.view_channel:
             continue
@@ -1276,6 +1288,7 @@ async def viewer_get_tree() -> dict:
             "id": str(ch.id), "name": ch.name, "position": ch.position,
             "can_send": perms.send_messages,
             "category_id": str(ch.category_id) if ch.category_id else None,
+            "type": channel_type,
         })
     categories = [{"id": str(c.id), "name": c.name, "position": c.position} for c in guild.categories]
     categories.sort(key=lambda c: c["position"])

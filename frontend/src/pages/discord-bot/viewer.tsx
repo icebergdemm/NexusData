@@ -9,13 +9,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Hash, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck } from "lucide-react"
+import { Hash, Volume2, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck } from "lucide-react"
 import { api, ApiError } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 
 // ── Типы ─────────────────────────────────────────────────────────────────
 
-interface TreeChannel { id: string; name: string; position: number; can_send: boolean; category_id: string | null }
+interface TreeChannel { id: string; name: string; position: number; can_send: boolean; category_id: string | null; type: "text" | "voice" | "stage" }
 interface TreeCategory { id: string; name: string; position: number }
 interface ChannelTree {
   guild: { id: string; name: string; icon_url: string | null }
@@ -141,7 +141,7 @@ function ChatPanel({ channel, canSend }: { channel: TreeChannel; canSend: boolea
   return (
     <div className="flex h-[75vh] flex-col rounded-lg border border-[#3b3d43] bg-[#313338]">
       <div className="flex items-center justify-between border-b border-[#3b3d43] px-4 py-2.5">
-        <div className="flex items-center gap-1.5 text-[#f2f3f5]"><Hash className="size-4 text-[#949ba4]" /><span className="font-semibold">{channel.name}</span></div>
+        <div className="flex items-center gap-1.5 text-[#f2f3f5]">{channel.type === "text" ? <Hash className="size-4 text-[#949ba4]" /> : <Volume2 className="size-4 text-[#949ba4]" />}<span className="font-semibold">{channel.name}</span></div>
         <a href={`/api/v1/admin/discord-bot/viewer/channels/${channel.id}/export`} download>
           <Button size="sm" variant="outline" className="h-7 gap-1 text-xs"><Download className="size-3.5" /> Экспорт в JSON</Button>
         </a>
@@ -374,7 +374,7 @@ export function DiscordViewerTab() {
                     onClick={() => setActiveChannel(c.id)}
                     className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-sm ${c.id === activeChannel ? "bg-[#404249] text-white" : "text-[#949ba4] hover:bg-[#35373c]"}`}
                   >
-                    <Hash className="size-3.5 shrink-0" /> <span className="truncate">{c.name}</span>
+                    {c.type === "text" ? <Hash className="size-3.5 shrink-0" /> : <Volume2 className="size-3.5 shrink-0" />} <span className="truncate">{c.name}</span>
                   </button>
                 ))}
               </div>
@@ -385,10 +385,10 @@ export function DiscordViewerTab() {
                 onClick={() => setActiveChannel(c.id)}
                 className={`flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-sm ${c.id === activeChannel ? "bg-[#404249] text-white" : "text-[#949ba4] hover:bg-[#35373c]"}`}
               >
-                <Hash className="size-3.5 shrink-0" /> <span className="truncate">{c.name}</span>
+                {c.type === "text" ? <Hash className="size-3.5 shrink-0" /> : <Volume2 className="size-3.5 shrink-0" />} <span className="truncate">{c.name}</span>
               </button>
             ))}
-            {!tree.channels.length && <p className="px-1 text-xs text-muted-foreground">Боту не видно ни одного текстового канала</p>}
+            {!tree.channels.length && <p className="px-1 text-xs text-muted-foreground">Боту не видно каналов с текстовым чатом</p>}
           </div>
           {channel ? <ChatPanel channel={channel} canSend={tree.can_send} /> : (
             <div className="flex h-[75vh] items-center justify-center rounded-lg border text-sm text-muted-foreground">Выберите канал слева</div>
