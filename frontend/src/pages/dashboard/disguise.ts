@@ -12,6 +12,7 @@ export interface DisguiseProfile {
   public_steam_id: string | null
   enabled: boolean
   sort_order: number
+  reservation?: DisguiseReservation | null
 }
 
 export interface DisguiseReservation {

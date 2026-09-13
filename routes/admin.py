@@ -3420,6 +3420,8 @@ def _disguise_server_rows(db: Session, player: PlayerData) -> list[dict]:
 
 def _disguise_response(db: Session, player: PlayerData) -> dict:
     profiles = _ensure_disguise_profiles(db, player)
+    reservations = _disguise_reserved_aliases(db, player)
+    reservations_by_alias = {item["alias"].casefold(): item for item in reservations}
     selected_profile = next(
         (profile for profile in profiles if profile.id == player.disguise_profile_id), None
     )
@@ -3441,10 +3443,11 @@ def _disguise_response(db: Session, player: PlayerData) -> dict:
                 "public_steam_id": profile.public_steam_id,
                 "enabled": bool(profile.enabled),
                 "sort_order": profile.sort_order,
+                "reservation": reservations_by_alias.get(profile.alias.casefold()),
             }
             for profile in profiles
         ],
-        "reserved_aliases": _disguise_reserved_aliases(db, player),
+        "reserved_aliases": reservations,
         "version": int(player.disguise_version or 0),
         "servers": _disguise_server_rows(db, player),
     }

@@ -23,6 +23,8 @@ export interface OnlinePlayer {
   is_superuser: boolean
   is_disguised: boolean
   disguise_alias: string | null
+  public_display_name: string | null
+  disguise_mode: "random" | "fixed" | null
   disguise_owner_name: string | null
   disguise_real_name: string | null
   has_discord_link: boolean

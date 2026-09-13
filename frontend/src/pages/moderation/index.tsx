@@ -48,7 +48,7 @@ function fmtPlayTime(hours: number | null | undefined): string {
   return `${h}ч ${m}м`
 }
 function onlineDisplayName(p: OnlinePlayer): string {
-  return p.player_name || p.player_steamid
+  return p.public_display_name || p.player_name || p.player_steamid
 }
 
 function SessionDurationCell({ joinTime }: { joinTime: string | null }) {
@@ -96,7 +96,7 @@ function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {
 function DisguiseBadge({ player }: { player: OnlinePlayer }) {
   if (!player.is_disguised) return null
   const details = [
-    player.disguise_alias ? `Публичное имя: ${player.disguise_alias}` : null,
+    player.disguise_alias ? `Публичное имя: ${player.disguise_alias}` : player.disguise_mode === "random" ? "Публичное имя: случайный профиль" : null,
     player.disguise_real_name ? `Настоящий профиль: ${player.disguise_real_name}` : null,
     player.disguise_owner_name ? `Владелец: ${player.disguise_owner_name}` : null,
   ].filter(Boolean).join("\n")

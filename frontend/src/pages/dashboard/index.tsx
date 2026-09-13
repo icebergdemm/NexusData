@@ -64,6 +64,9 @@ function DisguiseCard({ canUsePermission, canUse }: { canUsePermission: boolean;
   const aliasFor = (profileId: number | null, source = profiles) =>
     source.find((profile) => profile.id === profileId)?.alias ?? ""
 
+  const reservationFor = (alias: string) =>
+    data?.reserved_aliases?.find((reservation) => reservation.alias.toLocaleLowerCase() === alias.toLocaleLowerCase())
+
   const save = useMutation({
     mutationFn: (input: { enabled: boolean; mode: DisguiseMode; selectedProfileId: number | null; profiles?: DisguiseProfile[] }) => api.put<DisguiseState>(
       "/api/v1/me/disguise",
@@ -168,7 +171,22 @@ function DisguiseCard({ canUsePermission, canUse }: { canUsePermission: boolean;
               updatePolicy({ enabled, mode: "fixed", selectedProfileId: id })
             }}>
               <option value="">Выберите профиль</option>
-              {profiles.filter((profile) => profile.enabled).map((profile) => <option key={profile.id} value={profile.id}>{profile.alias}</option>)}
+              {profiles.filter((profile) => profile.enabled).map((profile) => {
+                const reservation = reservationFor(profile.alias)
+                const occupiedByOther = reservation && !reservation.is_self
+                return <option key={profile.id} value={profile.id} disabled={occupiedByOther ?? false}>
+                  {profile.alias}{reservation ? ` · ${reservation.is_self ? "занято вами" : `занято: ${reservation.owner_name}`}` : ""}
+                </option>
+              })}
+              {data?.reserved_aliases?.some((reservation) => !reservation.is_self && !profiles.some((profile) => profile.alias.toLocaleLowerCase() === reservation.alias.toLocaleLowerCase())) && (
+                <optgroup label="Занятые псевдонимы">
+                  {data.reserved_aliases.filter((reservation) => !reservation.is_self && !profiles.some((profile) => profile.alias.toLocaleLowerCase() === reservation.alias.toLocaleLowerCase())).map((reservation) => (
+                    <option key={`reserved-${reservation.alias}`} value={`reserved-${reservation.alias}`} disabled>
+                      {reservation.alias} · занято: {reservation.owner_name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
           <Button size="sm" variant="outline" disabled={save.isPending} onClick={openProfiles}><Settings2 className="mr-1.5 h-4 w-4" />Настройки</Button>
@@ -187,9 +205,14 @@ function DisguiseCard({ canUsePermission, canUse }: { canUsePermission: boolean;
           </DialogHeader>
           <div className="max-h-[55vh] overflow-auto rounded-md border">
             <Table className="min-w-[840px] table-fixed">
-              <TableHeader><TableRow><TableHead className="w-[42%]">Публичный ник</TableHead><TableHead className="w-[42%]">SteamID64 (необязательно)</TableHead><TableHead className="w-24">Активен</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead className="w-24">Статус</TableHead><TableHead className="w-[40%]">Публичный ник</TableHead><TableHead className="w-[40%]">SteamID64 (необязательно)</TableHead><TableHead className="w-24">Активен</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
               <TableBody>
-                {draftProfiles.map((profile) => <TableRow key={profile.id}>
+                {draftProfiles.map((profile) => {
+                  const reservation = reservationFor(profile.alias)
+                  return <TableRow key={profile.id}>
+                  <TableCell className="text-xs">
+                    {reservation ? <span className={reservation.is_self ? "text-primary" : "text-warning"} title={reservation.is_self ? "Псевдоним занят вами" : `Псевдоним занят: ${reservation.owner_name}`}>{reservation.is_self ? "Вы" : reservation.owner_name}</span> : <span className="text-muted-foreground">Свободен</span>}
+                  </TableCell>
                   <TableCell><Input value={profile.alias} maxLength={32} onChange={(event) => updateDraftProfile(profile.id, { alias: event.target.value })} /></TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
@@ -199,23 +222,12 @@ function DisguiseCard({ canUsePermission, canUse }: { canUsePermission: boolean;
                   </TableCell>
                   <TableCell><Switch checked={profile.enabled} onCheckedChange={(checked) => updateDraftProfile(profile.id, { enabled: checked })} /></TableCell>
                   <TableCell><Button variant="ghost" size="icon" onClick={() => removeDraftProfile(profile.id)} aria-label="Удалить профиль"><Trash2 className="h-4 w-4" /></Button></TableCell>
-                </TableRow>)}
+                </TableRow>
+                })}
               </TableBody>
             </Table>
           </div>
-          {data?.reserved_aliases?.length ? (
-            <div className="rounded-md border bg-muted/20 p-3 text-xs">
-              <div className="mb-2 font-medium">Занятые имена</div>
-              <div className="max-h-32 space-y-1 overflow-y-auto pr-1">
-                {data.reserved_aliases.map((reservation) => (
-                  <div key={`${reservation.alias}-${reservation.owner_admin_id ?? "unknown"}`} className="flex items-center justify-between gap-3">
-                    <span className="truncate">{reservation.alias}</span>
-                    <span className="shrink-0 text-muted-foreground">{reservation.is_self ? "Вы" : reservation.owner_name}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
+          <div className="text-xs text-muted-foreground">«Занят» означает, что псевдоним уже закреплён активной маскировкой. Такой ник нельзя выбрать второму игроку.</div>
           <Button variant="outline" onClick={addDraftProfile}><Plus className="mr-2 h-4 w-4" />Добавить профиль</Button>
           <DialogFooter>
             <Button variant="outline" onClick={() => setProfilesOpen(false)}>Отмена</Button>

@@ -485,6 +485,8 @@ def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) 
         "is_superuser": bool(info.get("is_superuser")),
         "is_disguised": bool(info.get("is_disguised")),
         "disguise_alias": info.get("disguise_alias"),
+        "public_display_name": info.get("public_display_name"),
+        "disguise_mode": info.get("disguise_mode"),
         "disguise_owner_name": info.get("disguise_owner_name"),
         "disguise_real_name": info.get("disguise_real_name"),
         "has_discord_link": bool(info.get("has_discord_link")),
@@ -597,6 +599,8 @@ def _enrich_online_disguise(db: Session, online_players: list[dict]) -> None:
             info.update({
                 "is_disguised": False,
                 "disguise_alias": None,
+                "public_display_name": None,
+                "disguise_mode": None,
                 "disguise_owner_name": None,
                 "disguise_real_name": None,
             })
@@ -605,11 +609,27 @@ def _enrich_online_disguise(db: Session, online_players: list[dict]) -> None:
             (profile for profile in profiles_by_player.get(player.player_id, []) if profile.id == player.disguise_profile_id),
             None,
         )
+        if selected is None and player.disguise_fixed_alias:
+            selected = next(
+                (profile for profile in profiles_by_player.get(player.player_id, [])
+                 if profile.alias.casefold() == player.disguise_fixed_alias.casefold()),
+                None,
+            )
         owner = player.linked_admin_user
         owner_name = (owner.discord_username or "").strip() if owner else ""
+        # The game server deliberately reports the authenticated/original
+        # name to NexusData. Resolve a public alias only for fixed profiles;
+        # random selection is local to the game session and is not in the
+        # current server payload.
+        public_alias = (
+            selected.alias if player.disguise_mode == "fixed" and selected
+            else player.disguise_fixed_alias if player.disguise_mode == "fixed" else None
+        )
         info.update({
             "is_disguised": True,
-            "disguise_alias": info.get("player_name") or (selected.alias if selected else player.disguise_fixed_alias),
+            "disguise_alias": public_alias,
+            "public_display_name": public_alias,
+            "disguise_mode": player.disguise_mode or "random",
             "disguise_owner_name": owner_name or f"Пользователь #{player.linked_admin_id}",
             "disguise_real_name": player.display_name,
         })
