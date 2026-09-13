@@ -109,10 +109,10 @@
         {% for p in online_players %}
         <tr class="{% if p.is_new_player %}row-new-player{% endif %}">
           <td>
-            {{ p.player_name }}
+            {{ p.public_display_name or p.player_name }}
             {% if p.is_new_player %}<span class="badge-new" title="Новичок: менее 2 часов">новичок</span>{% endif %}
           </td>
-          <td><code>{{ p.player_steamid }}</code></td>
+          <td><code>{% if p.is_disguised and not can_view_disguise_details %}Скрыто{% else %}{{ p.player_steamid }}{% endif %}</code></td>
           {% if not selected_server %}
           <td>
             {% if p.server_name %}
@@ -123,7 +123,7 @@
           <td>{{ p.character_name or '-' }}</td>
           <td>{{ p.ping if p.ping is not none else '-' }}</td>
           <td>{{ p.join_time|msk('%H:%M:%S') if p.join_time else '-' }}</td>
-          <td>{{ fmt_playtime(p.total_play_time) }}</td>
+          <td>{% if p.is_disguised and not can_view_disguise_details %}Скрыто{% else %}{{ fmt_playtime(p.total_play_time) }}{% endif %}</td>
           <td>
             <div class="action-group">
               {% if p.player_id %}
@@ -212,11 +212,11 @@
         {% for p in online_players %}
         <tr class="{% if p.is_new_player %}row-new-player{% endif %}">
           <td>
-            {{ p.player_name }}
+            {{ p.public_display_name or p.player_name }}
             {% if p.is_new_player %}<span class="badge-new">новичок</span>{% endif %}
           </td>
-          <td><code>{{ p.player_steamid }}</code></td>
-          <td>{{ fmt_playtime(p.total_play_time) }}</td>
+          <td><code>{% if p.is_disguised and not can_view_disguise_details %}Скрыто{% else %}{{ p.player_steamid }}{% endif %}</code></td>
+          <td>{% if p.is_disguised and not can_view_disguise_details %}Скрыто{% else %}{{ fmt_playtime(p.total_play_time) }}{% endif %}</td>
           <td>{{ p.ping if p.ping is not none else '-' }}</td>
           <td>{{ p.join_time|msk('%H:%M:%S') if p.join_time else '-' }}</td>
           <td>

@@ -375,7 +375,7 @@ export function ModerationPage() {
                       key={p.player_steamid}
                       actions={[
                         ...(p.player_id ? [{ label: "Открыть профиль", icon: ShieldAlert, onSelect: () => setSummaryPlayerId(p.player_id as number) }] : []),
-                        { label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") },
+                        ...(!p.is_disguised || data.can_view_disguise_details ? [{ label: "Скопировать SteamID", icon: IdCard, onSelect: () => copyToClipboard(p.player_steamid, "SteamID") }] : []),
                         { label: "Скопировать имя", icon: Copy, onSelect: () => copyToClipboard(name, "Имя") },
                         ...(data.can_issue_punishment ? [
                           { label: "Выдать предупреждение", separatorBefore: true, onSelect: () => setWarnTarget({ steamid: p.player_steamid, name }) },
@@ -396,12 +396,12 @@ export function ModerationPage() {
                           <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
                           <DisguiseBadge player={p} canViewDetails={data.can_view_disguise_details} />
-                          {!p.is_superuser && <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />}
+                          {!p.is_superuser && (!p.is_disguised || data.can_view_disguise_details) && <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />}
                         </TableCell>
                         <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>
                         <TableCell>{p.ping ?? "-"}</TableCell>
                         <TableCell><SessionDurationCell joinTime={p.join_time} /></TableCell>
-                        <TableCell className="text-sm text-muted-foreground">{fmtPlayTime(p.total_play_time != null ? p.total_play_time / 3600 : null)}</TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{p.is_disguised && !data.can_view_disguise_details ? "Скрыто" : fmtPlayTime(p.total_play_time != null ? p.total_play_time / 3600 : null)}</TableCell>
                         {(data.can_message || data.can_kick || data.can_ban || data.can_issue_punishment) && (
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1.5 whitespace-nowrap">

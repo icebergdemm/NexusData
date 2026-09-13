@@ -263,7 +263,7 @@ from models import (
     PlayerData, PlayerStats, AdminUser, PlayerKill, PlayerRoleAction,
     PlayerIP, PlayerName, PlayerRoleStat, PlayerSession, ServerPlayerPrivilege,
     AnticheatEvent, ServerActionQueue,
-    PlayerNote, LabelCategory, PlayerLabel, PlayerTrap
+    PlayerNote, LabelCategory, PlayerLabel, PlayerTrap, DisguiseProfile
 )
 
 # ── In-memory online players store ───────────────────────────────────────────
@@ -1452,6 +1452,42 @@ class ServerModerationService:
                 for r in self.db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
             }
 
+        # Keep the public fixed alias alongside the authenticated name in the
+        # in-memory snapshot. The game server intentionally reports the real
+        # name on every heartbeat; recomputing this here prevents a later
+        # heartbeat from making the moderation UI fall back to that name.
+        public_alias_by_player: dict[int, str] = {}
+        fixed_player_ids = [
+            player.player_id for player in pd_rows.values()
+            if player and player.disguise_enabled and player.disguise_mode == "fixed"
+        ]
+        if fixed_player_ids:
+            disguise_profiles = (
+                self.db.query(DisguiseProfile)
+                .filter(DisguiseProfile.player_id.in_(fixed_player_ids))
+                .all()
+            )
+            profiles_by_player: dict[int, list[DisguiseProfile]] = {}
+            for profile in disguise_profiles:
+                profiles_by_player.setdefault(profile.player_id, []).append(profile)
+            for player in pd_rows.values():
+                if not player or player.player_id not in fixed_player_ids:
+                    continue
+                selected = next(
+                    (profile for profile in profiles_by_player.get(player.player_id, [])
+                     if profile.id == player.disguise_profile_id),
+                    None,
+                )
+                if selected is None and player.disguise_fixed_alias:
+                    selected = next(
+                        (profile for profile in profiles_by_player.get(player.player_id, [])
+                         if profile.alias.casefold() == player.disguise_fixed_alias.casefold()),
+                        None,
+                    )
+                alias = selected.alias if selected else player.disguise_fixed_alias
+                if alias:
+                    public_alias_by_player[player.player_id] = alias
+
         # The login event is recorded when the client actually connects,
         # unlike this periodic snapshot. Use its open session for the online
         # duration, but keep the snapshot timestamp as a compatibility
@@ -1510,6 +1546,7 @@ class ServerModerationService:
                 _online_players[steamid] = {
                     "player_steamid": steamid,
                     "player_name": player_name or db_name or steamid,
+                    "public_player_name": public_alias_by_player.get(player_id),
                     "character_name": character_name,
                     "forced_display_name": pd.forced_display_name if pd else None,
                     "job_id": job_id,

@@ -269,6 +269,12 @@ async def moderation_page(
     online_players = svc.get_online_players(server_name=server)
     online_count = len(online_players)
     online_servers = svc.get_online_servers()
+    can_view_disguise_details = check_permission(current_admin, "disguise", "view_details")
+    _enrich_online_disguise(
+        db,
+        online_players,
+        include_details=can_view_disguise_details,
+    )
     selected_server = server
 
     # Round state: last start event per server
@@ -348,6 +354,7 @@ async def moderation_page(
         "search_query": search,
         "ac_events": ac_enriched,
         "fmt_playtime": _fmt_playtime,
+        "can_view_disguise_details": can_view_disguise_details,
         "csrf_token": request.session.get("csrf_token"),
     })
 
@@ -468,10 +475,21 @@ def _serialize_label_ids(player) -> list[int]:
 
 def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) -> dict:
     flags = info.get("player_flags", {})
+    public_name = info.get("public_display_name") or info.get("disguise_alias") or "Маскировка"
+    displayed_name = (
+        info.get("player_name")
+        if info.get("include_disguise_details") or not info.get("is_disguised")
+        else public_name
+    )
+    displayed_forced_name = (
+        info.get("forced_display_name")
+        if info.get("include_disguise_details") or not info.get("is_disguised")
+        else None
+    )
     return {
         "player_steamid": info.get("player_steamid"),
-        "player_name": info.get("player_name"),
-        "forced_display_name": info.get("forced_display_name"),
+        "player_name": displayed_name,
+        "forced_display_name": displayed_forced_name,
         "character_name": info.get("character_name"),
         "job_id": info.get("job_id"),
         "ping": info.get("ping"),
@@ -480,7 +498,11 @@ def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) 
         "server_name": info.get("server_name"),
         "join_time": info["join_time"].isoformat() if info.get("join_time") else None,
         "last_seen": info["last_seen"].isoformat() if info.get("last_seen") else None,
-        "total_play_time": info.get("total_play_time"),
+        "total_play_time": (
+            info.get("total_play_time")
+            if info.get("include_disguise_details") or not info.get("is_disguised")
+            else None
+        ),
         "is_new_player": info.get("is_new_player"),
         "is_superuser": bool(info.get("is_superuser")),
         "is_disguised": bool(info.get("is_disguised")),
@@ -623,12 +645,15 @@ def _enrich_online_disguise(db: Session, online_players: list[dict], *, include_
         # current server payload.
         public_alias = (
             selected.alias if player.disguise_mode == "fixed" and selected
-            else player.disguise_fixed_alias if player.disguise_mode == "fixed" else None
+            else player.disguise_fixed_alias if player.disguise_mode == "fixed" else info.get("public_player_name") or "Маскировка"
         )
+        info["include_disguise_details"] = include_details
         info.update({
             "is_disguised": True,
-            "disguise_alias": public_alias if include_details else None,
-            "public_display_name": public_alias if include_details else None,
+            # The alias is public game-facing data and must remain visible to
+            # ordinary moderators; only the identity behind it is restricted.
+            "disguise_alias": public_alias,
+            "public_display_name": public_alias,
             "disguise_mode": (player.disguise_mode or "random") if include_details else None,
             "disguise_owner_name": (owner_name or f"Пользователь #{player.linked_admin_id}") if include_details else None,
             "disguise_real_name": player.display_name if include_details else None,
@@ -649,11 +674,14 @@ async def api_moderation_overview(
     online_players = svc.get_online_players(server_name=server)
     online_servers = svc.get_online_servers()
     if check_permission(current_admin, "moderation", "view"):
+        can_view_disguise_details = check_permission(current_admin, "disguise", "view_details")
         _enrich_online_disguise(
             db,
             online_players,
-            include_details=check_permission(current_admin, "disguise", "view_details"),
+            include_details=can_view_disguise_details,
         )
+    else:
+        can_view_disguise_details = False
 
     round_states = {}
     for sn in (["ASPER1", "ASPER2"] if not server else [server]):
@@ -769,7 +797,7 @@ async def api_moderation_overview(
         "can_message": check_moderation_action_permission(current_admin, "message"),
         "can_kick": check_moderation_action_permission(current_admin, "kick"),
         "can_ban": check_moderation_action_permission(current_admin, "ban"),
-        "can_view_disguise_details": check_permission(current_admin, "disguise", "view_details"),
+        "can_view_disguise_details": can_view_disguise_details,
         # Быстрая выдача предупреждения прямо из списка онлайна — право то же,
         # что и на обычную выдачу наказаний, а не moderation:edit.
         "can_issue_punishment": check_permission(current_admin, "punishments", "issue"),

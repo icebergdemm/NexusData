@@ -1439,15 +1439,25 @@ async def admin_player_detail(
         AdminUser.discord_id == player.discord_id,
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
+    disguise_detail_access = current_admin.is_superuser or check_permission(current_admin, "disguise", "view_details")
 
     # Профиль, привязанный к суперпользователю, и is_secret открываются
-    # правом players_special:view (или статусом суперпользователя).
-    if linked_admin and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
+    # players_special:view. Активная маска дополнительно открывается
+    # отдельным правом disguise:view_details.
+    if linked_admin and not (
+        current_admin.is_superuser
+        or check_permission(current_admin, "players_special", "view")
+        or (player.disguise_enabled and disguise_detail_access)
+    ):
         return templates.TemplateResponse("admin/player_classified.html", {
             "request": request,
             "admin": current_admin,
         })
-    if is_secret and not (current_admin.is_superuser or check_permission(current_admin, "players_special", "view")):
+    if (is_secret or player.disguise_enabled) and not (
+        current_admin.is_superuser
+        or check_permission(current_admin, "players_special", "view")
+        or (player.disguise_enabled and disguise_detail_access)
+    ):
         return templates.TemplateResponse("admin/player_classified.html", {
             "request": request,
             "admin": current_admin,
@@ -1959,11 +1969,15 @@ async def api_player_detail(
         AdminUser.is_superuser == True
     ).first() if player.discord_id else None
     special_access = current_admin.is_superuser or check_permission(current_admin, "players_special", "view")
+    disguise_detail_access = current_admin.is_superuser or check_permission(current_admin, "disguise", "view_details")
     # Профиль, привязанный к аккаунту СУПЕРПОЛЬЗОВАТЕЛЯ, и is_secret
-    # открываются правом players_special:view (или статусом суперпользователя).
-    if linked_admin and not special_access:
+    # открываются players_special:view. Активная маска — также
+    # disguise:view_details.
+    if linked_admin and not (special_access or (player.disguise_enabled and disguise_detail_access)):
         return {"classified": True}
-    if is_secret and not special_access:
+    if (is_secret or player.disguise_enabled) and not (
+        special_access or (player.disguise_enabled and disguise_detail_access)
+    ):
         return {"classified": True}
 
     stats = db.query(PlayerStats).filter(PlayerStats.player_id == player_id).first()
