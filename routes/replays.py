@@ -1643,7 +1643,6 @@ async def api_rounds_list(
     return {
         "rounds": rounds, "total": total, "page": page, "total_pages": total_pages,
         "selected_server": server, "servers": servers,
-        "can_request_lobby_dump": check_permission(admin, "replays", "edit"),
         # Поиск по игрокам упёрся в потолок выборки — показанный список неполон.
         "truncated": truncated,
     }
@@ -1723,6 +1722,10 @@ async def api_request_lobby_dump(request: Request, db: Session = Depends(get_db)
     if server_name not in ("ASPER1", "ASPER2"):
         raise HTTPException(status_code=400, detail="Неизвестный сервер")
 
+    from routes.dispatch import get_round_state
+    if get_round_state(db, server_name)["active"]:
+        raise HTTPException(status_code=409, detail="На выбранном сервере сейчас идёт раунд")
+
     from services import ServerModerationService
     from routes.admin import log_admin_action
     requested_by_name = admin.discord_username or f"Администратор #{admin.id}"
@@ -1742,6 +1745,21 @@ async def api_request_lobby_dump(request: Request, db: Session = Depends(get_db)
     return {"status": "queued", "action_id": action.id, "server_name": server_name}
 
 
+@panel_router.get("/api/v1/admin/replays/lobby-dump/options")
+async def api_lobby_dump_options(request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "replays", "view"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    from routes.dispatch import get_round_state
+    return {
+        "can_request": check_permission(admin, "replays", "edit"),
+        "servers": [
+            {"server_name": server_name, "round_active": bool(get_round_state(db, server_name)["active"])}
+            for server_name in ("ASPER1", "ASPER2")
+        ],
+    }
+
+
 @panel_router.get("/api/v1/admin/replays")
 async def api_replays_list(
     request: Request, page: int = Query(1, ge=1), server: Optional[str] = Query(None), db: Session = Depends(get_db),
@@ -1758,7 +1776,6 @@ async def api_replays_list(
     return {
         "replays": [_serialize_replay(r) for r in rows],
         "total": total, "page": page, "total_pages": total_pages, "selected_server": server,
-        "can_request_lobby_dump": check_permission(admin, "replays", "edit"),
         "retention_days": services_replays.get_retention_days(db),
         "upload_dir": services_replays.get_upload_dir(db),
         "can_delete": check_permission(admin, "replays", "delete"),

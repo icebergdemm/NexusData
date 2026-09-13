@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
@@ -34,7 +35,6 @@ interface ReplayRow {
 interface ReplaysResponse {
   replays: ReplayRow[]; total: number; page: number; total_pages: number
   retention_days: number; can_delete: boolean; is_superuser: boolean
-  can_request_lobby_dump: boolean
 }
 interface RoundPlayer {
   steamid: string
@@ -67,7 +67,6 @@ interface RoundRow {
 interface RoundsResponse {
   rounds: RoundRow[]; total: number; page: number; total_pages: number
   selected_server: string | null; servers: string[]; truncated: boolean
-  can_request_lobby_dump: boolean
 }
 
 function fmtSize(n: number | null): string {
@@ -98,22 +97,69 @@ function fmtDuration(startIso: string | null, endIso: string | null): string {
 
 const ANY = "__any__"
 
-function LobbyDumpButton({ serverName }: { serverName: string | null }) {
+interface LobbyDumpOptions {
+  can_request: boolean
+  servers: { server_name: string; round_active: boolean }[]
+}
+
+function LobbyDumpDialog() {
+  const [open, setOpen] = useState(false)
+  const [serverName, setServerName] = useState("")
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["lobby-dump-options"],
+    queryFn: () => api.get<LobbyDumpOptions>("/api/v1/admin/replays/lobby-dump/options"),
+    refetchInterval: 15000,
+  })
   const mutation = useMutation({
     mutationFn: () => api.post<{ action_id: number }>("/api/v1/admin/replays/lobby-dump", { server_name: serverName }),
-    onSuccess: ({ action_id }) => toast.success(`Дамп лобби поставлен в очередь, action #${action_id}`),
+    onSuccess: ({ action_id }) => {
+      toast.success(`Дамп лобби поставлен в очередь, action #${action_id}`)
+      setOpen(false)
+      setServerName("")
+      refetch()
+    },
     onError: (error: Error) => toast.error(error.message),
   })
+  if (data && !data.can_request) return null
+  const selected = data?.servers.find((server) => server.server_name === serverName)
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      className="border-yellow-500/70 bg-yellow-500/10 text-yellow-700 hover:bg-yellow-500/20 dark:text-yellow-300"
-      disabled={!serverName || mutation.isPending}
-      onClick={(event) => { event.stopPropagation(); mutation.mutate() }}
-    >
-      <FileDown className="size-3.5" /> {mutation.isPending ? "Запрашиваем..." : "Принудительно получить запись лобби"}
-    </Button>
+    <>
+      <Button variant="outline" disabled={isLoading} onClick={() => { setOpen(true); refetch() }}>
+        <FileDown className="size-4" /> Принудительно получить запись лобби
+      </Button>
+      <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) setServerName("") }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Получить текущую запись лобби</DialogTitle>
+            <DialogDescription>Выберите сервер в лобби. Активная запись продолжится после создания дампа.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            {data?.servers.map((server) => (
+              <label key={server.server_name} className={`flex items-center justify-between gap-3 rounded-md border p-3 ${server.round_active ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-accent"}`}>
+                <span className="flex items-center gap-2 font-medium">
+                  <input
+                    type="radio"
+                    name="lobby-dump-server"
+                    value={server.server_name}
+                    checked={serverName === server.server_name}
+                    disabled={server.round_active}
+                    onChange={() => setServerName(server.server_name)}
+                  />
+                  {server.server_name}
+                </span>
+                <Badge variant={server.round_active ? "destructive" : "secondary"}>{server.round_active ? "Идёт раунд" : "Лобби"}</Badge>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild><Button variant="outline">Отмена</Button></DialogClose>
+            <Button disabled={!selected || selected.round_active || mutation.isPending} onClick={() => mutation.mutate()}>
+              {mutation.isPending ? "Запрашиваем..." : "Получить дамп"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
@@ -359,7 +405,6 @@ function RoundsTab() {
                         onClick={(e) => { e.stopPropagation(); navigate(`/replays/${r.lobby_replay!.id}`) }}
                       ><Volume2 className="size-3.5" /> {r.lobby_replay.replay_kind === "lobby_dump" ? `Дамп лобби · ${r.lobby_replay.dumped_by_name ?? "неизвестный пользователь"}` : "Демо лобби"}</Button>
                     ) : <span className="text-xs text-muted-foreground">Ожидаем демо лобби...</span>}
-                    {data.can_request_lobby_dump && <LobbyDumpButton serverName={r.server_name} />}
                   </div>
                 </div>
               </CardContent>
@@ -430,7 +475,6 @@ function DemosTab() {
                   <TableCell className="text-sm text-muted-foreground">{fmtDate(r.uploaded_at)}</TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                     <div className="flex justify-end gap-2">
-                      {data?.can_request_lobby_dump && <LobbyDumpButton serverName={r.server_name} />}
                       {data?.can_delete && (
                       <Button size="sm" variant="destructive" onClick={() => deleteMutation.mutate(r.id)}>Удалить</Button>
                       )}
@@ -457,7 +501,7 @@ function DemosTab() {
 export function ReplaysListPage() {
   return (
     <div>
-      <PageHeader title="Прошедшие раунды" description="История раундов и записи демо для просмотра" icon={PlayCircle} />
+      <PageHeader title="Прошедшие раунды" description="История раундов и записи демо для просмотра" icon={PlayCircle} actions={<LobbyDumpDialog />} />
       <Tabs defaultValue="rounds" className="space-y-4">
         <TabsList>
           <TabsTrigger value="rounds" className="gap-1.5"><History className="size-3.5" /> Раунды</TabsTrigger>
