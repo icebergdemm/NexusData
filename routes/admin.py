@@ -3130,12 +3130,91 @@ _DEFAULT_DISGUISE_PUBLIC_STEAM_IDS = (
 
 
 def _own_disguise_player(db: Session, current_admin: AdminUser) -> PlayerData:
-    if not current_admin.is_superuser:
-        raise HTTPException(status_code=403, detail="Маскировка доступна только superuser")
+    if not check_permission(current_admin, "disguise", "use"):
+        raise HTTPException(status_code=403, detail="У вас нет права на маскировку")
     player = db.query(PlayerData).filter(PlayerData.linked_admin_id == current_admin.id).first()
     if not player:
         raise HTTPException(status_code=400, detail="Сначала привяжите игровой профиль")
     return player
+
+
+def _admin_display_name(admin: Optional[AdminUser], fallback_id: Optional[int] = None) -> str:
+    if admin and (admin.discord_username or "").strip():
+        return admin.discord_username.strip()
+    return f"Пользователь #{fallback_id}" if fallback_id is not None else "Неизвестный пользователь"
+
+
+def _disguise_owner_for_alias(db: Session, player: PlayerData, alias: str) -> Optional[dict]:
+    """Return the owner of an active alias, if another player has reserved it."""
+    normalized = alias.casefold()
+    rows = (
+        db.query(DisguiseProfile, PlayerData, AdminUser)
+        .join(PlayerData, PlayerData.player_id == DisguiseProfile.player_id)
+        .outerjoin(AdminUser, AdminUser.id == PlayerData.linked_admin_id)
+        .filter(
+            DisguiseProfile.player_id != player.player_id,
+            DisguiseProfile.enabled.is_(True),
+            PlayerData.disguise_enabled.is_(True),
+            func.lower(DisguiseProfile.alias) == normalized,
+        )
+        .order_by(DisguiseProfile.id)
+        .all()
+    )
+    if rows:
+        profile, owner_player, owner_admin = rows[0]
+        return {
+            "alias": profile.alias,
+            "owner_admin_id": owner_admin.id if owner_admin else None,
+            "owner_name": _admin_display_name(owner_admin, owner_player.linked_admin_id),
+            "is_self": False,
+        }
+
+    # Keep compatibility with the legacy fixed_alias column if an old row has
+    # no profile record yet.
+    legacy = (
+        db.query(PlayerData, AdminUser)
+        .outerjoin(AdminUser, AdminUser.id == PlayerData.linked_admin_id)
+        .filter(
+            PlayerData.player_id != player.player_id,
+            PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_mode == "fixed",
+            func.lower(PlayerData.disguise_fixed_alias) == normalized,
+        )
+        .order_by(PlayerData.player_id)
+        .first()
+    )
+    if legacy:
+        owner_player, owner_admin = legacy
+        return {
+            "alias": owner_player.disguise_fixed_alias,
+            "owner_admin_id": owner_admin.id if owner_admin else None,
+            "owner_name": _admin_display_name(owner_admin, owner_player.linked_admin_id),
+            "is_self": False,
+        }
+    return None
+
+
+def _disguise_reserved_aliases(db: Session, player: PlayerData) -> list[dict]:
+    rows = (
+        db.query(DisguiseProfile, PlayerData, AdminUser)
+        .join(PlayerData, PlayerData.player_id == DisguiseProfile.player_id)
+        .outerjoin(AdminUser, AdminUser.id == PlayerData.linked_admin_id)
+        .filter(DisguiseProfile.enabled.is_(True), PlayerData.disguise_enabled.is_(True))
+        .order_by(func.lower(DisguiseProfile.alias), DisguiseProfile.id)
+        .all()
+    )
+    result = {}
+    for profile, owner_player, owner_admin in rows:
+        key = profile.alias.casefold()
+        if key in result:
+            continue
+        result[key] = {
+            "alias": profile.alias,
+            "owner_admin_id": owner_admin.id if owner_admin else None,
+            "owner_name": _admin_display_name(owner_admin, owner_player.linked_admin_id),
+            "is_self": owner_player.player_id == player.player_id,
+        }
+    return sorted(result.values(), key=lambda item: item["alias"].casefold())
 
 
 def _normalize_disguise_alias(value: object) -> str:
@@ -3218,19 +3297,9 @@ def _assert_disguise_alias_available(db: Session, player: PlayerData, alias: str
         )
         for candidate in candidates
     )
-    if not is_taken:
-        is_taken = (
-            db.query(DisguiseProfile)
-            .join(PlayerData, PlayerData.player_id == DisguiseProfile.player_id)
-            .filter(
-                DisguiseProfile.player_id != player.player_id,
-                DisguiseProfile.enabled.is_(True),
-                PlayerData.disguise_enabled.is_(True),
-                func.lower(DisguiseProfile.alias) == normalized,
-            )
-            .first()
-            is not None
-        )
+    owner = _disguise_owner_for_alias(db, player, alias)
+    if owner:
+        raise HTTPException(status_code=409, detail=f"Псевдоним уже занят пользователем {owner['owner_name']}")
     if is_taken:
         raise HTTPException(status_code=409, detail="Псевдоним уже занят")
 
@@ -3375,6 +3444,7 @@ def _disguise_response(db: Session, player: PlayerData) -> dict:
             }
             for profile in profiles
         ],
+        "reserved_aliases": _disguise_reserved_aliases(db, player),
         "version": int(player.disguise_version or 0),
         "servers": _disguise_server_rows(db, player),
     }

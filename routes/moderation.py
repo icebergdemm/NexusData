@@ -41,7 +41,7 @@ from schemas import (
     ServerActionOut, ServerActionAck,
     QueueActionIn, QueueActionResult,
 )
-from models import AdminUser, AdminSession, LabelCategory, PlayerLabel
+from models import AdminUser, AdminSession, LabelCategory, PlayerLabel, PlayerData, DisguiseProfile
 import logging
 
 settings = get_settings()
@@ -483,6 +483,10 @@ def _serialize_online_player(info: dict, dossier_triage: Optional[dict] = None) 
         "total_play_time": info.get("total_play_time"),
         "is_new_player": info.get("is_new_player"),
         "is_superuser": bool(info.get("is_superuser")),
+        "is_disguised": bool(info.get("is_disguised")),
+        "disguise_alias": info.get("disguise_alias"),
+        "disguise_owner_name": info.get("disguise_owner_name"),
+        "disguise_real_name": info.get("disguise_real_name"),
         "has_discord_link": bool(info.get("has_discord_link")),
         "label_ids": _serialize_label_ids(info),
         "has_labels": bool(flags.get("has_labels")),
@@ -568,6 +572,49 @@ def _serialize_round_state_json(rs: dict) -> dict:
     }
 
 
+def _enrich_online_disguise(db: Session, online_players: list[dict]) -> None:
+    """Attach moderation-only disguise metadata using the real SteamID key."""
+    steamids = [str(info.get("player_steamid")) for info in online_players if info.get("player_steamid")]
+    if not steamids:
+        return
+    players = db.query(PlayerData).filter(PlayerData.player_steamid.in_(steamids)).all()
+    by_steamid = {str(player.player_steamid): player for player in players}
+    disguised = [player for player in players if player.disguise_enabled]
+    profiles_by_player: dict[int, list[DisguiseProfile]] = {}
+    if disguised:
+        profiles = (
+            db.query(DisguiseProfile)
+            .filter(DisguiseProfile.player_id.in_([player.player_id for player in disguised]))
+            .order_by(DisguiseProfile.sort_order, DisguiseProfile.id)
+            .all()
+        )
+        for profile in profiles:
+            profiles_by_player.setdefault(profile.player_id, []).append(profile)
+
+    for info in online_players:
+        player = by_steamid.get(str(info.get("player_steamid")))
+        if not player or not player.disguise_enabled:
+            info.update({
+                "is_disguised": False,
+                "disguise_alias": None,
+                "disguise_owner_name": None,
+                "disguise_real_name": None,
+            })
+            continue
+        selected = next(
+            (profile for profile in profiles_by_player.get(player.player_id, []) if profile.id == player.disguise_profile_id),
+            None,
+        )
+        owner = player.linked_admin_user
+        owner_name = (owner.discord_username or "").strip() if owner else ""
+        info.update({
+            "is_disguised": True,
+            "disguise_alias": info.get("player_name") or (selected.alias if selected else player.disguise_fixed_alias),
+            "disguise_owner_name": owner_name or f"Пользователь #{player.linked_admin_id}",
+            "disguise_real_name": player.display_name,
+        })
+
+
 @panel_router.get("/api/v1/admin/moderation/overview")
 async def api_moderation_overview(
     server: Optional[str] = Query(None),
@@ -581,6 +628,8 @@ async def api_moderation_overview(
     svc = ServerModerationService(db)
     online_players = svc.get_online_players(server_name=server)
     online_servers = svc.get_online_servers()
+    if check_permission(current_admin, "moderation", "view"):
+        _enrich_online_disguise(db, online_players)
 
     round_states = {}
     for sn in (["ASPER1", "ASPER2"] if not server else [server]):

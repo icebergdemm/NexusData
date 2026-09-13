@@ -93,6 +93,23 @@ function ForcedNameBadge({ forcedName }: { forcedName: string | null }) {
   )
 }
 
+function DisguiseBadge({ player }: { player: OnlinePlayer }) {
+  if (!player.is_disguised) return null
+  const details = [
+    player.disguise_alias ? `Публичное имя: ${player.disguise_alias}` : null,
+    player.disguise_real_name ? `Настоящий профиль: ${player.disguise_real_name}` : null,
+    player.disguise_owner_name ? `Владелец: ${player.disguise_owner_name}` : null,
+  ].filter(Boolean).join("\n")
+  return (
+    <Tooltip delayDuration={300}>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className="ml-1.5 border-primary/40 bg-primary/10 text-[10px] text-primary">Маска</Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="whitespace-pre-line">{details || "Игрок под маскировкой"}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function RankMismatchBadge({ nickname, rankId, ranks }: { nickname: string | null; rankId: number | null | undefined; ranks: Record<string, string> | undefined }) {
   if (!nickname || rankId == null || !ranks) return null
   const rankName = ranks[String(rankId)]
@@ -376,6 +393,7 @@ export function ModerationPage() {
                           {p.is_new_player && <Badge variant="outline" className="ml-1.5 border-warning/40 text-[10px] text-warning">Новый</Badge>}
                           <DossierMarker triage={p.dossier_triage} />
                           <ForcedNameBadge forcedName={p.forced_display_name} />
+                          <DisguiseBadge player={p} />
                           {!p.is_superuser && <RankMismatchBadge nickname={p.player_name} rankId={p.rank_id} ranks={data.ranks} />}
                         </TableCell>
                         <TableCell><Badge variant="secondary">{p.server_name}</Badge></TableCell>

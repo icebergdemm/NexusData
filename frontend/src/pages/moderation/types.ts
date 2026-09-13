@@ -21,6 +21,10 @@ export interface OnlinePlayer {
   total_play_time: number | null
   is_new_player: boolean | null
   is_superuser: boolean
+  is_disguised: boolean
+  disguise_alias: string | null
+  disguise_owner_name: string | null
+  disguise_real_name: string | null
   has_discord_link: boolean
   label_ids: number[]
   has_labels: boolean

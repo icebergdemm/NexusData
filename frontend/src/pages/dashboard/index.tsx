@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { PageHeader } from "@/components/layout/PageHeader"
-import { canView, useCurrentAdmin, type PermissionPage } from "@/lib/auth"
+import { canDo, canView, useCurrentAdmin, type PermissionPage } from "@/lib/auth"
 import { api } from "@/lib/api"
 import {
   canEditDisguise, disguiseStatusLabel, makeDisguiseUpdate, type DisguiseMode, type DisguiseProfile, type DisguiseState,
@@ -39,7 +39,7 @@ const ACCENT_CLASSES: Record<string, string> = {
   info: "bg-info/15 text-info",
 }
 
-function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: boolean }) {
+function DisguiseCard({ canUsePermission, canUse }: { canUsePermission: boolean; canUse: boolean }) {
   const { data, refetch } = useQuery({
     queryKey: ["me", "disguise"],
     queryFn: () => api.get<DisguiseState>("/api/v1/me/disguise"),
@@ -83,7 +83,7 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
     },
   })
 
-  if (!isSuperuser) return null
+  if (!canUsePermission) return null
 
   if (!canUse) {
     return <Card className="mt-4"><CardContent className="text-sm text-muted-foreground">
@@ -203,6 +203,19 @@ function DisguiseCard({ isSuperuser, canUse }: { isSuperuser: boolean; canUse: b
               </TableBody>
             </Table>
           </div>
+          {data?.reserved_aliases?.length ? (
+            <div className="rounded-md border bg-muted/20 p-3 text-xs">
+              <div className="mb-2 font-medium">Занятые имена</div>
+              <div className="max-h-32 space-y-1 overflow-y-auto pr-1">
+                {data.reserved_aliases.map((reservation) => (
+                  <div key={`${reservation.alias}-${reservation.owner_admin_id ?? "unknown"}`} className="flex items-center justify-between gap-3">
+                    <span className="truncate">{reservation.alias}</span>
+                    <span className="shrink-0 text-muted-foreground">{reservation.is_self ? "Вы" : reservation.owner_name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <Button variant="outline" onClick={addDraftProfile}><Plus className="mr-2 h-4 w-4" />Добавить профиль</Button>
           <DialogFooter>
             <Button variant="outline" onClick={() => setProfilesOpen(false)}>Отмена</Button>
@@ -252,7 +265,7 @@ export function DashboardPage() {
         </CardContent>
       </Card>
       <DisguiseCard
-        isSuperuser={admin?.is_superuser === true}
+        canUsePermission={canDo(admin, "disguise", "use")}
         canUse={canEditDisguise(admin, admin?.linked_player)}
       />
     </div>

@@ -14,21 +14,30 @@ export interface DisguiseProfile {
   sort_order: number
 }
 
+export interface DisguiseReservation {
+  alias: string
+  owner_admin_id: number | null
+  owner_name: string
+  is_self: boolean
+}
+
 export interface DisguiseState {
   enabled: boolean
   mode: DisguiseMode
   fixed_alias: string | null
   selected_profile_id: number | null
   profiles: DisguiseProfile[]
+  reserved_aliases: DisguiseReservation[]
   version: number
   servers: DisguiseServer[]
 }
 
 export function canEditDisguise(
-  admin: { is_superuser: boolean } | undefined,
+  admin: { is_superuser: boolean; permissions?: Record<string, Record<string, boolean>> } | undefined,
   linkedPlayer: { player_steamid?: string } | null | undefined,
 ): boolean {
-  return admin?.is_superuser === true && Boolean(linkedPlayer?.player_steamid)
+  const allowed = admin?.is_superuser === true || admin?.permissions?.disguise?.use === true
+  return allowed && Boolean(linkedPlayer?.player_steamid)
 }
 
 export function makeDisguiseUpdate(
