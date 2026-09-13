@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Hash, Volume2, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck } from "lucide-react"
+import { Hash, Volume2, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck, Reply } from "lucide-react"
 import { api, ApiError } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 
@@ -27,10 +27,13 @@ interface ChannelTree {
 
 interface Author { id: string; username: string; display_name: string; avatar_url: string | null; bot: boolean }
 interface Attachment { id: string; filename: string; url: string; content_type: string | null; size: number }
+interface ReplyPreview {
+  id: string; unavailable: boolean; author?: Author; content?: string; created_at?: string
+}
 interface DiscordMessage {
   id: string; content: string; author: Author
   created_at: string; edited_at: string | null
-  attachments: Attachment[]; embeds: Record<string, unknown>[]; reply_to_id: string | null
+  attachments: Attachment[]; embeds: Record<string, unknown>[]; reply_to_id: string | null; reply_to: ReplyPreview | null
 }
 
 interface MemberRow {
@@ -53,10 +56,10 @@ function initials(name: string): string {
 
 // ── Лента сообщений ─────────────────────────────────────────────────────
 
-function MessageRow({ msg }: { msg: DiscordMessage }) {
+function MessageRow({ msg, onReply }: { msg: DiscordMessage; onReply?: (msg: DiscordMessage) => void }) {
   const time = formatBrowserDate(msg.created_at)
   return (
-    <div className="flex gap-2.5 rounded px-2 py-1.5 hover:bg-[#2e3035]">
+    <div data-message-id={msg.id} className="group flex gap-2.5 rounded px-2 py-1.5 hover:bg-[#2e3035]">
       <Avatar className="mt-0.5 size-9 shrink-0">
         <AvatarImage src={msg.author.avatar_url ?? undefined} />
         <AvatarFallback>{initials(msg.author.display_name)}</AvatarFallback>
@@ -66,7 +69,24 @@ function MessageRow({ msg }: { msg: DiscordMessage }) {
           <span className="text-sm font-semibold text-[#f2f3f5]">{msg.author.display_name}</span>
           {msg.author.bot && <Badge variant="secondary" className="h-4 px-1 text-[10px]">БОТ</Badge>}
           <span className="text-[11px] text-[#949ba4]">{time}{msg.edited_at && " (изменено)"}</span>
+          {onReply && (
+            <button
+              type="button"
+              title="Ответить"
+              aria-label={`Ответить на сообщение ${msg.author.display_name}`}
+              className="ml-auto rounded p-1 text-[#b5bac1] opacity-0 hover:bg-[#404249] hover:text-[#f2f3f5] group-hover:opacity-100"
+              onClick={() => onReply(msg)}
+            >
+              <Reply className="size-3.5" />
+            </button>
+          )}
         </div>
+        {msg.reply_to && (
+          <div className="mb-1 mt-0.5 border-l-2 border-[#5865f2] pl-2 text-xs text-[#949ba4]">
+            <div className="font-medium text-[#b5bac1]">Ответ на {msg.reply_to.author?.display_name ?? "сообщение"}</div>
+            <div className="truncate">{msg.reply_to.unavailable ? "Сообщение недоступно" : (msg.reply_to.content || "Вложение")}</div>
+          </div>
+        )}
         {msg.content && <div className="whitespace-pre-wrap break-words text-sm text-[#dbdee1]">{msg.content}</div>}
         {msg.attachments.map((a) => (
           <div key={a.id} className="mt-1">
@@ -94,6 +114,7 @@ function ChatPanel({ channel, canSend }: { channel: TreeChannel; canSend: boolea
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState("")
   const [file, setFile] = useState<File | null>(null)
+  const [replyTarget, setReplyTarget] = useState<DiscordMessage | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -101,6 +122,78 @@ function ChatPanel({ channel, canSend }: { channel: TreeChannel; canSend: boolea
     queryKey: ["discord-viewer-messages", channel.id],
     queryFn: () => api.get<{ messages: DiscordMessage[] }>(`/api/v1/admin/discord-bot/viewer/channels/${channel.id}/messages?limit=50`),
   })
+
+  useEffect(() => {
+    let stopped = false
+    let socket: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let attempts = 0
+
+    const mergeMessage = (previous: DiscordMessage | undefined, incoming: Partial<DiscordMessage> & { id: string }): DiscordMessage | undefined => {
+      if (!previous && !incoming.author) return undefined
+      const incomingReply = incoming.reply_to
+      const reply_to = incomingReply?.unavailable && previous?.reply_to && !previous.reply_to.unavailable
+        ? previous.reply_to
+        : incomingReply ?? previous?.reply_to ?? null
+      return {
+        ...(previous ?? incoming as DiscordMessage),
+        ...incoming,
+        reply_to,
+      }
+    }
+
+    const updateCache = (event: { type: string; message?: Partial<DiscordMessage> & { id: string }; message_id?: string }) => {
+      if (event.type === "resync") {
+        queryClient.invalidateQueries({ queryKey: ["discord-viewer-messages", channel.id] })
+        return
+      }
+      queryClient.setQueryData<{ messages: DiscordMessage[] }>(["discord-viewer-messages", channel.id], (old) => {
+        if (!old) return old
+        if (event.type === "message_delete") {
+          return { messages: old.messages.filter((message) => message.id !== event.message_id) }
+        }
+        if (!event.message) return old
+        const index = old.messages.findIndex((message) => message.id === event.message!.id)
+        if (event.type === "message_create" && index < 0) {
+          return { messages: [event.message as DiscordMessage, ...old.messages] }
+        }
+        if (index < 0) return old
+        const merged = mergeMessage(old.messages[index], event.message)
+        if (!merged) return old
+        const messages = [...old.messages]
+        messages[index] = merged
+        return { messages }
+      })
+    }
+
+    const connect = () => {
+      if (stopped || document.visibilityState === "hidden") return
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/admin/discord-bot/viewer/events?channel_id=${encodeURIComponent(channel.id)}`)
+      socket.onopen = () => { attempts = 0 }
+      socket.onmessage = (message) => {
+        try { updateCache(JSON.parse(message.data) as { type: string; message?: Partial<DiscordMessage> & { id: string }; message_id?: string }) } catch { /* malformed event: next resync will repair the list */ }
+      }
+      socket.onclose = () => {
+        socket = null
+        if (stopped || document.visibilityState === "hidden") return
+        const delay = Math.min(30000, 1000 * (2 ** Math.min(attempts++, 5))) + Math.floor(Math.random() * 500)
+        reconnectTimer = setTimeout(connect, delay)
+      }
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible" && !socket && !reconnectTimer) connect()
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    connect()
+    return () => {
+      stopped = true
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      socket?.close()
+    }
+  }, [channel.id, queryClient])
 
   const [older, setOlder] = useState<DiscordMessage[]>([])
   useEffect(() => { setOlder([]) }, [channel.id])
@@ -123,12 +216,19 @@ function ChatPanel({ channel, canSend }: { channel: TreeChannel; canSend: boolea
       const form = new FormData()
       form.set("content", draft)
       if (file) form.set("file", file)
+      if (replyTarget) form.set("reply_to_id", replyTarget.id)
       return api.postForm<DiscordMessage>(`/api/v1/admin/discord-bot/viewer/channels/${channel.id}/messages`, form)
     },
-    onSuccess: () => {
+    onSuccess: (sent) => {
+      const sentWithPreview = replyTarget
+        ? { ...sent, reply_to: { id: replyTarget.id, unavailable: false, author: replyTarget.author, content: replyTarget.content, created_at: replyTarget.created_at } }
+        : sent
+      queryClient.setQueryData<{ messages: DiscordMessage[] }>(["discord-viewer-messages", channel.id], (old) => ({
+        messages: [sentWithPreview, ...(old?.messages ?? []).filter((message) => message.id !== sent.id)],
+      }))
       setDraft(""); setFile(null)
+      setReplyTarget(null)
       if (fileInputRef.current) fileInputRef.current.value = ""
-      queryClient.invalidateQueries({ queryKey: ["discord-viewer-messages", channel.id] })
       setOlder([])
     },
     onError: (e: ApiError) => toast.error(e.message),
@@ -156,10 +256,21 @@ function ChatPanel({ channel, canSend }: { channel: TreeChannel; canSend: boolea
         )}
         {isLoading && <div className="p-4 text-center text-sm text-[#949ba4]">Загрузка…</div>}
         {!isLoading && !ordered.length && <div className="p-4 text-center text-sm text-[#949ba4]">Сообщений нет</div>}
-        {ordered.map((m) => <MessageRow key={m.id} msg={m} />)}
+        {ordered.map((m) => <MessageRow key={m.id} msg={m} onReply={canSend && channel.can_send ? setReplyTarget : undefined} />)}
       </div>
       {canSend && channel.can_send && (
         <div className="border-t border-[#3b3d43] p-3">
+          {replyTarget && (
+            <div className="mb-2 flex items-start gap-2 rounded border-l-2 border-[#5865f2] bg-[#2b2d31] px-2 py-1.5 text-xs text-[#b5bac1]">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-[#f2f3f5]">Ответ на {replyTarget.author.display_name}</div>
+                <div className="truncate">{replyTarget.content || "Вложение"}</div>
+              </div>
+              <button type="button" title="Отменить реплай" aria-label="Отменить реплай" onClick={() => setReplyTarget(null)}>
+                <X className="size-3.5" />
+              </button>
+            </div>
+          )}
           {file && (
             <div className="mb-1.5 flex items-center gap-2 text-xs text-[#949ba4]">
               <Paperclip className="size-3.5" /> {file.name}

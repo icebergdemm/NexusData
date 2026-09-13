@@ -34,6 +34,7 @@ from discord import app_commands
 
 from config import get_settings
 from discord_bot import data as bot_data
+from discord_bot import viewer_events
 from services import apply_punishment_discord_state
 from services_ticket_media import (
     TicketMediaQuotaExceeded,
@@ -1245,6 +1246,24 @@ def _serialize_author(user) -> dict:
     }
 
 
+def _serialize_reply(msg: discord.Message) -> Optional[dict]:
+    reference = getattr(msg, "reference", None)
+    message_id = getattr(reference, "message_id", None) if reference else None
+    if not message_id:
+        return None
+
+    reply = {"id": str(message_id), "unavailable": True}
+    resolved = getattr(reference, "resolved", None)
+    if resolved is not None and getattr(resolved, "author", None) is not None:
+        reply.update({
+            "unavailable": False,
+            "author": _serialize_author(resolved.author),
+            "content": getattr(resolved, "content", "") or "",
+            "created_at": resolved.created_at.isoformat(),
+        })
+    return reply
+
+
 def _serialize_message(msg: discord.Message) -> dict:
     return {
         "id": str(msg.id),
@@ -1258,6 +1277,7 @@ def _serialize_message(msg: discord.Message) -> dict:
         ],
         "embeds": [e.to_dict() for e in msg.embeds],
         "reply_to_id": str(msg.reference.message_id) if msg.reference and msg.reference.message_id else None,
+        "reply_to": _serialize_reply(msg),
     }
 
 
@@ -1312,13 +1332,42 @@ async def viewer_get_messages(channel_id: int, before: Optional[int], limit: int
     return out  # порядок — от новых к старым (как отдаёт history())
 
 
-async def viewer_send_message(channel_id: int, content: str, filename: Optional[str], file_bytes: Optional[bytes]) -> dict:
+async def viewer_validate_channel(channel_id: int) -> bool:
+    """Check the same bot-side visibility contract used by the channel tree."""
+    guild = _viewer_guild()
+    channel = guild.get_channel(channel_id)
+    if channel is None or _viewer_channel_type(channel) is None:
+        return False
+    return bool(channel.permissions_for(guild.me).view_channel)
+
+
+async def viewer_send_message(
+    channel_id: int,
+    content: str,
+    filename: Optional[str],
+    file_bytes: Optional[bytes],
+    reply_to_id: Optional[int] = None,
+) -> dict:
     channel = bot.get_channel(channel_id)
     if not channel:
         channel = await bot.fetch_channel(channel_id)
     import io
     file_obj = discord.File(io.BytesIO(file_bytes), filename=filename) if file_bytes else None
-    msg = await channel.send(content=(content[:2000] if content else None), file=file_obj)
+    send_kwargs = {
+        "content": content[:2000] if content else None,
+        "file": file_obj,
+    }
+    if reply_to_id:
+        guild_id = getattr(getattr(channel, "guild", None), "id", None)
+        send_kwargs.update({
+            "reference": discord.MessageReference(
+                message_id=int(reply_to_id),
+                channel_id=int(channel_id),
+                guild_id=int(guild_id) if guild_id else None,
+            ),
+            "mention_author": True,
+        })
+    msg = await channel.send(**send_kwargs)
     return _serialize_message(msg)
 
 
@@ -4294,10 +4343,83 @@ async def _freeze_reconcile_and_delete_ticket_channel(
         _ticket_channels_closing.discard(channel_id)
 
 
+# Discord Gateway events for the admin viewer.  The viewer bus is deliberately
+# checked before touching the message serializer: most guild messages have no
+# browser watching their channel, and doing work for those would be a quiet
+# rate/memory tax on the bot's single Gateway loop.
+def _viewer_event_channel_id(channel) -> Optional[int]:
+    guild = getattr(channel, "guild", None)
+    channel_id = getattr(channel, "id", None)
+    if not guild or getattr(guild, "id", None) != GUILD_ID or not channel_id:
+        return None
+    channel_id = int(channel_id)
+    return channel_id if viewer_events.has_subscribers(channel_id) else None
+
+
+def _publish_viewer_message(event_type: str, message: discord.Message) -> None:
+    channel_id = _viewer_event_channel_id(getattr(message, "channel", None))
+    if channel_id is None:
+        return
+    viewer_events.publish(channel_id, {
+        "type": event_type,
+        "channel_id": str(channel_id),
+        "message": _serialize_message(message),
+    })
+
+
+@bot.event
+async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
+    """Forward cached-independent edit deltas without a REST refetch.
+
+    Discord's raw payload is enough for content/timestamp/embed changes.  A
+    browser that has missed too many events receives ``resync`` from the bus;
+    this handler must not turn every edit into a history request and Gateway
+    heartbeat risk.
+    """
+    if payload.guild_id != GUILD_ID or not viewer_events.has_subscribers(payload.channel_id):
+        return
+    data = payload.data or {}
+    delta = {"id": str(payload.message_id)}
+    if "content" in data:
+        delta["content"] = data.get("content") or ""
+    if "edited_timestamp" in data:
+        delta["edited_at"] = data.get("edited_timestamp")
+    if "attachments" in data:
+        delta["attachments"] = [
+            {
+                "id": str(a.get("id")),
+                "filename": a.get("filename", ""),
+                "url": a.get("url", ""),
+                "content_type": a.get("content_type"),
+                "size": a.get("size", 0),
+            }
+            for a in (data.get("attachments") or [])
+        ]
+    if "embeds" in data:
+        delta["embeds"] = data.get("embeds") or []
+    viewer_events.publish(payload.channel_id, {
+        "type": "message_update",
+        "channel_id": str(payload.channel_id),
+        "message": delta,
+    })
+
+
+@bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    if payload.guild_id != GUILD_ID or not viewer_events.has_subscribers(payload.channel_id):
+        return
+    viewer_events.publish(payload.channel_id, {
+        "type": "message_delete",
+        "channel_id": str(payload.channel_id),
+        "message_id": str(payload.message_id),
+    })
+
+
 # Sync messages from ticket channels to NexusData
 @bot.event
 async def on_message(message: discord.Message):
     global FORWARD_CHANNEL_ID
+    _publish_viewer_message("message_create", message)
     channel_name = getattr(message.channel, "name", "") or ""
     is_bot_author = bool(getattr(message.author, "bot", False))
     if is_bot_author and not channel_name.startswith("ticket-"):

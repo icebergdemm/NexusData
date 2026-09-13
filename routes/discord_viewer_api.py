@@ -16,14 +16,17 @@ sync_members_task), это быстрее и не гоняет бота лишн
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, WebSocket
+from fastapi import WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy.orm import Session
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.orm import Session, joinedload
 
-from database import get_db
-from security import check_permission
+from database import get_db, SessionLocal
+from security import check_permission, compute_department_site_permissions, get_permission_policy_mode
 from models import DiscordMember, PlayerData, AdminUser, AdminSession
 from datetime import datetime
+from services_login_keys import resolve_api_login_key
 
 router = APIRouter()
 
@@ -31,6 +34,50 @@ router = APIRouter()
 def _get_admin(request: Request, db: Session) -> AdminUser:
     from routes.admin import load_current_admin
     return load_current_admin(request, db)
+
+
+def _get_websocket_admin(websocket: WebSocket) -> Optional[AdminUser]:
+    """Authenticate the same server-side admin cookie as the HTTP viewer.
+
+    A browser WebSocket cannot use the request dependency machinery, but it
+    does carry the signed-in ``admin_token`` cookie.  Do not put that token in
+    the URL: URLs leak into access logs, browser history and proxy telemetry.
+    """
+    db = SessionLocal()
+    try:
+        admin = None
+        login_key = websocket.headers.get("X-ND-Login-Key")
+        if login_key:
+            identity = resolve_api_login_key(db, login_key)
+            admin_id = identity[1] if identity else None
+            if admin_id is not None:
+                admin = (
+                    db.query(AdminUser)
+                    .options(joinedload(AdminUser.privilege_group))
+                    .filter(AdminUser.id == admin_id, AdminUser.is_deleted == 0)
+                    .first()
+                )
+
+        token = websocket.cookies.get("admin_token")
+        if admin is None and token:
+            session = db.query(AdminSession).filter(
+                AdminSession.token == token,
+                AdminSession.revoked == 0,
+            ).first()
+            if session and (session.expires_at is None or session.expires_at > datetime.utcnow()):
+                admin = (
+                    db.query(AdminUser)
+                    .options(joinedload(AdminUser.privilege_group))
+                    .filter(AdminUser.id == session.admin_id, AdminUser.is_deleted == 0)
+                    .first()
+                )
+
+        if admin:
+            admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
+            admin._permission_policy_mode = get_permission_policy_mode(db)
+        return admin
+    finally:
+        db.close()
 
 
 async def _call_bot(coro, timeout: float = 12.0):
@@ -73,6 +120,7 @@ async def api_viewer_messages(channel_id: int, request: Request, before: Optiona
 async def api_viewer_send_message(
     channel_id: int, request: Request,
     content: str = Form(""), file: Optional[UploadFile] = File(None),
+    reply_to_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     admin = _get_admin(request, db)
@@ -81,6 +129,15 @@ async def api_viewer_send_message(
     if not content.strip() and not file:
         raise HTTPException(status_code=400, detail="Пустое сообщение: нужен текст или файл")
 
+    parsed_reply_to_id = None
+    if reply_to_id not in (None, "", "null"):
+        try:
+            parsed_reply_to_id = int(reply_to_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Некорректный ID сообщения для реплая")
+        if parsed_reply_to_id <= 0:
+            raise HTTPException(status_code=400, detail="Некорректный ID сообщения для реплая")
+
     file_bytes = await file.read() if file else None
     if file_bytes and len(file_bytes) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Файл больше 8 МБ — лимит вложений Discord без буста сервера")
@@ -88,11 +145,68 @@ async def api_viewer_send_message(
     from discord_bot import bot as discord_bot
     msg = await _call_bot(discord_bot.viewer_send_message(
         channel_id, content, file.filename if file else None, file_bytes,
+        reply_to_id=parsed_reply_to_id,
     ))
 
     from routes.admin import log_admin_action
-    log_admin_action(db, admin.id, "discord_viewer_send_message", {"channel_id": channel_id})
+    log_admin_action(db, admin.id, "discord_viewer_send_message", {
+        "channel_id": channel_id,
+        "reply_to_id": parsed_reply_to_id,
+    })
     return msg
+
+
+@router.websocket("/api/v1/admin/discord-bot/viewer/events")
+async def api_viewer_events(websocket: WebSocket, channel_id: int):
+    """Stream Gateway-backed message changes for one visible channel."""
+    from discord_bot import viewer_events
+    from discord_bot import bot as discord_bot
+
+    await websocket.accept()
+    admin = await run_in_threadpool(_get_websocket_admin, websocket)
+    if not admin or not check_permission(admin, "discord_bot", "view"):
+        await websocket.close(code=1008, reason="Недостаточно прав")
+        return
+
+    try:
+        visible = await _call_bot(discord_bot.viewer_validate_channel(channel_id))
+    except HTTPException:
+        await websocket.close(code=1011, reason="Бот Discord недоступен")
+        return
+    if not visible:
+        await websocket.close(code=1008, reason="Канал недоступен")
+        return
+
+    subscription = viewer_events.subscribe(channel_id, asyncio.get_running_loop())
+    send_task = asyncio.create_task(_send_viewer_events(websocket, subscription))
+    receive_task = asyncio.create_task(websocket.receive())
+    try:
+        done, pending = await asyncio.wait(
+            {send_task, receive_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if receive_task in done:
+            message = receive_task.result()
+            if message.get("type") != "websocket.disconnect":
+                # The browser sends no commands.  A client message is enough
+                # to end this read-only stream; the next render reconnects.
+                return
+        if send_task in done:
+            send_task.result()
+        for task in pending:
+            task.cancel()
+    except (WebSocketDisconnect, RuntimeError, ConnectionError):
+        pass
+    finally:
+        for task in (send_task, receive_task):
+            if not task.done():
+                task.cancel()
+        viewer_events.unsubscribe(subscription)
+
+
+async def _send_viewer_events(websocket: WebSocket, subscription) -> None:
+    while True:
+        await websocket.send_json(await subscription.next_event())
 
 
 @router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/export")
