@@ -50,6 +50,9 @@ class PlayerData(Base):
     linked_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
     forced_display_name = Column(String(255), nullable=True)
     disguise_enabled = Column(Boolean, nullable=False, default=False)
+    # Once a fixed alias has actually been used, its ownership remains visible
+    # even while the owner temporarily disables the mask.
+    disguise_ever_enabled = Column(Boolean, nullable=False, default=False)
     disguise_mode = Column(String(16), nullable=False, default="random")
     disguise_fixed_alias = Column(String(32), nullable=True)
     disguise_version = Column(Integer, nullable=False, default=0)

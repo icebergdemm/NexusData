@@ -146,6 +146,7 @@ def _apply_migrations():
         # Per-player game disguise policy. The true SteamID remains on the
         # server; these fields only decide its client-facing projection.
         ("players_data", "disguise_enabled", "TINYINT NOT NULL DEFAULT 0"),
+        ("players_data", "disguise_ever_enabled", "TINYINT NOT NULL DEFAULT 0"),
         ("players_data", "disguise_mode", "VARCHAR(16) NOT NULL DEFAULT 'random'"),
         ("players_data", "disguise_fixed_alias", "VARCHAR(32)"),
         ("players_data", "disguise_version", "INT NOT NULL DEFAULT 0"),
@@ -717,6 +718,13 @@ def init_db():
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
     _apply_migrations()
+    # Preserve ownership for masks that were already active before the
+    # persistent claim flag existed.
+    with engine.begin() as conn:
+        conn.execute(__import__('sqlalchemy').text(
+            "UPDATE players_data SET disguise_ever_enabled=1 "
+            "WHERE disguise_enabled=1 AND disguise_ever_enabled=0"
+        ))
     _relax_server_player_privileges_unique_steamid()
     _add_missing_indexes()
     _backfill_round_pairing()

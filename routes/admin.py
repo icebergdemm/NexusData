@@ -3154,7 +3154,7 @@ def _disguise_owner_for_alias(db: Session, player: PlayerData, alias: str) -> Op
         .filter(
             DisguiseProfile.player_id != player.player_id,
             DisguiseProfile.enabled.is_(True),
-            PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_ever_enabled.is_(True),
             PlayerData.disguise_mode == "fixed",
             or_(
                 DisguiseProfile.id == PlayerData.disguise_profile_id,
@@ -3181,7 +3181,7 @@ def _disguise_owner_for_alias(db: Session, player: PlayerData, alias: str) -> Op
         .outerjoin(AdminUser, AdminUser.id == PlayerData.linked_admin_id)
         .filter(
             PlayerData.player_id != player.player_id,
-            PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_ever_enabled.is_(True),
             PlayerData.disguise_mode == "fixed",
             func.lower(PlayerData.disguise_fixed_alias) == normalized,
         )
@@ -3206,7 +3206,7 @@ def _disguise_reserved_aliases(db: Session, player: PlayerData) -> list[dict]:
         .outerjoin(AdminUser, AdminUser.id == PlayerData.linked_admin_id)
         .filter(
             DisguiseProfile.enabled.is_(True),
-            PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_ever_enabled.is_(True),
             PlayerData.disguise_mode == "fixed",
             or_(
                 DisguiseProfile.id == PlayerData.disguise_profile_id,
@@ -3361,7 +3361,7 @@ def _validate_disguise_profiles(db: Session, player: PlayerData, profiles: list[
         .filter(
             DisguiseProfile.player_id != player.player_id,
             DisguiseProfile.enabled.is_(True),
-            PlayerData.disguise_enabled.is_(True),
+            PlayerData.disguise_ever_enabled.is_(True),
             PlayerData.disguise_mode == "fixed",
             or_(
                 DisguiseProfile.id == PlayerData.disguise_profile_id,
@@ -3517,6 +3517,8 @@ async def api_update_own_disguise(
         fixed_alias = selected_profile.alias
 
     player.disguise_enabled = enabled
+    if enabled:
+        player.disguise_ever_enabled = True
     player.disguise_mode = mode
     player.disguise_fixed_alias = fixed_alias
     player.disguise_profile_id = selected_profile.id if selected_profile else None
