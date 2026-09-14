@@ -23,6 +23,7 @@ _snapshots: dict[str, dict[str, Any]] = {}
 _health_floors: dict[str, dict[str, float]] = {}
 _DEFAULT_CONTENT_DIR = r"C:\Users\icegergert\Documents\BarotraumaWorkBench\ASPER\MorePlugins_Barotrauma\LuaCsForBarotrauma_source\Barotrauma\Content"
 _BUNDLED_CATALOG_PATH = Path(__file__).resolve().parent.parent / "static" / "creature_catalog.json"
+_DEPLOYED_CATALOG_PATH = Path("/static/creature_catalog.json")
 
 
 @lru_cache(maxsize=1)
@@ -31,11 +32,13 @@ def _creature_catalog() -> list[dict[str, Any]]:
     root = os.environ.get("BAROTRAUMA_CONTENT_DIR", _DEFAULT_CONTENT_DIR)
     characters = os.path.join(root, "Characters")
     if not os.path.isdir(characters):
-        try:
-            with open(_BUNDLED_CATALOG_PATH, encoding="utf-8") as source:
-                return json.load(source).get("creatures", [])
-        except (OSError, ValueError):
-            return []
+        for catalog_path in (_DEPLOYED_CATALOG_PATH, _BUNDLED_CATALOG_PATH):
+            try:
+                with open(catalog_path, encoding="utf-8") as source:
+                    return json.load(source).get("creatures", [])
+            except (OSError, ValueError):
+                continue
+        return []
     creatures: list[dict[str, Any]] = []
     for directory, _, files in os.walk(characters):
         for filename in files:
