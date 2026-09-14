@@ -86,14 +86,16 @@ export function ReplayPlayerPage() {
     const runtime = window as unknown as {
       REPLAY_URL: string
       HAS_VOICE: boolean
+      REPLAY_VOICE_ONLY: boolean
       REPLAY_RECORDED_AT_MS: number | null
       __BARO_REPLAY_ACTIVE_INSTANCE__?: string
-      __BaroReplayUI?: { destroy?: () => void }
+      __BaroReplayUI?: { destroy?: () => void; setSpatial?: (enabled: boolean) => void }
     }
     const instanceId = `replay-${replayId}-${++replayScriptGeneration}`
     runtime.__BARO_REPLAY_ACTIVE_INSTANCE__ = instanceId
     runtime.REPLAY_URL = `/api/v1/admin/replays/${replayId}/download`
     runtime.HAS_VOICE = data.replay.has_voice
+    runtime.REPLAY_VOICE_ONLY = isVoiceMode
     // recorded_at приходит без указания зоны (naive UTC, см. services_replays.py) —
     // без явного "Z" Date.parse трактовал бы строку как локальное время браузера
     // администратора, а не как UTC. Плеер сам переводит это в МСК (см. rpvClockLabel).
@@ -158,6 +160,13 @@ export function ReplayPlayerPage() {
     // Re-run whenever the replay id changes (navigating from one replay to another)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replayId, data])
+
+  useEffect(() => {
+    const runtime = window as unknown as {
+      __BaroReplayUI?: { setSpatial?: (enabled: boolean) => void }
+    }
+    runtime.__BaroReplayUI?.setSpatial?.(!isVoiceMode)
+  }, [isVoiceMode])
 
   return (
     <div className={(isLobby ? "rpv-lobby " : "") + (isVoiceMode ? "rpv-voice-mode" : "")}>

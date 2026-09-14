@@ -558,7 +558,7 @@
 
   // ── Voice state ──────────────────────────────────────────────────────────
   let audioCtx = null, voiceEnabled = false, masterVol = 1.0;
-  let spatial = true, falloffDist = 3000;
+  let spatial = !window.REPLAY_VOICE_ONLY, falloffDist = 3000;
   let voicePtr = 0, opusSupported = false;
   const speakerState = new Map();   // sid -> {mute, vol}
   const speakingNow = new Set();    // sids speaking within window
@@ -1481,6 +1481,10 @@
     setVoiceEnabled(enabled){
       voiceEnabled=!!enabled;
       if(!voiceEnabled)resetDecoders();
+    },
+    setSpatial(enabled){
+      spatial=!!enabled;
+      for(const sid of decoders.keys())applyGain(sid);
     },
     setMasterVolume(value){
       masterVol=Math.max(0,Math.min(1,Number(value)||0));

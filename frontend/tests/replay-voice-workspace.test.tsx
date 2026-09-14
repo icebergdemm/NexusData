@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import test from "node:test"
 import React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
@@ -68,6 +69,14 @@ test("timeline pointer and wheel produce bounded replay positions", () => {
 test("bridge duration expands an initially unknown timeline", () => {
   assert.equal(timelineEndAfterBridgeReady(0, 1, 355_000), 355_000)
   assert.equal(timelineEndAfterBridgeReady(1_000, 700, 355_000), 700)
+})
+
+test("voice-only mode disables spatial attenuation for the replay bridge", () => {
+  const playerSource = readFileSync(new URL("../src/pages/replays/player.tsx", import.meta.url), "utf8")
+  const bridgeSource = readFileSync(new URL("../../static/js/replay_player.js", import.meta.url), "utf8")
+
+  assert.match(playerSource, /REPLAY_VOICE_ONLY = isVoiceMode/)
+  assert.match(bridgeSource, /let spatial = !window\.REPLAY_VOICE_ONLY/)
 })
 
 test("round voice workspace uses the same component contract", () => {
