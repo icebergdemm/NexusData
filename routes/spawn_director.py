@@ -40,8 +40,19 @@ _HARDCODED_CREATURE_IDS = (
 
 @lru_cache(maxsize=1)
 def _creature_catalog() -> list[dict[str, Any]]:
-    """Read vanilla creature XML. Set BAROTRAUMA_CONTENT_DIR on deployed NexusData."""
-    root = os.environ.get("BAROTRAUMA_CONTENT_DIR", _DEFAULT_CONTENT_DIR)
+    """Read the bundled catalog, or XML when an explicit content dir is configured."""
+    configured_root = os.environ.get("BAROTRAUMA_CONTENT_DIR")
+    if not configured_root:
+        for catalog_path in (_DEPLOYED_CATALOG_PATH, _BUNDLED_CATALOG_PATH):
+            try:
+                with open(catalog_path, encoding="utf-8") as source:
+                    creatures = json.load(source).get("creatures", [])
+                if creatures:
+                    return creatures
+            except (OSError, ValueError, TypeError):
+                continue
+
+    root = configured_root or _DEFAULT_CONTENT_DIR
     characters = os.path.join(root, "Characters")
     if not os.path.isdir(characters):
         for catalog_path in (_DEPLOYED_CATALOG_PATH, _BUNDLED_CATALOG_PATH):
