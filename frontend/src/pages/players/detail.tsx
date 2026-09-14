@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   Skull, Ship, HeartPulse, Swords, Bot, Trophy, Gift, StickyNote, Tags, Radio, Gavel, History as HistoryIcon, Star, Link2, Sparkles,
-  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole, MessageSquare,
+  Pencil, Check, X, KeyRound, Copy, Plus, RefreshCw, Trash2, LockKeyhole, MessageSquare, FileJson,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -42,6 +42,7 @@ import { PlayerAvatar } from "@/components/layout/PlayerAvatar"
 import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplatePicker"
 import { useDiscordProfile } from "@/lib/use-discord-profile"
 import { groupLabelCategories } from "../label-categories/label-utils"
+import { PlayerExportDialog } from "./PlayerExportDialog"
 
 interface AdminOption { id: number; discord_username: string | null }
 
@@ -90,6 +91,7 @@ export function PlayerDetailPage() {
   const [discordIdDraft, setDiscordIdDraft] = useState("")
   const [punishDialogOpen, setPunishDialogOpen] = useState(false)
   const [messageDialogOpen, setMessageDialogOpen] = useState(false)
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [messageDraft, setMessageDraft] = useState("")
   const [messageServer, setMessageServer] = useState("")
   const [selectedPunishment, setSelectedPunishment] = useState<PunishmentRow | null>(null)
@@ -104,7 +106,7 @@ export function PlayerDetailPage() {
     queryKey,
     queryFn: () => api.get<PlayerDetailResponse>(`/api/v1/admin/players/${playerId}`),
   })
-  const { data: dossier, isLoading: dossierLoading } = useQuery({
+  const { data: dossier, isLoading: dossierLoading, error: dossierError } = useQuery({
     queryKey: ["player-ai-dossier", playerId],
     queryFn: () => api.get<AIDossierResponse>(`/api/v1/admin/players/${playerId}/ai-dossier`),
     enabled: !!playerId && data?.classified !== true,
@@ -344,6 +346,11 @@ export function PlayerDetailPage() {
                 {data.can_send_message && (
                   <Button size="sm" variant="outline" onClick={() => setMessageDialogOpen(true)}>
                     <MessageSquare className="size-3.5" /> Сообщение
+                  </Button>
+                )}
+                {admin?.is_superuser && (
+                  <Button size="sm" variant="outline" onClick={() => setExportDialogOpen(true)} title="Экспортировать личное дело игрока">
+                    <FileJson className="size-3.5" /> Экспорт
                   </Button>
                 )}
                 {admin?.is_superuser && (
@@ -857,6 +864,16 @@ export function PlayerDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <PlayerExportDialog
+        open={exportDialogOpen}
+        onOpenChange={setExportDialogOpen}
+        playerId={player.player_id}
+        player={data}
+        dossier={dossier ?? null}
+        dossierLoading={dossierLoading}
+        dossierError={dossierError}
+      />
 
       <Dialog open={messageDialogOpen} onOpenChange={setMessageDialogOpen}>
         <DialogContent>

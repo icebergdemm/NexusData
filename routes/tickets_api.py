@@ -780,6 +780,70 @@ def _ticket_mention_profiles(
     return profiles
 
 
+@panel_router.get("/api/v1/admin/players/{player_id}/export-data")
+def api_player_export_data(
+    request: Request,
+    player_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return the stored ticket archive for a superuser player export."""
+    admin = _get_admin(request, db)
+    if not admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Только superuser может экспортировать личное дело")
+
+    player = db.query(PlayerData).filter(PlayerData.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    tickets = db.query(Ticket).filter(
+        Ticket.player_id == player_id,
+    ).order_by(desc(Ticket.created_at), desc(Ticket.id)).all()
+    ticket_ids = [ticket.id for ticket in tickets]
+    messages_by_ticket: dict[int, list[TicketMessage]] = {ticket_id: [] for ticket_id in ticket_ids}
+    if ticket_ids:
+        for message in db.query(TicketMessage).filter(
+            TicketMessage.ticket_id.in_(ticket_ids),
+        ).order_by(
+            TicketMessage.ticket_id,
+            TicketMessage.created_at,
+            TicketMessage.id,
+        ).all():
+            messages_by_ticket[message.ticket_id].append(message)
+
+    assigned_ids = {
+        ticket.assigned_admin_id
+        for ticket in tickets
+        if getattr(ticket, "assigned_admin_id", None)
+    }
+    assigned_admins = {
+        row.id: row
+        for row in db.query(AdminUser).filter(AdminUser.id.in_(assigned_ids)).all()
+    } if assigned_ids else {}
+
+    serialized_tickets = []
+    for ticket in tickets:
+        messages = messages_by_ticket[ticket.id]
+        serialized_tickets.append({
+            "ticket": _serialize_ticket(ticket, assigned_admins.get(ticket.assigned_admin_id)),
+            "messages": [_serialize_message(message) for message in messages],
+            "participants": _ticket_participants(db, admin, ticket, messages),
+            "mention_profiles": _ticket_mention_profiles(db, admin, messages),
+            "archive": _archive_summary(messages),
+        })
+
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "export_player_personal_file", {
+        "player_id": player_id,
+        "ticket_count": len(serialized_tickets),
+        "includes_deleted": True,
+    })
+    return {
+        "player_id": player_id,
+        "ticket_count": len(serialized_tickets),
+        "tickets": serialized_tickets,
+    }
+
+
 @panel_router.get("/api/v1/admin/tickets")
 def api_tickets_list(
     request: Request,

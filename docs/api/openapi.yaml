@@ -13,6 +13,21 @@ servers:
 security:
   - NexusDataLoginKey: []
 paths:
+  /api/v1/admin/players/{player_id}/export-data:
+    get:
+      summary: Архив данных игрока для личного дела
+      description: |
+        Возвращает только сохранённые в NexusData данные связанных тикетов,
+        включая soft-deleted тикеты, все сообщения, вложения, embeds,
+        reference snapshots, участников и сводку архива. Запросы к Discord
+        не выполняются. Доступен только superuser.
+      parameters:
+        - { name: player_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Архив тикетов игрока без permission/config-полей }
+        '401': { description: Не аутентифицирован }
+        '403': { description: Только superuser }
+        '404': { description: Игрок не найден }
   /api/v1/admin/users:
     get:
       summary: Список администраторов с кратким effective summary

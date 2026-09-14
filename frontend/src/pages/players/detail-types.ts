@@ -129,6 +129,7 @@ export interface PlayerDetailResponse {
    * Отдельно от custom_items, потому что `items` в контракте с игровым
    * сервером — плоский {item_id: количество}, и его форму менять нельзя. */
   custom_job_items: Record<string, Record<string, number>>
+  custom_job_item_variations: Record<string, Record<string, number>>
   custom_stats: Record<string, number | Record<string, number>>
   custom_talents: Record<string, string[]>
   available_kval_kits: AvailableKvalKit[]
