@@ -520,10 +520,26 @@
     decide(new Uint8Array(0), true);
     if (streamError) throw streamError;
     if (format === "zip" && !store.length && received) {
-      // Пустое имя файла в zip/распаковщик так и не вызвал onfile — либо
-      // архив пуст, либо повреждён; отдельно, чтобы не путать с "файл и
-      // правда нулевого размера" (тогда received тоже 0).
-      throw new Error("Не удалось найти файл внутри .zip — архив повреждён или пуст");
+      // Some .NET ZIPs use descriptors that old streaming fflate builds fail
+      // to expose. Retry only this case via the indexed decoder.
+      if (onProgress) onProgress({ stage: "unpack", percent: null, fallback: true });
+      const fallbackResponse = await fetch(url, { signal });
+      if (!fallbackResponse.ok) throw new Error("HTTP " + fallbackResponse.status);
+      const fallbackBytes = new Uint8Array(await fallbackResponse.arrayBuffer());
+      const extracted = fflate.unzipSync(fallbackBytes, {
+        filter: (file) => {
+          const name = String(file.name || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+          return name === "world.bin" || name.endsWith(".barodemo");
+        }
+      });
+      for (const [name, bytes] of Object.entries(extracted)) {
+        const lower = name.replace(/\\/g, "/").split("/").pop().toLowerCase();
+        if ((lower === "world.bin" || lower.endsWith(".barodemo")) && bytes?.length) {
+          store.append(bytes);
+          break;
+        }
+      }
+      if (!store.length) throw new Error("Не удалось найти world.bin внутри .zip — архив повреждён или пуст");
     }
     return store;
   }
