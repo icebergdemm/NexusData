@@ -10,11 +10,14 @@ import {
   type VoiceSegmentInput,
   type VoiceSpeaker,
 } from "./replay-voice-utils"
+import { ReplayContextPanels } from "./ReplayContextPanels"
+import type { ReplayContextEvent } from "./replay-context-utils"
 
 export interface ReplayVoiceWorkspaceData {
   durationMs: number
   voiceSpeakers: VoiceSpeaker[]
   voiceSegments: VoiceSegmentInput[]
+  timelineEvents: ReplayContextEvent[]
 }
 
 interface ReplayVoiceBridge {
@@ -60,7 +63,8 @@ const styles = [
   ".rvw-name-wrap{min-width:0;padding-left:2px}.rvw-speaker-link{display:flex;flex-direction:column;min-width:0;color:inherit;text-decoration:none}.rvw-speaker-link:hover .rvw-speaker-name{text-decoration:underline}.rvw-speaker-name,.rvw-speaker-status{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rvw-speaker-status{font-size:9px;color:var(--muted-foreground)}.rvw-unresolved{cursor:default}",
   ".rvw-track{position:relative;height:24px;border-radius:5px;background:repeating-linear-gradient(90deg,var(--background) 0,var(--background) calc(16.66% - 1px),color-mix(in srgb,var(--border) 55%,transparent) calc(16.66% - 1px),color-mix(in srgb,var(--border) 55%,transparent) 16.66%);touch-action:none;cursor:crosshair}.rvw-segment{position:absolute;top:3px;height:18px;border:0;border-radius:4px;background:var(--primary);box-shadow:0 0 0 1px color-mix(in srgb,var(--primary) 60%,transparent);cursor:pointer}.rvw-segment-radio{background:var(--info,#22d3ee);box-shadow:0 0 0 1px color-mix(in srgb,var(--info,#22d3ee) 60%,transparent)}.rvw-segment:hover{filter:brightness(1.25)}.rvw-playhead{position:absolute;top:-5px;bottom:-5px;width:2px;background:var(--foreground);box-shadow:0 0 7px var(--foreground);pointer-events:none;z-index:2}",
   ".rvw-empty{padding:28px 8px;text-align:center;color:var(--muted-foreground)}.rvw-foot{justify-content:space-between;padding:9px 16px;border:1px solid var(--border);border-top:0;color:var(--muted-foreground)}.rvw-legend{display:flex;gap:10px;flex-wrap:wrap;font-size:10px}.rvw-legend i{display:inline-block;width:8px;height:8px;margin-right:4px;border-radius:2px;background:var(--primary)}.rvw-legend i.radio{background:var(--info,#22d3ee)}",
-  "@media(max-width:760px){.rvw-ruler{margin-left:96px}.rvw-lane{grid-template-columns:84px minmax(0,1fr) 32px;gap:8px}.rvw-toolbar .rvw-spacer{display:none}.rvw-transport{order:3;flex-basis:100%}}",
+  ".rvw-context-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}.rvw-context-card{min-width:0;border:1px solid var(--border);background:var(--card);border-radius:6px;overflow:hidden}.rvw-context-card-head{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-bottom:1px solid var(--border)}.rvw-context-card-head h3{margin:0;font-size:12px}.rvw-context-filter-row{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent);flex-wrap:wrap}.rvw-context-filter-row .rvw-select{min-width:0}.rvw-context-search{display:flex;align-items:center;gap:4px;flex:1;min-width:130px}.rvw-context-search input{height:26px;min-width:0}.rvw-context-list{display:flex;max-height:270px;min-height:54px;flex-direction:column;gap:2px;overflow-y:auto;padding:6px}.rvw-context-row{display:flex;width:100%;align-items:flex-start;gap:7px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--foreground);padding:5px 6px;text-align:left;font-size:11px;line-height:1.25;cursor:pointer}.rvw-context-row:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}.rvw-context-row[data-active=true]{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 14%,transparent)}.rvw-context-row[data-past=false]{opacity:.45}.rvw-context-time{flex:none;color:var(--muted-foreground);font-family:monospace}.rvw-context-body{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px}.rvw-context-meta{display:flex;gap:6px;overflow:hidden;white-space:nowrap}.rvw-context-meta b{overflow:hidden;text-overflow:ellipsis}.rvw-context-meta span,.rvw-context-asr{color:var(--muted-foreground);font-size:10px}.rvw-context-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rvw-context-empty{margin:0;padding:20px 8px;text-align:center;color:var(--muted-foreground);font-size:11px}.rvw-context-follow{display:flex;margin:0 6px 6px;margin-left:auto;font-size:10px;height:25px}",
+  "@media(max-width:760px){.rvw-ruler{margin-left:96px}.rvw-lane{grid-template-columns:84px minmax(0,1fr) 32px;gap:8px}.rvw-toolbar .rvw-spacer{display:none}.rvw-transport{order:3;flex-basis:100%}.rvw-context-grid{grid-template-columns:1fr}}",
 ].join("")
 
 function bridge(): ReplayVoiceBridge | undefined {
@@ -71,6 +75,7 @@ function mergeBridgeData(initialData: ReplayVoiceWorkspaceData, detail: Record<s
   if (!detail) return initialData
   const nextSpeakers = Array.isArray(detail.voiceSpeakers) ? detail.voiceSpeakers as VoiceSpeaker[] : []
   const nextSegments = Array.isArray(detail.voiceSegments) ? detail.voiceSegments as VoiceSegmentInput[] : []
+  const nextEvents = Array.isArray(detail.timelineEvents) ? detail.timelineEvents as ReplayContextEvent[] : []
   const byId = new Map(initialData.voiceSpeakers.map((speaker) => [speaker.speaker_id, speaker]))
   for (const speaker of nextSpeakers) {
     const previous = byId.get(speaker.speaker_id)
@@ -87,6 +92,7 @@ function mergeBridgeData(initialData: ReplayVoiceWorkspaceData, detail: Record<s
     durationMs: Number(detail.durationMs) || initialData.durationMs,
     voiceSpeakers: [...byId.values()],
     voiceSegments: nextSegments.length ? nextSegments : initialData.voiceSegments,
+    timelineEvents: nextEvents.length ? nextEvents : initialData.timelineEvents,
   }
 }
 
@@ -151,7 +157,7 @@ function Segment({ segment, viewStartMs, viewSpanMs, onClick }: { segment: { sta
   return <button type="button" className={"rvw-segment" + (segment.radio ? " rvw-segment-radio" : "")} style={{ left: left + "%", width: Math.max(0.4, right - left) + "%" }} title={formatTime(segment.startMs) + "–" + formatTime(segment.endMs) + " · " + (segment.radio ? "радио" : "локальная речь")} aria-label={"Перейти к голосовому сегменту " + formatTime(segment.startMs)} onClick={onClick} />
 }
 
-export function ReplayVoiceWorkspace({ replayKind, initialData }: { replayKind: ReplayKind; initialData: ReplayVoiceWorkspaceData }) {
+export function ReplayVoiceWorkspace({ replayKind, replayId, initialData }: { replayKind: ReplayKind; replayId?: string; initialData: ReplayVoiceWorkspaceData }) {
   const [bridgeData, setBridgeData] = useState<Record<string, unknown> | null>(null)
   const [timeMs, setTimeMs] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -312,6 +318,7 @@ export function ReplayVoiceWorkspace({ replayKind, initialData }: { replayKind: 
       })}
       {filteredLanes.length === 0 && <div className="rvw-empty">Для выбранного канала или участника речи нет.</div>}
     </section>
+    {replayId && <ReplayContextPanels replayId={replayId} replayKind={replayKind} events={data.timelineEvents} timeMs={timeMs} onSeek={seek} />}
     <div className="rvw-foot"><div className="rvw-legend"><span><i />локальная речь</span><span><i className="radio" />радио</span></div><span className="rvw-tiny">Space — play/pause · ←/→ — 5 секунд</span><Link className="rvw-tiny rvw-muted" to="/replays">К списку реплеев</Link></div>
   </div>
 }

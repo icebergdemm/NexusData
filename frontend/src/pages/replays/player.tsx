@@ -352,7 +352,7 @@ export function ReplayPlayerPage() {
         </div>
       </div>
       </div>
-      {isVoiceMode && <ReplayVoiceWorkspace replayKind={data?.replay.replay_kind ?? "round"} initialData={voiceWorkspaceData} />}
+      {isVoiceMode && <ReplayVoiceWorkspace replayId={replayId} replayKind={data?.replay.replay_kind ?? "round"} initialData={voiceWorkspaceData} />}
       {IS_V2 && replayId && !isLobby && !isVoiceMode && (
         <ReplayTimelineWorkbench replayId={replayId} initialDurationMs={data?.replay.duration_ms} />
       )}
