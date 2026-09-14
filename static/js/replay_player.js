@@ -587,12 +587,14 @@
   // Per-frame decoded snapshot cache (avoid re-decoding within one frame)
   let _curSnap = null, _curSnapIdx = -1;
   function snapAt(t){
+    if(!demo||!demo.snaps.count)return null;
     const idx = API.indexAtTime(demo.snaps, t);
     if (idx !== _curSnapIdx) { _curSnap = API.decodeSnapshot(demo.snaps, idx); _curSnapIdx = idx; }
     return _curSnap;
   }
   let _nextSnap = null, _nextSnapIdx = -1;
   function snapAtInterpolated(t){
+    if(!demo||!demo.snaps.count)return null;
     const idx=API.indexAtTime(demo.snaps,t);
     const current=snapAt(t);
     if(!current||idx>=demo.snaps.count-1)return current;
@@ -1001,6 +1003,7 @@
             // Schedule sequentially on the audio clock to avoid overlap/gaps.
             const now = audioCtx.currentTime;
             const dur = n / sr;
+            if (!Number.isFinite(state.playhead)) state.playhead = now + 0.08;
             // If our playhead fell behind (gap in speech or first packet), resync
             // with a small latency cushion.
             if (state.playhead < now + 0.02) state.playhead = now + 0.08;
