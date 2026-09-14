@@ -1112,7 +1112,9 @@ async def upload_replay(
         return JSONResponse(status_code=400, content={"success": False, "error": "Поле 'file' не найдено в multipart запросе"})
 
     try:
-        replay = await svc.save_upload_stream(upload_source, server_name=server_name, notes=notes)
+        upload_kind = request.headers.get("x-replay-kind")
+        replay = await svc.save_upload_stream(upload_source, server_name=server_name, notes=notes,
+                                              replay_kind=upload_kind)
     except HTTPException as he:
         db.rollback()
         logger.warning("Replay upload rejected: %s (filename=%s)", he.detail, getattr(upload_source, "filename", None))

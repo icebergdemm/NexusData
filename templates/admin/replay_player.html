@@ -56,6 +56,7 @@
 <div class="rpv-top">
   <h2>🎬 {{ replay.submarine_name or 'Раунд' }} #{{ replay.id }}
     {% if replay.level_name %}<span style="color:var(--gray);font-weight:400;font-size:14px;">· {{ replay.level_name }}</span>{% endif %}
+    {% if replay.replay_kind == 'lobby_dump' %}<span style="color:#ffb347;font-size:12px;font-weight:600;">⚡ Принудительный дамп{% if replay.dumped_by_name %} · {{ replay.dumped_by_name }}{% endif %}</span>{% elif replay.replay_kind == 'lobby' %}<span style="color:#63d9f2;font-size:12px;font-weight:600;">Лобби</span>{% endif %}
   </h2>
   <span class="rpv-time">{{ replay.recorded_at|msk if replay.recorded_at else '' }}</span>
 </div>

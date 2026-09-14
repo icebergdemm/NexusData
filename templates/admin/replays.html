@@ -106,6 +106,8 @@
     </div>
     <div class="rp-badges">
       {% if r.server_name %}<span class="rp-badge rp-badge-server">{{ r.server_name }}</span>{% endif %}
+      {% if r.replay_kind == 'lobby_dump' %}<span class="rp-badge" style="background:rgba(255,170,40,.18);color:#ffb347;border:1px solid rgba(255,170,40,.35);">⚡ Принудительный дамп{% if r.dumped_by_name %}: {{ r.dumped_by_name }}{% endif %}</span>
+      {% elif r.replay_kind == 'lobby' %}<span class="rp-badge" style="background:rgba(99,217,242,.15);color:#63d9f2;">Лобби</span>{% endif %}
       {% if r.has_voice %}<span class="rp-badge rp-badge-voice">🎙 голос</span>{% endif %}
     </div>
     <div class="rp-actions">

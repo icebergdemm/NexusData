@@ -523,6 +523,7 @@ class ReplayService:
     # ── Streaming save (low memory) ─────────────────────────────────────────────
 
     async def save_upload_stream(self, upload, server_name=None, notes=None,
+                                 replay_kind=None,
                                  max_bytes: int = 500*1024*1024) -> "RoundReplay":
         """Save an UploadFile to disk in chunks WITHOUT loading it fully into RAM.
 
@@ -600,6 +601,9 @@ class ReplayService:
                 raise
         file_size = os.path.getsize(stored_path)
         meta = self._extract_metadata(stored_path)  # reads only ~4KB
+        replay_kind = replay_kind if replay_kind in ("round", "lobby", "lobby_dump") else (
+            meta.get("replay_kind") if meta.get("replay_kind") in ("round", "lobby", "lobby_dump") else "round"
+        )
 
         replay = RoundReplay(
             server_name=server_name or meta.get("server_name"),
@@ -609,7 +613,7 @@ class ReplayService:
             stored_filename=stored_name,
             file_size=file_size,
             has_voice=meta.get("has_voice", 0),
-            replay_kind=meta.get("replay_kind") if meta.get("replay_kind") in ("round", "lobby", "lobby_dump") else "round",
+            replay_kind=replay_kind,
             is_broken=bool(meta.get("is_broken", 0)),
             broken_at=datetime.utcnow() if meta.get("is_broken", 0) else None,
             recorded_at=meta.get("recorded_at"),
