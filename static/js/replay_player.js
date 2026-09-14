@@ -526,12 +526,10 @@
       const fallbackResponse = await fetch(url, { signal });
       if (!fallbackResponse.ok) throw new Error("HTTP " + fallbackResponse.status);
       const fallbackBytes = new Uint8Array(await fallbackResponse.arrayBuffer());
-      const extracted = fflate.unzipSync(fallbackBytes, {
-        filter: (file) => {
-          const name = String(file.name || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
-          return name !== "manifest.json" && name !== "voice.bin";
-        }
-      });
+      // Do not use unzipSync's filter here. Older fflate builds can return an
+      // empty result for .NET ZIP entries with data descriptors when a filter
+      // is present, even though the indexed archive itself is readable.
+      const extracted = fflate.unzipSync(fallbackBytes);
       for (const [name, bytes] of Object.entries(extracted)) {
         const lower = name.replace(/\\/g, "/").split("/").pop().toLowerCase();
         if (bytes?.length && (lower === "world.bin" || lower.endsWith(".barodemo") ||
