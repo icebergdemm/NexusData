@@ -444,7 +444,8 @@
           const entryName = String(file.name || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
           const isWorld = entryName === "world.bin";
           const isLegacyDemo = entryName.endsWith(".barodemo");
-          if (!isWorld && !isLegacyDemo) {
+          const isKnownNonWorld = entryName === "manifest.json" || entryName === "voice.bin";
+          if (isKnownNonWorld) {
             // Every unzip entry must be consumed so fflate can advance to the
             // next one; discard manifest.json and voice.bin without buffering.
             file.ondata = () => {};
@@ -453,17 +454,26 @@
           }
           let prefix = new Uint8Array(0);
           let identified = isWorld || isLegacyDemo;
+          let rejected = false;
           file.ondata = (err, data) => {
             if (err) { streamError = err; return; }
             try {
+              if (rejected) return;
               if (!identified) {
-                const merged = new Uint8Array(Math.min(4, prefix.length + data.length));
-                merged.set(prefix.subarray(0, merged.length));
-                if (merged.length > prefix.length) merged.set(data.subarray(0, merged.length - prefix.length), prefix.length);
+                const needed = 4 - prefix.length;
+                const take = Math.min(needed, data.length);
+                const merged = new Uint8Array(prefix.length + take);
+                merged.set(prefix);
+                merged.set(data.subarray(0, take), prefix.length);
                 prefix = merged;
-                identified = prefix.length < 4 || prefix[0] === 0x42 && prefix[1] === 0x44 && prefix[2] === 0x4D && prefix[3] === 0x4F;
+                if (prefix.length < 4) return;
+                identified = prefix[0] === 0x42 && prefix[1] === 0x44 && prefix[2] === 0x4D && prefix[3] === 0x4F;
+                if (!identified) { rejected = true; return; }
+                store.append(prefix);
+                if (data.length > take) store.append(data.subarray(take));
+                return;
               }
-              if (identified) store.append(data);
+              store.append(data);
             }
             catch (e) { streamError = e; }
           };
