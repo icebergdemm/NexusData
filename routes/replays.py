@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session, aliased, joinedload
 from database import get_db, GameSessionLocal
 from security import verify_external_api_key_dependency, check_permission
 from config import get_settings
-from models import AdminUser, AdminSession, RoundEvent, RoundReplay
+from models import AdminUser, AdminSession, RoundEvent, RoundReplay, ReplayVoiceSegment, ReplayVoiceSpeaker
 import services_replays
 from services_replays import ReplayService
 from services_replays import (
@@ -1229,6 +1229,29 @@ def _serialize_replay(r) -> dict:
     }
 
 
+def _serialize_replay_voice_speaker(row) -> dict:
+    return {
+        "speaker_id": int(row.speaker_id),
+        "names": list(row.names or []),
+        "steam_id": row.steam_id,
+        "player_id": row.player_id,
+        "resolution_status": row.resolution_status,
+    }
+
+
+def _serialize_replay_voice_segment(row) -> dict:
+    return {
+        "speaker_id": int(row.speaker_id),
+        "start_ms": int(row.start_ms),
+        "end_ms": int(row.end_ms),
+        # Persisted segments currently aggregate channel statistics. Keep the
+        # flag conservative: a mixed segment must not be presented as radio.
+        "radio": bool(row.radio_packet_count and row.packet_count and row.radio_packet_count == row.packet_count),
+        "packet_count": int(row.packet_count or 0),
+        "radio_packet_count": int(row.radio_packet_count or 0),
+    }
+
+
 def _resolve_round_players(db: Session, players: list) -> list:
     """Overlay forced_display_name onto the raw per-round player snapshot
     (list of {steamid, player_name} dicts as reported live by the game server
@@ -1793,7 +1816,22 @@ async def api_replay_detail(request: Request, replay_id: int, db: Session = Depe
     replay = svc.get_by_id(replay_id)
     if not replay:
         raise HTTPException(status_code=404, detail="Реплей не найден")
-    return {"replay": _serialize_replay(replay)}
+    payload = _serialize_replay(replay)
+    payload["voice_speakers"] = [
+        _serialize_replay_voice_speaker(row)
+        for row in db.query(ReplayVoiceSpeaker)
+        .filter(ReplayVoiceSpeaker.replay_id == replay_id)
+        .order_by(ReplayVoiceSpeaker.speaker_id.asc())
+        .all()
+    ]
+    payload["voice_segments"] = [
+        _serialize_replay_voice_segment(row)
+        for row in db.query(ReplayVoiceSegment)
+        .filter(ReplayVoiceSegment.replay_id == replay_id)
+        .order_by(ReplayVoiceSegment.start_ms.asc(), ReplayVoiceSegment.speaker_id.asc())
+        .all()
+    ]
+    return {"replay": payload}
 
 
 def _round_for_replay(db: Session, replay) -> Optional[RoundEvent]:

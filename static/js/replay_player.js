@@ -883,13 +883,27 @@
     seekWindow=null;
     updateTimeUI(true);
   }
+  async function enableVoicePlayback(){
+    if(!demo||!demo.voice||!demo.voice.count)return;
+    voiceEnabled=true;
+    await initAudio();
+    if(audioCtx&&audioCtx.state==="suspended")await audioCtx.resume();
+    if(!opusSupported&&typeof alert==="function")alert("Браузер не поддерживает декодирование Opus (WebCodecs AudioDecoder). Обновите Chrome/Edge.");
+    voicePtr=voiceIndexAtTime(currentTimeMs);
+  }
   function setPlaying(p){
     playing=p;
+    if(p&&demo&&demo.voice&&demo.voice.count&&!voiceEnabled)void enableVoicePlayback();
     const btn=document.getElementById("rpvPlay");
     if(btn){btn.dataset.playing=String(p);btn.setAttribute("aria-label",p?"Пауза":"Воспроизвести");}
     if(p&&audioCtx&&audioCtx.state==="suspended")audioCtx.resume();
     broadcastTime(true);
   }
+  async function play(){
+    await enableVoicePlayback();
+    setPlaying(true);
+  }
+  function pause(){setPlaying(false);}
 
   // ── Voice playback (per-speaker Opus decoders, positional) ───────────────
   async function initAudio(){
@@ -990,6 +1004,7 @@
     // Speaking indicators (±150ms)
     speakingNow.clear();
     const si=voiceIndexAtTime(currentTimeMs);
+    speakingRadio.clear();
     for(let k=Math.max(0,si-30);k<Math.min(V.count,si+30);k++){
       if(Math.abs(V.t[k]-currentTimeMs)<=150){
         speakingNow.add(V.sid[k]);
@@ -1143,7 +1158,7 @@
 
   // ── UI wiring ────────────────────────────────────────────────────────────
   function wireUI(){
-    onGlobal(document.getElementById("rpvPlay"),"click",()=>setPlaying(!playing));
+    onGlobal(document.getElementById("rpvPlay"),"click",async()=>{if(playing)pause();else await play();});
     document.querySelectorAll(".rpv-speed").forEach(btn=>{
       onGlobal(btn,"click",()=>{speed=parseFloat(btn.dataset.speed);document.querySelectorAll(".rpv-speed").forEach(b=>b.classList.remove("active"));btn.classList.add("active");});
     });
@@ -1192,15 +1207,8 @@
     // Voice controls
     const ve=document.getElementById("rpvVoiceEnable");
     if(ve)onGlobal(ve,"change",async(e)=>{
-      voiceEnabled=e.target.checked;
-      if(voiceEnabled){
-        await initAudio();
-        if(audioCtx.state==="suspended")await audioCtx.resume();
-        if(!opusSupported)alert("Браузер не поддерживает декодирование Opus (WebCodecs AudioDecoder). Обновите Chrome/Edge.");
-        voicePtr=voiceIndexAtTime(currentTimeMs);
-      } else {
-        resetDecoders();
-      }
+      if(e.target.checked)await enableVoicePlayback();
+      else {voiceEnabled=false;resetDecoders();}
     });
     const ma=document.getElementById("rpvMuteAll");
     if(ma)onGlobal(ma,"click",()=>{
@@ -1215,8 +1223,35 @@
     if(fo)onGlobal(fo,"input",(e)=>{falloffDist=parseInt(e.target.value);});
   }
 
+  // The recorder stores voice as packets, not precomputed speech intervals.
+  // Build compact activity segments for the React timeline without shipping
+  // Opus payloads into the UI. A short tail keeps isolated packets visible;
+  // adjacent packets on the same channel become one readable speaking run.
+  function voiceTimelineData(){
+    const speakers=new Map(),segments=[],active=new Map();
+    if(!demo||!demo.voice||!demo.voice.count)return{voiceSpeakers:[],voiceSegments:[]};
+    const V=demo.voice,MERGE_GAP_MS=320,PACKET_TAIL_MS=150;
+    for(let i=0;i<V.count;i++){
+      const sid=Number(V.sid[i]),radio=!!V.radio[i],timeMs=Math.max(0,Number(V.t[i])||0);
+      if(!speakers.has(sid)){
+        const sp=demo.spawns.get(sid);
+        speakers.set(sid,{speaker_id:sid,names:sp&&sp.name?[sp.name]:[],steam_id:null,player_id:null,resolution_status:null});
+      }
+      const key=sid+":"+(radio?"radio":"local"),previous=active.get(key);
+      if(previous&&timeMs-previous.end_ms<=MERGE_GAP_MS){
+        previous.end_ms=Math.max(previous.end_ms,timeMs+PACKET_TAIL_MS);
+        previous.packet_count++;
+      }else{
+        const segment={speaker_id:sid,start_ms:timeMs,end_ms:Math.min(demo.durationMs,timeMs+PACKET_TAIL_MS),channel:radio?"radio":"local",packet_count:1};
+        segments.push(segment);active.set(key,segment);
+      }
+    }
+    segments.sort((a,b)=>a.start_ms-b.start_ms||a.speaker_id-b.speaker_id);
+    return{voiceSpeakers:[...speakers.values()].sort((a,b)=>a.speaker_id-b.speaker_id),voiceSegments:segments};
+  }
+
   function timelineBridgeData(){
-    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[],entities:[]};
+    if(!demo)return{replayUrl:window.REPLAY_URL||null,durationMs:0,tickRate:0,players:[],timelineEvents:[],entities:[],voiceSpeakers:[],voiceSegments:[]};
     // Entity ids may be reused after a despawn. Resolve the actor at the
     // event's own timestamp instead of consulting only the final spawn map,
     // otherwise an early action can be attributed to a later character.
@@ -1399,11 +1434,12 @@
       });
     });
     timelineEvents.sort((a,b)=>a.offset_ms-b.offset_ms||a.id.localeCompare(b.id));
-    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents,entities:listInventoryEntities()};
+    const voice=voiceTimelineData();
+    return{replayUrl:window.REPLAY_URL||null,durationMs:demo.durationMs,tickRate:demo.header.tickRate,players,timelineEvents,entities:listInventoryEntities(),...voice};
   }
 
   function broadcastReady(){
-    if(!demo||!collectTimeline)return;
+    if(!demo)return;
     window.dispatchEvent(new CustomEvent("baroreplay:ready",{detail:timelineBridgeData()}));
   }
 
@@ -1439,6 +1475,21 @@
     getEntityInventory(entityId,timeMs){return resolveEntityInventory(entityId,timeMs==null?currentTimeMs:timeMs);},
     getInventoryAt(timeMs){const frame=inventoryAt(timeMs==null?currentTimeMs:timeMs);return frame?{timeMs:frame.timeMs,items:frame.items.map((it)=>({...it}))}:null;},
     setPlaying(p){setPlaying(!!p);},
+    play(){return play();},
+    pause(){pause();},
+    setSpeed(value){speed=Math.max(0.1,Math.min(8,Number(value)||1));},
+    setVoiceEnabled(enabled){
+      voiceEnabled=!!enabled;
+      if(!voiceEnabled)resetDecoders();
+    },
+    setMasterVolume(value){
+      masterVol=Math.max(0,Math.min(1,Number(value)||0));
+      for(const sid of decoders.keys())applyGain(sid);
+    },
+    setSpeakerMuted(sid,muted){
+      const id=Number(sid),state=speakerState.get(id)||{mute:false,vol:1};
+      state.mute=!!muted;speakerState.set(id,state);applyGain(id);
+    },
     selectPlayer(name){applyPlayerSelection(name||null,false);},
     getSelectedPlayer(){return selectedPlayerName;},
     destroy(){

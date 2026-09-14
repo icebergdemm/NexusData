@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { useParams, Link } from "react-router-dom"
+import { useEffect, useMemo, useState } from "react"
+import { useLocation, useNavigate, useParams, Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
@@ -11,6 +11,8 @@ import { AdaptiveIcon } from "@/components/layout/PlatformIcon"
 import { Badge } from "@/components/ui/badge"
 import { IS_V2 } from "@/lib/ui-version"
 import { V2ReplayTransport } from "./V2ReplayTransport"
+import { ReplayVoiceWorkspace, type ReplayVoiceWorkspaceData } from "./ReplayVoiceWorkspace"
+import { replayDisplayMode } from "./replay-voice-utils"
 
 let replayScriptGeneration = 0
 
@@ -21,6 +23,12 @@ interface ReplayDetail {
     filename: string | null; file_size: number | null
     replay_kind: "round" | "lobby" | "lobby_dump"
     dumped_by_name: string | null
+    voice_speakers?: Array<{
+      speaker_id: number; names: string[]; steam_id: string | null; player_id: number | null; resolution_status: string | null
+    }>
+    voice_segments?: Array<{
+      speaker_id: number; start_ms: number; end_ms: number; radio: boolean
+    }>
   }
 }
 
@@ -33,6 +41,8 @@ interface ReplayDetail {
  */
 export function ReplayPlayerPage() {
   const { replayId } = useParams<{ replayId: string }>()
+  const location = useLocation()
+  const navigate = useNavigate()
   const [scriptsReady, setScriptsReady] = useState(false)
 
   const { data } = useQuery({
@@ -41,6 +51,27 @@ export function ReplayPlayerPage() {
   })
   const isLobby = data?.replay.replay_kind === "lobby" || data?.replay.replay_kind === "lobby_dump"
   const isLobbyDump = data?.replay.replay_kind === "lobby_dump"
+  const displayMode = data ? replayDisplayMode(data.replay.replay_kind, location.search) : "full"
+  const isVoiceMode = displayMode === "voice"
+  const voiceWorkspaceData = useMemo<ReplayVoiceWorkspaceData>(() => ({
+    durationMs: data?.replay.duration_ms ?? 0,
+    voiceSpeakers: (data?.replay.voice_speakers ?? []).map((speaker) => ({
+      speaker_id: speaker.speaker_id,
+      names: speaker.names,
+      player_id: speaker.player_id,
+      steam_id: speaker.steam_id,
+      resolution_status: speaker.resolution_status,
+    })),
+    voiceSegments: data?.replay.voice_segments ?? [],
+    timelineEvents: [],
+  }), [data])
+  const changeView = (view: "full" | "voice") => {
+    const params = new URLSearchParams(location.search)
+    if (view === "voice") params.set("view", "voice")
+    else params.delete("view")
+    const search = params.toString()
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "" })
+  }
 
   useEffect(() => {
     // Wait until the replay metadata (has_voice) is known so the scripts are
@@ -124,7 +155,7 @@ export function ReplayPlayerPage() {
   }, [replayId, data])
 
   return (
-    <div className={isLobby ? "rpv-lobby" : undefined}>
+    <div className={(isLobby ? "rpv-lobby " : "") + (isVoiceMode ? "rpv-voice-mode" : "")}>
       <style>{`
         .rpv-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;}
         .rpv-top h2{display:flex;align-items:center;gap:6px;font-size:18px;font-weight:700;color:var(--foreground);margin:0;}
@@ -220,6 +251,9 @@ export function ReplayPlayerPage() {
         .rpv-lobby .rpv-canvas-wrap{position:absolute;width:1px;height:1px;clip-path:inset(50%);}
         .rpv-lobby .rpv-side{display:grid;grid-template-columns:minmax(260px,1fr) minmax(320px,2fr);max-height:none;overflow:visible;}
         .rpv-lobby .rpv-controls{margin-top:0;}
+        .rpv-legacy-shell-hidden{position:absolute;left:-10000px;top:0;width:900px;opacity:0;pointer-events:none;}
+        .rpv-mode-switch{display:flex;gap:4px;margin-left:auto;}
+        .rpv-mode-switch button{padding:5px 8px;font-size:11px;}.rpv-mode-switch button[data-active="true"]{background:var(--primary);border-color:var(--primary);}
         @media(max-width:700px){.rpv-lobby .rpv-side{grid-template-columns:1fr;}}
       `}</style>
 
@@ -232,6 +266,7 @@ export function ReplayPlayerPage() {
         </h2>
         <div className="rpv-top-actions">
           <span className="rpv-time">{data?.replay.recorded_at ? formatBrowserDate(data.replay.recorded_at) : ""}</span>
+          {!isLobby && <div className="rpv-mode-switch"><button type="button" className="rpv-btn" data-active={!isVoiceMode} onClick={() => changeView("full")}>Полный просмотр</button><button type="button" className="rpv-btn" data-active={isVoiceMode} onClick={() => changeView("voice")}>Только голос</button></div>}
           {IS_V2 && replayId && (
             <a
               className="rpv-btn rpv-download"
@@ -245,6 +280,7 @@ export function ReplayPlayerPage() {
         </div>
       </div>
 
+      <div className={isVoiceMode ? "rpv-legacy-shell-hidden" : undefined}>
       <div className="rpv-layout">
         <div>
           <div className="rpv-canvas-wrap">
@@ -283,7 +319,6 @@ export function ReplayPlayerPage() {
         <div className="rpv-side">
           <div className="rpv-panel">
             <h3 className="flex items-center gap-1.5"><AdaptiveIcon emoji="🔊" icon={Volume2} />Звук</h3>
-            <div className="rpv-row"><label><input type="checkbox" id="rpvVoiceEnable" /> Включить голос</label></div>
             <div className="rpv-row"><span>Общая громкость</span><input type="range" className="rpv-slider" id="rpvMasterVol" min={0} max={100} defaultValue={100} /></div>
             <div className="rpv-row" style={isLobby ? { display: "none" } : undefined}><label><input type="checkbox" id="rpvSpatial" defaultChecked={!isLobby} /> Затухание по расстоянию</label></div>
             <div className="rpv-row" style={isLobby ? { display: "none" } : undefined}><span title="Дистанция, на которой голос затухает до нуля">Радиус слышимости</span><input type="range" className="rpv-slider" id="rpvFalloff" min={500} max={8000} step={100} defaultValue={3000} /></div>
@@ -302,7 +337,9 @@ export function ReplayPlayerPage() {
           {replayId && !isLobby && <ReplayLogsPanel replayId={replayId} />}
         </div>
       </div>
-      {IS_V2 && replayId && !isLobby && (
+      </div>
+      {isVoiceMode && <ReplayVoiceWorkspace replayKind={data?.replay.replay_kind ?? "round"} initialData={voiceWorkspaceData} />}
+      {IS_V2 && replayId && !isLobby && !isVoiceMode && (
         <ReplayTimelineWorkbench replayId={replayId} initialDurationMs={data?.replay.duration_ms} />
       )}
     </div>
