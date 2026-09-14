@@ -24,6 +24,18 @@ _health_floors: dict[str, dict[str, float]] = {}
 _DEFAULT_CONTENT_DIR = r"C:\Users\icegergert\Documents\BarotraumaWorkBench\ASPER\MorePlugins_Barotrauma\LuaCsForBarotrauma_source\Barotrauma\Content"
 _BUNDLED_CATALOG_PATH = Path(__file__).resolve().parent.parent / "static" / "creature_catalog.json"
 _DEPLOYED_CATALOG_PATH = Path("/home/container/static/creature_catalog.json")
+_HARDCODED_CREATURE_IDS = (
+    "Ancient", "Balloon", "Bonethresher", "Carrier", "Charybdis", "Charybdisold",
+    "Coelanth", "Crawler", "Crawlerbroodmother", "Crawlerhusk", "Cyborgworm",
+    "Defensebot", "Endworm", "Fractalguardian", "Fractalguardian_emp", "Fractalguardian2",
+    "Guardianrepairbot", "Hammerhead", "Hammerheadgold", "Hammerheadmatriarch", "Hammerheadspawn",
+    "Husk_chimera", "Husk_prowler", "Huskcontainer", "Jove", "Latcher", "Legacycharybdis",
+    "Legacycrawler", "Legacyendworm", "Legacyfractalguardian", "Legacyfractalguardian2", "Legacyhusk",
+    "Legacymantis", "Legacymoloch", "Legacytigerthresher", "Legacywatcher", "Leucocyte", "Mantis",
+    "Moloch", "Molochbaby", "Molochblack", "Mudraptor", "Mudraptor_unarmored", "Orangeboy",
+    "Peanut", "Portalguardian", "Psilotoad", "Spineling", "Spineling_giant", "Spineling_morbusine",
+    "Swarmfeeder", "Terminalcell", "Tigerthresher", "Watcher",
+)
 
 
 @lru_cache(maxsize=1)
@@ -38,7 +50,21 @@ def _creature_catalog() -> list[dict[str, Any]]:
                     return json.load(source).get("creatures", [])
             except (OSError, ValueError):
                 continue
-        return []
+        return [{
+            "id": creature_id,
+            "group": "",
+            "base_hp": 0,
+            "needs_water": False,
+            "needs_air": False,
+            "combat_strength": 0,
+            "sight": 0,
+            "hearing": 0,
+            "aggression_hurt": 0,
+            "aggression_greed": 0,
+            "flee_health_threshold": 0,
+            "aggressive_boarding": False,
+            "targets": [],
+        } for creature_id in _HARDCODED_CREATURE_IDS]
     creatures: list[dict[str, Any]] = []
     for directory, _, files in os.walk(characters):
         for filename in files:
@@ -72,7 +98,23 @@ def _creature_catalog() -> list[dict[str, Any]]:
                 })
             except (ET.ParseError, OSError, ValueError):
                 continue
-    return sorted(creatures, key=lambda creature: creature["id"].lower())
+    if creatures:
+        return sorted(creatures, key=lambda creature: creature["id"].lower())
+    return [{
+        "id": creature_id,
+        "group": "",
+        "base_hp": 0,
+        "needs_water": False,
+        "needs_air": False,
+        "combat_strength": 0,
+        "sight": 0,
+        "hearing": 0,
+        "aggression_hurt": 0,
+        "aggression_greed": 0,
+        "flee_health_threshold": 0,
+        "aggressive_boarding": False,
+        "targets": [],
+    } for creature_id in _HARDCODED_CREATURE_IDS]
 
 
 def _require_view(request: Request, db: Session) -> AdminUser:
