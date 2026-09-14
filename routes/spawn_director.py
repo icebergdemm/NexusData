@@ -3,6 +3,7 @@
 from datetime import datetime
 from functools import lru_cache
 import os
+import json
 from typing import Any
 import xml.etree.ElementTree as ET
 
@@ -20,6 +21,7 @@ admin_router = APIRouter(prefix="/api/v1/admin/spawn-director", tags=["spawn-dir
 _snapshots: dict[str, dict[str, Any]] = {}
 _health_floors: dict[str, dict[str, float]] = {}
 _DEFAULT_CONTENT_DIR = r"C:\Users\icegergert\Documents\BarotraumaWorkBench\ASPER\MorePlugins_Barotrauma\LuaCsForBarotrauma_source\Barotrauma\Content"
+_BUNDLED_CATALOG_PATH = os.path.join("static", "creature_catalog.json")
 
 
 @lru_cache(maxsize=1)
@@ -28,7 +30,11 @@ def _creature_catalog() -> list[dict[str, Any]]:
     root = os.environ.get("BAROTRAUMA_CONTENT_DIR", _DEFAULT_CONTENT_DIR)
     characters = os.path.join(root, "Characters")
     if not os.path.isdir(characters):
-        return []
+        try:
+            with open(_BUNDLED_CATALOG_PATH, encoding="utf-8") as source:
+                return json.load(source).get("creatures", [])
+        except (OSError, ValueError):
+            return []
     creatures: list[dict[str, Any]] = []
     for directory, _, files in os.walk(characters):
         for filename in files:
@@ -96,9 +102,11 @@ def get_health_floor(server_name: str = "UNKNOWN") -> dict[str, float]:
 
 
 @admin_router.get("/state")
-def get_state(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_state(request: Request, server_name: str | None = None, db: Session = Depends(get_db)) -> dict[str, Any]:
     _require_view(request, db)
-    return {"servers": list(_snapshots.values())}
+    server = server_name.strip().upper() if server_name else None
+    snapshots = list(_snapshots.values())
+    return {"servers": [snapshot for snapshot in snapshots if not server or snapshot["server_name"] == server]}
 
 
 @admin_router.get("/creatures")

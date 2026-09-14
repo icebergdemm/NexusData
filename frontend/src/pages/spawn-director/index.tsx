@@ -8,6 +8,7 @@ import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { worldStateApi } from "@/pages/world-overview/api"
 import { WorldCanvas } from "@/pages/world-overview/WorldCanvas"
 
@@ -17,21 +18,22 @@ type Creature = { id: string; group: string; base_hp: number; needs_water: boole
 
 export function SpawnDirectorPage() {
   const [roundId, setRoundId] = useState<string | null>(null)
+  const [selectedServer, setSelectedServer] = useState<string>("__all__")
   const [multiplier, setMultiplier] = useState("0")
   const [fixed, setFixed] = useState("0")
   const [saving, setSaving] = useState(false)
   const [savedFor, setSavedFor] = useState<string | null>(null)
   const { data: admin } = useCurrentAdmin()
-  const { data } = useQuery({ queryKey: ["spawn-director"], queryFn: () => api.get<{ servers: Server[] }>("/admin/spawn-director/state"), refetchInterval: 3000 })
+  const { data } = useQuery({ queryKey: ["spawn-director", selectedServer], queryFn: () => api.get<{ servers: Server[] }>(`/admin/spawn-director/state${selectedServer === "__all__" ? "" : `?server_name=${encodeURIComponent(selectedServer)}`}`), refetchInterval: 3000 })
   const { data: creatureData } = useQuery({ queryKey: ["spawn-director-creatures"], queryFn: () => api.get<{ creatures: Creature[] }>("/admin/spawn-director/creatures"), staleTime: Infinity, retry: false })
   const servers = data?.servers ?? []
   const creatures = creatureData?.creatures ?? []
-  const { data: rounds } = useQuery({ queryKey: ["spawn-director-rounds"], queryFn: () => worldStateApi.listRounds(), refetchInterval: 5000 })
+  const { data: rounds } = useQuery({ queryKey: ["spawn-director-rounds", selectedServer], queryFn: () => worldStateApi.listRounds(selectedServer === "__all__" ? null : selectedServer), refetchInterval: 5000 })
   useEffect(() => { if (!roundId) setRoundId(rounds?.rounds[0]?.round_id ?? null) }, [roundId, rounds])
   const { data: geometry } = useQuery({ queryKey: ["spawn-director-geometry", roundId], queryFn: () => worldStateApi.getGeometry(roundId as string), enabled: !!roundId, staleTime: Infinity })
   const { data: state } = useQuery({ queryKey: ["spawn-director-world", roundId], queryFn: () => worldStateApi.getState(roundId as string), enabled: !!roundId, refetchInterval: 1000 })
   return <div className="space-y-5">
-    <PageHeader title="Директор волн" description="Адаптивная угроза и точки появления на карте текущего раунда" icon={Radar} />
+    <PageHeader title="Директор волн" description="Адаптивная угроза и точки появления на карте текущего раунда" icon={Radar} actions={<Select value={selectedServer} onValueChange={(server) => { setSelectedServer(server); setRoundId(null) }}><SelectTrigger className="w-44"><SelectValue placeholder="Сервер" /></SelectTrigger><SelectContent><SelectItem value="__all__">Все серверы</SelectItem>{[...new Set((data?.servers ?? []).map(server => server.server_name))].map(server => <SelectItem key={server} value={server}>{server}</SelectItem>)}</SelectContent></Select>} />
     {geometry && state && <section className="h-[420px]"><WorldCanvas geometry={geometry} state={state} selectedCharacterId={null} onSelectCharacter={() => {}} /></section>}
     {!servers.length ? <Card><CardContent className="py-16 text-center text-sm text-muted-foreground">Телеметрия ещё не поступала. Укажите `TelemetryUrl` в `adaptive_spawn_director.json`.</CardContent></Card> : servers.map(server => <section key={server.server_name} className="space-y-3">
       <div className="flex items-center justify-between"><h2 className="font-semibold">{server.server_name}</h2><Badge variant="secondary">{server.mode}</Badge></div>

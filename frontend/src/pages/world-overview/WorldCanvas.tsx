@@ -128,6 +128,23 @@ export function WorldCanvas({
     frame = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(frame)
   }, [state])
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      const rect = container.getBoundingClientRect()
+      const mx = event.clientX - rect.left
+      const my = event.clientY - rect.top
+      const v = viewRef.current
+      const [wx, wy] = toWorld(mx, my, v)
+      const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15
+      const nextScale = Math.min(Math.max(v.scale * factor, 0.001), 5)
+      setView({ scale: nextScale, offsetX: mx - wx * nextScale, offsetY: my + wy * nextScale })
+    }
+    container.addEventListener("wheel", handleWheel, { passive: false })
+    return () => container.removeEventListener("wheel", handleWheel)
+  }, [])
   // Tracks which character we've already auto-centered on, so re-selecting
   // the SAME character on every ~3s poll doesn't keep snapping the camera
   // back if the user has since panned away manually.
@@ -310,7 +327,7 @@ export function WorldCanvas({
       const radius = c.human ? 5 : 7
       ctx.beginPath()
       ctx.arc(sx, sy, radius, 0, Math.PI * 2)
-      ctx.fillStyle = c.dead ? "#5A5A5A" : (TEAM_COLORS[c.team] ?? "#C85A5A")
+       ctx.fillStyle = c.dead ? "#5A5A5A" : c.human ? "#5AA0FF" : (TEAM_COLORS[c.team] ?? "#B4B4B4")
       ctx.fill()
       if (c.id === selectedCharacterId) {
         ctx.lineWidth = 2
@@ -371,23 +388,6 @@ export function WorldCanvas({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId, startZone, abyssStartY])
-
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault()
-    const container = containerRef.current
-    if (!container) return
-    const rect = container.getBoundingClientRect()
-    const mx = e.clientX - rect.left
-    const my = e.clientY - rect.top
-    const v = viewRef.current
-    const [wx, wy] = toWorld(mx, my, v)
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
-    const nextScale = Math.min(Math.max(v.scale * factor, 0.001), 5)
-    // Keep the point under the cursor fixed while zooming.
-    const nextOffsetX = mx - wx * nextScale
-    const nextOffsetY = my + wy * nextScale
-    setView({ scale: nextScale, offsetX: nextOffsetX, offsetY: nextOffsetY })
-  }
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (!targetMode && onMoveMarker) {
@@ -515,7 +515,6 @@ export function WorldCanvas({
       ref={containerRef}
       className={`relative h-full w-full overflow-hidden rounded-lg border bg-[#0A0E14] ${hoveredMarkerId ? "cursor-context-menu" : targetMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
       title={hoveredMarkerId ? "ПКМ — меню метки" : undefined}
-      onWheel={onWheel}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
