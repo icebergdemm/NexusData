@@ -1,7 +1,10 @@
 """Live adaptive monster-wave telemetry for the administrator dashboard."""
 
 from datetime import datetime
+from functools import lru_cache
+import os
 from typing import Any
+import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -16,6 +19,50 @@ router = APIRouter(prefix="/api/v1/spawn-director", tags=["spawn-director"], dep
 admin_router = APIRouter(prefix="/api/v1/admin/spawn-director", tags=["spawn-director-admin"])
 _snapshots: dict[str, dict[str, Any]] = {}
 _health_floors: dict[str, dict[str, float]] = {}
+_DEFAULT_CONTENT_DIR = r"C:\Users\icegergert\Documents\BarotraumaWorkBench\ASPER\MorePlugins_Barotrauma\LuaCsForBarotrauma_source\Barotrauma\Content"
+
+
+@lru_cache(maxsize=1)
+def _creature_catalog() -> list[dict[str, Any]]:
+    """Read vanilla creature XML. Set BAROTRAUMA_CONTENT_DIR on deployed NexusData."""
+    root = os.environ.get("BAROTRAUMA_CONTENT_DIR", _DEFAULT_CONTENT_DIR)
+    characters = os.path.join(root, "Characters")
+    if not os.path.isdir(characters):
+        return []
+    creatures: list[dict[str, Any]] = []
+    for directory, _, files in os.walk(characters):
+        for filename in files:
+            if not filename.endswith(".xml") or filename.lower().endswith("ragdoll.xml"):
+                continue
+            try:
+                character = ET.parse(os.path.join(directory, filename)).getroot()
+                if character.tag.lower() != "character" or character.attrib.get("humanoid", "False").lower() == "true":
+                    continue
+                health, ai = character.find("health"), character.find("ai")
+                if health is None:
+                    continue
+                targets = [] if ai is None else [
+                    {"tag": target.attrib.get("tag", "?"), "state": target.attrib.get("state", "Observe"), "priority": target.attrib.get("priority", "0")}
+                    for target in ai.findall("target")
+                ]
+                creatures.append({
+                    "id": character.attrib.get("speciesname", os.path.splitext(filename)[0]),
+                    "group": character.attrib.get("group", ""),
+                    "base_hp": float(health.attrib.get("vitality", 0)),
+                    "needs_water": character.attrib.get("needswater", "False").lower() == "true",
+                    "needs_air": character.attrib.get("needsair", "False").lower() == "true",
+                    "combat_strength": float((ai.attrib if ai is not None else {}).get("combatstrength", 0)),
+                    "sight": float((ai.attrib if ai is not None else {}).get("sight", 0)),
+                    "hearing": float((ai.attrib if ai is not None else {}).get("hearing", 0)),
+                    "aggression_hurt": float((ai.attrib if ai is not None else {}).get("aggressionhurt", 0)),
+                    "aggression_greed": float((ai.attrib if ai is not None else {}).get("aggressiongreed", 0)),
+                    "flee_health_threshold": float((ai.attrib if ai is not None else {}).get("fleehealththreshold", 0)),
+                    "aggressive_boarding": (ai.attrib if ai is not None else {}).get("aggressiveboarding", "False").lower() == "true",
+                    "targets": targets,
+                })
+            except (ET.ParseError, OSError, ValueError):
+                continue
+    return sorted(creatures, key=lambda creature: creature["id"].lower())
 
 
 def _require_view(request: Request, db: Session) -> AdminUser:
@@ -34,6 +81,9 @@ async def ingest_snapshot(body: dict[str, Any]) -> dict[str, str]:
         "mode": body.get("mode", "observe"),
         "crew_power": body.get("crew_power", 0),
         "threat_multiplier": body.get("threat_multiplier", 1),
+        "learned_baseline": body.get("learned_baseline", 0),
+        "baseline_samples": body.get("baseline_samples", 0),
+        "explanation": body.get("explanation", ""),
         "waves": body.get("waves", []),
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
@@ -49,6 +99,15 @@ def get_health_floor(server_name: str = "UNKNOWN") -> dict[str, float]:
 def get_state(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     _require_view(request, db)
     return {"servers": list(_snapshots.values())}
+
+
+@admin_router.get("/creatures")
+def get_creatures(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_view(request, db)
+    creatures = _creature_catalog()
+    if not creatures:
+        raise HTTPException(status_code=503, detail="Каталог недоступен: задайте BAROTRAUMA_CONTENT_DIR")
+    return {"creatures": creatures}
 
 
 @admin_router.put("/health-floor/{server_name}")
