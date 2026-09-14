@@ -1,7 +1,5 @@
 import { useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   PLAYER_EXPORT_GROUPS,
   type JsonValue,
@@ -24,55 +22,79 @@ function isObject(value: JsonValue): value is { [key: string]: JsonValue } {
 }
 
 function scalarLabel(value: JsonValue): string {
-  if (value === null) return "—"
-  if (typeof value === "boolean") return value ? "Да" : "Нет"
+  if (value === null) return "null"
+  if (typeof value === "string") return JSON.stringify(value)
   return String(value)
 }
 
-function PreviewValue({ label, value, depth = 0 }: { label: string; value: JsonValue; depth?: number }) {
+function valueSummary(value: JsonValue): string {
+  if (Array.isArray(value)) return `${value.length} записей`
+  if (isObject(value)) return `${Object.keys(value).length} полей`
+  return scalarLabel(value)
+}
+
+function PreviewValue({
+  label,
+  value,
+  depth = 0,
+  hint,
+}: {
+  label: string
+  value: JsonValue
+  depth?: number
+  hint?: string
+}) {
+  const indent = { paddingLeft: `${depth * 1.25}rem` }
+
   if (Array.isArray(value)) {
-    return <ArrayPreview label={label} value={value} depth={depth} />
+    return <ArrayPreview label={label} value={value} depth={depth} hint={hint} />
   }
   if (isObject(value)) {
     return (
-      <div className={depth ? "space-y-2 border-l border-border pl-3" : "space-y-2"}>
-        {Object.entries(value).map(([key, child]) => (
-          <PreviewValue key={key} label={key} value={child} depth={depth + 1} />
-        ))}
+      <div>
+        <div style={indent} className="flex min-w-0 items-center gap-1.5 py-0.5">
+          <span className="text-info">{`"${label}":`}</span>
+          {hint && <span className="truncate text-muted-foreground">// {hint}</span>}
+        </div>
+        <div>
+          {Object.entries(value).map(([key, child]) => (
+            <PreviewValue key={key} label={key} value={child} depth={depth + 1} />
+          ))}
+        </div>
       </div>
     )
   }
   return (
-    <div className="grid grid-cols-[minmax(8rem,0.45fr)_minmax(0,1fr)] gap-3 border-b border-border/60 py-1.5 text-xs last:border-0">
-      <dt className="break-words text-muted-foreground">{label}</dt>
-      <dd className="break-words font-mono">{scalarLabel(value)}</dd>
+    <div style={indent} className="grid grid-cols-[minmax(8rem,0.42fr)_minmax(0,1fr)] gap-2 py-0.5">
+      <span className="text-info">{`"${label}":`}</span>
+      <span className="break-words text-foreground">{scalarLabel(value)}</span>
     </div>
   )
 }
 
-function ArrayPreview({ label, value, depth }: { label: string; value: JsonValue[]; depth: number }) {
+function ArrayPreview({ label, value, depth, hint }: { label: string; value: JsonValue[]; depth: number; hint?: string }) {
   const [expanded, setExpanded] = useState(value.length <= 3)
-  const lazy = value.length > 3
+  const indent = { paddingLeft: `${depth * 1.25}rem` }
+  const summary = hint ?? `${value.length} записей`
 
   return (
-    <div className={depth ? "border-l border-border pl-3" : ""}>
-      {lazy ? (
-        <button
-          type="button"
-          className="flex w-full items-center gap-1 py-1 text-left text-xs font-medium hover:text-primary"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-          <span>{label}</span>
-          <Badge variant="secondary" className="ml-1">{value.length}</Badge>
-        </button>
-      ) : (
-        <div className="py-1 text-xs font-medium">{label} <Badge variant="secondary">{value.length}</Badge></div>
-      )}
+    <div>
+      <button
+        type="button"
+        style={indent}
+        className="flex w-full min-w-0 items-center gap-1.5 py-0.5 text-left hover:text-primary"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        {expanded ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
+        <span className="text-info">{`"${label}":`}</span>
+        <span className="text-muted-foreground">[ {summary} ]</span>
+      </button>
       {expanded && (
-        <div className="space-y-1 pl-3">
-          {value.map((item, index) => (
+        <div>
+          {value.length === 0 ? (
+            <div style={{ paddingLeft: `${(depth + 1) * 1.25}rem` }} className="py-0.5 text-muted-foreground">[ пусто ]</div>
+          ) : value.map((item, index) => (
             <PreviewValue key={`${label}-${index}`} label={`#${index + 1}`} value={item} depth={depth + 1} />
           ))}
         </div>
@@ -81,45 +103,28 @@ function ArrayPreview({ label, value, depth }: { label: string; value: JsonValue
   )
 }
 
-function groupSummary(value: JsonValue): string {
-  if (Array.isArray(value)) return `${value.length} записей`
-  if (isObject(value)) return `${Object.keys(value).length} полей`
-  return scalarLabel(value)
-}
-
 export function PlayerExportPreview({ data }: { data: PlayerPersonalFileExport }) {
   return (
-    <div className="space-y-3">
-      <Card className="border-primary/20 bg-primary/5">
-        <CardHeader className="gap-1 py-4">
-          <CardTitle className="text-sm">Личное дело игрока</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Схема {data.schema_version} · экспортировано {data.exported_at}
-          </p>
-        </CardHeader>
-        <CardContent className="py-0 pb-4">
-          <PreviewValue label="subject" value={data.subject} />
-        </CardContent>
-      </Card>
-
+    <div className="rounded-md border bg-muted/10 px-3 py-2 font-mono text-[11px] leading-5">
+      <div className="text-muted-foreground">&#123;</div>
+      <PreviewValue label="dossier_type" value={data.dossier_type} depth={1} />
+      <PreviewValue label="schema_version" value={data.schema_version} depth={1} />
+      <PreviewValue label="exported_at" value={data.exported_at} depth={1} />
+      <PreviewValue label="subject" value={data.subject} depth={1} hint="Объект экспорта" />
       {PLAYER_EXPORT_GROUPS.map((group) => {
         const value = data[group]
         if (value === undefined) return null
         return (
-          <Card key={group}>
-            <CardHeader className="gap-1 py-4">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="text-sm">{GROUP_LABELS[group]}</CardTitle>
-                <Badge variant="outline">{groupSummary(value)}</Badge>
-              </div>
-              <p className="font-mono text-[10px] text-muted-foreground">{group}</p>
-            </CardHeader>
-            <CardContent className="py-0 pb-4">
-              <PreviewValue label={group} value={value} />
-            </CardContent>
-          </Card>
+          <PreviewValue
+            key={group}
+            label={group}
+            value={value}
+            depth={1}
+            hint={`${GROUP_LABELS[group]} · ${valueSummary(value)}`}
+          />
         )
       })}
+      <div className="text-muted-foreground">&#125;</div>
     </div>
   )
 }

@@ -112,7 +112,7 @@ export function PlayerExportDialog({
 
   return (
     <Dialog open={open} onOpenChange={resetForOpen}>
-      <DialogContent className="flex max-h-[92vh] w-[min(96vw,72rem)] max-w-none flex-col gap-4 overflow-hidden">
+      <DialogContent className="flex h-[92vh] max-h-[92vh] min-h-0 w-[min(96vw,72rem)] max-w-none flex-col gap-4 overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><FileJson className="size-4" /> Экспорт личного дела</DialogTitle>
           <DialogDescription>
@@ -162,13 +162,13 @@ export function PlayerExportDialog({
           </Button>
         </div>
 
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           {ticketQuery.isLoading || (includedGroups.has("ai_assessment") && dossierLoading) ? (
             <div className="flex h-full min-h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
               <LoaderCircle className="size-4 animate-spin" /> Загружаем данные для preview…
             </div>
           ) : (
-            <ScrollArea className="h-full pr-3">
+            <ScrollArea className="h-full min-h-0 pr-3">
               <PlayerExportPreview data={exportData} />
             </ScrollArea>
           )}
