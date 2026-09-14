@@ -529,17 +529,18 @@
       const extracted = fflate.unzipSync(fallbackBytes, {
         filter: (file) => {
           const name = String(file.name || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
-          return name === "world.bin" || name.endsWith(".barodemo");
+          return name !== "manifest.json" && name !== "voice.bin";
         }
       });
       for (const [name, bytes] of Object.entries(extracted)) {
         const lower = name.replace(/\\/g, "/").split("/").pop().toLowerCase();
-        if ((lower === "world.bin" || lower.endsWith(".barodemo")) && bytes?.length) {
+        if (bytes?.length && (lower === "world.bin" || lower.endsWith(".barodemo") ||
+            (bytes[0] === 0x42 && bytes[1] === 0x44 && bytes[2] === 0x4D && bytes[3] === 0x4F))) {
           store.append(bytes);
           break;
         }
       }
-      if (!store.length) throw new Error("Не удалось найти world.bin внутри .zip — архив повреждён или пуст");
+      if (!store.length) throw new Error("Не удалось найти BDMO-поток внутри .zip — архив повреждён или пуст");
     }
     return store;
   }
