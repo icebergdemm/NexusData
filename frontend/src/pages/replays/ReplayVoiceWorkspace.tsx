@@ -112,6 +112,13 @@ export function playbackPositionFromPointer(clientX: number, rect: TimelineRect,
   return Math.round(ratio * Math.max(0, durationMs))
 }
 
+export function timelineEndAfterBridgeReady(initialDurationMs: number, currentEndMs: number, bridgeDurationMs: number): number {
+  const initialWindowEnd = Math.max(1, Math.round(Number(initialDurationMs) || 0))
+  const currentWindowEnd = Math.max(1, Math.round(Number(currentEndMs) || 0))
+  const bridgeDuration = Math.max(1, Math.round(Number(bridgeDurationMs) || 0))
+  return currentWindowEnd === initialWindowEnd ? bridgeDuration : currentWindowEnd
+}
+
 export function timelineWindowAfterWheel(input: TimelineWheelInput): { startMs: number; endMs: number } {
   const durationMs = Math.max(1, input.durationMs)
   const spanMs = clamp(input.endMs - input.startMs, 1, durationMs)
@@ -158,7 +165,7 @@ export function ReplayVoiceWorkspace({ replayKind, initialData }: { replayKind: 
       const detail = (event as CustomEvent<Record<string, unknown>>).detail
       setBridgeData(detail)
       const nextDuration = Number(detail.durationMs) || initialData.durationMs
-      setViewEndMs((current) => current === initialData.durationMs ? nextDuration : current)
+      setViewEndMs((current) => timelineEndAfterBridgeReady(initialData.durationMs, current, nextDuration))
     }
     const onTime = (event: Event) => {
       const detail = (event as CustomEvent<{ timeMs?: number; playing?: boolean }>).detail

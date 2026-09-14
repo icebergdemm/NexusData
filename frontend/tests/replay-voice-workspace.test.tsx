@@ -9,6 +9,7 @@ globalThis.window = { location: { pathname: "/v2" } } as unknown as Window & typ
 const {
   ReplayVoiceWorkspace,
   playbackPositionFromPointer,
+  timelineEndAfterBridgeReady,
   timelineWindowAfterWheel,
 } = await import("../src/pages/replays/ReplayVoiceWorkspace")
 
@@ -62,6 +63,11 @@ test("timeline pointer and wheel produce bounded replay positions", () => {
     deltaY: 100,
     pan: true,
   }), { startMs: 140, endMs: 340 })
+})
+
+test("bridge duration expands an initially unknown timeline", () => {
+  assert.equal(timelineEndAfterBridgeReady(0, 1, 355_000), 355_000)
+  assert.equal(timelineEndAfterBridgeReady(1_000, 700, 355_000), 700)
 })
 
 test("round voice workspace uses the same component contract", () => {
