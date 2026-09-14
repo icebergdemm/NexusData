@@ -441,8 +441,9 @@
         unzipper = new fflate.Unzip((file) => {
           // nwdemo is a multi-file ZIP. Decode only its BDMO world stream;
           // legacy archives still have one .barodemo entry.
-          const isWorld = file.name === "world.bin";
-          const isLegacyDemo = file.name.endsWith(".barodemo");
+          const entryName = String(file.name || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+          const isWorld = entryName === "world.bin";
+          const isLegacyDemo = entryName.endsWith(".barodemo");
           if (!isWorld && !isLegacyDemo) {
             // Every unzip entry must be consumed so fflate can advance to the
             // next one; discard manifest.json and voice.bin without buffering.
@@ -450,9 +451,20 @@
             file.start();
             return;
           }
+          let prefix = new Uint8Array(0);
+          let identified = isWorld || isLegacyDemo;
           file.ondata = (err, data) => {
             if (err) { streamError = err; return; }
-            try { store.append(data); }
+            try {
+              if (!identified) {
+                const merged = new Uint8Array(Math.min(4, prefix.length + data.length));
+                merged.set(prefix.subarray(0, merged.length));
+                if (merged.length > prefix.length) merged.set(data.subarray(0, merged.length - prefix.length), prefix.length);
+                prefix = merged;
+                identified = prefix.length < 4 || prefix[0] === 0x42 && prefix[1] === 0x44 && prefix[2] === 0x4D && prefix[3] === 0x4F;
+              }
+              if (identified) store.append(data);
+            }
             catch (e) { streamError = e; }
           };
           file.start();
