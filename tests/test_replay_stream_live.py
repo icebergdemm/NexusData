@@ -1,7 +1,7 @@
 """Live extraction from the demo binary stream (routes/replays.py).
 
-Covers the WorldDemoStreamer v6 contract: despawn frame 0x04, voice frame
-0x09 with channel marker, chat 0x05, static geometry 0x10/0x11, truncation
+Covers the WorldDemoStreamer v7 contract: despawn frame 0x04, voice frame
+0x09 with channel marker, legacy frame handling, static geometry 0x10/0x11, truncation
 safety, and despawn application to the live cache.
 
 Runnable directly (python tests/test_replay_stream_live.py) and under pytest.
@@ -48,9 +48,9 @@ def _str(s: str) -> bytes:
     return struct.pack("<H", len(b)) + b
 
 
-def _header(version=6, server="ASPER1", seed="abc", level="Ridge", sub="Orca") -> bytes:
+def _header(version=7, server="ASPER1", seed="abc", level="Ridge", sub="Orca") -> bytes:
     out = b"BDMO"
-    out += struct.pack("<H", version) + struct.pack("<H", 1) + struct.pack("B", 10)
+    out += struct.pack("<H", version) + struct.pack("<H", 1) + struct.pack("B", 5)
     out += struct.pack("<q", 1753000000000)
     out += _str(server) + _str(seed) + _str(level) + _str(sub)
     out += struct.pack("<I", 0)
@@ -61,11 +61,11 @@ def _origin(x=1000, y=-2000) -> bytes:
     return bytes([0x02]) + struct.pack("<ii", x, y)
 
 
-def _spawn(t=100, cid=3, species="human", name="Ivan", team=1, job=None) -> bytes:
+def _spawn(t=100, cid=3, species="human", name="Ivan", team=1, job=None, version=7) -> bytes:
     out = (bytes([0x03]) + struct.pack("<I", t) + struct.pack("<H", cid)
            + _str(species) + _str(name) + struct.pack("b", team))
-    if job is not None:  # v7 layout
-        out += _str(job)
+    if version >= 7:
+        out += _str(job or "")
     return out
 
 
@@ -80,12 +80,12 @@ def _hullassign(t=250, entries=((3, 12),)) -> bytes:
     return out
 
 
-def _snapshot(t=300, ents=((3, 10, -20, 0x04, 200),), doors=((87, 255),), subs=((1, 1000, -2000),), oxy=None) -> bytes:
+def _snapshot(t=300, ents=((3, 10, -20, 0x04, 200),), doors=((87, 255),), subs=((1, 1000, -2000),), oxy=None, version=7) -> bytes:
     out = bytes([0x01]) + struct.pack("<I", t) + struct.pack("<H", len(ents))
     for cid, x, y, flags, hp in ents:
         out += struct.pack("<H", cid) + struct.pack("<hhBB", x, y, flags, hp)
-        if oxy is not None:  # v7 layout: 1 oxygen byte per entity
-            out += bytes([oxy])
+        if version >= 7:
+            out += bytes([oxy or 0])
     out += struct.pack("<H", len(doors))
     for did, opened in doors:
         out += struct.pack("<H", did) + bytes([opened])
@@ -96,10 +96,13 @@ def _snapshot(t=300, ents=((3, 10, -20, 0x04, 200),), doors=((87, 255),), subs=(
     return out
 
 
-def _inventory(items=((901, 3, "revolver", 200),)) -> bytes:
+def _inventory(items=((901, 3, "revolver", 200),), version=7) -> bytes:
     out = bytes([0x08]) + struct.pack("<H", len(items))
     for iid, owner, ident, cond in items:
-        out += struct.pack("<H", iid) + struct.pack("<H", owner) + _str(ident) + bytes([cond])
+        if version >= 7:
+            out += struct.pack("<H", iid) + bytes([1]) + struct.pack("<H", owner) + _str(ident) + bytes([cond])
+        else:
+            out += struct.pack("<H", iid) + struct.pack("<H", owner) + _str(ident) + bytes([cond])
     return out
 
 
@@ -154,7 +157,7 @@ def _outline() -> bytes:
 def test_snapshot_roundtrip():
     data = _header() + _origin() + _spawn() + _snapshot() + _inventory() + bytes([0xFF]) + struct.pack("<I", 400)
     p = _parse_demo_chunk(data)
-    assert p["header"]["version"] == 6, p["header"]
+    assert p["header"]["version"] == 7, p["header"]
     assert p["header"]["server"] == "ASPER1"
     assert p["spawns"][3]["name"] == "Ivan"
     assert p["t"] == 0.3, p["t"]
@@ -179,7 +182,7 @@ def test_voice_event_chat_do_not_break_live():
 
 def test_despawn_applies_to_cache():
     state = {"pending": 0, "seq": 0}
-    _apply_parsed_to_state(state, _parse_demo_chunk(_header(version=6) + _spawn() + _snapshot()))
+    _apply_parsed_to_state(state, _parse_demo_chunk(_header(version=6) + _spawn(version=6) + _snapshot(version=6)))
     assert 3 in state["spawns"] and len(state["characters"]) == 1
     _apply_parsed_to_state(state, _parse_demo_chunk(_despawn()))
     assert 3 not in state.get("spawns", {}), state["spawns"]
@@ -204,7 +207,7 @@ def test_truncation_never_raises():
 
 
 def test_unknown_frame_stops_cleanly():
-    data = _snapshot() + bytes([0x42, 0x01, 0x02]) + _snapshot(t=999)
+    data = _snapshot(version=6) + bytes([0x42, 0x01, 0x02]) + _snapshot(t=999, version=6)
     p = _parse_demo_chunk(data, 6)
     assert p["t"] == 0.3, p.get("t")  # second snapshot after unknown frame ignored
 
@@ -225,7 +228,7 @@ def test_fill_static_only_when_empty():
 
 def test_v6_layouts_still_parse():
     # Legacy streams (DemoRecorder v4 / streamer v5-6): no job/oxygen/kinds.
-    data = _header(version=6) + _origin() + _spawn() + _snapshot() + _inventory()
+    data = _header(version=6) + _origin() + _spawn(version=6) + _snapshot(version=6) + _inventory(version=6)
     p = _parse_demo_chunk(data)
     assert p["spawns"][3]["job"] is None
     assert p["characters"][0]["oxygen"] == 0

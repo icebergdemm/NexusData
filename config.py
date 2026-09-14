@@ -96,7 +96,7 @@ def update_env_file(path: str | os.PathLike, updates: Dict[str, Any]) -> Path | 
 
 class Settings(BaseSettings):
     app_name: str = "Barotrauma RoundManager API"
-    app_version: str = "3.0"
+    app_version: str = "3.1.0"
     debug: bool = False
 
     # Database
