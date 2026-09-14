@@ -122,14 +122,15 @@ def group_voice_packets(
     *,
     merge_gap_ms: int = VOICE_MERGE_GAP_MS,
 ) -> list[dict]:
-    """Group packets by speaker while preserving radio statistics and order."""
+    """Group packets by speaker and channel while preserving their order."""
     segments: list[dict] = []
-    last_by_speaker: dict[int, dict] = {}
+    last_by_source: dict[tuple[int, bool], dict] = {}
 
     for packet in packets:
         if packet.speaker_id == 0:
             continue
-        previous = last_by_speaker.get(packet.speaker_id)
+        source = (packet.speaker_id, packet.radio)
+        previous = last_by_source.get(source)
         if previous and packet.time_ms - previous["end_ms"] <= merge_gap_ms:
             previous["end_ms"] = packet.time_ms
             previous["packet_count"] += 1
@@ -146,9 +147,27 @@ def group_voice_packets(
             "packet_records": [packet],
         }
         segments.append(segment)
-        last_by_speaker[packet.speaker_id] = segment
+        last_by_source[source] = segment
 
     return sorted(segments, key=lambda row: (row["start_ms"], row["speaker_id"]))
+
+
+def build_replay_voice_segment_rows(
+    grouped: Sequence[Mapping[str, int]],
+    *,
+    mapping: Mapping[int, str],
+    speaker_rows: Mapping[int, object],
+) -> list[dict]:
+    """Attach an optional resolved identity without dropping activity."""
+    return [{
+        "speaker_id": int(segment["speaker_id"]),
+        "steam_id": mapping.get(int(segment["speaker_id"])),
+        "player_id": getattr(speaker_rows.get(int(segment["speaker_id"])), "player_id", None),
+        "start_ms": int(segment["start_ms"]),
+        "end_ms": int(segment["end_ms"]),
+        "packet_count": int(segment["packet_count"]),
+        "radio_packet_count": int(segment["radio_packet_count"]),
+    } for segment in grouped]
 
 
 def _read_exact_stream(stream: BinaryIO, size: int) -> bytes:
@@ -404,7 +423,7 @@ def extract_voice_segment_metadata(path: str | os.PathLike[str]) -> ReplayVoiceS
     with _open_replay(path) as (stream, mapping):
         version, frames = _iter_replay_frames(stream)
         segments: list[dict] = []
-        active_by_speaker: dict[int, dict] = {}
+        active_by_source: dict[tuple[int, bool], dict] = {}
         names_by_character: dict[int, set[str]] = {}
         seen_speakers: set[int] = set()
         complete = False
@@ -425,7 +444,8 @@ def extract_voice_segment_metadata(path: str | os.PathLike[str]) -> ReplayVoiceS
 
             speaker_id = frame.speaker_id
             seen_speakers.add(speaker_id)
-            previous = active_by_speaker.get(speaker_id)
+            source = (speaker_id, frame.voice_radio)
+            previous = active_by_source.get(source)
             if previous and frame.time_ms - previous["end_ms"] <= VOICE_MERGE_GAP_MS:
                 previous["end_ms"] = frame.time_ms
                 previous["packet_count"] += 1
@@ -440,7 +460,7 @@ def extract_voice_segment_metadata(path: str | os.PathLike[str]) -> ReplayVoiceS
                 "radio_packet_count": int(frame.voice_radio),
             }
             segments.append(segment)
-            active_by_speaker[speaker_id] = segment
+            active_by_source[source] = segment
 
         if not complete:
             warnings.append("replay ended before FRAME_END")
@@ -712,6 +732,74 @@ class VoiceProfileService:
             row["end_ms"] = max(row["end_ms"], packet.time_ms)
         return stats
 
+    def _has_voice_activity(self, replay_id: int) -> bool:
+        from models import ReplayVoiceSegment
+
+        return self.db.query(ReplayVoiceSegment.id).filter(
+            ReplayVoiceSegment.replay_id == replay_id,
+        ).first() is not None
+
+    def ensure_replay_voice_activity(self, replay_id: int) -> None:
+        """Fill timeline metadata without invoking profile audio extraction."""
+        if not self._has_voice_activity(replay_id):
+            self._index_voice_activity_metadata(replay_id)
+
+    def _index_voice_activity_metadata(self, replay_id: int) -> None:
+        from models import ReplayVoiceSegment, ReplayVoiceSpeaker, RoundReplay
+
+        replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
+        if replay is None:
+            raise ValueError(f"replay {replay_id} does not exist")
+        replay_path = Path(__import__("services_replays").ReplayService(self.db).get_file_path(replay))
+        if not replay_path.is_file():
+            raise FileNotFoundError(str(replay_path))
+
+        extraction = extract_voice_segment_metadata(replay_path)
+        speaker_rows = {
+            row.speaker_id: row
+            for row in self.db.query(ReplayVoiceSpeaker).filter(ReplayVoiceSpeaker.replay_id == replay_id).all()
+        }
+        speaker_ids = {segment["speaker_id"] for segment in extraction.segments}
+        for speaker_id in speaker_ids:
+            row = speaker_rows.get(speaker_id)
+            names = extraction.names_by_speaker.get(speaker_id, set())
+            if row is None:
+                row = ReplayVoiceSpeaker(
+                    replay_id=replay_id,
+                    speaker_id=speaker_id,
+                    names=sorted(names),
+                    resolution_status="unresolved",
+                )
+                self.db.add(row)
+                speaker_rows[speaker_id] = row
+            if row.resolution_status == "unresolved" and row.decided_by_admin_id is None:
+                player, candidates, source = self._resolve_speaker(
+                    speaker_id,
+                    names,
+                    extraction.mapping.get(speaker_id),
+                )
+                row.names = sorted(names)
+                row.candidate_profiles = candidates
+                if player:
+                    row.steam_id = player["steam_id"]
+                    row.player_id = player.get("player_id")
+                    row.resolution_status = "mapped"
+                    row.mapping_source = source
+
+        self.db.flush()
+        mapping = {
+            speaker_id: row.steam_id
+            for speaker_id, row in speaker_rows.items()
+            if row.steam_id
+        }
+        for segment in build_replay_voice_segment_rows(
+            extraction.segments,
+            mapping=mapping,
+            speaker_rows=speaker_rows,
+        ):
+            self.db.add(ReplayVoiceSegment(replay_id=replay_id, **segment))
+        self.db.commit()
+
     def index_replay(self, replay_id: int) -> dict:
         from models import ReplayVoiceSegment, ReplayVoiceSpeaker, RoundReplay
 
@@ -785,16 +873,16 @@ class VoiceProfileService:
 
         self.db.flush()
         self.db.query(ReplayVoiceSegment).filter(ReplayVoiceSegment.replay_id == replay_id).delete(synchronize_session=False)
-        for segment in grouped:
-            steam_id = mapping.get(segment["speaker_id"])
-            if not steam_id:
-                continue
-            speaker_row = speaker_rows.get(segment["speaker_id"])
+        for segment in build_replay_voice_segment_rows(
+            grouped,
+            mapping=mapping,
+            speaker_rows=speaker_rows,
+        ):
             self.db.add(ReplayVoiceSegment(
                 replay_id=replay_id,
                 speaker_id=segment["speaker_id"],
-                steam_id=steam_id,
-                player_id=speaker_row.player_id if speaker_row else None,
+                steam_id=segment["steam_id"],
+                player_id=segment["player_id"],
                 start_ms=segment["start_ms"],
                 end_ms=segment["end_ms"],
                 packet_count=segment["packet_count"],

@@ -1816,6 +1816,10 @@ async def api_replay_detail(request: Request, replay_id: int, db: Session = Depe
     replay = svc.get_by_id(replay_id)
     if not replay:
         raise HTTPException(status_code=404, detail="Реплей не найден")
+    if getattr(replay, "has_voice", False):
+        from services_voice_profiles import VoiceProfileService
+
+        VoiceProfileService(db).ensure_replay_voice_activity(replay_id)
     payload = _serialize_replay(replay)
     payload["voice_speakers"] = [
         _serialize_replay_voice_speaker(row)

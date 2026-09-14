@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import test from "node:test"
 
 import {
@@ -45,6 +46,14 @@ test("filterVoiceLanes can show only radio activity and selected speakers", () =
   assert.deepEqual(filtered[0].segments, [
     { speakerId: 1, startMs: 700, endMs: 800, radio: true },
   ])
+})
+
+test("replay bridge emits the voice utility radio field", () => {
+  const source = readFileSync(new URL("../static/js/replay_player.js", import.meta.url), "utf8")
+  const bridge = source.slice(source.indexOf("function voiceTimelineData"), source.indexOf("function timelineBridgeData"))
+
+  assert.match(bridge, /radio,packet_count:1/)
+  assert.doesNotMatch(bridge, /channel:/)
 })
 
 test("voice view query defaults to full mode and accepts only voice mode", () => {

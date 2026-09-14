@@ -1242,7 +1242,7 @@
         previous.end_ms=Math.max(previous.end_ms,timeMs+PACKET_TAIL_MS);
         previous.packet_count++;
       }else{
-        const segment={speaker_id:sid,start_ms:timeMs,end_ms:Math.min(demo.durationMs,timeMs+PACKET_TAIL_MS),channel:radio?"radio":"local",packet_count:1};
+        const segment={speaker_id:sid,start_ms:timeMs,end_ms:Math.min(demo.durationMs,timeMs+PACKET_TAIL_MS),radio,packet_count:1};
         segments.push(segment);active.set(key,segment);
       }
     }
