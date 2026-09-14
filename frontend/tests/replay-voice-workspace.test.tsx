@@ -10,6 +10,7 @@ globalThis.window = { location: { pathname: "/v2" } } as unknown as Window & typ
 const {
   ReplayVoiceWorkspace,
   playbackPositionFromPointer,
+  timelineZoomAnchorRatio,
   timelineEndAfterBridgeReady,
   timelineWindowAfterWheel,
 } = await import("../src/pages/replays/ReplayVoiceWorkspace")
@@ -48,6 +49,9 @@ test("voice workspace renders one timeline without placeholder categories or dup
 
 test("timeline pointer and wheel produce bounded replay positions", () => {
   assert.equal(playbackPositionFromPointer(150, { left: 100, width: 200 }, 1_000), 250)
+  assert.equal(timelineZoomAnchorRatio(600, 100, 1_100), 0.5)
+  assert.equal(timelineZoomAnchorRatio(-100, 100, 1_100), 0)
+  assert.equal(timelineZoomAnchorRatio(2_000, 100, 1_100), 1)
   assert.deepEqual(timelineWindowAfterWheel({
     startMs: 100,
     endMs: 300,

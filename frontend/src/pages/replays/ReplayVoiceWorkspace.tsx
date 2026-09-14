@@ -112,6 +112,10 @@ export function playbackPositionFromPointer(clientX: number, rect: TimelineRect,
   return Math.round(ratio * Math.max(0, durationMs))
 }
 
+export function timelineZoomAnchorRatio(timeMs: number, startMs: number, endMs: number): number {
+  return clamp((timeMs - startMs) / Math.max(1, endMs - startMs), 0, 1)
+}
+
 export function timelineEndAfterBridgeReady(initialDurationMs: number, currentEndMs: number, bridgeDurationMs: number): number {
   const initialWindowEnd = Math.max(1, Math.round(Number(initialDurationMs) || 0))
   const currentWindowEnd = Math.max(1, Math.round(Number(currentEndMs) || 0))
@@ -225,13 +229,15 @@ export function ReplayVoiceWorkspace({ replayKind, initialData }: { replayKind: 
       startMs: viewStartMs,
       endMs: viewEndMs,
       durationMs,
-      anchorRatio: clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1),
+      anchorRatio: event.shiftKey
+        ? clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1)
+        : timelineZoomAnchorRatio(timeMs, viewStartMs, viewEndMs),
       deltaY: event.deltaY,
       pan: event.shiftKey,
     })
     setViewStartMs(windowAfterWheel.startMs)
     setViewEndMs(windowAfterWheel.endMs)
-  }, [durationMs, viewEndMs, viewStartMs])
+  }, [durationMs, timeMs, viewEndMs, viewStartMs])
   const togglePlaying = useCallback(() => {
     const next = !playing
     if (next) {
