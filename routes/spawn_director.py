@@ -23,7 +23,7 @@ _snapshots: dict[str, dict[str, Any]] = {}
 _health_floors: dict[str, dict[str, float]] = {}
 _DEFAULT_CONTENT_DIR = r"C:\Users\icegergert\Documents\BarotraumaWorkBench\ASPER\MorePlugins_Barotrauma\LuaCsForBarotrauma_source\Barotrauma\Content"
 _BUNDLED_CATALOG_PATH = Path(__file__).resolve().parent.parent / "static" / "creature_catalog.json"
-_DEPLOYED_CATALOG_PATH = Path("/static/creature_catalog.json")
+_DEPLOYED_CATALOG_PATH = Path("/home/container/static/creature_catalog.json")
 
 
 @lru_cache(maxsize=1)
