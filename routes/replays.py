@@ -1,6 +1,6 @@
 """
 Round replays routes:
-- API: HTTP upload of .barodemo / .barodemo.zip from game servers (API key).
+    - API: HTTP upload of .nwdemo / .barodemo from game servers (API key).
 - Admin panel: list, player page, download, delete, settings.
 
 The download endpoint streams the COMPRESSED archive directly to the browser,
@@ -1041,7 +1041,7 @@ async def _ensure_csrf(request: Request, db: Session):
 @api_router.post("/upload")
 async def upload_replay(
     request: Request,
-    file: Optional[UploadFile] = File(None, description=".barodemo или .barodemo.zip"),
+    file: Optional[UploadFile] = File(None, description=".nwdemo или .barodemo"),
     server_name: Optional[str] = Query(None, description="Имя сервера-отправителя"),
     notes: Optional[str] = Query(None),
     db: Session = Depends(get_db),
@@ -1133,6 +1133,7 @@ async def upload_replay(
         "stored_filename": replay.stored_filename,
         "file_size": replay.file_size,
         "has_voice": bool(replay.has_voice),
+        "is_broken": bool(replay.is_broken),
     }
 
 

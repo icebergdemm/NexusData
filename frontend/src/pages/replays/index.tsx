@@ -29,6 +29,7 @@ import { formatBrowserDate } from "@/lib/format-date"
 interface ReplayRow {
   id: number; server_name: string | null; submarine_name: string | null; level_name: string | null
   file_size: number | null; has_voice: boolean; recorded_at: string | null; uploaded_at: string | null
+  is_broken: boolean
   replay_kind: "round" | "lobby" | "lobby_dump"
   dumped_by_name: string | null
 }
@@ -466,6 +467,7 @@ function DemosTab() {
                     <Badge variant={r.replay_kind === "round" ? "secondary" : "outline"} className={r.replay_kind === "lobby_dump" ? "ml-2 border-yellow-500 bg-yellow-500/15 text-yellow-700 dark:text-yellow-300" : "ml-2"}>
                       {r.replay_kind === "lobby_dump" ? "Принудительный дамп" : r.replay_kind === "lobby" ? "Лобби" : "Раунд"}
                     </Badge>
+                    {r.is_broken && <Badge variant="outline" className="ml-2 border-red-500 bg-red-500/15 text-red-700 dark:text-red-300">Неполная</Badge>}
                     {r.level_name && r.replay_kind === "round" && <span className="text-xs text-muted-foreground"> · {r.level_name}</span>}
                     {r.replay_kind === "lobby_dump" && <div className="mt-1 text-xs text-yellow-700 dark:text-yellow-300">Инициировал: {r.dumped_by_name ?? "неизвестный пользователь"}</div>}
                   </TableCell>

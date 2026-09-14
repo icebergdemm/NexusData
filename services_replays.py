@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import Iterator, Optional, List
 
 from sqlalchemy.orm import Session
+from fastapi import HTTPException
 
 from config import get_settings
 from models import RoundReplay, AppSetting
@@ -383,6 +384,31 @@ class ReplayService:
                     names = zf.namelist()
                     if not names:
                         return {}
+                    if "manifest.json" in names:
+                        import json
+                        with zf.open("manifest.json", "r") as manifest:
+                            data = json.loads(manifest.read(65536).decode("utf-8"))
+                        if data.get("format") == "nwdemo-v2":
+                            if "world.bin" not in names:
+                                return {}
+                            started_at = data.get("started_at")
+                            return {
+                                "server_name": data.get("server_name"),
+                                "level_name": data.get("level_name"),
+                                "sub_name": data.get("submarine_name"),
+                                "has_voice": int("voice.bin" in names),
+                                "is_broken": int(bool(data.get("is_broken"))),
+                                "recorded_at": datetime.utcfromtimestamp(float(started_at) / 1000.0) if started_at else None,
+                            }
+                        init = data.get("init") if isinstance(data, dict) else None
+                        if isinstance(init, dict):
+                            return {
+                                "server_name": data.get("server_name") or init.get("server_name"),
+                                "level_name": init.get("level_name"),
+                                "sub_name": init.get("sub_name"),
+                                "has_voice": int("voice.bin" in names),
+                                "recorded_at": datetime.utcfromtimestamp(float(data["created_at"]) / 1000.0) if data.get("created_at") else None,
+                            }
                     with zf.open(names[0], "r") as entry:
                         head = entry.read(4096)  # only header region
                     return cls._parse_demo_header(head)
@@ -399,6 +425,24 @@ class ReplayService:
         except Exception as e:
             logger.warning(f"Metadata extraction failed for {file_path}: {e}")
         return {}
+
+    @staticmethod
+    def _validate_nwdemo(path: str) -> None:
+        """Verify the archive contract without extracting or rebuilding it."""
+        try:
+            with zipfile.ZipFile(path, "r") as archive:
+                names = set(archive.namelist())
+                if not {"manifest.json", "world.bin", "voice.bin"}.issubset(names):
+                    raise ValueError("архив должен содержать manifest.json, world.bin и voice.bin")
+                manifest = json.loads(archive.read("manifest.json", pwd=None).decode("utf-8"))
+                if not isinstance(manifest, dict) or manifest.get("format") != "nwdemo-v2":
+                    raise ValueError("неподдерживаемый формат manifest.json")
+                if manifest.get("world_format") != "BDMO" or manifest.get("world_version") != 7:
+                    raise ValueError("неподдерживаемый формат world.bin")
+                if not manifest.get("round_id"):
+                    raise ValueError("в manifest.json отсутствует round_id")
+        except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Некорректный .nwdemo: {exc}") from exc
 
     # ── Upload ─────────────────────────────────────────────────────────────────
 
@@ -445,6 +489,7 @@ class ReplayService:
             stored_filename=stored_name,
             file_size=file_size,
             has_voice=meta.get("has_voice", 0),
+            is_broken=meta.get("is_broken", 0),
             recorded_at=meta.get("recorded_at"),
             notes=notes,
         )
@@ -501,8 +546,9 @@ class ReplayService:
                 detail=f"Файл пустой или слишком маленький ({len(head) if head else 0} байт)"
             )
 
+        is_nwdemo = (getattr(upload, "filename", "") or "").lower().endswith(".nwdemo")
         if head[:4] == _MAGIC_ZIP:
-            stored_name = f"replay_{ts}.barodemo.zip"
+            stored_name = f"replay_{ts}.nwdemo" if is_nwdemo else f"replay_{ts}.barodemo.zip"
         elif head[:4] == _MAGIC_DEMO:
             stored_name = f"replay_{ts}.barodemo"
         elif head[:2] == b"\x1f\x8b":
@@ -517,7 +563,7 @@ class ReplayService:
             from fastapi import HTTPException
             raise HTTPException(
                 status_code=400,
-                detail=f"Файл не является .barodemo или .barodemo.zip (сигнатура: {head[:4].hex()})"
+                detail=f"Файл не является .nwdemo или .barodemo (сигнатура: {head[:4].hex()})"
             )
 
         stored_path = os.path.join(self.upload_dir, stored_name)
@@ -544,6 +590,12 @@ class ReplayService:
                 except OSError: pass
             raise
 
+        if is_nwdemo:
+            try:
+                self._validate_nwdemo(stored_path)
+            except Exception:
+                os.remove(stored_path)
+                raise
         file_size = os.path.getsize(stored_path)
         meta = self._extract_metadata(stored_path)  # reads only ~4KB
 
@@ -555,6 +607,8 @@ class ReplayService:
             stored_filename=stored_name,
             file_size=file_size,
             has_voice=meta.get("has_voice", 0),
+            is_broken=bool(meta.get("is_broken", 0)),
+            broken_at=datetime.utcnow() if meta.get("is_broken", 0) else None,
             recorded_at=meta.get("recorded_at"),
             notes=notes,
         )

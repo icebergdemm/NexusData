@@ -197,7 +197,8 @@
     const voiceT = [], voiceSid = [], voiceOff = [], voiceLen = [], voiceRadio = [];
     let lastSnapshotTime = 0;
 
-    while (r.o < r.len) {
+    let truncated = false;
+    try { while (r.o < r.len) {
       const type = r.u8();
       if (type === 0x10) { // GEOMETRY
         const hc = r.u16(); if(hc>LIM.hull)throw new Error("Битый счётчик hulls="+hc);
@@ -298,6 +299,12 @@
         inventories.push({timeMs:lastSnapshotTime,items});
       } else if (type === 0xFF) { const t=r.u32();if(t>durationMs)durationMs=t;break; }
       else { throw new Error("Неизвестный тип фрейма 0x"+type.toString(16)+" — формат несовместим или файл повреждён"); }
+    }} catch (error) {
+      // BDMO has variable-size frames and no resynchronisation marker. A
+      // damaged tail therefore cannot be safely scanned; retain every fully
+      // indexed frame before it instead of rejecting the playable prefix.
+      truncated = true;
+      console.warn("Replay tail skipped:", error);
     }
     // Build compact voice index. We keep ONE reference to the paged buffer;
     // packets are sliced on demand (small, short-lived) during playback.
@@ -320,6 +327,7 @@
     };
     const snaps = {
       count: snapTimes.length,
+      truncated,
       v: header.version,
       t: Int32Array.from(snapTimes),
       off: (snapOffsets.length && snapOffsets[snapOffsets.length-1] < 2**31) ? Int32Array.from(snapOffsets) : Float64Array.from(snapOffsets),
@@ -431,6 +439,17 @@
       if (head[0]===0x50 && head[1]===0x4B && head[2]===0x03 && head[3]===0x04) {
         format = "zip";
         unzipper = new fflate.Unzip((file) => {
+          // nwdemo is a multi-file ZIP. Decode only its BDMO world stream;
+          // legacy archives still have one .barodemo entry.
+          const isWorld = file.name === "world.bin";
+          const isLegacyDemo = file.name.endsWith(".barodemo");
+          if (!isWorld && !isLegacyDemo) {
+            // Every unzip entry must be consumed so fflate can advance to the
+            // next one; discard manifest.json and voice.bin without buffering.
+            file.ondata = () => {};
+            file.start();
+            return;
+          }
           file.ondata = (err, data) => {
             if (err) { streamError = err; return; }
             try { store.append(data); }

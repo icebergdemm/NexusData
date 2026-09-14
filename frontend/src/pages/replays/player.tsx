@@ -21,6 +21,7 @@ interface ReplayDetail {
     id: number; submarine_name: string | null; level_name: string | null
     recorded_at: string | null; has_voice: boolean; duration_ms: number | null
     filename: string | null; file_size: number | null
+    is_broken: boolean
     replay_kind: "round" | "lobby" | "lobby_dump"
     dumped_by_name: string | null
     voice_speakers?: Array<{
@@ -277,6 +278,7 @@ export function ReplayPlayerPage() {
           <AdaptiveIcon emoji="🎬" icon={Clapperboard} /> {isLobby ? "Демо лобби" : (data?.replay.submarine_name ?? "Раунд")} #{replayId}
           {!isLobby && data?.replay.level_name && <span style={{ color: "var(--muted-foreground)", fontWeight: 400, fontSize: 14 }}> · {data.replay.level_name}</span>}
           {isLobbyDump && <Badge variant="outline" className="border-yellow-500 bg-yellow-500/15 text-yellow-700 dark:text-yellow-300">Принудительный дамп · {data?.replay.dumped_by_name ?? "неизвестный пользователь"}</Badge>}
+          {data?.replay.is_broken && <Badge variant="outline" className="border-red-500 bg-red-500/15 text-red-700 dark:text-red-300">Неполная запись · проигрывается доступная часть</Badge>}
         </h2>
         <div className="rpv-top-actions">
           <span className="rpv-time">{data?.replay.recorded_at ? formatBrowserDate(data.replay.recorded_at) : ""}</span>
