@@ -32,6 +32,16 @@ test("buildVoiceLanes keeps players alphabetic and merges adjacent activity", ()
   assert.equal(lanes[0].totalMs, 500)
 })
 
+test("buildVoiceLanes shows aggregate speaker activity when intervals are missing", () => {
+  const lanes = buildVoiceLanes([
+    { speaker_id: 3, names: ["Legacy"], start_ms: 120, end_ms: 480 },
+  ], [], 1_000)
+
+  assert.deepEqual(lanes[0].segments, [
+    { speakerId: 3, startMs: 120, endMs: 480, radio: false },
+  ])
+})
+
 test("filterVoiceLanes can show only radio activity and selected speakers", () => {
   const lanes = buildVoiceLanes(speakers, segments, 1_000)
 

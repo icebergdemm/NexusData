@@ -42,6 +42,27 @@ def test_voice_activity_payload_keeps_unresolved_speaker_intervals():
     }]
 
 
+def test_voice_speaker_payload_includes_activity_bounds_for_fallback():
+    from routes.replays import _serialize_replay_voice_speaker
+
+    payload = _serialize_replay_voice_speaker(SimpleNamespace(
+        speaker_id=7,
+        names=["Unknown"],
+        steam_id=None,
+        player_id=None,
+        resolution_status="unresolved",
+        packet_count=8,
+        radio_packet_count=3,
+        start_ms=1_000,
+        end_ms=4_000,
+    ))
+
+    assert payload["packet_count"] == 8
+    assert payload["radio_packet_count"] == 3
+    assert payload["start_ms"] == 1_000
+    assert payload["end_ms"] == 4_000
+
+
 def test_missing_voice_activity_rebuilds_metadata_without_profile_materialization():
     from services_voice_profiles import VoiceProfileService
 
@@ -64,6 +85,10 @@ def test_replay_voice_speaker_payload_preserves_confirmed_and_unresolved_identit
         steam_id="76561198000000001",
         player_id=7,
         resolution_status="mapped",
+        packet_count=0,
+        radio_packet_count=0,
+        start_ms=None,
+        end_ms=None,
     ))
     unresolved = _serialize_replay_voice_speaker(SimpleNamespace(
         speaker_id=12,
@@ -71,6 +96,10 @@ def test_replay_voice_speaker_payload_preserves_confirmed_and_unresolved_identit
         steam_id=None,
         player_id=None,
         resolution_status="unresolved",
+        packet_count=0,
+        radio_packet_count=0,
+        start_ms=None,
+        end_ms=None,
     ))
 
     assert mapped == {
@@ -79,6 +108,10 @@ def test_replay_voice_speaker_payload_preserves_confirmed_and_unresolved_identit
         "steam_id": "76561198000000001",
         "player_id": 7,
         "resolution_status": "mapped",
+        "packet_count": 0,
+        "radio_packet_count": 0,
+        "start_ms": None,
+        "end_ms": None,
     }
     assert unresolved["player_id"] is None
     assert unresolved["steam_id"] is None
@@ -93,3 +126,10 @@ def test_replay_voice_speaker_payload_preserves_confirmed_and_unresolved_identit
     ))
     assert segment["radio"] is True
     assert segment["start_ms"] == 100
+
+
+def test_voice_activity_is_incomplete_when_a_speaker_has_no_segment():
+    from services_voice_profiles import voice_activity_is_complete
+
+    assert not voice_activity_is_complete({1, 2}, {1})
+    assert voice_activity_is_complete({1, 2}, {1, 2})

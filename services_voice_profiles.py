@@ -71,6 +71,16 @@ class VoiceProfileParseError(ValueError):
     pass
 
 
+def voice_activity_is_complete(
+    speaker_ids: Iterable[int],
+    segment_speaker_ids: Iterable[int],
+) -> bool:
+    """Return whether every indexed speaker has at least one segment row."""
+    speakers = {int(speaker_id) for speaker_id in speaker_ids}
+    segments = {int(speaker_id) for speaker_id in segment_speaker_ids}
+    return not speakers or speakers.issubset(segments)
+
+
 def _candidate_sort_key(candidate: Mapping[str, object]) -> tuple:
     recorded_at = candidate.get("recorded_at")
     if recorded_at is None:
@@ -733,11 +743,21 @@ class VoiceProfileService:
         return stats
 
     def _has_voice_activity(self, replay_id: int) -> bool:
-        from models import ReplayVoiceSegment
+        from models import ReplayVoiceSegment, ReplayVoiceSpeaker
 
-        return self.db.query(ReplayVoiceSegment.id).filter(
-            ReplayVoiceSegment.replay_id == replay_id,
-        ).first() is not None
+        speaker_ids = {
+            int(row[0])
+            for row in self.db.query(ReplayVoiceSpeaker.speaker_id).filter(
+                ReplayVoiceSpeaker.replay_id == replay_id,
+            ).all()
+        }
+        segment_speaker_ids = {
+            int(row[0])
+            for row in self.db.query(ReplayVoiceSegment.speaker_id).filter(
+                ReplayVoiceSegment.replay_id == replay_id,
+            ).distinct().all()
+        }
+        return bool(segment_speaker_ids) and voice_activity_is_complete(speaker_ids, segment_speaker_ids)
 
     def ensure_replay_voice_activity(self, replay_id: int) -> None:
         """Fill timeline metadata without invoking profile audio extraction."""
@@ -759,6 +779,19 @@ class VoiceProfileService:
             row.speaker_id: row
             for row in self.db.query(ReplayVoiceSpeaker).filter(ReplayVoiceSpeaker.replay_id == replay_id).all()
         }
+        speaker_stats: dict[int, dict[str, int]] = {}
+        for segment in extraction.segments:
+            speaker_id = int(segment["speaker_id"])
+            stats = speaker_stats.setdefault(speaker_id, {
+                "packet_count": 0,
+                "radio_packet_count": 0,
+                "start_ms": int(segment["start_ms"]),
+                "end_ms": int(segment["end_ms"]),
+            })
+            stats["packet_count"] += int(segment["packet_count"])
+            stats["radio_packet_count"] += int(segment["radio_packet_count"])
+            stats["start_ms"] = min(stats["start_ms"], int(segment["start_ms"]))
+            stats["end_ms"] = max(stats["end_ms"], int(segment["end_ms"]))
         speaker_ids = {segment["speaker_id"] for segment in extraction.segments}
         for speaker_id in speaker_ids:
             row = speaker_rows.get(speaker_id)
@@ -785,6 +818,11 @@ class VoiceProfileService:
                     row.player_id = player.get("player_id")
                     row.resolution_status = "mapped"
                     row.mapping_source = source
+            stats = speaker_stats[speaker_id]
+            row.packet_count = stats["packet_count"]
+            row.radio_packet_count = stats["radio_packet_count"]
+            row.start_ms = stats["start_ms"]
+            row.end_ms = stats["end_ms"]
 
         self.db.flush()
         mapping = {
@@ -792,6 +830,10 @@ class VoiceProfileService:
             for speaker_id, row in speaker_rows.items()
             if row.steam_id
         }
+        # A partial legacy index is being replaced here. Keeping its rows
+        # would violate the replay/speaker/time uniqueness constraint when the
+        # same metadata is indexed again.
+        self.db.query(ReplayVoiceSegment).filter(ReplayVoiceSegment.replay_id == replay_id).delete(synchronize_session=False)
         for segment in build_replay_voice_segment_rows(
             extraction.segments,
             mapping=mapping,

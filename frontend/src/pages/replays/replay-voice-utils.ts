@@ -8,6 +8,10 @@ export interface VoiceSpeaker {
   player_id?: number | null
   steam_id?: string | null
   resolution_status?: string | null
+  packet_count?: number | null
+  radio_packet_count?: number | null
+  start_ms?: number | null
+  end_ms?: number | null
 }
 
 export interface VoiceSegmentInput {
@@ -88,6 +92,24 @@ export function buildVoiceLanes(
   const byId = new Map(speakers.map((speaker) => [Number(speaker.speaker_id), speaker]))
   for (const speakerId of bySpeaker.keys()) {
     if (!byId.has(speakerId)) byId.set(speakerId, { speaker_id: speakerId })
+  }
+
+  // Older indexes may contain speaker aggregates but no per-segment rows.
+  // Keep that activity visible until the backend can rebuild exact intervals.
+  for (const speaker of byId.values()) {
+    const speakerId = Number(speaker.speaker_id)
+    if (bySpeaker.has(speakerId)) continue
+    const startMs = Number(speaker.start_ms)
+    const endMs = Number(speaker.end_ms)
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+      const fallback = normalizedSegment({
+        speaker_id: speakerId,
+        start_ms: startMs,
+        end_ms: endMs,
+        radio: false,
+      }, safeDurationMs)
+      if (fallback) bySpeaker.set(speakerId, [fallback])
+    }
   }
 
   return [...byId.values()]

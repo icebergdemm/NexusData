@@ -1236,6 +1236,12 @@ def _serialize_replay_voice_speaker(row) -> dict:
         "steam_id": row.steam_id,
         "player_id": row.player_id,
         "resolution_status": row.resolution_status,
+        # Keep the aggregate bounds in the API. They are a compatibility
+        # fallback for indexes created before per-segment rows were persisted.
+        "packet_count": int(getattr(row, "packet_count", 0) or 0),
+        "radio_packet_count": int(getattr(row, "radio_packet_count", 0) or 0),
+        "start_ms": int(row.start_ms) if getattr(row, "start_ms", None) is not None else None,
+        "end_ms": int(row.end_ms) if getattr(row, "end_ms", None) is not None else None,
     }
 
 

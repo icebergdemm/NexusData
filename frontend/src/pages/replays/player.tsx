@@ -25,6 +25,7 @@ interface ReplayDetail {
     dumped_by_name: string | null
     voice_speakers?: Array<{
       speaker_id: number; names: string[]; steam_id: string | null; player_id: number | null; resolution_status: string | null
+      packet_count?: number | null; radio_packet_count?: number | null; start_ms?: number | null; end_ms?: number | null
     }>
     voice_segments?: Array<{
       speaker_id: number; start_ms: number; end_ms: number; radio: boolean
@@ -61,6 +62,10 @@ export function ReplayPlayerPage() {
       player_id: speaker.player_id,
       steam_id: speaker.steam_id,
       resolution_status: speaker.resolution_status,
+      packet_count: speaker.packet_count,
+      radio_packet_count: speaker.radio_packet_count,
+      start_ms: speaker.start_ms,
+      end_ms: speaker.end_ms,
     })),
     voiceSegments: data?.replay.voice_segments ?? [],
     timelineEvents: [],
