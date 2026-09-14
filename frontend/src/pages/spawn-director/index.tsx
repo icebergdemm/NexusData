@@ -15,7 +15,6 @@ import { WorldCanvas } from "@/pages/world-overview/WorldCanvas"
 type Wave = { id: number; species: string; amount: number; original_amount: number; hp_multiplier: number; x?: number; y?: number; state: string; adjustment?: string }
 type Server = { server_name: string; mode: string; crew_power: number; learned_baseline: number; baseline_samples: number; threat_multiplier: number; explanation: string; waves: Wave[]; updated_at: string }
 type Creature = { id: string; group: string; base_hp: number; needs_water: boolean; needs_air: boolean; combat_strength: number; sight: number; hearing: number; aggression_hurt: number; aggression_greed: number; flee_health_threshold: number; aggressive_boarding: boolean; targets: { tag: string; state: string; priority: string }[] }
-const fallbackCreatures: Creature[] = ["Ancient", "Balloon", "Bonethresher", "Carrier", "Charybdis", "Charybdisold", "Coelanth", "Crawler", "Crawlerbroodmother", "Crawlerhusk", "Cyborgworm", "Defensebot", "Endworm", "Fractalguardian", "Fractalguardian_emp", "Fractalguardian2", "Guardianrepairbot", "Hammerhead", "Hammerheadgold", "Hammerheadmatriarch", "Hammerheadspawn", "Husk_chimera", "Husk_prowler", "Huskcontainer", "Jove", "Latcher", "Legacycharybdis", "Legacycrawler", "Legacyendworm", "Legacyfractalguardian", "Legacyfractalguardian2", "Legacyhusk", "Legacymantis", "Legacymoloch", "Legacytigerthresher", "Legacywatcher", "Leucocyte", "Mantis", "Moloch", "Molochbaby", "Molochblack", "Mudraptor", "Mudraptor_unarmored", "Orangeboy", "Peanut", "Portalguardian", "Psilotoad", "Spineling", "Spineling_giant", "Spineling_morbusine", "Swarmfeeder", "Terminalcell", "Tigerthresher", "Watcher"].map(id => ({ id, group: "", base_hp: 0, needs_water: false, needs_air: false, combat_strength: 0, sight: 0, hearing: 0, aggression_hurt: 0, aggression_greed: 0, flee_health_threshold: 0, aggressive_boarding: false, targets: [] }))
 
 export function SpawnDirectorPage() {
   const [roundId, setRoundId] = useState<string | null>(null)
@@ -30,7 +29,7 @@ export function SpawnDirectorPage() {
   const { data: knownServers } = useQuery({ queryKey: ["spawn-director-known-servers"], queryFn: () => worldStateApi.listServers(), refetchInterval: 5000 })
   const servers = data?.servers ?? []
   const serverNames = [...new Set([...(knownServers?.servers ?? []), ...servers.map(server => server.server_name)])].sort()
-  const creatures = creatureData?.creatures?.length ? creatureData.creatures : fallbackCreatures
+  const creatures = creatureData?.creatures ?? []
   const { data: rounds } = useQuery({ queryKey: ["spawn-director-rounds", selectedServer], queryFn: () => worldStateApi.listRounds(selectedServer === "__all__" ? null : selectedServer), refetchInterval: 5000 })
   useEffect(() => { if (!roundId) setRoundId(rounds?.rounds[0]?.round_id ?? null) }, [roundId, rounds])
   const { data: geometry } = useQuery({ queryKey: ["spawn-director-geometry", roundId], queryFn: () => worldStateApi.getGeometry(roundId as string), enabled: !!roundId, staleTime: Infinity })
