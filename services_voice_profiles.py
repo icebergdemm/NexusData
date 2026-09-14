@@ -430,6 +430,12 @@ def extract_voice_packet_records(path: str | os.PathLike[str]) -> ReplayVoiceExt
 
 def extract_voice_segment_metadata(path: str | os.PathLike[str]) -> ReplayVoiceSegmentExtraction:
     """Extract only voice segment metadata, without retaining Opus payloads."""
+    path = Path(path)
+    if path.suffix.lower() == ".nwdemo":
+        # nwdemo stores voice independently from world.bin. The legacy BDMO
+        # frame reader must not reject this valid archive just because it has
+        # no .barodemo member.
+        return _extract_nwdemo_voice_metadata(path)
     with _open_replay(path) as (stream, mapping):
         version, frames = _iter_replay_frames(stream)
         segments: list[dict] = []
@@ -487,6 +493,69 @@ def extract_voice_segment_metadata(path: str | os.PathLike[str]) -> ReplayVoiceS
             complete=complete,
             warnings=warnings,
         )
+
+
+def _read_dotnet_string(stream: BinaryIO) -> str:
+    value = 0
+    shift = 0
+    while True:
+        raw = stream.read(1)
+        if not raw:
+            raise VoiceProfileParseError("truncated nwdemo voice string")
+        byte = raw[0]
+        value |= (byte & 0x7f) << shift
+        if not byte & 0x80:
+            break
+        shift += 7
+        if shift > 28:
+            raise VoiceProfileParseError("invalid nwdemo voice string length")
+    data = stream.read(value)
+    if len(data) != value:
+        raise VoiceProfileParseError("truncated nwdemo voice string data")
+    return data.decode("utf-8", errors="replace")
+
+
+def _extract_nwdemo_voice_metadata(path: Path) -> ReplayVoiceSegmentExtraction:
+    segments: list[dict] = []
+    names_by_speaker: dict[int, set[str]] = {}
+    try:
+        with zipfile.ZipFile(path, "r") as archive, archive.open("voice.bin", "r") as stream:
+            active: dict[tuple[int, bool], dict] = {}
+            while True:
+                header = stream.read(6)
+                if not header:
+                    break
+                if len(header) != 6:
+                    raise VoiceProfileParseError("truncated nwdemo voice packet")
+                time_ms, speaker_id = struct.unpack("<IH", header)
+                _steam_id = _read_dotnet_string(stream)
+                radio_raw = stream.read(1)
+                length_raw = stream.read(2)
+                if len(radio_raw) != 1 or len(length_raw) != 2:
+                    raise VoiceProfileParseError("truncated nwdemo voice packet header")
+                radio = bool(radio_raw[0])
+                length = struct.unpack("<H", length_raw)[0]
+                payload = stream.read(length)
+                if len(payload) != length:
+                    raise VoiceProfileParseError("truncated nwdemo voice payload")
+                if not speaker_id:
+                    continue
+                key = (speaker_id, radio)
+                previous = active.get(key)
+                if previous and time_ms - previous["end_ms"] <= VOICE_MERGE_GAP_MS:
+                    previous["end_ms"] = time_ms
+                    previous["packet_count"] += 1
+                    previous["radio_packet_count"] += int(radio)
+                    continue
+                segment = {"speaker_id": speaker_id, "start_ms": time_ms, "end_ms": time_ms,
+                           "packet_count": 1, "radio_packet_count": int(radio)}
+                segments.append(segment)
+                active[key] = segment
+    except KeyError:
+        return ReplayVoiceSegmentExtraction(7, [], {}, {}, False, ["nwdemo archive has no voice.bin"])
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise VoiceProfileParseError(f"invalid nwdemo voice archive: {exc}") from exc
+    return ReplayVoiceSegmentExtraction(7, segments, {}, names_by_speaker, False, [])
 
 
 def extract_voice_packets_for_speaker(
