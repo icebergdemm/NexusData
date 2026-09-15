@@ -19,7 +19,7 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-title > span,
 .rpv-editor-events-head strong,
 .rpv-editor-inspector-head strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 11px;
   font-weight: 750;
   letter-spacing: .1em;
@@ -34,7 +34,7 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
   width: 42px;
   text-align: center;
   color: var(--muted-foreground);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 11px;
 }
 .rpv-editor-events-count {
@@ -42,15 +42,15 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
   border-left: 1px solid var(--border);
   padding-left: 6px;
   color: var(--muted-foreground);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
 .rpv-editor-timecode { position: relative; display: grid; grid-template-columns: auto 148px; align-items: center; gap: 7px; margin-left: 5px; }
-.rpv-editor-timecode label { color: var(--muted-foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: .1em; }
-.rpv-editor-timecode input { height: 30px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
+.rpv-editor-timecode label { color: var(--muted-foreground); font-family: var(--font-mono, monospace); font-size: 9px; letter-spacing: .1em; }
+.rpv-editor-timecode input { height: 30px; font-family: var(--font-mono, monospace); font-size: 12px; font-variant-numeric: tabular-nums; }
 .rpv-editor-timecode input[aria-invalid="true"] { border-color: var(--destructive); }
 .rpv-editor-timecode [role="alert"] { position: absolute; right: 0; top: 34px; z-index: 5; border: 1px solid var(--destructive); background: var(--background); padding: 3px 6px; color: var(--destructive); font-size: 9px; }
 
@@ -64,15 +64,15 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
   font-size: 10px;
 }
 .rpv-editor-hint span { display: inline-flex; align-items: center; gap: 3px; }
-.rpv-editor-hint kbd { border: 1px solid var(--border); background: var(--card); padding: 0 4px; color: var(--foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.rpv-editor-hint kbd { border: 1px solid var(--border); background: var(--card); padding: 0 4px; color: var(--foreground); font-family: var(--font-mono, monospace); }
 
 .rpv-editor-canvas-wrap { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }
 .rpv-editor-canvas { display: block; width: 100%; height: 214px; cursor: crosshair; outline: none; touch-action: none; }
 .rpv-editor-canvas:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.rpv-editor-tooltip { position: absolute; z-index: 5; max-width: 320px; transform: translate(10px, -115%); border: 1px solid var(--foreground); background: var(--background); padding: 4px 7px; color: var(--foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; pointer-events: none; }
+.rpv-editor-tooltip { position: absolute; z-index: 5; max-width: 320px; transform: translate(10px, -115%); border: 1px solid var(--foreground); background: var(--background); padding: 4px 7px; color: var(--foreground); font-family: var(--font-mono, monospace); font-size: 10px; pointer-events: none; }
 
 .rpv-editor-roster { display: flex; gap: 4px; overflow-x: auto; padding: 8px 10px; border-bottom: 1px solid var(--border); scrollbar-width: thin; }
-.rpv-editor-roster button { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; height: 28px; border: 1px solid var(--border); background: transparent; padding: 0 8px; color: var(--muted-foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; cursor: pointer; }
+.rpv-editor-roster button { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; height: 28px; border: 1px solid var(--border); background: transparent; padding: 0 8px; color: var(--muted-foreground); font-family: var(--font-mono, monospace); font-size: 10px; cursor: pointer; }
 .rpv-editor-roster button svg { width: 12px; height: 12px; }
 .rpv-editor-roster button span { border-left: 1px solid var(--border); padding-left: 5px; }
 .rpv-editor-roster button:hover { color: var(--foreground); border-color: var(--foreground); }
@@ -89,7 +89,7 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-filters [data-slot="select-trigger"] { width: 190px; height: 31px; font-size: 11px; }
 .rpv-editor-search-icon { position: absolute; left: 8px; top: 8px; z-index: 1; width: 14px; height: 14px; color: var(--muted-foreground); pointer-events: none; }
 .rpv-editor-search-scope { display: inline-flex; height: 31px; border: 1px solid var(--border); }
-.rpv-editor-search-scope button { border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 9px; color: var(--muted-foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: .04em; cursor: pointer; }
+.rpv-editor-search-scope button { border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 9px; color: var(--muted-foreground); font-family: var(--font-mono, monospace); font-size: 9px; letter-spacing: .04em; cursor: pointer; }
 .rpv-editor-search-scope button:last-child { border-right: 0; }
 .rpv-editor-search-scope button:hover { color: var(--foreground); }
 .rpv-editor-search-scope button.active { background: var(--foreground); color: var(--background); }
@@ -107,7 +107,7 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-event-list > button.selected { background: var(--accent); }
 .rpv-editor-event-list > button.selected { box-shadow: inset 2px 0 0 var(--foreground); }
 .rpv-editor-event-list > button.dimmed { opacity: .28; filter: grayscale(1); }
-.rpv-editor-event-list time { color: var(--muted-foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-variant-numeric: tabular-nums; }
+.rpv-editor-event-list time { color: var(--muted-foreground); font-family: var(--font-mono, monospace); font-size: 10px; font-variant-numeric: tabular-nums; }
 .rpv-editor-event-icon { width: 17px; height: 17px; margin-left: 8px; color: var(--muted-foreground); }
 .rpv-editor-event-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rpv-editor-event-copy b { overflow: hidden; color: var(--foreground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
@@ -117,15 +117,15 @@ html[data-ui-version="v2"] .rpv-editor-toolbar {
 .rpv-editor-inspector { min-width: 0; }
 .rpv-editor-inspector-head { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .rpv-editor-inspector-body { display: flex; flex-direction: column; gap: 14px; padding: 14px; }
-.rpv-editor-inspector-time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 24px; font-weight: 750; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.rpv-editor-inspector-time { font-family: var(--font-mono, monospace); font-size: 24px; font-weight: 750; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
 .rpv-editor-inspector-kind { display: flex; align-items: center; gap: 10px; }
 .rpv-editor-inspector-kind > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.rpv-editor-inspector-kind span { color: var(--muted-foreground); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.rpv-editor-inspector-kind span { color: var(--muted-foreground); font-family: var(--font-mono, monospace); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
 .rpv-editor-inspector-kind b { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .rpv-editor-inspector dl { display: flex; flex-direction: column; margin: 0; border-top: 1px solid var(--border); }
 .rpv-editor-inspector dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 10px; }
 .rpv-editor-inspector dt { color: var(--muted-foreground); }
-.rpv-editor-inspector dd { overflow: hidden; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.rpv-editor-inspector dd { overflow: hidden; margin: 0; font-family: var(--font-mono, monospace); text-overflow: ellipsis; white-space: nowrap; }
 .rpv-editor-inspector-body > p { margin: 0; color: var(--muted-foreground); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
 .rpv-editor-inspector-empty,
 .rpv-editor-empty { min-height: 140px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: var(--muted-foreground); text-align: center; font-size: 11px; }
@@ -152,13 +152,13 @@ html[data-ui-version="v2"] .rpv-editor-events-sheet {
   padding: 14px 52px 12px 14px;
 }
 .rpv-editor-sheet-head [data-slot="sheet-title"] {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 13px;
   letter-spacing: .08em;
   text-transform: uppercase;
 }
 .rpv-editor-sheet-head [data-slot="sheet-description"] {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }

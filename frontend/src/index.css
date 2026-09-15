@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -28,6 +29,10 @@
   }
 }
 @import "shadcn/tailwind.css";
+
+@theme {
+  --font-mono: "IBM Plex Mono", monospace;
+}
 
 @custom-variant dark (&:is(.dark *));
 
@@ -365,7 +370,7 @@ html[data-ui-version="v2"] [data-slot="sidebar-group"] {
 html[data-ui-version="v2"] [data-slot="sidebar-group-label"] {
   height: 1.75rem;
   padding-inline: 0.875rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.12em;
@@ -464,7 +469,7 @@ html[data-ui-version="v2"] [data-slot="page-header-title"] {
 
 html[data-ui-version="v2"] [data-slot="page-header-description"] {
   margin-top: 0.2rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 0.68rem;
   letter-spacing: 0.02em;
 }
@@ -488,7 +493,7 @@ html[data-ui-version="v2"] [role="tablist"] {
 }
 
 html[data-ui-version="v2"] thead {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 0.65rem;
   text-transform: uppercase;
 }
@@ -526,7 +531,7 @@ html[data-ui-version="v2"] [data-slot="button"] {
 }
 
 html[data-ui-version="v2"] [data-slot="badge"] {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono, monospace);
   letter-spacing: 0.035em;
 }
 

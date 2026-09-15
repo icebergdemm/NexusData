@@ -204,7 +204,7 @@ export function ReplayPlayerPage() {
         .rpv-btn:hover{border-color:var(--primary);}
         .rpv-btn.active{background:var(--primary);border-color:var(--primary);}
         .rpv-seek{flex:1;min-width:160px;}
-        .rpv-time{font-family:monospace;font-size:12px;color:var(--muted-foreground);white-space:nowrap;}
+        .rpv-time{font-family:var(--font-mono,monospace);font-size:12px;color:var(--muted-foreground);white-space:nowrap;}
         .rpv-side{display:flex;flex-direction:column;gap:12px;max-height:calc(70vh + 62px);overflow-y:auto;}
         .rpv-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
         .rpv-panel h3{font-size:13px;font-weight:700;color:var(--foreground);margin:0 0 10px;}

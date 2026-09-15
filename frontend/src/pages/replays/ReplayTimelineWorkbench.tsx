@@ -581,7 +581,7 @@ function TimelineCanvas({
 
     context.fillStyle = background
     context.fillRect(0, 0, width, height)
-    context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace"
+    context.font = "10px 'IBM Plex Mono', monospace"
     context.textBaseline = "middle"
 
     const tick = nearestTickInterval(windowMs, plotWidth)
@@ -645,10 +645,10 @@ function TimelineCanvas({
       context.globalAlpha = 1
       if (clusterCount > 1 && windowMs < durationMs * 0.7) {
         context.fillStyle = background
-        context.font = "bold 8px ui-monospace, monospace"
+        context.font = "bold 8px 'IBM Plex Mono', monospace"
         context.textAlign = "center"
         context.fillText(String(Math.min(99, clusterCount)), cluster.x, cluster.y + 0.5)
-        context.font = "10px ui-monospace, monospace"
+        context.font = "10px 'IBM Plex Mono', monospace"
       }
     }
     hitsRef.current = clusters
