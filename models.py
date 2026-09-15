@@ -1194,6 +1194,10 @@ class RoundReplay(Base):
     voice_profile_state = Column(String(20), nullable=True, index=True)
     voice_profile_error = Column(String(2000), nullable=True)
     voice_profile_processed_at = Column(DateTime, nullable=True)
+    voice_profile_started_at = Column(DateTime, nullable=True)
+    voice_profile_heartbeat_at = Column(DateTime, nullable=True, index=True)
+    voice_profile_attempts = Column(Integer, nullable=False, default=0)
+    voice_profile_progress = Column(JSON, nullable=True)
     # Manual escape hatch when the automatic header-timestamp/server_name
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.

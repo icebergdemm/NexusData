@@ -607,13 +607,18 @@ def task_finalize_replay_streams() -> dict:
 
 def task_process_voice_profiles() -> dict:
     """Scan one pending direct-identity nwdemo-v2 archive when enabled."""
-    from services_voice_profiles import process_next_nwdemo_voice_profile, voice_profile_scanner_enabled
+    from services_voice_profiles import (
+        process_next_nwdemo_voice_profile,
+        recover_stale_nwdemo_processing,
+        voice_profile_scanner_enabled,
+    )
 
     db = SessionLocal()
     try:
+        recovery = recover_stale_nwdemo_processing(db)
         if not voice_profile_scanner_enabled(db):
-            return {"status": "disabled"}
-        return process_next_nwdemo_voice_profile(db)
+            return {"status": "disabled", **recovery}
+        return {**recovery, **process_next_nwdemo_voice_profile(db)}
     except Exception:
         db.rollback()
         logger.exception("Voice profile worker failed")
