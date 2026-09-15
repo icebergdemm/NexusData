@@ -44,6 +44,7 @@ MFCC_V1_ALGORITHM = "mfcc-v1"
 MFCC_V1_COEFFICIENTS = 13
 MFCC_V1_FILTERS = 26
 MFCC_V1_MIN_QUALITY_MS = 3_000
+VOICE_PROFILE_SCANNER_SETTING = "voice_profiles_scanner_enabled"
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,27 @@ class ReplayVoiceSegmentExtraction:
 
 class VoiceProfileParseError(ValueError):
     pass
+
+
+def voice_profile_scanner_enabled(db) -> bool:
+    """Read the persisted gate for the small periodic nwdemo scanner."""
+    from models import AppSetting
+
+    setting = db.query(AppSetting).filter(AppSetting.key == VOICE_PROFILE_SCANNER_SETTING).first()
+    return bool(setting and str(setting.value or "").strip().casefold() in {"1", "true", "yes", "on"})
+
+
+def set_voice_profile_scanner_enabled(db, enabled: bool) -> bool:
+    """Persist the scanner gate; the worker observes it on its next minute tick."""
+    from models import AppSetting
+
+    setting = db.query(AppSetting).filter(AppSetting.key == VOICE_PROFILE_SCANNER_SETTING).first()
+    if setting is None:
+        setting = AppSetting(key=VOICE_PROFILE_SCANNER_SETTING)
+        db.add(setting)
+    setting.value = "true" if enabled else "false"
+    db.flush()
+    return bool(enabled)
 
 
 def voice_activity_is_complete(

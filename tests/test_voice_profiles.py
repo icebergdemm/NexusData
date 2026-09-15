@@ -6,7 +6,11 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
+from database import Base
+from models import AppSetting
 from routes.voice_profiles import _profile_players_payload
 from services_voice_profiles import (
     VOICE_PROFILE_ARCHIVE_VERSION,
@@ -24,12 +28,28 @@ from services_voice_profiles import (
     read_ndvc,
     read_vpk1,
     stale_profile_clips,
+    set_voice_profile_scanner_enabled,
     select_profile_candidates,
     steam2_to_steam64,
+    voice_profile_scanner_enabled,
     write_vpk1,
     write_ndvc,
     write_wave_slice,
 )
+
+
+def test_nwdemo_scanner_defaults_off_and_persists_switch():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[AppSetting.__table__])
+    db = Session(engine)
+    try:
+        assert voice_profile_scanner_enabled(db) is False
+        assert set_voice_profile_scanner_enabled(db, True) is True
+        assert voice_profile_scanner_enabled(db) is True
+        assert set_voice_profile_scanner_enabled(db, False) is False
+        assert voice_profile_scanner_enabled(db) is False
+    finally:
+        db.close()
 
 
 def _dotnet_string(value: str) -> bytes:

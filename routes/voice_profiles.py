@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -18,6 +19,7 @@ from models import (
     AdminUser,
     PlayerData,
     ReplayVoiceSpeaker,
+    RoundReplay,
     VoiceProfileClip,
     VoiceProfileImport,
     VoiceProfileJob,
@@ -25,11 +27,17 @@ from models import (
     VoiceProfileSignature,
     VoiceReplayFingerprint,
 )
-from routes.admin import load_current_admin
+from routes.admin import load_current_admin, log_admin_action
 from security import verify_external_api_key_dependency
 from services import PlayerService
 from services_replays import get_upload_dir
-from services_voice_profiles import NwdemoVoiceProfileService, VoiceProfileService, enqueue_voice_profile_job
+from services_voice_profiles import (
+    NwdemoVoiceProfileService,
+    VoiceProfileService,
+    enqueue_voice_profile_job,
+    set_voice_profile_scanner_enabled,
+    voice_profile_scanner_enabled,
+)
 from services_voice_profile_import import commit_import_package, validate_import_package
 
 
@@ -71,6 +79,70 @@ def _require_superuser(admin: AdminUser) -> None:
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _nwdemo_replay_filter():
+    return or_(
+        RoundReplay.replay_format == "nwdemo-v2",
+        RoundReplay.filename.ilike("%.nwdemo"),
+        RoundReplay.stored_filename.ilike("%.nwdemo"),
+    )
+
+
+def _scanner_payload(db: Session) -> dict[str, Any]:
+    replays = db.query(RoundReplay).filter(_nwdemo_replay_filter()).order_by(
+        RoundReplay.voice_profile_processed_at.desc(),
+        RoundReplay.uploaded_at.desc(),
+        RoundReplay.id.desc(),
+    ).all()
+    counts = {"pending": 0, "processing": 0, "ready": 0, "failed": 0}
+    for replay in replays:
+        state = replay.voice_profile_state or "pending"
+        if state in counts:
+            counts[state] += 1
+
+    recent = replays[:50]
+    replay_ids = [replay.id for replay in recent]
+    clips = db.query(VoiceProfileClip).filter(
+        VoiceProfileClip.source_format == "nwdemo-v2",
+        VoiceProfileClip.source_replay_id.in_(replay_ids or {-1}),
+        VoiceProfileClip.player_id.isnot(None),
+    ).all()
+    player_ids = {clip.player_id for clip in clips if clip.player_id is not None}
+    players = db.query(PlayerData).filter(PlayerData.player_id.in_(player_ids or {-1})).all()
+    player_by_id = {player.player_id: player for player in players}
+    players_by_replay: dict[int, list[dict[str, Any]]] = {}
+    seen_by_replay: dict[int, set[int]] = {}
+    for clip in clips:
+        replay_id = int(clip.source_replay_id)
+        player_id = int(clip.player_id)
+        if player_id in seen_by_replay.setdefault(replay_id, set()):
+            continue
+        seen_by_replay[replay_id].add(player_id)
+        player = player_by_id.get(player_id)
+        if player is None:
+            continue
+        players_by_replay.setdefault(replay_id, []).append({
+            "player_id": player.player_id,
+            "display_name": player.display_name or player.player_last_time_name,
+        })
+
+    return {
+        "enabled": voice_profile_scanner_enabled(db),
+        "counts": counts,
+        "log": [
+            {
+                "replay_id": replay.id,
+                "state": replay.voice_profile_state or "pending",
+                "replay_kind": replay.replay_kind,
+                "recorded_at": _iso(replay.recorded_at),
+                "processed_at": _iso(replay.voice_profile_processed_at),
+                "error": replay.voice_profile_error,
+                "players": players_by_replay.get(replay.id, []),
+            }
+            for replay in recent
+        ],
+    }
 
 
 def _job_payload(job: VoiceProfileJob) -> dict[str, Any]:
@@ -499,6 +571,32 @@ async def list_player_profiles(
         PlayerData.player_steamid.in_(steam_ids),
     ).all()
     return {"players": _profile_players_payload(clips, selections, players)}
+
+
+@router.get("/scanner")
+async def get_voice_profile_scanner(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Expose the persisted scanner gate and recent nwdemo-only activity."""
+    _require_superuser(current_admin)
+    return _scanner_payload(db)
+
+
+@router.patch("/scanner")
+async def set_voice_profile_scanner(
+    body: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled должен быть boolean")
+    set_voice_profile_scanner_enabled(db, enabled)
+    db.commit()
+    log_admin_action(db, current_admin.id, "voice_profile_scanner_toggle", {"enabled": enabled})
+    return _scanner_payload(db)
 
 
 @router.get("/players/{player_id}")
