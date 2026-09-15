@@ -96,6 +96,17 @@ def test_nwdemo_v2_rejects_legacy_or_missing_members(tmp_path):
         read_nwdemo_voice_packets(broken_world)
 
 
+def test_nwdemo_empty_world_requires_explicit_lobby_allowance(tmp_path):
+    path = tmp_path / "voice-only-lobby.nwdemo"
+    _write_nwdemo(path, _nwdemo_voice_packet(100, 7, "STEAM_1:1:168500928", False, b"opus"), world=b"")
+
+    with pytest.raises(ValueError, match="world.bin header"):
+        read_nwdemo_voice_packets(path)
+
+    packets = read_nwdemo_voice_packets(path, allow_empty_world=True)
+    assert [(packet.time_ms, packet.steam_id) for packet in packets] == [(100, "76561198297267585")]
+
+
 def test_nwdemo_invalid_steam_identity_does_not_create_a_profile_packet(tmp_path):
     path = tmp_path / "invalid-steam.nwdemo"
     _write_nwdemo(path, _nwdemo_voice_packet(100, 7, "STEAM_1:2:1", False, b"opus"))

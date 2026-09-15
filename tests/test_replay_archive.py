@@ -40,6 +40,19 @@ class ReplayArchiveTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 ReplayService._validate_nwdemo(path)
 
+    def test_allows_empty_nwdemo_world_only_with_explicit_lobby_allowance(self):
+        with tempfile.TemporaryDirectory(prefix="nexus-nwdemo-") as directory:
+            path = os.path.join(directory, "lobby.nwdemo")
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("manifest.json", json.dumps({
+                    "format": "nwdemo-v2", "world_format": "BDMO", "world_version": 7, "round_id": "lobby-1"
+                }))
+                archive.writestr("world.bin", b"")
+                archive.writestr("voice.bin", b"")
+            with self.assertRaises(Exception):
+                ReplayService._validate_nwdemo(path)
+            ReplayService._validate_nwdemo(path, allow_empty_world=True)
+
     def test_wraps_raw_replay_in_real_zip_without_changing_bytes(self):
         with tempfile.TemporaryDirectory(prefix="nexus-replay-archive-") as directory:
             source = os.path.join(directory, "source.barodemo")

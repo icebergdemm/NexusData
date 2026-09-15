@@ -428,7 +428,7 @@ class ReplayService:
         return {}
 
     @staticmethod
-    def _validate_nwdemo(path: str) -> None:
+    def _validate_nwdemo(path: str, *, allow_empty_world: bool = False) -> None:
         """Verify the archive contract without extracting or rebuilding it."""
         try:
             with zipfile.ZipFile(path, "r") as archive:
@@ -442,7 +442,7 @@ class ReplayService:
                     raise ValueError("неподдерживаемый формат world.bin")
                 with archive.open("world.bin", "r") as world:
                     world_magic = world.read(4)
-                if world_magic != _MAGIC_DEMO:
+                if world_magic != _MAGIC_DEMO and not (allow_empty_world and not world_magic):
                     raise ValueError("world.bin не содержит BDMO header")
                 if not manifest.get("round_id"):
                     raise ValueError("в manifest.json отсутствует round_id")
@@ -599,7 +599,10 @@ class ReplayService:
 
         if is_nwdemo:
             try:
-                self._validate_nwdemo(stored_path)
+                self._validate_nwdemo(
+                    stored_path,
+                    allow_empty_world=replay_kind in ("lobby", "lobby_dump"),
+                )
             except Exception:
                 os.remove(stored_path)
                 raise

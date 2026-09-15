@@ -582,7 +582,11 @@ def _read_dotnet_string(stream: BinaryIO) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def read_nwdemo_voice_packets(path: str | os.PathLike[str]) -> list[NwdemoVoicePacket]:
+def read_nwdemo_voice_packets(
+    path: str | os.PathLike[str],
+    *,
+    allow_empty_world: bool = False,
+) -> list[NwdemoVoicePacket]:
     """Read the version-gated nwdemo-v2 layout, never inferring identity."""
     path = Path(path)
     packets: list[NwdemoVoicePacket] = []
@@ -600,7 +604,7 @@ def read_nwdemo_voice_packets(path: str | os.PathLike[str]) -> list[NwdemoVoiceP
                 raise VoiceProfileParseError("unsupported nwdemo format")
             with archive.open("world.bin", "r") as world:
                 world_magic = world.read(4)
-            if world_magic != DEMO_MAGIC:
+            if world_magic != DEMO_MAGIC and not (allow_empty_world and not world_magic):
                 raise VoiceProfileParseError("invalid nwdemo world.bin header")
             with archive.open("voice.bin", "r") as stream:
                 while True:
@@ -1816,7 +1820,10 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         ):
             raise ValueError("voice profiles accept only nwdemo-v2 replays")
         path = Path(ReplayService(self.db).get_file_path(replay))
-        packets = read_nwdemo_voice_packets(path)
+        packets = read_nwdemo_voice_packets(
+            path,
+            allow_empty_world=replay.replay_kind in {"lobby", "lobby_dump"},
+        )
         replay.replay_format = "nwdemo-v2"
         segments = group_nwdemo_voice_packets(packets)
         replay_hash = _file_sha256(path)
