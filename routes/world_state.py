@@ -97,6 +97,22 @@ def _resolve_ingest_server_name(body: dict, existing: Optional[str]) -> str:
     return settings.world_default_server_name.strip().upper()
 
 
+def _merge_id_rows(existing, patch):
+    """Merge sparse live rows without losing fields omitted by a delta."""
+    if not isinstance(patch, list):
+        return existing
+    current = {
+        row.get("id"): dict(row)
+        for row in (existing if isinstance(existing, list) else [])
+        if isinstance(row, dict) and row.get("id") is not None
+    }
+    for row in patch:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        current.setdefault(row["id"], {}).update(row)
+    return list(current.values())
+
+
 async def _read_json_body(request: Request) -> dict:
     """Reads and JSON-decodes the request body, transparently gunzipping it
     first when the plugin's `CompressPayload: true` is on. Per the guide
@@ -251,11 +267,18 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
     row.last_seq = seq
     row.last_t = body.get("t")
     row.last_sent_at = _ms_to_dt(body.get("sent_at"))
-    row.last_subs = body.get("subs")
-    row.last_hulls_state = body.get("hulls")
-    row.last_doors_state = body.get("doors")
-    row.last_reactors = body.get("reactors")
-    row.last_characters = body.get("characters")
+    # Delta clients omit unchanged streams. Preserve their last state instead
+    # of turning an omitted field into an empty live-world component.
+    if "subs" in body:
+        row.last_subs = body.get("subs")
+    if "hulls" in body:
+        row.last_hulls_state = body.get("hulls")
+    if "doors" in body:
+        row.last_doors_state = body.get("doors")
+    if "reactors" in body:
+        row.last_reactors = body.get("reactors")
+    if "characters" in body:
+        row.last_characters = _merge_id_rows(row.last_characters, body.get("characters"))
     # null here means IncludeItems:false on the plugin side — "don't update
     # items this tick", NOT "all items vanished". Only overwrite on a real value.
     items = body.get("items")

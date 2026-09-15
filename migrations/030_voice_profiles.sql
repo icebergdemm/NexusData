@@ -79,6 +79,7 @@ ALTER TABLE `replay_voice_speakers`
     ADD COLUMN IF NOT EXISTS `radio_packet_count` INT NOT NULL DEFAULT 0 AFTER `packet_count`;
 
 ALTER TABLE `replay_voice_segments`
+    MODIFY COLUMN `steam_id` VARCHAR(50) NULL,
     ADD COLUMN IF NOT EXISTS `player_id` INT NULL AFTER `steam_id`,
     ADD COLUMN IF NOT EXISTS `radio_packet_count` INT NOT NULL DEFAULT 0 AFTER `packet_count`;
 

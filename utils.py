@@ -125,6 +125,26 @@ def is_bogon_ip(value: object) -> bool:
             return True
 
 
+def derive_subnet(value: object) -> Optional[str]:
+    """Derive a coarse subnet label (``a.b.c.0/24``, IPv6 ``/64``) from an IP.
+
+    The DB triggers ``trg_players_ip_insert``/``trg_players_ip_update`` copy
+    ``players_data.last_subnet`` into ``player_ips.subnet`` (NOT NULL), so any
+    code path that stores ``last_ip`` must also store a non-NULL subnet —
+    even when the game server did not send one. Returns None for garbage.
+    """
+    try:
+        addr = ipaddress.ip_address(str(value).strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
+    try:
+        if isinstance(addr, ipaddress.IPv4Address):
+            return str(ipaddress.ip_network(f"{addr}/24", strict=False))
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    except (ValueError, TypeError):
+        return None
+
+
 def validate_page_number(page: int, min_page: int = 1) -> bool:
     """Validate page number"""
     return isinstance(page, int) and page >= min_page

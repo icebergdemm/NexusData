@@ -167,6 +167,8 @@ def _apply_migrations():
         # AI dossier diagnostics: bounded raw model content, exposed only to
         # superusers by the AI-center API.
         ("ai_player_dossier_runs", "raw_response", "TEXT"),
+        # Durable shared LLM arbitration queue is created by Base.metadata;
+        # this marker keeps startup migrations additive for older databases.
         # ai_creature_alerts: retryable outbox state. A detected contact must
         # not become permanently suppressed merely because an AI request or
         # game-server delivery failed once.

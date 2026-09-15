@@ -303,11 +303,33 @@ from repositories import (
     PlayerRoleActionRepository, PlayerIPRepository, PlayerNameRepository,
     PlayerRoleStatRepository, PlayerSessionRepository
 )
-from utils import is_bogon_ip, parse_iso_datetime, safe_get_int, safe_get_list, validate_steamid, validate_player_name
+from utils import derive_subnet, is_bogon_ip, parse_iso_datetime, safe_get_int, safe_get_list, validate_steamid, validate_player_name
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def ip_subnet_fields(ip: Optional[str], subnet: Optional[str]) -> dict:
+    """Build the last_ip/last_subnet update fragment for an ingested address.
+
+    The DB triggers trg_players_ip_insert/trg_players_ip_update copy
+    NEW.last_subnet into player_ips.subnet (NOT NULL): a stored IP must never
+    be paired with a NULL subnet, otherwise the whole INSERT/UPDATE aborts
+    with 1048 "Column 'subnet' cannot be null". Derive a.b.c.0/24 (/64 for
+    IPv6) when the game server did not send a usable subnet.
+    """
+    fields: dict = {}
+    ip_is_usable = bool(ip and not is_bogon_ip(ip))
+    if ip_is_usable:
+        fields["last_ip"] = ip
+    if subnet and not is_bogon_ip(subnet) and (not ip or not is_bogon_ip(ip)):
+        fields["last_subnet"] = subnet
+    elif ip_is_usable:
+        derived = derive_subnet(ip)
+        if derived:
+            fields["last_subnet"] = derived
+    return fields
 
 
 class EventDispatcherService:
@@ -483,10 +505,7 @@ class EventDispatcherService:
             update_data = {}
             if player_name:
                 update_data["player_last_time_name"] = player_name
-            if ip and not is_bogon_ip(ip):
-                update_data["last_ip"] = ip
-            if subnet and not is_bogon_ip(subnet) and (not ip or not is_bogon_ip(ip)):
-                update_data["last_subnet"] = subnet
+            update_data.update(ip_subnet_fields(ip, subnet))
             
             logger.debug(f"Updating player {player.player_id} with: {update_data}")
             player = self.player_service.update_player(player.player_id, update_data)
@@ -714,11 +733,8 @@ class PlayerService:
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=str(e))
             
-            # Add new optional fields
-            if player_data.last_ip and not is_bogon_ip(player_data.last_ip):
-                update_data["last_ip"] = player_data.last_ip
-            if player_data.last_subnet and not is_bogon_ip(player_data.last_subnet) and (not player_data.last_ip or not is_bogon_ip(player_data.last_ip)):
-                update_data["last_subnet"] = player_data.last_subnet
+            # Add new optional fields (subnet derived when missing — see ip_subnet_fields)
+            update_data.update(ip_subnet_fields(player_data.last_ip, player_data.last_subnet))
             if player_data.first_login:
                 try:
                     update_data["first_login"] = parse_iso_datetime(player_data.first_login)
@@ -733,6 +749,7 @@ class PlayerService:
         
         # Create new player (handle race condition with duplicate key)
         from sqlalchemy.exc import IntegrityError as SAIntegrityError
+        create_ip_fields = ip_subnet_fields(player_data.last_ip, player_data.last_subnet)
         new_player = PlayerData(
             player_last_time_name=player_data.player_last_time_name,
             player_steamid=player_data.player_steamid,
@@ -740,8 +757,8 @@ class PlayerService:
             rank_id=player_data.rank_id if player_data.rank_id is not None else 0,
             kit_level=player_data.kit_level if player_data.kit_level is not None else 0,
             achievements=safe_get_list(player_data.achievements),
-            last_ip=player_data.last_ip if player_data.last_ip and not is_bogon_ip(player_data.last_ip) else None,
-            last_subnet=player_data.last_subnet if player_data.last_subnet and not is_bogon_ip(player_data.last_subnet) and (not player_data.last_ip or not is_bogon_ip(player_data.last_ip)) else None,
+            last_ip=create_ip_fields.get("last_ip"),
+            last_subnet=create_ip_fields.get("last_subnet"),
             avg_ping=player_data.avg_ping,
         )
         

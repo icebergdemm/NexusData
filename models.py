@@ -1696,6 +1696,27 @@ class AIPlayerDossierRun(Base):
     raw_response = Column(Text, nullable=True)
 
 
+class AILlmRequest(Base):
+    """Durable arbitration queue for all asynchronous LLM clients."""
+    __tablename__ = "ai_llm_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(String(32), nullable=False, index=True)
+    backend = Column(String(32), nullable=False)
+    priority = Column(Integer, nullable=False, default=100, index=True)
+    status = Column(String(16), nullable=False, default="queued", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    request_json = Column(JSON, nullable=False)
+    result_ref = Column(JSON, nullable=True)
+    idempotency_key = Column(String(128), nullable=True, unique=True)
+    requested_by = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    error = Column(String(2000), nullable=True)
+
+
 class OnlineSnapshot(Base):
     """Snapshot of online player count, recorded each time game server reports players."""
     __tablename__ = "online_snapshots"

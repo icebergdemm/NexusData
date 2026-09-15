@@ -34,6 +34,55 @@ from services_ai_dossier import (
 router = APIRouter()
 
 
+@router.get("/api/v1/admin/ai-llm/queue")
+def get_ai_llm_queue(current_admin: AdminUser = Depends(get_current_admin)):
+    require_ai_center_access(current_admin)
+    from services_llm_worker import get_ai_llm_worker_snapshot
+    return get_ai_llm_worker_snapshot()
+
+
+@router.post("/api/v1/admin/ai-llm/{ticket_id}/cancel")
+def cancel_ai_llm(ticket_id: int, current_admin: AdminUser = Depends(get_current_admin)):
+    require_ai_center_access(current_admin)
+    from services_llm_gateway import cancel
+    return {"cancelled": cancel(ticket_id)}
+
+
+@router.post("/api/v1/admin/ai-llm/{ticket_id}/boost")
+async def boost_ai_llm(ticket_id: int, request: Request,
+                       current_admin: AdminUser = Depends(get_current_admin)):
+    require_ai_center_access(current_admin)
+    body = await request.json()
+    from services_llm_gateway import boost
+    if not isinstance(body.get("priority"), int):
+        raise HTTPException(status_code=422, detail="priority must be an integer")
+    boost(ticket_id, body["priority"])
+    return {"boosted": True}
+
+
+@router.post("/api/v1/admin/ai-llm/clients/{client_id}/pause")
+def pause_ai_llm_client(client_id: str, current_admin: AdminUser = Depends(get_current_admin)):
+    require_ai_center_access(current_admin)
+    from services_llm_gateway import pause_client
+    pause_client(client_id)
+    return {"paused": True}
+
+
+@router.post("/api/v1/admin/ai-llm/clients/{client_id}/resume")
+def resume_ai_llm_client(client_id: str, current_admin: AdminUser = Depends(get_current_admin)):
+    require_ai_center_access(current_admin)
+    from services_llm_gateway import resume_client
+    resume_client(client_id)
+    return {"paused": False}
+
+
+@router.post("/api/v1/admin/ai-llm/retry-failed")
+def retry_failed_ai_llm(current_admin: AdminUser = Depends(get_current_admin)):
+    require_ai_center_access(current_admin)
+    from services_llm_gateway import retry_failed
+    return {"retried": retry_failed()}
+
+
 def _require_player_view(admin: AdminUser) -> None:
     if not (check_permission(admin, "players", "view") or check_permission(admin, "players_special", "view")):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
