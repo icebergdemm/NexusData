@@ -38,6 +38,7 @@ from services_voice_profiles import (
     NwdemoVoiceProfileService,
     VoiceProfileService,
     enqueue_voice_profile_job,
+    rank_global_voiceprint_pairs,
     rank_voiceprint_candidates,
     set_voice_profile_scanner_enabled,
     set_voiceprint_worker_enabled,
@@ -171,6 +172,8 @@ def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
             VoiceProfileClip.source_replay_id.isnot(None),
         ).distinct()
     }
+
+
     replay_ids_with_fingerprints = {int(row.replay_id) for row in fingerprints}
     queued_replays = [
         replay for replay in ready_replays
@@ -238,6 +241,62 @@ def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
             "queued_replays": len(queued_replays),
         },
         "log": log[:50],
+    }
+
+
+def _global_voiceprint_ranking_payload(db: Session) -> dict[str, Any]:
+    """Project safe metadata over the strongest unique aggregate pairs."""
+    signatures = db.query(VoiceProfileSignature).filter(
+        VoiceProfileSignature.algorithm == ONNX_VOICEPRINT_ALGORITHM,
+    ).all()
+    pairs = rank_global_voiceprint_pairs([{
+        "steam_id": row.steam_id,
+        "source_channel": row.source_channel,
+        "vector": row.vector,
+        "sample_count": row.sample_count,
+        "duration_ms": row.weighted_duration_ms,
+    } for row in signatures])
+    steam_ids = {
+        str(pair[side])
+        for pair in pairs
+        for side in ("left_steam_id", "right_steam_id")
+    }
+    players_by_steam = {
+        str(player.player_steamid): player
+        for player in db.query(PlayerData).filter(
+            PlayerData.player_steamid.in_(steam_ids or {"-1"}),
+        ).all()
+    }
+
+    def player_payload(steam_id: str, sample_count: int, duration_ms: int) -> dict[str, object]:
+        player = players_by_steam.get(steam_id)
+        return {
+            "steam_id": steam_id,
+            "player_id": getattr(player, "player_id", None),
+            "display_name": (
+                getattr(player, "display_name", None)
+                or getattr(player, "player_last_time_name", None)
+            ),
+            "sample_count": sample_count,
+            "duration_ms": duration_ms,
+        }
+
+    return {
+        "criteria": {"min_replays": 3, "min_duration_ms": 15_000},
+        "pairs": [{
+            "score": pair["score"],
+            "source_channel": pair["source_channel"],
+            "left": player_payload(
+                str(pair["left_steam_id"]),
+                int(pair["left_sample_count"]),
+                int(pair["left_duration_ms"]),
+            ),
+            "right": player_payload(
+                str(pair["right_steam_id"]),
+                int(pair["right_sample_count"]),
+                int(pair["right_duration_ms"]),
+            ),
+        } for pair in pairs],
     }
 
 
@@ -702,6 +761,15 @@ async def get_voiceprint_monitor(
 ):
     _require_superuser(current_admin)
     return _voiceprint_monitor_payload(db)
+
+
+@router.get("/global-voiceprint-ranking")
+async def get_global_voiceprint_ranking(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    return _global_voiceprint_ranking_payload(db)
 
 
 @router.patch("/voiceprint-monitor")

@@ -1016,6 +1016,56 @@ def rank_voiceprint_candidates(target: Mapping[str, object], candidates: Iterabl
     return sorted(ranked, key=lambda row: (-float(row["score"]), str(row["steam_id"])))[:10]
 
 
+def rank_global_voiceprint_pairs(
+    signatures: Iterable[Mapping[str, object]], *, limit: int = 10,
+) -> list[dict[str, object]]:
+    """Return each eligible player pair once, never mistaking a pair for proof."""
+    rows = list(signatures)
+    pairs: dict[tuple[str, str], dict[str, object]] = {}
+    for target in rows:
+        target_steam_id = str(target.get("steam_id") or "")
+        target_channel = str(target.get("source_channel") or "")
+        if not target_steam_id or not target_channel:
+            continue
+        for candidate in rank_voiceprint_candidates(target, rows):
+            candidate_steam_id = str(candidate["steam_id"])
+            left_steam_id, right_steam_id = sorted((target_steam_id, candidate_steam_id))
+            target_is_left = target_steam_id == left_steam_id
+            pair = {
+                "left_steam_id": left_steam_id,
+                "right_steam_id": right_steam_id,
+                "score": float(candidate["score"]),
+                "source_channel": target_channel,
+                "left_sample_count": int(
+                    target.get("sample_count") if target_is_left else candidate["sample_count"]
+                ),
+                "left_duration_ms": int(
+                    target.get("duration_ms") if target_is_left else candidate["duration_ms"]
+                ),
+                "right_sample_count": int(
+                    candidate["sample_count"] if target_is_left else target.get("sample_count")
+                ),
+                "right_duration_ms": int(
+                    candidate["duration_ms"] if target_is_left else target.get("duration_ms")
+                ),
+            }
+            existing = pairs.get((left_steam_id, right_steam_id))
+            if (
+                existing is None
+                or float(pair["score"]) > float(existing["score"])
+                or (
+                    float(pair["score"]) == float(existing["score"])
+                    and pair["source_channel"] == "normal"
+                    and existing["source_channel"] != "normal"
+                )
+            ):
+                pairs[(left_steam_id, right_steam_id)] = pair
+    return sorted(
+        pairs.values(),
+        key=lambda pair: (-float(pair["score"]), str(pair["left_steam_id"]), str(pair["right_steam_id"])),
+    )[:max(0, limit)]
+
+
 def gzip_file(source_path: str | os.PathLike[str], destination_path: str | os.PathLike[str]) -> int:
     """Compress a WAV without adding a third-party runtime dependency."""
     source = Path(source_path)

@@ -104,6 +104,22 @@ interface VoiceprintMonitor {
   };
   log: VoiceprintMonitorLogEntry[];
 }
+interface GlobalVoiceprintRankingPlayer {
+  steam_id: string;
+  player_id: number | null;
+  display_name: string | null;
+  sample_count: number;
+  duration_ms: number;
+}
+interface GlobalVoiceprintRanking {
+  criteria: { min_replays: number; min_duration_ms: number };
+  pairs: {
+    score: number;
+    source_channel: "normal" | "radio";
+    left: GlobalVoiceprintRankingPlayer;
+    right: GlobalVoiceprintRankingPlayer;
+  }[];
+}
 
 const displayName = (player: PlayerSuggestion) =>
   player.forced_display_name || player.player_last_time_name;
@@ -539,6 +555,95 @@ function VoiceprintMonitorConsole({
   );
 }
 
+function GlobalVoiceprintRanking({
+  openProfile,
+}: {
+  openProfile: (player: { player_id: number; display_name: string }) => void;
+}) {
+  const ranking = useQuery({
+    queryKey: ["global-voiceprint-ranking"],
+    queryFn: () =>
+      api.get<GlobalVoiceprintRanking>(
+        "/api/v1/admin/voice-profiles/global-voiceprint-ranking",
+      ),
+    refetchInterval: 15_000,
+  });
+  const data = ranking.data;
+  const openPlayer = (player: GlobalVoiceprintRankingPlayer) => {
+    if (player.player_id !== null) {
+      openProfile({
+        player_id: player.player_id,
+        display_name: player.display_name || player.steam_id,
+      });
+    }
+  };
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle>Общий рейтинг похожести</CardTitle>
+        <p className="text-sm font-normal text-muted-foreground">
+          Кандидаты для ручной проверки: каналы не смешиваются, а совпадение —
+          не приговор.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {ranking.isLoading && (
+          <p className="text-muted-foreground">Считаем пары…</p>
+        )}
+        {ranking.isError && (
+          <p className="text-destructive">Общий рейтинг не загрузился.</p>
+        )}
+        {data && !data.pairs.length && (
+          <p className="text-muted-foreground">
+            Пока нет подходящих пар: каждому профилю нужны {data.criteria.min_replays} good-реплея и {voiceprintDuration(data.criteria.min_duration_ms)} материала одного канала.
+          </p>
+        )}
+        {data?.pairs.map((pair) => (
+          <div
+            key={`${pair.left.steam_id}-${pair.right.steam_id}`}
+            className="grid gap-2 rounded-md border p-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center"
+          >
+            <button
+              type="button"
+              disabled={pair.left.player_id === null}
+              onClick={() => openPlayer(pair.left)}
+              className={
+                "min-w-0 text-left disabled:cursor-default" +
+                (pair.left.player_id !== null ? " hover:text-sky-300" : "")
+              }
+            >
+              <span className="block truncate font-medium">{pair.left.display_name || pair.left.steam_id}</span>
+              <span className="block font-mono text-xs text-muted-foreground">{pair.left.steam_id}</span>
+              <span className="block text-xs text-muted-foreground">
+                {pair.left.sample_count} репл. · {voiceprintDuration(pair.left.duration_ms)}
+              </span>
+            </button>
+            <div className="flex items-center justify-center gap-1 text-center text-xs text-muted-foreground">
+              <span className="font-medium text-sky-300">{(pair.score * 100).toFixed(1)}%</span>
+              <span>· {pair.source_channel}</span>
+            </div>
+            <button
+              type="button"
+              disabled={pair.right.player_id === null}
+              onClick={() => openPlayer(pair.right)}
+              className={
+                "min-w-0 text-left md:text-right disabled:cursor-default" +
+                (pair.right.player_id !== null ? " hover:text-sky-300" : "")
+              }
+            >
+              <span className="block truncate font-medium">{pair.right.display_name || pair.right.steam_id}</span>
+              <span className="block font-mono text-xs text-muted-foreground">{pair.right.steam_id}</span>
+              <span className="block text-xs text-muted-foreground">
+                {pair.right.sample_count} репл. · {voiceprintDuration(pair.right.duration_ms)}
+              </span>
+            </button>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function VoiceProfilesPage() {
   const [tab, setTab] = useState("profiles");
   const [query, setQuery] = useState("");
@@ -708,6 +813,7 @@ export function VoiceProfilesPage() {
               </Card>
             </>
           )}
+          <GlobalVoiceprintRanking openProfile={openProfile} />
         </TabsContent>
         <TabsContent value="scanner">
           <ScannerConsole openProfile={openProfile} />
