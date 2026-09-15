@@ -48,6 +48,7 @@ MFCC_V1_COEFFICIENTS = 13
 MFCC_V1_FILTERS = 26
 MFCC_V1_MIN_QUALITY_MS = 3_000
 VOICE_PROFILE_SCANNER_SETTING = "voice_profiles_scanner_enabled"
+VOICEPRINT_WORKER_SETTING = "voiceprint_worker_enabled"
 ONNX_VOICEPRINT_ALGORITHM = "redimnet-b2-onnx-v1"
 ONNX_VOICEPRINT_DIMENSIONS = 192
 ONNX_VOICEPRINT_SAMPLE_RATE = 16_000
@@ -119,6 +120,27 @@ def set_voice_profile_scanner_enabled(db, enabled: bool) -> bool:
     setting = db.query(AppSetting).filter(AppSetting.key == VOICE_PROFILE_SCANNER_SETTING).first()
     if setting is None:
         setting = AppSetting(key=VOICE_PROFILE_SCANNER_SETTING)
+        db.add(setting)
+    setting.value = "true" if enabled else "false"
+    db.flush()
+    return bool(enabled)
+
+
+def voiceprint_worker_enabled(db) -> bool:
+    """Read the independent ONNX backfill gate; it defaults to on."""
+    from models import AppSetting
+
+    setting = db.query(AppSetting).filter(AppSetting.key == VOICEPRINT_WORKER_SETTING).first()
+    return setting is None or str(setting.value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def set_voiceprint_worker_enabled(db, enabled: bool) -> bool:
+    """Persist the ONNX backfill gate without pausing clip extraction."""
+    from models import AppSetting
+
+    setting = db.query(AppSetting).filter(AppSetting.key == VOICEPRINT_WORKER_SETTING).first()
+    if setting is None:
+        setting = AppSetting(key=VOICEPRINT_WORKER_SETTING)
         db.add(setting)
     setting.value = "true" if enabled else "false"
     db.flush()
@@ -1719,6 +1741,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
         ),
     ).order_by(RoundReplay.id).with_for_update().first()
     if replay is None:
+        if not voiceprint_worker_enabled(db):
+            return {"status": "voiceprint_paused"}
         model = voiceprint_model_status()
         if model["status"] != "ready":
             return {"status": "awaiting_voiceprint_model"}

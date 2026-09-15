@@ -33,13 +33,17 @@ from services import PlayerService
 from services_replays import get_upload_dir
 from services_voice_profiles import (
     ONNX_VOICEPRINT_ALGORITHM,
+    ONNX_VOICEPRINT_DIMENSIONS,
+    ONNX_VOICEPRINT_SAMPLE_RATE,
     NwdemoVoiceProfileService,
     VoiceProfileService,
     enqueue_voice_profile_job,
     rank_voiceprint_candidates,
     set_voice_profile_scanner_enabled,
+    set_voiceprint_worker_enabled,
     voiceprint_is_eligible,
     voiceprint_model_status,
+    voiceprint_worker_enabled,
     voice_profile_scanner_enabled,
 )
 from services_voice_profile_import import commit_import_package, validate_import_package
@@ -146,6 +150,94 @@ def _scanner_payload(db: Session) -> dict[str, Any]:
             }
             for replay in recent
         ],
+    }
+
+
+def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
+    fingerprints = db.query(VoiceReplayFingerprint).filter(
+        VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM,
+    ).order_by(VoiceReplayFingerprint.updated_at.desc(), VoiceReplayFingerprint.id.desc()).all()
+    signatures = db.query(VoiceProfileSignature).filter(
+        VoiceProfileSignature.algorithm == ONNX_VOICEPRINT_ALGORITHM,
+    ).all()
+    ready_replays = db.query(RoundReplay).filter(
+        _nwdemo_replay_filter(),
+        RoundReplay.voice_profile_state == "ready",
+    ).all()
+    replay_ids_with_clips = {
+        int(row[0])
+        for row in db.query(VoiceProfileClip.source_replay_id).filter(
+            VoiceProfileClip.source_format == "nwdemo-v2",
+            VoiceProfileClip.source_replay_id.isnot(None),
+        ).distinct()
+    }
+    replay_ids_with_fingerprints = {int(row.replay_id) for row in fingerprints}
+    queued_replays = [
+        replay for replay in ready_replays
+        if replay.id in replay_ids_with_clips and replay.id not in replay_ids_with_fingerprints
+    ]
+    recent_errors = db.query(RoundReplay).filter(
+        _nwdemo_replay_filter(),
+        RoundReplay.voice_profile_error.like("voiceprint:%"),
+    ).order_by(RoundReplay.voice_profile_processed_at.desc(), RoundReplay.id.desc()).limit(50).all()
+    steam_ids = {str(row.steam_id) for row in fingerprints[:50]}
+    players_by_steam = {
+        str(player.player_steamid): player
+        for player in db.query(PlayerData).filter(
+            PlayerData.player_steamid.in_(steam_ids or {"-1"}),
+        ).all()
+    }
+    log = [
+        {
+            "id": f"fingerprint-{row.id}",
+            "at": _iso(row.updated_at),
+            "state": "ready" if row.quality == "good" else "low",
+            "replay_id": row.replay_id,
+            "channel": row.source_channel,
+            "duration_ms": row.duration_ms,
+            "player": (
+                {
+                    "player_id": players_by_steam[str(row.steam_id)].player_id,
+                    "display_name": players_by_steam[str(row.steam_id)].display_name
+                    or players_by_steam[str(row.steam_id)].player_last_time_name,
+                }
+                if str(row.steam_id) in players_by_steam else None
+            ),
+            "error": None,
+        }
+        for row in fingerprints[:50]
+    ]
+    log.extend({
+        "id": f"error-{replay.id}",
+        "at": _iso(replay.voice_profile_processed_at or replay.uploaded_at),
+        "state": "failed",
+        "replay_id": replay.id,
+        "channel": None,
+        "duration_ms": None,
+        "player": None,
+        "error": replay.voice_profile_error,
+    } for replay in recent_errors)
+    log.sort(key=lambda item: (item["at"] or "", item["id"]), reverse=True)
+    model = voiceprint_model_status()
+    return {
+        "enabled": voiceprint_worker_enabled(db),
+        "model": {
+            "status": model["status"],
+            "algorithm": ONNX_VOICEPRINT_ALGORITHM,
+            "dimensions": ONNX_VOICEPRINT_DIMENSIONS,
+            "sample_rate": ONNX_VOICEPRINT_SAMPLE_RATE,
+        },
+        "counts": {
+            "fingerprints": len(fingerprints),
+            "good_fingerprints": sum(row.quality == "good" for row in fingerprints),
+            "eligible_signatures": sum(voiceprint_is_eligible({
+                "sample_count": row.sample_count,
+                "duration_ms": row.weighted_duration_ms,
+                "vector": row.vector,
+            }) for row in signatures),
+            "queued_replays": len(queued_replays),
+        },
+        "log": log[:50],
     }
 
 
@@ -601,6 +693,31 @@ async def set_voice_profile_scanner(
     db.commit()
     log_admin_action(db, current_admin.id, "voice_profile_scanner_toggle", {"enabled": enabled})
     return _scanner_payload(db)
+
+
+@router.get("/voiceprint-monitor")
+async def get_voiceprint_monitor(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    return _voiceprint_monitor_payload(db)
+
+
+@router.patch("/voiceprint-monitor")
+async def set_voiceprint_monitor(
+    body: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled должен быть boolean")
+    set_voiceprint_worker_enabled(db, enabled)
+    db.commit()
+    log_admin_action(db, current_admin.id, "voiceprint_worker_toggle", {"enabled": enabled})
+    return _voiceprint_monitor_payload(db)
 
 
 @router.get("/players/{player_id}")
