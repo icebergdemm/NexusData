@@ -296,6 +296,8 @@ class Settings(BaseSettings):
     voice_profiles_enabled: bool = False
     voice_profiles_process_new_replays: bool = False
     voice_profile_decoder_path: str = ""
+    # Persistent, release-pinned ONNX model. The worker never downloads it.
+    voiceprint_model_dir: str = "data/voiceprint-models"
 
     # Steam Web API (avatar auto-fetch) — https://steamcommunity.com/dev/apikey
     steam_api_key: str = ""

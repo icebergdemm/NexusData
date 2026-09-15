@@ -32,10 +32,14 @@ from security import verify_external_api_key_dependency
 from services import PlayerService
 from services_replays import get_upload_dir
 from services_voice_profiles import (
+    ONNX_VOICEPRINT_ALGORITHM,
     NwdemoVoiceProfileService,
     VoiceProfileService,
     enqueue_voice_profile_job,
+    rank_voiceprint_candidates,
     set_voice_profile_scanner_enabled,
+    voiceprint_is_eligible,
+    voiceprint_model_status,
     voice_profile_scanner_enabled,
 )
 from services_voice_profile_import import commit_import_package, validate_import_package
@@ -621,10 +625,47 @@ async def get_player_profile(
     selection_by_clip = {selection.clip_id: selection for selection in selections}
     fingerprints = db.query(VoiceReplayFingerprint).filter(
         VoiceReplayFingerprint.steam_id == steam_id,
+        VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM,
     ).all()
     signatures = db.query(VoiceProfileSignature).filter(
         VoiceProfileSignature.steam_id == steam_id,
+        VoiceProfileSignature.algorithm == ONNX_VOICEPRINT_ALGORITHM,
     ).all()
+    signature_rows = [{
+        "steam_id": signature.steam_id,
+        "source_channel": signature.source_channel,
+        "vector": signature.vector,
+        "sample_count": signature.sample_count,
+        "duration_ms": signature.weighted_duration_ms,
+    } for signature in signatures]
+    all_signatures = db.query(VoiceProfileSignature).filter(
+        VoiceProfileSignature.algorithm == ONNX_VOICEPRINT_ALGORITHM,
+    ).all()
+    all_signature_rows = [{
+        "steam_id": signature.steam_id,
+        "source_channel": signature.source_channel,
+        "vector": signature.vector,
+        "sample_count": signature.sample_count,
+        "duration_ms": signature.weighted_duration_ms,
+    } for signature in all_signatures]
+    best_candidates: dict[str, dict[str, object]] = {}
+    for target in signature_rows:
+        for candidate in rank_voiceprint_candidates(target, all_signature_rows):
+            steam = str(candidate["steam_id"])
+            if steam not in best_candidates or float(candidate["score"]) > float(best_candidates[steam]["score"]):
+                best_candidates[steam] = candidate
+    ranked_candidates = sorted(
+        best_candidates.values(), key=lambda candidate: (-float(candidate["score"]), str(candidate["steam_id"]))
+    )[:10]
+    player_by_steam = {
+        str(candidate.player_steamid): candidate
+        for candidate in db.query(PlayerData).filter(
+            PlayerData.player_steamid.in_([candidate["steam_id"] for candidate in ranked_candidates] or ["-1"]),
+        ).all()
+    }
+    voiceprint_status = "model_missing" if voiceprint_model_status()["status"] != "ready" else (
+        "ready" if any(voiceprint_is_eligible(row) for row in signature_rows) else "collecting"
+    )
     return {
         "player": {
             "player_id": player.player_id,
@@ -638,9 +679,18 @@ async def get_player_profile(
             "replay_kinds": sorted({str(clip.source_kind) for clip in clips if clip.source_kind}),
         },
         "voiceprint": {
-            "status": "ready" if signatures else ("low_quality" if fingerprints else "pending"),
+            "algorithm": ONNX_VOICEPRINT_ALGORITHM,
+            "status": voiceprint_status,
             "replay_samples": len(fingerprints),
             "aggregate_channels": sorted({signature.source_channel for signature in signatures}),
+            "candidates": [{
+                **candidate,
+                "player_id": getattr(player_by_steam.get(str(candidate["steam_id"])), "player_id", None),
+                "display_name": (
+                    getattr(player_by_steam.get(str(candidate["steam_id"])), "display_name", None)
+                    or getattr(player_by_steam.get(str(candidate["steam_id"])), "player_last_time_name", None)
+                ),
+            } for candidate in ranked_candidates],
         },
     }
 

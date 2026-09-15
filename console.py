@@ -52,6 +52,8 @@ _HELP = """
                                  продолжает показывать страницу техработ
   maintenance on [текст]|off   — вкл/выкл режим технических работ
   db check                     — принудительно проверить подключение к БД
+  voiceprint-model status       — состояние pinned ONNX-модели голоса
+  voiceprint-model install      — скачать release asset, проверить SHA-256
   update [restart|norestart]   — забрать код из git (git pull --ff-only),
                                  при изменениях во frontend/ пересобрать его;
                                  аргумент разово перекрывает настройку
@@ -199,6 +201,20 @@ def _update_cmd(rest: str):
     services_git_update.run_update(print, force_restart=force_restart)
 
 
+def _voiceprint_model_cmd(rest: str):
+    from services_voice_profiles import install_voiceprint_model, voiceprint_model_status
+
+    action = rest.strip().lower()
+    if action == "status":
+        result = voiceprint_model_status()
+        print(f"voiceprint-model: {result['status']}  {result['path']}")
+    elif action == "install":
+        result = install_voiceprint_model()
+        print(f"voiceprint-model: {result['status']}  {result['path']}  {result.get('bytes', 0)} bytes")
+    else:
+        print("Использование: voiceprint-model install|status")
+
+
 def _handle(line: str):
     parts = line.strip().split(maxsplit=1)
     if not parts:
@@ -222,6 +238,8 @@ def _handle(line: str):
         _db_check()
     elif cmd == "update":
         _update_cmd(rest)
+    elif cmd == "voiceprint-model":
+        _voiceprint_model_cmd(rest)
     else:
         print(f"Неизвестная команда: {line!r}. 'help' — список команд.")
 

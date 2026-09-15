@@ -8,6 +8,7 @@ so the deterministic parts remain cheap to test.
 from __future__ import annotations
 
 import datetime as _datetime
+import audioop
 import gzip
 import hashlib
 import math
@@ -20,9 +21,11 @@ import zipfile
 import wave
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import groupby
 from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator, Mapping, Sequence
+from urllib.request import urlopen
 
 
 VPK1_MAGIC = b"VPK1"
@@ -45,6 +48,18 @@ MFCC_V1_COEFFICIENTS = 13
 MFCC_V1_FILTERS = 26
 MFCC_V1_MIN_QUALITY_MS = 3_000
 VOICE_PROFILE_SCANNER_SETTING = "voice_profiles_scanner_enabled"
+ONNX_VOICEPRINT_ALGORITHM = "redimnet-b2-onnx-v1"
+ONNX_VOICEPRINT_DIMENSIONS = 192
+ONNX_VOICEPRINT_SAMPLE_RATE = 16_000
+ONNX_VOICEPRINT_MAX_DURATION_MS = 30_000
+VOICEPRINT_MIN_SAMPLE_COUNT = 3
+VOICEPRINT_MIN_DURATION_MS = 15_000
+ONNX_VOICEPRINT_MODEL_FILENAME = "redimnet_b2_vox2.onnx"
+ONNX_VOICEPRINT_MODEL_RELEASE_URL = (
+    "https://github.com/icebergdemm/NexusData/releases/download/"
+    "voiceprint-redimnet-b2-onnx-v1/redimnet_b2_vox2.onnx"
+)
+ONNX_VOICEPRINT_MODEL_SHA256 = "a7586b34c8db1bbf32c64efc2b269be54f66787e50320c4472614bbe95218a81"
 
 
 @dataclass(frozen=True)
@@ -890,6 +905,95 @@ def aggregate_mfcc_v1(rows: Iterable[Mapping[str, object]]) -> tuple[list[float]
     return ([value / norm for value in vector] if norm else vector, len(accepted), weighted_duration)
 
 
+def select_voiceprint_pcm16(samples: Sequence[int], *, max_samples: int) -> list[int]:
+    """Keep start/middle/end speech context without making long rounds dominant."""
+    if max_samples <= 0:
+        return []
+    source = list(samples)
+    if len(source) <= max_samples:
+        return source
+    sections = min(3, max_samples)
+    base, extra = divmod(max_samples, sections)
+    output: list[int] = []
+    for section in range(sections):
+        width = base + int(section < extra)
+        if section == 0:
+            start = 0
+        elif section == sections - 1:
+            start = len(source) - width
+        else:
+            start = max(0, (len(source) - width) // 2)
+        output.extend(source[start : start + width])
+    return output
+
+
+def resample_pcm16_for_voiceprint(samples: Sequence[int], *, sample_rate: int = 48_000) -> list[int]:
+    """Use Python's PCM resampler for the fixed canonical 48 kHz input."""
+    if sample_rate == ONNX_VOICEPRINT_SAMPLE_RATE:
+        return list(samples)
+    if sample_rate != 48_000:
+        raise ValueError("voiceprint input must be 48 kHz PCM16")
+    payload = struct.pack(f"<{len(samples)}h", *samples) if samples else b""
+    converted, _state = audioop.ratecv(payload, 2, 1, sample_rate, ONNX_VOICEPRINT_SAMPLE_RATE, None)
+    return list(struct.unpack(f"<{len(converted) // 2}h", converted)) if converted else []
+
+
+def onnx_voiceprint_embedding(samples: Sequence[int], session) -> list[float]:
+    """Run a raw-waveform ONNX speaker model and L2-normalize its embedding."""
+    if not samples:
+        raise ValueError("voiceprint input is empty")
+    import numpy
+
+    waveform = numpy.asarray(samples, dtype=numpy.float32)[None, None, :] / 32768.0
+    output = session.run(None, {session.get_inputs()[0].name: waveform})[0]
+    vector = [float(value) for value in numpy.asarray(output).reshape(-1)]
+    norm = math.sqrt(sum(value * value for value in vector))
+    if not norm:
+        raise ValueError("voiceprint model returned a zero vector")
+    return [value / norm for value in vector]
+
+
+def voiceprint_is_eligible(row: Mapping[str, object]) -> bool:
+    return (
+        int(row.get("sample_count") or 0) >= VOICEPRINT_MIN_SAMPLE_COUNT
+        and int(row.get("duration_ms") or 0) >= VOICEPRINT_MIN_DURATION_MS
+        and isinstance(row.get("vector"), list)
+    )
+
+
+def rank_voiceprint_candidates(target: Mapping[str, object], candidates: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Rank only comparable, sufficiently sampled profiles; never assert identity."""
+    if not voiceprint_is_eligible(target):
+        return []
+    steam_id = str(target.get("steam_id") or "")
+    channel = str(target.get("source_channel") or "")
+    vector = target.get("vector")
+    assert isinstance(vector, list)
+    ranked = []
+    for candidate in candidates:
+        candidate_steam_id = str(candidate.get("steam_id") or "")
+        candidate_vector = candidate.get("vector")
+        if (
+            not candidate_steam_id
+            or candidate_steam_id == steam_id
+            or str(candidate.get("source_channel") or "") != channel
+            or not voiceprint_is_eligible(candidate)
+            or not isinstance(candidate_vector, list)
+        ):
+            continue
+        score = cosine_similarity(vector, candidate_vector)
+        if score is None:
+            continue
+        ranked.append({
+            "steam_id": candidate_steam_id,
+            "score": score,
+            "sample_count": int(candidate.get("sample_count") or 0),
+            "duration_ms": int(candidate.get("duration_ms") or 0),
+            "source_channel": channel,
+        })
+    return sorted(ranked, key=lambda row: (-float(row["score"]), str(row["steam_id"])))[:10]
+
+
 def gzip_file(source_path: str | os.PathLike[str], destination_path: str | os.PathLike[str]) -> int:
     """Compress a WAV without adding a third-party runtime dependency."""
     source = Path(source_path)
@@ -1458,6 +1562,63 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def voiceprint_model_path() -> Path:
+    """Return the persistent, release-managed model path without fetching it."""
+    from config import get_settings
+
+    return Path(get_settings().voiceprint_model_dir) / ONNX_VOICEPRINT_MODEL_FILENAME
+
+
+def voiceprint_model_status() -> dict[str, object]:
+    path = voiceprint_model_path()
+    if not path.is_file():
+        return {"status": "missing", "path": str(path)}
+    actual_sha256 = _file_sha256(path)
+    if actual_sha256 != ONNX_VOICEPRINT_MODEL_SHA256:
+        return {"status": "invalid", "path": str(path), "sha256": actual_sha256}
+    return {
+        "status": "ready",
+        "path": str(path),
+        "sha256": actual_sha256,
+        "bytes": path.stat().st_size,
+    }
+
+
+def install_voiceprint_model(*, emit=print) -> dict[str, object]:
+    """Install the pinned release asset atomically; workers never call this."""
+    destination = voiceprint_model_path()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f"{destination.name}.tmp.{os.getpid()}")
+    digest = hashlib.sha256()
+    try:
+        emit(f"voiceprint-model: downloading {ONNX_VOICEPRINT_MODEL_FILENAME}")
+        with urlopen(ONNX_VOICEPRINT_MODEL_RELEASE_URL, timeout=120) as source, temporary.open("wb") as target:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+                target.write(chunk)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != ONNX_VOICEPRINT_MODEL_SHA256:
+            raise RuntimeError(
+                "voiceprint model SHA-256 mismatch: "
+                f"expected {ONNX_VOICEPRINT_MODEL_SHA256}, got {actual_sha256}"
+            )
+        os.replace(temporary, destination)
+        return voiceprint_model_status()
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+@lru_cache(maxsize=1)
+def voiceprint_onnx_session(model_path: str):
+    """Load the local model lazily, once per process, on the CPU provider."""
+    import onnxruntime
+
+    return onnxruntime.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+
+
 def enqueue_voice_profile_job(db, replay_ids: Iterable[int], mode: str = "backfill"):
     """Create one durable run; callers may safely retry after a 409."""
     from models import VoiceProfileJob
@@ -1540,8 +1701,8 @@ def process_voice_profile_job(db) -> dict:
 
 def process_next_nwdemo_voice_profile(db) -> dict:
     """Process one pending NewWorldStreamer archive; legacy jobs stay inert."""
-    from models import RoundReplay
-    from sqlalchemy import or_
+    from models import RoundReplay, VoiceProfileClip, VoiceReplayFingerprint
+    from sqlalchemy import exists, or_
 
     service = NwdemoVoiceProfileService(db)
     if not service.decoder_path:
@@ -1558,7 +1719,28 @@ def process_next_nwdemo_voice_profile(db) -> dict:
         ),
     ).order_by(RoundReplay.id).with_for_update().first()
     if replay is None:
-        return {"status": "idle"}
+        model = voiceprint_model_status()
+        if model["status"] != "ready":
+            return {"status": "awaiting_voiceprint_model"}
+        replay = db.query(RoundReplay).filter(
+            RoundReplay.replay_format == "nwdemo-v2",
+            RoundReplay.voice_profile_state == "ready",
+            exists().where(VoiceProfileClip.source_replay_id == RoundReplay.id),
+            ~exists().where(
+                (VoiceReplayFingerprint.replay_id == RoundReplay.id)
+                & (VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM)
+            ),
+        ).order_by(RoundReplay.id).with_for_update().first()
+        if replay is None:
+            return {"status": "idle"}
+        try:
+            return {"status": "voiceprint_processed", **service.backfill_voiceprint(int(replay.id))}
+        except Exception as exc:
+            db.rollback()
+            replay = db.query(RoundReplay).filter(RoundReplay.id == replay.id).one()
+            replay.voice_profile_error = f"voiceprint: {exc}"[:2000]
+            db.commit()
+            raise
     # Rows uploaded before v2 columns existed are admitted only because their
     # extension narrows the candidate set; index_replay still validates every
     # manifest/world/voice byte contract before writing a profile.
@@ -1693,18 +1875,18 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         decode_vpk1(self.decoder_path, vpk_path, wav_path, index_path)
         return wav_path
 
-    def _update_signature(self, steam_id: str, source_channel: str) -> None:
+    def _update_signature(self, steam_id: str, source_channel: str, algorithm: str) -> None:
         from models import VoiceProfileSignature, VoiceReplayFingerprint
 
         fingerprints = self.db.query(VoiceReplayFingerprint).filter(
             VoiceReplayFingerprint.steam_id == steam_id,
-            VoiceReplayFingerprint.algorithm == MFCC_V1_ALGORITHM,
+            VoiceReplayFingerprint.algorithm == algorithm,
             VoiceReplayFingerprint.source_channel == source_channel,
             VoiceReplayFingerprint.quality == "good",
         ).all()
         signature = self.db.query(VoiceProfileSignature).filter(
             VoiceProfileSignature.steam_id == steam_id,
-            VoiceProfileSignature.algorithm == MFCC_V1_ALGORITHM,
+            VoiceProfileSignature.algorithm == algorithm,
             VoiceProfileSignature.source_channel == source_channel,
         ).first()
         aggregate = aggregate_mfcc_v1({
@@ -1720,7 +1902,7 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         if signature is None:
             signature = VoiceProfileSignature(
                 steam_id=steam_id,
-                algorithm=MFCC_V1_ALGORITHM,
+                algorithm=algorithm,
                 source_channel=source_channel,
                 vector=vector,
                 sample_count=sample_count,
@@ -1769,8 +1951,70 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             for name, value in values.items():
                 setattr(row, name, value)
         self.db.flush()
-        self._update_signature(steam_id, "normal")
-        self._update_signature(steam_id, "radio")
+        self._update_signature(steam_id, "normal", MFCC_V1_ALGORITHM)
+        self._update_signature(steam_id, "radio", MFCC_V1_ALGORITHM)
+
+    @staticmethod
+    def _read_canonical_wav(path: Path) -> tuple[list[int], int]:
+        with wave.open(str(path), "rb") as reader:
+            if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (1, 2, 48_000):
+                raise ValueError("voiceprint input must be mono 48 kHz PCM16 WAV")
+            frame_count = reader.getnframes()
+            payload = reader.readframes(frame_count)
+        samples = list(struct.unpack(f"<{frame_count}h", payload)) if frame_count else []
+        return samples, round(frame_count * 1000 / 48_000)
+
+    def _update_onnx_fingerprint(
+        self,
+        replay,
+        steam_id: str,
+        packets: Sequence[NwdemoVoicePacket],
+        temporary: Path,
+        session,
+    ) -> None:
+        from models import VoiceReplayFingerprint
+
+        normal = [packet for packet in packets if not packet.radio]
+        source_channel = "normal" if normal else "radio"
+        chosen = normal or list(packets)
+        if not chosen:
+            return
+        key = hashlib.sha256(f"onnx-fingerprint|{replay.id}|{steam_id}".encode()).hexdigest()
+        ndvc_path = temporary / f"{key}.ndvc"
+        write_ndvc(ndvc_path, chosen)
+        samples, duration_ms = self._read_canonical_wav(self._decode_ndvc(ndvc_path, temporary, key))
+        capped = select_voiceprint_pcm16(
+            samples,
+            max_samples=48_000 * (ONNX_VOICEPRINT_MAX_DURATION_MS // 1000),
+        )
+        embedding = onnx_voiceprint_embedding(resample_pcm16_for_voiceprint(capped), session)
+        if len(embedding) != ONNX_VOICEPRINT_DIMENSIONS:
+            raise ValueError(f"voiceprint model returned {len(embedding)} dimensions, expected {ONNX_VOICEPRINT_DIMENSIONS}")
+        row = self.db.query(VoiceReplayFingerprint).filter(
+            VoiceReplayFingerprint.replay_id == replay.id,
+            VoiceReplayFingerprint.steam_id == steam_id,
+            VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM,
+        ).first()
+        values = {
+            "source_channel": source_channel,
+            "vector": embedding,
+            "quality": "good" if duration_ms >= MFCC_V1_MIN_QUALITY_MS else "low",
+            "duration_ms": min(duration_ms, ONNX_VOICEPRINT_MAX_DURATION_MS),
+            "packet_count": len(chosen),
+        }
+        if row is None:
+            self.db.add(VoiceReplayFingerprint(
+                replay_id=replay.id,
+                steam_id=steam_id,
+                algorithm=ONNX_VOICEPRINT_ALGORITHM,
+                **values,
+            ))
+        else:
+            for name, value in values.items():
+                setattr(row, name, value)
+        self.db.flush()
+        self._update_signature(steam_id, "normal", ONNX_VOICEPRINT_ALGORITHM)
+        self._update_signature(steam_id, "radio", ONNX_VOICEPRINT_ALGORITHM)
 
     def reconcile_steam_id(self, steam_id: str) -> int:
         """Select 3/3/5 and materialize WAV only for those selected clips."""
@@ -1900,12 +2144,15 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             by_steam: dict[str, list[NwdemoVoicePacket]] = {}
             for packet in packets:
                 by_steam.setdefault(packet.steam_id, []).append(packet)
-            with tempfile.TemporaryDirectory(prefix="nwdemo-voiceprint-") as temp_dir:
-                temporary = Path(temp_dir)
-                for steam_id, player_packets in by_steam.items():
-                    self._update_fingerprint(replay, steam_id, player_packets, temporary)
+            model = voiceprint_model_status()
+            if model["status"] == "ready":
+                session = voiceprint_onnx_session(str(model["path"]))
+                with tempfile.TemporaryDirectory(prefix="nwdemo-voiceprint-") as temp_dir:
+                    temporary = Path(temp_dir)
+                    for steam_id, player_packets in by_steam.items():
+                        self._update_onnx_fingerprint(replay, steam_id, player_packets, temporary, session)
             replay.voice_profile_state = "ready"
-            replay.voice_profile_error = None
+            replay.voice_profile_error = None if model["status"] == "ready" else "voiceprint model is not installed"
             replay.voice_profile_processed_at = _datetime.datetime.utcnow()
         else:
             replay.voice_profile_state = "awaiting_decoder"
@@ -1919,3 +2166,30 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             "materialized_clips": materialized,
             "warnings": [],
         }
+
+    def backfill_voiceprint(self, replay_id: int) -> dict:
+        """Add ONNX observations only; selected clips are intentionally untouched."""
+        from models import RoundReplay
+        from services_replays import ReplayService
+
+        model = voiceprint_model_status()
+        if model["status"] != "ready":
+            raise RuntimeError("voiceprint model is not installed")
+        replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
+        if replay is None or replay.replay_format != "nwdemo-v2":
+            raise ValueError("voiceprints accept only ready nwdemo-v2 replays")
+        packets = read_nwdemo_voice_packets(
+            Path(ReplayService(self.db).get_file_path(replay)),
+            allow_empty_world=replay.replay_kind in {"lobby", "lobby_dump"},
+        )
+        by_steam: dict[str, list[NwdemoVoicePacket]] = {}
+        for packet in packets:
+            by_steam.setdefault(packet.steam_id, []).append(packet)
+        session = voiceprint_onnx_session(str(model["path"]))
+        with tempfile.TemporaryDirectory(prefix="nwdemo-voiceprint-") as temp_dir:
+            temporary = Path(temp_dir)
+            for steam_id, player_packets in by_steam.items():
+                self._update_onnx_fingerprint(replay, steam_id, player_packets, temporary, session)
+        replay.voice_profile_error = None
+        self.db.commit()
+        return {"replay_id": replay_id, "fingerprints": len(by_steam)}

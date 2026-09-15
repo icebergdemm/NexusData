@@ -48,9 +48,19 @@ interface VoiceProfile {
     replay_kinds: string[];
   };
   voiceprint: {
-    status: "ready" | "low_quality" | "pending";
+    algorithm: string;
+    status: "ready" | "collecting" | "model_missing";
     replay_samples: number;
     aggregate_channels: string[];
+    candidates: {
+      steam_id: string;
+      player_id: number | null;
+      display_name: string | null;
+      score: number;
+      sample_count: number;
+      duration_ms: number;
+      source_channel: "normal" | "radio";
+    }[];
   };
 }
 interface ScannerLogEntry {
@@ -75,9 +85,9 @@ const duration = (clip: VoiceClip) =>
 function voiceprintLabel(status: VoiceProfile["voiceprint"]["status"]) {
   return status === "ready"
     ? "готов"
-    : status === "low_quality"
-      ? "мало материала"
-      : "ожидает обработки";
+    : status === "collecting"
+      ? "копит материал"
+      : "модель не установлена";
 }
 function stateClass(state: ScannerLogEntry["state"]) {
   return state === "ready"
@@ -426,6 +436,48 @@ export function VoiceProfilesPage() {
                   clips={data.clips.filter((clip) => clip.band === "latest")}
                 />
               </div>
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle>Похожие голоса</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  {!data.voiceprint.candidates.length ? (
+                    <p className="text-muted-foreground">
+                      Рейтинг появится после 3 независимых реплеев и 15 секунд
+                      материала на каждом профиле.
+                    </p>
+                  ) : (
+                    data.voiceprint.candidates.map((candidate) => (
+                      <button
+                        key={`${candidate.steam_id}-${candidate.source_channel}`}
+                        type="button"
+                        disabled={candidate.player_id === null}
+                        onClick={() =>
+                          candidate.player_id !== null &&
+                          openProfile({
+                            player_id: candidate.player_id,
+                            display_name:
+                              candidate.display_name || candidate.steam_id,
+                          })
+                        }
+                        className="flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left enabled:hover:bg-accent disabled:cursor-default"
+                      >
+                        <span>
+                          {candidate.display_name || candidate.steam_id}
+                          <span className="ml-2 font-mono text-xs text-muted-foreground">
+                            {candidate.steam_id}
+                          </span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          {(candidate.score * 100).toFixed(1)}% ·{" "}
+                          {candidate.source_channel} · {candidate.sample_count}{" "}
+                          репл.
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
             </>
           )}
         </TabsContent>
