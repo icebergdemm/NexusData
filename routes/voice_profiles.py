@@ -22,12 +22,14 @@ from models import (
     VoiceProfileImport,
     VoiceProfileJob,
     VoiceProfileSelection,
+    VoiceProfileSignature,
+    VoiceReplayFingerprint,
 )
 from routes.admin import load_current_admin
 from security import verify_external_api_key_dependency
 from services import PlayerService
 from services_replays import get_upload_dir
-from services_voice_profiles import VoiceProfileService, enqueue_voice_profile_job
+from services_voice_profiles import NwdemoVoiceProfileService, VoiceProfileService, enqueue_voice_profile_job
 from services_voice_profile_import import commit_import_package, validate_import_package
 
 
@@ -115,13 +117,10 @@ def _speaker_payload(row: ReplayVoiceSpeaker) -> dict[str, Any]:
 def _clip_payload(clip: VoiceProfileClip, selection: VoiceProfileSelection | None = None) -> dict[str, Any]:
     return {
         "id": clip.id,
-        "archive_key": clip.archive_key,
-        "steam_id": clip.steam_id,
-        "player_id": clip.player_id,
         "source_replay_id": clip.source_replay_id,
         "source_replay_filename": clip.source_replay_filename,
-        "source_replay_hash": clip.source_replay_hash,
-        "speaker_id": clip.speaker_id,
+        "source_kind": getattr(clip, "source_kind", None),
+        "radio": bool(getattr(clip, "is_radio", False)),
         "start_ms": clip.start_ms,
         "end_ms": clip.end_ms,
         "packet_count": clip.packet_count,
@@ -176,6 +175,9 @@ def _profile_players_payload(
     selection_by_clip = {selection.clip_id: selection for selection in selections}
     grouped: dict[str, dict[str, Any]] = {}
     for clip in clips:
+        selection = selection_by_clip.get(clip.id)
+        if selection is None:
+            continue
         steam_id = str(clip.steam_id)
         player = player_by_steam.get(steam_id)
         profile = grouped.setdefault(
@@ -191,11 +193,27 @@ def _profile_players_payload(
                 "clips": [],
             },
         )
-        profile["clips"].append(_clip_payload(clip, selection_by_clip.get(clip.id)))
+        profile["clips"].append(_clip_payload(clip, selection))
     return sorted(
         grouped.values(),
         key=lambda profile: (str(profile["display_name"]).casefold(), profile["steam_id"]),
     )
+
+
+@router.post("/replays/{replay_id}/process")
+async def process_one_nwdemo_replay(
+    replay_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Controlled first-run probe before enabling the periodic scanner."""
+    _require_superuser(current_admin)
+    try:
+        return await run_in_threadpool(NwdemoVoiceProfileService(db).index_replay, replay_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/runs")
@@ -470,7 +488,7 @@ async def list_player_profiles(
         VoiceProfileClip.steam_id,
         VoiceProfileClip.recorded_at,
         VoiceProfileClip.start_ms,
-    ).all()
+    ).filter(VoiceProfileClip.source_format == "nwdemo-v2").all()
     steam_ids = sorted({str(clip.steam_id) for clip in clips if clip.steam_id})
     if not steam_ids:
         return {"players": []}
@@ -497,21 +515,35 @@ async def get_player_profile(
     selections = db.query(VoiceProfileSelection).filter(
         VoiceProfileSelection.steam_id == steam_id,
     ).order_by(VoiceProfileSelection.slot).all()
+    selected_ids = [selection.clip_id for selection in selections]
     clips = db.query(VoiceProfileClip).filter(
-        VoiceProfileClip.steam_id == steam_id,
-    ).order_by(VoiceProfileClip.recorded_at, VoiceProfileClip.start_ms).all()
+        VoiceProfileClip.id.in_(selected_ids or {-1}),
+        VoiceProfileClip.source_format == "nwdemo-v2",
+    ).order_by(VoiceProfileClip.recorded_at, VoiceProfileClip.source_replay_id, VoiceProfileClip.start_ms).all()
     selection_by_clip = {selection.clip_id: selection for selection in selections}
+    fingerprints = db.query(VoiceReplayFingerprint).filter(
+        VoiceReplayFingerprint.steam_id == steam_id,
+    ).all()
+    signatures = db.query(VoiceProfileSignature).filter(
+        VoiceProfileSignature.steam_id == steam_id,
+    ).all()
     return {
         "player": {
             "player_id": player.player_id,
             "steam_id": steam_id,
             "display_name": player.display_name or player.player_last_time_name,
         },
-        "clips": [_clip_payload(clip, selection_by_clip.get(clip.id)) for clip in clips],
-        "selections": [
-            {"slot": selection.slot, "band": selection.band, "clip_id": selection.clip_id}
-            for selection in selections
-        ],
+        "clips": [_clip_payload(clip, selection_by_clip[clip.id]) for clip in clips],
+        "stats": {
+            "selected_clips": len(clips),
+            "radio_clips": sum(1 for clip in clips if bool(getattr(clip, "is_radio", False))),
+            "replay_kinds": sorted({str(clip.source_kind) for clip in clips if clip.source_kind}),
+        },
+        "voiceprint": {
+            "status": "ready" if signatures else ("low_quality" if fingerprints else "pending"),
+            "replay_samples": len(fingerprints),
+            "aggregate_channels": sorted({signature.source_channel for signature in signatures}),
+        },
     }
 
 
@@ -523,9 +555,12 @@ async def get_clip_audio(
 ):
     _require_superuser(current_admin)
     clip = db.query(VoiceProfileClip).filter(VoiceProfileClip.id == clip_id).first()
-    if clip is None:
+    if clip is None or getattr(clip, "source_format", None) != "nwdemo-v2":
         raise HTTPException(status_code=404, detail="Клип не найден")
-    if clip.storage_format != "wav-gzip" or not clip.wav_filename:
+    selected = db.query(VoiceProfileSelection).filter(
+        VoiceProfileSelection.clip_id == clip.id,
+    ).first()
+    if selected is None or not clip.wav_filename:
         raise HTTPException(status_code=415, detail="Для клипа нет поддерживаемого WAV-хранилища")
     root = Path(get_upload_dir(db)).resolve()
     path = (root / clip.wav_filename).resolve()

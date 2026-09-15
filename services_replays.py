@@ -440,6 +440,10 @@ class ReplayService:
                     raise ValueError("неподдерживаемый формат manifest.json")
                 if manifest.get("world_format") != "BDMO" or manifest.get("world_version") != 7:
                     raise ValueError("неподдерживаемый формат world.bin")
+                with archive.open("world.bin", "r") as world:
+                    world_magic = world.read(4)
+                if world_magic != _MAGIC_DEMO:
+                    raise ValueError("world.bin не содержит BDMO header")
                 if not manifest.get("round_id"):
                     raise ValueError("в manifest.json отсутствует round_id")
         except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -618,6 +622,8 @@ class ReplayService:
             broken_at=datetime.utcnow() if meta.get("is_broken", 0) else None,
             recorded_at=meta.get("recorded_at"),
             notes=notes,
+            replay_format="nwdemo-v2" if is_nwdemo else None,
+            voice_profile_state="pending" if is_nwdemo else None,
         )
         self.db.add(replay)
         self.db.commit()

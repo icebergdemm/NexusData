@@ -1188,6 +1188,12 @@ class RoundReplay(Base):
     dump_action_id = Column(Integer, nullable=True, index=True)
     dumped_by_admin_id = Column(Integer, nullable=True, index=True)
     dumped_by_name = Column(String(255), nullable=True)
+    # NewWorldStreamer archives are version-gated independently from the old
+    # .barodemo pipeline.  The worker only accepts nwdemo-v2 rows here.
+    replay_format = Column(String(32), nullable=True, index=True)
+    voice_profile_state = Column(String(20), nullable=True, index=True)
+    voice_profile_error = Column(String(2000), nullable=True)
+    voice_profile_processed_at = Column(DateTime, nullable=True)
     # Manual escape hatch when the automatic header-timestamp/server_name
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.
@@ -1304,16 +1310,21 @@ class VoiceProfileClip(Base):
     source_replay_id = Column(Integer, nullable=True, index=True)
     source_replay_filename = Column(String(500), nullable=False)
     source_replay_hash = Column(String(64), nullable=False)
-    speaker_id = Column(Integer, nullable=False)
+    # Legacy corpus rows still have a local speaker ID. nwdemo-v2 profiles do
+    # not: their only identity is the Steam64 recorded per voice packet.
+    speaker_id = Column(Integer, nullable=True)
     start_ms = Column(Integer, nullable=False)
     end_ms = Column(Integer, nullable=False)
     packet_count = Column(Integer, nullable=False, default=0)
     radio_packet_count = Column(Integer, nullable=False, default=0)
     ndvc_filename = Column(String(500), nullable=True, unique=True)
-    wav_filename = Column(String(500), nullable=False, unique=True)
-    storage_format = Column(String(32), nullable=False, default="wav-gzip")
+    wav_filename = Column(String(500), nullable=True, unique=True)
+    storage_format = Column(String(32), nullable=False, default="ndvc")
     storage_size = Column(Integer, nullable=False, default=0)
     archive_version = Column(Integer, nullable=False, default=1)
+    source_format = Column(String(32), nullable=True, index=True)
+    source_kind = Column(String(16), nullable=True, index=True)
+    is_radio = Column(Boolean, nullable=False, default=False, index=True)
     recorded_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
@@ -1344,6 +1355,49 @@ class VoiceProfileSelection(Base):
         UniqueConstraint("steam_id", "slot", name="uq_voice_profile_selection_slot"),
         UniqueConstraint("steam_id", "clip_id", name="uq_voice_profile_selection_clip"),
         Index("ix_voice_profile_selections_steam_slot", "steam_id", "slot"),
+    )
+
+
+class VoiceReplayFingerprint(Base):
+    """One non-identifying acoustic feature vector per replay and Steam64."""
+
+    __tablename__ = "voice_replay_fingerprints"
+
+    id = Column(Integer, primary_key=True, index=True)
+    replay_id = Column(Integer, nullable=False, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    algorithm = Column(String(32), nullable=False)
+    source_channel = Column(String(16), nullable=False)
+    vector = Column(JSON, nullable=False)
+    quality = Column(String(16), nullable=False, default="low")
+    duration_ms = Column(Integer, nullable=False, default=0)
+    packet_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("replay_id", "steam_id", "algorithm", name="uq_voice_replay_fingerprint"),
+        Index("ix_voice_replay_fingerprint_steam_algorithm", "steam_id", "algorithm", "source_channel"),
+    )
+
+
+class VoiceProfileSignature(Base):
+    """Aggregate of quality-approved replay fingerprints for later review."""
+
+    __tablename__ = "voice_profile_signatures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False, index=True)
+    algorithm = Column(String(32), nullable=False)
+    source_channel = Column(String(16), nullable=False)
+    vector = Column(JSON, nullable=False)
+    sample_count = Column(Integer, nullable=False, default=0)
+    weighted_duration_ms = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "algorithm", "source_channel", name="uq_voice_profile_signature"),
     )
 
 

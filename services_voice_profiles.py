@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as _datetime
 import gzip
 import hashlib
+import math
 import os
 import json
 import subprocess
@@ -27,22 +28,38 @@ from typing import BinaryIO, Iterable, Iterator, Mapping, Sequence
 VPK1_MAGIC = b"VPK1"
 VPK1_VERSION = 1
 NDVC_MAGIC = b"NDVC"
-NDVC_VERSION = 1
+NDVC_VERSION = 2
 DEMO_MAGIC = b"BDMO"
 VOICE_MAP_MEMBER = "voice-map.json"
 MAX_OPUS_PACKET_SIZE = 40
+MAX_NWDEMO_OPUS_PACKET_SIZE = 1275
 VOICE_MERGE_GAP_MS = 1000
-VOICE_PROFILE_LIMIT = 25
-VOICE_PROFILE_EARLY_COUNT = 5
-VOICE_PROFILE_MIDDLE_COUNT = 10
-VOICE_PROFILE_LATEST_COUNT = 10
+VOICE_PROFILE_LIMIT = 11
+VOICE_PROFILE_EARLY_COUNT = 3
+VOICE_PROFILE_MIDDLE_COUNT = 3
+VOICE_PROFILE_LATEST_COUNT = 5
 VOICE_PROFILE_ARCHIVE_VERSION = 2
+NWDEMO_PROFILE_ARCHIVE_VERSION = 3
+MFCC_V1_ALGORITHM = "mfcc-v1"
+MFCC_V1_COEFFICIENTS = 13
+MFCC_V1_FILTERS = 26
+MFCC_V1_MIN_QUALITY_MS = 3_000
 
 
 @dataclass(frozen=True)
 class VoicePacket:
     time_ms: int
     speaker_id: int
+    data: bytes
+    radio: bool = False
+
+
+@dataclass(frozen=True)
+class NwdemoVoicePacket:
+    """A NewWorldStreamer packet keyed solely by its authoritative Steam64."""
+
+    time_ms: int
+    steam_id: str
     data: bytes
     radio: bool = False
 
@@ -115,7 +132,7 @@ def _select_evenly(candidates: Sequence[Mapping[str, object]], count: int) -> li
 def select_profile_candidates(
     candidates: Iterable[Mapping[str, object]],
 ) -> list[Mapping[str, object]]:
-    """Select the deterministic 5-earliest/10-middle/10-latest profile."""
+    """Select the deterministic 3-earliest/3-middle/5-latest profile."""
     ordered = sorted(candidates, key=_candidate_sort_key)
     if len(ordered) <= VOICE_PROFILE_LIMIT:
         return ordered
@@ -125,6 +142,22 @@ def select_profile_candidates(
     middle_pool = ordered[VOICE_PROFILE_EARLY_COUNT:-VOICE_PROFILE_LATEST_COUNT]
     middle = _select_evenly(middle_pool, VOICE_PROFILE_MIDDLE_COUNT)
     return [*early, *middle, *latest]
+
+
+def steam2_to_steam64(value: str) -> str | None:
+    """Convert the NewWorldStreamer Steam2 identity without any name lookup."""
+    parts = value.strip().upper().split(":")
+    if len(parts) != 3 or not parts[0].startswith("STEAM_"):
+        return None
+    try:
+        universe = int(parts[0].split("_", 1)[1])
+        auth = int(parts[1])
+        account = int(parts[2])
+    except ValueError:
+        return None
+    if universe not in (0, 1) or auth not in (0, 1) or account < 0:
+        return None
+    return str(76561197960265728 + auth + account * 2)
 
 
 def group_voice_packets(
@@ -160,6 +193,36 @@ def group_voice_packets(
         last_by_source[source] = segment
 
     return sorted(segments, key=lambda row: (row["start_ms"], row["speaker_id"]))
+
+
+def group_nwdemo_voice_packets(
+    packets: Sequence[NwdemoVoicePacket],
+    *,
+    merge_gap_ms: int = VOICE_MERGE_GAP_MS,
+) -> list[dict]:
+    """Group direct Steam64 nwdemo packets by identity and radio channel."""
+    segments: list[dict] = []
+    active: dict[tuple[str, bool], dict] = {}
+    for packet in sorted(packets, key=lambda row: (row.time_ms, row.steam_id, row.radio)):
+        source = (packet.steam_id, packet.radio)
+        previous = active.get(source)
+        if previous is not None and packet.time_ms - previous["end_ms"] <= merge_gap_ms:
+            previous["end_ms"] = packet.time_ms
+            previous["packet_count"] += 1
+            previous["packet_records"].append(packet)
+            continue
+        segment = {
+            "steam_id": packet.steam_id,
+            "radio": packet.radio,
+            "start_ms": packet.time_ms,
+            "end_ms": packet.time_ms,
+            "packet_count": 1,
+            "radio_packet_count": int(packet.radio),
+            "packet_records": [packet],
+        }
+        segments.append(segment)
+        active[source] = segment
+    return sorted(segments, key=lambda row: (row["start_ms"], row["steam_id"], row["radio"]))
 
 
 def build_replay_voice_segment_rows(
@@ -388,6 +451,10 @@ def _iter_replay_frames(stream: BinaryIO) -> tuple[int, Iterator[_ReplayFrame]]:
 
 def extract_voice_packet_records(path: str | os.PathLike[str]) -> ReplayVoiceExtraction:
     """Extract voice packets, observed names, and embedded identity mapping."""
+    path = Path(path)
+    if path.suffix.lower() == ".nwdemo":
+        packets, mapping = _read_nwdemo_voice_packets(path)
+        return ReplayVoiceExtraction(7, packets, mapping, {}, True, [])
     with _open_replay(path) as (stream, mapping):
         version, frames = _iter_replay_frames(stream)
         packets: list[VoicePacket] = []
@@ -515,47 +582,75 @@ def _read_dotnet_string(stream: BinaryIO) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _extract_nwdemo_voice_metadata(path: Path) -> ReplayVoiceSegmentExtraction:
-    segments: list[dict] = []
-    names_by_speaker: dict[int, set[str]] = {}
+def read_nwdemo_voice_packets(path: str | os.PathLike[str]) -> list[NwdemoVoicePacket]:
+    """Read the version-gated nwdemo-v2 layout, never inferring identity."""
+    path = Path(path)
+    packets: list[NwdemoVoicePacket] = []
     try:
-        with zipfile.ZipFile(path, "r") as archive, archive.open("voice.bin", "r") as stream:
-            active: dict[tuple[int, bool], dict] = {}
-            while True:
-                header = stream.read(6)
-                if not header:
-                    break
-                if len(header) != 6:
-                    raise VoiceProfileParseError("truncated nwdemo voice packet")
-                time_ms, speaker_id = struct.unpack("<IH", header)
-                _steam_id = _read_dotnet_string(stream)
-                radio_raw = stream.read(1)
-                length_raw = stream.read(2)
-                if len(radio_raw) != 1 or len(length_raw) != 2:
-                    raise VoiceProfileParseError("truncated nwdemo voice packet header")
-                radio = bool(radio_raw[0])
-                length = struct.unpack("<H", length_raw)[0]
-                payload = stream.read(length)
-                if len(payload) != length:
-                    raise VoiceProfileParseError("truncated nwdemo voice payload")
-                if not speaker_id:
-                    continue
-                key = (speaker_id, radio)
-                previous = active.get(key)
-                if previous and time_ms - previous["end_ms"] <= VOICE_MERGE_GAP_MS:
-                    previous["end_ms"] = time_ms
-                    previous["packet_count"] += 1
-                    previous["radio_packet_count"] += int(radio)
-                    continue
-                segment = {"speaker_id": speaker_id, "start_ms": time_ms, "end_ms": time_ms,
-                           "packet_count": 1, "radio_packet_count": int(radio)}
-                segments.append(segment)
-                active[key] = segment
-    except KeyError:
-        return ReplayVoiceSegmentExtraction(7, [], {}, {}, False, ["nwdemo archive has no voice.bin"])
-    except (OSError, zipfile.BadZipFile) as exc:
+        with zipfile.ZipFile(path, "r") as archive:
+            if not {"manifest.json", "world.bin", "voice.bin"}.issubset(archive.namelist()):
+                raise VoiceProfileParseError("nwdemo archive has no required member")
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if (
+                not isinstance(manifest, Mapping)
+                or manifest.get("format") != "nwdemo-v2"
+                or manifest.get("world_format") != "BDMO"
+                or manifest.get("world_version") != 7
+            ):
+                raise VoiceProfileParseError("unsupported nwdemo format")
+            with archive.open("world.bin", "r") as world:
+                world_magic = world.read(4)
+            if world_magic != DEMO_MAGIC:
+                raise VoiceProfileParseError("invalid nwdemo world.bin header")
+            with archive.open("voice.bin", "r") as stream:
+                while True:
+                    header = stream.read(6)
+                    if not header:
+                        break
+                    if len(header) != 6:
+                        raise VoiceProfileParseError("truncated nwdemo voice packet")
+                    time_ms, _local_speaker_id = struct.unpack("<IH", header)
+                    steam_id = steam2_to_steam64(_read_dotnet_string(stream))
+                    radio_raw = _read_exact_stream(stream, 1)[0]
+                    if radio_raw not in (0, 1):
+                        raise VoiceProfileParseError("invalid nwdemo radio flag")
+                    length = struct.unpack("<H", _read_exact_stream(stream, 2))[0]
+                    payload = _read_exact_stream(stream, length)
+                    if not 0 < length <= MAX_NWDEMO_OPUS_PACKET_SIZE:
+                        raise VoiceProfileParseError("invalid nwdemo Opus payload length")
+                    if steam_id is None:
+                        continue
+                    packets.append(NwdemoVoicePacket(time_ms, steam_id, payload, bool(radio_raw)))
+    except KeyError as exc:
+        raise VoiceProfileParseError("nwdemo archive has no required member") from exc
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise VoiceProfileParseError(f"invalid nwdemo voice archive: {exc}") from exc
-    return ReplayVoiceSegmentExtraction(7, segments, {}, names_by_speaker, False, [])
+    return packets
+
+
+def _read_nwdemo_voice_packets(path: Path) -> tuple[list[VoicePacket], dict[int, str]]:
+    """Compatibility adapter for the retired local-speaker metadata index.
+
+    New nwdemo processing must call :func:`read_nwdemo_voice_packets`; this
+    adapter intentionally has no identity semantics beyond feeding old read-only
+    inspection code until the legacy tables can be retired.
+    """
+    direct_packets = read_nwdemo_voice_packets(path)
+    steam_ids = {packet.steam_id for packet in direct_packets}
+    local_ids = {steam_id: index + 1 for index, steam_id in enumerate(sorted(steam_ids))}
+    mapping = {local_ids[steam_id]: steam_id for steam_id in steam_ids}
+    return (
+        [
+            VoicePacket(packet.time_ms, local_ids[packet.steam_id], packet.data, packet.radio)
+            for packet in direct_packets
+        ],
+        mapping,
+    )
+
+
+def _extract_nwdemo_voice_metadata(path: Path) -> ReplayVoiceSegmentExtraction:
+    packets, mapping = _read_nwdemo_voice_packets(path)
+    return ReplayVoiceSegmentExtraction(7, group_voice_packets(packets), mapping, {}, True, [])
 
 
 def extract_voice_packets_for_speaker(
@@ -563,6 +658,10 @@ def extract_voice_packets_for_speaker(
     speaker_id: int,
 ) -> list[VoicePacket]:
     """Extract Opus packets for one speaker without retaining other speakers."""
+    path = Path(path)
+    if path.suffix.lower() == ".nwdemo":
+        packets, _mapping = _read_nwdemo_voice_packets(path)
+        return [packet for packet in packets if packet.speaker_id == speaker_id]
     with _open_replay(path) as (stream, _mapping):
         _version, frames = _iter_replay_frames(stream)
         packets: list[VoicePacket] = []
@@ -621,6 +720,148 @@ def make_archive_key(
         (str(steam_id), str(replay_identity), str(speaker_id), str(start_ms), str(end_ms))
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def make_nwdemo_archive_key(
+    source_replay_hash: str,
+    steam_id: str,
+    radio: bool,
+    start_ms: int,
+    end_ms: int,
+) -> str:
+    """Stable nwdemo candidate identity with no local speaker component."""
+    payload = "|".join(
+        (source_replay_hash, steam_id, str(int(radio)), str(start_ms), str(end_ms))
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _next_power_of_two(value: int) -> int:
+    return 1 << max(0, (value - 1).bit_length())
+
+
+def _fft(values: Sequence[complex]) -> list[complex]:
+    """Small deterministic radix-2 FFT; voiceprints must not need NumPy."""
+    size = len(values)
+    output = list(values)
+    bits = size.bit_length() - 1
+    for index in range(size):
+        swapped = 0
+        value = index
+        for _ in range(bits):
+            swapped = (swapped << 1) | (value & 1)
+            value >>= 1
+        if swapped > index:
+            output[index], output[swapped] = output[swapped], output[index]
+    width = 2
+    while width <= size:
+        twiddle_step = complex(math.cos(-2 * math.pi / width), math.sin(-2 * math.pi / width))
+        half = width // 2
+        for start in range(0, size, width):
+            twiddle = 1 + 0j
+            for offset in range(half):
+                even = output[start + offset]
+                odd = output[start + offset + half] * twiddle
+                output[start + offset] = even + odd
+                output[start + offset + half] = even - odd
+                twiddle *= twiddle_step
+        width *= 2
+    return output
+
+
+def _hz_to_mel(value: float) -> float:
+    return 2595.0 * math.log10(1.0 + value / 700.0)
+
+
+def _mel_to_hz(value: float) -> float:
+    return 700.0 * (10.0 ** (value / 2595.0) - 1.0)
+
+
+def mfcc_v1_from_pcm16(samples: Sequence[int], sample_rate: int = 48_000) -> list[float]:
+    """Return a normalized mean/std 26-dimensional MFCC voice feature."""
+    if sample_rate != 48_000:
+        raise ValueError("mfcc-v1 expects 48 kHz PCM")
+    frame_size = int(sample_rate * 0.025)
+    hop_size = int(sample_rate * 0.010)
+    fft_size = _next_power_of_two(frame_size)
+    if not samples:
+        return [0.0] * (MFCC_V1_COEFFICIENTS * 2)
+    frame_starts = list(range(0, max(1, len(samples) - frame_size + 1), hop_size))
+    # A cap makes one very long replay no more authoritative than many rounds.
+    if len(frame_starts) > 120:
+        step = (len(frame_starts) - 1) / 119
+        frame_starts = [frame_starts[round(index * step)] for index in range(120)]
+    mel_min = _hz_to_mel(20.0)
+    mel_max = _hz_to_mel(sample_rate / 2)
+    mel_points = [mel_min + (mel_max - mel_min) * index / (MFCC_V1_FILTERS + 1) for index in range(MFCC_V1_FILTERS + 2)]
+    bins = [min(fft_size // 2, int(math.floor((fft_size + 1) * _mel_to_hz(point) / sample_rate))) for point in mel_points]
+    coefficients: list[list[float]] = []
+    window = [0.54 - 0.46 * math.cos(2 * math.pi * index / (frame_size - 1)) for index in range(frame_size)]
+    for start in frame_starts:
+        frame = [float(samples[start + index]) / 32768.0 if start + index < len(samples) else 0.0 for index in range(frame_size)]
+        spectrum = _fft([complex(value * window[index], 0.0) for index, value in enumerate(frame)] + [0j] * (fft_size - frame_size))
+        power = [(value.real * value.real + value.imag * value.imag) / fft_size for value in spectrum[: fft_size // 2 + 1]]
+        energies = []
+        for filter_index in range(MFCC_V1_FILTERS):
+            left, center, right = bins[filter_index : filter_index + 3]
+            energy = 0.0
+            for index in range(left, center):
+                if center > left:
+                    energy += power[index] * (index - left) / (center - left)
+            for index in range(center, right):
+                if right > center:
+                    energy += power[index] * (right - index) / (right - center)
+            energies.append(math.log(max(energy, 1e-12)))
+        coefficients.append([
+            sum(energies[index] * math.cos(math.pi * coefficient * (index + 0.5) / MFCC_V1_FILTERS) for index in range(MFCC_V1_FILTERS))
+            for coefficient in range(MFCC_V1_COEFFICIENTS)
+        ])
+    means = [sum(frame[index] for frame in coefficients) / len(coefficients) for index in range(MFCC_V1_COEFFICIENTS)]
+    deviations = [
+        math.sqrt(sum((frame[index] - means[index]) ** 2 for frame in coefficients) / len(coefficients))
+        for index in range(MFCC_V1_COEFFICIENTS)
+    ]
+    vector = [*means, *deviations]
+    norm = math.sqrt(sum(value * value for value in vector))
+    return [value / norm for value in vector] if norm else [0.0] * len(vector)
+
+
+def mfcc_v1_from_wav(path: str | os.PathLike[str]) -> tuple[list[float], int]:
+    """Validate canonical WAV and calculate its durable mfcc-v1 feature."""
+    with wave.open(str(path), "rb") as reader:
+        if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (1, 2, 48_000):
+            raise ValueError("voiceprint input must be mono 48 kHz PCM16 WAV")
+        frame_count = reader.getnframes()
+        payload = reader.readframes(frame_count)
+    samples = struct.unpack(f"<{frame_count}h", payload) if frame_count else ()
+    return mfcc_v1_from_pcm16(samples), round(frame_count * 1000 / 48_000)
+
+
+def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float | None:
+    if len(left) != len(right) or not left:
+        return None
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if not left_norm or not right_norm:
+        return None
+    return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+
+
+def aggregate_mfcc_v1(rows: Iterable[Mapping[str, object]]) -> tuple[list[float], int, int] | None:
+    """Duration-weight high-quality features; low-quality rows stay forensic only."""
+    accepted = [row for row in rows if row.get("quality") == "good" and isinstance(row.get("vector"), list)]
+    if not accepted:
+        return None
+    width = len(accepted[0]["vector"])
+    if not width or any(len(row["vector"]) != width for row in accepted):
+        return None
+    weighted_duration = sum(max(1, int(row.get("duration_ms") or 0)) for row in accepted)
+    vector = [
+        sum(float(row["vector"][index]) * max(1, int(row.get("duration_ms") or 0)) for row in accepted) / weighted_duration
+        for index in range(width)
+    ]
+    norm = math.sqrt(sum(value * value for value in vector))
+    return ([value / norm for value in vector] if norm else vector, len(accepted), weighted_duration)
 
 
 def gzip_file(source_path: str | os.PathLike[str], destination_path: str | os.PathLike[str]) -> int:
@@ -791,6 +1032,9 @@ class VoiceProfileService:
                     "steam_id": embedded_steam_id,
                     "name": player.display_name or player.player_last_time_name,
                 }, [], "embedded"
+            # A NewWorldStreamer identity is authoritative even when NexusData
+            # has not seen that player yet. Never replace it with a name guess.
+            return None, [], "embedded_missing_player"
 
         candidates = self._player_candidates(names)
         if len(candidates) == 1:
@@ -1268,6 +1512,45 @@ def process_voice_profile_job(db) -> dict:
         raise
 
 
+def process_next_nwdemo_voice_profile(db) -> dict:
+    """Process one pending NewWorldStreamer archive; legacy jobs stay inert."""
+    from models import RoundReplay
+    from sqlalchemy import or_
+
+    service = NwdemoVoiceProfileService(db)
+    if not service.decoder_path:
+        return {"status": "awaiting_decoder"}
+    replay = db.query(RoundReplay).filter(
+        or_(
+            RoundReplay.replay_format == "nwdemo-v2",
+            RoundReplay.filename.ilike("%.nwdemo"),
+            RoundReplay.stored_filename.ilike("%.nwdemo"),
+        ),
+        or_(
+            RoundReplay.voice_profile_state.in_(("pending", "awaiting_decoder")),
+            RoundReplay.voice_profile_state.is_(None),
+        ),
+    ).order_by(RoundReplay.id).with_for_update().first()
+    if replay is None:
+        return {"status": "idle"}
+    # Rows uploaded before v2 columns existed are admitted only because their
+    # extension narrows the candidate set; index_replay still validates every
+    # manifest/world/voice byte contract before writing a profile.
+    replay.replay_format = "nwdemo-v2"
+    replay.voice_profile_state = "processing"
+    replay.voice_profile_error = None
+    db.commit()
+    try:
+        return {"status": "processed", **service.index_replay(int(replay.id))}
+    except Exception as exc:
+        db.rollback()
+        replay = db.query(RoundReplay).filter(RoundReplay.id == replay.id).one()
+        replay.voice_profile_state = "failed"
+        replay.voice_profile_error = str(exc)[:2000]
+        db.commit()
+        raise
+
+
 def _read_exact(file, size: int) -> bytes:
     data = file.read(size)
     if len(data) != size:
@@ -1336,6 +1619,274 @@ def write_ndvc(path: str | os.PathLike[str], packets: Sequence[VoicePacket]) -> 
                 raise ValueError("packet timestamp is outside NDVC range")
             if len(packet.data) > 0xFFFF:
                 raise ValueError("Opus packet is too large for NDVC")
-            file.write(struct.pack("<IH", relative_time, len(packet.data)))
+            file.write(struct.pack("<IBH", relative_time, int(packet.radio), len(packet.data)))
             file.write(packet.data)
     return destination.stat().st_size
+
+
+def read_ndvc(path: str | os.PathLike[str]) -> list[VoicePacket]:
+    """Read the durable Opus archive; v1 is retained only for old corpus rows."""
+    with Path(path).open("rb") as file:
+        if _read_exact(file, 4) != NDVC_MAGIC:
+            raise ValueError("invalid NDVC magic")
+        version, count = struct.unpack("<BI", _read_exact(file, 5))
+        if version not in (1, NDVC_VERSION):
+            raise ValueError(f"unsupported NDVC version {version}")
+        packets = []
+        for _ in range(count):
+            if version == 1:
+                time_ms, length = struct.unpack("<IH", _read_exact(file, 6))
+                radio = False
+            else:
+                time_ms, radio_raw, length = struct.unpack("<IBH", _read_exact(file, 7))
+                if radio_raw not in (0, 1):
+                    raise ValueError("invalid NDVC radio flag")
+                radio = bool(radio_raw)
+            packets.append(VoicePacket(time_ms, 0, _read_exact(file, length), radio))
+        if file.read(1):
+            raise ValueError("trailing bytes in NDVC file")
+        return packets
+
+
+class NwdemoVoiceProfileService(VoiceProfileService):
+    """The direct-identity nwdemo-v2 profile pipeline, isolated from legacy."""
+
+    def _lookup_player_id(self, steam_id: str) -> int | None:
+        from models import PlayerData
+
+        player = self.db.query(PlayerData).filter(PlayerData.player_steamid == steam_id).first()
+        return int(player.player_id) if player is not None else None
+
+    def _decode_ndvc(self, ndvc_path: Path, temporary: Path, key: str) -> Path:
+        if not self.decoder_path:
+            raise RuntimeError("VOICE_PROFILE_DECODER_PATH is not configured")
+        vpk_path = temporary / f"{key}.vpk1"
+        wav_path = temporary / f"{key}.wav"
+        index_path = temporary / f"{key}.index.json"
+        write_vpk1(vpk_path, read_ndvc(ndvc_path))
+        decode_vpk1(self.decoder_path, vpk_path, wav_path, index_path)
+        return wav_path
+
+    def _update_signature(self, steam_id: str, source_channel: str) -> None:
+        from models import VoiceProfileSignature, VoiceReplayFingerprint
+
+        fingerprints = self.db.query(VoiceReplayFingerprint).filter(
+            VoiceReplayFingerprint.steam_id == steam_id,
+            VoiceReplayFingerprint.algorithm == MFCC_V1_ALGORITHM,
+            VoiceReplayFingerprint.source_channel == source_channel,
+            VoiceReplayFingerprint.quality == "good",
+        ).all()
+        signature = self.db.query(VoiceProfileSignature).filter(
+            VoiceProfileSignature.steam_id == steam_id,
+            VoiceProfileSignature.algorithm == MFCC_V1_ALGORITHM,
+            VoiceProfileSignature.source_channel == source_channel,
+        ).first()
+        aggregate = aggregate_mfcc_v1({
+            "vector": row.vector,
+            "quality": row.quality,
+            "duration_ms": row.duration_ms,
+        } for row in fingerprints)
+        if aggregate is None:
+            if signature is not None:
+                self.db.delete(signature)
+            return
+        vector, sample_count, weighted_duration = aggregate
+        if signature is None:
+            signature = VoiceProfileSignature(
+                steam_id=steam_id,
+                algorithm=MFCC_V1_ALGORITHM,
+                source_channel=source_channel,
+                vector=vector,
+                sample_count=sample_count,
+                weighted_duration_ms=weighted_duration,
+            )
+            self.db.add(signature)
+        else:
+            signature.vector = vector
+            signature.sample_count = sample_count
+            signature.weighted_duration_ms = weighted_duration
+
+    def _update_fingerprint(self, replay, steam_id: str, packets: Sequence[NwdemoVoicePacket], temporary: Path) -> None:
+        from models import VoiceReplayFingerprint
+
+        normal = [packet for packet in packets if not packet.radio]
+        source_channel = "normal" if normal else "radio"
+        chosen = normal or list(packets)
+        if not chosen:
+            return
+        key = hashlib.sha256(f"fingerprint|{replay.id}|{steam_id}".encode()).hexdigest()
+        ndvc_path = temporary / f"{key}.ndvc"
+        write_ndvc(ndvc_path, chosen)
+        wav_path = self._decode_ndvc(ndvc_path, temporary, key)
+        vector, duration_ms = mfcc_v1_from_wav(wav_path)
+        quality = "good" if duration_ms >= MFCC_V1_MIN_QUALITY_MS else "low"
+        row = self.db.query(VoiceReplayFingerprint).filter(
+            VoiceReplayFingerprint.replay_id == replay.id,
+            VoiceReplayFingerprint.steam_id == steam_id,
+            VoiceReplayFingerprint.algorithm == MFCC_V1_ALGORITHM,
+        ).first()
+        values = {
+            "source_channel": source_channel,
+            "vector": vector,
+            "quality": quality,
+            "duration_ms": duration_ms,
+            "packet_count": len(chosen),
+        }
+        if row is None:
+            self.db.add(VoiceReplayFingerprint(
+                replay_id=replay.id,
+                steam_id=steam_id,
+                algorithm=MFCC_V1_ALGORITHM,
+                **values,
+            ))
+        else:
+            for name, value in values.items():
+                setattr(row, name, value)
+        self.db.flush()
+        self._update_signature(steam_id, "normal")
+        self._update_signature(steam_id, "radio")
+
+    def reconcile_steam_id(self, steam_id: str) -> int:
+        """Select 3/3/5 and materialize WAV only for those selected clips."""
+        from models import VoiceProfileClip, VoiceProfileSelection
+        from services_replays import get_upload_dir
+
+        clips = self.db.query(VoiceProfileClip).filter(
+            VoiceProfileClip.steam_id == steam_id,
+            VoiceProfileClip.source_format == "nwdemo-v2",
+        ).all()
+        candidates = [{
+            "candidate_key": clip.archive_key,
+            "replay_id": clip.source_replay_id,
+            "start_ms": clip.start_ms,
+            "recorded_at": clip.recorded_at,
+            "clip": clip,
+        } for clip in clips]
+        selected = select_profile_candidates(candidates)
+        selected_ids = {candidate["clip"].id for candidate in selected}
+        root = Path(get_upload_dir(self.db))
+        self.root.joinpath("wav").mkdir(parents=True, exist_ok=True)
+        materialized = 0
+        with tempfile.TemporaryDirectory(prefix="nwdemo-voice-profile-") as temp_dir:
+            temporary = Path(temp_dir)
+            for candidate in selected:
+                clip = candidate["clip"]
+                wav_relative = f"voice_profiles/wav/{clip.archive_key}.wav.gz"
+                wav_path = root / wav_relative
+                ndvc_path = root / str(clip.ndvc_filename)
+                if not wav_path.is_file():
+                    decoded = self._decode_ndvc(ndvc_path, temporary, clip.archive_key)
+                    clip.storage_size = int(clip.storage_size or 0) + gzip_file(decoded, wav_path)
+                    materialized += 1
+                clip.wav_filename = wav_relative
+                clip.storage_format = "ndvc+wav-gzip"
+            for clip in clips:
+                if clip.id in selected_ids or not clip.wav_filename:
+                    continue
+                try:
+                    (root / clip.wav_filename).unlink()
+                except FileNotFoundError:
+                    pass
+                clip.wav_filename = None
+                clip.storage_format = "ndvc"
+        self.db.query(VoiceProfileSelection).filter(
+            VoiceProfileSelection.steam_id == steam_id,
+        ).delete(synchronize_session=False)
+        for slot, candidate in enumerate(selected):
+            band = "early" if slot < VOICE_PROFILE_EARLY_COUNT else "middle" if slot < VOICE_PROFILE_EARLY_COUNT + VOICE_PROFILE_MIDDLE_COUNT else "latest"
+            self.db.add(VoiceProfileSelection(
+                steam_id=steam_id,
+                slot=slot,
+                band=band,
+                clip_id=candidate["clip"].id,
+            ))
+        return materialized
+
+    def index_replay(self, replay_id: int) -> dict:
+        """Persist direct-ID candidates and then derive selections/fingerprints."""
+        from models import RoundReplay, VoiceProfileClip
+        from services_replays import ReplayService, get_upload_dir
+
+        replay = self.db.query(RoundReplay).filter(RoundReplay.id == replay_id).first()
+        if replay is None:
+            raise ValueError(f"replay {replay_id} does not exist")
+        if (
+            getattr(replay, "replay_format", None) != "nwdemo-v2"
+            and not str(getattr(replay, "stored_filename", "")).lower().endswith(".nwdemo")
+        ):
+            raise ValueError("voice profiles accept only nwdemo-v2 replays")
+        path = Path(ReplayService(self.db).get_file_path(replay))
+        packets = read_nwdemo_voice_packets(path)
+        replay.replay_format = "nwdemo-v2"
+        segments = group_nwdemo_voice_packets(packets)
+        replay_hash = _file_sha256(path)
+        upload_root = Path(get_upload_dir(self.db))
+        self.root.joinpath("ndvc").mkdir(parents=True, exist_ok=True)
+        affected: set[str] = set()
+        for segment in segments:
+            steam_id = str(segment["steam_id"])
+            key = make_nwdemo_archive_key(
+                replay_hash, steam_id, bool(segment["radio"]), int(segment["start_ms"]), int(segment["end_ms"]),
+            )
+            ndvc_relative = f"voice_profiles/ndvc/{key}.ndvc"
+            ndvc_path = upload_root / ndvc_relative
+            if not ndvc_path.is_file():
+                write_ndvc(ndvc_path, segment["packet_records"])
+            clip = self.db.query(VoiceProfileClip).filter(VoiceProfileClip.archive_key == key).first()
+            values = {
+                "steam_id": steam_id,
+                "player_id": self._lookup_player_id(steam_id),
+                "source_replay_id": replay.id,
+                "source_replay_filename": replay.filename,
+                "source_replay_hash": replay_hash,
+                "speaker_id": None,
+                "start_ms": int(segment["start_ms"]),
+                "end_ms": int(segment["end_ms"]),
+                "packet_count": int(segment["packet_count"]),
+                "radio_packet_count": int(segment["radio_packet_count"]),
+                "ndvc_filename": ndvc_relative,
+                "storage_format": "ndvc",
+                "storage_size": ndvc_path.stat().st_size,
+                "archive_version": NWDEMO_PROFILE_ARCHIVE_VERSION,
+                "recorded_at": replay.recorded_at or replay.uploaded_at,
+                "source_format": "nwdemo-v2",
+                "source_kind": replay.replay_kind,
+                "is_radio": bool(segment["radio"]),
+            }
+            if clip is None:
+                self.db.add(VoiceProfileClip(archive_key=key, **values))
+            else:
+                for name, value in values.items():
+                    setattr(clip, name, value)
+                if clip.wav_filename:
+                    wav_path = upload_root / clip.wav_filename
+                    if wav_path.is_file():
+                        clip.storage_size = ndvc_path.stat().st_size + wav_path.stat().st_size
+            affected.add(steam_id)
+        self.db.flush()
+        materialized = 0
+        if self.decoder_path:
+            for steam_id in affected:
+                materialized += self.reconcile_steam_id(steam_id)
+            by_steam: dict[str, list[NwdemoVoicePacket]] = {}
+            for packet in packets:
+                by_steam.setdefault(packet.steam_id, []).append(packet)
+            with tempfile.TemporaryDirectory(prefix="nwdemo-voiceprint-") as temp_dir:
+                temporary = Path(temp_dir)
+                for steam_id, player_packets in by_steam.items():
+                    self._update_fingerprint(replay, steam_id, player_packets, temporary)
+            replay.voice_profile_state = "ready"
+            replay.voice_profile_error = None
+            replay.voice_profile_processed_at = _datetime.datetime.utcnow()
+        else:
+            replay.voice_profile_state = "awaiting_decoder"
+            replay.voice_profile_error = "VOICE_PROFILE_DECODER_PATH is not configured"
+        self.db.commit()
+        return {
+            "replay_id": replay_id,
+            "status": replay.voice_profile_state,
+            "mapped_speakers": len(affected),
+            "unresolved_speakers": [],
+            "materialized_clips": materialized,
+            "warnings": [],
+        }

@@ -217,6 +217,13 @@ def _apply_migrations():
         ("round_replays", "dump_action_id", "INT"),
         ("round_replays", "dumped_by_admin_id", "INT"),
         ("round_replays", "dumped_by_name", "VARCHAR(255)"),
+        ("round_replays", "replay_format", "VARCHAR(32)"),
+        ("round_replays", "voice_profile_state", "VARCHAR(20)"),
+        ("round_replays", "voice_profile_error", "VARCHAR(2000)"),
+        ("round_replays", "voice_profile_processed_at", "DATETIME"),
+        ("voice_profile_clips", "source_format", "VARCHAR(32)"),
+        ("voice_profile_clips", "source_kind", "VARCHAR(16)"),
+        ("voice_profile_clips", "is_radio", "TINYINT NOT NULL DEFAULT 0"),
         # Kit variations + special kits (item 15) — additive; `items` (variation 1)
         # unchanged, so old game-server clients that only read job_id/kit_level/items
         # keep working untouched.
@@ -325,6 +332,31 @@ def _apply_migrations():
                     _logging.getLogger(__name__).warning(
                         "Migration failed for %s.%s: %s", table, column, e
                     )
+
+        # The v2 identity pipeline deliberately has no local speaker identity
+        # and stores WAV only for selected clips. Existing legacy rows retain
+        # both values, so this is a safe relaxation rather than a rewrite.
+        for column in ("speaker_id", "wav_filename"):
+            try:
+                nullable = conn.execute(
+                    __import__('sqlalchemy').text(
+                        "SELECT IS_NULLABLE FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA=:db AND TABLE_NAME='voice_profile_clips' AND COLUMN_NAME=:col"
+                    ),
+                    {"db": db_name, "col": column},
+                ).scalar()
+                if nullable == "NO":
+                    definition = "INT NULL" if column == "speaker_id" else "VARCHAR(500) NULL"
+                    conn.execute(__import__('sqlalchemy').text(
+                        f"ALTER TABLE `voice_profile_clips` MODIFY COLUMN `{column}` {definition}"
+                    ))
+                    conn.commit()
+            except Exception as e:
+                conn.rollback()
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Voice-profile nullable migration failed for %s: %s", column, e
+                )
 
         # Widen kits.job_id if it's too narrow
         try:
@@ -442,6 +474,11 @@ _MISSING_INDEX_COLUMNS = [
     ("round_events", "server_session_id"),
     ("round_events", "round_token"),
     ("rating_event_ledger", "dedup_key"),
+    ("round_replays", "replay_format"),
+    ("round_replays", "voice_profile_state"),
+    ("voice_profile_clips", "source_format"),
+    ("voice_profile_clips", "source_kind"),
+    ("voice_profile_clips", "is_radio"),
 ]
 
 _MISSING_COMPOSITE_INDEXES = [

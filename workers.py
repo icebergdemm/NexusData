@@ -606,16 +606,18 @@ def task_finalize_replay_streams() -> dict:
 
 
 def task_process_voice_profiles() -> dict:
-    """Process one queued replay voice-profile job when explicitly enabled."""
+    """Scan one pending direct-identity nwdemo-v2 archive when enabled."""
     from config import get_settings
 
     if not get_settings().voice_profiles_enabled:
         return {"status": "disabled"}
-    from services_voice_profiles import process_voice_profile_job
+    from services_voice_profiles import process_next_nwdemo_voice_profile
 
     db = SessionLocal()
     try:
-        return process_voice_profile_job(db)
+        if not get_settings().voice_profiles_process_new_replays:
+            return {"status": "disabled"}
+        return process_next_nwdemo_voice_profile(db)
     except Exception:
         db.rollback()
         logger.exception("Voice profile worker failed")
