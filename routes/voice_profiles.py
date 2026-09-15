@@ -136,9 +136,33 @@ def _scanner_payload(db: Session) -> dict[str, Any]:
             "display_name": player.display_name or player.player_last_time_name,
         })
 
+    now = datetime.utcnow()
+    active_replay = next(
+        (replay for replay in replays if replay.voice_profile_state == "processing"),
+        None,
+    )
+    active = None
+    if active_replay is not None:
+        progress = active_replay.voice_profile_progress if isinstance(active_replay.voice_profile_progress, dict) else {}
+        started_at = active_replay.voice_profile_started_at or active_replay.uploaded_at or now
+        heartbeat_at = active_replay.voice_profile_heartbeat_at
+        active = {
+            "replay_id": active_replay.id,
+            "replay_kind": active_replay.replay_kind,
+            "phase": progress.get("phase", "reading"),
+            "percent": int(progress.get("percent", 0) or 0),
+            "elapsed_ms": max(0, int((now - started_at).total_seconds() * 1000)),
+            "heartbeat_age_ms": None if heartbeat_at is None else max(0, int((now - heartbeat_at).total_seconds() * 1000)),
+            "packets_read": int(progress.get("packets_read", 0) or 0),
+            "bytes_read": int(progress.get("bytes_read", 0) or 0),
+            "speakers_seen": int(progress.get("speakers_seen", 0) or 0),
+            "speakers_completed": int(progress.get("speakers_completed", 0) or 0),
+        }
+
     return {
         "enabled": voice_profile_scanner_enabled(db),
         "counts": counts,
+        "active": active,
         "log": [
             {
                 "replay_id": replay.id,
