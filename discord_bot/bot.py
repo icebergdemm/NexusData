@@ -2499,6 +2499,21 @@ async def _close_ticket_with_retry(
     return False
 
 
+async def _send_ticket_followup(
+    interaction: discord.Interaction,
+    content: str,
+) -> None:
+    """Do not turn a successful channel deletion into an interaction error."""
+    try:
+        await interaction.followup.send(content, ephemeral=True)
+    except discord.HTTPException as exc:
+        # Discord rejects interaction webhooks once their channel was deleted.
+        if getattr(exc, "code", None) == 10003:
+            logger.info("Ticket close response skipped because the channel was deleted")
+            return
+        raise
+
+
 class TicketCloseView(discord.ui.View):
     def __init__(self, ticket_id=None, channel=None):
         super().__init__(timeout=None)
@@ -2522,9 +2537,9 @@ class TicketCloseView(discord.ui.View):
             ticket_id = ticket["id"] if ticket else None
 
         if not ticket_id:
-            await interaction.followup.send(
+            await _send_ticket_followup(
+                interaction,
                 "⚠️ Не удалось закрыть обращение на сайте — канал НЕ удалён, попробуйте ещё раз позже.",
-                ephemeral=True,
             )
             return
 
@@ -2541,14 +2556,14 @@ class TicketCloseView(discord.ui.View):
                 ticket_id,
                 type(exc).__name__,
             )
-            await interaction.followup.send(
+            await _send_ticket_followup(
+                interaction,
                 "⚠️ Не удалось надёжно сохранить историю и вложения — канал НЕ удалён. "
                 "Повторите закрытие позже.",
-                ephemeral=True,
             )
             return
 
-        await interaction.followup.send("🔒 Тикет закрыт, история и файлы сохранены.", ephemeral=True)
+        await _send_ticket_followup(interaction, "🔒 Тикет закрыт, история и файлы сохранены.")
         await refresh_ticket_status()
 
 
