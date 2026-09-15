@@ -1044,6 +1044,7 @@ async def upload_replay(
     file: Optional[UploadFile] = File(None, description=".nwdemo или .barodemo"),
     server_name: Optional[str] = Query(None, description="Имя сервера-отправителя"),
     notes: Optional[str] = Query(None),
+    after_round_stream_id: Optional[str] = Query(None, description="Stream id раунда, за которым следует лобби-запись"),
     db: Session = Depends(get_db),
 ):
     """Upload a round replay file.
@@ -1113,8 +1114,10 @@ async def upload_replay(
 
     try:
         upload_kind = request.headers.get("x-replay-kind")
+        after_round = after_round_stream_id or request.headers.get("x-after-round-stream-id") or None
         replay = await svc.save_upload_stream(upload_source, server_name=server_name, notes=notes,
-                                              replay_kind=upload_kind)
+                                              replay_kind=upload_kind,
+                                              after_round_stream_id=after_round)
     except HTTPException as he:
         db.rollback()
         logger.warning("Replay upload rejected: %s (filename=%s)", he.detail, getattr(upload_source, "filename", None))
