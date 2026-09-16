@@ -19,6 +19,10 @@ def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
+def _safe(value: str) -> str:
+    return (value or "").replace("@", "@\u200b")
+
+
 class DiscordReactionPort:
     def __init__(self, bot: discord.Client, config: DetectorConfig) -> None:
         self.bot = bot
@@ -166,14 +170,16 @@ class DiscordNotifier:
             Verdict.CLEAN: "Чисто",
         }[result.verdict]
         embed = discord.Embed(title="Возможное нарушение формы общения", color=0xD64545)
-        embed.add_field(name="Участник", value=_clip(context.author_display_name, 256), inline=True)
+        embed.add_field(name="Участник", value=_clip(_safe(context.author_display_name), 256), inline=True)
         embed.add_field(name="Discord ID", value=str(context.author_id), inline=True)
+        embed.add_field(name="Канал", value=f"<#{context.channel_id}>" if context.channel_id else "-", inline=True)
         embed.add_field(name="Результат", value=label, inline=True)
         embed.add_field(name="Сработало", value=_clip(", ".join(context.trigger_tokens), 1024), inline=True)
-        embed.add_field(name="Сообщение", value=_clip(f"> {context.raw_content}", 1024), inline=False)
+        embed.add_field(name="Сообщение", value=_clip(f"> {_safe(context.raw_content)}", 1024), inline=False)
         lines = []
         for signal in reversed(incident.get("signals", [])):
-            lines.append(f"> {signal['raw_content']} ([перейти]({signal['jump_url']})" if signal.get("jump_url") else f"> {signal['raw_content']}")
+            message_text = _safe(signal["raw_content"])
+            lines.append(f"> {message_text} ([перейти]({signal['jump_url']}))" if signal.get("jump_url") else f"> {message_text}")
         if incident.get("message_count", 0) > len(lines):
             lines.append(f"+ ещё {incident['message_count'] - len(lines)} сообщений")
         embed.add_field(name="Контекст incident", value=_clip("\n".join(lines) or "нет", 1024), inline=False)
