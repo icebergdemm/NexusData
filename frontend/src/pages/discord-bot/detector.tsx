@@ -129,6 +129,7 @@ function DiscordChannelPicker({
   useEffect(() => setSelection(selectedIds), [selectedKey])
 
   const selected = new Set(selection)
+  const selectionKey = selection.join(",")
   const query = search.trim().toLocaleLowerCase()
   const visible = useMemo(() => {
     if (!tree) return []
@@ -141,6 +142,7 @@ function DiscordChannelPicker({
     const categoryNames = new Map((tree?.categories ?? []).map((category) => [category.id, category.name]))
     const groups = new Map<string, DetectorChannel[]>()
     for (const channel of visible) {
+      if (selected.has(channel.id)) continue
       const key = channel.category_id ?? "__uncategorized__"
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key)!.push(channel)
@@ -150,8 +152,12 @@ function DiscordChannelPicker({
       name: categoryNames.get(key) ?? "Без категории",
       channels: channels.sort((a, b) => a.position - b.position),
     }))
-  }, [tree, visible])
+  }, [tree, visible, selectionKey])
   const filteredIds = visible.map((channel) => channel.id)
+  const selectedChannels = selection
+    .map((id) => tree?.channels.find((channel) => channel.id === id))
+    .filter((channel): channel is DetectorChannel => !!channel && (channel.type === "text" || channel.type === "thread"))
+  const unresolvedIds = selection.filter((id) => !selectedChannels.some((channel) => channel.id === id))
   const dirty = selection.join(",") !== selectedIds.join(",")
 
   const toggle = (id: string) => {
@@ -190,6 +196,33 @@ function DiscordChannelPicker({
           <p className="truncate text-zinc-400">
             {selection.map((id) => tree?.channels.find((channel) => channel.id === id)?.name ?? id).join(", ")}
           </p>
+        </div>
+      )}
+      {selection.length > 0 && (
+        <div className="rounded border border-primary/30 bg-primary/5 p-2">
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-primary">Выбранные — сверху</p>
+          <div className="space-y-1">
+            {selectedChannels.map((channel) => {
+              const parent = channel.parent_id ? tree?.channels.find((item) => item.id === channel.parent_id) : undefined
+              return (
+                <div key={channel.id} className="flex items-center gap-2 rounded bg-background/50 px-2 py-1.5 text-xs">
+                  {channel.type === "thread" ? <GitBranch className="size-3.5 shrink-0 text-primary" /> : <Hash className="size-3.5 shrink-0 text-primary" />}
+                  <span className="min-w-0 flex-1 truncate">{channel.name}</span>
+                  {parent && <span className="max-w-36 truncate text-[10px] text-muted-foreground">в #{parent.name}</span>}
+                  <span className="font-mono text-[10px] text-muted-foreground">{channel.id}</span>
+                  <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]" disabled={disabled} onClick={() => setSelection((current) => current.filter((id) => id !== channel.id))}>Снять</Button>
+                </div>
+              )
+            })}
+            {unresolvedIds.map((id) => (
+              <div key={id} className="flex items-center gap-2 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs text-amber-200">
+                <CircleAlert className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1"><span className="font-mono">{id}</span> — не найден в текущем Discord tree</span>
+                <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[10px] text-amber-200 hover:text-amber-100" disabled={disabled} onClick={() => setSelection((current) => current.filter((item) => item !== id))}>Снять</Button>
+              </div>
+            ))}
+          </div>
+          {unresolvedIds.length > 0 && <p className="mt-1 text-[10px] text-amber-300">Это может быть архивная/удалённая thread или объект, скрытый от бота. Для мониторинга оставляйте только доступные каналы.</p>}
         </div>
       )}
       <div className="max-h-64 overflow-y-auto rounded border border-border/60 bg-background/60 p-1">
