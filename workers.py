@@ -607,13 +607,18 @@ def task_finalize_replay_streams() -> dict:
 
 def task_process_voice_profiles() -> dict:
     """Scan one pending direct-identity nwdemo-v2 archive when enabled."""
-    from services_voice_profiles import process_next_nwdemo_voice_profile, voice_profile_scanner_enabled
+    from services_voice_profiles import (
+        process_next_nwdemo_voice_profile,
+        recover_stale_nwdemo_processing,
+        voice_profile_scanner_enabled,
+    )
 
     db = SessionLocal()
     try:
+        recovery = recover_stale_nwdemo_processing(db)
         if not voice_profile_scanner_enabled(db):
-            return {"status": "disabled"}
-        return process_next_nwdemo_voice_profile(db)
+            return {"status": "disabled", **recovery}
+        return {**recovery, **process_next_nwdemo_voice_profile(db)}
     except Exception:
         db.rollback()
         logger.exception("Voice profile worker failed")
@@ -1578,6 +1583,8 @@ def _start_simple_workers():
 
     from services_ai_dossier_worker import start_ai_dossier_worker
     start_ai_dossier_worker()
+    from services_llm_worker import start_ai_llm_worker
+    start_ai_llm_worker()
 
     for fn, interval in periodic_tasks:
         t = threading.Thread(target=_loop, args=(fn, interval), daemon=True, name=f"Worker-{fn.__name__}")
@@ -1919,6 +1926,8 @@ def stop_all_workers() -> None:
     try:
         from services_ai_dossier_worker import stop_ai_dossier_worker
         stop_ai_dossier_worker()
+        from services_llm_worker import stop_ai_llm_worker
+        stop_ai_llm_worker()
     except Exception:
         logger.exception("[Workers] Failed to stop AI dossier worker")
     if _HAS_SCHEDULER and scheduler is not None:

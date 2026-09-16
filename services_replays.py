@@ -397,6 +397,8 @@ class ReplayService:
                                 "level_name": data.get("level_name"),
                                 "sub_name": data.get("submarine_name"),
                                 "replay_kind": data.get("replay_kind"),
+                                "round_id": data.get("round_id"),
+                                "after_round_stream_id": data.get("after_round_stream_id"),
                                 "has_voice": int("voice.bin" in names),
                                 "is_broken": int(bool(data.get("is_broken"))),
                                 "recorded_at": datetime.utcfromtimestamp(float(started_at) / 1000.0) if started_at else None,
@@ -528,6 +530,7 @@ class ReplayService:
 
     async def save_upload_stream(self, upload, server_name=None, notes=None,
                                  replay_kind=None,
+                                 after_round_stream_id=None,
                                  max_bytes: int = 500*1024*1024) -> "RoundReplay":
         """Save an UploadFile to disk in chunks WITHOUT loading it fully into RAM.
 
@@ -611,6 +614,12 @@ class ReplayService:
         replay_kind = replay_kind if replay_kind in ("round", "lobby", "lobby_dump") else (
             meta.get("replay_kind") if meta.get("replay_kind") in ("round", "lobby", "lobby_dump") else "round"
         )
+        # The lobby->round link: the plugin reports which round stream the
+        # lobby recording follows (manifest field, query param, or header).
+        # The round side stores the plugin's stream id (manifest round_id) so
+        # the round detail query (after_round_stream_id == stream_id) matches.
+        after_round_stream_id = after_round_stream_id or meta.get("after_round_stream_id") or None
+        stream_id = meta.get("round_id") or None
 
         replay = RoundReplay(
             server_name=server_name or meta.get("server_name"),
@@ -621,6 +630,8 @@ class ReplayService:
             file_size=file_size,
             has_voice=meta.get("has_voice", 0),
             replay_kind=replay_kind,
+            stream_id=stream_id,
+            after_round_stream_id=after_round_stream_id,
             is_broken=bool(meta.get("is_broken", 0)),
             broken_at=datetime.utcnow() if meta.get("is_broken", 0) else None,
             recorded_at=meta.get("recorded_at"),
@@ -629,7 +640,24 @@ class ReplayService:
             voice_profile_state="pending" if is_nwdemo else None,
         )
         self.db.add(replay)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except Exception:
+            # Lost-response retry of an already-stored upload: stream_id is
+            # unique, so return the stored row instead of failing the duplicate.
+            self.db.rollback()
+            if stream_id:
+                existing = self.db.query(RoundReplay).filter(
+                    RoundReplay.stream_id == stream_id
+                ).first()
+                if existing is not None:
+                    logger.info(f"Replay upload duplicate ignored, returning replay {existing.id} (stream {stream_id})")
+                    try:
+                        os.remove(stored_path)
+                    except OSError:
+                        pass
+                    return existing
+            raise
         self.db.refresh(replay)
         logger.info(f"Saved replay {replay.id} (streamed): {stored_name} ({file_size} bytes)")
         return replay

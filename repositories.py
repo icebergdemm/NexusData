@@ -10,6 +10,7 @@ from models import (
 from fastapi import HTTPException
 import logging
 from datetime import datetime, timedelta
+from utils import derive_subnet
 
 logger = logging.getLogger(__name__)
 
@@ -579,6 +580,13 @@ class PlayerIPRepository(BaseRepository):
         """Create IP record or update last_seen"""
         existing = self.get_by_player_and_ip(player_id, ip)
         now = datetime.now()
+
+        if not subnet:
+            # player_ips.subnet is NOT NULL — derive instead of letting the
+            # DB raise a raw 1048 (same failure as the players_data triggers).
+            subnet = derive_subnet(ip)
+        if not subnet:
+            raise HTTPException(status_code=422, detail="Subnet is required")
         
         if existing:
             existing.last_seen = now
@@ -607,7 +615,12 @@ class PlayerNameRepository(BaseRepository):
         ).first()
     
     def get_all_by_player(self, player_id: int) -> List[PlayerName]:
-        return self.db.query(PlayerName).filter(PlayerName.player_id == player_id).all()
+        return (
+            self.db.query(PlayerName)
+            .filter(PlayerName.player_id == player_id)
+            .order_by(PlayerName.first_seen.desc(), PlayerName.id.desc())
+            .all()
+        )
     
     def create_or_update(self, player_id: int, nickname: str) -> PlayerName:
         """Create nickname record or update last_seen"""

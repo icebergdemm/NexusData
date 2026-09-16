@@ -1245,6 +1245,14 @@ class RoundReplay(Base):
     voice_profile_state = Column(String(20), nullable=True, index=True)
     voice_profile_error = Column(String(2000), nullable=True)
     voice_profile_processed_at = Column(DateTime, nullable=True)
+    # Set after the current ONNX backfill has inspected every speaker in this
+    # replay. A replay with no accepted speech is still complete; absence of
+    # a fingerprint alone must not put it back into the queue forever.
+    voiceprint_processed_at = Column(DateTime, nullable=True, index=True)
+    voice_profile_started_at = Column(DateTime, nullable=True)
+    voice_profile_heartbeat_at = Column(DateTime, nullable=True, index=True)
+    voice_profile_attempts = Column(Integer, nullable=False, default=0)
+    voice_profile_progress = Column(JSON, nullable=True)
     # Manual escape hatch when the automatic header-timestamp/server_name
     # matcher (routes/replays.py's _find_matching_replay) can't find this
     # replay's round — set once by an admin, always wins over the heuristic.
@@ -1376,6 +1384,10 @@ class VoiceProfileClip(Base):
     source_format = Column(String(32), nullable=True, index=True)
     source_kind = Column(String(16), nullable=True, index=True)
     is_radio = Column(Boolean, nullable=False, default=False, index=True)
+    speech_status = Column(String(16), nullable=False, default="unknown", index=True)
+    speech_ms = Column(Integer, nullable=False, default=0)
+    speech_ratio = Column(Float, nullable=False, default=0.0)
+    speech_gate_version = Column(String(32), nullable=False, default="pcm-energy-v1")
     recorded_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
@@ -1745,6 +1757,27 @@ class AIPlayerDossierRun(Base):
     input_hash = Column(String(64), nullable=True, index=True)
     error_message = Column(String(2000), nullable=True)
     raw_response = Column(Text, nullable=True)
+
+
+class AILlmRequest(Base):
+    """Durable arbitration queue for all asynchronous LLM clients."""
+    __tablename__ = "ai_llm_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(String(32), nullable=False, index=True)
+    backend = Column(String(32), nullable=False)
+    priority = Column(Integer, nullable=False, default=100, index=True)
+    status = Column(String(16), nullable=False, default="queued", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    request_json = Column(JSON, nullable=False)
+    result_ref = Column(JSON, nullable=True)
+    idempotency_key = Column(String(128), nullable=True, unique=True)
+    requested_by = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    error = Column(String(2000), nullable=True)
 
 
 class OnlineSnapshot(Base):

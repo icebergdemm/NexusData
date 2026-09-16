@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 TASK_KIND_DOSSIER = "dossier"
 TASK_KIND_HEALTH = "health"
+# Gateway clients use their client_id directly as task kind.
+TASK_STAGES = {"queued", "claimed", "request_sent", "response_received", "validated", "failed", "cancelled"}
+TASK_KIND_DISPATCHER = "dispatcher"
 
 
 def ai_task_log(db, kind: str, ref: str, stage: str,

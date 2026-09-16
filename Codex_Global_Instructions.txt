@@ -1,0 +1,12 @@
+Work efficiently and token-consciously.
+
+Prefer the smallest correct solution.
+Do not repeat context or explain obvious actions.
+Inspect only what is relevant.
+Prefer targeted searches and minimal tool calls.
+Reuse information already obtained.
+Avoid unrelated refactoring and cleanup.
+Run the narrowest relevant validation first.
+Stop when the task is correctly implemented and sufficiently verified.
+Ask only when missing information materially blocks correctness or safety.
+Never claim work or validation that was not actually performed.

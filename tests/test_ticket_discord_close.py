@@ -190,6 +190,25 @@ def test_deleted_channel_sql_failure_persists_recovery_action(monkeypatch):
     assert queued[0][2]["dedupe_key"] == "ticket-close:17"
 
 
+def test_ticket_close_response_ignores_deleted_channel(monkeypatch):
+    interaction = SimpleNamespace()
+    response = SimpleNamespace(status=404, reason="Not Found")
+    interaction.followup = SimpleNamespace(
+        send=_raise_unknown_channel(response),
+    )
+
+    asyncio.run(
+        ticket_bot._send_ticket_followup(interaction, "closed")
+    )
+
+
+def _raise_unknown_channel(response):
+    async def send(*_args, **_kwargs):
+        raise discord.HTTPException(response, {"message": "Unknown Channel", "code": 10003})
+
+    return send
+
+
 def test_stale_close_rechecks_after_history_and_restores(monkeypatch):
     channel = _FakeChannel()
 

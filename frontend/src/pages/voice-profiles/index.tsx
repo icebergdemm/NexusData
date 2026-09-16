@@ -76,6 +76,18 @@ interface ScannerLogEntry {
 interface ScannerStatus {
   enabled: boolean;
   counts: Record<"pending" | "processing" | "ready" | "failed", number>;
+  active: {
+    replay_id: number;
+    replay_kind: "round" | "lobby" | "lobby_dump" | null;
+    phase: string;
+    percent: number;
+    elapsed_ms: number;
+    heartbeat_age_ms: number | null;
+    packets_read: number;
+    bytes_read: number;
+    speakers_seen: number;
+    speakers_completed: number;
+  } | null;
   log: ScannerLogEntry[];
 }
 interface VoiceprintMonitorLogEntry {
@@ -101,6 +113,21 @@ interface VoiceprintMonitor {
     good_fingerprints: number;
     eligible_signatures: number;
     queued_replays: number;
+  };
+  speech_gate: {
+    version: string;
+    normal: {
+      checked: number;
+      accepted: number;
+      rejected: number;
+      speech_ms: number;
+    };
+    radio: {
+      checked: number;
+      accepted: number;
+      rejected: number;
+      speech_ms: number;
+    };
   };
   log: VoiceprintMonitorLogEntry[];
 }
@@ -150,6 +177,14 @@ function voiceprintLogClass(state: VoiceprintMonitorLogEntry["state"]) {
 }
 function voiceprintDuration(durationMs: number | null) {
   return durationMs === null ? "—" : `${(durationMs / 1000).toFixed(2)} с`;
+}
+function scannerElapsed(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(totalSeconds / 60)}м ${String(totalSeconds % 60).padStart(2, "0")}с`;
+}
+function scannerBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function ClipCard({ clip }: { clip: VoiceClip }) {
@@ -279,6 +314,56 @@ function ScannerConsole({
       )}
       {data && (
         <>
+          {data.active ? (
+            <Card className="border-sky-900/70 bg-sky-950/10">
+              <CardHeader className="flex-row items-start justify-between space-y-0 pb-3">
+                <div>
+                  <CardTitle className="font-mono text-sm">
+                    replay #{data.active.replay_id} · {data.active.replay_kind || "unknown"}
+                  </CardTitle>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {data.enabled
+                      ? "Обработка продолжается. Переключатель остановит только следующий claim."
+                      : "Сканнер на паузе: текущий replay завершится, новые не запускаются."}
+                  </p>
+                </div>
+                <Badge variant={data.enabled ? "default" : "secondary"}>
+                  {data.enabled ? "в работе" : "paused"}
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between font-mono text-xs">
+                  <span className="text-sky-300">{data.active.phase}</span>
+                  <span>{data.active.percent}% · {scannerElapsed(data.active.elapsed_ms)}</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded bg-zinc-800">
+                  <div
+                    className="h-full bg-sky-400 transition-[width] duration-500"
+                    style={{ width: `${Math.min(100, Math.max(0, data.active.percent))}%` }}
+                  />
+                </div>
+                <div className="grid gap-2 font-mono text-xs text-muted-foreground sm:grid-cols-4">
+                  <span>{data.active.packets_read.toLocaleString()} packets</span>
+                  <span>{scannerBytes(data.active.bytes_read)}</span>
+                  <span>{data.active.speakers_completed}/{data.active.speakers_seen} SteamID</span>
+                  <span className={data.active.heartbeat_age_ms === null || data.active.heartbeat_age_ms > 900000 ? "text-red-300" : ""}>
+                    heartbeat {data.active.heartbeat_age_ms === null ? "нет" : `${Math.round(data.active.heartbeat_age_ms / 1000)}с`}
+                  </span>
+                </div>
+                {(data.active.heartbeat_age_ms === null || data.active.heartbeat_age_ms > 900000) && (
+                  <p className="font-mono text-xs text-red-300">
+                    heartbeat устарел; recovery вернёт replay в очередь после таймаута.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          ) : !data.enabled ? (
+            <Card className="border-amber-900/60 bg-amber-950/10">
+              <CardContent className="p-4 text-sm text-amber-200">
+                Сканнер на паузе. Новые реплеи не берутся в работу.
+              </CardContent>
+            </Card>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {(
               [
@@ -495,6 +580,48 @@ function VoiceprintMonitorConsole({
               </div>
             ))}
           </div>
+          <Card className="border-zinc-800 bg-zinc-950/70">
+            <CardHeader className="flex-row items-center gap-2 space-y-0 pb-3">
+              <CardTitle className="text-sm">Фильтр речи</CardTitle>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                {data.speech_gate.version}
+              </Badge>
+              <span className="ml-auto text-xs text-muted-foreground">
+                учитывается только подтверждённая речь
+              </span>
+            </CardHeader>
+            <CardContent className="grid gap-3 pt-0 sm:grid-cols-2">
+              {(["normal", "radio"] as const).map((channel) => {
+                const stats = data.speech_gate[channel];
+                return (
+                  <div
+                    key={channel}
+                    className="rounded-md border border-zinc-800 px-3 py-2 font-mono text-xs"
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-zinc-100">
+                        {channel === "normal" ? "normal" : "radio"}
+                      </span>
+                      <span className="text-zinc-500">
+                        {voiceprintDuration(stats.speech_ms)} речи
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-zinc-500">
+                      <span>
+                        checked <b className="text-zinc-200">{stats.checked}</b>
+                      </span>
+                      <span>
+                        accepted <b className="text-emerald-400">{stats.accepted}</b>
+                      </span>
+                      <span>
+                        rejected <b className="text-red-300">{stats.rejected}</b>
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
           <Card className="overflow-hidden border-zinc-800 bg-zinc-950 text-zinc-300">
             <CardHeader className="flex-row items-center gap-2 space-y-0 border-b border-zinc-800 py-3">
               <Terminal className="size-4 text-sky-400" />

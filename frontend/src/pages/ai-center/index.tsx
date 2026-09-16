@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Link } from "react-router-dom"
-import { Bot, ExternalLink, HeartPulse, Play, RefreshCw, Search, Upload } from "lucide-react"
+import { Ban, Bot, ExternalLink, HeartPulse, Pause, Play, RefreshCw, Search, Upload, Zap } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -46,6 +46,62 @@ const levelColor: Record<string, string> = { info: "text-muted-foreground", warn
 const fmt = (value?: string | null) => value ? formatBrowserDate(value) : "—"
 
 type TaskLogEntry = { id: number; kind: string; ref: string; stage: string; level: string; message: string; created_at: string | null }
+type LlmTicket = { ticket_id: number; client_id: string; backend: string; priority: number; status: string; attempts: number; created_at: string | null; started_at: string | null }
+type LlmSnapshot = { task_id: string; thread_alive: boolean; processing: boolean; last_status: string | null; elapsed_ms: number | null; total: number; tickets: LlmTicket[]; clients: Record<string, { queued: number; running: number; paused: boolean }> }
+
+const clientLabel: Record<string, string> = { dossier: "Досье", dispatcher: "Диспетчер", future: "Будущий клиент" }
+const clientDescription: Record<string, string> = { dossier: "Фоновая модераторская аналитика", dispatcher: "Интерактивные игровые запросы", future: "Зарезервированный приоритетный слот" }
+const ticketStatusLabel: Record<string, string> = { queued: "в очереди", running: "в работе", succeeded: "готово", failed: "ошибка", cancelled: "отменено" }
+
+function LlmQueueCard() {
+  const queryClient = useQueryClient()
+  const [clientFilter, setClientFilter] = useState("")
+  const { data, isLoading } = useQuery({
+    queryKey: ["ai-llm-queue"],
+    queryFn: () => api.get<LlmSnapshot>("/api/v1/admin/ai-llm/queue"),
+    refetchInterval: 3000,
+  })
+  const action = useMutation({
+    mutationFn: ({ path, body }: { path: string; body?: unknown }) => api.post(path, body ?? {}),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ai-llm-queue"] }),
+    onError: (error: Error) => toast.error(error.message),
+  })
+  const snapshot = data
+  const tickets = snapshot?.tickets.filter((ticket) => !clientFilter || ticket.client_id === clientFilter) ?? []
+  const clients = Object.entries(snapshot?.clients ?? {})
+  return <Card className="overflow-hidden border-primary/20">
+    <CardHeader className="border-b bg-primary/[0.03] pb-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-sm"><Zap className="size-4 text-primary" /> Единый LLM-шлюз</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">Один арбитр для всех клиентов, durable tickets и один in-flight запрос к backend.</p>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={`size-2 rounded-full ${snapshot?.thread_alive ? "bg-emerald-500" : "bg-destructive"}`} />
+          {snapshot?.thread_alive ? "воркер онлайн" : "воркер остановлен"}
+          {snapshot?.processing && <Badge variant="secondary">обрабатывает {snapshot.elapsed_ms ? `${Math.round(snapshot.elapsed_ms / 1000)}с` : "…"}</Badge>}
+        </div>
+      </div>
+    </CardHeader>
+    <CardContent className="space-y-4 pt-4">
+      <div className="grid gap-2 md:grid-cols-3">
+        {clients.map(([clientId, client]) => <div key={clientId} className={`rounded-lg border p-3 ${client.paused ? "border-warning/40 bg-warning/5" : "bg-background"}`}>
+          <div className="flex items-start justify-between gap-2">
+            <div><div className="font-medium">{clientLabel[clientId] || clientId}</div><div className="text-[11px] text-muted-foreground">{clientDescription[clientId] || "LLM-клиент"}</div></div>
+            <Badge variant={client.paused ? "outline" : client.running ? "default" : "secondary"}>{client.paused ? "пауза" : `${client.queued + client.running} ticket`}</Badge>
+          </div>
+          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground"><span>{client.queued} в очереди · {client.running} выполняется</span><Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/clients/${clientId}/${client.paused ? "resume" : "pause"}` })} disabled={action.isPending}>{client.paused ? <Play className="mr-1 size-3" /> : <Pause className="mr-1 size-3" />}{client.paused ? "Продолжить" : "Пауза"}</Button></div>
+        </div>)}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2"><span className="text-xs font-medium">Активные tickets</span><Badge variant="outline">{snapshot?.total ?? 0}</Badge></div>
+        <select className="rounded border bg-background px-2 py-1 text-xs" value={clientFilter} onChange={(event) => setClientFilter(event.target.value)}><option value="">все клиенты</option>{clients.map(([clientId]) => <option key={clientId} value={clientId}>{clientLabel[clientId] || clientId}</option>)}</select>
+      </div>
+      <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[620px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="p-2">Ticket</th><th className="p-2">Клиент</th><th className="p-2">Статус</th><th className="p-2">Приоритет</th><th className="p-2">Попытки</th><th className="p-2 text-right">Действия</th></tr></thead><tbody>{isLoading && <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">Загрузка очереди…</td></tr>}{!isLoading && !tickets.length && <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">Активных tickets нет. Новые запросы появятся здесь автоматически.</td></tr>}{tickets.map((ticket) => <tr key={ticket.ticket_id} className="border-t"><td className="p-2 font-mono">#{ticket.ticket_id}</td><td className="p-2">{clientLabel[ticket.client_id] || ticket.client_id}<div className="text-[10px] text-muted-foreground">{ticket.backend}</div></td><td className="p-2"><Badge variant={ticket.status === "running" ? "default" : "secondary"}>{ticketStatusLabel[ticket.status] || ticket.status}</Badge></td><td className="p-2 font-mono">{ticket.priority}</td><td className="p-2">{ticket.attempts}</td><td className="p-2 text-right"><div className="flex justify-end gap-1"><Button title="Повысить приоритет" size="icon" variant="ghost" className="size-7" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/${ticket.ticket_id}/boost`, body: { priority: Math.max(0, ticket.priority - 10) } })} disabled={ticket.status !== "queued" || action.isPending}><Zap className="size-3.5" /></Button><Button title="Отменить" size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/${ticket.ticket_id}/cancel` })} disabled={ticket.status !== "queued" || action.isPending}><Ban className="size-3.5" /></Button></div></td></tr>)}</tbody></table></div>
+      {snapshot?.last_status && <p className="text-[11px] text-muted-foreground">Последний результат worker: {snapshot.last_status}. Lease зависшего запроса автоматически возвращается в очередь.</p>}
+    </CardContent>
+  </Card>
+}
 
 function TaskLogCard() {
   const [kindFilter, setKindFilter] = useState("")
@@ -71,6 +127,8 @@ function TaskLogCard() {
         <option value="">все виды задач</option>
         <option value="dossier">досье</option>
         <option value="health">health-check</option>
+        <option value="dispatcher">диспетчер</option>
+        <option value="future">будущие клиенты</option>
       </select>
     </CardTitle>
   </CardHeader><CardContent className="max-h-[28rem] space-y-3 overflow-auto text-xs">
@@ -211,7 +269,8 @@ export function AICenterPage() {
 
   return <div className="space-y-4">
     <PageHeader title="AI-центр" description="Qwen/KoboldCpp: проверка подключения, контролируемые досье и журнал запусков" icon={Bot} actions={<Button variant="outline" size="sm" onClick={() => refetchOverview()}><RefreshCw className="mr-1.5 size-3.5" /> Обновить</Button>} />
-    <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">ИИ-сводка справочная. Решение принимает модератор, а не языковая модель, которой дали доступ к логам и немного уверенности в себе.</div>
+     <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">ИИ-сводка справочная. Решение принимает модератор, а не языковая модель, которой дали доступ к логам и немного уверенности в себе.</div>
+     <LlmQueueCard />
     {isSuperuser && dossier?.run?.raw_response && <RawResponsePanel value={dossier.run.raw_response} />}
     {isSuperuser && dossier?.status === "failed" && !dossier.run?.raw_response && <Card><CardHeader><CardTitle className="text-sm">Сырой ответ Qwen</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">Для этой ошибки raw-ответ недоступен: запуск мог завершиться до ответа модели или был создан до включения диагностического сохранения. Повторите генерацию, чтобы получить тело ответа, если KoboldCpp его вернёт.</CardContent></Card>}
 
