@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+import logging
 import re
 from typing import Protocol
+
+logger = logging.getLogger("NexusBot.address_detector")
 
 
 class Verdict(StrEnum):
@@ -79,4 +82,41 @@ class RuleAnalyzer:
             "isolated pronoun without direct addressee",
             "rules",
             ("isolated_pronoun",),
+        )
+
+
+class HybridAnalyzer:
+    def __init__(
+        self,
+        rules: Analyzer,
+        model: Analyzer | None,
+        *,
+        likely_threshold: float = 0.75,
+        clean_threshold: float = 0.80,
+    ) -> None:
+        self.rules = rules
+        self.model = model
+        self.likely_threshold = likely_threshold
+        self.clean_threshold = clean_threshold
+
+    async def analyze(self, context: object) -> AnalysisResult:
+        rule_result = await self.rules.analyze(context)
+        if rule_result.verdict is not Verdict.UNCERTAIN or self.model is None:
+            return rule_result
+        try:
+            model_result = await self.model.analyze(context)
+        except Exception:
+            logger.exception("address_detector model_error")
+            return AnalysisResult.uncertain("model error", classifier_version="onnx-fallback")
+        confidence = model_result.confidence
+        if model_result.verdict is Verdict.LIKELY_VIOLATION and confidence is not None and confidence >= self.likely_threshold:
+            return model_result
+        if model_result.verdict is Verdict.CLEAN and confidence is not None and confidence >= self.clean_threshold:
+            return model_result
+        return AnalysisResult(
+            Verdict.UNCERTAIN,
+            confidence,
+            model_result.reason or "model confidence is between thresholds",
+            model_result.classifier_version,
+            model_result.matched_signals,
         )

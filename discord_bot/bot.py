@@ -93,8 +93,10 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         await _address_detector_runtime.stop()
         _address_detector_runtime = None
 
-    from discord_bot.address_detector.config import DetectorConfig, load_detector_config
+    from discord_bot.address_detector.analyzer import HybridAnalyzer, RuleAnalyzer
+    from discord_bot.address_detector.config import load_detector_config
     from discord_bot.address_detector.notifier import DiscordNotifier, DiscordReactionPort
+    from discord_bot.address_detector.onnx_analyzer import load_optional_onnx
     from discord_bot.address_detector.persistence import AddressDetectorStore
     from discord_bot.address_detector.runtime import AddressDetectorRuntime
 
@@ -123,6 +125,16 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
     runtime = AddressDetectorRuntime(
         detector_config,
         DiscordReactionPort(bot, detector_config),
+        analyzer=HybridAnalyzer(
+            RuleAnalyzer(),
+            await asyncio.to_thread(
+                load_optional_onnx,
+                detector_config.onnx_model_path,
+                detector_config.onnx_tokenizer_path,
+            ) if detector_config.analyzer_mode == "hybrid" else None,
+            likely_threshold=detector_config.likely_threshold,
+            clean_threshold=detector_config.clean_threshold,
+        ),
         store=store,
         on_signal=notifier.send_signal,
         on_edit_clean=notifier.mark_edit_clean,
@@ -135,6 +147,22 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         detector_config.analyzer_mode,
         detector_config.worker_count,
     )
+
+
+def get_address_detector_status() -> dict:
+    runtime = _address_detector_runtime
+    if runtime is None:
+        return {"active": False, "queue_depth": 0}
+    return {
+        "active": True,
+        "queue_depth": runtime.service.queue.qsize(),
+        "queue_capacity": runtime.service.queue.maxsize,
+    }
+
+
+async def reload_address_detector() -> None:
+    config = await asyncio.to_thread(bot_data.get_bot_config)
+    await _configure_address_detector(config)
 
 # Full Discord profiles (notably banners) require REST lookups and are not
 # present in the lightweight member rows synchronized to SQL.  Keep them in
