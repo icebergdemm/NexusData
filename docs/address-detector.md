@@ -68,7 +68,7 @@ and are sent to moderators.
    target server:
 
    ```sh
-   python scripts/address_detector_benchmark.py
+   python -m scripts.address_detector_benchmark
    ```
 
    The command reports cold load time, warm p50/p95 latency and the result of
