@@ -138,6 +138,7 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         store=store,
         on_signal=notifier.send_signal,
         on_edit_clean=notifier.mark_edit_clean,
+        on_delete=notifier.mark_deleted,
     )
     await runtime.start()
     _address_detector_runtime = runtime
@@ -157,6 +158,7 @@ def get_address_detector_status() -> dict:
         "active": True,
         "queue_depth": runtime.service.queue.qsize(),
         "queue_capacity": runtime.service.queue.maxsize,
+        **runtime.status(),
     }
 
 
