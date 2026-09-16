@@ -88,12 +88,24 @@ class DiscordNotifier:
                 if isinstance(target, discord.Thread) and not getattr(permissions, "send_messages_in_threads", False):
                     errors.append("missing permission: send_messages_in_threads")
         for channel_id in self.config.monitored_channel_ids:
-            if self.bot.get_channel(channel_id) is not None:
-                continue
-            try:
-                await self.bot.fetch_channel(channel_id)
-            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            monitored = self.bot.get_channel(channel_id)
+            if monitored is not None:
+                pass
+            else:
+                try:
+                    monitored = await self.bot.fetch_channel(channel_id)
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    monitored = None
+            if monitored is None:
                 errors.append(f"monitored channel unavailable: {channel_id}")
+                continue
+            monitored_guild = getattr(monitored, "guild", None)
+            monitored_me = getattr(monitored_guild, "me", None)
+            if monitored_me is not None and hasattr(monitored, "permissions_for"):
+                permissions = monitored.permissions_for(monitored_me)
+                for permission in ("view_channel", "read_message_history", "add_reactions"):
+                    if not getattr(permissions, permission, False):
+                        errors.append(f"monitored channel {channel_id} missing permission: {permission}")
         fatal = any("signals channel" in error or "moderator role" in error or "Message Content" in error for error in errors)
         return not fatal, errors
 
