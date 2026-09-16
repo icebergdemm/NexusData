@@ -51,33 +51,55 @@ class DiscordNotifier:
     async def resolve_target(self) -> discord.abc.GuildChannel | discord.Thread | None:
         if not self.config.signals_channel_id:
             return None
-        channel_id = int(self.config.signals_channel_id)
+        return await self._resolve_channel(int(self.config.signals_channel_id))
+
+    async def _resolve_channel(self, channel_id: int) -> discord.abc.GuildChannel | discord.Thread | None:
         channel = self.bot.get_channel(channel_id)
         if channel is not None:
             return channel
-        return await self.bot.fetch_channel(channel_id)
+
+        # Active threads can be present in the guild cache without being in
+        # Client.get_channel(). This is the exact shape returned by the live
+        # viewer picker, so consult guild/thread caches before REST.
+        for guild in getattr(self.bot, "guilds", ()):
+            for getter_name in ("get_channel", "get_thread"):
+                getter = getattr(guild, getter_name, None)
+                if getter is not None:
+                    channel = getter(channel_id)
+                    if channel is not None:
+                        return channel
+            channel = next(
+                (thread for thread in getattr(guild, "threads", ()) if int(getattr(thread, "id", 0)) == channel_id),
+                None,
+            )
+            if channel is not None:
+                return channel
+
+        try:
+            return await self.bot.fetch_channel(channel_id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            return None
 
     async def validate(self) -> tuple[bool, list[str]]:
         errors: list[str] = []
         if not getattr(self.bot.intents, "message_content", False):
             errors.append("Message Content Intent is disabled")
         target = None
-        try:
-            target = await self.resolve_target()
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
-            errors.append(f"signals channel unavailable: {type(exc).__name__}")
+        target = await self.resolve_target()
+        if target is None and self.config.signals_channel_id:
+            errors.append("signals channel unavailable")
         if target is None:
             errors.append("signals channel/thread is not configured or unavailable")
         guild = getattr(target, "guild", None) if target is not None else None
         if not self.config.moderator_role_id:
-            errors.append("moderator role is not configured")
+            errors.append("warning: moderator role is not configured; role ping is disabled")
         elif guild is None or guild.get_role(int(self.config.moderator_role_id)) is None:
-            errors.append("moderator role unavailable")
+            errors.append("warning: moderator role unavailable; role ping is disabled")
         if self.config.redadmin_emoji_id:
             if self.bot.get_emoji(int(self.config.redadmin_emoji_id)) is None:
-                errors.append("redadmin emoji unavailable; reaction lifecycle is degraded")
+                errors.append("warning: redadmin emoji unavailable; reaction lifecycle is degraded")
         else:
-            errors.append("redadmin emoji is not configured; reaction lifecycle is degraded")
+            errors.append("warning: redadmin emoji is not configured; reaction lifecycle is degraded")
         if target is not None:
             me = getattr(getattr(target, "guild", None), "me", None)
             if me is not None:
@@ -97,7 +119,7 @@ class DiscordNotifier:
                 except (discord.Forbidden, discord.NotFound, discord.HTTPException):
                     monitored = None
             if monitored is None:
-                errors.append(f"monitored channel unavailable: {channel_id}")
+                errors.append(f"warning: monitored channel unavailable: {channel_id}")
                 continue
             monitored_guild = getattr(monitored, "guild", None)
             monitored_me = getattr(monitored_guild, "me", None)
@@ -105,8 +127,8 @@ class DiscordNotifier:
                 permissions = monitored.permissions_for(monitored_me)
                 for permission in ("view_channel", "read_message_history", "add_reactions"):
                     if not getattr(permissions, permission, False):
-                        errors.append(f"monitored channel {channel_id} missing permission: {permission}")
-        fatal = any("emoji" not in error.lower() for error in errors)
+                        errors.append(f"warning: monitored channel {channel_id} missing permission: {permission}")
+        fatal = any(not error.startswith("warning:") for error in errors)
         return not fatal, errors
 
     async def send_signal(self, context: AddressContext, result: AnalysisResult, record: AnalysisRecord) -> None:

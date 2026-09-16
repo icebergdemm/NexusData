@@ -89,6 +89,7 @@ function configured(data: DetectorTabData | undefined, key: string, fallback: st
 
 function eventTone(event: string): string {
   if (event.includes("error") || event.includes("timeout") || event.includes("overflow")) return "text-amber-300"
+  if (event.includes("warning")) return "text-amber-300"
   if (event.includes("likely") || event.includes("uncertain")) return "text-red-300"
   if (event.includes("clean") || event.includes("removed")) return "text-emerald-300"
   return "text-zinc-300"
@@ -281,19 +282,20 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const diagnostic = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
     entry.event === "startup_validation_error" || entry.event === "detector_disabled",
   )
+  const warning = [...(detector?.runtime.events ?? [])].reverse().find((entry) => entry.event === "startup_validation_warning")
   const statusReason = detector?.config_error ?? diagnostic?.detail ?? (!monitoredIds.length && enabled ? "whitelist каналов пуст" : undefined)
-  const statusText = statusReason ? "Не запущен" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
-  const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
+  const statusText = statusReason ? "Не запущен" : active && warning ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
+  const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warning ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
 
   return (
     <div className="space-y-4">
       <Card className={statusClass}>
         <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
           <div className="flex items-center gap-3">
-            {statusReason ? <CircleAlert className="size-5 text-destructive" /> : active ? <CircleCheck className="size-5 text-emerald-500" /> : <Power className="size-5 text-muted-foreground" />}
+            {statusReason ? <CircleAlert className="size-5 text-destructive" /> : warning ? <CircleAlert className="size-5 text-amber-300" /> : active ? <CircleCheck className="size-5 text-emerald-500" /> : <Power className="size-5 text-muted-foreground" />}
             <div>
               <p className="font-medium">Детектор обращений</p>
-              <p className="text-xs text-muted-foreground">{statusText}. {statusReason ?? "Бот только сигнализирует модераторам и ничего не применяет к участнику."}</p>
+              <p className="text-xs text-muted-foreground">{statusText}. {statusReason ?? warning?.detail ?? "Бот только сигнализирует модераторам и ничего не применяет к участнику."}</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
