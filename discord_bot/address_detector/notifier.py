@@ -119,14 +119,25 @@ class DiscordNotifier:
         signal = await asyncio.to_thread(self.store.get_signal, message_id)
         if signal is None or not signal.admin_message_id:
             return
+        await self._mark_signal(signal.admin_message_id, signal.status_note or "Текущая версия больше не срабатывает")
+
+    async def mark_deleted(self, message_id: int) -> None:
+        signal = await asyncio.to_thread(self.store.get_signal, message_id)
+        if signal is None or not signal.admin_message_id:
+            return
+        await self._mark_signal(signal.admin_message_id, signal.status_note or "Исходное сообщение удалено автором/недоступно")
+
+    async def _mark_signal(self, admin_message_id: str, note: str) -> None:
         target = await self.resolve_target()
         if target is None:
             return
         try:
-            message = await target.fetch_message(int(signal.admin_message_id))
-            await message.edit(content=None)
+            message = await target.fetch_message(int(admin_message_id))
+            embed = message.embeds[0].copy() if message.embeds else discord.Embed(title="Сигнал модерации")
+            embed.add_field(name="Изменение исходного сообщения", value=_clip(note, 1024), inline=False)
+            await message.edit(embed=embed)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            logger.warning("address_detector edit_signal_update_failed message_id=%s", message_id)
+            logger.warning("address_detector signal_update_failed admin_message_id=%s", admin_message_id)
 
     async def _send_with_retry(self, target: Any, content: str | None, embed: discord.Embed, allowed_mentions: discord.AllowedMentions):
         last_error: Exception | None = None
@@ -160,4 +171,3 @@ class DiscordNotifier:
         embed.add_field(name="Контекст incident", value=_clip("\n".join(lines) or "нет", 1024), inline=False)
         embed.set_footer(text=f"Автоматический сигнал. Не является взысканием. classifier={result.classifier_version} confidence={result.confidence}")
         return embed
-

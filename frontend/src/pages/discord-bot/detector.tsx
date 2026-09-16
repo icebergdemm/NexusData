@@ -19,7 +19,7 @@ interface DetectorEffective {
 
 interface DetectorResponse {
   effective: DetectorEffective | null
-  runtime: { active: boolean; queue_depth: number; queue_capacity?: number }
+  runtime: { active: boolean; queue_depth: number; queue_capacity?: number; counters?: Record<string, number> }
   config_error: string | null
 }
 
@@ -144,12 +144,12 @@ export function AddressDetectorTab({ data, onSave }: Props) {
         </CardContent>
       </Card>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.monitored_channel_count ?? 0}</p><p className="text-xs text-muted-foreground">каналов в effective whitelist</p></CardContent></Card>
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.queue_depth ?? 0}</p><p className="text-xs text-muted-foreground">задач в очереди</p></CardContent></Card>
+        <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.counters?.candidate_detected ?? 0}</p><p className="text-xs text-muted-foreground">candidate detected</p></CardContent></Card>
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.analyzer_mode ?? "-"}</p><p className="text-xs text-muted-foreground">режим анализатора</p></CardContent></Card>
       </div>
     </div>
   )
 }
-

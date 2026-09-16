@@ -25,6 +25,7 @@ class DetectorJob:
 
 
 SignalCallback = Callable[[object, AnalysisResult], Awaitable[None] | None]
+EventCallback = Callable[[str], None]
 
 
 class AddressDetectorService:
@@ -39,13 +40,17 @@ class AddressDetectorService:
         queue_size: int = 128,
         worker_count: int = 1,
         analysis_timeout: float = 15.0,
+        on_event: EventCallback | None = None,
+        on_result: SignalCallback | None = None,
     ) -> None:
         self.analyzer = analyzer
         self.reactions = reactions
         self.on_signal = on_signal
+        self.on_result = on_result
         self.queue: asyncio.Queue[DetectorJob | None] = asyncio.Queue(maxsize=max(1, queue_size))
         self.worker_count = max(1, worker_count)
         self.analysis_timeout = max(0.01, analysis_timeout)
+        self.on_event = on_event
         self._workers: list[asyncio.Task[None]] = []
         self._stopping = False
 
@@ -76,6 +81,7 @@ class AddressDetectorService:
             self.queue.put_nowait(DetectorJob(message, match))
         except asyncio.QueueFull:
             logger.error("address_detector queue_overflow")
+            self._event("queue_overflow")
             await self._remove_reaction(message)
             return False
         return True
@@ -83,10 +89,12 @@ class AddressDetectorService:
     async def add_marker(self, message: object) -> None:
         try:
             await self.reactions.add(message)
+            self._event("reaction_added")
         except Exception:
             # A missing emoji or Add Reactions permission must not discard the
             # candidate; the worker can still deliver a moderator signal.
             logger.exception("address_detector reaction_add_error")
+            self._event("reaction_error")
 
     async def remove_marker(self, message: object) -> None:
         await self._remove_reaction(message)
@@ -107,6 +115,10 @@ class AddressDetectorService:
                     callback_result = self.on_signal(job.message, result)
                     if inspect.isawaitable(callback_result):
                         await callback_result
+                if self.on_result is not None:
+                    callback_result = self.on_result(job.message, result)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
             except Exception:
                 logger.exception("address_detector worker_error")
                 await self._remove_reaction(getattr(job, "message", None)) if job is not None else None
@@ -118,9 +130,11 @@ class AddressDetectorService:
             return await asyncio.wait_for(self.analyzer.analyze(message), timeout=self.analysis_timeout)
         except asyncio.TimeoutError:
             logger.warning("address_detector analysis_timeout")
+            self._event("analysis_timeout")
             return AnalysisResult.uncertain("analysis timeout")
         except Exception:
             logger.exception("address_detector analysis_error")
+            self._event("analysis_error")
             return AnalysisResult.uncertain("analysis error")
 
     async def _remove_reaction(self, message: object) -> None:
@@ -128,5 +142,10 @@ class AddressDetectorService:
             return
         try:
             await self.reactions.remove(message)
+            self._event("reaction_removed")
         except Exception:
             logger.exception("address_detector reaction_remove_error")
+
+    def _event(self, name: str) -> None:
+        if self.on_event:
+            self.on_event(name)

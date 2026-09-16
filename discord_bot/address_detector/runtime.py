@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from collections import Counter
 from typing import Awaitable, Callable
 
 from .analyzer import AnalysisResult, Analyzer, RuleAnalyzer, Verdict
@@ -63,13 +64,16 @@ class AddressDetectorRuntime:
         self.on_signal = on_signal
         self.on_edit_clean = on_edit_clean
         self.on_delete = on_delete
+        self.metrics: Counter[str] = Counter()
         self.service = AddressDetectorService(
             self.context_analyzer,
             reactions,
-            self._classified,
+            lambda _message, _result: None,
             queue_size=config.queue_size,
             worker_count=config.worker_count,
             analysis_timeout=config.analysis_timeout_seconds,
+            on_event=self._event,
+            on_result=self._classified,
         )
 
     async def start(self) -> None:
@@ -85,6 +89,7 @@ class AddressDetectorRuntime:
         match = find_triggers(getattr(message, "content", ""))
         if not match.tokens:
             return False
+        self._event("candidate_detected")
         await self.service.add_marker(message)
         accepted = await asyncio.to_thread(self.store.upsert_candidate, self._candidate_context(message, match), match.tokens)
         if not accepted:
@@ -98,6 +103,7 @@ class AddressDetectorRuntime:
         match = find_triggers(getattr(message, "content", ""))
         if not match.tokens:
             await asyncio.to_thread(self.store.mark_edit_clean, int(getattr(message, "id")))
+            await self.service.remove_marker(message)
             if self.on_edit_clean:
                 result = self.on_edit_clean(int(getattr(message, "id")))
                 if inspect.isawaitable(result):
@@ -130,10 +136,23 @@ class AddressDetectorRuntime:
             result,
             self.config.incident_window_seconds,
         )
+        self._event({
+            Verdict.CLEAN: "analysis_clean",
+            Verdict.UNCERTAIN: "analysis_uncertain",
+            Verdict.LIKELY_VIOLATION: "analysis_likely",
+        }[result.verdict])
         if self.on_signal and result.verdict is not Verdict.CLEAN:
             callback_result = self.on_signal(context, result, record)
             if inspect.isawaitable(callback_result):
                 await callback_result
+            self._event("signal_sent" if record.should_ping_moderators else "signal_aggregated")
+
+    def status(self) -> dict:
+        return {"counters": dict(self.metrics)}
+
+    def _event(self, name: str) -> None:
+        self.metrics[name] += 1
+        logger.info("address_detector event=%s", name)
 
     @staticmethod
     def _candidate_context(message: object, match: TriggerMatch) -> AddressContext:

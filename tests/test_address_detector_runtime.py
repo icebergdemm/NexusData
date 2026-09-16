@@ -47,6 +47,11 @@ class Analyzer:
         return AnalysisResult(Verdict.UNCERTAIN, 0.5, "test", "test")
 
 
+class CleanAnalyzer:
+    async def analyze(self, context):
+        return AnalysisResult(Verdict.CLEAN, 0.99, "quoted example", "test")
+
+
 def msg(message_id, content):
     async def rows():
         if False:
@@ -102,3 +107,25 @@ def test_non_candidate_never_touches_store_or_history() -> None:
 
     assert asyncio.run(scenario()) == (False, 0)
 
+
+def test_edit_to_clean_removes_marker_and_updates_signal_state() -> None:
+    async def scenario():
+        reactions = Reactions()
+        store = Store()
+        edits = []
+        runtime = AddressDetectorRuntime(
+            config(), reactions, analyzer=CleanAnalyzer(), store=store,
+            on_edit_clean=lambda message_id: edits.append(message_id),
+        )
+        await runtime.start()
+        candidate = msg(3, "ты где?")
+        assert await runtime.handle_message(candidate)
+        await runtime.join()
+        candidate.content = "обычный текст"
+        await runtime.handle_edit(candidate)
+        await runtime.stop()
+        return reactions.events, edits
+
+    events, edits = asyncio.run(scenario())
+    assert events == [("add", 3), ("remove", 3), ("remove", 3)]
+    assert edits == [3]

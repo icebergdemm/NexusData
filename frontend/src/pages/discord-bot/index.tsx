@@ -56,7 +56,7 @@ interface DiscordBotResponse {
       model_configured: boolean
     } | null
     config_error: string | null
-    runtime: { active: boolean; queue_depth: number; queue_capacity?: number }
+    runtime: { active: boolean; queue_depth: number; queue_capacity?: number; counters?: Record<string, number> }
   }
 }
 

@@ -6,6 +6,7 @@ from typing import Callable, Iterable
 
 from database import SessionLocal
 from models import AddressDetectorIncident, AddressDetectorSignal
+from sqlalchemy.exc import IntegrityError
 
 from .analyzer import AnalysisResult, Verdict
 from .context import AddressContext, MessageSnapshot
@@ -69,7 +70,11 @@ class AddressDetectorStore:
                 processing_status="queued",
             )
             db.add(signal)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                return False
             return True
         finally:
             db.close()
@@ -79,7 +84,6 @@ class AddressDetectorStore:
         try:
             signal = db.query(AddressDetectorSignal).filter_by(message_id=str(context.message_id)).one_or_none()
             if signal is None:
-                db.close()
                 self.upsert_candidate(context, tokens)
                 return
             signal.author_display_name = context.author_display_name

@@ -133,6 +133,23 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
     configs = db.query(DiscordBotConfig).all()
     config = {c.key: c.value for c in configs}
 
+    from config import get_settings
+    from discord_bot.address_detector.config import KNOWN_KEYS, load_detector_config
+    from discord_bot.bot import get_address_detector_status
+    try:
+        effective_detector = load_detector_config(get_settings(), config)
+        detector_effective = {
+            **effective_detector.public_status(),
+            "monitored_channel_ids": sorted(effective_detector.monitored_channel_ids),
+            "excluded_channel_ids": sorted(effective_detector.excluded_channel_ids),
+            "signals_channel_id": effective_detector.signals_channel_id,
+            "moderator_role_id": effective_detector.moderator_role_id,
+        }
+        detector_config_error = None
+    except ValueError as exc:
+        detector_effective = None
+        detector_config_error = str(exc)
+
     # Recent failures of the site -> Discord role push (routes/departments.py's
     # _queue_role_sync) — now read directly from the bot's own in-memory log
     # (see discord_bot/bot.py's get_recent_role_sync_failures) instead of a
@@ -156,6 +173,12 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
         "failed_role_syncs": failed_role_syncs,
         "can_edit": check_permission(admin, "discord_bot", "edit"),
         "can_manage_config": check_permission(admin, "discord_bot", "manage_config"),
+        "address_detector": {
+            "known_keys": list(KNOWN_KEYS),
+            "effective": detector_effective,
+            "config_error": detector_config_error,
+            "runtime": get_address_detector_status(),
+        },
     }
 
 
@@ -173,6 +196,16 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
     if not key:
         raise HTTPException(status_code=400, detail="key required")
 
+    from config import get_settings
+    from discord_bot.address_detector.config import KNOWN_KEYS, load_detector_config
+    if key in KNOWN_KEYS:
+        proposed = {row.key: row.value for row in db.query(DiscordBotConfig).all()}
+        proposed[key] = value
+        try:
+            load_detector_config(get_settings(), proposed)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     record = db.query(DiscordBotConfig).filter(DiscordBotConfig.key == key).first()
     if record:
         record.value = value
@@ -180,6 +213,16 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
         record = DiscordBotConfig(key=key, value=value)
         db.add(record)
     db.commit()
+    if key in KNOWN_KEYS:
+        try:
+            from discord_bot import bot as discord_bot
+            if discord_bot.bot.is_ready():
+                await discord_bot.reload_address_detector()
+        except Exception:
+            # Configuration is durable even if the scheduler process is not
+            # the one currently holding the Gateway connection.
+            import logging
+            logging.getLogger(__name__).exception("address_detector reload after config save failed")
     from routes.admin import log_admin_action
     log_admin_action(db, admin.id, "discord_bot_config_set", {"key": key})
     return {"status": "ok", "key": key, "value": value}
