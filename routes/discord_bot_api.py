@@ -283,7 +283,6 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
         except Exception:
             # Configuration is durable even if the scheduler process is not
             # the one currently holding the Gateway connection.
-            import logging
             logging.getLogger(__name__).exception("address_detector reload after config save failed")
     from routes.admin import log_admin_action
     log_admin_action(db, admin.id, "discord_bot_config_set", {"key": key})
