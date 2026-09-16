@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
 from .analyzer import AnalysisResult, Analyzer, Verdict
+from .filter import TriggerMatch
 
 logger = logging.getLogger("NexusBot.address_detector")
 
@@ -20,6 +21,7 @@ class ReactionPort(Protocol):
 @dataclass(frozen=True)
 class DetectorJob:
     message: object
+    match: TriggerMatch | None = None
 
 
 SignalCallback = Callable[[object, AnalysisResult], Awaitable[None] | None]
@@ -62,23 +64,32 @@ class AddressDetectorService:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers = []
 
-    async def submit(self, message: object) -> bool:
+    async def submit(self, message: object, match: TriggerMatch | None = None, *, marker_added: bool = False) -> bool:
         """Add the marker first, then enqueue. False means the queue rejected it."""
 
         if self._stopping:
             return False
-        try:
-            await self.reactions.add(message)
-        except Exception:
-            logger.exception("address_detector reaction_add_error")
+        if not marker_added:
+            await self.add_marker(message)
 
         try:
-            self.queue.put_nowait(DetectorJob(message))
+            self.queue.put_nowait(DetectorJob(message, match))
         except asyncio.QueueFull:
             logger.error("address_detector queue_overflow")
             await self._remove_reaction(message)
             return False
         return True
+
+    async def add_marker(self, message: object) -> None:
+        try:
+            await self.reactions.add(message)
+        except Exception:
+            # A missing emoji or Add Reactions permission must not discard the
+            # candidate; the worker can still deliver a moderator signal.
+            logger.exception("address_detector reaction_add_error")
+
+    async def remove_marker(self, message: object) -> None:
+        await self._remove_reaction(message)
 
     async def join(self) -> None:
         await self.queue.join()
@@ -89,7 +100,7 @@ class AddressDetectorService:
             try:
                 if job is None:
                     return
-                result = await self._analyze(job.message)
+                result = await self._analyze(job if job.match is not None else job.message)
                 if result.verdict is Verdict.CLEAN:
                     await self._remove_reaction(job.message)
                 else:
@@ -119,4 +130,3 @@ class AddressDetectorService:
             await self.reactions.remove(message)
         except Exception:
             logger.exception("address_detector reaction_remove_error")
-

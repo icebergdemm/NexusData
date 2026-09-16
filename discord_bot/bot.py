@@ -82,6 +82,60 @@ bot = commands.Bot(
     max_messages=100,
 )
 
+_address_detector_runtime = None
+
+
+async def _configure_address_detector(db_config: dict | None = None) -> None:
+    """Load, validate and start the detector without affecting bot startup."""
+
+    global _address_detector_runtime
+    if _address_detector_runtime is not None:
+        await _address_detector_runtime.stop()
+        _address_detector_runtime = None
+
+    from discord_bot.address_detector.config import DetectorConfig, load_detector_config
+    from discord_bot.address_detector.notifier import DiscordNotifier, DiscordReactionPort
+    from discord_bot.address_detector.persistence import AddressDetectorStore
+    from discord_bot.address_detector.runtime import AddressDetectorRuntime
+
+    try:
+        detector_config = load_detector_config(settings, db_config or {})
+    except ValueError as exc:
+        logger.error("address_detector invalid_config error=%s", exc)
+        return
+    if not detector_config.enabled:
+        logger.info("address_detector disabled")
+        return
+    if not detector_config.monitored_channel_ids:
+        logger.warning("address_detector disabled: monitored_channel_ids whitelist is empty")
+        return
+
+    store = AddressDetectorStore()
+    notifier = DiscordNotifier(bot, detector_config, store)
+    ready, validation_errors = await notifier.validate()
+    for error in validation_errors:
+        level = logging.WARNING if "emoji" in error else logging.ERROR
+        logger.log(level, "address_detector startup_validation error=%s", error)
+    if not ready:
+        logger.error("address_detector disabled: startup validation failed")
+        return
+
+    runtime = AddressDetectorRuntime(
+        detector_config,
+        DiscordReactionPort(bot, detector_config),
+        store=store,
+        on_signal=notifier.send_signal,
+        on_edit_clean=notifier.mark_edit_clean,
+    )
+    await runtime.start()
+    _address_detector_runtime = runtime
+    logger.info(
+        "address_detector started channels=%s mode=%s workers=%s",
+        len(detector_config.monitored_channel_ids),
+        detector_config.analyzer_mode,
+        detector_config.worker_count,
+    )
+
 # Full Discord profiles (notably banners) require REST lookups and are not
 # present in the lightweight member rows synchronized to SQL.  Keep them in
 # memory for a short period so opening several ticket mentions does not turn
@@ -231,6 +285,13 @@ async def on_ready():
                 logger.info(f"Loaded rating_channel_id: {RATING_CHANNEL_ID}")
         except (ValueError, TypeError):
             pass
+
+    try:
+        await _configure_address_detector(config)
+    except Exception:
+        # A detector misconfiguration must never take down the rest of the
+        # Discord bot. Its startup validation already emits the useful detail.
+        logger.exception("address_detector startup failed")
 
     sync_members_task.start()
     publish_rating_task.start()
@@ -4376,7 +4437,22 @@ async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
     this handler must not turn every edit into a history request and Gateway
     heartbeat risk.
     """
-    if payload.guild_id != GUILD_ID or not viewer_events.has_subscribers(payload.channel_id):
+    if payload.guild_id != GUILD_ID:
+        return
+    if _address_detector_runtime is not None:
+        try:
+            edited_message = getattr(payload, "cached_message", None)
+            if edited_message is None:
+                channel = bot.get_channel(payload.channel_id)
+                if channel is not None:
+                    edited_message = await channel.fetch_message(payload.message_id)
+            if edited_message is not None:
+                await _address_detector_runtime.handle_edit(edited_message)
+        except (discord.Forbidden, discord.NotFound):
+            logger.warning("address_detector edit_message_unavailable message_id=%s", payload.message_id)
+        except Exception:
+            logger.exception("address_detector edit_failed message_id=%s", payload.message_id)
+    if not viewer_events.has_subscribers(payload.channel_id):
         return
     data = payload.data or {}
     delta = {"id": str(payload.message_id)}
@@ -4406,7 +4482,14 @@ async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
 
 @bot.event
 async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
-    if payload.guild_id != GUILD_ID or not viewer_events.has_subscribers(payload.channel_id):
+    if payload.guild_id != GUILD_ID:
+        return
+    if _address_detector_runtime is not None:
+        try:
+            await _address_detector_runtime.handle_delete(payload.message_id)
+        except Exception:
+            logger.exception("address_detector delete_failed message_id=%s", payload.message_id)
+    if not viewer_events.has_subscribers(payload.channel_id):
         return
     viewer_events.publish(payload.channel_id, {
         "type": "message_delete",
@@ -4425,6 +4508,12 @@ async def on_message(message: discord.Message):
     if is_bot_author and not channel_name.startswith("ticket-"):
         await bot.process_commands(message)
         return
+
+    if _address_detector_runtime is not None:
+        try:
+            await _address_detector_runtime.handle_message(message)
+        except Exception:
+            logger.exception("address_detector message_failed message_id=%s", getattr(message, "id", None))
 
     # A mute is intentionally enforced by deleting messages instead of changing
     # every channel's permissions. This covers channels created after the mute

@@ -176,6 +176,18 @@ class AddressDetectorStore:
         finally:
             db.close()
 
+    def mark_edit_clean(self, message_id: int) -> None:
+        db = self.session_factory()
+        try:
+            signal = db.query(AddressDetectorSignal).filter_by(message_id=str(message_id)).one_or_none()
+            if signal is not None:
+                signal.classification = Verdict.CLEAN.value
+                signal.processing_status = "classified"
+                signal.status_note = "Исходное сообщение изменено; текущая версия больше не срабатывает"
+                db.commit()
+        finally:
+            db.close()
+
     def get_signal(self, message_id: int) -> AddressDetectorSignal | None:
         db = self.session_factory()
         try:
@@ -187,3 +199,38 @@ class AddressDetectorStore:
         finally:
             db.close()
 
+    def get_incident(self, incident_id: int) -> dict | None:
+        db = self.session_factory()
+        try:
+            incident = db.query(AddressDetectorIncident).filter_by(id=incident_id).one_or_none()
+            if incident is None:
+                return None
+            signals = (
+                db.query(AddressDetectorSignal)
+                .filter_by(incident_id=incident_id)
+                .order_by(AddressDetectorSignal.created_at.desc())
+                .limit(5)
+                .all()
+            )
+            return {
+                "id": int(incident.id),
+                "guild_id": incident.guild_id,
+                "channel_id": incident.channel_id,
+                "author_id": incident.author_id,
+                "admin_message_id": incident.admin_message_id,
+                "message_count": int(incident.message_count or 0),
+                "signals": [
+                    {
+                        "message_id": int(signal.message_id),
+                        "raw_content": signal.raw_content,
+                        "classification": signal.classification,
+                        "confidence": signal.confidence,
+                        "matched_tokens": list(signal.matched_tokens or []),
+                        "jump_url": (signal.context_snapshot or {}).get("jump_url"),
+                        "status_note": signal.status_note,
+                    }
+                    for signal in signals
+                ],
+            }
+        finally:
+            db.close()

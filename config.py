@@ -236,6 +236,26 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("GUILD_ID", "DISCORD_GUILD_ID")
     )
 
+    # Address detector. Empty channel whitelist means no Discord traffic is
+    # monitored; DB values from Discord Bot → Detector override these defaults.
+    moderation_address_detector_enabled: bool = False
+    moderation_signals_channel_id: str = ""
+    moderator_role_id: str = ""
+    redadmin_emoji_id: str = ""
+    monitored_channel_ids: str = ""
+    monitored_category_ids: str = ""
+    excluded_channel_ids: str = ""
+    address_context_messages: int = Field(4, ge=1, le=5)
+    address_incident_window_seconds: int = Field(120, ge=1, le=86400)
+    address_analyzer_mode: str = "hybrid"
+    address_likely_threshold: float = Field(0.75, ge=0, le=1)
+    address_clean_threshold: float = Field(0.80, ge=0, le=1)
+    address_analysis_timeout_seconds: float = Field(15.0, gt=0, le=120)
+    onnx_model_path: str = ""
+    onnx_tokenizer_path: str = ""
+    address_queue_size: int = Field(128, ge=1, le=10000)
+    address_worker_count: int = Field(1, ge=1, le=16)
+
     # Обновление кода из git (консольная команда `update`, см.
     # services_git_update.py). Настраивается на странице «Администрирование».
     # Пустой каталог — сам каталог приложения.
