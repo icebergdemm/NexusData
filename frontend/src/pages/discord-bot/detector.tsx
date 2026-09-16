@@ -58,7 +58,7 @@ interface DetectorTabData {
 
 interface Props {
   data?: DetectorTabData
-  onSave: (key: string, value: string) => void
+  onSave: (key: string, value: string, source?: "picker" | "advanced") => void
 }
 
 function ConfigField({ label, configKey, value, disabled, hint, onSave }: {
@@ -67,7 +67,7 @@ function ConfigField({ label, configKey, value, disabled, hint, onSave }: {
   value: string
   disabled: boolean
   hint?: string
-  onSave: (key: string, value: string) => void
+  onSave: (key: string, value: string, source?: "picker" | "advanced") => void
 }) {
   const [draft, setDraft] = useState(value)
   useEffect(() => setDraft(value), [value])
@@ -76,7 +76,7 @@ function ConfigField({ label, configKey, value, disabled, hint, onSave }: {
       <Label className="text-xs text-muted-foreground">{label}</Label>
       <div className="flex gap-2">
         <Input className="font-mono text-xs" value={draft} disabled={disabled} onChange={(e) => setDraft(e.target.value)} />
-        {!disabled && draft !== value && <Button size="sm" onClick={() => onSave(configKey, draft)}>Сохранить</Button>}
+        {!disabled && draft !== value && <Button size="sm" onClick={() => onSave(configKey, draft, configKey === "monitored_channel_ids" ? "advanced" : undefined)}>Сохранить</Button>}
       </div>
       {hint && <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
@@ -367,7 +367,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
               error={channelTreeQuery.isError}
               label="Разрешённые каналы и активные threads"
               hint="Мониторинг работает только по выбранным ID. Пустой выбор явно выключает detector."
-              onSave={(value) => onSave("monitored_channel_ids", value)}
+              onSave={(value) => onSave("monitored_channel_ids", value, "picker")}
             />
             <details className="rounded-md border border-border/60 px-3 py-2">
               <summary className="cursor-pointer text-xs font-medium">Расширенный режим: ID и исключения</summary>
@@ -412,9 +412,9 @@ export function AddressDetectorTab({ data, onSave }: Props) {
               error={channelTreeQuery.isError}
               label="Канал / ветка сигналов"
               hint="Выберите уже существующий текстовый канал или thread, куда бот отправляет сигналы."
-              onSave={(value) => onSave("moderation_signals_channel_id", value)}
+              onSave={(value) => onSave("moderation_signals_channel_id", value, "picker")}
             />
-            <DiscordRolePicker roles={rolesQuery.data?.roles} selectedId={moderatorRoleId} disabled={!canEdit} error={rolesQuery.isError} onSave={(value) => onSave("moderator_role_id", value)} />
+            <DiscordRolePicker roles={rolesQuery.data?.roles} selectedId={moderatorRoleId} disabled={!canEdit} error={rolesQuery.isError} onSave={(value) => onSave("moderator_role_id", value, "picker")} />
             <details className="rounded-md border border-border/60 px-3 py-2">
               <summary className="cursor-pointer text-xs font-medium">Расширенный режим: ручные ID</summary>
               <div className="mt-3 space-y-4">

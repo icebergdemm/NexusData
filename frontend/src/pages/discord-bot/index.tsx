@@ -436,7 +436,7 @@ export function DiscordBotPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["discord-bot"] })
 
   const setConfig = useMutation({
-    mutationFn: (body: { key: string; value: string }) => api.post("/api/v1/admin/discord-bot/config", body),
+    mutationFn: (body: { key: string; value: string; source?: "picker" | "advanced" }) => api.post("/api/v1/admin/discord-bot/config", body),
     onSuccess: () => { toast.success("Сохранено"); invalidate() },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -454,7 +454,7 @@ export function DiscordBotPage() {
           <DiscordViewerTab />
         </TabsContent>
         <TabsContent value="address-detector">
-          <AddressDetectorTab data={data} onSave={(key, value) => setConfig.mutate({ key, value })} />
+          <AddressDetectorTab data={data} onSave={(key, value, source) => setConfig.mutate({ key, value, source })} />
         </TabsContent>
         <TabsContent value="settings">
       <div className="space-y-4">
