@@ -83,4 +83,3 @@ def test_rule_analyzer_keeps_isolated_address_uncertain() -> None:
     result = asyncio.run(RuleAnalyzer().analyze(context))
 
     assert result.verdict is Verdict.UNCERTAIN
-

@@ -63,4 +63,3 @@ def test_deleted_message_keeps_snapshot_and_marks_signal() -> None:
     signal = store.get_signal(20)
     assert signal.deleted_at is not None
     assert signal.raw_content == "ты где?"
-

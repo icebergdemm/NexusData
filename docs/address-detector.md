@@ -58,4 +58,3 @@ and are sent to moderators.
 There is no automatic punishment path in this feature. The footer in every
 signal is intentionally explicit: it is an administrative signal, not a
 sanction.
-

@@ -31,4 +31,3 @@ def in_scope(message: object, config: ScopeConfig) -> bool:
     if getattr(author, "bot", False) or getattr(message, "webhook_id", None) is not None:
         return False
     return not _is_system_message(message)
-

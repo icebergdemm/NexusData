@@ -165,4 +165,3 @@ def load_detector_config(settings: object, overrides: Mapping[str, object]) -> D
         queue_size=_int(_raw(settings, overrides, "address_queue_size", 128), "address_queue_size", 1, 10000),
         worker_count=_int(_raw(settings, overrides, "address_worker_count", 1), "address_worker_count", 1, 16),
     )
-

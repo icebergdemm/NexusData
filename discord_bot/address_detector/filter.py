@@ -67,4 +67,3 @@ def find_triggers(content: str | None) -> TriggerMatch:
         if token not in tokens:
             tokens.append(token)
     return TriggerMatch(cleaned_text=cleaned, tokens=tokens)
-

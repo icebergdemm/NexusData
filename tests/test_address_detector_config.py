@@ -58,4 +58,3 @@ def test_detector_config_defaults_to_disabled_without_whitelist() -> None:
 
     assert config.enabled is False
     assert config.monitored_channel_ids == set()
-

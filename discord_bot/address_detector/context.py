@@ -106,4 +106,3 @@ class ContextCollector:
             previous_messages=tuple(previous),
             jump_url=getattr(message, "jump_url", None),
         )
-
