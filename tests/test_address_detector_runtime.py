@@ -108,6 +108,21 @@ def test_non_candidate_never_touches_store_or_history() -> None:
     assert asyncio.run(scenario()) == (False, 0)
 
 
+def test_status_exposes_recent_technical_events_without_message_text() -> None:
+    runtime = AddressDetectorRuntime(config(), Reactions(), analyzer=Analyzer(), store=Store())
+
+    runtime._event("candidate_detected")
+    runtime._event("analysis_uncertain")
+
+    status = runtime.status()
+    assert [(item["event"], item["count"]) for item in status["events"][-2:]] == [
+        ("candidate_detected", 1),
+        ("analysis_uncertain", 1),
+    ]
+    assert status["events"][-1]["at"]
+    assert "content" not in status["events"][-1]
+
+
 def test_edit_to_clean_removes_marker_and_updates_signal_state() -> None:
     async def scenario():
         reactions = Reactions()

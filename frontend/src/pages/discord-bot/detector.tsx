@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { CircleAlert, CircleCheck, Power, RadioTower } from "lucide-react"
+import { Activity, CircleAlert, CircleCheck, Power, RadioTower, TerminalSquare } from "lucide-react"
 
 interface DetectorEffective {
   enabled: boolean
@@ -19,7 +19,13 @@ interface DetectorEffective {
 
 interface DetectorResponse {
   effective: DetectorEffective | null
-  runtime: { active: boolean; queue_depth: number; queue_capacity?: number; counters?: Record<string, number> }
+  runtime: {
+    active: boolean
+    queue_depth: number
+    queue_capacity?: number
+    counters?: Record<string, number>
+    events?: { at: string; event: string; count: number }[]
+  }
   config_error: string | null
 }
 
@@ -58,6 +64,13 @@ function ConfigField({ label, configKey, value, disabled, hint, onSave }: {
 
 function configured(data: DetectorTabData | undefined, key: string, fallback: string): string {
   return data?.config[key] ?? fallback
+}
+
+function eventTone(event: string): string {
+  if (event.includes("error") || event.includes("timeout") || event.includes("overflow")) return "text-amber-300"
+  if (event.includes("likely") || event.includes("uncertain")) return "text-red-300"
+  if (event.includes("clean") || event.includes("removed")) return "text-emerald-300"
+  return "text-zinc-300"
 }
 
 export function AddressDetectorTab({ data, onSave }: Props) {
@@ -124,7 +137,14 @@ export function AddressDetectorTab({ data, onSave }: Props) {
           <CardHeader><CardTitle className="text-sm">Доставка сигнала</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <ConfigField label="Канал / ветка сигналов" configKey="moderation_signals_channel_id" value={configured(data, "moderation_signals_channel_id", "")} disabled={!canEdit} onSave={onSave} />
-            <ConfigField label="Роль модераторов" configKey="moderator_role_id" value={configured(data, "moderator_role_id", "")} disabled={!canEdit} onSave={onSave} />
+            <ConfigField
+              label="Роль модераторов (ID для пинга)"
+              configKey="moderator_role_id"
+              value={configured(data, "moderator_role_id", "")}
+              disabled={!canEdit}
+              hint="Discord: User Settings → Advanced → Developer Mode. Затем правой кнопкой по роли → Copy Role ID. Вставьте только число, не @название."
+              onSave={onSave}
+            />
             <ConfigField label=":redadmin: emoji ID" configKey="redadmin_emoji_id" value={configured(data, "redadmin_emoji_id", "")} disabled={!canEdit} onSave={onSave} />
           </CardContent>
         </Card>
@@ -150,6 +170,36 @@ export function AddressDetectorTab({ data, onSave }: Props) {
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{detector?.runtime.counters?.candidate_detected ?? 0}</p><p className="text-xs text-muted-foreground">candidate detected</p></CardContent></Card>
         <Card><CardContent className="py-4"><p className="font-mono text-xl">{effective?.analyzer_mode ?? "-"}</p><p className="text-xs text-muted-foreground">режим анализатора</p></CardContent></Card>
       </div>
+
+      <Card className="overflow-hidden border-zinc-800 bg-[#111413]">
+        <CardHeader className="border-b border-zinc-800 bg-[#0b0e0c] py-3">
+          <CardTitle className="flex items-center gap-2 font-mono text-sm font-normal text-zinc-200">
+            <TerminalSquare className="size-4 text-emerald-400" />
+            Журнал detector runtime
+            <span className="ml-auto flex items-center gap-1.5 text-[11px] text-zinc-500">
+              <Activity className="size-3" /> обновляется вместе со статусом
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="max-h-72 min-h-28 overflow-auto px-4 py-3 font-mono text-[11px] leading-6">
+            {[...(detector?.runtime.events ?? [])].reverse().map((entry, index) => (
+              <div key={`${entry.at}-${entry.event}-${entry.count}-${index}`} className={eventTone(entry.event)}>
+                <span className="mr-3 text-zinc-600">{new Date(entry.at).toLocaleTimeString()}</span>
+                <span className="mr-3 text-zinc-500">detector</span>
+                <span>{entry.event}</span>
+                <span className="ml-3 text-zinc-600">count={entry.count}</span>
+              </div>
+            ))}
+            {!detector?.runtime.events?.length && (
+              <div className="text-zinc-600">— runtime пока не оставил событий —</div>
+            )}
+          </div>
+          <div className="border-t border-zinc-800 px-4 py-2 font-mono text-[10px] text-zinc-600">
+            {active ? "watching gateway events" : "runtime offline; проверьте enabled, whitelist и startup validation"}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

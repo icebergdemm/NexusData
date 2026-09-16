@@ -153,7 +153,7 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
 def get_address_detector_status() -> dict:
     runtime = _address_detector_runtime
     if runtime is None:
-        return {"active": False, "queue_depth": 0}
+        return {"active": False, "queue_depth": 0, "events": []}
     return {
         "active": True,
         "queue_depth": runtime.service.queue.qsize(),

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections import Counter
+from collections import Counter, deque
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from .analyzer import AnalysisResult, Analyzer, RuleAnalyzer, Verdict
@@ -65,6 +66,7 @@ class AddressDetectorRuntime:
         self.on_edit_clean = on_edit_clean
         self.on_delete = on_delete
         self.metrics: Counter[str] = Counter()
+        self.events: deque[dict[str, object]] = deque(maxlen=80)
         self._classification_lock = asyncio.Lock()
         self.service = AddressDetectorService(
             self.context_analyzer,
@@ -150,10 +152,15 @@ class AddressDetectorRuntime:
             self._event("signal_sent" if record.should_ping_moderators else "signal_aggregated")
 
     def status(self) -> dict:
-        return {"counters": dict(self.metrics)}
+        return {"counters": dict(self.metrics), "events": list(self.events)}
 
     def _event(self, name: str) -> None:
         self.metrics[name] += 1
+        self.events.append({
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": name,
+            "count": self.metrics[name],
+        })
         logger.info("address_detector event=%s", name)
 
     @staticmethod

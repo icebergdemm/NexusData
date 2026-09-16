@@ -418,7 +418,11 @@ function TicketsSettingsCard() {
 export function DiscordBotPage() {
   const [newKey, setNewKey] = useState({ key: "", value: "" })
   const queryClient = useQueryClient()
-  const { data } = useQuery({ queryKey: ["discord-bot"], queryFn: () => api.get<DiscordBotResponse>("/api/v1/admin/discord-bot") })
+  const { data } = useQuery({
+    queryKey: ["discord-bot"],
+    queryFn: () => api.get<DiscordBotResponse>("/api/v1/admin/discord-bot"),
+    refetchInterval: 5000,
+  })
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["discord-bot"] })
 
   const setConfig = useMutation({
