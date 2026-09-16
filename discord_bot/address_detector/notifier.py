@@ -64,10 +64,11 @@ class DiscordNotifier:
             errors.append(f"signals channel unavailable: {type(exc).__name__}")
         if target is None:
             errors.append("signals channel/thread is not configured or unavailable")
-        if self.config.moderator_role_id:
-            guild = getattr(target, "guild", None) if target is not None else None
-            if guild is None or guild.get_role(int(self.config.moderator_role_id)) is None:
-                errors.append("moderator role unavailable")
+        guild = getattr(target, "guild", None) if target is not None else None
+        if not self.config.moderator_role_id:
+            errors.append("moderator role is not configured")
+        elif guild is None or guild.get_role(int(self.config.moderator_role_id)) is None:
+            errors.append("moderator role unavailable")
         if self.config.redadmin_emoji_id:
             if self.bot.get_emoji(int(self.config.redadmin_emoji_id)) is None:
                 errors.append("redadmin emoji unavailable; reaction lifecycle is degraded")
@@ -82,6 +83,13 @@ class DiscordNotifier:
                         errors.append(f"missing permission: {permission}")
                 if isinstance(target, discord.Thread) and not getattr(permissions, "send_messages_in_threads", False):
                     errors.append("missing permission: send_messages_in_threads")
+        for channel_id in self.config.monitored_channel_ids:
+            if self.bot.get_channel(channel_id) is not None:
+                continue
+            try:
+                await self.bot.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                errors.append(f"monitored channel unavailable: {channel_id}")
         fatal = any("signals channel" in error or "moderator role" in error or "Message Content" in error for error in errors)
         return not fatal, errors
 
