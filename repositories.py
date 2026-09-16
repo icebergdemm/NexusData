@@ -615,7 +615,12 @@ class PlayerNameRepository(BaseRepository):
         ).first()
     
     def get_all_by_player(self, player_id: int) -> List[PlayerName]:
-        return self.db.query(PlayerName).filter(PlayerName.player_id == player_id).all()
+        return (
+            self.db.query(PlayerName)
+            .filter(PlayerName.player_id == player_id)
+            .order_by(PlayerName.first_seen.desc(), PlayerName.id.desc())
+            .all()
+        )
     
     def create_or_update(self, player_id: int, nickname: str) -> PlayerName:
         """Create nickname record or update last_seen"""
