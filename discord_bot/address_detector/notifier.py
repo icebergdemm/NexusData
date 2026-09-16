@@ -181,7 +181,11 @@ class DiscordNotifier:
         try:
             message = await target.fetch_message(int(admin_message_id))
             embed = message.embeds[0].copy() if message.embeds else discord.Embed(title="Сигнал модерации")
-            embed.add_field(name="Изменение исходного сообщения", value=_clip(note, 1024), inline=False)
+            fields = [field for field in embed.fields if field.name != "Состояние исходного сообщения"]
+            embed.clear_fields()
+            for field in fields:
+                embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            embed.add_field(name="Состояние исходного сообщения", value=_clip(note, 1024), inline=False)
             await message.edit(embed=embed)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             logger.warning("address_detector signal_update_failed admin_message_id=%s", admin_message_id)
@@ -211,22 +215,20 @@ class DiscordNotifier:
         else:
             embed.description = f"> {quote}"
         embed.add_field(name="Участник", value=_clip(_safe(context.author_display_name), 256), inline=True)
-        embed.add_field(name="Discord ID", value=str(context.author_id), inline=True)
         embed.add_field(name="Канал", value=f"<#{context.channel_id}>" if context.channel_id else "-", inline=True)
-        embed.add_field(name="Результат", value=label, inline=True)
-        embed.add_field(name="Сработало", value=_clip(", ".join(context.trigger_tokens), 1024), inline=True)
-        lines = []
+        lines: list[str] = []
         current_message_id = str(context.message_id)
         for signal in reversed(incident.get("signals", [])):
             if str(signal.get("message_id")) == current_message_id:
                 continue
-            message_text = _safe(signal["raw_content"])
-            lines.append(f"> {message_text} ([перейти]({signal['jump_url']}))" if signal.get("jump_url") else f"> {message_text}")
+            if signal.get("jump_url"):
+                lines.append(f"[Предыдущее сообщение]({signal['jump_url']})")
             if len(lines) >= 3:
                 break
         omitted = max(0, int(incident.get("message_count", 0)) - 1 - len(lines))
         if omitted:
             lines.append(f"+ ещё {omitted} сообщений")
-        embed.add_field(name="Контекст incident", value=_clip("\n".join(lines) or "нет предыдущих сообщений", 1024), inline=False)
-        embed.set_footer(text=f"Автоматический сигнал. Не является взысканием. classifier={result.classifier_version} confidence={result.confidence}")
+        context_value = "\n".join(lines) or "нет предыдущих сообщений"
+        embed.add_field(name="Контекст incident", value=_clip(context_value, 1024), inline=False)
+        embed.set_footer(text="Автоматический сигнал. Не является взысканием")
         return embed

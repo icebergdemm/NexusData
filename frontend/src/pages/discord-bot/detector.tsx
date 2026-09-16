@@ -45,7 +45,7 @@ interface DetectorResponse {
     queue_depth: number
     queue_capacity?: number
     counters?: Record<string, number>
-    events?: { at: string; event: string; count: number; detail?: string }[]
+    events?: { at: string; event: string; count: number; level?: "info" | "warning" | "error"; detail?: string }[]
   }
   config_error: string | null
 }
@@ -87,11 +87,13 @@ function configured(data: DetectorTabData | undefined, key: string, fallback: st
   return data?.config[key] ?? fallback
 }
 
-function eventTone(event: string): string {
+function eventTone(event: string, level?: "info" | "warning" | "error"): string {
+  if (level === "error") return "text-red-300"
+  if (level === "warning") return "text-amber-300"
   if (event.includes("error") || event.includes("timeout") || event.includes("overflow")) return "text-amber-300"
   if (event.includes("warning")) return "text-amber-300"
   if (event.includes("likely") || event.includes("uncertain")) return "text-red-300"
-  if (event.includes("clean") || event.includes("removed")) return "text-emerald-300"
+  if (event.includes("clean") || event.includes("removed") || event.includes("loaded")) return "text-emerald-300"
   return "text-zinc-300"
 }
 
@@ -315,7 +317,9 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const diagnostic = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
     entry.event === "startup_validation_error" || entry.event === "detector_disabled",
   )
-  const warning = [...(detector?.runtime.events ?? [])].reverse().find((entry) => entry.event === "startup_validation_warning")
+  const warning = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
+    entry.event === "startup_validation_warning" || entry.event === "model_degraded",
+  )
   const statusReason = detector?.config_error ?? diagnostic?.detail ?? (!monitoredIds.length && enabled ? "whitelist каналов пуст" : undefined)
   const statusText = statusReason ? "Не запущен" : active && warning ? "Активен с предупреждением" : active ? "Активен" : enabled ? "Ожидает запуска" : "Выключен"
   const statusClass = statusReason ? "border-destructive/50 bg-destructive/5" : warning ? "border-amber-500/40 bg-amber-500/5" : active ? "border-emerald-500/40 bg-emerald-500/5" : "border-border"
@@ -470,7 +474,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
         <CardContent className="p-0">
           <div className="max-h-72 min-h-28 overflow-auto px-4 py-3 font-mono text-[11px] leading-6">
             {[...(detector?.runtime.events ?? [])].reverse().map((entry, index) => (
-              <div key={`${entry.at}-${entry.event}-${entry.count}-${index}`} className={eventTone(entry.event)}>
+              <div key={`${entry.at}-${entry.event}-${entry.count}-${index}`} className={eventTone(entry.event, entry.level)}>
                 <span className="mr-3 text-zinc-600">{new Date(entry.at).toLocaleTimeString()}</span>
                 <span className="mr-3 text-zinc-500">detector</span>
                 <span>{entry.event}</span>

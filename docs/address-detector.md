@@ -34,9 +34,28 @@ the candidate.
 
 The default candidate is
 [`MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli`](https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/tree/main/onnx).
-It is an external MIT-licensed artifact and is not stored in Git. Download the
-ONNX file and tokenizer on the operator's server over SSH, then set paths to
-the mounted files. The bot never downloads the model at startup.
+It is an external MIT-licensed artifact and is not stored in Git. Install the
+three files into `/home/container/models/address-detector` on the NexusData
+runtime host (or use another directory and point the two environment settings
+at it):
+
+```sh
+set -eu
+model_dir=/home/container/models/address-detector
+mkdir -p "$model_dir"
+curl -fL --retry 3 -o "$model_dir/model.onnx" \
+  'https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/resolve/main/onnx/model.onnx?download=true'
+curl -fL --retry 3 -o "$model_dir/tokenizer.json" \
+  'https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/resolve/main/onnx/tokenizer.json?download=true'
+curl -fL --retry 3 -o "$model_dir/config.json" \
+  'https://huggingface.co/MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli/resolve/main/config.json?download=true'
+sha256sum "$model_dir/model.onnx" "$model_dir/tokenizer.json" "$model_dir/config.json"
+```
+
+The checksum output is the installation record; keep it with the server
+deployment notes. `config.json` is required because the NLI adapter reads the
+`id2label` mapping instead of assuming a particular logits order. The bot
+never downloads the model at startup.
 
 If the model or tokenizer is absent, `hybrid` stays in rules-only degraded mode:
 obvious rules still classify, while unresolved candidates become `UNCERTAIN`
@@ -46,13 +65,22 @@ and are sent to moderators.
 
 1. Install the pinned Python dependencies from `requirements.txt`.
 2. Place the model outside the repository and verify CPU load/latency on the
-   target server.
+   target server:
+
+   ```sh
+   python scripts/address_detector_benchmark.py
+   ```
+
+   The command reports cold load time, warm p50/p95 latency and the result of
+   a small Russian smoke set. It does not send Discord messages.
 3. Configure a test Discord channel, signal channel/thread, moderator role,
    and emoji in the third admin tab.
 4. Start with `ADDRESS_ANALYZER_MODE=rules`; manually check reaction lifecycle,
    edit/delete handling, and incident aggregation.
-5. Set `ADDRESS_ANALYZER_MODE=hybrid` only after the CPU benchmark and manual
-   examples are acceptable.
+5. Set `ONNX_MODEL_PATH` and `ONNX_TOKENIZER_PATH` to the installed files, then
+   set `ADDRESS_ANALYZER_MODE=hybrid` only after the CPU benchmark and manual
+   examples are acceptable. The UI journal reports `model_loaded` or the
+   rules-only degraded reason after restart.
 6. Deploy through the normal NexusData flow with `update restart`.
 
 There is no automatic punishment path in this feature. The footer in every

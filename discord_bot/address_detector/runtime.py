@@ -92,7 +92,7 @@ class AddressDetectorRuntime:
         match = find_triggers(getattr(message, "content", ""))
         if not match.tokens:
             return False
-        self._event("candidate_detected")
+        self._event("candidate_detected", f"signals={','.join(match.tokens)}")
         await self.service.add_marker(message)
         accepted = await asyncio.to_thread(self.store.upsert_candidate, self._candidate_context(message, match), match.tokens)
         if not accepted:
@@ -140,28 +140,42 @@ class AddressDetectorRuntime:
                 result,
                 self.config.incident_window_seconds,
             )
-        self._event({
+        classification_event = {
             Verdict.CLEAN: "analysis_clean",
             Verdict.UNCERTAIN: "analysis_uncertain",
             Verdict.LIKELY_VIOLATION: "analysis_likely",
-        }[result.verdict])
+        }[result.verdict]
+        detail_parts = [f"classifier={result.classifier_version}"]
+        if result.confidence is not None:
+            detail_parts.append(f"confidence={result.confidence:.2f}")
+        if result.matched_signals:
+            detail_parts.append(f"signals={','.join(result.matched_signals)}")
+        if result.reason:
+            detail_parts.append(f"reason={result.reason}")
+        self._event(classification_event, " ".join(detail_parts))
         if self.on_signal and result.verdict is not Verdict.CLEAN:
             callback_result = self.on_signal(context, result, record)
             if inspect.isawaitable(callback_result):
                 await callback_result
-            self._event("signal_sent" if record.should_ping_moderators else "signal_aggregated")
+            self._event(
+                "signal_sent" if record.should_ping_moderators else "signal_aggregated",
+                f"incident_messages={record.message_count}",
+            )
 
     def status(self) -> dict:
         return {"counters": dict(self.metrics), "events": list(self.events)}
 
-    def _event(self, name: str) -> None:
+    def _event(self, name: str, detail: str | None = None) -> None:
         self.metrics[name] += 1
+        level = "error" if ("error" in name or "overflow" in name) else "warning" if "timeout" in name or "warning" in name else "info"
         self.events.append({
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "event": name,
             "count": self.metrics[name],
+            "level": level,
+            **({"detail": detail} if detail else {}),
         })
-        logger.info("address_detector event=%s", name)
+        logger.info("address_detector event=%s detail=%s", name, detail)
 
     @staticmethod
     def _candidate_context(message: object, match: TriggerMatch) -> AddressContext:

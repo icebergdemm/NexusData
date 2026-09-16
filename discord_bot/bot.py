@@ -92,6 +92,7 @@ def _address_detector_startup_event(event: str, detail: str | None = None) -> No
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "event": event,
         "count": count,
+        "level": "error" if "error" in event else "warning" if "warning" in event or "degraded" in event else "info",
     }
     if detail:
         record["detail"] = detail
@@ -143,16 +144,30 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         _address_detector_startup_event("detector_disabled", "startup validation failed")
         return
 
+    model_error_kind: list[str] = []
+    onnx_model = await asyncio.to_thread(
+        load_optional_onnx,
+        detector_config.onnx_model_path,
+        detector_config.onnx_tokenizer_path,
+        error_kind=model_error_kind,
+    ) if detector_config.analyzer_mode == "hybrid" else None
+    if detector_config.analyzer_mode == "hybrid":
+        if onnx_model is None:
+            detail = "rules-only degraded mode: ONNX model unavailable"
+            if model_error_kind:
+                detail += f" ({model_error_kind[0]})"
+            logger.warning("address_detector %s", detail)
+            _address_detector_startup_event("model_degraded", detail)
+        else:
+            detail = f"classifier={onnx_model.model_version} entailment_index={onnx_model.entailment_index}"
+            logger.info("address_detector model_loaded %s", detail)
+            _address_detector_startup_event("model_loaded", detail)
     runtime = AddressDetectorRuntime(
         detector_config,
         DiscordReactionPort(bot, detector_config),
         analyzer=HybridAnalyzer(
             RuleAnalyzer(),
-            await asyncio.to_thread(
-                load_optional_onnx,
-                detector_config.onnx_model_path,
-                detector_config.onnx_tokenizer_path,
-            ) if detector_config.analyzer_mode == "hybrid" else None,
+            onnx_model,
             likely_threshold=detector_config.likely_threshold,
             clean_threshold=detector_config.clean_threshold,
         ),

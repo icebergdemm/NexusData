@@ -25,7 +25,7 @@ class DetectorJob:
 
 
 SignalCallback = Callable[[object, AnalysisResult], Awaitable[None] | None]
-EventCallback = Callable[[str], None]
+EventCallback = Callable[[str, str | None], None]
 
 
 class AddressDetectorService:
@@ -81,7 +81,7 @@ class AddressDetectorService:
             self.queue.put_nowait(DetectorJob(message, match))
         except asyncio.QueueFull:
             logger.error("address_detector queue_overflow")
-            self._event("queue_overflow")
+            self._event("queue_overflow", "очередь заполнена")
             await self._remove_reaction(message)
             return False
         return True
@@ -89,12 +89,12 @@ class AddressDetectorService:
     async def add_marker(self, message: object) -> None:
         try:
             await self.reactions.add(message)
-            self._event("reaction_added")
+            self._event("reaction_added", "redadmin")
         except Exception:
             # A missing emoji or Add Reactions permission must not discard the
             # candidate; the worker can still deliver a moderator signal.
             logger.exception("address_detector reaction_add_error")
-            self._event("reaction_error")
+            self._event("reaction_error", "reaction lifecycle unavailable")
 
     async def remove_marker(self, message: object) -> None:
         await self._remove_reaction(message)
@@ -130,11 +130,11 @@ class AddressDetectorService:
             return await asyncio.wait_for(self.analyzer.analyze(message), timeout=self.analysis_timeout)
         except asyncio.TimeoutError:
             logger.warning("address_detector analysis_timeout")
-            self._event("analysis_timeout")
+            self._event("analysis_timeout", "analysis timeout")
             return AnalysisResult.uncertain("analysis timeout")
         except Exception:
             logger.exception("address_detector analysis_error")
-            self._event("analysis_error")
+            self._event("analysis_error", "analysis error")
             return AnalysisResult.uncertain("analysis error")
 
     async def _remove_reaction(self, message: object) -> None:
@@ -142,10 +142,10 @@ class AddressDetectorService:
             return
         try:
             await self.reactions.remove(message)
-            self._event("reaction_removed")
+            self._event("reaction_removed", "redadmin")
         except Exception:
             logger.exception("address_detector reaction_remove_error")
 
-    def _event(self, name: str) -> None:
+    def _event(self, name: str, detail: str | None = None) -> None:
         if self.on_event:
-            self.on_event(name)
+            self.on_event(name, detail)
