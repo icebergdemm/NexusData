@@ -40,3 +40,4 @@ openpyxl==3.1.2
 
 # Discord bot (discord_bot/bot.py) — runs in-process, see discord_bot.supervise_bot()
 discord.py==2.6.4
+# Detector dependency bootstrap revision 2.
