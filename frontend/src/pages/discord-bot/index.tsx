@@ -49,6 +49,10 @@ interface DiscordBotResponse {
     effective: {
       enabled: boolean
       monitored_channel_count: number
+      monitored_channel_ids: string[]
+      excluded_channel_ids: string[]
+      signals_channel_id: string
+      moderator_role_id: string
       signals_channel_configured: boolean
       moderator_role_configured: boolean
       emoji_configured: boolean
@@ -56,7 +60,13 @@ interface DiscordBotResponse {
       model_configured: boolean
     } | null
     config_error: string | null
-    runtime: { active: boolean; queue_depth: number; queue_capacity?: number; counters?: Record<string, number> }
+    runtime: {
+      active: boolean
+      queue_depth: number
+      queue_capacity?: number
+      counters?: Record<string, number>
+      events?: { at: string; event: string; count: number; detail?: string }[]
+    }
   }
 }
 

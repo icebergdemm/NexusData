@@ -213,7 +213,7 @@ class AddressDetectorStore:
                 db.query(AddressDetectorSignal)
                 .filter_by(incident_id=incident_id)
                 .order_by(AddressDetectorSignal.created_at.desc())
-                .limit(5)
+                .limit(3)
                 .all()
             )
             return {
