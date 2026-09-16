@@ -161,6 +161,16 @@ function DiscordChannelPicker({
     .filter((channel): channel is DetectorChannel => !!channel && (channel.type === "text" || channel.type === "thread"))
   const unresolvedIds = selection.filter((id) => !selectedChannels.some((channel) => channel.id === id))
   const dirty = selection.join(",") !== selectedIds.join(",")
+  const clearUnresolved = () => setSelection(selectedChannels.map((channel) => channel.id))
+  const saveSelection = () => {
+    if (multiple) {
+      // Live picker selections must never carry stale/hidden IDs forward.
+      // The advanced ID field remains available for an intentional exception.
+      onSave(JSON.stringify(selectedChannels.map((channel) => channel.id)))
+      return
+    }
+    onSave(selection[0] ?? "")
+  }
 
   const toggle = (id: string) => {
     if (disabled) return
@@ -180,7 +190,7 @@ function DiscordChannelPicker({
           <p className="text-xs font-medium">{label}</p>
           <p className="text-[11px] text-muted-foreground">{hint}</p>
         </div>
-        {dirty && <Button size="sm" disabled={disabled} onClick={() => onSave(multiple ? JSON.stringify(selection) : (selection[0] ?? ""))}><Save className="size-3.5" /> Сохранить</Button>}
+        {dirty && <Button size="sm" disabled={disabled} onClick={saveSelection}><Save className="size-3.5" /> Сохранить</Button>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-52 flex-1">
@@ -190,6 +200,7 @@ function DiscordChannelPicker({
         {multiple && <>
           <Button size="sm" variant="outline" disabled={disabled || !visible.length} onClick={selectFiltered}>Выбрать найденные</Button>
           <Button size="sm" variant="ghost" disabled={disabled || !visible.length} onClick={clearFiltered}>Снять найденные</Button>
+          {unresolvedIds.length > 0 && <Button size="sm" variant="ghost" className="text-amber-300 hover:text-amber-200" disabled={disabled} onClick={clearUnresolved}>Очистить недоступные</Button>}
         </>}
       </div>
       {selection.length > 0 && (

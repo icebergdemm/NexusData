@@ -23,6 +23,7 @@
 Настройки живут в .env и правятся на странице «Администрирование».
 """
 import base64
+import importlib.util
 import logging
 import os
 import re
@@ -43,6 +44,7 @@ _BUILD_TIMEOUT = 900
 
 # Вместо токена в выводе консоли.
 _MASK = "***"
+_ADDRESS_DETECTOR_RUNTIME_MODULES = ("numpy", "onnxruntime", "tokenizers")
 
 
 def _redact(text: str) -> str:
@@ -121,6 +123,15 @@ def _install_runtime_requirements(emit: Callable[[str], None], path: str) -> boo
         return False
     emit("✓ Python-зависимости обновлены.")
     return True
+
+
+def _missing_address_detector_modules() -> list[str]:
+    """Return optional detector modules absent from the running Python env."""
+    return [
+        module
+        for module in _ADDRESS_DETECTOR_RUNTIME_MODULES
+        if importlib.util.find_spec(module) is None
+    ]
 
 
 # ── Доступ к приватному репозиторию ──────────────────────────────────────────
@@ -639,7 +650,10 @@ def _finish(
     dependencies_ok = True
     frontend_ok = True
 
-    if requirements_touched:
+    missing_modules = _missing_address_detector_modules()
+    if requirements_touched or missing_modules:
+        if missing_modules:
+            emit(f"! Не найдены runtime-модули detector: {', '.join(missing_modules)}")
         dependencies_ok = _install_runtime_requirements(emit, path)
 
     if frontend_touched and settings.git_update_build_frontend:
