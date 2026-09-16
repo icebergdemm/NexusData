@@ -223,6 +223,7 @@ def _apply_migrations():
         ("round_replays", "voice_profile_state", "VARCHAR(20)"),
         ("round_replays", "voice_profile_error", "VARCHAR(2000)"),
         ("round_replays", "voice_profile_processed_at", "DATETIME"),
+        ("round_replays", "voiceprint_processed_at", "DATETIME"),
         ("round_replays", "voice_profile_started_at", "DATETIME"),
         ("round_replays", "voice_profile_heartbeat_at", "DATETIME"),
         ("round_replays", "voice_profile_attempts", "INT NOT NULL DEFAULT 0"),

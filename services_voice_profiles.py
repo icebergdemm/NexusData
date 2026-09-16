@@ -2067,7 +2067,7 @@ def process_voice_profile_job(db) -> dict:
 
 def process_next_nwdemo_voice_profile(db) -> dict:
     """Process one pending NewWorldStreamer archive; legacy jobs stay inert."""
-    from models import RoundReplay, VoiceProfileClip, VoiceReplayFingerprint
+    from models import RoundReplay, VoiceProfileClip
     from sqlalchemy import exists, or_
 
     service = NwdemoVoiceProfileService(db)
@@ -2093,11 +2093,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
         replay = db.query(RoundReplay).filter(
             RoundReplay.replay_format == "nwdemo-v2",
             RoundReplay.voice_profile_state == "ready",
+            RoundReplay.voiceprint_processed_at.is_(None),
             exists().where(VoiceProfileClip.source_replay_id == RoundReplay.id),
-            ~exists().where(
-                (VoiceReplayFingerprint.replay_id == RoundReplay.id)
-                & (VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM)
-            ),
         ).order_by(RoundReplay.id).with_for_update().first()
         if replay is None:
             return {"status": "idle"}
@@ -2116,6 +2113,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
             result = service.backfill_voiceprint(int(replay.id), progress_callback=progress)
             replay = db.query(RoundReplay).filter(RoundReplay.id == replay.id).one()
             replay.voice_profile_state = "ready"
+            replay.voiceprint_processed_at = _datetime.datetime.utcnow()
+            replay.voice_profile_error = None
             replay.voice_profile_started_at = None
             replay.voice_profile_heartbeat_at = None
             replay.voice_profile_progress = None
@@ -2755,6 +2754,7 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                         if normal or radio:
                             if progress_callback is not None:
                                 progress_callback("embedding", 70, speakers_completed=1)
+                    replay.voiceprint_processed_at = _datetime.datetime.utcnow()
                 if progress_callback is not None:
                     progress_callback("finalizing", 95, speakers_completed=len(affected))
                 replay.voice_profile_state = "ready"

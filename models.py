@@ -1194,6 +1194,10 @@ class RoundReplay(Base):
     voice_profile_state = Column(String(20), nullable=True, index=True)
     voice_profile_error = Column(String(2000), nullable=True)
     voice_profile_processed_at = Column(DateTime, nullable=True)
+    # Set after the current ONNX backfill has inspected every speaker in this
+    # replay. A replay with no accepted speech is still complete; absence of
+    # a fingerprint alone must not put it back into the queue forever.
+    voiceprint_processed_at = Column(DateTime, nullable=True, index=True)
     voice_profile_started_at = Column(DateTime, nullable=True)
     voice_profile_heartbeat_at = Column(DateTime, nullable=True, index=True)
     voice_profile_attempts = Column(Integer, nullable=False, default=0)
