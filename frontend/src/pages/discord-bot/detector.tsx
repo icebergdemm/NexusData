@@ -115,6 +115,7 @@ function DiscordChannelPicker({
   label,
   hint,
   onSave,
+  onRefresh,
 }: {
   tree?: DetectorChannelTree
   selectedIds: string[]
@@ -124,6 +125,7 @@ function DiscordChannelPicker({
   label: string
   hint: string
   onSave: (value: string) => void
+  onRefresh?: () => Promise<DetectorChannelTree | undefined>
 }) {
   const [search, setSearch] = useState("")
   const [selection, setSelection] = useState(selectedIds)
@@ -162,14 +164,32 @@ function DiscordChannelPicker({
   const unresolvedIds = selection.filter((id) => !selectedChannels.some((channel) => channel.id === id))
   const dirty = selection.join(",") !== selectedIds.join(",")
   const clearUnresolved = () => setSelection(selectedChannels.map((channel) => channel.id))
-  const saveSelection = () => {
-    if (multiple) {
+  const [refreshing, setRefreshing] = useState(false)
+  const saveSelection = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      // The page can stay open while the bot reconnects or Discord changes.
+      // Refresh before saving so an old cached tree cannot produce a confusing
+      // 409 after the user clicks the button.
+      const freshTree = onRefresh ? await onRefresh() : tree
+      if (!freshTree) return
+      const available = new Set(
+        freshTree.channels
+          .filter((channel) => channel.type === "text" || channel.type === "thread")
+          .map((channel) => channel.id),
+      )
+      const freshSelection = selection.filter((id) => available.has(id))
+      if (freshSelection.length !== selection.length) {
+        setSelection(freshSelection)
+        return
+      }
       // Live picker selections must never carry stale/hidden IDs forward.
       // The advanced ID field remains available for an intentional exception.
-      onSave(JSON.stringify(selectedChannels.map((channel) => channel.id)))
-      return
+      onSave(multiple ? JSON.stringify(freshSelection) : (freshSelection[0] ?? ""))
+    } finally {
+      setRefreshing(false)
     }
-    onSave(selection[0] ?? "")
   }
 
   const toggle = (id: string) => {
@@ -190,7 +210,7 @@ function DiscordChannelPicker({
           <p className="text-xs font-medium">{label}</p>
           <p className="text-[11px] text-muted-foreground">{hint}</p>
         </div>
-        {dirty && <Button size="sm" disabled={disabled} onClick={saveSelection}><Save className="size-3.5" /> Сохранить</Button>}
+        {dirty && <Button size="sm" disabled={disabled || refreshing} onClick={saveSelection}><Save className="size-3.5" /> {refreshing ? "Проверяю…" : "Сохранить"}</Button>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-52 flex-1">
@@ -311,6 +331,8 @@ export function AddressDetectorTab({ data, onSave }: Props) {
     queryKey: ["discord-detector-channel-tree"],
     queryFn: () => api.get<DetectorChannelTree>("/api/v1/admin/discord-bot/viewer/tree"),
     retry: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   })
   const rolesQuery = useQuery({
     queryKey: ["discord-detector-roles"],
@@ -325,6 +347,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
   const monitoredIds = effective?.monitored_channel_ids ?? parseIds(configured(data, "monitored_channel_ids", ""))
   const signalChannelId = effective?.signals_channel_id ?? configured(data, "moderation_signals_channel_id", "")
   const moderatorRoleId = effective?.moderator_role_id ?? configured(data, "moderator_role_id", "")
+  const refreshChannelTree = async () => (await channelTreeQuery.refetch()).data
   const diagnostic = [...(detector?.runtime.events ?? [])].reverse().find((entry) =>
     entry.event === "startup_validation_error" || entry.event === "detector_disabled",
   )
@@ -368,6 +391,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
               label="Разрешённые каналы и активные threads"
               hint="Мониторинг работает только по выбранным ID. Пустой выбор явно выключает detector."
               onSave={(value) => onSave("monitored_channel_ids", value, "picker")}
+              onRefresh={refreshChannelTree}
             />
             <details className="rounded-md border border-border/60 px-3 py-2">
               <summary className="cursor-pointer text-xs font-medium">Расширенный режим: ID и исключения</summary>
@@ -413,6 +437,7 @@ export function AddressDetectorTab({ data, onSave }: Props) {
               label="Канал / ветка сигналов"
               hint="Выберите уже существующий текстовый канал или thread, куда бот отправляет сигналы."
               onSave={(value) => onSave("moderation_signals_channel_id", value, "picker")}
+              onRefresh={refreshChannelTree}
             />
             <DiscordRolePicker roles={rolesQuery.data?.roles} selectedId={moderatorRoleId} disabled={!canEdit} error={rolesQuery.isError} onSave={(value) => onSave("moderator_role_id", value, "picker")} />
             <details className="rounded-md border border-border/60 px-3 py-2">
