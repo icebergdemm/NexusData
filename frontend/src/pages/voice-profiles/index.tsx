@@ -114,6 +114,21 @@ interface VoiceprintMonitor {
     eligible_signatures: number;
     queued_replays: number;
   };
+  speech_gate: {
+    version: string;
+    normal: {
+      checked: number;
+      accepted: number;
+      rejected: number;
+      speech_ms: number;
+    };
+    radio: {
+      checked: number;
+      accepted: number;
+      rejected: number;
+      speech_ms: number;
+    };
+  };
   log: VoiceprintMonitorLogEntry[];
 }
 interface GlobalVoiceprintRankingPlayer {
@@ -565,6 +580,48 @@ function VoiceprintMonitorConsole({
               </div>
             ))}
           </div>
+          <Card className="border-zinc-800 bg-zinc-950/70">
+            <CardHeader className="flex-row items-center gap-2 space-y-0 pb-3">
+              <CardTitle className="text-sm">Фильтр речи</CardTitle>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                {data.speech_gate.version}
+              </Badge>
+              <span className="ml-auto text-xs text-muted-foreground">
+                учитывается только подтверждённая речь
+              </span>
+            </CardHeader>
+            <CardContent className="grid gap-3 pt-0 sm:grid-cols-2">
+              {(["normal", "radio"] as const).map((channel) => {
+                const stats = data.speech_gate[channel];
+                return (
+                  <div
+                    key={channel}
+                    className="rounded-md border border-zinc-800 px-3 py-2 font-mono text-xs"
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-zinc-100">
+                        {channel === "normal" ? "normal" : "radio"}
+                      </span>
+                      <span className="text-zinc-500">
+                        {voiceprintDuration(stats.speech_ms)} речи
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-zinc-500">
+                      <span>
+                        checked <b className="text-zinc-200">{stats.checked}</b>
+                      </span>
+                      <span>
+                        accepted <b className="text-emerald-400">{stats.accepted}</b>
+                      </span>
+                      <span>
+                        rejected <b className="text-red-300">{stats.rejected}</b>
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
           <Card className="overflow-hidden border-zinc-800 bg-zinc-950 text-zinc-300">
             <CardHeader className="flex-row items-center gap-2 space-y-0 border-b border-zinc-800 py-3">
               <Terminal className="size-4 text-sky-400" />
