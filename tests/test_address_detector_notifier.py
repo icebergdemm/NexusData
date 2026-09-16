@@ -66,4 +66,3 @@ def test_signal_allows_only_moderator_role_ping() -> None:
     assert sent["allowed_mentions"].users is False
     assert sent["allowed_mentions"].everyone is False
     assert "@\u200buser" in sent["embed"].fields[0].value
-
