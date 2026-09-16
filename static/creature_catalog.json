@@ -171,11 +171,11 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 1000,
-      "sight": 0.5,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -343,11 +343,11 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 400,
-      "sight": 0.1,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -363,7 +363,169 @@
       "aggression_hurt": 200,
       "aggression_greed": 10,
       "flee_health_threshold": 10,
-      "aggressive_boarding": false,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "stronger",
+          "state": "Avoid",
+          "priority": "200"
+        },
+        {
+          "tag": "husk",
+          "state": "PassiveAggressive",
+          "priority": "200"
+        },
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "dead",
+          "state": "Eat",
+          "priority": "100"
+        },
+        {
+          "tag": "weaker",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "engine",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "monsterfood",
+          "state": "Eat",
+          "priority": "30"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "15"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "5"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "5"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "crawlerbroodmother",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "crawler_large",
+          "state": "Protect",
+          "priority": "5"
+        },
+        {
+          "tag": "watcher",
+          "state": "Protect",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Crawler_hatchling",
+      "group": "crawler",
+      "base_hp": 40,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 50,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 200,
+      "aggression_greed": 10,
+      "flee_health_threshold": 10,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "crawlerbroodmother",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "crawler_large",
+          "state": "Protect",
+          "priority": "5"
+        },
+        {
+          "tag": "crawler",
+          "state": "Protect",
+          "priority": "2"
+        },
+        {
+          "tag": "dead",
+          "state": "Eat",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Crawler_large",
+      "group": "crawler",
+      "base_hp": 160,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 160,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 200,
+      "aggression_greed": 10,
+      "flee_health_threshold": 10,
+      "aggressive_boarding": true,
       "targets": [
         {
           "tag": "stronger",
@@ -484,8 +646,119 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 800,
-      "sight": 1.5,
-      "hearing": 1.5,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 200,
+      "aggression_greed": 10,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "stronger",
+          "state": "Avoid",
+          "priority": "200"
+        },
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "husk",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "engine",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "20"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "dead",
+          "state": "Eat",
+          "priority": "10"
+        },
+        {
+          "tag": "weaker",
+          "state": "Aggressive",
+          "priority": "2"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "watcher",
+          "state": "Idle",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Crawlerbroodmother_m",
+      "group": "crawler",
+      "base_hp": 1000,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 800,
+      "sight": 1,
+      "hearing": 1,
       "aggression_hurt": 200,
       "aggression_greed": 10,
       "flee_health_threshold": 0,
@@ -595,7 +868,7 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 150,
-      "sight": 0.5,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 50,
       "aggression_greed": 20,
@@ -757,6 +1030,67 @@
       ]
     },
     {
+      "id": "Doomworm",
+      "group": "abyss",
+      "base_hp": 15000,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 30000,
+      "sight": 0,
+      "hearing": 3,
+      "aggression_hurt": 100,
+      "aggression_greed": 10,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weaker",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "terminalcell",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "leucocyte",
+          "state": "Idle",
+          "priority": "1"
+        }
+      ]
+    },
+    {
       "id": "Endworm",
       "group": "abyss",
       "base_hp": 8000,
@@ -884,57 +1218,6 @@
       ]
     },
     {
-      "id": "Fractalguardian_emp",
-      "group": "ancientalien",
-      "base_hp": 700,
-      "needs_water": false,
-      "needs_air": false,
-      "combat_strength": 1000,
-      "sight": 4,
-      "hearing": 4,
-      "aggression_hurt": 0,
-      "aggression_greed": 0,
-      "flee_health_threshold": 0,
-      "aggressive_boarding": false,
-      "targets": [
-        {
-          "tag": "weapon",
-          "state": "Attack",
-          "priority": "500"
-        },
-        {
-          "tag": "engine",
-          "state": "Attack",
-          "priority": "200"
-        },
-        {
-          "tag": "sonar",
-          "state": "Attack",
-          "priority": "50"
-        },
-        {
-          "tag": "room",
-          "state": "Attack",
-          "priority": "10"
-        },
-        {
-          "tag": "wall",
-          "state": "Attack",
-          "priority": "10"
-        },
-        {
-          "tag": "human",
-          "state": "Attack",
-          "priority": "5"
-        },
-        {
-          "tag": "portalguardian",
-          "state": "Follow",
-          "priority": "1"
-        }
-      ]
-    },
-    {
       "id": "Fractalguardian2",
       "group": "ancientalien",
       "base_hp": 400,
@@ -996,6 +1279,153 @@
         {
           "tag": "guardiantrap",
           "state": "HideTo",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Fractalguardian3",
+      "group": "ancientalien",
+      "base_hp": 400,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 700,
+      "sight": 2,
+      "hearing": 1,
+      "aggression_hurt": 0,
+      "aggression_greed": 0,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "guardianshelter",
+          "state": "FleeTo",
+          "priority": "1000"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "200"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "200"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "tool",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "stronger",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weaker",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "50"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "portalguardian",
+          "state": "Follow",
+          "priority": "5"
+        },
+        {
+          "tag": "fractalguardian_emp",
+          "state": "Follow",
+          "priority": "1"
+        },
+        {
+          "tag": "guardiantrap",
+          "state": "HideTo",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Fractalguardian_emp",
+      "group": "ancientalien",
+      "base_hp": 700,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 1000,
+      "sight": 4,
+      "hearing": 4,
+      "aggression_hurt": 0,
+      "aggression_greed": 0,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "500"
+        },
+        {
+          "tag": "engine",
+          "state": "Attack",
+          "priority": "200"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "50"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "5"
+        },
+        {
+          "tag": "portalguardian",
+          "state": "Follow",
           "priority": "1"
         }
       ]
@@ -1143,7 +1573,300 @@
       ]
     },
     {
+      "id": "Hammerhead_m",
+      "group": "hammerhead",
+      "base_hp": 350,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 400,
+      "sight": 2,
+      "hearing": 1,
+      "aggression_hurt": 100,
+      "aggression_greed": 10,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "stronger",
+          "state": "Aggressive",
+          "priority": "75"
+        },
+        {
+          "tag": "equal",
+          "state": "Aggressive",
+          "priority": "75"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "human",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "weaker",
+          "state": "Aggressive",
+          "priority": "25"
+        },
+        {
+          "tag": "hammerheadmatriarch",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "terminalcell",
+          "state": "Idle",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Hammerhead_mNamed",
+      "group": "hammerhead",
+      "base_hp": 600,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 400,
+      "sight": 2,
+      "hearing": 1,
+      "aggression_hurt": 100,
+      "aggression_greed": 10,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "stronger",
+          "state": "Aggressive",
+          "priority": "75"
+        },
+        {
+          "tag": "equal",
+          "state": "Aggressive",
+          "priority": "75"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "human",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "weaker",
+          "state": "Aggressive",
+          "priority": "25"
+        },
+        {
+          "tag": "hammerheadmatriarch",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "terminalcell",
+          "state": "Idle",
+          "priority": "1"
+        }
+      ]
+    },
+    {
       "id": "Hammerheadgold",
+      "group": "hammerhead",
+      "base_hp": 400,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 500,
+      "sight": 4,
+      "hearing": 2,
+      "aggression_hurt": 50,
+      "aggression_greed": 10,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "100"
+        },
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "human",
+          "state": "PassiveAggressive",
+          "priority": "25"
+        },
+        {
+          "tag": "weaker",
+          "state": "PassiveAggressive",
+          "priority": "25"
+        },
+        {
+          "tag": "stronger",
+          "state": "PassiveAggressive",
+          "priority": "25"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "terminalcell",
+          "state": "Idle",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Hammerheadgold_m",
       "group": "hammerhead",
       "base_hp": 400,
       "needs_water": false,
@@ -1371,6 +2094,183 @@
       ]
     },
     {
+      "id": "Human",
+      "group": "human",
+      "base_hp": 100,
+      "needs_water": false,
+      "needs_air": true,
+      "combat_strength": 0,
+      "sight": 0,
+      "hearing": 0,
+      "aggression_hurt": 0,
+      "aggression_greed": 0,
+      "flee_health_threshold": 99,
+      "aggressive_boarding": false,
+      "targets": []
+    },
+    {
+      "id": "Humanhusk",
+      "group": "husk",
+      "base_hp": 100,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 50,
+      "sight": 0,
+      "hearing": 1,
+      "aggression_hurt": 150,
+      "aggression_greed": 5,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "crawler",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "20"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "swarmfeeder",
+          "state": "Idle",
+          "priority": "0"
+        },
+        {
+          "tag": "huskinfected",
+          "state": "Idle",
+          "priority": "0"
+        }
+      ]
+    },
+    {
+      "id": "Husk",
+      "group": "husk",
+      "base_hp": 200,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 90,
+      "sight": 0,
+      "hearing": 1,
+      "aggression_hurt": 150,
+      "aggression_greed": 5,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "crawler",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "20"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "swarmfeeder",
+          "state": "Idle",
+          "priority": "0"
+        },
+        {
+          "tag": "huskinfected",
+          "state": "Idle",
+          "priority": "0"
+        }
+      ]
+    },
+    {
       "id": "Husk_chimera",
       "group": "husk",
       "base_hp": 600,
@@ -1433,6 +2333,87 @@
           "tag": "wall",
           "state": "Attack",
           "priority": "5"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "swarmfeeder",
+          "state": "Idle",
+          "priority": "0"
+        },
+        {
+          "tag": "huskinfected",
+          "state": "Idle",
+          "priority": "0"
+        }
+      ]
+    },
+    {
+      "id": "Husk_exosuit",
+      "group": "husk",
+      "base_hp": 500,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 500,
+      "sight": 0,
+      "hearing": 1,
+      "aggression_hurt": 150,
+      "aggression_greed": 5,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "crawler",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "20"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "10"
         },
         {
           "tag": "turret",
@@ -1671,11 +2652,11 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 1500,
-      "sight": 0.5,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -1686,12 +2667,12 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 100,
-      "sight": 0.5,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
       "flee_health_threshold": 10,
-      "aggressive_boarding": false,
+      "aggressive_boarding": true,
       "targets": []
     },
     {
@@ -1701,11 +2682,11 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 10000,
-      "sight": 0.1,
+      "sight": 0,
       "hearing": 2,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -1720,7 +2701,7 @@
       "hearing": 2,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -1735,7 +2716,7 @@
       "hearing": 2,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -1746,12 +2727,12 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 100,
-      "sight": 0.5,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
-      "aggressive_boarding": false,
+      "flee_health_threshold": 99,
+      "aggressive_boarding": true,
       "targets": []
     },
     {
@@ -1761,12 +2742,12 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 250,
-      "sight": 0.5,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
       "flee_health_threshold": 20,
-      "aggressive_boarding": false,
+      "aggressive_boarding": true,
       "targets": []
     },
     {
@@ -1780,7 +2761,7 @@
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -1795,7 +2776,7 @@
       "hearing": 1,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": []
     },
@@ -1810,7 +2791,7 @@
       "hearing": 0,
       "aggression_hurt": 0,
       "aggression_greed": 0,
-      "flee_health_threshold": 0,
+      "flee_health_threshold": 99,
       "aggressive_boarding": false,
       "targets": [
         {
@@ -1883,7 +2864,7 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 250,
-      "sight": 1.5,
+      "sight": 1,
       "hearing": 1,
       "aggression_hurt": 100,
       "aggression_greed": 10,
@@ -1904,7 +2885,93 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 1250,
-      "sight": 0.075,
+      "sight": 0,
+      "hearing": 1,
+      "aggression_hurt": 5,
+      "aggression_greed": 1,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "200"
+        },
+        {
+          "tag": "stronger",
+          "state": "Avoid",
+          "priority": "200"
+        },
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "85"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "50"
+        },
+        {
+          "tag": "tool",
+          "state": "PassiveAggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "molochbaby",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Moloch_m",
+      "group": "moloch",
+      "base_hp": 1600,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 1600,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 5,
       "aggression_greed": 1,
@@ -2016,7 +3083,88 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 2000,
-      "sight": 0.075,
+      "sight": 0,
+      "hearing": 1,
+      "aggression_hurt": 5,
+      "aggression_greed": 1,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": false,
+      "targets": [
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "200"
+        },
+        {
+          "tag": "stronger",
+          "state": "Avoid",
+          "priority": "200"
+        },
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "80"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "50"
+        },
+        {
+          "tag": "tool",
+          "state": "PassiveAggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "molochbaby",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Molochblack_m",
+      "group": "moloch",
+      "base_hp": 2200,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 2200,
+      "sight": 0,
       "hearing": 1,
       "aggression_hurt": 5,
       "aggression_greed": 1,
@@ -2202,6 +3350,354 @@
       ]
     },
     {
+      "id": "Mudraptor_hatchling",
+      "group": "mudraptor",
+      "base_hp": 60,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 95,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 300,
+      "aggression_greed": 20,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "stronger",
+          "state": "Avoid",
+          "priority": "100"
+        },
+        {
+          "tag": "tigerthresher",
+          "state": "Avoid",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "90"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "80"
+        },
+        {
+          "tag": "weaker",
+          "state": "Attack",
+          "priority": "60"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "dead",
+          "state": "Eat",
+          "priority": "10"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "watcher",
+          "state": "Protect",
+          "priority": "1"
+        },
+        {
+          "tag": "mudraptor_veteran",
+          "state": "Follow",
+          "priority": "1"
+        },
+        {
+          "tag": "monsterfood",
+          "state": "Eat",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Mudraptor_passive",
+      "group": "human",
+      "base_hp": 150,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 240,
+      "sight": 0,
+      "hearing": 0,
+      "aggression_hurt": 300,
+      "aggression_greed": 20,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "stronger",
+          "state": "Avoid",
+          "priority": "100"
+        },
+        {
+          "tag": "tigerthresher",
+          "state": "Avoid",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "90"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "80"
+        },
+        {
+          "tag": "weaker",
+          "state": "Attack",
+          "priority": "60"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "30"
+        },
+        {
+          "tag": "dead",
+          "state": "Eat",
+          "priority": "10"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "watcher",
+          "state": "Protect",
+          "priority": "1"
+        },
+        {
+          "tag": "mudraptor_veteran",
+          "state": "Follow",
+          "priority": "1"
+        },
+        {
+          "tag": "monsterfood",
+          "state": "Eat",
+          "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Mudraptor_pet",
+      "group": "human",
+      "base_hp": 100,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 105,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 300,
+      "aggression_greed": 20,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "owner",
+          "state": "Protect",
+          "priority": "10"
+        },
+        {
+          "tag": "hostile",
+          "state": "Aggressive",
+          "priority": "100"
+        },
+        {
+          "tag": "stronger",
+          "state": "Aggressive",
+          "priority": "100"
+        },
+        {
+          "tag": "weaker",
+          "state": "Aggressive",
+          "priority": "100"
+        },
+        {
+          "tag": "equal",
+          "state": "Aggressive",
+          "priority": "100"
+        },
+        {
+          "tag": "tigerthresher",
+          "state": "Aggressive",
+          "priority": "100"
+        },
+        {
+          "tag": "human",
+          "state": "Follow",
+          "priority": "10"
+        },
+        {
+          "tag": "dead",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "monsterfood",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "watcher",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "mudraptor_veteran",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "door",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "wall",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "room",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "sonar",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "turret",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "decoy",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "weapon",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "provocative",
+          "state": "Idle",
+          "priority": "1"
+        },
+        {
+          "tag": "tool",
+          "state": "Idle",
+          "priority": "1"
+        }
+      ]
+    },
+    {
       "id": "Mudraptor_unarmored",
       "group": "mudraptor",
       "base_hp": 150,
@@ -2309,6 +3805,27 @@
           "tag": "monsterfood",
           "state": "Eat",
           "priority": "1"
+        }
+      ]
+    },
+    {
+      "id": "Mudraptor_veteran",
+      "group": "mudraptor",
+      "base_hp": 300,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 490,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 300,
+      "aggression_greed": 20,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "tigerthresher",
+          "state": "Aggressive",
+          "priority": "100"
         }
       ]
     },
@@ -2706,8 +4223,8 @@
       "needs_water": false,
       "needs_air": false,
       "combat_strength": 10,
-      "sight": 0.5,
-      "hearing": 0.5,
+      "sight": 0,
+      "hearing": 0,
       "aggression_hurt": 100,
       "aggression_greed": 10,
       "flee_health_threshold": 0,
@@ -2798,6 +4315,132 @@
       "needs_water": true,
       "needs_air": false,
       "combat_strength": 200,
+      "sight": 1,
+      "hearing": 1,
+      "aggression_hurt": 200,
+      "aggression_greed": 10,
+      "flee_health_threshold": 0,
+      "aggressive_boarding": true,
+      "targets": [
+        {
+          "tag": "decoy",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "provocative",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "weapon",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "nasonov",
+          "state": "Attack",
+          "priority": "100"
+        },
+        {
+          "tag": "tool",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "human",
+          "state": "Attack",
+          "priority": "60"
+        },
+        {
+          "tag": "weaker",
+          "state": "Attack",
+          "priority": "50"
+        },
+        {
+          "tag": "equal",
+          "state": "Attack",
+          "priority": "50"
+        },
+        {
+          "tag": "stronger",
+          "state": "Aggressive",
+          "priority": "50"
+        },
+        {
+          "tag": "leucocyte",
+          "state": "Avoid",
+          "priority": "50"
+        },
+        {
+          "tag": "engine",
+          "state": "Avoid",
+          "priority": "40"
+        },
+        {
+          "tag": "dead",
+          "state": "Eat",
+          "priority": "20"
+        },
+        {
+          "tag": "door",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "room",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "wall",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "sonar",
+          "state": "Attack",
+          "priority": "10"
+        },
+        {
+          "tag": "bonethresher",
+          "state": "Protect",
+          "priority": "2"
+        },
+        {
+          "tag": "turret",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "searchlight",
+          "state": "Attack",
+          "priority": "1"
+        },
+        {
+          "tag": "watcher",
+          "state": "Protect",
+          "priority": "1"
+        },
+        {
+          "tag": "monsterfood",
+          "state": "Eat",
+          "priority": "1"
+        },
+        {
+          "tag": "terminalcell",
+          "state": "Idle",
+          "priority": "0"
+        }
+      ]
+    },
+    {
+      "id": "Tigerthresher_hatchling",
+      "group": "thresher",
+      "base_hp": 75,
+      "needs_water": false,
+      "needs_air": false,
+      "combat_strength": 120,
       "sight": 1,
       "hearing": 1,
       "aggression_hurt": 200,

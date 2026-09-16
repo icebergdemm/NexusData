@@ -25,7 +25,7 @@ export function SpawnDirectorPage() {
   const [savedFor, setSavedFor] = useState<string | null>(null)
   const { data: admin } = useCurrentAdmin()
   const { data } = useQuery({ queryKey: ["spawn-director", selectedServer], queryFn: () => api.get<{ servers: Server[] }>(`/admin/spawn-director/state${selectedServer === "__all__" ? "" : `?server_name=${encodeURIComponent(selectedServer)}`}`), refetchInterval: 3000 })
-  const { data: creatureData } = useQuery({ queryKey: ["spawn-director-creatures"], queryFn: () => api.get<{ creatures: Creature[] }>("/admin/spawn-director/creatures"), staleTime: Infinity, retry: false })
+  const { data: creatureData } = useQuery({ queryKey: ["spawn-director-creatures"], queryFn: async () => { try { return await api.get<{ creatures: Creature[] }>("/admin/spawn-director/creatures") } catch { const res = await fetch("/static/creature_catalog.json"); if (!res.ok) throw new Error(`Статический каталог недоступен: HTTP ${res.status}`); return (await res.json()) as { creatures: Creature[] } } }, staleTime: Infinity, retry: 1 })
   const { data: knownServers } = useQuery({ queryKey: ["spawn-director-known-servers"], queryFn: () => worldStateApi.listServers(), refetchInterval: 5000 })
   const servers = data?.servers ?? []
   const serverNames = [...new Set([...(knownServers?.servers ?? []), ...servers.map(server => server.server_name)])].sort()

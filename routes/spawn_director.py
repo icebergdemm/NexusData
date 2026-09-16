@@ -1,8 +1,8 @@
 """Live adaptive monster-wave telemetry for the administrator dashboard."""
 
 from datetime import datetime
-from functools import lru_cache
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +21,43 @@ _snapshots: dict[str, dict[str, Any]] = {}
 _health_floors: dict[str, dict[str, float]] = {}
 _BUNDLED_CATALOG_PATH = Path(__file__).resolve().parent.parent / "static" / "creature_catalog.json"
 _DEPLOYED_CATALOG_PATH = Path("/home/container/static/creature_catalog.json")
+_CWD_CATALOG_PATH = Path.cwd() / "static" / "creature_catalog.json"
+_catalog_cache: dict[str, Any] = {"mtime": None, "creatures": []}
+
+logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
+def _read_catalog_file(catalog_path: Path) -> list[dict[str, Any]] | None:
+    try:
+        with open(catalog_path, encoding="utf-8") as source:
+            creatures = json.load(source).get("creatures", [])
+    except (OSError, ValueError, TypeError):
+        return None
+    return creatures if creatures else None
+
+
 def _creature_catalog() -> list[dict[str, Any]]:
-    """Read the generated JSON catalog."""
-    for catalog_path in (_DEPLOYED_CATALOG_PATH, _BUNDLED_CATALOG_PATH):
+    """Read the generated JSON catalog (see scripts/build_creature_catalog.py).
+
+    The result is cached by file mtime so a missing file at startup does not
+    stick as an empty catalog forever: the next request retries the disk.
+    """
+    for catalog_path in (_DEPLOYED_CATALOG_PATH, _BUNDLED_CATALOG_PATH, _CWD_CATALOG_PATH):
         try:
-            with open(catalog_path, encoding="utf-8") as source:
-                creatures = json.load(source).get("creatures", [])
-            if creatures:
-                return creatures
-        except (OSError, ValueError, TypeError):
+            mtime = catalog_path.stat().st_mtime
+        except OSError:
             continue
-    return []
+        if _catalog_cache["mtime"] == mtime and _catalog_cache["creatures"]:
+            return _catalog_cache["creatures"]
+        creatures = _read_catalog_file(catalog_path)
+        if creatures:
+            _catalog_cache["mtime"] = mtime
+            _catalog_cache["creatures"] = creatures
+            return creatures
+    if not _catalog_cache["creatures"]:
+        logger.warning("creature catalog not found in deployment; checked %s, %s and %s",
+                       _DEPLOYED_CATALOG_PATH, _BUNDLED_CATALOG_PATH, _CWD_CATALOG_PATH)
+    return _catalog_cache["creatures"]
 
 
 def _require_view(request: Request, db: Session) -> AdminUser:
