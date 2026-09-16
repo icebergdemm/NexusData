@@ -134,9 +134,10 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
     notifier = DiscordNotifier(bot, detector_config, store)
     ready, validation_errors = await notifier.validate()
     for error in validation_errors:
-        level = logging.WARNING if "emoji" in error else logging.ERROR
-        logger.log(level, "address_detector startup_validation error=%s", error)
-        _address_detector_startup_event("startup_validation_error", error)
+        is_warning = error.startswith("warning:")
+        level = logging.WARNING if is_warning else logging.ERROR
+        logger.log(level, "address_detector startup_validation %s=%s", "warning" if is_warning else "error", error)
+        _address_detector_startup_event("startup_validation_warning" if is_warning else "startup_validation_error", error.removeprefix("warning: ").strip())
     if not ready:
         logger.error("address_detector disabled: startup validation failed")
         _address_detector_startup_event("detector_disabled", "startup validation failed")
