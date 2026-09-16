@@ -611,6 +611,8 @@ def _ensure_storage_dir():
     # SQLite VACUUM may need a temporary copy close to the database size.
     # The container's /tmp is intentionally tiny, so keep SQLite temp files
     # beside the log database where the storage quota is actually available.
+    # The connection also applies PRAGMA temp_store_directory below: SQLite
+    # can resolve its temp directory before a runtime environment change.
     sqlite_temp_dir = os.environ.get("SQLITE_TMPDIR") or os.path.abspath(LOG_STORAGE_DIR)
     os.makedirs(sqlite_temp_dir, exist_ok=True)
     os.environ["SQLITE_TMPDIR"] = sqlite_temp_dir
@@ -623,6 +625,8 @@ def _get_conn() -> sqlite3.Connection:
         return conn
     _ensure_storage_dir()
     conn = sqlite3.connect(LOG_DB_PATH, timeout=30, check_same_thread=False)
+    sqlite_temp_dir = os.environ["SQLITE_TMPDIR"].replace("'", "''")
+    conn.execute(f"PRAGMA temp_store_directory='{sqlite_temp_dir}'")
     # SQLite's built-in LOWER/LIKE only folds ASCII. Register Unicode
     # casefolding for the correctness fallback used while the FTS backfill is
     # still running: a Russian query such as ``физ`` must match
