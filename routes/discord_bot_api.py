@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Optional
 import secrets
 import json as _json
+import logging
 
 from database import get_db
 from security import check_permission
@@ -37,6 +38,60 @@ _templates.env.globals.update(check_permission=check_permission)
 def _get_admin(request: Request, db: Session) -> AdminUser:
     from routes.admin import load_current_admin
     return load_current_admin(request, db)
+
+
+def _discord_id_strings(values) -> list[str]:
+    """Keep Discord snowflakes as strings across the JSON boundary."""
+    return sorted(str(value) for value in values)
+
+
+async def _validate_picker_whitelist(value: object, source: str) -> str:
+    """Reject stale IDs from the live channel picker.
+
+    The advanced field is intentionally the escape hatch for archived/hidden
+    objects. Picker saves, including requests from an older already-open
+    frontend tab, must only contain channels the bot can currently see.
+    """
+    if source == "advanced":
+        return value if isinstance(value, str) else _json.dumps(value, ensure_ascii=False)
+
+    if isinstance(value, list):
+        raw_ids = value
+    else:
+        try:
+            raw_ids = _json.loads(str(value or ""))
+        except (_json.JSONDecodeError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="Whitelist picker: ожидается JSON-массив Discord ID") from exc
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="Whitelist picker: ожидается JSON-массив Discord ID")
+
+    from routes.discord_viewer_api import _call_bot
+    from discord_bot import bot as discord_bot
+
+    tree = await _call_bot(discord_bot.viewer_get_tree())
+    available = {
+        str(channel["id"])
+        for channel in tree.get("channels", [])
+        if channel.get("type") in {"text", "thread"}
+    }
+    selected = []
+    invalid = []
+    for item in raw_ids:
+        channel_id = str(item).strip()
+        if not channel_id or channel_id in selected:
+            continue
+        if channel_id not in available:
+            invalid.append(channel_id)
+        else:
+            selected.append(channel_id)
+    if invalid:
+        shown = ", ".join(invalid[:5])
+        suffix = f" и ещё {len(invalid) - 5}" if len(invalid) > 5 else ""
+        raise HTTPException(
+            status_code=409,
+            detail=f"Picker получил недоступные Discord ID: {shown}{suffix}. Обновите список каналов и выберите их заново; скрытые объекты сохраняются через advanced-режим.",
+        )
+    return _json.dumps(selected, ensure_ascii=False, separators=(",", ":"))
 
 
 def _twink_suspects(db: Session) -> list:
@@ -133,6 +188,23 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
     configs = db.query(DiscordBotConfig).all()
     config = {c.key: c.value for c in configs}
 
+    from config import get_settings
+    from discord_bot.address_detector.config import KNOWN_KEYS, load_detector_config
+    from discord_bot.bot import get_address_detector_status
+    try:
+        effective_detector = load_detector_config(get_settings(), config)
+        detector_effective = {
+            **effective_detector.public_status(),
+            "monitored_channel_ids": _discord_id_strings(effective_detector.monitored_channel_ids),
+            "excluded_channel_ids": _discord_id_strings(effective_detector.excluded_channel_ids),
+            "signals_channel_id": effective_detector.signals_channel_id,
+            "moderator_role_id": effective_detector.moderator_role_id,
+        }
+        detector_config_error = None
+    except ValueError as exc:
+        detector_effective = None
+        detector_config_error = str(exc)
+
     # Recent failures of the site -> Discord role push (routes/departments.py's
     # _queue_role_sync) — now read directly from the bot's own in-memory log
     # (see discord_bot/bot.py's get_recent_role_sync_failures) instead of a
@@ -156,6 +228,12 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
         "failed_role_syncs": failed_role_syncs,
         "can_edit": check_permission(admin, "discord_bot", "edit"),
         "can_manage_config": check_permission(admin, "discord_bot", "manage_config"),
+        "address_detector": {
+            "known_keys": list(KNOWN_KEYS),
+            "effective": detector_effective,
+            "config_error": detector_config_error,
+            "runtime": get_address_detector_status(),
+        },
     }
 
 
@@ -170,8 +248,25 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
     body = await request.json()
     key = (body.get("key") or "").strip()
     value = body.get("value")
+    source = str(body.get("source") or "").strip().lower()
     if not key:
         raise HTTPException(status_code=400, detail="key required")
+
+    from config import get_settings
+    from discord_bot.address_detector.config import KNOWN_KEYS, load_detector_config
+    # Treat a whitelist save without an explicit advanced marker as a picker
+    # save. This also protects against a stale browser tab using the old UI.
+    if key == "monitored_channel_ids":
+        value = await _validate_picker_whitelist(value, source)
+    if key in KNOWN_KEYS:
+        proposed = {row.key: row.value for row in db.query(DiscordBotConfig).all()}
+        proposed[key] = value
+        try:
+            detector_config = load_detector_config(get_settings(), proposed)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        detector_config = None
 
     record = db.query(DiscordBotConfig).filter(DiscordBotConfig.key == key).first()
     if record:
@@ -180,9 +275,32 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
         record = DiscordBotConfig(key=key, value=value)
         db.add(record)
     db.commit()
+    if key == "monitored_channel_ids":
+        logging.getLogger(__name__).info(
+            "address_detector config_saved key=%s source=%s monitored_count=%s",
+            key, source or "picker", len(detector_config.monitored_channel_ids) if detector_config else 0,
+        )
+    if key in KNOWN_KEYS:
+        try:
+            from discord_bot import bot as discord_bot
+            if discord_bot.bot.is_ready():
+                await discord_bot.reload_address_detector()
+        except Exception:
+            # Configuration is durable even if the scheduler process is not
+            # the one currently holding the Gateway connection.
+            logging.getLogger(__name__).exception("address_detector reload after config save failed")
     from routes.admin import log_admin_action
     log_admin_action(db, admin.id, "discord_bot_config_set", {"key": key})
-    return {"status": "ok", "key": key, "value": value}
+    effective = None
+    if detector_config is not None:
+        effective = {
+            **detector_config.public_status(),
+            "monitored_channel_ids": _discord_id_strings(detector_config.monitored_channel_ids),
+            "excluded_channel_ids": _discord_id_strings(detector_config.excluded_channel_ids),
+            "signals_channel_id": detector_config.signals_channel_id,
+            "moderator_role_id": detector_config.moderator_role_id,
+        }
+    return {"status": "ok", "key": key, "value": value, "effective": effective}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -47,11 +47,15 @@ MFCC_V1_ALGORITHM = "mfcc-v1"
 MFCC_V1_COEFFICIENTS = 13
 MFCC_V1_FILTERS = 26
 MFCC_V1_MIN_QUALITY_MS = 3_000
+SPEECH_GATE_VERSION = "pcm-energy-v1"
+SPEECH_GATE_MIN_MS = 300
+SPEECH_GATE_MIN_RATIO = 0.15
+SPEECH_GATE_MAX_RECONCILE_DECODES = 32
 VOICE_PROFILE_SCANNER_SETTING = "voice_profiles_scanner_enabled"
 VOICEPRINT_WORKER_SETTING = "voiceprint_worker_enabled"
 VOICE_PROFILE_STALE_AFTER_SECONDS = 15 * 60
 VOICE_PROFILE_MAX_ATTEMPTS = 3
-ONNX_VOICEPRINT_ALGORITHM = "redimnet-b2-onnx-v1"
+ONNX_VOICEPRINT_ALGORITHM = "redimnet-b2-onnx-v2"
 ONNX_VOICEPRINT_DIMENSIONS = 192
 ONNX_VOICEPRINT_SAMPLE_RATE = 16_000
 ONNX_VOICEPRINT_MAX_DURATION_MS = 30_000
@@ -81,6 +85,17 @@ class NwdemoVoicePacket:
     steam_id: str
     data: bytes
     radio: bool = False
+
+
+@dataclass(frozen=True)
+class PcmSpeechAnalysis:
+    """Deterministic low-cost speech gate result for one decoded clip."""
+
+    accepted: bool
+    speech_ms: int
+    speech_ratio: float
+    voiced_samples: list[int]
+    threshold_dbfs: float
 
 
 @dataclass(frozen=True)
@@ -275,6 +290,30 @@ def select_profile_candidates(
     middle_pool = ordered[VOICE_PROFILE_EARLY_COUNT:-VOICE_PROFILE_LATEST_COUNT]
     middle = _select_evenly(middle_pool, VOICE_PROFILE_MIDDLE_COUNT)
     return [*early, *middle, *latest]
+
+
+def select_speech_profile_candidates(
+    candidates: Iterable[Mapping[str, object]],
+    *,
+    inspect,
+    max_attempts: int = SPEECH_GATE_MAX_RECONCILE_DECODES,
+) -> tuple[list[Mapping[str, object]], int]:
+    """Select 3/3/5 while bounding unknown-candidate inspections."""
+    ordered = sorted(candidates, key=_candidate_sort_key)
+    accepted = [candidate for candidate in ordered if candidate.get("speech_status") == "accepted"]
+    attempts = 0
+    if len(accepted) < VOICE_PROFILE_LIMIT:
+        for candidate in ordered:
+            if candidate.get("speech_status") != "unknown":
+                continue
+            if attempts >= max(0, int(max_attempts)):
+                break
+            attempts += 1
+            if inspect(candidate):
+                accepted.append(candidate)
+            if len(accepted) >= VOICE_PROFILE_LIMIT:
+                break
+    return select_profile_candidates(accepted), attempts
 
 
 def steam2_to_steam64(value: str) -> str | None:
@@ -928,6 +967,32 @@ def write_wave_slice(
             pass
 
 
+def write_pcm16_wav(
+    path: str | os.PathLike[str],
+    samples: Sequence[int],
+    *,
+    sample_rate: int = 48_000,
+) -> int:
+    """Write canonical mono PCM16 samples to an atomic WAV file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + f".tmp.{os.getpid()}")
+    payload = struct.pack(f"<{len(samples)}h", *samples) if samples else b""
+    try:
+        with wave.open(str(temporary), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(sample_rate)
+            writer.writeframes(payload)
+        os.replace(temporary, destination)
+        return destination.stat().st_size
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def make_archive_key(
     steam_id: str,
     replay_identity: str | int,
@@ -1103,6 +1168,79 @@ def select_voiceprint_pcm16(samples: Sequence[int], *, max_samples: int) -> list
             start = max(0, (len(source) - width) // 2)
         output.extend(source[start : start + width])
     return output
+
+
+def analyze_pcm16_speech(
+    samples: Sequence[int],
+    *,
+    sample_rate: int = 48_000,
+    absolute_floor_dbfs: float = -50.0,
+    relative_margin_db: float = 8.0,
+) -> PcmSpeechAnalysis:
+    """Keep speech-like PCM while retaining a cheap, explainable gate.
+
+    Metrics count only confirmed active frames.  The retained audio includes
+    a small boundary pad and hangover so consonants are not clipped, but that
+    padding never inflates speech_ms or speech_ratio.
+    """
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
+    if not samples:
+        return PcmSpeechAnalysis(False, 0, 0.0, [], absolute_floor_dbfs)
+    frame_size = max(1, sample_rate * 20 // 1000)
+    frames: list[tuple[int, int, float]] = []
+    for start in range(0, len(samples), frame_size):
+        frame = samples[start : start + frame_size]
+        power = sum(int(value) * int(value) for value in frame) / len(frame)
+        rms = math.sqrt(power)
+        level = 20.0 * math.log10(max(rms / 32768.0, 1e-6))
+        frames.append((start, len(frame), level))
+
+    if len(samples) < sample_rate * 2:
+        threshold = absolute_floor_dbfs
+    else:
+        levels = sorted(frame[2] for frame in frames)
+        p20 = levels[max(0, int(len(levels) * 0.2) - 1)]
+        threshold = min(-35.0, max(absolute_floor_dbfs, p20 + relative_margin_db))
+
+    active = [level >= threshold for _start, _length, level in frames]
+    core = [False] * len(frames)
+    index = 0
+    while index < len(frames):
+        if not active[index]:
+            index += 1
+            continue
+        end = index
+        while end < len(frames) and active[end]:
+            end += 1
+        if end - index >= 3:
+            for frame_index in range(index, end):
+                core[frame_index] = True
+        index = end
+
+    core_ms = sum(length * 1000 / sample_rate for (_start, length, _level), is_core in zip(frames, core) if is_core)
+    duration_ms = len(samples) * 1000 / sample_rate
+    speech_ratio = core_ms / duration_ms if duration_ms else 0.0
+    kept = [False] * len(frames)
+    for index, is_core in enumerate(core):
+        if not is_core:
+            continue
+        for frame_index in range(max(0, index - 5), min(len(frames), index + 11)):
+            kept[frame_index] = True
+    voiced_samples = [
+        int(value)
+        for (start, length, _level), keep in zip(frames, kept)
+        if keep
+        for value in samples[start : start + length]
+    ]
+    speech_ms = round(core_ms)
+    return PcmSpeechAnalysis(
+        speech_ms >= SPEECH_GATE_MIN_MS and speech_ratio >= SPEECH_GATE_MIN_RATIO,
+        speech_ms,
+        speech_ratio,
+        voiced_samples,
+        threshold,
+    )
 
 
 def resample_pcm16_for_voiceprint(samples: Sequence[int], *, sample_rate: int = 48_000) -> list[int]:
@@ -1929,7 +2067,7 @@ def process_voice_profile_job(db) -> dict:
 
 def process_next_nwdemo_voice_profile(db) -> dict:
     """Process one pending NewWorldStreamer archive; legacy jobs stay inert."""
-    from models import RoundReplay, VoiceProfileClip, VoiceReplayFingerprint
+    from models import RoundReplay, VoiceProfileClip
     from sqlalchemy import exists, or_
 
     service = NwdemoVoiceProfileService(db)
@@ -1955,11 +2093,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
         replay = db.query(RoundReplay).filter(
             RoundReplay.replay_format == "nwdemo-v2",
             RoundReplay.voice_profile_state == "ready",
+            RoundReplay.voiceprint_processed_at.is_(None),
             exists().where(VoiceProfileClip.source_replay_id == RoundReplay.id),
-            ~exists().where(
-                (VoiceReplayFingerprint.replay_id == RoundReplay.id)
-                & (VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM)
-            ),
         ).order_by(RoundReplay.id).with_for_update().first()
         if replay is None:
             return {"status": "idle"}
@@ -1978,6 +2113,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
             result = service.backfill_voiceprint(int(replay.id), progress_callback=progress)
             replay = db.query(RoundReplay).filter(RoundReplay.id == replay.id).one()
             replay.voice_profile_state = "ready"
+            replay.voiceprint_processed_at = _datetime.datetime.utcnow()
+            replay.voice_profile_error = None
             replay.voice_profile_started_at = None
             replay.voice_profile_heartbeat_at = None
             replay.voice_profile_progress = None
@@ -2330,7 +2467,7 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         packets: Sequence[NwdemoVoicePacket],
         temporary: Path,
         session,
-    ) -> None:
+    ) -> bool:
         from models import VoiceReplayFingerprint
 
         normal = [packet for packet in packets if not packet.radio]
@@ -2341,24 +2478,32 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         key = hashlib.sha256(f"onnx-fingerprint|{replay.id}|{steam_id}".encode()).hexdigest()
         ndvc_path = temporary / f"{key}.ndvc"
         write_ndvc(ndvc_path, chosen)
-        samples, duration_ms = self._read_canonical_wav(self._decode_ndvc(ndvc_path, temporary, key))
-        capped = select_voiceprint_pcm16(
-            samples,
-            max_samples=48_000 * (ONNX_VOICEPRINT_MAX_DURATION_MS // 1000),
-        )
-        embedding = onnx_voiceprint_embedding(resample_pcm16_for_voiceprint(capped), session)
-        if len(embedding) != ONNX_VOICEPRINT_DIMENSIONS:
-            raise ValueError(f"voiceprint model returned {len(embedding)} dimensions, expected {ONNX_VOICEPRINT_DIMENSIONS}")
+        samples, _duration_ms = self._read_canonical_wav(self._decode_ndvc(ndvc_path, temporary, key))
+        speech = analyze_pcm16_speech(samples)
         row = self.db.query(VoiceReplayFingerprint).filter(
             VoiceReplayFingerprint.replay_id == replay.id,
             VoiceReplayFingerprint.steam_id == steam_id,
             VoiceReplayFingerprint.algorithm == ONNX_VOICEPRINT_ALGORITHM,
         ).first()
+        if not speech.accepted:
+            if row is not None:
+                self.db.delete(row)
+                self.db.flush()
+            self._update_signature(steam_id, "normal", ONNX_VOICEPRINT_ALGORITHM)
+            self._update_signature(steam_id, "radio", ONNX_VOICEPRINT_ALGORITHM)
+            return False
+        capped = select_voiceprint_pcm16(
+            speech.voiced_samples,
+            max_samples=48_000 * (ONNX_VOICEPRINT_MAX_DURATION_MS // 1000),
+        )
+        embedding = onnx_voiceprint_embedding(resample_pcm16_for_voiceprint(capped), session)
+        if len(embedding) != ONNX_VOICEPRINT_DIMENSIONS:
+            raise ValueError(f"voiceprint model returned {len(embedding)} dimensions, expected {ONNX_VOICEPRINT_DIMENSIONS}")
         values = {
             "source_channel": source_channel,
             "vector": embedding,
-            "quality": "good" if duration_ms >= MFCC_V1_MIN_QUALITY_MS else "low",
-            "duration_ms": min(duration_ms, ONNX_VOICEPRINT_MAX_DURATION_MS),
+            "quality": "good" if speech.speech_ms >= MFCC_V1_MIN_QUALITY_MS else "low",
+            "duration_ms": min(speech.speech_ms, ONNX_VOICEPRINT_MAX_DURATION_MS),
             "packet_count": len(chosen),
         }
         if row is None:
@@ -2374,6 +2519,7 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         self.db.flush()
         self._update_signature(steam_id, "normal", ONNX_VOICEPRINT_ALGORITHM)
         self._update_signature(steam_id, "radio", ONNX_VOICEPRINT_ALGORITHM)
+        return True
 
     def reconcile_steam_id(self, steam_id: str) -> int:
         """Select 3/3/5 and materialize WAV only for those selected clips."""
@@ -2384,17 +2530,41 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             VoiceProfileClip.steam_id == steam_id,
             VoiceProfileClip.source_format == "nwdemo-v2",
         ).all()
+        root = Path(get_upload_dir(self.db))
+        self.root.joinpath("wav").mkdir(parents=True, exist_ok=True)
         candidates = [{
             "candidate_key": clip.archive_key,
             "replay_id": clip.source_replay_id,
             "start_ms": clip.start_ms,
             "recorded_at": clip.recorded_at,
+            "speech_status": (
+                clip.speech_status
+                if getattr(clip, "speech_gate_version", None) == SPEECH_GATE_VERSION
+                and clip.speech_status in {"accepted", "rejected"}
+                and (clip.speech_status != "accepted" or (root / str(clip.wav_filename)).is_file())
+                else "unknown"
+            ),
             "clip": clip,
         } for clip in clips]
-        selected = select_profile_candidates(candidates)
+        analysis_cache: dict[int, PcmSpeechAnalysis] = {}
+
+        def inspect(candidate: Mapping[str, object]) -> bool:
+            clip = candidate["clip"]
+            ndvc_path = root / str(clip.ndvc_filename)
+            with tempfile.TemporaryDirectory(prefix="nwdemo-speech-gate-") as temp_dir:
+                temporary = Path(temp_dir)
+                decoded = self._decode_ndvc(ndvc_path, temporary, str(clip.archive_key))
+                samples, _duration_ms = self._read_canonical_wav(decoded)
+            analysis = analyze_pcm16_speech(samples)
+            analysis_cache[int(clip.id)] = analysis
+            clip.speech_status = "accepted" if analysis.accepted else "rejected"
+            clip.speech_ms = analysis.speech_ms
+            clip.speech_ratio = analysis.speech_ratio
+            clip.speech_gate_version = SPEECH_GATE_VERSION
+            return analysis.accepted
+
+        selected, _attempts = select_speech_profile_candidates(candidates, inspect=inspect)
         selected_ids = {candidate["clip"].id for candidate in selected}
-        root = Path(get_upload_dir(self.db))
-        self.root.joinpath("wav").mkdir(parents=True, exist_ok=True)
         materialized = 0
         with tempfile.TemporaryDirectory(prefix="nwdemo-voice-profile-") as temp_dir:
             temporary = Path(temp_dir)
@@ -2403,9 +2573,15 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                 wav_relative = f"voice_profiles/wav/{clip.archive_key}.wav.gz"
                 wav_path = root / wav_relative
                 ndvc_path = root / str(clip.ndvc_filename)
-                if not wav_path.is_file():
-                    decoded = self._decode_ndvc(ndvc_path, temporary, clip.archive_key)
-                    clip.storage_size = int(clip.storage_size or 0) + gzip_file(decoded, wav_path)
+                analysis = analysis_cache.get(int(clip.id))
+                if not wav_path.is_file() or analysis is not None:
+                    if analysis is None:
+                        decoded = self._decode_ndvc(ndvc_path, temporary, clip.archive_key)
+                        samples, _duration_ms = self._read_canonical_wav(decoded)
+                        analysis = analyze_pcm16_speech(samples)
+                    voiced_wav = temporary / f"{clip.archive_key}.voice.wav"
+                    write_pcm16_wav(voiced_wav, analysis.voiced_samples)
+                    clip.storage_size = int(ndvc_path.stat().st_size) + gzip_file(voiced_wav, wav_path)
                     materialized += 1
                 clip.wav_filename = wav_relative
                 clip.storage_format = "ndvc+wav-gzip"
@@ -2535,6 +2711,12 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                     "is_radio": bool(segment["radio"]),
                 }
                 if clip is None:
+                    values.update({
+                        "speech_status": "unknown",
+                        "speech_ms": 0,
+                        "speech_ratio": 0.0,
+                        "speech_gate_version": SPEECH_GATE_VERSION,
+                    })
                     self.db.add(VoiceProfileClip(archive_key=key, **values))
                 else:
                     for name, value in values.items():
@@ -2564,11 +2746,15 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                     for steam_id in sorted({key[0] for key in samples}):
                         normal = samples.get((steam_id, False), [])
                         radio = samples.get((steam_id, True), [])
-                        player_packets = normal or radio
-                        if player_packets:
-                            self._update_onnx_fingerprint(replay, steam_id, player_packets, temporary, session)
+                        used_normal = bool(normal) and self._update_onnx_fingerprint(
+                            replay, steam_id, normal, temporary, session,
+                        )
+                        if not used_normal and radio:
+                            self._update_onnx_fingerprint(replay, steam_id, radio, temporary, session)
+                        if normal or radio:
                             if progress_callback is not None:
                                 progress_callback("embedding", 70, speakers_completed=1)
+                    replay.voiceprint_processed_at = _datetime.datetime.utcnow()
                 if progress_callback is not None:
                     progress_callback("finalizing", 95, speakers_completed=len(affected))
                 replay.voice_profile_state = "ready"
@@ -2588,8 +2774,8 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         }
 
     def backfill_voiceprint(self, replay_id: int, *, progress_callback=None) -> dict:
-        """Add ONNX observations only; selected clips are intentionally untouched."""
-        from models import RoundReplay
+        """Add ONNX observations and lazily reconcile stale speech selections."""
+        from models import RoundReplay, VoiceProfileClip
         from services_replays import ReplayService
 
         model = voiceprint_model_status()
@@ -2615,10 +2801,24 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             temporary = Path(temp_dir)
             steam_ids = sorted({key[0] for key in samples})
             for index, steam_id in enumerate(steam_ids, start=1):
-                player_packets = samples.get((steam_id, False), []) or samples.get((steam_id, True), [])
-                if not player_packets:
+                normal = samples.get((steam_id, False), [])
+                radio = samples.get((steam_id, True), [])
+                if not normal and not radio:
                     continue
-                self._update_onnx_fingerprint(replay, steam_id, player_packets, temporary, session)
+                used_normal = bool(normal) and self._update_onnx_fingerprint(
+                    replay, steam_id, normal, temporary, session,
+                )
+                if not used_normal and radio:
+                    self._update_onnx_fingerprint(replay, steam_id, radio, temporary, session)
+                stale_clip = self.db.query(VoiceProfileClip.id).filter(
+                    VoiceProfileClip.steam_id == steam_id,
+                    VoiceProfileClip.source_format == "nwdemo-v2",
+                ).filter(
+                    (VoiceProfileClip.speech_gate_version != SPEECH_GATE_VERSION)
+                    | (VoiceProfileClip.speech_status == "unknown")
+                ).first()
+                if stale_clip is not None:
+                    self.reconcile_steam_id(steam_id)
                 if progress_callback is not None:
                     progress_callback(
                         "embedding",

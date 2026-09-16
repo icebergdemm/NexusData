@@ -223,6 +223,7 @@ def _apply_migrations():
         ("round_replays", "voice_profile_state", "VARCHAR(20)"),
         ("round_replays", "voice_profile_error", "VARCHAR(2000)"),
         ("round_replays", "voice_profile_processed_at", "DATETIME"),
+        ("round_replays", "voiceprint_processed_at", "DATETIME"),
         ("round_replays", "voice_profile_started_at", "DATETIME"),
         ("round_replays", "voice_profile_heartbeat_at", "DATETIME"),
         ("round_replays", "voice_profile_attempts", "INT NOT NULL DEFAULT 0"),
@@ -230,6 +231,10 @@ def _apply_migrations():
         ("voice_profile_clips", "source_format", "VARCHAR(32)"),
         ("voice_profile_clips", "source_kind", "VARCHAR(16)"),
         ("voice_profile_clips", "is_radio", "TINYINT NOT NULL DEFAULT 0"),
+        ("voice_profile_clips", "speech_status", "VARCHAR(16) NOT NULL DEFAULT 'unknown'"),
+        ("voice_profile_clips", "speech_ms", "INT NOT NULL DEFAULT 0"),
+        ("voice_profile_clips", "speech_ratio", "DOUBLE NOT NULL DEFAULT 0"),
+        ("voice_profile_clips", "speech_gate_version", "VARCHAR(32) NOT NULL DEFAULT 'pcm-energy-v1'"),
         # Kit variations + special kits (item 15) — additive; `items` (variation 1)
         # unchanged, so old game-server clients that only read job_id/kit_level/items
         # keep working untouched.

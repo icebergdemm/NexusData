@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -35,6 +35,7 @@ from services_voice_profiles import (
     ONNX_VOICEPRINT_ALGORITHM,
     ONNX_VOICEPRINT_DIMENSIONS,
     ONNX_VOICEPRINT_SAMPLE_RATE,
+    SPEECH_GATE_VERSION,
     NwdemoVoiceProfileService,
     VoiceProfileService,
     enqueue_voice_profile_job,
@@ -185,24 +186,15 @@ def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
     signatures = db.query(VoiceProfileSignature).filter(
         VoiceProfileSignature.algorithm == ONNX_VOICEPRINT_ALGORITHM,
     ).all()
-    ready_replays = db.query(RoundReplay).filter(
+    queued_replays = db.query(RoundReplay).filter(
         _nwdemo_replay_filter(),
         RoundReplay.voice_profile_state == "ready",
-    ).all()
-    replay_ids_with_clips = {
-        int(row[0])
-        for row in db.query(VoiceProfileClip.source_replay_id).filter(
+        RoundReplay.voiceprint_processed_at.is_(None),
+        exists().where(
+            VoiceProfileClip.source_replay_id == RoundReplay.id,
             VoiceProfileClip.source_format == "nwdemo-v2",
-            VoiceProfileClip.source_replay_id.isnot(None),
-        ).distinct()
-    }
-
-
-    replay_ids_with_fingerprints = {int(row.replay_id) for row in fingerprints}
-    queued_replays = [
-        replay for replay in ready_replays
-        if replay.id in replay_ids_with_clips and replay.id not in replay_ids_with_fingerprints
-    ]
+        ),
+    ).all()
     recent_errors = db.query(RoundReplay).filter(
         _nwdemo_replay_filter(),
         RoundReplay.voice_profile_error.like("voiceprint:%"),
@@ -246,6 +238,30 @@ def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
     } for replay in recent_errors)
     log.sort(key=lambda item: (item["at"] or "", item["id"]), reverse=True)
     model = voiceprint_model_status()
+    speech_gate = {
+        "version": SPEECH_GATE_VERSION,
+        "normal": {"checked": 0, "accepted": 0, "rejected": 0, "speech_ms": 0},
+        "radio": {"checked": 0, "accepted": 0, "rejected": 0, "speech_ms": 0},
+    }
+    speech_rows = db.query(
+        VoiceProfileClip.is_radio,
+        VoiceProfileClip.speech_status,
+        func.count(VoiceProfileClip.id),
+        func.sum(VoiceProfileClip.speech_ms),
+    ).filter(
+        VoiceProfileClip.source_format == "nwdemo-v2",
+        VoiceProfileClip.speech_gate_version == SPEECH_GATE_VERSION,
+        VoiceProfileClip.speech_status.in_(("accepted", "rejected")),
+    ).group_by(
+        VoiceProfileClip.is_radio,
+        VoiceProfileClip.speech_status,
+    ).all()
+    for is_radio, status, count, speech_ms in speech_rows:
+        channel = speech_gate["radio" if is_radio else "normal"]
+        count = int(count or 0)
+        channel["checked"] += count
+        channel[str(status)] += count
+        channel["speech_ms"] += int(speech_ms or 0)
     return {
         "enabled": voiceprint_worker_enabled(db),
         "model": {
@@ -264,6 +280,7 @@ def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
             }) for row in signatures),
             "queued_replays": len(queued_replays),
         },
+        "speech_gate": speech_gate,
         "log": log[:50],
     }
 

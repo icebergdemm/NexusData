@@ -583,6 +583,8 @@ LOG_DB_PATH = os.path.join(LOG_STORAGE_DIR, "logs.db")
 _log_cache_lock = threading.Lock()
 _log_worker_running = False
 _log_refresh_interval = 60  # 1 minute
+_sqlite_temp_dir_lock = threading.Lock()
+_sqlite_temp_dir_path = None
 
 # До 17.08.2026 англоязычный автокик по рассинхронизации не имел своего
 # ACTION_PATTERN. Если причина содержала двоеточие (обычно ``Events queued:
@@ -608,15 +610,30 @@ _tls = threading.local()
 def _ensure_storage_dir():
     os.makedirs(LOG_STORAGE_DIR, exist_ok=True)
     os.makedirs(LOG_RAW_DIR, exist_ok=True)
+    # SQLite VACUUM may need a temporary copy close to the database size.
+    # The container's /tmp is intentionally tiny, so keep SQLite temp files
+    # beside the log database where the storage quota is actually available.
+    # The connection also applies PRAGMA temp_store_directory below: SQLite
+    # can resolve its temp directory before a runtime environment change.
+    sqlite_temp_dir = os.environ.get("SQLITE_TMPDIR") or os.path.abspath(LOG_STORAGE_DIR)
+    os.makedirs(sqlite_temp_dir, exist_ok=True)
+    os.environ["SQLITE_TMPDIR"] = sqlite_temp_dir
 
 
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local SQLite connection with sane pragmas."""
+    global _sqlite_temp_dir_path
     conn = getattr(_tls, "conn", None)
     if conn is not None:
         return conn
     _ensure_storage_dir()
     conn = sqlite3.connect(LOG_DB_PATH, timeout=30, check_same_thread=False)
+    sqlite_temp_dir = os.path.abspath(os.environ["SQLITE_TMPDIR"])
+    with _sqlite_temp_dir_lock:
+        if _sqlite_temp_dir_path != sqlite_temp_dir:
+            escaped_temp_dir = sqlite_temp_dir.replace("'", "''")
+            conn.execute(f"PRAGMA temp_store_directory='{escaped_temp_dir}'")
+            _sqlite_temp_dir_path = sqlite_temp_dir
     # SQLite's built-in LOWER/LIKE only folds ASCII. Register Unicode
     # casefolding for the correctness fallback used while the FTS backfill is
     # still running: a Russian query such as ``физ`` must match

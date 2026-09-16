@@ -602,6 +602,57 @@ class DiscordBotConfig(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class AddressDetectorIncident(Base):
+    """Durable aggregation window for address-detector moderator signals."""
+
+    __tablename__ = "discord_address_detector_incidents"
+    __table_args__ = (
+        Index("ix_address_detector_incident_scope", "guild_id", "channel_id", "author_id", "last_seen_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    guild_id = Column(String(25), nullable=False)
+    channel_id = Column(String(25), nullable=False)
+    author_id = Column(String(25), nullable=False)
+    started_at = Column(DateTime, nullable=False, default=func.now())
+    last_seen_at = Column(DateTime, nullable=False, default=func.now(), index=True)
+    message_ids = Column(JSON, nullable=False, default=list)
+    message_count = Column(Integer, nullable=False, default=0)
+    admin_message_id = Column(String(25), nullable=True)
+    moderator_pinged = Column(Boolean, nullable=False, default=False)
+
+
+class AddressDetectorSignal(Base):
+    """One unique Discord message processed by the address detector."""
+
+    __tablename__ = "discord_address_detector_signals"
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_address_detector_signal_message"),
+        Index("ix_address_detector_signal_incident", "incident_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(String(25), nullable=False)
+    guild_id = Column(String(25), nullable=False)
+    channel_id = Column(String(25), nullable=False)
+    author_id = Column(String(25), nullable=False)
+    author_display_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+    raw_content = Column(Text, nullable=False, default="")
+    cleaned_content = Column(Text, nullable=False, default="")
+    matched_tokens = Column(JSON, nullable=False, default=list)
+    context_snapshot = Column(JSON, nullable=True)
+    classification = Column(String(32), nullable=True)
+    confidence = Column(Float, nullable=True)
+    classifier_version = Column(String(255), nullable=True)
+    incident_id = Column(Integer, ForeignKey("discord_address_detector_incidents.id"), nullable=True)
+    admin_message_id = Column(String(25), nullable=True)
+    processing_status = Column(String(32), nullable=False, default="queued")
+    status_note = Column(Text, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
+
+
 class DiscordAntiRaidLog(Base):
     """Anti-raid event log."""
     __tablename__ = "discord_antiraid_log"
@@ -1194,6 +1245,10 @@ class RoundReplay(Base):
     voice_profile_state = Column(String(20), nullable=True, index=True)
     voice_profile_error = Column(String(2000), nullable=True)
     voice_profile_processed_at = Column(DateTime, nullable=True)
+    # Set after the current ONNX backfill has inspected every speaker in this
+    # replay. A replay with no accepted speech is still complete; absence of
+    # a fingerprint alone must not put it back into the queue forever.
+    voiceprint_processed_at = Column(DateTime, nullable=True, index=True)
     voice_profile_started_at = Column(DateTime, nullable=True)
     voice_profile_heartbeat_at = Column(DateTime, nullable=True, index=True)
     voice_profile_attempts = Column(Integer, nullable=False, default=0)
@@ -1329,6 +1384,10 @@ class VoiceProfileClip(Base):
     source_format = Column(String(32), nullable=True, index=True)
     source_kind = Column(String(16), nullable=True, index=True)
     is_radio = Column(Boolean, nullable=False, default=False, index=True)
+    speech_status = Column(String(16), nullable=False, default="unknown", index=True)
+    speech_ms = Column(Integer, nullable=False, default=0)
+    speech_ratio = Column(Float, nullable=False, default=0.0)
+    speech_gate_version = Column(String(32), nullable=False, default="pcm-energy-v1")
     recorded_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)

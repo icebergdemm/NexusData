@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover"
@@ -43,6 +42,7 @@ import { ModerationTemplatePicker } from "@/components/layout/ModerationTemplate
 import { useDiscordProfile } from "@/lib/use-discord-profile"
 import { groupLabelCategories } from "../label-categories/label-utils"
 import { PlayerExportDialog } from "./PlayerExportDialog"
+import { PlayerHistoryTab } from "./PlayerHistoryTab"
 
 interface AdminOption { id: number; discord_username: string | null }
 
@@ -60,13 +60,6 @@ function fmtPlayTime(hours: number): string {
   const h = Math.floor(hours)
   const m = Math.round((hours - h) * 60)
   return `${h}ч ${m}м`
-}
-
-function fmtDuration(seconds: number | null): string {
-  if (!seconds) return "-"
-  const h = Math.floor(seconds / 3600)
-  const m = Math.round((seconds % 3600) / 60)
-  return h > 0 ? `${h}ч ${m}м` : `${m}м`
 }
 
 const STATUS_LABEL: Record<string, { label: string; variant: "default" | "secondary" | "destructive" }> = {
@@ -739,86 +732,7 @@ export function PlayerDetailPage() {
         </TabsContent>
 
         <TabsContent value="history">
-          <div className="grid gap-4 md:grid-cols-2">
-            <Card>
-              <CardHeader><CardTitle className="text-sm">Сессии</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-64">
-                  <div className="space-y-1 p-4 pt-0 text-sm">
-                    {data.sessions.map((s) => (
-                      <div key={s.id} className="flex justify-between border-b py-1.5 last:border-0">
-                        <span>#{s.session_number}</span>
-                        <span className="text-muted-foreground">{fmtDate(s.login_time)}</span>
-                        <span className="text-muted-foreground">{fmtDuration(s.session_duration)}</span>
-                      </div>
-                    ))}
-                    {!data.sessions.length && <div className="text-muted-foreground">Нет данных</div>}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader><CardTitle className="text-sm">IP-адреса</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-64">
-                  <div className="space-y-1 p-4 pt-0 text-sm">
-                    {data.ips.map((ip) => (
-                      <div key={ip.id} className="flex justify-between border-b py-1.5 last:border-0">
-                        <span className="font-mono">{ip.ip}</span>
-                        <span className="text-muted-foreground">{fmtDate(ip.last_seen)}</span>
-                      </div>
-                    ))}
-                    {!data.ips.length && <div className="text-muted-foreground">Нет данных</div>}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader><CardTitle className="text-sm">Прошлые ники</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-64">
-                  <div className="space-y-1 p-4 pt-0 text-sm">
-                    {data.names.map((n) => (
-                      <div key={n.id} className="flex justify-between border-b py-1.5 last:border-0">
-                        <span>{n.nickname}</span>
-                        <span className="text-muted-foreground">{fmtDate(n.last_seen)}</span>
-                      </div>
-                    ))}
-                    {!data.names.length && <div className="text-muted-foreground">Нет данных</div>}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader><CardTitle className="text-sm">Убийства монстров</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-64">
-                  <div className="space-y-1 p-4 pt-0 text-sm">
-                    {data.kills.map((k) => (
-                      <div key={k.id} className="flex justify-between border-b py-1.5 last:border-0">
-                        <span>{k.monster_type}</span>
-                        <span className="text-muted-foreground">{k.kills_count}</span>
-                      </div>
-                    ))}
-                    {!data.kills.length && <div className="text-muted-foreground">Нет данных</div>}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-            {data.role_actions.length > 0 && (
-              <Card className="md:col-span-2">
-                <CardHeader><CardTitle className="text-sm">Действия по ролям</CardTitle></CardHeader>
-                <CardContent className="grid grid-cols-2 gap-1 text-sm sm:grid-cols-3">
-                  {data.role_actions.map((a) => (
-                    <div key={a.id} className="flex justify-between border-b py-1.5">
-                      <span>{a.role} · {a.action_type}</span>
-                      <span className="text-muted-foreground">{a.value}</span>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
-          </div>
+          <PlayerHistoryTab data={data} />
         </TabsContent>
 
         <TabsContent value="ai" className="space-y-4">

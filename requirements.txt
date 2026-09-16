@@ -29,6 +29,8 @@ psutil==5.9.8
 # deliberately not a runtime dependency of NexusData.
 numpy==1.26.4
 onnxruntime==1.22.1
+tokenizers==0.21.4
+# `update restart` installs this manifest before restarting the backend.
 
 # Documents (ONLYOFFICE-edited .docx/.xlsx) — python-docx used only for the
 # Discord publish text excerpt and generating the blank .docx seed template;
@@ -38,3 +40,4 @@ openpyxl==3.1.2
 
 # Discord bot (discord_bot/bot.py) — runs in-process, see discord_bot.supervise_bot()
 discord.py==2.6.4
+# Detector dependency bootstrap revision 2.
