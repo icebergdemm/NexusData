@@ -32,7 +32,7 @@ class _Request:
 
 
 class _DetectorConfig:
-    monitored_channel_ids = set()
+    monitored_channel_ids = {1428721204482539551}
     excluded_channel_ids = set()
     signals_channel_id = ""
     moderator_role_id = ""
@@ -58,3 +58,4 @@ def test_detector_config_save_does_not_shadow_logging(monkeypatch):
     response = asyncio.run(discord_bot_api.api_admin_discord_bot_set_config(_Request(), _Db()))
 
     assert response["status"] == "ok"
+    assert response["effective"]["monitored_channel_ids"] == ["1428721204482539551"]

@@ -40,6 +40,11 @@ def _get_admin(request: Request, db: Session) -> AdminUser:
     return load_current_admin(request, db)
 
 
+def _discord_id_strings(values) -> list[str]:
+    """Keep Discord snowflakes as strings across the JSON boundary."""
+    return sorted(str(value) for value in values)
+
+
 async def _validate_picker_whitelist(value: object, source: str) -> str:
     """Reject stale IDs from the live channel picker.
 
@@ -190,8 +195,8 @@ async def api_admin_discord_bot(request: Request, db: Session = Depends(get_db))
         effective_detector = load_detector_config(get_settings(), config)
         detector_effective = {
             **effective_detector.public_status(),
-            "monitored_channel_ids": sorted(effective_detector.monitored_channel_ids),
-            "excluded_channel_ids": sorted(effective_detector.excluded_channel_ids),
+            "monitored_channel_ids": _discord_id_strings(effective_detector.monitored_channel_ids),
+            "excluded_channel_ids": _discord_id_strings(effective_detector.excluded_channel_ids),
             "signals_channel_id": effective_detector.signals_channel_id,
             "moderator_role_id": effective_detector.moderator_role_id,
         }
@@ -290,8 +295,8 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
     if detector_config is not None:
         effective = {
             **detector_config.public_status(),
-            "monitored_channel_ids": sorted(detector_config.monitored_channel_ids),
-            "excluded_channel_ids": sorted(detector_config.excluded_channel_ids),
+            "monitored_channel_ids": _discord_id_strings(detector_config.monitored_channel_ids),
+            "excluded_channel_ids": _discord_id_strings(detector_config.excluded_channel_ids),
             "signals_channel_id": detector_config.signals_channel_id,
             "moderator_role_id": detector_config.moderator_role_id,
         }
