@@ -27,6 +27,42 @@ DEFAULT_SOURCE = Path(
 )
 DEFAULT_OUTPUT = REPO_ROOT / "static" / "creature_catalog.json"
 
+# Vanilla Russian display names live in Content/Texts/Russian/RussianVanilla.xml
+# as <character.<species-id>> tags; resolved relative to the Characters folder.
+TEXTS_RU = Path("..") / "Texts" / "Russian" / "RussianVanilla.xml"
+
+# Fallback Russian names for species without an official <character.*> string.
+# Official strings always win; this only covers the gaps.
+NAME_RU_FALLBACK = {
+    "ancient": "Древний",
+    "balloon": "Шар",
+    "carrier": "Носитель",
+    "crawlerhusk": "Ползун-хаск",
+    "cyborgworm": "Киборг-червь",
+    "guardianrepairbot": "Бот-ремонтник",
+    "husk_chimera": "Хаск-химера",
+    "husk_exosuit": "Хаск в экзокостюме",
+    "husk_prowler": "Хаск-рыскатель",
+    "huskcontainer": "Контейнер хаска",
+    "jove": "Джов",
+    "portalguardian": "Страж портала",
+}
+
+# Variant filename suffixes mapped to Russian qualifier labels.
+VARIANT_SUFFIX_RU = [
+    ("_mnamed", "именная особь"),
+    ("_hatchling", "детёныш"),
+    ("_morbusine", "морбузиновая особь"),
+    ("_unarmored", "без брони"),
+    ("_veteran", "ветеран"),
+    ("_passive", "пассивная особь"),
+    ("_large", "крупная особь"),
+    ("_gold", "золотая особь"),
+    ("_emp", "ЭМИ-вариант"),
+    ("_pet", "питомец"),
+    ("_m", "вариант миссии"),
+]
+
 # Folders that never contain a spawnable species definition themselves.
 SKIP_DIRS = {"animations", "ragdolls"}
 
@@ -108,6 +144,10 @@ def _parse_species(path: Path) -> dict | None:
                     "tag": node_attrs.get("tag", ""),
                     "state": node_attrs.get("state", ""),
                     "priority": node_attrs.get("priority", ""),
+                    # Raw perception distances in game units (pixels, 100 = 1 m);
+                    # 0 means "auto from perception" (see EnemyAIController).
+                    "react": _parse_int(node_attrs.get("reactdistance")),
+                    "attack": _parse_int(node_attrs.get("attackdistance")),
                 }
             )
     return {
@@ -115,6 +155,7 @@ def _parse_species(path: Path) -> dict | None:
         "_inherit": inherit,
         "_vitality_raw": health_attrs.get("vitality"),
         "_ai_attrs": ai_attrs,
+        "name_ru": "",
         "group": attrs.get("group", "") or inherit,
         "base_hp": _parse_int(health_attrs.get("vitality"), 100),
         "needs_water": _parse_bool(attrs.get("needswater")),
@@ -130,8 +171,51 @@ def _parse_species(path: Path) -> dict | None:
     }
 
 
+def _load_official_ru_names(source: Path) -> dict[str, str]:
+    """Parse <character.*> strings from the vanilla Russian localization."""
+    try:
+        root = ET.fromstring(open(source / TEXTS_RU, encoding="utf-8-sig").read())
+    except (OSError, ET.ParseError):
+        return {}
+    names: dict[str, str] = {}
+    for element in root.iter():
+        tag = element.tag.strip().lower()
+        if tag.startswith("character.") and (element.text or "").strip():
+            names[tag[len("character."):]] = element.text.strip()
+    return names
+
+
+def _resolve_ru_name(species_id: str, inherit: str, official: dict[str, str]) -> str:
+    key = species_id.lower()
+    if key in official:
+        return official[key]
+    # Mission variants: base name + qualifier (e.g. "Ползун (детёныш)").
+    if inherit and inherit.lower() in official:
+        base_ru = official[inherit.lower()]
+        lowered = key
+        for suffix, label in VARIANT_SUFFIX_RU:
+            if lowered.endswith(suffix):
+                return f"{base_ru} ({label})"
+        return f"{base_ru} (вариант)"
+    # Legacy species are previous versions of the same creature.
+    if key.startswith("legacy") and key[len("legacy"):] in official:
+        return f"{official[key[len('legacy'):]]} (старая версия)"
+    if key.endswith("old") and key[: -len("old")] in official:
+        return f"{official[key[: -len('old')]]} (старая версия)"
+    if key.endswith("husk"):
+        head = key[: -len("husk")].rstrip("_")
+        if head in official:
+            return f"{official[head]}-хаск"
+    # Standalone files named like variants (own <Character>, no inherit).
+    for suffix, label in VARIANT_SUFFIX_RU:
+        if key.endswith(suffix) and key[: -len(suffix)] in official:
+            return f"{official[key[: -len(suffix)]]} ({label})"
+    return NAME_RU_FALLBACK.get(key, "")
+
+
 def collect(source: Path) -> list[dict]:
     species: dict[str, dict] = {}
+    official_ru = _load_official_ru_names(source)
     # Top-level species folders: <Dir>/<Dir>.xml is the definition; other
     # top-level xml files (Variants overrides) are picked up by the sweep.
     for path in sorted(source.rglob("*.xml")):
@@ -149,38 +233,43 @@ def collect(source: Path) -> list[dict]:
         species[entry["id"]] = entry  # Variants override base on name clash
     # Variants without an explicit group inherit it from the base species;
     # missing AI/health fields are inherited too (variant XML holds overrides).
+    # Russian names resolve last so variant rules can use the base species.
     for entry in species.values():
-        base = species.get(entry.pop("_inherit", ""))
+        inherit = entry.pop("_inherit", "")
+        entry["_inherit_id"] = inherit
         vitality_raw = entry.pop("_vitality_raw")
         ai_attrs = entry.pop("_ai_attrs")
-        if base is None or base is entry:
-            continue
-        if not vitality_raw:
-            entry["base_hp"] = base["base_hp"]
-        if entry["group"] == (base["id"]):
-            entry["group"] = base["group"] or entry["group"]
-        for key in (
-            "combat_strength",
-            "sight",
-            "hearing",
-            "aggression_hurt",
-            "aggression_greed",
-            "flee_health_threshold",
-            "aggressive_boarding",
-        ):
-            xml_key = {
-                "combat_strength": "combatstrength",
-                "sight": "sight",
-                "hearing": "hearing",
-                "aggression_hurt": "aggressionhurt",
-                "aggression_greed": "aggressiongreed",
-                "flee_health_threshold": "fleehealththreshold",
-                "aggressive_boarding": "aggressiveboarding",
-            }[key]
-            if xml_key not in ai_attrs:
-                entry[key] = base[key]
-        if not entry["targets"]:
-            entry["targets"] = [dict(target) for target in base["targets"]]
+        base = species.get(inherit)
+        if base is not None and base is not entry:
+            if not vitality_raw:
+                entry["base_hp"] = base["base_hp"]
+            if entry["group"] == (base["id"]):
+                entry["group"] = base["group"] or entry["group"]
+            for key in (
+                "combat_strength",
+                "sight",
+                "hearing",
+                "aggression_hurt",
+                "aggression_greed",
+                "flee_health_threshold",
+                "aggressive_boarding",
+            ):
+                xml_key = {
+                    "combat_strength": "combatstrength",
+                    "sight": "sight",
+                    "hearing": "hearing",
+                    "aggression_hurt": "aggressionhurt",
+                    "aggression_greed": "aggressiongreed",
+                    "flee_health_threshold": "fleehealththreshold",
+                    "aggressive_boarding": "aggressiveboarding",
+                }[key]
+                if xml_key not in ai_attrs:
+                    entry[key] = base[key]
+            if not entry["targets"]:
+                entry["targets"] = [dict(target) for target in base["targets"]]
+    for entry in species.values():
+        inherit = entry.pop("_inherit_id", "")
+        entry["name_ru"] = _resolve_ru_name(entry["id"], inherit, official_ru)
     return [species[key] for key in sorted(species)]
 
 

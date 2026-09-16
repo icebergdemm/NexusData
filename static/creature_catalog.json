@@ -3,6 +3,7 @@
   "creatures": [
     {
       "id": "Ancient",
+      "name_ru": "Древний",
       "group": "ancientalien",
       "base_hp": 100,
       "needs_water": false,
@@ -18,12 +19,15 @@
         {
           "tag": "Jove",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Balloon",
+      "name_ru": "Шар",
       "group": "human",
       "base_hp": 30,
       "needs_water": false,
@@ -39,27 +43,36 @@
         {
           "tag": "owner",
           "state": "Protect",
-          "priority": "100"
+          "priority": "100",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Follow",
-          "priority": "10"
+          "priority": "10",
+          "react": 200,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Bonethresher",
+      "name_ru": "Костяной акулий тигр",
       "group": "thresher",
       "base_hp": 300,
       "needs_water": false,
@@ -75,97 +88,134 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "80"
+          "priority": "80",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Aggressive",
-          "priority": "80"
+          "priority": "80",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "30"
+          "priority": "30",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "10"
+          "priority": "10",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Carrier",
+      "name_ru": "Носитель",
       "group": "",
       "base_hp": 1000,
       "needs_water": false,
@@ -181,6 +231,7 @@
     },
     {
       "id": "Charybdis",
+      "name_ru": "Харибда",
       "group": "abyss",
       "base_hp": 7500,
       "needs_water": false,
@@ -196,57 +247,78 @@
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "500"
+          "priority": "500",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "90"
+          "priority": "90",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Charybdisold",
+      "name_ru": "Харибда (старая версия)",
       "group": "",
       "base_hp": 1000,
       "needs_water": false,
@@ -262,82 +334,113 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "300"
+          "priority": "300",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "150"
+          "priority": "150",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "150"
+          "priority": "150",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "PassiveAggressive",
-          "priority": "110"
+          "priority": "110",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "70"
+          "priority": "70",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "40"
+          "priority": "40",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "30"
+          "priority": "30",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Coelanth",
+      "name_ru": "Целанф",
       "group": "",
       "base_hp": 100,
       "needs_water": false,
@@ -353,6 +456,7 @@
     },
     {
       "id": "Crawler",
+      "name_ru": "Ползун",
       "group": "crawler",
       "base_hp": 80,
       "needs_water": false,
@@ -368,117 +472,162 @@
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "husk",
           "state": "PassiveAggressive",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 500
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 400,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "15"
+          "priority": "15",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawlerbroodmother",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "crawler_large",
           "state": "Protect",
-          "priority": "5"
+          "priority": "5",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 1000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Crawler_hatchling",
+      "name_ru": "Ползун (детёныш)",
       "group": "crawler",
       "base_hp": 40,
       "needs_water": false,
@@ -494,27 +643,36 @@
         {
           "tag": "crawlerbroodmother",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "crawler_large",
           "state": "Protect",
-          "priority": "5"
+          "priority": "5",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Protect",
-          "priority": "2"
+          "priority": "2",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Crawler_large",
+      "name_ru": "Ползун (крупная особь)",
       "group": "crawler",
       "base_hp": 160,
       "needs_water": false,
@@ -530,117 +688,162 @@
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "husk",
           "state": "PassiveAggressive",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 500
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 400,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "15"
+          "priority": "15",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawlerbroodmother",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "crawler_large",
           "state": "Protect",
-          "priority": "5"
+          "priority": "5",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 1000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Crawlerbroodmother",
+      "name_ru": "Матка роя ползунов",
       "group": "crawler",
       "base_hp": 1000,
       "needs_water": false,
@@ -656,102 +859,141 @@
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "husk",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 500
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 800,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "2"
+          "priority": "2",
+          "react": 800,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Crawlerbroodmother_m",
+      "name_ru": "Матка роя ползунов (вариант миссии)",
       "group": "crawler",
       "base_hp": 1000,
       "needs_water": false,
@@ -767,102 +1009,141 @@
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "husk",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 500
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 800,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "2"
+          "priority": "2",
+          "react": 800,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Crawlerhusk",
+      "name_ru": "Ползун-хаск",
       "group": "husk",
       "base_hp": 100,
       "needs_water": false,
@@ -878,77 +1159,106 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "swarmfeeder",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "huskinfected",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Cyborgworm",
+      "name_ru": "Киборг-червь",
       "group": "ancientalien",
       "base_hp": 10000,
       "needs_water": false,
@@ -964,32 +1274,43 @@
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Defensebot",
+      "name_ru": "Защитный бот",
       "group": "human",
       "base_hp": 50,
       "needs_water": false,
@@ -1005,32 +1326,43 @@
         {
           "tag": "hostile",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1500,
+          "attack": 1500
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1500,
+          "attack": 1500
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1500,
+          "attack": 1500
         },
         {
           "tag": "equal",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1500,
+          "attack": 1500
         },
         {
           "tag": "owner",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 150,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Doomworm",
+      "name_ru": "Гибельный червь",
       "group": "abyss",
       "base_hp": 15000,
       "needs_water": false,
@@ -1046,52 +1378,71 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Endworm",
+      "name_ru": "Червь Рока",
       "group": "abyss",
       "base_hp": 8000,
       "needs_water": false,
@@ -1107,52 +1458,71 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Fractalguardian",
+      "name_ru": "Фрактальный страж",
       "group": "ancientalien",
       "base_hp": 400,
       "needs_water": false,
@@ -1168,57 +1538,78 @@
         {
           "tag": "guardianshelter",
           "state": "FleeTo",
-          "priority": "1000"
+          "priority": "1000",
+          "react": 25,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "portalguardian",
           "state": "Follow",
-          "priority": "5"
+          "priority": "5",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "fractalguardian_emp",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "guardiantrap",
           "state": "HideTo",
-          "priority": "1"
+          "priority": "1",
+          "react": 25,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Fractalguardian2",
+      "name_ru": "Фрактальный страж",
       "group": "ancientalien",
       "base_hp": 400,
       "needs_water": false,
@@ -1234,57 +1625,78 @@
         {
           "tag": "guardianshelter",
           "state": "FleeTo",
-          "priority": "1000"
+          "priority": "1000",
+          "react": 25,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "portalguardian",
           "state": "Follow",
-          "priority": "5"
+          "priority": "5",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "fractalguardian_emp",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "guardiantrap",
           "state": "HideTo",
-          "priority": "1"
+          "priority": "1",
+          "react": 25,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Fractalguardian3",
+      "name_ru": "Фрактальный страж (вариант)",
       "group": "ancientalien",
       "base_hp": 400,
       "needs_water": false,
@@ -1300,87 +1712,120 @@
         {
           "tag": "guardianshelter",
           "state": "FleeTo",
-          "priority": "1000"
+          "priority": "1000",
+          "react": 25,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "portalguardian",
           "state": "Follow",
-          "priority": "5"
+          "priority": "5",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "fractalguardian_emp",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "guardiantrap",
           "state": "HideTo",
-          "priority": "1"
+          "priority": "1",
+          "react": 25,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Fractalguardian_emp",
+      "name_ru": "Фрактальный страж (ЭМИ-вариант)",
       "group": "ancientalien",
       "base_hp": 700,
       "needs_water": false,
@@ -1396,42 +1841,57 @@
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "500"
+          "priority": "500",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Attack",
-          "priority": "200"
+          "priority": "200",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "portalguardian",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 1000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Guardianrepairbot",
+      "name_ru": "Бот-ремонтник",
       "group": "ancientalien",
       "base_hp": 10,
       "needs_water": false,
@@ -1447,32 +1907,43 @@
         {
           "tag": "portalguardian",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "fractalguardian_emp",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "fractalguardian",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "fractalguardian2",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "fractalguardian3",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerhead",
+      "name_ru": "Молотоглав",
       "group": "hammerhead",
       "base_hp": 350,
       "needs_water": false,
@@ -1488,92 +1959,127 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "75"
+          "priority": "75",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Aggressive",
-          "priority": "75"
+          "priority": "75",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "hammerheadmatriarch",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerhead_m",
+      "name_ru": "Молотоглав (вариант миссии)",
       "group": "hammerhead",
       "base_hp": 350,
       "needs_water": false,
@@ -1589,92 +2095,127 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "75"
+          "priority": "75",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Aggressive",
-          "priority": "75"
+          "priority": "75",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "hammerheadmatriarch",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerhead_mNamed",
+      "name_ru": "Моппи Джек",
       "group": "hammerhead",
       "base_hp": 600,
       "needs_water": false,
@@ -1690,92 +2231,127 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "75"
+          "priority": "75",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Aggressive",
-          "priority": "75"
+          "priority": "75",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "hammerheadmatriarch",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerheadgold",
+      "name_ru": "Золотой молотоглав",
       "group": "hammerhead",
       "base_hp": 400,
       "needs_water": false,
@@ -1791,82 +2367,113 @@
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "PassiveAggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "PassiveAggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "PassiveAggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerheadgold_m",
+      "name_ru": "Золотой молотоглав (вариант миссии)",
       "group": "hammerhead",
       "base_hp": 400,
       "needs_water": false,
@@ -1882,82 +2489,113 @@
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "PassiveAggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "PassiveAggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "PassiveAggressive",
-          "priority": "25"
+          "priority": "25",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerheadmatriarch",
+      "name_ru": "Молотоглав-матриарх",
       "group": "hammerhead",
       "base_hp": 1000,
       "needs_water": false,
@@ -1973,52 +2611,71 @@
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 3000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "PassiveAggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2500,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "PassiveAggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2500,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Avoid",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Hammerheadspawn",
+      "name_ru": "Малек молотоглава",
       "group": "hammerhead",
       "base_hp": 5,
       "needs_water": true,
@@ -2034,67 +2691,92 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Human",
+      "name_ru": "Человек",
       "group": "human",
       "base_hp": 100,
       "needs_water": false,
@@ -2110,6 +2792,7 @@
     },
     {
       "id": "Humanhusk",
+      "name_ru": "Человек-хаск",
       "group": "husk",
       "base_hp": 100,
       "needs_water": false,
@@ -2125,72 +2808,99 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "swarmfeeder",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "huskinfected",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Husk",
+      "name_ru": "Хаск",
       "group": "husk",
       "base_hp": 200,
       "needs_water": false,
@@ -2206,72 +2916,99 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "swarmfeeder",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "huskinfected",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Husk_chimera",
+      "name_ru": "Хаск-химера",
       "group": "husk",
       "base_hp": 600,
       "needs_water": false,
@@ -2287,77 +3024,106 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "swarmfeeder",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "huskinfected",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Husk_exosuit",
+      "name_ru": "Хаск в экзокостюме",
       "group": "husk",
       "base_hp": 500,
       "needs_water": false,
@@ -2373,72 +3139,99 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "swarmfeeder",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "huskinfected",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Husk_prowler",
+      "name_ru": "Хаск-рыскатель",
       "group": "husk",
       "base_hp": 400,
       "needs_water": false,
@@ -2454,72 +3247,99 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "crawler",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "swarmfeeder",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "huskinfected",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Huskcontainer",
+      "name_ru": "Контейнер хаска",
       "group": "husk",
       "base_hp": 30,
       "needs_water": false,
@@ -2535,32 +3355,43 @@
         {
           "tag": "husk",
           "state": "Protect",
-          "priority": "85"
+          "priority": "85",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "owner",
           "state": "Protect",
-          "priority": "80"
+          "priority": "80",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Follow",
-          "priority": "10"
+          "priority": "10",
+          "react": 200,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Jove",
+      "name_ru": "Джов",
       "group": "ancientalien",
       "base_hp": 10000,
       "needs_water": false,
@@ -2576,6 +3407,7 @@
     },
     {
       "id": "Latcher",
+      "name_ru": "Блокиратор",
       "group": "abyss",
       "base_hp": 7000,
       "needs_water": false,
@@ -2591,62 +3423,85 @@
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "150"
+          "priority": "150",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Legacycharybdis",
+      "name_ru": "Харибда (старая версия)",
       "group": "",
       "base_hp": 1000,
       "needs_water": false,
@@ -2662,6 +3517,7 @@
     },
     {
       "id": "Legacycrawler",
+      "name_ru": "Ползун (старая версия)",
       "group": "",
       "base_hp": 70,
       "needs_water": false,
@@ -2677,6 +3533,7 @@
     },
     {
       "id": "Legacyendworm",
+      "name_ru": "Червь Рока (старая версия)",
       "group": "",
       "base_hp": 10000,
       "needs_water": false,
@@ -2692,6 +3549,7 @@
     },
     {
       "id": "Legacyfractalguardian",
+      "name_ru": "Фрактальный страж (старая версия)",
       "group": "ancientalien",
       "base_hp": 80,
       "needs_water": false,
@@ -2707,6 +3565,7 @@
     },
     {
       "id": "Legacyfractalguardian2",
+      "name_ru": "Фрактальный страж (старая версия)",
       "group": "ancientalien",
       "base_hp": 100,
       "needs_water": false,
@@ -2722,6 +3581,7 @@
     },
     {
       "id": "Legacyhusk",
+      "name_ru": "Хаск (старая версия)",
       "group": "",
       "base_hp": 100,
       "needs_water": false,
@@ -2737,6 +3597,7 @@
     },
     {
       "id": "Legacymantis",
+      "name_ru": "Богомол (старая версия)",
       "group": "mantisoid",
       "base_hp": 200,
       "needs_water": false,
@@ -2752,6 +3613,7 @@
     },
     {
       "id": "Legacymoloch",
+      "name_ru": "Молох (старая версия)",
       "group": "moloch",
       "base_hp": 1000,
       "needs_water": false,
@@ -2767,6 +3629,7 @@
     },
     {
       "id": "Legacytigerthresher",
+      "name_ru": "Акулий тигр (старая версия)",
       "group": "",
       "base_hp": 150,
       "needs_water": false,
@@ -2782,6 +3645,7 @@
     },
     {
       "id": "Legacywatcher",
+      "name_ru": "Смотритель (старая версия)",
       "group": "",
       "base_hp": 1000,
       "needs_water": false,
@@ -2797,37 +3661,50 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "600"
+          "priority": "600",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Escape",
-          "priority": "15"
+          "priority": "15",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Idle",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "light",
           "state": "Idle",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Leucocyte",
+      "name_ru": "Лейкоцит",
       "group": "thalamus",
       "base_hp": 25,
       "needs_water": true,
@@ -2843,22 +3720,29 @@
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 1000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mantis",
+      "name_ru": "Богомол",
       "group": "mantisoid",
       "base_hp": 200,
       "needs_water": false,
@@ -2874,12 +3758,15 @@
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Moloch",
+      "name_ru": "Молох",
       "group": "moloch",
       "base_hp": 1250,
       "needs_water": false,
@@ -2895,77 +3782,106 @@
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "85"
+          "priority": "85",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "PassiveAggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "molochbaby",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Moloch_m",
+      "name_ru": "Молох (вариант миссии)",
       "group": "moloch",
       "base_hp": 1600,
       "needs_water": false,
@@ -2981,77 +3897,106 @@
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "85"
+          "priority": "85",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "PassiveAggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "molochbaby",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Molochbaby",
+      "name_ru": "Детеныш молоха",
       "group": "moloch",
       "base_hp": 100,
       "needs_water": false,
@@ -3067,17 +4012,22 @@
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Aggressive",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Molochblack",
+      "name_ru": "Черный молох",
       "group": "moloch",
       "base_hp": 1700,
       "needs_water": false,
@@ -3093,72 +4043,99 @@
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "PassiveAggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "molochbaby",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Molochblack_m",
+      "name_ru": "Черный молох (вариант миссии)",
       "group": "moloch",
       "base_hp": 2200,
       "needs_water": false,
@@ -3174,72 +4151,99 @@
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "200"
+          "priority": "200",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 4000,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "PassiveAggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "molochbaby",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mudraptor",
+      "name_ru": "Грязевой раптор",
       "group": "mudraptor",
       "base_hp": 150,
       "needs_water": false,
@@ -3255,102 +4259,141 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tigerthresher",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "90"
+          "priority": "90",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "80"
+          "priority": "80",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "mudraptor_veteran",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mudraptor_hatchling",
+      "name_ru": "Грязевой раптор (детёныш)",
       "group": "mudraptor",
       "base_hp": 60,
       "needs_water": false,
@@ -3366,102 +4409,141 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tigerthresher",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "90"
+          "priority": "90",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "80"
+          "priority": "80",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "mudraptor_veteran",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mudraptor_passive",
+      "name_ru": "Грязевой раптор (пассивная особь)",
       "group": "human",
       "base_hp": 150,
       "needs_water": false,
@@ -3477,102 +4559,141 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tigerthresher",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "90"
+          "priority": "90",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "80"
+          "priority": "80",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "mudraptor_veteran",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mudraptor_pet",
+      "name_ru": "Ручной раптор",
       "group": "human",
       "base_hp": 100,
       "needs_water": false,
@@ -3588,117 +4709,162 @@
         {
           "tag": "owner",
           "state": "Protect",
-          "priority": "10"
+          "priority": "10",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "hostile",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tigerthresher",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Follow",
-          "priority": "10"
+          "priority": "10",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "mudraptor_veteran",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Idle",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mudraptor_unarmored",
+      "name_ru": "Грязевой раптор (без брони)",
       "group": "mudraptor",
       "base_hp": 150,
       "needs_water": false,
@@ -3714,102 +4880,141 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "tigerthresher",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "90"
+          "priority": "90",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "80"
+          "priority": "80",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "30"
+          "priority": "30",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "mudraptor_veteran",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 750,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Mudraptor_veteran",
+      "name_ru": "Грязевой раптор (ветеран)",
       "group": "mudraptor",
       "base_hp": 300,
       "needs_water": false,
@@ -3825,12 +5030,15 @@
         {
           "tag": "tigerthresher",
           "state": "Aggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Orangeboy",
+      "name_ru": "Оранжевый парень",
       "group": "human",
       "base_hp": 30,
       "needs_water": false,
@@ -3846,27 +5054,36 @@
         {
           "tag": "owner",
           "state": "Protect",
-          "priority": "100"
+          "priority": "100",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Follow",
-          "priority": "10"
+          "priority": "10",
+          "react": 200,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Peanut",
+      "name_ru": "Арахис",
       "group": "human",
       "base_hp": 30,
       "needs_water": false,
@@ -3882,22 +5099,29 @@
         {
           "tag": "human",
           "state": "Freeze",
-          "priority": "800"
+          "priority": "800",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Avoid",
-          "priority": "10"
+          "priority": "10",
+          "react": 1000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Portalguardian",
+      "name_ru": "Страж портала",
       "group": "ancientalien",
       "base_hp": 2000,
       "needs_water": false,
@@ -3913,37 +5137,50 @@
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Psilotoad",
+      "name_ru": "Псиложаба",
       "group": "human",
       "base_hp": 30,
       "needs_water": false,
@@ -3959,27 +5196,36 @@
         {
           "tag": "owner",
           "state": "Protect",
-          "priority": "100"
+          "priority": "100",
+          "react": 200,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Follow",
-          "priority": "10"
+          "priority": "10",
+          "react": 200,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Spineling",
+      "name_ru": "Шипостай",
       "group": "spineling",
       "base_hp": 50,
       "needs_water": true,
@@ -3995,72 +5241,99 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "PassiveAggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 1000
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 600,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "20"
+          "priority": "20",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "20"
+          "priority": "20",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "spineling_giant",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 2000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Spineling_giant",
+      "name_ru": "Гигантский шипостай",
       "group": "spineling",
       "base_hp": 500,
       "needs_water": true,
@@ -4076,67 +5349,92 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "PassiveAggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 1000
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 800,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 800,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "20"
+          "priority": "20",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "20"
+          "priority": "20",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Spineling_morbusine",
+      "name_ru": "Ядостай",
       "group": "spineling",
       "base_hp": 65,
       "needs_water": true,
@@ -4152,72 +5450,99 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "PassiveAggressive",
-          "priority": "100"
+          "priority": "100",
+          "react": 2000,
+          "attack": 1000
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 600,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "100"
+          "priority": "100",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Aggressive",
-          "priority": "20"
+          "priority": "20",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Aggressive",
-          "priority": "20"
+          "priority": "20",
+          "react": 1500,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "5"
+          "priority": "5",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "spineling_giant",
           "state": "Follow",
-          "priority": "1"
+          "priority": "1",
+          "react": 2000,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Swarmfeeder",
+      "name_ru": "Кормилец роя",
       "group": "ancientalien",
       "base_hp": 10,
       "needs_water": false,
@@ -4233,42 +5558,57 @@
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "husk",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Terminalcell",
+      "name_ru": "Терминальная клетка",
       "group": "thalamus",
       "base_hp": 10,
       "needs_water": true,
@@ -4284,32 +5624,43 @@
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "80"
+          "priority": "80",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "40"
+          "priority": "40",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Tigerthresher",
+      "name_ru": "Акулий тигр",
       "group": "thresher",
       "base_hp": 150,
       "needs_water": true,
@@ -4325,117 +5676,162 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "40"
+          "priority": "40",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "bonethresher",
           "state": "Protect",
-          "priority": "2"
+          "priority": "2",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Tigerthresher_hatchling",
+      "name_ru": "Акулий тигр (детёныш)",
       "group": "thresher",
       "base_hp": 75,
       "needs_water": false,
@@ -4451,117 +5847,162 @@
         {
           "tag": "decoy",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "provocative",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weapon",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "nasonov",
           "state": "Attack",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "tool",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "human",
           "state": "Attack",
-          "priority": "60"
+          "priority": "60",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "weaker",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "equal",
           "state": "Attack",
-          "priority": "50"
+          "priority": "50",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "stronger",
           "state": "Aggressive",
-          "priority": "50"
+          "priority": "50",
+          "react": 2000,
+          "attack": 0
         },
         {
           "tag": "leucocyte",
           "state": "Avoid",
-          "priority": "50"
+          "priority": "50",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "engine",
           "state": "Avoid",
-          "priority": "40"
+          "priority": "40",
+          "react": 500,
+          "attack": 0
         },
         {
           "tag": "dead",
           "state": "Eat",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "door",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "room",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "sonar",
           "state": "Attack",
-          "priority": "10"
+          "priority": "10",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "bonethresher",
           "state": "Protect",
-          "priority": "2"
+          "priority": "2",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "turret",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "searchlight",
           "state": "Attack",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "watcher",
           "state": "Protect",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "monsterfood",
           "state": "Eat",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 0
         },
         {
           "tag": "terminalcell",
           "state": "Idle",
-          "priority": "0"
+          "priority": "0",
+          "react": 0,
+          "attack": 0
         }
       ]
     },
     {
       "id": "Watcher",
+      "name_ru": "Смотритель",
       "group": "watcheroid",
       "base_hp": 500,
       "needs_water": true,
@@ -4577,42 +6018,58 @@
         {
           "tag": "weapon",
           "state": "Avoid",
-          "priority": "500"
+          "priority": "500",
+          "react": 3000,
+          "attack": 0
         },
         {
           "tag": "decoy",
           "state": "Observe",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 1000
         },
         {
           "tag": "provocative",
           "state": "Observe",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 1000
         },
         {
           "tag": "light",
           "state": "Observe",
-          "priority": "100"
+          "priority": "100",
+          "react": 0,
+          "attack": 1000
         },
         {
           "tag": "human",
           "state": "Observe",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 1000
         },
         {
           "tag": "weaker",
           "state": "Observe",
-          "priority": "20"
+          "priority": "20",
+          "react": 0,
+          "attack": 1000
         },
         {
           "tag": "stronger",
           "state": "Observe",
-          "priority": "20"
+          "priority": "20",
+          "react": 1000,
+          "attack": 0
         },
         {
           "tag": "wall",
           "state": "Observe",
-          "priority": "1"
+          "priority": "1",
+          "react": 0,
+          "attack": 1500
         }
       ]
     }
