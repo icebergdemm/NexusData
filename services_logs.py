@@ -608,6 +608,12 @@ _tls = threading.local()
 def _ensure_storage_dir():
     os.makedirs(LOG_STORAGE_DIR, exist_ok=True)
     os.makedirs(LOG_RAW_DIR, exist_ok=True)
+    # SQLite VACUUM may need a temporary copy close to the database size.
+    # The container's /tmp is intentionally tiny, so keep SQLite temp files
+    # beside the log database where the storage quota is actually available.
+    sqlite_temp_dir = os.environ.get("SQLITE_TMPDIR") or os.path.abspath(LOG_STORAGE_DIR)
+    os.makedirs(sqlite_temp_dir, exist_ok=True)
+    os.environ["SQLITE_TMPDIR"] = sqlite_temp_dir
 
 
 def _get_conn() -> sqlite3.Connection:

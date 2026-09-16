@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import func, or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -186,24 +186,15 @@ def _voiceprint_monitor_payload(db: Session) -> dict[str, Any]:
     signatures = db.query(VoiceProfileSignature).filter(
         VoiceProfileSignature.algorithm == ONNX_VOICEPRINT_ALGORITHM,
     ).all()
-    ready_replays = db.query(RoundReplay).filter(
+    queued_replays = db.query(RoundReplay).filter(
         _nwdemo_replay_filter(),
         RoundReplay.voice_profile_state == "ready",
-    ).all()
-    replay_ids_with_clips = {
-        int(row[0])
-        for row in db.query(VoiceProfileClip.source_replay_id).filter(
+        RoundReplay.voiceprint_processed_at.is_(None),
+        exists().where(
+            VoiceProfileClip.source_replay_id == RoundReplay.id,
             VoiceProfileClip.source_format == "nwdemo-v2",
-            VoiceProfileClip.source_replay_id.isnot(None),
-        ).distinct()
-    }
-
-
-    replay_ids_with_fingerprints = {int(row.replay_id) for row in fingerprints}
-    queued_replays = [
-        replay for replay in ready_replays
-        if replay.id in replay_ids_with_clips and replay.id not in replay_ids_with_fingerprints
-    ]
+        ),
+    ).all()
     recent_errors = db.query(RoundReplay).filter(
         _nwdemo_replay_filter(),
         RoundReplay.voice_profile_error.like("voiceprint:%"),
