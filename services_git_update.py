@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -81,6 +82,45 @@ def _run(cmd: List[str], cwd: str, timeout: int, env: Optional[Dict[str, str]] =
         return 127, f"Команда не найдена: {cmd[0]}"
     except subprocess.TimeoutExpired:
         return 124, f"Превышено время ожидания ({timeout} с): {_redact(' '.join(cmd))}"
+
+
+def _install_runtime_requirements(emit: Callable[[str], None], path: str) -> bool:
+    """Install the Python runtime from the repository before restarting it.
+
+    Pterodactyl runs ``update`` through this module rather than the standalone
+    deploy script.  Without this step a requirements change reaches the disk,
+    the process restarts, and optional features quietly keep running without
+    their newly declared packages.  That is exactly how ONNX ended up in
+    rules-only mode while ``requirements.txt`` already listed tokenizers.
+    """
+    requirements = os.path.join(path, "requirements.txt")
+    if not os.path.isfile(requirements):
+        emit("! requirements.txt не найден — Python-зависимости не обновлены.")
+        return False
+
+    emit("→ Устанавливаю Python-зависимости из requirements.txt…")
+    code, out = _run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "-r",
+            requirements,
+        ],
+        path,
+        _BUILD_TIMEOUT,
+        env=_base_env(),
+    )
+    for line in out.splitlines()[-40:]:
+        emit(f"    {line}")
+    if code != 0:
+        emit("✗ Python-зависимости не установились — backend будет перезапущен, но часть функций останется degraded.")
+        return False
+    emit("✓ Python-зависимости обновлены.")
+    return True
 
 
 # ── Доступ к приватному репозиторию ──────────────────────────────────────────
@@ -413,7 +453,14 @@ def run_update(emit: Callable[[str], None], force_restart: Optional[bool] = None
         line.startswith("frontend/") for line in changed_files.splitlines()
     )
 
-    return _finish(emit, path, frontend_touched, force_restart)
+    requirements_touched = "requirements.txt" in changed_files.splitlines()
+    return _finish(
+        emit,
+        path,
+        frontend_touched,
+        force_restart,
+        requirements_touched=requirements_touched,
+    )
 
 
 def _resolve_npm() -> Tuple[Optional[str], List[str]]:
@@ -577,7 +624,7 @@ def _warn_if_stale_build(emit: Callable[[str], None], path: str, dist: str) -> N
 
 def _finish(
     emit: Callable[[str], None], path: str, frontend_touched: bool,
-    force_restart: Optional[bool],
+    force_restart: Optional[bool], requirements_touched: bool = False,
 ) -> bool:
     """Общий хвост обновления и разворачивания: пересборка фронтенда и
     перезапуск backend.
@@ -589,7 +636,11 @@ def _finish(
     готовой сборкой. У фронтенда и бэкенда разное время жизни изменений —
     первый можно донастроить отдельно, второй ждать не должен."""
     settings = get_settings()
+    dependencies_ok = True
     frontend_ok = True
+
+    if requirements_touched:
+        dependencies_ok = _install_runtime_requirements(emit, path)
 
     if frontend_touched and settings.git_update_build_frontend:
         frontend_dir = os.path.join(path, "frontend")
@@ -639,13 +690,15 @@ def _finish(
         emit("! Backend не перезапущен — изменения в Python-коде вступят в силу")
         emit("  после команды `backend restart`.")
 
-    if frontend_ok:
+    if dependencies_ok and frontend_ok:
         emit("✓ Обновление завершено.")
+    elif not dependencies_ok and restart:
+        emit("! Обновление завершено НЕ полностью: Python-зависимости не установились, backend перезапущен (см. выше).")
     elif restart:
         emit("! Обновление завершено НЕ полностью: backend перезапущен, фронтенд — нет (см. выше).")
     else:
         emit("! Обновление завершено НЕ полностью: фронтенд не собран (см. выше), backend не перезапускался.")
-    return frontend_ok
+    return dependencies_ok and frontend_ok
 
 
 def run_bootstrap(emit: Callable[[str], None], force_restart: Optional[bool] = None) -> bool:
@@ -748,7 +801,13 @@ def run_bootstrap(emit: Callable[[str], None], force_restart: Optional[bool] = N
     emit(f"Стало:   {current_revision(path)}")
     emit("✓ Репозиторий развёрнут. Дальше достаточно обычного `update`.")
 
-    return _finish(emit, path, frontend_touched=True, force_restart=force_restart)
+    return _finish(
+        emit,
+        path,
+        frontend_touched=True,
+        force_restart=force_restart,
+        requirements_touched=True,
+    )
 
 
 def _restart_backend(emit: Callable[[str], None]) -> None:
