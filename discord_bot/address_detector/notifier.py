@@ -182,19 +182,29 @@ class DiscordNotifier:
             Verdict.LIKELY_VIOLATION: "Вероятное нарушение",
             Verdict.CLEAN: "Чисто",
         }[result.verdict]
-        embed = discord.Embed(title="Возможное нарушение формы общения", color=0xD64545)
+        embed = discord.Embed(title=f"Возможное нарушение формы общения — {label}", url=context.jump_url or None, color=0xD64545)
+        quote = _clip(_safe(context.raw_content), 600) or "(сообщение без текста)"
+        if context.jump_url:
+            embed.description = f"[Открыть исходное сообщение]({context.jump_url})\n> {quote}"
+        else:
+            embed.description = f"> {quote}"
         embed.add_field(name="Участник", value=_clip(_safe(context.author_display_name), 256), inline=True)
         embed.add_field(name="Discord ID", value=str(context.author_id), inline=True)
         embed.add_field(name="Канал", value=f"<#{context.channel_id}>" if context.channel_id else "-", inline=True)
         embed.add_field(name="Результат", value=label, inline=True)
         embed.add_field(name="Сработало", value=_clip(", ".join(context.trigger_tokens), 1024), inline=True)
-        embed.add_field(name="Сообщение", value=_clip(f"> {_safe(context.raw_content)}", 1024), inline=False)
         lines = []
+        current_message_id = str(context.message_id)
         for signal in reversed(incident.get("signals", [])):
+            if str(signal.get("message_id")) == current_message_id:
+                continue
             message_text = _safe(signal["raw_content"])
             lines.append(f"> {message_text} ([перейти]({signal['jump_url']}))" if signal.get("jump_url") else f"> {message_text}")
-        if incident.get("message_count", 0) > len(lines):
-            lines.append(f"+ ещё {incident['message_count'] - len(lines)} сообщений")
-        embed.add_field(name="Контекст incident", value=_clip("\n".join(lines) or "нет", 1024), inline=False)
+            if len(lines) >= 3:
+                break
+        omitted = max(0, int(incident.get("message_count", 0)) - 1 - len(lines))
+        if omitted:
+            lines.append(f"+ ещё {omitted} сообщений")
+        embed.add_field(name="Контекст incident", value=_clip("\n".join(lines) or "нет предыдущих сообщений", 1024), inline=False)
         embed.set_footer(text=f"Автоматический сигнал. Не является взысканием. classifier={result.classifier_version} confidence={result.confidence}")
         return embed

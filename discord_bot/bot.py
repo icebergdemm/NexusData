@@ -83,12 +83,27 @@ bot = commands.Bot(
 )
 
 _address_detector_runtime = None
+_address_detector_startup_events: list[dict] = []
+
+
+def _address_detector_startup_event(event: str, detail: str | None = None) -> None:
+    count = sum(1 for item in _address_detector_startup_events if item["event"] == event) + 1
+    record = {
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "event": event,
+        "count": count,
+    }
+    if detail:
+        record["detail"] = detail
+    _address_detector_startup_events.append(record)
+    logger.info("address_detector startup_event=%s detail=%s", event, detail or "-")
 
 
 async def _configure_address_detector(db_config: dict | None = None) -> None:
     """Load, validate and start the detector without affecting bot startup."""
 
-    global _address_detector_runtime
+    global _address_detector_runtime, _address_detector_startup_events
+    _address_detector_startup_events = []
     if _address_detector_runtime is not None:
         await _address_detector_runtime.stop()
         _address_detector_runtime = None
@@ -104,12 +119,15 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
         detector_config = load_detector_config(settings, db_config or {})
     except ValueError as exc:
         logger.error("address_detector invalid_config error=%s", exc)
+        _address_detector_startup_event("startup_validation_error", str(exc))
         return
     if not detector_config.enabled:
         logger.info("address_detector disabled")
+        _address_detector_startup_event("detector_disabled", "переключатель выключен")
         return
     if not detector_config.monitored_channel_ids:
         logger.warning("address_detector disabled: monitored_channel_ids whitelist is empty")
+        _address_detector_startup_event("detector_disabled", "whitelist каналов пуст")
         return
 
     store = AddressDetectorStore()
@@ -118,8 +136,10 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
     for error in validation_errors:
         level = logging.WARNING if "emoji" in error else logging.ERROR
         logger.log(level, "address_detector startup_validation error=%s", error)
+        _address_detector_startup_event("startup_validation_error", error)
     if not ready:
         logger.error("address_detector disabled: startup validation failed")
+        _address_detector_startup_event("detector_disabled", "startup validation failed")
         return
 
     runtime = AddressDetectorRuntime(
@@ -142,6 +162,7 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
     )
     await runtime.start()
     _address_detector_runtime = runtime
+    _address_detector_startup_event("detector_started", f"channels={len(detector_config.monitored_channel_ids)}")
     logger.info(
         "address_detector started channels=%s mode=%s workers=%s",
         len(detector_config.monitored_channel_ids),
@@ -153,12 +174,14 @@ async def _configure_address_detector(db_config: dict | None = None) -> None:
 def get_address_detector_status() -> dict:
     runtime = _address_detector_runtime
     if runtime is None:
-        return {"active": False, "queue_depth": 0, "events": []}
+        return {"active": False, "queue_depth": 0, "events": list(_address_detector_startup_events)}
+    runtime_status = runtime.status()
     return {
         "active": True,
         "queue_depth": runtime.service.queue.qsize(),
         "queue_capacity": runtime.service.queue.maxsize,
-        **runtime.status(),
+        "events": [*_address_detector_startup_events, *runtime_status.get("events", [])],
+        "counters": runtime_status.get("counters", {}),
     }
 
 
@@ -1373,6 +1396,8 @@ def _serialize_message(msg: discord.Message) -> dict:
 
 
 def _viewer_channel_type(channel) -> Optional[str]:
+    if isinstance(channel, discord.Thread):
+        return "thread"
     if isinstance(channel, discord.TextChannel):
         return "text"
     if isinstance(channel, VocalGuildChannel):
@@ -1388,7 +1413,13 @@ async def viewer_get_tree() -> dict:
     guild = _viewer_guild()
     me = guild.me
     channels = []
-    for ch in guild.channels:
+    channel_objects = list(guild.channels)
+    channel_ids = {int(getattr(ch, "id", 0)) for ch in channel_objects}
+    channel_objects.extend(
+        thread for thread in getattr(guild, "threads", ())
+        if not getattr(thread, "archived", False) and int(getattr(thread, "id", 0)) not in channel_ids
+    )
+    for ch in channel_objects:
         channel_type = _viewer_channel_type(ch)
         if channel_type is None:
             continue
@@ -1396,9 +1427,11 @@ async def viewer_get_tree() -> dict:
         if not perms.view_channel:
             continue
         channels.append({
-            "id": str(ch.id), "name": ch.name, "position": ch.position,
+            "id": str(ch.id), "name": ch.name,
+            "position": getattr(ch, "position", getattr(getattr(ch, "parent", None), "position", 0)),
             "can_send": perms.send_messages,
-            "category_id": str(ch.category_id) if ch.category_id else None,
+            "category_id": str(getattr(ch, "category_id", None) or getattr(getattr(ch, "parent", None), "category_id", None) or "") or None,
+            "parent_id": str(getattr(ch, "parent_id", None)) if getattr(ch, "parent_id", None) else None,
             "type": channel_type,
         })
     categories = [{"id": str(c.id), "name": c.name, "position": c.position} for c in guild.categories]
