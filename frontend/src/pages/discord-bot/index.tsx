@@ -16,6 +16,7 @@ import { PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { DiscordViewerTab } from "./viewer"
+import { AddressDetectorTab } from "./detector"
 
 const KNOWN_KEYS: { key: string; label: string }[] = [
   { key: "forward_channel_id", label: "Пересылка сообщений" },
@@ -43,6 +44,20 @@ interface DiscordBotResponse {
   failed_role_syncs: FailedRoleSync[]
   can_edit: boolean
   can_manage_config: boolean
+  address_detector?: {
+    known_keys: string[]
+    effective: {
+      enabled: boolean
+      monitored_channel_count: number
+      signals_channel_configured: boolean
+      moderator_role_configured: boolean
+      emoji_configured: boolean
+      analyzer_mode: string
+      model_configured: boolean
+    } | null
+    config_error: string | null
+    runtime: { active: boolean; queue_depth: number; queue_capacity?: number; counters?: Record<string, number> }
+  }
 }
 
 interface RoleSyncRow {
@@ -419,9 +434,13 @@ export function DiscordBotPage() {
         <TabsList className="mb-4">
           <TabsTrigger value="settings"><Settings className="size-3.5" /> Настройки</TabsTrigger>
           <TabsTrigger value="viewer"><MessageSquare className="size-3.5" /> Чат и участники</TabsTrigger>
+          <TabsTrigger value="address-detector"><Bot className="size-3.5" /> Детектор обращений</TabsTrigger>
         </TabsList>
         <TabsContent value="viewer">
           <DiscordViewerTab />
+        </TabsContent>
+        <TabsContent value="address-detector">
+          <AddressDetectorTab data={data} onSave={(key, value) => setConfig.mutate({ key, value })} />
         </TabsContent>
         <TabsContent value="settings">
       <div className="space-y-4">

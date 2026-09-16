@@ -602,6 +602,57 @@ class DiscordBotConfig(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class AddressDetectorIncident(Base):
+    """Durable aggregation window for address-detector moderator signals."""
+
+    __tablename__ = "discord_address_detector_incidents"
+    __table_args__ = (
+        Index("ix_address_detector_incident_scope", "guild_id", "channel_id", "author_id", "last_seen_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    guild_id = Column(String(25), nullable=False)
+    channel_id = Column(String(25), nullable=False)
+    author_id = Column(String(25), nullable=False)
+    started_at = Column(DateTime, nullable=False, default=func.now())
+    last_seen_at = Column(DateTime, nullable=False, default=func.now(), index=True)
+    message_ids = Column(JSON, nullable=False, default=list)
+    message_count = Column(Integer, nullable=False, default=0)
+    admin_message_id = Column(String(25), nullable=True)
+    moderator_pinged = Column(Boolean, nullable=False, default=False)
+
+
+class AddressDetectorSignal(Base):
+    """One unique Discord message processed by the address detector."""
+
+    __tablename__ = "discord_address_detector_signals"
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_address_detector_signal_message"),
+        Index("ix_address_detector_signal_incident", "incident_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(String(25), nullable=False)
+    guild_id = Column(String(25), nullable=False)
+    channel_id = Column(String(25), nullable=False)
+    author_id = Column(String(25), nullable=False)
+    author_display_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+    raw_content = Column(Text, nullable=False, default="")
+    cleaned_content = Column(Text, nullable=False, default="")
+    matched_tokens = Column(JSON, nullable=False, default=list)
+    context_snapshot = Column(JSON, nullable=True)
+    classification = Column(String(32), nullable=True)
+    confidence = Column(Float, nullable=True)
+    classifier_version = Column(String(255), nullable=True)
+    incident_id = Column(Integer, ForeignKey("discord_address_detector_incidents.id"), nullable=True)
+    admin_message_id = Column(String(25), nullable=True)
+    processing_status = Column(String(32), nullable=False, default="queued")
+    status_note = Column(Text, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
+
+
 class DiscordAntiRaidLog(Base):
     """Anti-raid event log."""
     __tablename__ = "discord_antiraid_log"
