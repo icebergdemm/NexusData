@@ -18,6 +18,7 @@ _TRIGGER_WORDS = (
     "твоего",
     "твоей",
     "твоему",
+    "твоем",
     "твоим",
     "твоих",
     "твою",
@@ -27,7 +28,7 @@ _TRIGGER_RE = re.compile(r"(?<!\w)(?:" + "|".join(_TRIGGER_WORDS) + r")(?!\w)", 
 _FENCED_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
 _INLINE_CODE_RE = re.compile(r"`[^`\r\n]*`", re.MULTILINE)
 _MARKDOWN_URL_RE = re.compile(r"\[[^\]\r\n]*\]\(\s*(?:https?://|discord(?:app)?://)[^\s)]+\s*\)", re.IGNORECASE)
-_URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
+_URL_RE = re.compile(r"(?:https?://|www\.|discord\.gg/|discord(?:app)?\.com/invite/)[^\s<>]+", re.IGNORECASE)
 _META_EXAMPLE_RE = re.compile(
     r"(?:пример\s+обращения|правил\w*\s+запреща\w*\s+обраща|в\s+русском\s+язык\w*\s+местоимени)",
     re.IGNORECASE,
@@ -49,6 +50,7 @@ def _remove_ignored_regions(text: str) -> str:
     text = _INLINE_CODE_RE.sub(" ", text)
     text = _MARKDOWN_URL_RE.sub(" ", text)
     text = _URL_RE.sub(" ", text)
+    text = re.sub(r"^\s*>>>[\s\S]*$", " ", text, flags=re.MULTILINE)
     return re.sub(r"^\s*>.*$", " ", text, flags=re.MULTILINE)
 
 

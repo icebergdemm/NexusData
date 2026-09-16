@@ -29,7 +29,7 @@ KNOWN_KEYS = (
 
 
 def _raw(settings: object, overrides: Mapping[str, object], key: str, default: object) -> object:
-    if key in overrides and overrides[key] not in (None, ""):
+    if key in overrides and overrides[key] is not None:
         return overrides[key]
     return getattr(settings, key, default)
 

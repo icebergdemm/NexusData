@@ -4471,7 +4471,9 @@ async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
         return
     if _address_detector_runtime is not None:
         try:
-            edited_message = getattr(payload, "cached_message", None)
+            edited_message = getattr(payload, "message", None)
+            if edited_message is None:
+                edited_message = getattr(payload, "cached_message", None)
             if edited_message is None:
                 channel = bot.get_channel(payload.channel_id)
                 if channel is not None:

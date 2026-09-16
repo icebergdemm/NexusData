@@ -43,6 +43,15 @@ def test_find_triggers_ignores_non_addressing_text(content: str) -> None:
     assert find_triggers(content).tokens == []
 
 
+def test_find_triggers_covers_unaccented_possessive_form_and_multiline_quotes() -> None:
+    assert find_triggers("это в твоем сообщении").tokens == ["твоем"]
+    assert find_triggers(">>> цитата\nты внутри цитаты").tokens == []
+
+
+def test_find_triggers_ignores_bare_discord_invite_urls() -> None:
+    assert find_triggers("discord.gg/ты").tokens == []
+
+
 def _message(**kwargs):
     author = kwargs.pop("author", SimpleNamespace(bot=False))
     channel = kwargs.pop("channel", SimpleNamespace(id=10, category_id=None))

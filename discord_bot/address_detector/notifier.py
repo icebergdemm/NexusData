@@ -106,7 +106,7 @@ class DiscordNotifier:
                 for permission in ("view_channel", "read_message_history", "add_reactions"):
                     if not getattr(permissions, permission, False):
                         errors.append(f"monitored channel {channel_id} missing permission: {permission}")
-        fatal = any("signals channel" in error or "moderator role" in error or "Message Content" in error for error in errors)
+        fatal = any("emoji" not in error.lower() for error in errors)
         return not fatal, errors
 
     async def send_signal(self, context: AddressContext, result: AnalysisResult, record: AnalysisRecord) -> None:
@@ -133,6 +133,7 @@ class DiscordNotifier:
             try:
                 admin_message = await target.fetch_message(int(existing_id))
                 await admin_message.edit(embed=embed, allowed_mentions=allowed_mentions)
+                await asyncio.to_thread(self.store.set_admin_message_id, context.message_id, int(existing_id))
                 return
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 logger.warning("address_detector incident_message_unavailable incident_id=%s", record.incident_id)

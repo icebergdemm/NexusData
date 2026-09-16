@@ -58,3 +58,13 @@ def test_detector_config_defaults_to_disabled_without_whitelist() -> None:
 
     assert config.enabled is False
     assert config.monitored_channel_ids == set()
+
+
+def test_empty_db_override_can_clear_env_whitelist() -> None:
+    config = load_detector_config(
+        settings(monitored_channel_ids="10", moderation_signals_channel_id="20"),
+        {"monitored_channel_ids": "", "moderation_signals_channel_id": ""},
+    )
+
+    assert config.monitored_channel_ids == set()
+    assert config.signals_channel_id == ""

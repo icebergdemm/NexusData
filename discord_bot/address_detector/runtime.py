@@ -65,6 +65,7 @@ class AddressDetectorRuntime:
         self.on_edit_clean = on_edit_clean
         self.on_delete = on_delete
         self.metrics: Counter[str] = Counter()
+        self._classification_lock = asyncio.Lock()
         self.service = AddressDetectorService(
             self.context_analyzer,
             reactions,
@@ -130,12 +131,13 @@ class AddressDetectorRuntime:
         if context is None:
             logger.error("address_detector missing_context message_id=%s", message_id)
             return
-        record = await asyncio.to_thread(
-            self.store.record_analysis,
-            context,
-            result,
-            self.config.incident_window_seconds,
-        )
+        async with self._classification_lock:
+            record = await asyncio.to_thread(
+                self.store.record_analysis,
+                context,
+                result,
+                self.config.incident_window_seconds,
+            )
         self._event({
             Verdict.CLEAN: "analysis_clean",
             Verdict.UNCERTAIN: "analysis_uncertain",
