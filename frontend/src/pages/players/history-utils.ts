@@ -71,6 +71,22 @@ export function sortKillRows(rows: KillRow[]): KillRow[] {
   return [...rows].sort((a, b) => b.kills_count - a.kills_count || a.id - b.id)
 }
 
+export interface TelemetrySummary {
+  totalMonsterKills: number
+  monsterTypes: number
+  roles: number
+  actionRecords: number
+}
+
+export function getTelemetrySummary(kills: KillRow[], actions: RoleActionRow[]): TelemetrySummary {
+  return {
+    totalMonsterKills: kills.reduce((total, kill) => total + kill.kills_count, 0),
+    monsterTypes: new Set(kills.map((kill) => kill.monster_type)).size,
+    roles: new Set(actions.map((action) => action.role)).size,
+    actionRecords: actions.length,
+  }
+}
+
 export interface RoleActionGroup {
   role: string
   actions: RoleActionRow[]

@@ -3,6 +3,7 @@ import test from "node:test"
 import type { IpRow, KillRow, NameRow, RoleActionRow, SessionRow } from "../src/pages/players/detail-types"
 import {
   getActivitySummary,
+  getTelemetrySummary,
   groupRoleActions,
   isSessionActive,
   sortIpRows,
@@ -70,6 +71,25 @@ test("monster kills are sorted from the most frequent to the least frequent", ()
   ]
 
   assert.deepEqual(sortKillRows(kills).map((row) => row.monster_type), ["crawler", "husk"])
+})
+
+test("telemetry summary keeps raw identifiers out of the primary metrics", () => {
+  const kills: KillRow[] = [
+    { id: 1, monster_type: "husk", kills_count: 2 },
+    { id: 2, monster_type: "crawler", kills_count: 8 },
+  ]
+  const actions: RoleActionRow[] = [
+    { id: 1, role: "mechanic", action_type: "repair_hull", value: 4 },
+    { id: 2, role: "engineer", action_type: "operate_reactor", value: 10 },
+    { id: 3, role: "mechanic", action_type: "repair_device", value: 9 },
+  ]
+
+  assert.deepEqual(getTelemetrySummary(kills, actions), {
+    totalMonsterKills: 10,
+    monsterTypes: 2,
+    roles: 2,
+    actionRecords: 3,
+  })
 })
 
 test("role actions are grouped by role and sorted by value inside each group", () => {
