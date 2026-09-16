@@ -583,6 +583,8 @@ LOG_DB_PATH = os.path.join(LOG_STORAGE_DIR, "logs.db")
 _log_cache_lock = threading.Lock()
 _log_worker_running = False
 _log_refresh_interval = 60  # 1 minute
+_sqlite_temp_dir_lock = threading.Lock()
+_sqlite_temp_dir_path = None
 
 # До 17.08.2026 англоязычный автокик по рассинхронизации не имел своего
 # ACTION_PATTERN. Если причина содержала двоеточие (обычно ``Events queued:
@@ -620,13 +622,18 @@ def _ensure_storage_dir():
 
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local SQLite connection with sane pragmas."""
+    global _sqlite_temp_dir_path
     conn = getattr(_tls, "conn", None)
     if conn is not None:
         return conn
     _ensure_storage_dir()
     conn = sqlite3.connect(LOG_DB_PATH, timeout=30, check_same_thread=False)
-    sqlite_temp_dir = os.environ["SQLITE_TMPDIR"].replace("'", "''")
-    conn.execute(f"PRAGMA temp_store_directory='{sqlite_temp_dir}'")
+    sqlite_temp_dir = os.path.abspath(os.environ["SQLITE_TMPDIR"])
+    with _sqlite_temp_dir_lock:
+        if _sqlite_temp_dir_path != sqlite_temp_dir:
+            escaped_temp_dir = sqlite_temp_dir.replace("'", "''")
+            conn.execute(f"PRAGMA temp_store_directory='{escaped_temp_dir}'")
+            _sqlite_temp_dir_path = sqlite_temp_dir
     # SQLite's built-in LOWER/LIKE only folds ASCII. Register Unicode
     # casefolding for the correctness fallback used while the FTS backfill is
     # still running: a Russian query such as ``физ`` must match
