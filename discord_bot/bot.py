@@ -851,42 +851,37 @@ def _save_round_status_ids(ids: dict):
 
 
 _round_status_message_ids = _load_round_status_ids()
+_round_status_locks: dict[str, asyncio.Lock] = {}
+_round_status_debounce_tasks: dict[str, asyncio.Task] = {}
+_ROUND_STATUS_DEBOUNCE_SECONDS = 0.75
 
 
-def _format_shuttle_eta(shuttle_arrival_at: str) -> str:
-    """shuttle_arrival_at is an ISO8601 UTC timestamp (suffixed 'Z') or None."""
-    if not shuttle_arrival_at:
-        return "-"
+def _format_discord_timestamp(value: str, empty_value: str) -> str:
+    """Format a stored absolute timestamp as a Discord client-side relative time."""
+    if not value:
+        return empty_value
     try:
-        arrival = datetime.fromisoformat(shuttle_arrival_at[:-1] if shuttle_arrival_at.endswith("Z") else shuttle_arrival_at)
-    except ValueError:
-        return "-"
-    remaining = (arrival - datetime.utcnow()).total_seconds()
-    arrival_msk = f"{format_msk_time(arrival)} МСК"
-    if remaining <= 0:
-        return f"В секторе... ({arrival_msk})"
-    minutes, seconds = divmod(int(remaining), 60)
-    countdown = f"через {minutes} мин {seconds:02d} сек" if minutes else f"через {seconds} сек"
-    return f"{countdown} ({arrival_msk})"
+        timestamp = datetime.fromisoformat(value[:-1] if value.endswith("Z") else value)
+    except (AttributeError, TypeError, ValueError):
+        return empty_value
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return f"<t:{int(timestamp.timestamp())}:R>"
 
 
-def _format_round_duration(started_at: str) -> str:
-    if not started_at:
-        return "—"
-    try:
-        started = datetime.fromisoformat(started_at[:-1] if started_at.endswith("Z") else started_at)
-    except ValueError:
-        return "—"
+def _round_status_embed_signature(embed) -> tuple:
+    return (
+        embed.title,
+        embed.description,
+        embed.color.value if embed.color else None,
+        tuple((field.name, field.value, bool(field.inline)) for field in embed.fields),
+        getattr(embed.footer, "text", None),
+    )
 
-    now = datetime.now(started.tzinfo) if started.tzinfo else datetime.utcnow()
-    total_minutes = max(0, int((now - started).total_seconds() // 60))
-    days, minutes = divmod(total_minutes, 24 * 60)
-    hours, minutes = divmod(minutes, 60)
-    if days:
-        return f"{days} д {hours} ч {minutes:02d} мин"
-    if hours:
-        return f"{hours} ч {minutes:02d} мин"
-    return f"{minutes} мин"
+
+def _round_status_lock(server_name: str) -> asyncio.Lock:
+    key = server_name.strip().upper()
+    return _round_status_locks.setdefault(key, asyncio.Lock())
 
 
 async def refresh_round_status_embed(server_name: str):
@@ -929,10 +924,10 @@ async def refresh_round_status_embed(server_name: str):
             else:
                 captain_names.append(captain.get("name") or "Неизвестный капитан")
         captain_value = ", ".join(captain_names) or "Капитан не найден"
-        duration_value = _format_round_duration(status.get("started_at"))
+        round_value = _format_discord_timestamp(status.get("started_at"), "—")
     else:
         captain_value = "—"
-        duration_value = "—"
+        round_value = "—"
 
     embed = discord.Embed(title=title, color=color)
     embed.add_field(name="📍 Локация", value=status.get("location") or "-", inline=True)
@@ -942,34 +937,59 @@ async def refresh_round_status_embed(server_name: str):
     embed.add_field(name="👤 Капитан", value=captain_value, inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(name="👥 Кол-во экипажа", value=str(status.get("player_count", 0)), inline=True)
-    embed.add_field(name="⏱️ Длительность", value=duration_value, inline=True)
-    embed.add_field(name="🚀 Челнок снабжения", value=_format_shuttle_eta(status.get("shuttle_arrival_at")), inline=False)
-    embed.set_footer(text=f"Сделано за сухарики | Обновлено {format_msk(datetime.utcnow())} МСК")
+    embed.add_field(name="⏱️ Раунд идёт", value=round_value, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="🚀 Челнок снабжения",
+        value=_format_discord_timestamp(status.get("shuttle_arrival_at"), "-"),
+        inline=False,
+    )
+    embed.set_footer(text="Сделано за сухарики")
 
-    msg_id = _round_status_message_ids.get(server_name)
-    if msg_id:
+    async with _round_status_lock(server_name):
+        msg_id = _round_status_message_ids.get(server_name)
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+                existing_embed = msg.embeds[0] if msg.embeds else None
+                if existing_embed is not None and _round_status_embed_signature(existing_embed) == _round_status_embed_signature(embed):
+                    return
+                await msg.edit(embed=embed)
+                return
+            except discord.NotFound:
+                pass  # сообщение реально удалено — заведём новое ниже
+            except discord.HTTPException as e:
+                # Временная неполадка Discord (лимит запросов, 5xx на fetch) —
+                # пропускаем цикл с тем же сохранённым message_id.
+                logger.warning(f"Не удалось обновить статус раунда {server_name}, попробуем через минуту: {e}")
+                return
+
         try:
-            msg = await channel.fetch_message(int(msg_id))
-            await msg.edit(embed=embed)
-            return
-        except discord.NotFound:
-            pass  # сообщение реально удалено — заведём новое ниже
-        except discord.HTTPException as e:
-            # Временная неполадка Discord (лимит запросов, 5xx на fetch) —
-            # раньше это тоже трактовалось как «сообщения больше нет» и
-            # каждую минуту при таком сбое в канал улетала лишняя копия
-            # статуса раунда, а старая молча оставалась висеть. Здесь просто
-            # пропускаем цикл — round_status_task вызовет эту функцию снова
-            # через минуту с тем же message_id.
-            logger.warning(f"Не удалось обновить статус раунда {server_name}, попробуем через минуту: {e}")
-            return
+            msg = await channel.send(embed=embed)
+            _round_status_message_ids[server_name] = msg.id
+            _save_round_status_ids(_round_status_message_ids)
+        except Exception as e:
+            logger.error(f"Failed to send round status embed for {server_name}: {e}")
 
+
+async def _debounced_round_status_refresh(server_name: str):
+    key = server_name.strip().upper()
+    current_task = asyncio.current_task()
+    existing_task = _round_status_debounce_tasks.get(key)
+    if existing_task is not None and existing_task is not current_task and not existing_task.done():
+        return
+    _round_status_debounce_tasks[key] = current_task
     try:
-        msg = await channel.send(embed=embed)
-        _round_status_message_ids[server_name] = msg.id
-        _save_round_status_ids(_round_status_message_ids)
-    except Exception as e:
-        logger.error(f"Failed to send round status embed for {server_name}: {e}")
+        await asyncio.sleep(_ROUND_STATUS_DEBOUNCE_SECONDS)
+        await refresh_round_status_embed(server_name)
+    finally:
+        if _round_status_debounce_tasks.get(key) is current_task:
+            _round_status_debounce_tasks.pop(key, None)
+
+
+def queue_round_status_refresh(server_name: str):
+    if server_name:
+        return schedule(_debounced_round_status_refresh(server_name), f"round status refresh {server_name}")
 
 
 @tasks.loop(minutes=1)

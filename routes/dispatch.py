@@ -386,7 +386,7 @@ def _queue_round_status_refresh(db, server_name: Optional[str]):
     if not server_name:
         return
     from discord_bot import bot as discord_bot
-    discord_bot.schedule(discord_bot.execute_bot_action("refresh_round_status", {"server_name": server_name}))
+    discord_bot.queue_round_status_refresh(server_name)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
