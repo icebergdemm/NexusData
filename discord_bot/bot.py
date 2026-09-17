@@ -951,7 +951,7 @@ async def refresh_round_status_embed(server_name: str):
     embed.add_field(name="👤 Капитан", value=captain_value, inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(name="👥 Кол-во экипажа", value=str(status.get("player_count", 0)), inline=True)
-    embed.add_field(name="⏱️ Раунд идёт", value=round_value, inline=True)
+    embed.add_field(name="⏱️ Раунд начался", value=round_value, inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="🚀 Челнок снабжения",
