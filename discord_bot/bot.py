@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -927,12 +928,17 @@ async def refresh_round_status_embed(server_name: str):
                 captain_names.append(f"<@{captain['discord_id']}>")
             else:
                 captain_names.append(captain.get("name") or "Неизвестный капитан")
-        captain_value = ", ".join(captain_names) or "Капитан не найден"
-        round_value = _format_discord_timestamp(
-            status.get("started_at"),
-            "—",
-            timezone(MSK_OFFSET),
+        started_at_unix = status.get("started_at_unix")
+        round_value = (
+            f"<t:{int(started_at_unix)}:R>"
+            if started_at_unix is not None else "—"
         )
+        if captain_names:
+            captain_value = ", ".join(captain_names)
+        elif started_at_unix is not None and 0 <= time.time() - int(started_at_unix) < 20:
+            captain_value = "Ожидание данных…"
+        else:
+            captain_value = "Капитан не найден"
     else:
         captain_value = "—"
         round_value = "—"

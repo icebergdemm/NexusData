@@ -144,12 +144,24 @@ client_router = APIRouter(
 def get_round_state(db: Session, server_name: str) -> dict:
     """Return the current round state for a server, derived from the last
     start/end RoundEvent rows (mirrors the logic used by the moderation status page)."""
-    last_start = (
-        db.query(RoundEvent)
+    is_mysql = db.get_bind().dialect.name == "mysql"
+    start_query = db.query(RoundEvent)
+    if is_mysql:
+        start_query = start_query.add_columns(
+            func.unix_timestamp(RoundEvent.created_at).label("started_at_unix")
+        )
+    last_start_result = (
+        start_query
         .filter(RoundEvent.event_type == "start", RoundEvent.server_name == server_name)
         .order_by(desc(RoundEvent.created_at))
         .first()
     )
+    started_at_unix = None
+    if is_mysql and last_start_result:
+        last_start, started_at_unix = last_start_result
+        started_at_unix = int(started_at_unix) if started_at_unix is not None else None
+    else:
+        last_start = last_start_result
     last_end = (
         db.query(RoundEvent)
         .filter(RoundEvent.event_type == "end", RoundEvent.server_name == server_name)
@@ -159,7 +171,7 @@ def get_round_state(db: Session, server_name: str) -> dict:
     if not last_start:
         return {
             "active": False, "location": None, "submarine_name": None, "mission": None,
-            "started_at": None, "players": [], "last_end": last_end,
+            "started_at": None, "started_at_unix": None, "players": [], "last_end": last_end,
         }
 
     is_active = (last_end is None) or (last_start.created_at > last_end.created_at)
@@ -169,6 +181,7 @@ def get_round_state(db: Session, server_name: str) -> dict:
         "submarine_name": last_start.submarine_name if is_active else None,
         "mission": last_start.mission if is_active else None,
         "started_at": last_start.created_at if is_active else None,
+        "started_at_unix": started_at_unix if is_active else None,
         "players": last_start.players or [],
         "last_end": last_end,
     }

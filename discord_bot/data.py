@@ -563,6 +563,7 @@ def get_round_status(server_name: str) -> dict:
             "submarine_name": round_state["submarine_name"],
             "mission": round_state["mission"],
             "started_at": round_state["started_at"].isoformat() if round_state["started_at"] else None,
+            "started_at_unix": round_state.get("started_at_unix"),
             "player_count": len(online_players),
             "captains": captains,
             "submarine_health": live.submarine_health if live else None,
