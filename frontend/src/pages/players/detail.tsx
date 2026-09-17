@@ -444,7 +444,7 @@ export function PlayerDetailPage() {
               <div><div className={`text-lg font-bold ${activePunishments ? "text-destructive" : ""}`}>{activePunishments}</div><div className="text-xs text-muted-foreground">активных наказаний</div></div>
             </div>
           </div>
-          <div className="relative mt-2 text-xs text-muted-foreground">Последний вход: {fmtDate(player.last_login_time)}{player.last_ip && ` · IP ${player.last_ip}`}</div>
+          <div className="relative mt-2 text-xs text-muted-foreground">Последний вход: {fmtDate(player.last_login_time)}{data.can_view_ip ? (player.last_ip && ` · IP ${player.last_ip}`) : " · IP скрыт"}</div>
         </div>
 
         {data.has_edit && (

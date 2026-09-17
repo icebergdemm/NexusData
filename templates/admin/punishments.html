@@ -265,7 +265,7 @@
               </a>
               {% else %}<span class="mono-cell">-</span>{% endif %}
             </td>
-            <td><span class="mono-cell">{{ p.player_ip or '-' }}</span></td>
+            <td><span class="mono-cell">{% if can_view_ip %}{{ p.player_ip or '-' }}{% else %}Скрыто{% endif %}</span></td>
             <td class="reason-cell">{{ p.reason or '-' }}</td>
             <td>{{ p.issued_by_name or '-' }}</td>
             <td class="mono-cell">{{ p.issued_at|msk if p.issued_at else '-' }}</td>

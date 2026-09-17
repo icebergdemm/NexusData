@@ -107,6 +107,7 @@ export interface RewardReference {
 
 export interface PlayerDetailResponse {
   classified?: boolean
+  can_view_ip?: boolean
   player: PlayerDetailPlayer
   stats: PlayerStats | null
   kills: KillRow[]

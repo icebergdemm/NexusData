@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 
 from database import get_db, get_game_db
 from security import check_permission, check_moderation_action_permission, csrf_token_from_request
+from services_player_privacy import can_view_player_ips, redact_anomaly_evidence, redact_sauron_results
 from config import get_settings
 from security import verify_external_api_key_dependency
 from services import (
@@ -921,13 +922,19 @@ async def sauron_twinks(
             from datetime import datetime
             age = (datetime.utcnow() - result.finished_at).total_seconds()
             if age < 600:
-                return JSONResponse(result.data.get("results", []))
+                return JSONResponse(redact_sauron_results(
+                    result.data.get("results", []),
+                    allow=can_view_player_ips(admin),
+                ))
         scheduler.submit(task_sauron_twinks, priority=Priority.NORMAL, task_id=task_id, timeout=90.0)
         return JSONResponse({"status": "running", "message": "Анализ запущен, обновите через несколько секунд"}, status_code=202)
     except ImportError:
         import services_sauron
         results = services_sauron.detect_all_twink_pairs(db, days=days)
-        return JSONResponse(results)
+        return JSONResponse(redact_sauron_results(
+            results,
+            allow=can_view_player_ips(admin),
+        ))
 
 
 @panel_router.get("/api/v1/sauron/deviant")
@@ -1010,7 +1017,7 @@ def _serialize_anomaly_player(db: Session, player_id: Optional[int]) -> Optional
     }
 
 
-def _serialize_anomaly(db: Session, a) -> dict:
+def _serialize_anomaly(db: Session, a, *, allow_ip: bool = False) -> dict:
     return {
         "id": a.id,
         "category": a.category,
@@ -1018,7 +1025,7 @@ def _serialize_anomaly(db: Session, a) -> dict:
         "player": _serialize_anomaly_player(db, a.player_id),
         "related_player": _serialize_anomaly_player(db, a.related_player_id),
         "score": a.score,
-        "evidence": a.evidence or {},
+        "evidence": redact_anomaly_evidence(a.evidence or {}, allow=allow_ip),
         "detected_at": a.detected_at.isoformat() if a.detected_at else None,
         "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
         "status": a.status,
@@ -1047,7 +1054,10 @@ async def api_list_anomalies(
 
     from fastapi.responses import JSONResponse
     return JSONResponse({
-        "anomalies": [_serialize_anomaly(db, a) for a in rows],
+        "anomalies": [
+            _serialize_anomaly(db, a, allow_ip=can_view_player_ips(admin))
+            for a in rows
+        ],
         "can_manage": check_permission(admin, "moderation", "manage_anticheat"),
         "nd_autoban_enabled": __import__("discord_bot.data", fromlist=["data"]).is_nd_autoban_enabled(),
     })

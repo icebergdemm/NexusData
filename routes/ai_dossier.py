@@ -10,9 +10,10 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import AIPlayerDossier, AdminUser, AppSetting, LabelCategory, PlayerData, PlayerLabel
+from models import AIPlayerDossier, AdminUser, AppSetting, LabelCategory, PlayerData, PlayerIP, PlayerLabel
 from routes.admin import get_current_admin, log_admin_action
 from security import check_permission
+from services_player_privacy import can_view_player_ips, redact_dossier_payload
 from services import can_manage_secret_labels
 from services_ai_dossier import (
     dossier_response_with_run,
@@ -111,6 +112,18 @@ def _has_secret_label(db: Session, player_id: int) -> bool:
 
 def _dossier_response_for_admin(db: Session, report: AIPlayerDossier | None, admin: AdminUser) -> dict:
     response = dossier_response_with_run(db, report, include_raw=admin.is_superuser)
+    if report and not can_view_player_ips(admin):
+        last_ip = db.query(PlayerData.last_ip).filter(
+            PlayerData.player_id == report.player_id,
+        ).scalar()
+        known_ips = [last_ip] if last_ip else []
+        known_ips.extend(
+            value for value, in db.query(PlayerIP.ip).filter(
+                PlayerIP.player_id == report.player_id,
+                PlayerIP.ip.isnot(None),
+            ).all()
+        )
+        response = redact_dossier_payload(response, known_ips=known_ips, allow=False)
     if report and not can_manage_secret_labels(admin) and _has_secret_label(db, report.player_id):
         # Dossiers are durable and shared between admins. A cached result made
         # before the label was hidden can still contain its name or evidence.

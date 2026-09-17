@@ -94,11 +94,12 @@ export function PlayerHistoryTab({ data }: PlayerHistoryTabProps) {
             </ScrollArea>
           </section>
           <section className="rounded-lg border bg-muted/10 p-3">
-            <div className="mb-2 flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground"><span>IP-адреса</span><span>{data.ips.length}</span></div>
+            <div className="mb-2 flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground"><span>IP-адреса</span>{data.can_view_ip ? <span>{data.ips.length}</span> : <Badge variant="outline">Скрыто</Badge>}</div>
             <ScrollArea className="h-56">
               <div className="pr-3 text-sm">
-              {ips.map((ip) => <div key={ip.id} className="border-b py-2 last:border-0"><div className="flex justify-between gap-3"><span className="font-mono">{ip.ip}</span><span className="text-right text-xs text-muted-foreground">{fmtPeriod(ip.first_seen, ip.last_seen)}</span></div><div className="mt-0.5 font-mono text-xs text-muted-foreground">{ip.subnet || "Подсеть не определена"}</div></div>)}
-              {!data.ips.length && <div className="py-2 text-muted-foreground">Нет данных</div>}
+              {data.can_view_ip && ips.map((ip) => <div key={ip.id} className="border-b py-2 last:border-0"><div className="flex justify-between gap-3"><span className="font-mono">{ip.ip}</span><span className="text-right text-xs text-muted-foreground">{fmtPeriod(ip.first_seen, ip.last_seen)}</span></div><div className="mt-0.5 font-mono text-xs text-muted-foreground">{ip.subnet || "Подсеть не определена"}</div></div>)}
+              {!data.can_view_ip && <div className="py-2 text-muted-foreground">Доступ к IP-адресам ограничен.</div>}
+              {data.can_view_ip && !data.ips.length && <div className="py-2 text-muted-foreground">Нет данных</div>}
               </div>
             </ScrollArea>
           </section>

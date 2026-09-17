@@ -17,6 +17,7 @@ from security import (
     compute_department_site_permissions,
     get_permission_policy_mode,
 )
+from services_player_privacy import can_view_player_ips
 from services_login_keys import resolve_api_login_key
 from services import (
     AdminService, DiscordAuthService, PlayerService,
@@ -1472,6 +1473,7 @@ async def admin_player_detail(
     name_service = PlayerNameService(db)
     role_stat_service = PlayerRoleStatService(db)
     session_service = PlayerSessionService(db)
+    can_view_ip = can_view_player_ips(current_admin)
     
     try:
         kills = kill_service.get_player_kills(player_id)
@@ -1492,7 +1494,7 @@ async def admin_player_detail(
         role_actions = []
     
     try:
-        ips = ip_service.get_player_ips(player_id)
+        ips = ip_service.get_player_ips(player_id) if can_view_ip else []
     except HTTPException:
         logger.warning(f"Failed to get player IPs for {player_id}")
         ips = []
@@ -1539,6 +1541,10 @@ async def admin_player_detail(
             }
         },
     )
+    if can_view_ip:
+        log_admin_action(db, current_admin.id, "view_player_ip", {
+            "target": {"player_id": player.player_id},
+        })
 
     # Notes, labels, traps, twink analysis, qual-kits
     note_svc = PlayerNoteService(db)
@@ -1585,7 +1591,7 @@ async def admin_player_detail(
     has_edit = check_permission(current_admin, "players", "edit")
     has_delete = check_permission(current_admin, "players", "delete")
     has_special = check_permission(current_admin, "players_special", "view")
-    display_last_ip = player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) else None
+    display_last_ip = player.last_ip if can_view_ip and player.last_ip and not is_bogon_ip(player.last_ip) else None
 
     return templates.TemplateResponse("admin/player_detail.html", {
         "request": request,
@@ -1595,7 +1601,7 @@ async def admin_player_detail(
         "stats": stats,
         "kills": kills,
         "role_actions": role_actions,
-        "ips": ips,
+        "ips": ips if can_view_ip else [],
         "names": names,
         "role_stats": role_stats,
         "sessions": sessions,
@@ -1617,6 +1623,7 @@ async def admin_player_detail(
         "has_edit": has_edit,
         "has_delete": has_delete,
         "has_special": has_special,
+        "can_view_ip": can_view_ip,
     })
 
 
@@ -1991,7 +1998,8 @@ async def api_player_detail(
 
     kills = _safe(PlayerKillService(db).get_player_kills, "kills")
     role_actions = _safe(PlayerRoleActionService(db).get_player_actions, "role actions")
-    ips = _safe(PlayerIPService(db).get_player_ips, "IPs")
+    can_view_ip = can_view_player_ips(current_admin)
+    ips = _safe(PlayerIPService(db).get_player_ips, "IPs") if can_view_ip else []
     names = _safe(PlayerNameService(db).get_player_names, "names")
     role_stats = _safe(PlayerRoleStatService(db).get_player_role_stats, "role stats")
     sessions = _safe(PlayerSessionService(db).get_player_sessions, "sessions")
@@ -1999,6 +2007,10 @@ async def api_player_detail(
     log_admin_action(db, current_admin.id, "view_player_profile", {
         "target": {"player_id": player.player_id, "steamid": player.player_steamid, "name": player.player_last_time_name}
     })
+    if can_view_ip:
+        log_admin_action(db, current_admin.id, "view_player_ip", {
+            "target": {"player_id": player.player_id},
+        })
 
     notes = PlayerNoteService(db).get_notes(player_id)
     note_admin_ids = {n.admin_id for n in notes if n.admin_id}
@@ -2072,7 +2084,7 @@ async def api_player_detail(
             "play_time_hours": player.play_time_hours,
             "rank_id": player.rank_id,
             "kit_level": player.kit_level,
-            "last_ip": player.last_ip if player.last_ip and not is_bogon_ip(player.last_ip) else None,
+            "last_ip": player.last_ip if can_view_ip and player.last_ip and not is_bogon_ip(player.last_ip) else None,
             "discord_id": player.discord_id,
             "discord_profile_id": discord_profile_id,
             "discord_id_confirmed": bool(player.discord_id_confirmed),
@@ -2118,6 +2130,7 @@ async def api_player_detail(
         "is_online": is_online,
         "server_privileges": server_privileges,
         "has_view": check_permission(current_admin, "players", "view"),
+        "can_view_ip": can_view_ip,
         "has_edit": check_permission(current_admin, "players", "edit"),
         "has_delete": check_permission(current_admin, "players", "delete"),
         "has_special": check_permission(current_admin, "players_special", "view"),
@@ -6810,6 +6823,7 @@ async def admin_punishments(
         "pages": pages,
         "type_labels": PUNISHMENT_TYPE_LABELS,
         "punishment_types": PUNISHMENT_TYPES,
+        "can_view_ip": can_view_player_ips(current_admin),
     })
 
 
