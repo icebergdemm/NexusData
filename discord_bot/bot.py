@@ -870,6 +870,25 @@ def _format_shuttle_eta(shuttle_arrival_at: str) -> str:
     return f"{countdown} ({arrival_msk})"
 
 
+def _format_round_duration(started_at: str) -> str:
+    if not started_at:
+        return "—"
+    try:
+        started = datetime.fromisoformat(started_at[:-1] if started_at.endswith("Z") else started_at)
+    except ValueError:
+        return "—"
+
+    now = datetime.now(started.tzinfo) if started.tzinfo else datetime.utcnow()
+    total_minutes = max(0, int((now - started).total_seconds() // 60))
+    days, minutes = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days} д {hours} ч {minutes:02d} мин"
+    if hours:
+        return f"{hours} ч {minutes:02d} мин"
+    return f"{minutes} мин"
+
+
 async def refresh_round_status_embed(server_name: str):
     """Update (or send) the live round-status embed for one server.
 
@@ -902,12 +921,29 @@ async def refresh_round_status_embed(server_name: str):
         title = f"⚪ {server_name} - раунд не идёт"
         color = 0x858a94
 
+    if status.get("active"):
+        captain_names = []
+        for captain in status.get("captains") or []:
+            if captain.get("discord_id"):
+                captain_names.append(f"<@{captain['discord_id']}>")
+            else:
+                captain_names.append(captain.get("name") or "Неизвестный капитан")
+        captain_value = ", ".join(captain_names) or "Капитан не найден"
+        duration_value = _format_round_duration(status.get("started_at"))
+    else:
+        captain_value = "—"
+        duration_value = "—"
+
     embed = discord.Embed(title=title, color=color)
     embed.add_field(name="📍 Локация", value=status.get("location") or "-", inline=True)
     embed.add_field(name="🚢 Корабль", value=status.get("submarine_name") or "-", inline=True)
-    embed.add_field(name="🎯 Миссия", value=status.get("mission") or "-", inline=False)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="🎯 Миссия", value=status.get("mission") or "-", inline=True)
+    embed.add_field(name="👤 Капитан", value=captain_value, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(name="👥 Кол-во экипажа", value=str(status.get("player_count", 0)), inline=True)
-    embed.add_field(name="🚀 Челнок снабжения", value=_format_shuttle_eta(status.get("shuttle_arrival_at")), inline=True)
+    embed.add_field(name="⏱️ Длительность", value=duration_value, inline=True)
+    embed.add_field(name="🚀 Челнок снабжения", value=_format_shuttle_eta(status.get("shuttle_arrival_at")), inline=False)
     embed.set_footer(text=f"Сделано за сухарики | Обновлено {format_msk(datetime.utcnow())} МСК")
 
     msg_id = _round_status_message_ids.get(server_name)

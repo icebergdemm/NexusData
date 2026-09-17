@@ -515,6 +515,7 @@ def ingest_department_chat_message(discord_channel_id: str, discord_message_id: 
 
 def get_round_status(server_name: str) -> dict:
     from routes.dispatch import get_round_state
+    from repositories import PlayerRepository
     from services import ServerModerationService
     from models import ServerLiveState
 
@@ -522,6 +523,38 @@ def get_round_status(server_name: str) -> dict:
     try:
         round_state = get_round_state(db, server_name)
         online_players = ServerModerationService(db).get_online_players(server_name=server_name)
+        captains = []
+        if round_state["active"]:
+            captain_players = [
+                player for player in online_players
+                if str(player.get("job_id") or "").strip().casefold() == "captain"
+            ]
+            if captain_players:
+                player_repository = PlayerRepository(db)
+                for captain in captain_players:
+                    profile = None
+                    player_id = captain.get("player_id")
+                    if player_id is not None:
+                        try:
+                            profile = player_repository.get_by_id(int(player_id))
+                        except (TypeError, ValueError):
+                            pass
+                    if profile is None:
+                        steamid = str(captain.get("player_steamid") or "").strip()
+                        if steamid:
+                            profile = player_repository.get_by_steamid(steamid)
+
+                    discord_id = None
+                    if (
+                        profile is not None
+                        and profile.discord_id
+                        and profile.discord_id_confirmed == 1
+                    ):
+                        discord_id = str(profile.discord_id)
+                    captains.append({
+                        "name": str(captain.get("player_name") or "").strip() or "Неизвестный капитан",
+                        "discord_id": discord_id,
+                    })
         live = db.query(ServerLiveState).filter(ServerLiveState.server_name == server_name).first()
         return {
             "server_name": server_name,
@@ -531,6 +564,7 @@ def get_round_status(server_name: str) -> dict:
             "mission": round_state["mission"],
             "started_at": round_state["started_at"].isoformat() if round_state["started_at"] else None,
             "player_count": len(online_players),
+            "captains": captains,
             "submarine_health": live.submarine_health if live else None,
             "shuttle_arrival_at": live.shuttle_arrival_at.isoformat() + "Z" if live and live.shuttle_arrival_at else None,
         }
