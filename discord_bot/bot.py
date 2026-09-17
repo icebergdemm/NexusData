@@ -856,7 +856,11 @@ _round_status_debounce_tasks: dict[str, asyncio.Task] = {}
 _ROUND_STATUS_DEBOUNCE_SECONDS = 0.75
 
 
-def _format_discord_timestamp(value: str, empty_value: str) -> str:
+def _format_discord_timestamp(
+    value: str,
+    empty_value: str,
+    naive_timezone: timezone = timezone.utc,
+) -> str:
     """Format a stored absolute timestamp as a Discord client-side relative time."""
     if not value:
         return empty_value
@@ -865,7 +869,7 @@ def _format_discord_timestamp(value: str, empty_value: str) -> str:
     except (AttributeError, TypeError, ValueError):
         return empty_value
     if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = timestamp.replace(tzinfo=naive_timezone)
     return f"<t:{int(timestamp.timestamp())}:R>"
 
 
@@ -924,7 +928,11 @@ async def refresh_round_status_embed(server_name: str):
             else:
                 captain_names.append(captain.get("name") or "Неизвестный капитан")
         captain_value = ", ".join(captain_names) or "Капитан не найден"
-        round_value = _format_discord_timestamp(status.get("started_at"), "—")
+        round_value = _format_discord_timestamp(
+            status.get("started_at"),
+            "—",
+            timezone(MSK_OFFSET),
+        )
     else:
         captain_value = "—"
         round_value = "—"
@@ -941,7 +949,11 @@ async def refresh_round_status_embed(server_name: str):
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="🚀 Челнок снабжения",
-        value=_format_discord_timestamp(status.get("shuttle_arrival_at"), "-"),
+        value=_format_discord_timestamp(
+            status.get("shuttle_arrival_at"),
+            "-",
+            timezone.utc,
+        ),
         inline=False,
     )
     embed.set_footer(text="Сделано за сухарики")

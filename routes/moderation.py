@@ -103,6 +103,9 @@ def report_online_players(
     svc = ServerModerationService(db)
     count = svc.replace_online_players(report.players, server_name=server_name)
     _update_server_live_state(db, server_name, report.submarine_health, report.supply_shuttle_eta)
+    if server_name:
+        from routes.dispatch import _queue_round_status_refresh
+        _queue_round_status_refresh(db, server_name)
     return ServerPlayersReportResult(status="ok", count=count)
 
 
