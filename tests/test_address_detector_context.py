@@ -83,3 +83,22 @@ def test_rule_analyzer_keeps_isolated_address_uncertain() -> None:
     result = asyncio.run(RuleAnalyzer().analyze(context))
 
     assert result.verdict is Verdict.UNCERTAIN
+
+
+def test_rule_analyzer_ignores_standalone_uh_ty_exclamation() -> None:
+    current = message(31, "УХ ты!")
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(current.content)))
+
+    result = asyncio.run(RuleAnalyzer().analyze(context))
+
+    assert result.verdict is Verdict.CLEAN
+    assert result.matched_signals == ("idiomatic_exclamation",)
+
+
+def test_rule_analyzer_does_not_ignore_uh_ty_with_direct_address() -> None:
+    current = message(32, "ух ты, ты опять это сделал")
+    context = asyncio.run(ContextCollector().collect(current, find_triggers(current.content)))
+
+    result = asyncio.run(RuleAnalyzer().analyze(context))
+
+    assert result.verdict is Verdict.UNCERTAIN

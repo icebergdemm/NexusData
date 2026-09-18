@@ -40,6 +40,7 @@ class Analyzer(Protocol):
 class RuleAnalyzer:
     """Explainable rules for the obvious cases before optional local ML."""
 
+    _IDIOMATIC_EXCLAMATION_RE = re.compile(r"^\s*ух\s+ты\s*[.!?…]*\s*$", re.IGNORECASE)
     _META_RE = re.compile(
         r"(?:буквально\s+написал|цитат\w*|пример\w*\s+(?:плохого\s+)?сообщени|"
         r"в\s+русском\s+язык\w*\s+местоимени|правил\w*\s+запреща\w*\s+обраща|"
@@ -52,6 +53,14 @@ class RuleAnalyzer:
         text = getattr(context, "cleaned_content", "")
         if not tokens:
             return AnalysisResult(Verdict.CLEAN, 0.99, "no trigger tokens", "rules")
+        if self._IDIOMATIC_EXCLAMATION_RE.fullmatch(text):
+            return AnalysisResult(
+                Verdict.CLEAN,
+                0.99,
+                "standalone idiomatic exclamation",
+                "rules",
+                ("idiomatic_exclamation",),
+            )
         if self._META_RE.search(text):
             return AnalysisResult(
                 Verdict.CLEAN,
