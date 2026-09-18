@@ -41,6 +41,11 @@ class LLMGatewayError(Exception):
         self.status_code = status_code
 
 
+def _database_local_now() -> datetime:
+    """Return naive local time matching the database DateTime convention."""
+    return datetime.now()
+
+
 def set_wake_callback(callback) -> None:
     global _wake
     _wake = callback
@@ -93,7 +98,7 @@ def submit(client_id, messages, params, priority=None, idempotency_key=None,
         ).count()
         if depth >= client["max_queue_depth"]:
             raise LLMGatewayError("LLM client queue is full", 429)
-        minute_ago = datetime.utcnow() - timedelta(minutes=1)
+        minute_ago = _database_local_now() - timedelta(minutes=1)
         recent = db.query(AILlmRequest).filter(
             AILlmRequest.client_id == client_id,
             AILlmRequest.created_at >= minute_ago,
