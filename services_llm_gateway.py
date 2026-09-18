@@ -58,7 +58,14 @@ def _validate(client_id: str, messages: Any, params: dict) -> tuple[dict, dict]:
     if not isinstance(messages, list) or not messages:
         raise LLMGatewayError("messages must be a non-empty list")
     params = dict(params or {})
-    allowed = {"model", "max_tokens", "temperature", "response_format", "top_p", "stop"}
+    # Keep the gateway OpenAI-compatible for future callers that need a
+    # model-selected tool call followed by an application-provided tool
+    # message. The payload is still passed through unchanged; this layer only
+    # keeps the queue's small allowlist from rejecting supported fields.
+    allowed = {
+        "model", "max_tokens", "temperature", "response_format", "top_p", "stop",
+        "tools", "tool_choice", "parallel_tool_calls",
+    }
     if set(params) - allowed:
         raise LLMGatewayError("Unsupported LLM parameter")
     if "max_tokens" in params and (not isinstance(params["max_tokens"], int) or
