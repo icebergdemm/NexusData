@@ -23,6 +23,8 @@ LLM_CLIENTS = {
                     "timeout": 60.0, "max_tokens": 512, "max_queue_depth": 50},
     "future": {"backend": "dossier", "priority": 200, "quota_min": 1,
                 "timeout": 180.0, "max_tokens": 260, "max_queue_depth": 5},
+    "log_analysis_dry_run": {"backend": "dossier", "priority": 150, "quota_min": 12,
+                              "timeout": 240.0, "max_tokens": 2048, "max_queue_depth": 20},
 }
 BACKENDS = {
     "dossier": {"url_key": "ai_dossier_url", "key": "ai_dossier_api_key",
@@ -183,6 +185,10 @@ def claim_next(last_client: str | None = None) -> AILlmRequest | None:
         row.started_at = now
         row.lease_expires_at = now + timedelta(seconds=240)
         db.commit()
+        # commit() expires ORM attributes by default.  The worker consumes the
+        # detached row after this function returns, so reload the scalar
+        # fields before expunging it instead of handing it a time bomb.
+        db.refresh(row)
         db.expunge(row)
         return row
     finally:
