@@ -38,7 +38,7 @@ DOSSIER_SCHEMA_VERSION = 2
 DOSSIER_RULES_VERSION = 5
 MAX_OUTPUT_TOKENS = 260
 MAX_RAW_RESPONSE_CHARS = 12000
-DEFAULT_MODEL = "qwen2.5-3b-instruct"
+DEFAULT_MODEL = "qwen3-14b-iq3_m"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "player_dossier.md"
 ALLOWED_RUN_SOURCES = {"manual", "manual_batch", "daily", "test", "health"}
 # AI_REQUEST_LOCK is imported from services_ai_client (the single site-wide

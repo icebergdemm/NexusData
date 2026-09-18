@@ -106,7 +106,7 @@ class AIDossierContractTests(unittest.TestCase):
         request = build_kobold_request(
             {"player": {"player_id": 7, "name": "Тест"}, "findings": [], "missing": ["logs"]},
             api_key="secret",
-            model="qwen2.5-3b-instruct",
+            model="qwen3-14b-iq3_m",
         )
 
         self.assertEqual(request["headers"]["Authorization"], "Bearer secret")

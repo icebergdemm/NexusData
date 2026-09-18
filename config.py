@@ -157,7 +157,7 @@ class Settings(BaseSettings):
     ai_dossier_api_key: str = Field("")
     ai_dossier_tls_ca_file: str = Field("")
     ai_dossier_timeout_seconds: float = Field(180.0, gt=0, le=600)
-    ai_dossier_model: str = Field("qwen2.5-3b-instruct", min_length=1, max_length=255)
+    ai_dossier_model: str = Field("qwen3-14b-iq3_m", min_length=1, max_length=255)
     ai_dossier_active_days: int = Field(30, ge=1, le=365)
     ai_dossier_daily_limit: int = Field(10, ge=1, le=10)
     ai_dossier_schedule_hour: int = Field(4, ge=0, le=23)
