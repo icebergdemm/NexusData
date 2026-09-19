@@ -6,7 +6,8 @@ Two independent constraints decide how much of an item can be handed out:
   the station can always produce;
 * **per-round ceiling** — ``WarehouseItem.per_round_limit``, counted per server
   and per round in ``WarehouseRoundUsage``. With ``per_round_limit_min`` set,
-  the ceiling is drawn anew each round from that range.
+  the ceiling is drawn anew each round from that range, and
+  ``round_spawn_chance`` first decides whether the line turns up at all.
 
 Rounds run independently on each server, so a delivery to ASPER1 must not eat
 ASPER2's budget. The counter is keyed by that server's last round-start event
@@ -76,6 +77,43 @@ def issued_this_round(
     return int(row.issued) if row else 0
 
 
+def _draw(identifier: str, server_name: Optional[str], round_ref: str, purpose: str) -> int:
+    """A stable pseudo-random integer for one (item, server, round, purpose).
+
+    Nothing is stored: the same inputs give the same number in every worker
+    process and on every request within the round. A value that changed between
+    two reads would let a caller retry until it liked the answer, and would make
+    the figure shown to the AI a lie.
+    """
+    seed = f"{identifier}|{normalize_server(server_name)}|{round_ref}|{purpose}"
+    return int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def spawned_this_round(
+    db: Session,
+    item: WarehouseItem,
+    server_name: Optional[str],
+    round_ref: Optional[str] = None,
+) -> bool:
+    """Did this line turn up at all this round?
+
+    The draw deliberately ignores the configured percentage, so the same
+    underlying roll is compared against whatever chance is set: raising the
+    chance mid-round can only make an absent item appear, never take away one
+    the crew already sees.
+    """
+    chance = item.round_spawn_chance
+    if chance is None:
+        return True
+    chance = int(chance)
+    if chance >= 100:
+        return True
+    if chance <= 0:
+        return False
+    ref = round_ref or current_round_ref(db, server_name)
+    return _draw(item.identifier, server_name, ref, "spawn") % 100 < chance
+
+
 def round_limit(
     db: Session,
     item: WarehouseItem,
@@ -84,24 +122,24 @@ def round_limit(
 ) -> Optional[int]:
     """The ceiling that applies to this item, on this server, this round.
 
-    A line configured with a range draws its own ceiling every round. The draw
-    is derived from (item, server, round) instead of being stored, which keeps
-    it identical for every worker process and every request within the round —
-    a number that changed between two reads would let a caller retry until it
-    liked the answer, and would make the figure shown to the AI a lie.
+    Two rolls, in the order a quartermaster would do them: first whether the
+    line turned up at all, then how much of it. A line configured with a range
+    draws its own amount every round; without a range the ceiling is fixed.
     """
     ceiling = item.per_round_limit
     if ceiling is None:
         return None
     ceiling = int(ceiling)
+    ref = round_ref or current_round_ref(db, server_name)
+    if not spawned_this_round(db, item, server_name, ref):
+        return 0
     floor = item.per_round_limit_min
     if floor is None or int(floor) >= ceiling:
         return ceiling
     floor = max(0, int(floor))
-    ref = round_ref or current_round_ref(db, server_name)
-    seed = f"{item.identifier}|{normalize_server(server_name)}|{ref}|{floor}-{ceiling}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
-    return floor + int(digest, 16) % (ceiling - floor + 1)
+    return floor + _draw(
+        item.identifier, server_name, ref, f"{floor}-{ceiling}",
+    ) % (ceiling - floor + 1)
 
 
 def remaining_this_round(
@@ -241,11 +279,13 @@ def validate_limit_settings(
     is_unlimited: bool,
     per_round_limit,
     per_round_limit_min=None,
+    round_spawn_chance=None,
 ) -> tuple:
     """Normalize the settings, or raise ValueError describing what is wrong.
 
-    Returns ``(per_round_limit, per_round_limit_min)``; the lower bound is None
-    whenever the ceiling is the same every round.
+    Returns ``(per_round_limit, per_round_limit_min, round_spawn_chance)``; the
+    lower bound is None whenever the ceiling is the same every round, and the
+    chance is None whenever the line always turns up.
     """
     if per_round_limit in (None, ""):
         normalized_limit = None
@@ -275,4 +315,17 @@ def validate_limit_settings(
         if normalized_min == normalized_limit:
             # Not a range at all — store it as a plain fixed ceiling.
             normalized_min = None
-    return normalized_limit, normalized_min
+
+    if round_spawn_chance in (None, ""):
+        normalized_chance = None
+    else:
+        if isinstance(round_spawn_chance, bool) or not isinstance(round_spawn_chance, int):
+            raise ValueError("Шанс появления должен быть целым числом")
+        if not 0 <= round_spawn_chance <= 100:
+            raise ValueError("Шанс появления — от 0 до 100 процентов")
+        # 100% is the default behaviour; storing it would only add a state
+        # that behaves identically.
+        normalized_chance = None if round_spawn_chance >= 100 else int(round_spawn_chance)
+    if normalized_chance is not None and normalized_limit is None:
+        raise ValueError("Шанс появления требует лимита на раунд")
+    return normalized_limit, normalized_min, normalized_chance

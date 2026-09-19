@@ -2668,6 +2668,11 @@ class WarehouseItem(Base):
     # each round draws its own ceiling from [min, per_round_limit], so the crew
     # cannot count on a fixed allowance — a roll of 0 means "nothing this time".
     per_round_limit_min = Column(Integer, nullable=True)
+    # Percentage chance that the line is available at all this round, rolled
+    # before the amount. NULL = always available. Two rolls instead of one give
+    # the quartermaster a loot-table style lever: a rare item can be absent most
+    # rounds, yet generous when it does turn up.
+    round_spawn_chance = Column(Integer, nullable=True)
     updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

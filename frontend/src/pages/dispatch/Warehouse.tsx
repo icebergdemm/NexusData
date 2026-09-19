@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Plus, Minus, Trash2, Search, PackageSearch, Settings2, Infinity as InfinityIcon, Check, Image as ImageIcon, Dices } from "lucide-react"
+import { Plus, Minus, Trash2, Search, PackageSearch, Settings2, Infinity as InfinityIcon, Check, Image as ImageIcon, Dices, Percent } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -36,10 +36,15 @@ interface ItemDraft {
   random: boolean
   limit: string
   limitMin: string
+  rareSpawn: boolean
+  spawnChance: string
 }
 
 function emptyDraft(quantity = "1"): ItemDraft {
-  return { quantity, unlimited: false, limited: false, random: false, limit: "", limitMin: "0" }
+  return {
+    quantity, unlimited: false, limited: false, random: false,
+    limit: "", limitMin: "0", rareSpawn: false, spawnChance: "50",
+  }
 }
 
 /** Same rules the server enforces (see services_warehouse.validate_limit_settings),
@@ -56,6 +61,10 @@ function draftError(draft: ItemDraft): string | null {
     const min = Math.trunc(Number(draft.limitMin))
     if (!Number.isFinite(min) || min < 0 || min > limit) return "Нижняя граница — от нуля до верхней"
   }
+  if (draft.rareSpawn) {
+    const chance = Math.trunc(Number(draft.spawnChance))
+    if (!Number.isFinite(chance) || chance < 0 || chance > 100) return "Шанс появления — от 0 до 100"
+  }
   return null
 }
 
@@ -67,6 +76,7 @@ function draftToInput(identifier: string, draft: ItemDraft): WarehouseItemInput 
     is_unlimited: draft.unlimited,
     per_round_limit: limitActive ? Math.trunc(Number(draft.limit)) : null,
     per_round_limit_min: limitActive && draft.random ? Math.trunc(Number(draft.limitMin)) : null,
+    round_spawn_chance: limitActive && draft.rareSpawn ? Math.trunc(Number(draft.spawnChance)) : null,
   }
 }
 
@@ -133,6 +143,26 @@ function LimitFields({ draft, onChange, idPrefix }: {
               aria-label={draft.random ? "Верхняя граница лимита" : "Лимит на раунд"}
             />
           </div>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor={`${idPrefix}-rare`} className="text-[11px] font-normal">
+              Появляется не каждый раунд
+            </Label>
+            <Switch
+              id={`${idPrefix}-rare`}
+              checked={draft.rareSpawn}
+              onCheckedChange={(value) => onChange({ rareSpawn: value })}
+            />
+          </div>
+          {draft.rareSpawn && (
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number" min={0} max={100} value={draft.spawnChance}
+                onChange={(e) => onChange({ spawnChance: e.target.value })}
+                className="h-7 text-xs" aria-label="Шанс появления за раунд"
+              />
+              <span className="text-[11px] text-muted-foreground">% шанс на раунд</span>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -425,6 +455,11 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
                             лимит {draft.random ? `${draft.limitMin || 0}–${draft.limit}` : draft.limit}/раунд
                           </Badge>
                         )}
+                        {limitActive && draft.rareSpawn && (
+                          <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[9px]">
+                            <Percent className="size-2.5" />шанс {draft.spawnChance || 0}%
+                          </Badge>
+                        )}
                       </div>
                     )}
 
@@ -503,6 +538,8 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
   const [limit, setLimit] = useState("")
   const [random, setRandom] = useState(false)
   const [limitMin, setLimitMin] = useState("0")
+  const [rareSpawn, setRareSpawn] = useState(false)
+  const [spawnChance, setSpawnChance] = useState("50")
 
   useEffect(() => {
     if (!item) return
@@ -511,6 +548,8 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
     setLimit(item.per_round_limit !== null ? String(item.per_round_limit) : "")
     setRandom(item.per_round_limit_min !== null)
     setLimitMin(item.per_round_limit_min !== null ? String(item.per_round_limit_min) : "0")
+    setRareSpawn(item.round_spawn_chance !== null)
+    setSpawnChance(item.round_spawn_chance !== null ? String(item.round_spawn_chance) : "50")
   }, [item])
 
   const parsedLimit = Math.trunc(Number(limit))
@@ -521,6 +560,10 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
   const minInvalid = limitActive && random && (
     !Number.isFinite(parsedMin) || parsedMin < 0 || parsedMin > parsedLimit
   )
+  const parsedChance = Math.trunc(Number(spawnChance))
+  const chanceInvalid = limitActive && rareSpawn && (
+    !Number.isFinite(parsedChance) || parsedChance < 0 || parsedChance > 100
+  )
 
   const saveMutation = useMutation({
     mutationFn: () => warehouseApi.setLimits(
@@ -528,6 +571,7 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
       unlimited,
       limitActive ? parsedLimit : null,
       limitActive && random ? parsedMin : null,
+      limitActive && rareSpawn ? parsedChance : null,
     ),
     onSuccess: () => {
       toast.success("Настройки предмета сохранены")
@@ -640,6 +684,34 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
             </div>
           )}
 
+          {limitActive && (
+            <div className="space-y-2 rounded-md border p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <Label htmlFor="wh-rare" className="text-sm">Появляется не каждый раунд</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Сначала разыгрывается сам факт поставки, и только потом количество.
+                    Не выпало — предмета в этом раунде нет вовсе, ИИ увидит ноль.
+                  </p>
+                </div>
+                <Switch id="wh-rare" checked={rareSpawn} onCheckedChange={setRareSpawn} />
+              </div>
+              {rareSpawn && (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number" min={0} max={100} value={spawnChance}
+                    onChange={(e) => setSpawnChance(e.target.value)}
+                    aria-label="Шанс появления за раунд"
+                  />
+                  <span className="shrink-0 text-xs text-muted-foreground">% шанс на раунд</span>
+                </div>
+              )}
+              {chanceInvalid && (
+                <p className="text-xs text-destructive">Шанс появления — целое число от 0 до 100</p>
+              )}
+            </div>
+          )}
+
           {item.rounds && (
             <div className="space-y-1 rounded-md border p-3 text-xs">
               <div className="mb-1 font-medium">Текущий раунд</div>
@@ -647,10 +719,14 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
                 <div key={server} className="flex items-center justify-between text-muted-foreground">
                   <span className="font-mono text-[11px]">{server}</span>
                   <span>
-                    выдано {state.issued}
-                    {/* Для диапазона это выпавший потолок, а не максимум настройки. */}
-                    {state.limit !== null ? ` из ${state.limit}` : ""}
-                    {state.remaining !== null ? ` · осталось ${state.remaining}` : ""}
+                    {state.spawned ? (
+                      <>
+                        выдано {state.issued}
+                        {/* Для диапазона это выпавший потолок, а не максимум настройки. */}
+                        {state.limit !== null ? ` из ${state.limit}` : ""}
+                        {state.remaining !== null ? ` · осталось ${state.remaining}` : ""}
+                      </>
+                    ) : "в этом раунде не выпал"}
                   </span>
                 </div>
               ))}
@@ -660,7 +736,7 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-          <Button disabled={limitInvalid || minInvalid || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+          <Button disabled={limitInvalid || minInvalid || chanceInvalid || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
             {saveMutation.isPending ? "Сохранение…" : "Сохранить"}
           </Button>
         </DialogFooter>
@@ -751,6 +827,11 @@ function WarehouseCard({ item, canEdit, catalog, onCommit, onRemove, onOpenLimit
                 : item.per_round_limit}/раунд
             </Badge>
           )}
+          {item.round_spawn_chance !== null && (
+            <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[9px]">
+              <Percent className="size-2.5" />шанс {item.round_spawn_chance}%
+            </Badge>
+          )}
         </div>
 
         {canEdit ? (
@@ -793,15 +874,21 @@ function WarehouseCard({ item, canEdit, catalog, onCommit, onRemove, onOpenLimit
           </div>
         )}
 
-        {Object.entries(rounds).some(([, state]) => state.remaining !== null || state.issued > 0) && (
+        {Object.entries(rounds).some(([, state]) => (
+          state.remaining !== null || state.issued > 0 || !state.spawned
+        )) && (
           <div className="w-full space-y-0.5 text-[9px] text-muted-foreground">
             {Object.entries(rounds).map(([server, state]) => (
               <div key={server} className="flex justify-between">
                 <span className="font-mono">{server}</span>
-                <span>
-                  выдано {state.issued}
-                  {state.limit !== null ? `/${state.limit}` : ""}
-                  {state.remaining !== null ? ` · доступно ${state.available}` : ""}
+                <span className={state.spawned ? undefined : "text-warning"}>
+                  {state.spawned ? (
+                    <>
+                      выдано {state.issued}
+                      {state.limit !== null ? `/${state.limit}` : ""}
+                      {state.remaining !== null ? ` · доступно ${state.available}` : ""}
+                    </>
+                  ) : "не выпал на раунд"}
                 </span>
               </div>
             ))}

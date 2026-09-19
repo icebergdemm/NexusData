@@ -35,6 +35,7 @@ from services_warehouse import (
     issued_this_round,
     remaining_this_round,
     round_limit,
+    spawned_this_round,
     validate_limit_settings,
 )
 
@@ -82,6 +83,7 @@ def _serialize(w: WarehouseItem, db: Session | None = None) -> dict:
         "is_unlimited": bool(w.is_unlimited),
         "per_round_limit": w.per_round_limit,
         "per_round_limit_min": w.per_round_limit_min,
+        "round_spawn_chance": w.round_spawn_chance,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
         "updated_by": w.updated_by.discord_username if w.updated_by else None,
     }
@@ -96,6 +98,8 @@ def _serialize(w: WarehouseItem, db: Session | None = None) -> dict:
                 # For a randomised range this is the ceiling actually drawn for
                 # the current round, not the configured maximum.
                 "limit": round_limit(db, w, server),
+                # False = предмет в этом раунде не выпал по шансу появления.
+                "spawned": spawned_this_round(db, w, server),
             }
             for server in DISPATCH_SERVERS
         }
@@ -160,10 +164,11 @@ async def api_upsert_warehouse_item(
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
             raise HTTPException(status_code=400, detail="Количество должно быть целым числом ≥ 0")
         try:
-            per_round_limit, per_round_limit_min = validate_limit_settings(
+            per_round_limit, per_round_limit_min, spawn_chance = validate_limit_settings(
                 bool(entry.get("is_unlimited")),
                 entry.get("per_round_limit"),
                 entry.get("per_round_limit_min"),
+                entry.get("round_spawn_chance"),
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
@@ -176,6 +181,7 @@ async def api_upsert_warehouse_item(
         row.is_unlimited = bool(entry.get("is_unlimited"))
         row.per_round_limit = per_round_limit
         row.per_round_limit_min = per_round_limit_min
+        row.round_spawn_chance = spawn_chance
         row.updated_by_admin_id = current_admin.id
         saved.append(row)
 
@@ -210,6 +216,7 @@ async def api_adjust_warehouse_item(
         "is_unlimited" in body
         or "per_round_limit" in body
         or "per_round_limit_min" in body
+        or "round_spawn_chance" in body
     )
     if not touches_limits and "quantity" not in body and "delta" not in body:
         raise HTTPException(status_code=400, detail="Укажите quantity, delta или настройки лимита")
@@ -229,12 +236,16 @@ async def api_adjust_warehouse_item(
         is_unlimited = bool(body.get("is_unlimited", row.is_unlimited))
         raw_limit = body.get("per_round_limit", row.per_round_limit)
         raw_min = body.get("per_round_limit_min", row.per_round_limit_min)
+        raw_chance = body.get("round_spawn_chance", row.round_spawn_chance)
         try:
-            limit, limit_min = validate_limit_settings(is_unlimited, raw_limit, raw_min)
+            limit, limit_min, chance = validate_limit_settings(
+                is_unlimited, raw_limit, raw_min, raw_chance,
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
         row.per_round_limit = limit
         row.per_round_limit_min = limit_min
+        row.round_spawn_chance = chance
         row.is_unlimited = is_unlimited
 
     row.updated_by_admin_id = current_admin.id
@@ -299,6 +310,8 @@ async def api_client_warehouse(
             # The ceiling in force right now. For a randomised range the
             # configured maximum would over-promise, so it is not sent.
             "per_round_limit": round_limit(db, w, requested) if requested else w.per_round_limit,
+            # Предмет может не выпасть на раунд — тогда доступно ноль.
+            "spawned": spawned_this_round(db, w, requested) if requested else None,
             "available_by_server": spread["per_server"],
         })
     return JSONResponse({"server_name": requested, "items": items})

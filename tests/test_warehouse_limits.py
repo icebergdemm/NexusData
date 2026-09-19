@@ -120,8 +120,8 @@ def test_finite_item_is_capped_by_whichever_runs_out_first(db):
 def test_unlimited_without_a_ceiling_is_rejected():
     with pytest.raises(ValueError):
         warehouse_rules.validate_limit_settings(True, None)
-    assert warehouse_rules.validate_limit_settings(True, 5) == (5, None)
-    assert warehouse_rules.validate_limit_settings(False, None) == (None, None)
+    assert warehouse_rules.validate_limit_settings(True, 5) == (5, None, None)
+    assert warehouse_rules.validate_limit_settings(False, None) == (None, None, None)
 
 
 def test_random_round_limit_stays_fixed_inside_one_round(db):
@@ -195,8 +195,8 @@ def test_random_limit_is_enforced_like_a_fixed_one(db):
 
 
 def test_equal_bounds_are_stored_as_a_plain_fixed_limit():
-    assert warehouse_rules.validate_limit_settings(False, 10, 10) == (10, None)
-    assert warehouse_rules.validate_limit_settings(False, 10, 0) == (10, 0)
+    assert warehouse_rules.validate_limit_settings(False, 10, 10) == (10, None, None)
+    assert warehouse_rules.validate_limit_settings(False, 10, 0) == (10, 0, None)
     with pytest.raises(ValueError):
         warehouse_rules.validate_limit_settings(False, 5, 9)
     with pytest.raises(ValueError):
@@ -252,3 +252,120 @@ def test_bulk_add_rejects_an_unlimited_item_without_a_ceiling(db, monkeypatch):
 
     assert excinfo.value.status_code == 400
     assert db.query(WarehouseItem).count() == 0
+
+
+def _spawn_rate(db, item, rounds=400):
+    """Доля раундов, в которых предмет вообще появился."""
+    hits = sum(
+        1 for round_id in range(rounds)
+        if warehouse_rules.spawned_this_round(db, item, "ASPER1", round_ref=f"r{round_id}")
+    )
+    return hits / rounds
+
+
+def test_spawn_chance_roughly_matches_the_configured_percentage(db):
+    db.add(WarehouseItem(identifier="flare", quantity=0, is_unlimited=True,
+                         per_round_limit=10, round_spawn_chance=25))
+    db.commit()
+    item = db.query(WarehouseItem).first()
+
+    assert 0.15 < _spawn_rate(db, item) < 0.35
+
+
+def test_item_that_did_not_spawn_is_unavailable_this_round(db):
+    db.add(WarehouseItem(identifier="flare", quantity=500, is_unlimited=True,
+                         per_round_limit=10, round_spawn_chance=50))
+    db.commit()
+    item = db.query(WarehouseItem).first()
+
+    missed = next(
+        ref for ref in (f"r{i}" for i in range(400))
+        if not warehouse_rules.spawned_this_round(db, item, "ASPER1", round_ref=ref)
+    )
+
+    assert warehouse_rules.round_limit(db, item, "ASPER1", round_ref=missed) == 0
+    assert warehouse_rules.availability(db, item, "ASPER1", round_ref=missed) == 0
+
+
+def test_zero_and_full_chance_are_absolute(db):
+    db.add(WarehouseItem(identifier="never", quantity=0, is_unlimited=True,
+                         per_round_limit=5, round_spawn_chance=0))
+    db.add(WarehouseItem(identifier="always", quantity=0, is_unlimited=True,
+                         per_round_limit=5))
+    db.commit()
+    never = db.query(WarehouseItem).filter_by(identifier="never").one()
+    always = db.query(WarehouseItem).filter_by(identifier="always").one()
+
+    assert _spawn_rate(db, never) == 0
+    assert _spawn_rate(db, always) == 1
+
+
+def test_raising_the_chance_never_removes_an_item_already_present(db):
+    """Шанс не входит в сам бросок, поэтому правка настройки монотонна."""
+    db.add(WarehouseItem(identifier="flare", quantity=0, is_unlimited=True,
+                         per_round_limit=5, round_spawn_chance=30))
+    db.commit()
+    item = db.query(WarehouseItem).first()
+    visible_at_30 = {
+        ref for ref in (f"r{i}" for i in range(200))
+        if warehouse_rules.spawned_this_round(db, item, "ASPER1", round_ref=ref)
+    }
+
+    item.round_spawn_chance = 80
+    db.commit()
+    visible_at_80 = {
+        ref for ref in (f"r{i}" for i in range(200))
+        if warehouse_rules.spawned_this_round(db, item, "ASPER1", round_ref=ref)
+    }
+
+    assert visible_at_30 < visible_at_80
+
+
+def test_spawn_roll_is_independent_of_the_amount_roll(db):
+    """Иначе редкий предмет выпадал бы всегда с одним и тем же количеством."""
+    db.add(WarehouseItem(identifier="flare", quantity=0, is_unlimited=True,
+                         per_round_limit=10, per_round_limit_min=1, round_spawn_chance=50))
+    db.commit()
+    item = db.query(WarehouseItem).first()
+
+    amounts = {
+        warehouse_rules.round_limit(db, item, "ASPER1", round_ref=f"r{i}")
+        for i in range(200)
+        if warehouse_rules.spawned_this_round(db, item, "ASPER1", round_ref=f"r{i}")
+    }
+
+    assert len(amounts) >= 8
+
+
+def test_spawn_chance_requires_a_limit_and_is_bounded():
+    assert warehouse_rules.validate_limit_settings(False, 10, None, 40) == (10, None, 40)
+    # 100% ничем не отличается от отсутствия настройки.
+    assert warehouse_rules.validate_limit_settings(False, 10, None, 100) == (10, None, None)
+    with pytest.raises(ValueError):
+        warehouse_rules.validate_limit_settings(False, None, None, 40)
+    with pytest.raises(ValueError):
+        warehouse_rules.validate_limit_settings(False, 10, None, 140)
+
+
+def test_bulk_add_stores_the_spawn_chance(db, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.warehouse as warehouse_routes
+
+    monkeypatch.setattr(warehouse_routes, "check_permission", lambda *_args: True)
+
+    class _Request:
+        async def json(self):
+            return {"items": [{
+                "identifier": "flare", "quantity": 0, "is_unlimited": True,
+                "per_round_limit": 12, "per_round_limit_min": 2,
+                "round_spawn_chance": 35,
+            }]}
+
+    asyncio.run(warehouse_routes.api_upsert_warehouse_item(
+        _Request(), db=db, current_admin=SimpleNamespace(id=1),
+    ))
+
+    row = db.query(WarehouseItem).one()
+    assert (row.per_round_limit, row.per_round_limit_min, row.round_spawn_chance) == (12, 2, 35)

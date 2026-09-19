@@ -303,6 +303,7 @@ def _apply_migrations():
         ("warehouse_items", "is_unlimited", "TINYINT NOT NULL DEFAULT 0"),
         ("warehouse_items", "per_round_limit", "INT"),
         ("warehouse_items", "per_round_limit_min", "INT"),
+        ("warehouse_items", "round_spawn_chance", "INT"),
         # discord_bot_actions: structured response for request/response-style
         # actions (channel-category verification).
         ("discord_bot_actions", "result", "JSON"),
