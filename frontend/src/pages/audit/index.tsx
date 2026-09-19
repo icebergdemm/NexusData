@@ -69,7 +69,7 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const category = searchParams.get("category") || "all"
   const from = searchParams.get("from") || searchParams.get("date_from") || ""
   const to = searchParams.get("to") || searchParams.get("date_to") || ""
-  const showViews = searchParams.get("views") === "1"
+  const excludeViews = searchParams.get("exclude_views") === "1" || searchParams.get("views") === "0"
   const debouncedQ = useDebouncedValue(q.trim(), 350)
   const debouncedAction = useDebouncedValue(action.trim(), 350)
 
@@ -107,20 +107,20 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   }, [hasRequestedSession, searchParams, selectedSession, sessionsQuery.isError, sessionsQuery.isLoading, setSearchParams])
 
   const logsQuery = useInfiniteQuery({
-    queryKey: ["audit-workspace-logs", source, adminId, selectedSessionId, unbound, activeSessions, debouncedQ, category, debouncedAction, from, to, showViews],
+    queryKey: ["audit-workspace-logs", source, adminId, selectedSessionId, unbound, activeSessions, debouncedQ, category, debouncedAction, from, to, excludeViews],
     queryFn: ({ pageParam = 1 }) => {
       const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
       if (source !== "all") params.set("source", source)
       if (hasAdmin) params.set("admin", String(adminId))
       if (selectedSessionId != null) params.set("session_id", String(selectedSessionId))
       if (unbound) params.set("unbound", "true")
-      if (activeSessions) params.set("active_sessions", "true")
+      else if (activeSessions) params.set("active_sessions", "true")
       if (debouncedQ) params.set("q", debouncedQ)
       if (category !== "all") params.set("category", category)
       if (debouncedAction) params.set("action", debouncedAction)
       if (from) params.set("from", new Date(from).toISOString())
       if (to) params.set("to", new Date(to).toISOString())
-      if (!showViews) params.set("exclude_views", "true")
+      if (excludeViews) params.set("exclude_views", "true")
       return api.get<AuditResponse>(`/api/v1/admin/audit/logs?${params.toString()}`)
     },
     initialPageParam: 1,
@@ -137,7 +137,7 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const selectedLog = selectedRemoteLog.data ?? selectedLoadedLog
   const lastPage = logsQuery.data?.pages.at(-1)
   const hasNextPage = Boolean(lastPage && lastPage.page < lastPage.total_pages)
-  const hasFilters = hasAdmin || hasRequestedSession || unbound || !activeSessions || Boolean(debouncedQ || debouncedAction || from || to || category !== "all" || source !== "all" || showViews)
+  const hasFilters = hasAdmin || hasRequestedSession || unbound || !activeSessions || Boolean(debouncedQ || debouncedAction || from || to || category !== "all" || source !== "all" || excludeViews)
 
   const selectSession = (session: AuditSession) => {
     const next = new URLSearchParams(searchParams)
@@ -157,6 +157,12 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   }
   const selectEvent = (log: AuditLog) => updateParam("event", String(log.id))
   const clearFilters = () => setSearchParams(activeSessions ? {} : { active: "0" })
+  const showAllEvents = () => {
+    const next = new URLSearchParams(searchParams)
+    const localFilterKeys = ["session", "unbound", "event", "q", "action", "category", "from", "to", "source", "exclude_views", "views"]
+    localFilterKeys.forEach((key) => next.delete(key))
+    setSearchParams(next)
+  }
 
   return (
     <div className="space-y-4">
@@ -165,7 +171,6 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
         <div><span className="font-medium text-foreground">Рабочее место расследования</span><span className="ml-2">{total} событий в выборке</span></div>
         <div className="flex flex-wrap items-center gap-4 text-xs">
           <label className="inline-flex items-center gap-2"><Checkbox checked={activeSessions} onCheckedChange={(checked) => updateParam("active", checked ? "" : "0")} /> Активные сессии</label>
-          <label className="inline-flex items-center gap-2"><Checkbox checked={showViews} onCheckedChange={(checked) => updateParam("views", checked ? "1" : "")} /> Показывать чувствительные просмотры</label>
         </div>
       </div>
       {selectionNotice && <div role="status" className="border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">{selectionNotice}</div>}
@@ -183,11 +188,12 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
         </div>
       </Card>
 
-      <Card className="min-h-[520px] gap-0 overflow-hidden py-0 xl:grid xl:grid-cols-[240px_minmax(420px,1fr)_320px]">
+      <Card className="min-h-[520px] min-w-0 gap-0 overflow-hidden py-0 xl:grid xl:grid-cols-[minmax(220px,18rem)_minmax(0,1fr)_minmax(280px,20rem)]">
         {sessionsQuery.isLoading ? <div className="p-4"><Skeleton className="h-40" /></div> : sessionsQuery.isError ? <div role="alert" className="p-4 text-sm text-destructive">Не удалось загрузить список сессий.</div> : <AuditSessionRail sessions={sessions} selectedKey={selectedKey} onSelect={selectSession} />}
         <main className="min-w-0 border-b border-border bg-card xl:border-b-0">
           <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5"><div><h2 className="font-semibold">Лента событий</h2><p className="mt-0.5 text-xs text-muted-foreground">{selectedSession ? selectedSession.admin_display_name || selectedSession.admin_name : "Все доступные события"}</p></div>{selectedSession?.status === "active" && <Badge variant="default">активна</Badge>}</div>
-          {logsQuery.isLoading ? <div className="space-y-2 p-5">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-16" />)}</div> : logsQuery.isError ? <div role="alert" className="m-4 border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">Не удалось загрузить события аудита. Проверьте фильтры и повторите запрос.</div> : <AuditTimeline logs={logs} selectedEventId={hasEvent ? eventId : null} onSelect={selectEvent} emptyMessage={selectedSession?.status === "active" ? "В этой сессии пока нет событий." : "По заданным фильтрам событий не найдено."} />}
+          {logsQuery.isLoading ? <div className="space-y-2 p-5">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-16" />)}</div> : logsQuery.isError ? <div role="alert" className="m-4 border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">Не удалось загрузить события аудита. Проверьте фильтры и повторите запрос.</div> : <AuditTimeline logs={logs} selectedEventId={hasEvent ? eventId : null} onSelect={selectEvent} emptyMessage={selectedSession ? "В этой области событий пока нет. Возможно, они отфильтрованы." : "По заданным фильтрам событий не найдено."} />}
+          {!logsQuery.isLoading && !logsQuery.isError && !logs.length && selectedSession && <div className="border-t border-border px-4 py-3 text-center"><Button size="sm" variant="outline" onClick={showAllEvents}>Показать все события</Button></div>}
           {hasNextPage && <div className="border-t border-border p-3 text-center"><Button size="sm" variant="ghost" onClick={() => logsQuery.fetchNextPage()} disabled={logsQuery.isFetchingNextPage}>{logsQuery.isFetchingNextPage ? "Загрузка…" : "Загрузить ещё"}</Button></div>}
           {!hasNextPage && logs.length > 0 && <div className="border-t border-border px-4 py-2 text-center text-[10px] text-muted-foreground">Загружено {logs.length} из {total}</div>}
         </main>

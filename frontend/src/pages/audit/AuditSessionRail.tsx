@@ -12,16 +12,16 @@ function authLabel(value: string | null): string {
 
 export function AuditSessionRail({ sessions, selectedKey, onSelect }: { sessions: AuditSession[]; selectedKey: string; onSelect: (session: AuditSession) => void }) {
   return (
-    <aside className="min-w-0 border-b border-border bg-card xl:border-b-0 xl:border-r">
+    <aside className="min-h-0 min-w-0 border-b border-border bg-card xl:border-b-0 xl:border-r">
       <div className="border-b border-border px-4 py-3">
         <div className="font-semibold">Доступ и сессии</div>
         <div className="mt-0.5 text-xs text-muted-foreground">{sessions.filter((session) => session.status !== "actor").length} браузерных цепочек</div>
       </div>
-      <div className="flex overflow-x-auto xl:block xl:max-h-[calc(100svh-18rem)] xl:overflow-y-auto">
+      <div className="max-h-72 overflow-y-auto overflow-x-hidden xl:max-h-[calc(100svh-18rem)]">
         <button
           type="button"
           onClick={() => onSelect({ scope_key: "all", session_id: null, admin_id: null, actor: { type: "all", discord_id: null, discord_name: null, nexus_username: null }, admin_name: null, admin_display_name: null, auth_type: null, created_at: null, expires_at: null, last_seen_at: null, first_event_at: null, last_event_at: null, event_count: 0, last_event: null, status: "actor", is_current: false })}
-          className={cn("group min-w-[220px] border-r border-border px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring xl:min-w-0 xl:border-r-0 xl:border-b", selectedKey === "all" && "bg-primary/10 shadow-[inset_3px_0_0_hsl(var(--primary))]")}
+          className={cn("group w-full min-w-0 border-b border-border px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selectedKey === "all" && "bg-primary/10 shadow-[inset_3px_0_0_hsl(var(--primary))]")}
           aria-pressed={selectedKey === "all"}
         >
           <div className="flex items-center gap-2.5">
@@ -41,7 +41,7 @@ export function AuditSessionRail({ sessions, selectedKey, onSelect }: { sessions
               key={key}
               type="button"
               onClick={() => onSelect(session)}
-              className={cn("group min-w-[220px] border-r border-border px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring xl:min-w-0 xl:border-r-0 xl:border-b", selected && "bg-primary/10 shadow-[inset_3px_0_0_hsl(var(--primary))]")}
+              className={cn("group w-full min-w-0 border-b border-border px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected && "bg-primary/10 shadow-[inset_3px_0_0_hsl(var(--primary))]")}
               aria-pressed={selected}
             >
               <div className="flex items-start gap-2.5">
@@ -54,7 +54,7 @@ export function AuditSessionRail({ sessions, selectedKey, onSelect }: { sessions
               </div>
               <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
                 <span>{isUnbound ? "Исторические события" : authLabel(session.auth_type)}</span>
-                <span>{session.event_count} событий</span>
+                <span>{session.event_count} событий всего</span>
               </span>
               <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
                 <span>{session.last_event_at ? new Date(session.last_event_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "нет событий"}</span>

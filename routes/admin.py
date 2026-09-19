@@ -3,7 +3,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_, inspect
+from sqlalchemy import and_, func, or_, inspect
 from typing import Optional
 import secrets
 import threading
@@ -1759,11 +1759,12 @@ async def admin_player_detail(
                 "name": player.player_last_time_name,
             }
         },
+        request=request,
     )
     if can_view_ip:
         log_admin_action(db, current_admin.id, "view_player_ip", {
             "target": {"player_id": player.player_id},
-        })
+        }, request=request)
 
     # Notes, labels, traps, twink analysis, qual-kits
     note_svc = PlayerNoteService(db)
@@ -2178,6 +2179,7 @@ def _serialize_punishment_row(row) -> dict:
 
 @router.get("/api/v1/admin/players/{player_id}")
 async def api_player_detail(
+    request: Request,
     player_id: int,
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
@@ -2225,11 +2227,11 @@ async def api_player_detail(
 
     log_admin_action(db, current_admin.id, "view_player_profile", {
         "target": {"player_id": player.player_id, "steamid": player.player_steamid, "name": player.player_last_time_name}
-    })
+    }, request=request)
     if can_view_ip:
         log_admin_action(db, current_admin.id, "view_player_ip", {
             "target": {"player_id": player.player_id},
-        })
+        }, request=request)
 
     notes = PlayerNoteService(db).get_notes(player_id)
     note_admin_ids = {n.admin_id for n in notes if n.admin_id}
@@ -4261,7 +4263,7 @@ async def api_audit_sessions(
     if not check_permission(current_admin, "audit", "view"):
         raise HTTPException(status_code=403)
 
-    from sqlalchemy import func, select
+    from sqlalchemy import cast, func, select, String as SAString
     from audit_service import format_audit_event
 
     now = datetime.utcnow()
@@ -4279,6 +4281,7 @@ async def api_audit_sessions(
         matching_admins = db.query(AdminUser.id).filter(or_(
             AdminUser.discord_username.ilike(like),
             AdminUser.discord_id.ilike(like),
+            cast(AdminUser.id, SAString).ilike(like),
         )).subquery()
         session_query = session_query.filter(AdminSession.admin_id.in_(matching_admins))
 
@@ -4355,53 +4358,43 @@ async def api_audit_sessions(
         matching_admins = db.query(AdminUser.id).filter(or_(
             AdminUser.discord_username.ilike(like),
             AdminUser.discord_id.ilike(like),
+            cast(AdminUser.id, SAString).ilike(like),
         )).subquery()
         actor_query = actor_query.filter(or_(
             AdminActionLog.actor_discord_name.ilike(like),
             AdminActionLog.actor_discord_id.ilike(like),
+            AdminActionLog.actor_nexus_username.ilike(like),
             AdminActionLog.admin_id.in_(matching_admins),
             AdminActionLog.action.ilike(like),
         ))
-    actor_logs = [] if active is True else actor_query.order_by(AdminActionLog.created_at.desc()).limit(500).all()
-    actor_groups = {}
-    for log in actor_logs:
-        key = (
-            getattr(log, "actor_type", None) or ("web" if log.admin_id else "system"),
-            getattr(log, "actor_discord_id", None),
-            getattr(log, "actor_nexus_username", None),
-            log.admin_id,
-        )
-        group = actor_groups.setdefault(key, {"logs": [], "last": log})
-        group["logs"].append(log)
-        if log.created_at and (not group["last"].created_at or log.created_at > group["last"].created_at):
-            group["last"] = log
-    for (kind, discord_id, nexus_name, _admin_id), group in actor_groups.items():
-        last = group["last"]
-        actor = _audit_actor_payload(db, last)
-        actor_name = actor["display_name"]
-        discord_id = actor["discord_id"]
-        nexus_name = actor["nexus_username"] or nexus_name
+    # Keep one explicit unbound scope visible in both active and history modes.
+    # It is not a browser session, so it must never be silently discarded just
+    # because the browser-session filter is enabled.
+    actor_count = actor_query.count()
+    actor_last = actor_query.order_by(AdminActionLog.created_at.desc(), AdminActionLog.id.desc()).first()
+    actor_first_at = actor_query.with_entities(func.min(AdminActionLog.created_at)).scalar()
+    if actor_last:
         result.append({
             "session_id": None,
-            "admin_id": last.admin_id,
-            "actor": {"type": kind, "discord_id": discord_id, "discord_name": actor_name, "nexus_username": nexus_name},
-            "admin_name": nexus_name or actor_name,
-            "admin_display_name": actor_name,
+            "admin_id": None,
+            "actor": {"type": "unbound", "discord_id": None, "discord_name": "События без браузерной сессии", "nexus_username": None},
+            "admin_name": None,
+            "admin_display_name": "События без браузерной сессии",
             "auth_type": None,
             "created_at": None,
             "expires_at": None,
             "last_seen_at": None,
-            "first_event_at": min(log.created_at for log in group["logs"] if log.created_at).isoformat() if any(log.created_at for log in group["logs"]) else None,
-            "last_event_at": last.created_at.isoformat() if last.created_at else None,
-            "event_count": len(group["logs"]),
-            "last_event": format_audit_event(last),
+            "first_event_at": actor_first_at.isoformat() if actor_first_at else None,
+            "last_event_at": actor_last.created_at.isoformat() if actor_last.created_at else None,
+            "event_count": actor_count,
+            "last_event": format_audit_event(actor_last),
             "status": "actor",
             "is_current": False,
         })
 
     return {
         "sessions": result,
-        "total": total_browser + len(actor_groups),
+        "total": total_browser + (1 if actor_last else 0),
         "page": page,
         "page_size": page_size,
         "total_pages": (total_browser + page_size - 1) // page_size if total_browser else 1,
@@ -4508,15 +4501,25 @@ async def api_audit_logs(
         # other — не фильтруем
 
     if action:
-        query = query.filter(AdminActionLog.action.ilike(f"%{action}%"))
+        normalized_action = action.strip().lower()
+        if normalized_action == "ban":
+            query = query.filter(or_(
+                AdminActionLog.action.ilike("%moderation.ban%"),
+                and_(
+                    AdminActionLog.action == "punishment_create",
+                    cast(AdminActionLog.details, SAString).ilike("%ban%"),
+                ),
+            ))
+        else:
+            query = query.filter(AdminActionLog.action.ilike(f"%{action}%"))
     effective_admin_id = admin if admin is not None else admin_id
     if effective_admin_id is not None:
         query = query.filter(AdminActionLog.admin_id == effective_admin_id)
-    if session_id is not None:
-        query = query.filter(AdminActionLog.session_id == session_id)
     if unbound:
         query = query.filter(AdminActionLog.session_id.is_(None))
-    if active_sessions:
+    elif session_id is not None:
+        query = query.filter(AdminActionLog.session_id == session_id)
+    elif active_sessions:
         active_session_ids = select(AdminSession.id).where(
             AdminSession.revoked == 0,
             or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > datetime.utcnow()),
@@ -7684,8 +7687,14 @@ async def admin_punishment_create(
         db.add(action)
         db.commit()
 
-    log_admin_action(db, current_admin.id, "punishment_create",
-                     {"punishment_id": punishment.id, "type": ptype, "player_id": player_id})
+    audit_action = "moderation.ban" if ptype == "ban" else "punishment_create"
+    log_admin_action(
+        db,
+        current_admin.id,
+        audit_action,
+        {"punishment_id": punishment.id, "type": ptype, "player_id": player_id},
+        request=request,
+    )
     push_flash(request, "success", f"{PUNISHMENT_TYPE_LABELS.get(ptype, ptype)} выдан(о).")
     return RedirectResponse(url=f"/adminold/players/{player_id}", status_code=302)
 
@@ -7966,8 +7975,14 @@ async def api_punishment_create(
         db.add(action)
         db.commit()
 
-    log_admin_action(db, current_admin.id, "punishment_create",
-                     {"punishment_id": punishment.id, "type": ptype, "player_id": player_id})
+    audit_action = "moderation.ban" if ptype == "ban" else "punishment_create"
+    log_admin_action(
+        db,
+        current_admin.id,
+        audit_action,
+        {"punishment_id": punishment.id, "type": ptype, "player_id": player_id},
+        request=request,
+    )
     # п.5: наказания с сайта — сразу в Discord (оба канала)
     try:
         from routes.game_api import _queue_punishment_discord_notification

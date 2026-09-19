@@ -143,10 +143,22 @@ def record_audit_event(
         actor_nexus_username=actor_nexus_username,
     )
     context = _request_context(request, outcome=outcome, reason=reason, severity=severity)
+    normalized_details = safe_audit_details(details or {})
+    if action.startswith("view_"):
+        recent_views = db.query(AdminActionLog).filter(
+            AdminActionLog.action == action,
+            AdminActionLog.admin_id == (admin_id if admin_id is not None else getattr(admin, "id", None)),
+            AdminActionLog.session_id == context.get("session_id"),
+            AdminActionLog.route == context.get("route"),
+            AdminActionLog.created_at >= datetime.utcnow() - timedelta(minutes=5),
+        ).order_by(AdminActionLog.created_at.desc()).limit(25).all()
+        for previous in recent_views:
+            if safe_audit_details(getattr(previous, "details", None) or {}) == normalized_details:
+                return previous
     event = AdminActionLog(
         admin_id=admin_id if admin_id is not None else getattr(admin, "id", None),
         action=action,
-        details=safe_audit_details(details or {}),
+        details=normalized_details,
         actor_type=actor.actor_type,
         actor_discord_id=actor.discord_id,
         actor_discord_name=actor.discord_name,
@@ -222,14 +234,27 @@ def format_audit_event(event, *, include_raw: bool = False) -> dict:
             for field in sorted(fields)
             if details["before"].get(field) != details["after"].get(field)
         ]
+    fields = [
+        {"key": key, "value": value}
+        for key, value in details.items()
+        if key not in {"target", "changes", "before", "after", "reason"}
+    ]
     source = "Discord" if action.startswith("discord:") else "Панель"
     actor_name = getattr(event, "actor_discord_name", None) or getattr(event, "actor_nexus_username", None)
+    summary = audit_action_label(action)
+    if action == "punishment_create":
+        punishment_type = str(details.get("type") or "").lower()
+        if punishment_type == "ban":
+            summary = "Заблокирован игрок"
+        elif punishment_type == "kick":
+            summary = "Исключён игрок с сервера"
     return {
         "id": getattr(event, "id", None),
-        "summary": audit_action_label(action),
+        "summary": summary,
         "action": action,
         "target": _event_target(action, details),
         "changes": changes,
+        "fields": fields,
         "reason": getattr(event, "reason", None) or details.get("reason"),
         "actor": {
             "type": getattr(event, "actor_type", None) or ("web" if getattr(event, "admin_id", None) else "system"),

@@ -436,7 +436,7 @@ async def enqueue_moderation_action(
         "reason": reason,
         "server_name": server_name,
         "action_id": action.id,
-    })
+    }, request=request)
     srv_label = f" → {server_name}" if server_name else " → все серверы"
     push_flash(request, "success", f"Действие «{action_type}» поставлено в очередь для {target_steamid}{srv_label}")
     return RedirectResponse(url=f"/adminold/moderation?tab={redirect_tab}", status_code=302)
@@ -879,7 +879,7 @@ async def api_enqueue_moderation_action(
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, f"moderation.{action_type}", {
         "target_steamid": target_steamid, "reason": reason, "server_name": server_name, "action_id": action.id,
-    })
+    }, request=request)
     return {"status": "ok", "action_id": action.id}
 
 

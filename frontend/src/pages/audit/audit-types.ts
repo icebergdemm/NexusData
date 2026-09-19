@@ -11,6 +11,7 @@ export interface AuditStructuredDetails {
   action: string
   target: { type: string; id: number | string; label?: string | null } | null
   changes: Array<{ field: string; from: unknown; to: unknown }>
+  fields: Array<{ key: string; value: unknown }>
   reason: string | null
   actor: AuditActor
   context: {

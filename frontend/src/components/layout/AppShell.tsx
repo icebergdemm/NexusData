@@ -80,6 +80,7 @@ export function AppShell() {
   const [v2SidebarOpen, setV2SidebarOpen] = useState(readV2SidebarState)
 
   useEffect(() => {
+    if (!admin) return
     const path = location.pathname
     let viewKey: string | null = null
     if (path.includes("/players/") && /\/ip(?:\/|$)/.test(path)) viewKey = "player_ip"
@@ -89,7 +90,7 @@ export function AppShell() {
     else if (path.includes("/admin/users/") || path.includes("/adminold/users/")) viewKey = "admin_profile"
     if (!viewKey) return
     void api.post("/api/v1/admin/audit/view", { view_key: viewKey, route: path }).catch(() => undefined)
-  }, [location.pathname])
+  }, [admin, location.pathname])
   const handleV2SidebarOpenChange = useCallback((open: boolean) => {
     setV2SidebarOpen(open)
     try {
