@@ -460,10 +460,12 @@ async def sync_members_task():
     # памяти (см. chunk_guilds_at_startup выше). Записываем в БД порциями,
     # чтобы в памяти одновременно жил лишь небольшой кусок списка.
     batch, synced = [], 0
+    seen_discord_ids = set()
     try:
         async for member in guild.fetch_members(limit=None):
             if member.bot:
                 continue
+            seen_discord_ids.add(str(member.id))
             batch.append({
                 "discord_id": str(member.id),
                 "username": str(member),
@@ -483,6 +485,8 @@ async def sync_members_task():
     if batch:
         res = await asyncio.to_thread(bot_data.sync_members, batch, False)
         synced += (res or {}).get("synced", 0)
+
+    await asyncio.to_thread(bot_data.revoke_sessions_for_missing_members, seen_discord_ids)
 
     # Автосопоставление имён с игроками — один раз в конце, а не на каждую
     # порцию: операция тяжёлая (читает всех участников и игроков разом).

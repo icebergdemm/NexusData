@@ -277,6 +277,30 @@ def sync_members(members: list, run_automatch: bool = True) -> dict:
         db.close()
 
 
+def revoke_sessions_for_missing_members(seen_discord_ids: set[str]) -> int:
+    """Revoke web sessions for non-superusers absent from a completed guild sync."""
+    from models import AdminUser, AdminSession
+
+    db = SessionLocal()
+    try:
+        admins = db.query(AdminUser).filter(
+            AdminUser.discord_id.isnot(None),
+            AdminUser.is_deleted == 0,
+            AdminUser.is_superuser == 0,
+        ).all()
+        missing_ids = [a.id for a in admins if str(a.discord_id) not in seen_discord_ids]
+        if not missing_ids:
+            return 0
+        affected = db.query(AdminSession).filter(
+            AdminSession.admin_id.in_(missing_ids),
+            AdminSession.revoked == 0,
+        ).update({"revoked": 1}, synchronize_session=False)
+        db.commit()
+        return affected
+    finally:
+        db.close()
+
+
 def automatch_discord_ids() -> None:
     """Автосопоставление имён Discord с игроками, отдельным вызовом.
 

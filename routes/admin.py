@@ -18,6 +18,7 @@ from security import (
     get_permission_policy_mode,
     get_active_admin_session,
     hash_admin_session_token,
+    enforce_cookie_csrf,
 )
 from services_player_privacy import can_view_player_ips
 from services_login_keys import resolve_api_login_key
@@ -50,6 +51,20 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 discord_auth = DiscordAuthService()
+DISCORD_MEMBERSHIP_MAX_AGE = timedelta(minutes=10)
+
+
+def has_fresh_discord_membership(db: Session, admin: AdminUser, now: Optional[datetime] = None) -> bool:
+    """Return whether the linked Discord account was recently seen in the guild."""
+    if not admin.discord_id:
+        return False
+    from models import DiscordMember
+
+    member = db.query(DiscordMember).filter(DiscordMember.discord_id == str(admin.discord_id)).first()
+    synced_at = member.last_synced_at if member else None
+    if not synced_at:
+        return False
+    return (now or datetime.utcnow()) - synced_at <= DISCORD_MEMBERSHIP_MAX_AGE
 
 
 def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[dict] = None):
@@ -107,6 +122,7 @@ def load_current_admin(request: Request, db: Session) -> AdminUser:
                 .first()
             )
     if admin:
+        enforce_cookie_csrf(request)
         request.session["username"] = admin.discord_username
         admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
         admin._permission_policy_mode = get_permission_policy_mode(db)
@@ -497,6 +513,10 @@ async def discord_callback(
         if getattr(admin, 'is_deleted', 0) == 1:
             logger.warning(f"Deleted admin login attempt: Discord ID {discord_id}")
             return RedirectResponse(url="/login?error=not_authorized", status_code=302)
+
+        if not getattr(admin, "is_superuser", False) and not has_fresh_discord_membership(db, admin):
+            logger.warning(f"Discord membership unavailable or stale for admin login: Discord ID {discord_id}")
+            return RedirectResponse(url="/login?error=membership_unverified", status_code=302)
 
         # Refresh Discord display name (global_name = display name, username = unique handle)
         fresh_display_name = user_info.get("global_name") or user_info.get("username", "")

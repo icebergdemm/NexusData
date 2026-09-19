@@ -52,6 +52,22 @@ def get_active_admin_session(db, raw_token: str, request: Optional[Request] = No
         db.commit()
     return session
 
+
+def enforce_cookie_csrf(request: Request) -> None:
+    """Reject state-changing browser requests without the session CSRF token."""
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    if getattr(request.state, "nd_auth_type", None) == "login_key":
+        return
+    provided = csrf_token_from_request(request)
+    if not provided:
+        form = getattr(request, "_form", None)
+        provided = form.get("csrf_token") if form is not None else None
+    expected = request.session.get("csrf_token")
+    if provided and expected and secrets.compare_digest(str(provided), str(expected)):
+        return
+    raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
 # JWT Config
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
