@@ -10,9 +10,10 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
+import { securityDisplayName, securitySecondaryName } from "@/lib/security-display"
 
 interface SessionRow {
-  id: number; admin_id: number; admin_name: string | null
+  id: number; admin_id: number; admin_name: string | null; admin_display_name: string | null
   created_at: string | null; expires_at: string | null; last_seen_at: string | null
   last_seen_ip: string | null; user_agent: string | null; auth_type: string | null
   revoked: boolean; is_current: boolean
@@ -64,9 +65,19 @@ export function SessionsPage({ embedded = false }: { embedded?: boolean }) {
               <TableRow><TableHead>Админ</TableHead><TableHead>Вход и устройство</TableHead><TableHead>Создана</TableHead><TableHead>Истекает</TableHead><TableHead>Статус</TableHead>{data?.can_edit && <TableHead />}</TableRow>
             </TableHeader>
             <TableBody>
-              {data?.sessions.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell>{s.admin_name ?? `#${s.admin_id}`}{s.is_current && <Badge className="ml-2" variant="outline">это вы</Badge>}</TableCell>
+              {data?.sessions.map((s) => {
+                const displayName = securityDisplayName(s.admin_display_name, s.admin_name, `#${s.admin_id}`)
+                const nexusName = securitySecondaryName(s.admin_display_name, s.admin_name)
+                const openProfile = () => { const next = new URLSearchParams(searchParams); next.set("profile", String(s.admin_id)); setSearchParams(next) }
+                return <TableRow
+                  key={s.id}
+                  className="cursor-pointer transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
+                  tabIndex={0}
+                  aria-label={`Открыть профиль ${displayName}`}
+                  onClick={(event) => { if (event.target instanceof Element && event.target.closest("a,button")) return; openProfile() }}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openProfile() } }}
+                >
+                  <TableCell><div className="font-medium">{displayName}{s.is_current && <Badge className="ml-2" variant="outline">это вы</Badge>}</div>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}</TableCell>
                   <TableCell><div className="text-sm">{authLabel(s.auth_type)}</div><div className="max-w-xs truncate text-xs text-muted-foreground" title={s.user_agent ?? undefined}>{s.last_seen_ip ?? "IP скрыт"} · {formatBrowserDate(s.last_seen_at)}</div></TableCell>
                   <TableCell className="text-sm">{fmtDate(s.created_at)}</TableCell>
                   <TableCell className="text-sm">{fmtDate(s.expires_at)}</TableCell>
@@ -77,7 +88,7 @@ export function SessionsPage({ embedded = false }: { embedded?: boolean }) {
                     </TableCell>
                   )}
                 </TableRow>
-              ))}
+              })}
               {!data?.sessions.length && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{showHistory ? "Сессий нет" : "Активных сессий нет"}</TableCell></TableRow>}
             </TableBody>
           </Table>

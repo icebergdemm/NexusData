@@ -18,6 +18,7 @@ import { LoginKeysDialog } from "./LoginKeysDialog"
 import { formatPermissionSource, hasPermissionConflict, permissionSourceHref, permissionStatusLabel, resolvePermissionValue, setPermissionOverride, type PermissionValue } from "./PermissionMatrixEditor"
 import type { AuthorizationTrace, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
+import { securityDisplayName, securitySecondaryName } from "@/lib/security-display"
 
 export function UserDetailPage({ adminId: adminIdProp, embedded = false, onClose }: { adminId?: number; embedded?: boolean; onClose?: () => void } = {}) {
   const { adminId: adminIdParam } = useParams<{ adminId: string }>()
@@ -42,7 +43,10 @@ export function UserDetailPage({ adminId: adminIdProp, embedded = false, onClose
   })
   const listedAdmin = usersData?.admins.find((admin) => admin.id === adminId)
   const canEdit = !!usersData?.can_edit
-  const profileName = trace?.admin.discord_username ?? listedAdmin?.discord_username ?? `#${adminId}`
+  const discordDisplayName = trace?.admin.discord_display_name ?? listedAdmin?.discord_display_name
+  const nexusUsername = trace?.admin.discord_username ?? listedAdmin?.discord_username
+  const profileName = securityDisplayName(discordDisplayName, nexusUsername, `#${adminId}`)
+  const nexusName = securitySecondaryName(discordDisplayName, nexusUsername)
 
   const assignGroup = useMutation({
     mutationFn: (privilege_group_id: number | null) => api.post(`/api/v1/admin/users/${adminId}/assign-group`, { privilege_group_id }),
@@ -82,6 +86,7 @@ export function UserDetailPage({ adminId: adminIdProp, embedded = false, onClose
             <div className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary"><UserCog className="size-6" /></div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2"><h1 className="text-xl font-bold">{profileName}</h1>{trace.admin.is_superuser && <Badge>Superuser</Badge>}<Badge variant="outline">{trace.admin.role}</Badge></div>
+              {nexusName && <div className="mt-1 text-sm text-muted-foreground">Имя Nexus Data: {nexusName}</div>}
               <div className="mt-1 font-mono text-xs text-muted-foreground">Discord ID: {trace.admin.discord_id}</div>
               {player ? <Link className="mt-1 inline-flex items-center gap-1 text-sm text-primary hover:underline" to={`/players/${player.player_id}`}><ExternalLink className="size-3.5" />Игровой профиль: {player.name}</Link> : <div className="mt-1 text-sm text-muted-foreground">Игровой профиль не привязан</div>}
             </div>

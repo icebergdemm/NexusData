@@ -1,5 +1,5 @@
 import { useSearchParams } from "react-router-dom"
-import { useInfiniteQuery } from "@tanstack/react-query"
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { ScrollText, Search, RotateCcw, CalendarClock } from "lucide-react"
@@ -16,10 +16,13 @@ import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
+import { securityDisplayName, securitySecondaryName } from "@/lib/security-display"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 
 interface AuditLog {
-  id: number; admin_id: number; admin_name: string | null; action: string
+  id: number; admin_id: number; admin_name: string | null; admin_display_name: string | null; action: string
   details: Record<string, unknown> | null; created_at: string | null
+  auth_type?: string | null; session_id?: number | null; outcome?: string | null; reason?: string | null; severity?: string | null
 }
 interface AuditResponse { logs: AuditLog[]; total: number; page: number; page_size: number; total_pages: number }
 
@@ -96,6 +99,8 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const dateFromInput = datetimeLocalValue(dateFrom)
   const dateToInput = datetimeLocalValue(dateTo)
   const showViews = searchParams.get("views") === "1"
+  const eventId = Number(searchParams.get("event"))
+  const hasEvent = Number.isInteger(eventId) && eventId > 0
   const hasActiveFilters = hasAdminFilter || !!debouncedSearch || category !== "all" || !!debouncedAction || !!dateFrom || !!dateTo || source !== "panel" || showViews
 
   const updateParam = (key: string, value: string) => {
@@ -124,6 +129,13 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   })
   const allLogs = infiniteData?.pages.flatMap((p) => p.logs) ?? []
   const total = infiniteData?.pages[0]?.total ?? 0
+  const selectedLoadedLog = allLogs.find((log) => log.id === eventId)
+  const { data: selectedRemoteLog } = useQuery({
+    queryKey: ["audit-log", eventId],
+    queryFn: () => api.get<AuditLog>(`/api/v1/admin/audit/logs/${eventId}`),
+    enabled: hasEvent && !selectedLoadedLog,
+  })
+  const selectedLog = selectedRemoteLog ?? selectedLoadedLog
   const sentinelRef = useInfiniteScroll(() => { if (hasNextPage) fetchNextPage() }, !!hasNextPage, isFetchingNextPage)
 
   const filtered = allLogs
@@ -226,14 +238,24 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
                   {filtered.map((l) => {
                     const cat = actionCategory(l.action)
                     const meta = CATEGORY_META[cat]
+                    const displayName = securityDisplayName(l.admin_display_name, l.admin_name, `#${l.admin_id}`)
+                    const nexusName = securitySecondaryName(l.admin_display_name, l.admin_name)
+                    const openEvent = () => { const next = new URLSearchParams(searchParams); next.set("event", String(l.id)); setSearchParams(next) }
                     return (
-                      <TableRow key={l.id}>
+                      <TableRow
+                        key={l.id}
+                        className="cursor-pointer transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
+                        tabIndex={0}
+                        aria-label={`Открыть событие ${l.action}`}
+                        onClick={openEvent}
+                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openEvent() } }}
+                      >
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-secondary text-[10px] font-semibold">
-                              {initials(l.admin_name, l.admin_id)}
+                              {initials(l.admin_display_name || l.admin_name, l.admin_id)}
                             </div>
-                            <span className="font-medium">{l.admin_name ?? `#${l.admin_id}`}</span>
+                            <div className="min-w-0"><span className="font-medium">{displayName}</span>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}</div>
                           </div>
                         </TableCell>
                         <TableCell>
@@ -267,6 +289,33 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
           )}
         </CardContent>
       </Card>
+      <Sheet open={hasEvent} onOpenChange={(open) => {
+        if (!open) {
+          const next = new URLSearchParams(searchParams)
+          next.delete("event")
+          setSearchParams(next)
+        }
+      }}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader><SheetTitle>Событие аудита</SheetTitle><SheetDescription>Полная запись действия администратора</SheetDescription></SheetHeader>
+          {selectedLog ? <AuditEventDetails log={selectedLog} /> : <div className="px-6 pb-6 text-sm text-muted-foreground">Загрузка события…</div>}
+        </SheetContent>
+      </Sheet>
     </div>
   )
+}
+
+function AuditEventDetails({ log }: { log: AuditLog }) {
+  const displayName = securityDisplayName(log.admin_display_name, log.admin_name, `#${log.admin_id}`)
+  const nexusName = securitySecondaryName(log.admin_display_name, log.admin_name)
+  return <div className="space-y-5 px-6 pb-6">
+    <div className="space-y-1"><div className="text-lg font-semibold">{log.action}</div><div className="text-sm">{displayName}</div>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}<div className="text-xs text-muted-foreground">{formatBrowserDate(log.created_at)}</div></div>
+    <div className="grid gap-3 text-sm sm:grid-cols-2"><DetailField label="Источник" value={log.auth_type ?? "не указан"} /><DetailField label="Сессия" value={log.session_id ? `#${log.session_id}` : "не указана"} /><DetailField label="Результат" value={log.outcome ?? "не указан"} /><DetailField label="Важность" value={log.severity ?? "не указана"} /></div>
+    {log.reason && <div><div className="mb-1 text-xs font-medium text-muted-foreground">Причина</div><p className="text-sm">{log.reason}</p></div>}
+    <div><div className="mb-1 text-xs font-medium text-muted-foreground">Детали</div><pre className="max-h-80 overflow-auto rounded-md border bg-muted/30 p-3 text-xs leading-relaxed whitespace-pre-wrap break-words">{JSON.stringify(log.details ?? {}, null, 2)}</pre></div>
+  </div>
+}
+
+function DetailField({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-md border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 break-words font-medium">{value}</div></div>
 }

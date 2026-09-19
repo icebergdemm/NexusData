@@ -21,6 +21,7 @@ import { PermissionMatrixEditor, type PermissionValue } from "./PermissionMatrix
 import type { PrivilegeGroup, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
 import { UserDetailPage } from "./detail"
+import { securityDisplayName, securitySecondaryName } from "@/lib/security-display"
 
 export function UsersPage({ embedded = false }: { embedded?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -48,7 +49,7 @@ export function UsersPage({ embedded = false }: { embedded?: boolean }) {
     const query = search.trim().toLowerCase()
     return (data?.admins ?? []).filter((admin) => {
       const matchesSearch = !query || [
-        admin.discord_username, admin.discord_id, admin.privilege_group_name,
+        admin.discord_display_name, admin.discord_username, admin.discord_id, admin.privilege_group_name,
         admin.linked_player?.player_name, admin.role,
         admin.is_superuser ? "superuser суперпользователь" : "",
       ].some((value) => (value ?? "").toLowerCase().includes(query))
@@ -159,9 +160,20 @@ export function UsersPage({ embedded = false }: { embedded?: boolean }) {
                 <Table>
                   <TableHeader><TableRow><TableHead>Администратор</TableHead><TableHead>Группа</TableHead><TableHead>Департаменты</TableHead><TableHead>Конфликты</TableHead><TableHead>Роль</TableHead><TableHead className="w-8" /></TableRow></TableHeader>
                   <TableBody>
-                    {filteredAdmins.map((admin) => <TableRow key={admin.id} className="cursor-pointer" onClick={(event) => { if (event.target instanceof Element && event.target.closest("a,button")) return; const next = new URLSearchParams(searchParams); next.set("admin", String(admin.id)); setSearchParams(next) }}>
+                    {filteredAdmins.map((admin) => {
+                      const displayName = securityDisplayName(admin.discord_display_name, admin.discord_username, `#${admin.id}`)
+                      const nexusName = securitySecondaryName(admin.discord_display_name, admin.discord_username)
+                      return <TableRow
+                        key={admin.id}
+                        className="cursor-pointer transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
+                        tabIndex={0}
+                        aria-label={`Открыть профиль ${displayName}`}
+                        onClick={(event) => { if (event.target instanceof Element && event.target.closest("a,button")) return; const next = new URLSearchParams(searchParams); next.set("admin", String(admin.id)); setSearchParams(next) }}
+                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const next = new URLSearchParams(searchParams); next.set("admin", String(admin.id)); setSearchParams(next) } }}
+                      >
                       <TableCell>
-                        <div className="font-medium">{admin.discord_username ?? "Без имени"}</div>
+                        <div className="font-medium">{displayName}</div>
+                        {nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}
                         <div className="font-mono text-xs text-muted-foreground">{admin.discord_id}</div>
                         {admin.linked_player && <Link to={`/players/${admin.linked_player.player_id}`} className="text-xs text-primary underline-offset-2 hover:underline">Игрок: {admin.linked_player.player_name}</Link>}
                       </TableCell>
@@ -170,7 +182,8 @@ export function UsersPage({ embedded = false }: { embedded?: boolean }) {
                       <TableCell>{admin.permission_summary.conflict_count > 0 ? <Badge variant="destructive" className="gap-1"><AlertTriangle className="size-3" />{admin.permission_summary.conflict_count}</Badge> : <Badge variant="secondary">0</Badge>}</TableCell>
                       <TableCell><div className="flex flex-wrap gap-1"><Badge variant="outline">{admin.role}</Badge>{admin.is_superuser && <Badge>Superuser</Badge>}</div></TableCell>
                       <TableCell><ChevronRight className="size-4 text-muted-foreground" /></TableCell>
-                    </TableRow>)}
+                      </TableRow>
+                    })}
                     {!filteredAdmins.length && <TableRow><TableCell colSpan={6} className="py-12 text-center text-muted-foreground">Администраторы не найдены</TableCell></TableRow>}
                   </TableBody>
                 </Table>

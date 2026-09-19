@@ -3,7 +3,7 @@ import type { PermissionValue } from "./PermissionMatrixEditor"
 export interface LinkedPlayer { player_id: number; player_name: string; auto: boolean }
 
 export interface AdminUserRow {
-  id: number; discord_id: string; discord_username: string | null; role: string
+  id: number; discord_id: string; discord_username: string | null; discord_display_name: string | null; role: string
   is_superuser: boolean; privilege_group_id: number | null; privilege_group_name: string | null
   individual_permissions: { pages?: PermissionValue } | PermissionValue | null
   linked_player: LinkedPlayer | null
@@ -27,7 +27,7 @@ export interface PermissionDecision {
 }
 
 export interface AuthorizationTrace {
-  admin: { id: number; discord_id: string; discord_username: string | null; discord_avatar: string | null; role: string; is_superuser: boolean; policy_mode: string }
+  admin: { id: number; discord_id: string; discord_username: string | null; discord_display_name: string | null; discord_avatar: string | null; role: string; is_superuser: boolean; policy_mode: string }
   effective: { pages: Record<string, Record<string, PermissionDecision>> }
   sources: { individual: { pages?: PermissionValue } | PermissionValue; group: { id: number; name: string; permissions: unknown } | null; department_site: unknown[]; department_module: unknown[] }
   departments: Array<{ id: number; name: string; held_level_keys: string[]; is_head: boolean; is_deputy_head: boolean; is_auto: boolean; levels: Array<{ id: number; key: string; name: string; kind: string; held: boolean; permissions: unknown; site_permissions: unknown }> }>

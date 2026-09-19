@@ -2,16 +2,19 @@ import { useState } from "react"
 import { Link, Outlet, useLocation, useNavigate, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Search } from "lucide-react"
+import { Search, ShieldCheck } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
+import { PageHeader } from "@/components/layout/PageHeader"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { UsersPage } from "@/pages/users"
 import { SessionsPage } from "@/pages/sessions"
 import { AuditPage } from "@/pages/audit"
+import { UserDetailPage } from "@/pages/users/detail"
 
 interface LockdownState {
   enabled: boolean
@@ -30,11 +33,13 @@ const tabs = [
 export function SecurityLayout() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { data: admin, isLoading: adminLoading } = useCurrentAdmin()
   const queryClient = useQueryClient()
   const [quickSearch, setQuickSearch] = useState(searchParams.get("q") ?? "")
   const [confirmState, setConfirmState] = useState<boolean | null>(null)
+  const profileId = location.pathname.startsWith("/security/sessions") ? Number(searchParams.get("profile")) : 0
+  const hasSessionProfile = Number.isInteger(profileId) && profileId > 0
   const { data: lockdown } = useQuery({
     queryKey: ["security-lockdown"],
     queryFn: () => api.get<LockdownState>("/api/v1/admin/security/lockdown"),
@@ -64,14 +69,11 @@ export function SecurityLayout() {
   return (
     <div className="mx-auto w-full max-w-[1500px] space-y-5">
       <header className="border-b border-border/80 pb-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">Безопасность</h1>
-              <p className="text-sm text-muted-foreground">Кто в панели и что там происходило</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-3">
+        <PageHeader
+          title="Безопасность"
+          description="Кто в панели и что там происходило"
+          icon={ShieldCheck}
+          actions={<div className="flex flex-wrap items-center justify-end gap-3">
             <form onSubmit={submitSearch} className="relative w-full sm:w-72">
               <Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
               <Input value={quickSearch} onChange={(event) => setQuickSearch(event.target.value)} placeholder="Админ, Discord ID или действие" className="h-9 pl-8" aria-label="Быстрый поиск по безопасности" />
@@ -82,8 +84,8 @@ export function SecurityLayout() {
                 <Switch checked={!!lockdown?.enabled} disabled={!lockdown || updateLockdown.isPending} onCheckedChange={setConfirmState} aria-label="Аварийная блокировка сайта" />
               </div>
             )}
-          </div>
-        </div>
+          </div>}
+        />
         <nav aria-label="Разделы безопасности" className="mt-5 flex gap-1 overflow-x-auto">
           {tabs.map((tab) => {
             const active = tab.to === "/security" ? location.pathname === tab.to : location.pathname.startsWith(tab.to)
@@ -93,6 +95,19 @@ export function SecurityLayout() {
       </header>
 
       <Outlet />
+
+      <Sheet open={hasSessionProfile} onOpenChange={(open) => {
+        if (!open) {
+          const next = new URLSearchParams(searchParams)
+          next.delete("profile")
+          setSearchParams(next)
+        }
+      }}>
+        <SheetContent side="right" className="w-full max-w-none overflow-y-auto p-0 sm:max-w-4xl">
+          <SheetHeader className="border-b px-5 py-4 pr-12"><SheetTitle>Профиль администратора</SheetTitle><SheetDescription>Права, департаменты, ключи, сессии и аудит</SheetDescription></SheetHeader>
+          {hasSessionProfile && <div className="p-4 sm:p-6"><UserDetailPage adminId={profileId} embedded /></div>}
+        </SheetContent>
+      </Sheet>
 
       <ConfirmDialog
         open={confirmState !== null}

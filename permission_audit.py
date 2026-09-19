@@ -16,6 +16,7 @@ from models import (
     AdminLoginKey,
     AdminPrivilegeGroup,
     AdminUser,
+    DiscordMember,
     Department,
     DepartmentAccessLevel,
     DepartmentMember,
@@ -296,12 +297,14 @@ def build_authorization_trace(db, admin_id: int) -> dict:
         })
 
     player = db.query(PlayerData).filter(PlayerData.linked_admin_id == admin.id).first()
+    discord_member = db.query(DiscordMember).filter(DiscordMember.discord_id == str(admin.discord_id)).first() if admin.discord_id else None
     login_keys = db.query(AdminLoginKey).filter(AdminLoginKey.admin_id == admin.id).order_by(AdminLoginKey.created_at.desc()).all()
     return {
         "admin": {
             "id": admin.id,
             "discord_id": admin.discord_id,
             "discord_username": admin.discord_username,
+            "discord_display_name": discord_member.display_name if discord_member else None,
             "discord_avatar": admin.discord_avatar,
             "role": admin.role,
             "is_superuser": bool(admin.is_superuser),

@@ -40,7 +40,7 @@ from services import (
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
-    LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
+    DiscordMember, LabelCategory, PlayerLabel, PlayerNote, PlayerTrap, Kit, PlayerSession,
     PlayerPunishment, AppSetting, ServerAction, DisguiseProfile,
 )
 from config import get_settings, update_env_file
@@ -193,6 +193,7 @@ def group_security_activity(logs, window_seconds: int = 300) -> list[dict]:
             "ids": [log.id],
             "admin_id": log.admin_id,
             "admin_name": getattr(log, "admin_name", None),
+            "admin_display_name": getattr(log, "admin_display_name", None),
             "action": log.action,
             "count": 1,
             "details": [details],
@@ -896,9 +897,10 @@ async def admin_users_list(
     })
 
 
-def _serialize_admin_user(a: AdminUser, linked_player=None) -> dict:
+def _serialize_admin_user(a: AdminUser, linked_player=None, discord_display_name: Optional[str] = None) -> dict:
     return {
         "id": a.id, "discord_id": a.discord_id, "discord_username": a.discord_username,
+        "discord_display_name": discord_display_name,
         "discord_avatar": a.discord_avatar, "role": a.role, "is_superuser": bool(a.is_superuser),
         "privilege_group_id": a.privilege_group_id,
         "privilege_group_name": a.privilege_group.name if a.privilege_group else None,
@@ -944,12 +946,15 @@ def api_admin_users_list(db: Session = Depends(get_db), current_admin: AdminUser
 
     linked_players = db.query(PlayerData).filter(PlayerData.linked_admin_id.in_([a.id for a in admins])).all()
     linked_by_admin_id = {p.linked_admin_id: p for p in linked_players}
+    discord_ids = {str(a.discord_id) for a in admins if a.discord_id}
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+    discord_names = {member.discord_id: member.display_name for member in discord_members}
 
     from permission_audit import permission_summaries
     summaries = permission_summaries(db, admins)
     admins_data = []
     for a in admins:
-        item = _serialize_admin_user(a, linked_by_admin_id.get(a.id))
+        item = _serialize_admin_user(a, linked_by_admin_id.get(a.id), discord_names.get(str(a.discord_id)))
         item["permission_summary"] = summaries[a.id]
         admins_data.append(item)
 
@@ -3040,12 +3045,18 @@ async def api_sessions_list(
         )
     sessions = query.order_by(AdminSession.created_at.desc()).all()
     admin_ids = {s.admin_id for s in sessions}
-    admins_map = {a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()} if admin_ids else {}
+    session_admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
+    admins_map = {a.id: a.discord_username for a in session_admins}
+    discord_ids = {str(a.discord_id) for a in session_admins if a.discord_id}
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+    discord_names = {member.discord_id: member.display_name for member in discord_members}
+    admin_discord_names = {a.id: discord_names.get(str(a.discord_id)) for a in session_admins}
 
     return {
         "sessions": [
             {
                 "id": s.id, "admin_id": s.admin_id, "admin_name": admins_map.get(s.admin_id),
+                "admin_display_name": admin_discord_names.get(s.admin_id),
                 "token_preview": None,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "expires_at": s.expires_at.isoformat() if s.expires_at else None,
@@ -3209,12 +3220,15 @@ async def api_security_overview(
         .all()
     )
     admin_ids = {log.admin_id for log in attention_logs + activity_logs if log.admin_id}
-    admin_lookup = {
-        admin.id: admin.discord_username
-        for admin in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()
-    } if admin_ids else {}
+    overview_admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
+    admin_lookup = {admin.id: admin.discord_username for admin in overview_admins}
+    discord_ids = {str(admin.discord_id) for admin in overview_admins if admin.discord_id}
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+    discord_names = {member.discord_id: member.display_name for member in discord_members}
+    admin_display_lookup = {admin.id: discord_names.get(str(admin.discord_id)) for admin in overview_admins}
     for log in attention_logs + activity_logs:
         log.admin_name = admin_lookup.get(log.admin_id)
+        log.admin_display_name = admin_display_lookup.get(log.admin_id)
 
     active_sessions = (
         db.query(AdminSession)
@@ -3227,16 +3241,19 @@ async def api_security_overview(
         .all()
     )
     session_admin_ids = {session.admin_id for session in active_sessions}
-    session_admin_lookup = {
-        admin.id: admin.discord_username
-        for admin in db.query(AdminUser).filter(AdminUser.id.in_(session_admin_ids)).all()
-    } if session_admin_ids else {}
+    session_admins = db.query(AdminUser).filter(AdminUser.id.in_(session_admin_ids)).all() if session_admin_ids else []
+    session_admin_lookup = {admin.id: admin.discord_username for admin in session_admins}
+    session_discord_ids = {str(admin.discord_id) for admin in session_admins if admin.discord_id}
+    session_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(session_discord_ids)).all() if session_discord_ids else []
+    session_discord_names = {member.discord_id: member.display_name for member in session_members}
+    session_display_lookup = {admin.id: session_discord_names.get(str(admin.discord_id)) for admin in session_admins}
 
     def serialize_session(session: AdminSession) -> dict:
         return {
             "id": session.id,
             "admin_id": session.admin_id,
             "admin_name": session_admin_lookup.get(session.admin_id),
+            "admin_display_name": session_display_lookup.get(session.admin_id),
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "expires_at": session.expires_at.isoformat() if session.expires_at else None,
             "last_seen_at": session.last_seen_at.isoformat() if session.last_seen_at else None,
@@ -4258,10 +4275,16 @@ async def api_audit_logs(
                     AdminUser.discord_id.ilike(like),
                 ),
             ).exists()
+            discord_name_exists = db.query(DiscordMember.id).filter(
+                DiscordMember.discord_id == AdminUser.discord_id,
+                DiscordMember.display_name.ilike(like),
+                AdminUser.id == AdminActionLog.admin_id,
+            ).exists()
             query = query.filter(or_(
                 AdminActionLog.action.ilike(like),
                 cast(AdminActionLog.details, SAString).ilike(like),
                 admin_exists,
+                discord_name_exists,
             ))
     total = query.count()
     logs = (
@@ -4276,6 +4299,10 @@ async def api_audit_logs(
     admin_ids = list(set(log.admin_id for log in logs if log.admin_id))
     admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
     admin_lookup = {a.id: a.discord_username for a in admins}
+    discord_ids = {str(a.discord_id) for a in admins if a.discord_id}
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+    discord_names = {member.discord_id: member.display_name for member in discord_members}
+    admin_display_lookup = {a.id: discord_names.get(str(a.discord_id)) for a in admins}
 
     return JSONResponse({
         "logs": [
@@ -4283,6 +4310,7 @@ async def api_audit_logs(
                 "id": log.id,
                 "admin_id": log.admin_id,
                 "admin_name": admin_lookup.get(log.admin_id, "Неизвестный"),
+                "admin_display_name": admin_display_lookup.get(log.admin_id),
                 "action": log.action,
                 "details": redact_audit_details(log.details, bool(current_admin.is_superuser)),
                 "created_at": log.created_at.isoformat() if log.created_at else None,
@@ -4303,6 +4331,40 @@ async def api_audit_logs(
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if total > 0 else 1,
     })
+
+
+@router.get("/api/v1/admin/audit/logs/{log_id}")
+async def api_audit_log_detail(
+    log_id: int,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    if not check_permission(current_admin, "audit", "view"):
+        raise HTTPException(status_code=403)
+    log = db.query(AdminActionLog).filter(AdminActionLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Событие аудита не найдено")
+    admin = db.query(AdminUser).filter(AdminUser.id == log.admin_id).first() if log.admin_id else None
+    member = db.query(DiscordMember).filter(DiscordMember.discord_id == str(admin.discord_id)).first() if admin and admin.discord_id else None
+    return {
+        "id": log.id,
+        "admin_id": log.admin_id,
+        "admin_name": admin.discord_username if admin else "Неизвестный",
+        "admin_display_name": member.display_name if member else None,
+        "action": log.action,
+        "details": redact_audit_details(log.details, bool(current_admin.is_superuser)),
+        "created_at": log.created_at.isoformat() if log.created_at else None,
+        "auth_type": log.auth_type,
+        "session_id": log.session_id,
+        "login_key_id": log.login_key_id,
+        "request_id": log.request_id,
+        "source_ip": log.source_ip if current_admin.is_superuser else None,
+        "user_agent": log.user_agent if current_admin.is_superuser else None,
+        "outcome": log.outcome,
+        "reason": log.reason,
+        "severity": log.severity,
+    }
 
 
 @router.get("/adminold/server-privileges", response_class=HTMLResponse)

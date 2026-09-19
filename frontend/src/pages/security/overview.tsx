@@ -5,11 +5,13 @@ import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { cn } from "@/lib/utils"
+import { securityDisplayName, securitySecondaryName } from "@/lib/security-display"
 
 interface SecuritySession {
   id: number
   admin_id: number
   admin_name: string | null
+  admin_display_name: string | null
   created_at: string | null
   expires_at: string | null
   last_seen_at: string | null
@@ -30,6 +32,7 @@ interface RecentAction {
   id: number
   admin_id: number
   admin_name: string | null
+  admin_display_name: string | null
   action: string
   count: number
   details: Array<Record<string, unknown>>
@@ -82,7 +85,7 @@ export function SecurityOverviewPage() {
 
   return (
     <div className="space-y-8">
-      <section aria-labelledby="security-attention-title">
+      <section aria-labelledby="security-attention-title" className="rounded-lg border bg-card/30 p-4 sm:p-5">
         <SectionHeading id="security-attention-title" title="Требует внимания" />
         {data.attention.length ? (
           <div className="divide-y divide-border border-y border-border">
@@ -98,24 +101,33 @@ export function SecurityOverviewPage() {
         )}
       </section>
 
-      <section aria-labelledby="security-sessions-title">
+      <section aria-labelledby="security-sessions-title" className="rounded-lg border bg-card/30 p-4 sm:p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><SectionHeading id="security-sessions-title" title="Сейчас в панели" /><Link className="text-sm text-primary underline-offset-4 hover:underline" to="/security/sessions">Все сессии</Link></div>
         <div className="divide-y divide-border border-y border-border">
-          {data.active_sessions.map((session) => <div key={session.id} className="flex flex-wrap items-center gap-3 py-3 text-sm">
-            <div className="min-w-0 flex-1"><div className="font-medium">{session.admin_name ?? `#${session.admin_id}`} {session.is_current && <span className="ml-1 text-xs text-primary">это вы</span>}</div><div className="text-xs text-muted-foreground">с {formatTime(session.created_at)}, до {formatDate(session.expires_at)} · {authLabel(session.auth_type)}</div></div>
-            {!session.is_current && <Button size="sm" variant="destructive" onClick={() => revoke.mutate(session.id)} disabled={revoke.isPending}>Отозвать</Button>}
-          </div>)}
+          {data.active_sessions.map((session) => {
+            const displayName = securityDisplayName(session.admin_display_name, session.admin_name, `#${session.admin_id}`)
+            const nexusName = securitySecondaryName(session.admin_display_name, session.admin_name)
+            return <div key={session.id} className="flex flex-wrap items-center gap-3 py-3 text-sm">
+              <div className="min-w-0 flex-1"><div className="font-medium">{displayName} {session.is_current && <span className="ml-1 text-xs text-primary">это вы</span>}</div>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}<div className="text-xs text-muted-foreground">с {formatTime(session.created_at)}, до {formatDate(session.expires_at)} · {authLabel(session.auth_type)}</div></div>
+              {!session.is_current && <Button size="sm" variant="destructive" onClick={() => revoke.mutate(session.id)} disabled={revoke.isPending}>Отозвать</Button>}
+            </div>
+          })}
           {!data.active_sessions.length && <div className="py-5 text-sm text-muted-foreground">Активных сессий нет.</div>}
         </div>
       </section>
 
-      <section aria-labelledby="security-actions-title">
+      <section aria-labelledby="security-actions-title" className="rounded-lg border bg-card/30 p-4 sm:p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><SectionHeading id="security-actions-title" title="Последние действия" /><Link className="text-sm text-primary underline-offset-4 hover:underline" to="/security/audit">Открыть весь аудит</Link></div>
         <div className="divide-y divide-border border-y border-border">
-          {data.recent_actions.map((action) => <div key={`${action.id}-${action.action}`} className="flex gap-3 py-3 text-sm">
-            <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", activityDot(action))} aria-hidden="true" />
-            <div className="min-w-0 flex-1"><div><span className="font-medium">{action.admin_name ?? `#${action.admin_id}`}</span><span className="text-muted-foreground"> — {activityLabel(action)}</span><span className="ml-2 text-xs text-muted-foreground">{formatBrowserDate(action.created_at)}</span></div>{activityDetails(action) && <div className="mt-1 text-xs text-muted-foreground">{activityDetails(action)}</div>}</div>
-          </div>)}
+          {data.recent_actions.map((action) => {
+            const displayName = securityDisplayName(action.admin_display_name, action.admin_name, `#${action.admin_id}`)
+            const nexusName = securitySecondaryName(action.admin_display_name, action.admin_name)
+            const details = activityDetails(action)
+            return <Link key={`${action.id}-${action.action}`} to={`/security/audit?event=${action.id}`} className="flex gap-3 py-3 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", activityDot(action))} aria-hidden="true" />
+              <div className="min-w-0 flex-1"><div><span className="font-medium">{displayName}</span><span className="text-muted-foreground"> — {activityLabel(action)}</span><span className="ml-2 text-xs text-muted-foreground">{formatBrowserDate(action.created_at)}</span></div>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}{details && <div className="mt-1 text-xs text-muted-foreground">{details}</div>}</div>
+            </Link>
+          })}
           {!data.recent_actions.length && <div className="py-5 text-sm text-muted-foreground">Важных действий пока нет.</div>}
         </div>
       </section>
