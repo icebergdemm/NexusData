@@ -504,6 +504,8 @@ def _default_ai_dispatcher_runtime_config() -> dict:
         "alert_history_messages": _AI_DEFAULT_ALERT_HISTORY_MESSAGES,
         "enabled_tools": list(_AI_CONFIGURABLE_TOOLS),
         "report_types": {name: True for name in _AI_REPORT_TYPES},
+        # Не отвечать на переговоры бортов между собой (см. _is_overheard_traffic).
+        "skip_overheard_traffic": True,
     }
 
 
@@ -545,6 +547,10 @@ def _ai_dispatcher_runtime_config(db: Session) -> dict:
             if name in enabled_tools
         ]
 
+    skip_overheard = stored.get("skip_overheard_traffic")
+    if isinstance(skip_overheard, bool):
+        config["skip_overheard_traffic"] = skip_overheard
+
     report_types = stored.get("report_types")
     if isinstance(report_types, dict):
         config["report_types"] = {
@@ -566,8 +572,11 @@ def _set_ai_dispatcher_runtime_config(
     alert_history_messages: Optional[int] = None,
     enabled_tools: Optional[List[str]] = None,
     report_types: Optional[dict] = None,
+    skip_overheard_traffic: Optional[bool] = None,
 ) -> dict:
     config = _ai_dispatcher_runtime_config(db)
+    if skip_overheard_traffic is not None:
+        config["skip_overheard_traffic"] = bool(skip_overheard_traffic)
     if history_messages is not None:
         config["history_messages"] = history_messages
     if nearby_context_messages is not None:
@@ -705,6 +714,23 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         return
 
     round_id = _resolve_ai_conversation_round_id(db, server_name)
+    context = _build_ai_communication_context(
+        db,
+        server_name,
+        sender_name=msg.player_name,
+    )
+    if _ai_dispatcher_runtime_config(db)["skip_overheard_traffic"]:
+        overheard = _is_overheard_traffic(msg.text, context, msg.player_name)
+        if overheard:
+            # Реплика адресована другому борту и поста не касается. Она
+            # остаётся в журнале и в контексте следующего ответа, но ход
+            # модели не запускает.
+            logger.info(
+                "AI dispatcher skipped message %s: обращение к %s, пост не упомянут",
+                msg.id,
+                ", ".join(overheard),
+            )
+            return
     payload = {
         "event_id": f"nexus-dispatch-{msg.id}",
         "round_id": round_id,
@@ -712,11 +738,7 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
         "text": msg.text,
         "sender_name": msg.player_name,
         "dispatcher_config": _ai_dispatcher_request_config(db),
-        "communication_context": _build_ai_communication_context(
-            db,
-            server_name,
-            sender_name=msg.player_name,
-        ),
+        "communication_context": context,
     }
     _enqueue_ai_dispatch_job(
         _AIDispatchJob(
@@ -757,6 +779,69 @@ def _not_dispatcher_echo_steamid():
             tuple(_DISPATCHER_ECHO_SENDER_IDS)
         ),
     )
+
+
+# Как экипаж зовёт саму диспетчерскую. Корни, а не целые слова: в эфире
+# говорят и «пост», и «посту», и «диспетчерская». Границы слова обязательны,
+# иначе «постой» или «апостол» сойдут за обращение к посту.
+_AI_DISPATCHER_CALLSIGN_RE = re.compile(
+    r"(?<![а-яёa-z])(диспетчер\w*|пост(?:у|а|ом|е)?|центр\w*|баз[аеуы]|оператор\w*)(?![а-яёa-z])",
+    re.IGNORECASE,
+)
+
+
+def _normalize_callsign(value: str) -> str:
+    """Позывной без разделителей и номера борта: «Снегирь-2» → «снегирь»."""
+    cleaned = re.sub(r"[^\w\s]", " ", str(value or ""), flags=re.UNICODE)
+    cleaned = re.sub(r"\d+", " ", cleaned)
+    return " ".join(cleaned.split()).casefold()
+
+
+def _mentions_dispatcher(text: str) -> bool:
+    return bool(_AI_DISPATCHER_CALLSIGN_RE.search(text or ""))
+
+
+def _mentioned_other_callsigns(text: str, context: dict, sender_name: Optional[str]) -> list:
+    """Позывные ИЗ ЭТОГО раунда, к которым обращаются в сообщении.
+
+    Берём только то, что сайт и так знает про раунд (подлодки, челнок, маяк,
+    сам отправитель), — выдумывать позывные по тексту нельзя.
+    """
+    normalized_text = _normalize_callsign(text)
+    if not normalized_text:
+        return []
+    own = {_normalize_callsign(sender_name)} if sender_name else set()
+    source = context.get("source") if isinstance(context, dict) else None
+    if isinstance(source, dict):
+        own.add(_normalize_callsign(source.get("name")))
+        own.add(_normalize_callsign(source.get("vessel_name")))
+    own.discard("")
+
+    found = []
+    for target in (context.get("available_targets") or []):
+        if not isinstance(target, dict):
+            continue
+        for key in ("name", "vessel_name"):
+            callsign = _normalize_callsign(target.get(key))
+            # Слишком короткий позывной («м», «а») найдётся в любом тексте.
+            if len(callsign) < 3 or callsign in own:
+                continue
+            if re.search(rf"(?<!\w){re.escape(callsign)}(?!\w)", normalized_text):
+                found.append(callsign)
+    return sorted(set(found))
+
+
+def _is_overheard_traffic(text: str, context: dict, sender_name: Optional[str]) -> list:
+    """Переговоры бортов между собой, которые пост просто слышит.
+
+    Диспетчер сидит на общем канале и слышит всё. Раньше каждая реплика
+    запускала ход модели, и она вклинивалась в чужой разговор — например,
+    когда «Снегирь-2» вызывал «Тайфун». Вмешательство остаётся возможным,
+    если к посту обратились: явного упоминания достаточно.
+    """
+    if _mentions_dispatcher(text):
+        return []
+    return _mentioned_other_callsigns(text, context, sender_name)
 
 
 def _is_ai_visible_dispatch_message(msg: DispatchMessage) -> bool:
@@ -3015,6 +3100,7 @@ def set_dispatch_ai_config(
             body.alert_history_messages,
             body.enabled_tools,
             body.report_types,
+            body.skip_overheard_traffic,
         )
     ):
         runtime_config = _set_ai_dispatcher_runtime_config(
@@ -3024,6 +3110,7 @@ def set_dispatch_ai_config(
             alert_history_messages=body.alert_history_messages,
             enabled_tools=body.enabled_tools,
             report_types=body.report_types,
+            skip_overheard_traffic=body.skip_overheard_traffic,
         )
         changed.update(runtime_config)
     db.commit()

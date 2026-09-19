@@ -379,6 +379,8 @@ class AIDispatcherConfigIn(BaseModel):
     """Часткове оновлення runtime-конфігурації AsperAIDispatcher."""
 
     enabled: Optional[bool] = None
+    # Не отвечать на переговоры бортов между собой, когда пост не упомянут.
+    skip_overheard_traffic: Optional[bool] = None
     history_messages: Optional[int] = Field(default=None, ge=1, le=30)
     nearby_context_messages: Optional[int] = Field(default=None, ge=1, le=30)
     alert_history_messages: Optional[int] = Field(default=None, ge=1, le=30)

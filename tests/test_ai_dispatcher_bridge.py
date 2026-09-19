@@ -1726,3 +1726,55 @@ class DispatcherEchoVisibilityTests(unittest.TestCase):
         with patch("routes.dispatch._ai_dispatcher_enabled") as enabled:
             _queue_ai_dispatcher_request(self.db, echo)
         enabled.assert_not_called()
+
+
+class OverheardTrafficGateTests(unittest.TestCase):
+    """Реплика к другому борту не должна запускать ход модели."""
+
+    def _run(self, text, sender="Снегирь-2", skip=True):
+        message = DispatchMessage(
+            id=61, text=text, player_name=sender, server_name="ASPER1",
+        )
+        context = {
+            "source": {"kind": "player", "name": sender, "vessel_name": sender},
+            "available_targets": [
+                {"kind": "vessel", "name": "Тайфун", "vessel_name": None},
+                {"kind": "player", "name": sender, "vessel_name": sender},
+            ],
+            "default_target": sender,
+            "recent_messages": [],
+        }
+        with (
+            patch("routes.dispatch._ai_dispatcher_enabled", return_value=True),
+            patch("routes.dispatch._resolve_ai_conversation_round_id", return_value="r1"),
+            patch("routes.dispatch._build_ai_communication_context", return_value=context),
+            patch(
+                "routes.dispatch._ai_dispatcher_runtime_config",
+                return_value={
+                    "history_messages": 5,
+                    "nearby_context_messages": 4,
+                    "alert_history_messages": 5,
+                    "enabled_tools": [],
+                    "report_types": {},
+                    "skip_overheard_traffic": skip,
+                },
+            ),
+            patch("routes.dispatch._ai_dispatcher_request_config", return_value={}),
+            patch("routes.dispatch._enqueue_ai_dispatch_job") as enqueue_job,
+            patch.object(dispatch_routes.settings, "ai_dispatcher_url", "http://dispatcher/api"),
+            patch.object(dispatch_routes.settings, "ai_dispatcher_api_key", "secret"),
+        ):
+            _queue_ai_dispatcher_request(MagicMock(), message)
+        return enqueue_job
+
+    def test_call_to_another_vessel_is_not_forwarded(self):
+        self._run("Тайфун, выйдите на связь, говорит Снегирь-2.").assert_not_called()
+
+    def test_call_that_names_the_post_is_forwarded(self):
+        self._run("Тайфун, доложите посту обстановку").assert_called_once()
+
+    def test_message_without_an_addressee_is_forwarded(self):
+        self._run("У нас течь в машинном, нужна помощь").assert_called_once()
+
+    def test_operator_can_switch_the_filter_off(self):
+        self._run("Тайфун, выйдите на связь", skip=False).assert_called_once()
