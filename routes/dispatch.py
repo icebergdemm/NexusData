@@ -7,6 +7,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, func, or_
+
+import services_warehouse as warehouse_rules
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -3123,7 +3125,14 @@ async def dispatch_torpedo_action(request: Request, db: Session = Depends(get_db
     return JSONResponse({"status": "ok", "action_id": action.id})
 
 
-def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, admin_id: Optional[int]) -> ServerAction:
+def _queue_cargo_action(
+    db: Session,
+    server_name: Optional[str],
+    items: list,
+    admin_id: Optional[int],
+    *,
+    allow_limit_override: bool = False,
+) -> ServerAction:
     """Shared by the admin panel endpoint and the external client endpoint.
     Requested items are DEDUCTED from the virtual warehouse (routes/warehouse.py)
     atomically with queuing the action — if stock is insufficient for anything
@@ -3146,7 +3155,9 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
             raise HTTPException(status_code=400, detail="Некорректный предмет в грузе")
         requested[identifier] = requested.get(identifier, 0) + qty
 
+    round_ref = warehouse_rules.current_round_ref(db, normalized_server)
     to_deduct = []
+    overrides = []
     for identifier, qty in requested.items():
         row = (
             db.query(WarehouseItem)
@@ -3154,14 +3165,40 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
             .with_for_update()
             .first()
         )
-        if not row or row.quantity < qty:
-            available = row.quantity if row else 0
-            raise HTTPException(status_code=400, detail=f"На складе недостаточно «{identifier}» (нужно {qty}, есть {available})")
+        if not row:
+            raise HTTPException(status_code=400, detail=f"«{identifier}» нет на складе")
+        # An unlimited line is produced on demand, so only its per-round
+        # ceiling can stop it.
+        if not row.is_unlimited and row.quantity < qty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"На складе недостаточно «{identifier}» (нужно {qty}, есть {row.quantity})",
+            )
+        remaining = warehouse_rules.remaining_this_round(db, row, normalized_server, round_ref)
+        if remaining is not None and qty > remaining:
+            if not allow_limit_override:
+                # The AI never gets this flag: its orders are capped by the
+                # same number it was shown as available.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Лимит на раунд для «{identifier}» исчерпан "
+                        f"(запрошено {qty}, доступно {remaining} из {row.per_round_limit})"
+                    ),
+                )
+            overrides.append({
+                "identifier": identifier,
+                "quantity": qty,
+                "remaining": remaining,
+                "per_round_limit": row.per_round_limit,
+            })
         to_deduct.append((row, qty))
 
     for row, qty in to_deduct:
-        row.quantity -= qty
+        if not row.is_unlimited:
+            row.quantity -= qty
         row.updated_by_admin_id = admin_id
+        warehouse_rules.record_issue(db, row.identifier, normalized_server, qty, round_ref)
 
     action = ServerAction(
         action_type="cargo_spawn",
@@ -3172,6 +3209,9 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
                 {"identifier": identifier, "quantity": qty}
                 for identifier, qty in requested.items()
             ],
+            # Lets a failed ACK give back both the stock and the round budget.
+            "warehouse_round_ref": round_ref,
+            **({"limit_overrides": overrides} if overrides else {}),
         },
         queued_by_admin_id=admin_id,
     )
@@ -3185,6 +3225,15 @@ def _queue_cargo_action(db: Session, server_name: Optional[str], items: list, ad
         normalized_server,
         action.payload.get("items", []) if isinstance(action.payload, dict) else [],
     )
+    if overrides:
+        # Going over a ceiling is allowed for a human, but never silently.
+        logger.warning(
+            "dispatch.cargo.limit_override action_id=%s server=%s admin_id=%s items=%r",
+            action.id,
+            normalized_server,
+            admin_id,
+            overrides,
+        )
     return action
 
 
@@ -3195,7 +3244,15 @@ async def dispatch_cargo_action(request: Request, db: Session = Depends(get_db),
     body = await request.json()
     server_name = (body.get("server_name") or "").strip() or None
     items = body.get("items") or []
-    action = _queue_cargo_action(db, server_name, items, current_admin.id)
+    action = _queue_cargo_action(
+        db,
+        server_name,
+        items,
+        current_admin.id,
+        # The UI re-sends the order with this set after showing the operator
+        # exactly which ceiling they are about to exceed.
+        allow_limit_override=bool(body.get("allow_limit_override")),
+    )
     return JSONResponse({"status": "ok", "action_id": action.id})
 
 

@@ -298,6 +298,10 @@ def _apply_migrations():
         # departments: Discord channel for the hourly department-rating
         # leaderboard embed (bot-published).
         ("departments", "rating_channel_id", "VARCHAR(50)"),
+        # warehouse_items: an always-available line capped per round, and an
+        # optional per-round ceiling for ordinary stocked lines.
+        ("warehouse_items", "is_unlimited", "TINYINT NOT NULL DEFAULT 0"),
+        ("warehouse_items", "per_round_limit", "INT"),
         # discord_bot_actions: structured response for request/response-style
         # actions (channel-category verification).
         ("discord_bot_actions", "result", "JSON"),

@@ -1,4 +1,14 @@
 import { useState } from "react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { PackagePlus } from "lucide-react"
@@ -45,10 +55,24 @@ export function CargoDialog({ open, onOpenChange, defaultServer }: {
   const usedByIdentifier = new Map<string, number>()
   slots.forEach((s) => { if (s) usedByIdentifier.set(s.identifier, (usedByIdentifier.get(s.identifier) ?? 0) + s.quantity) })
 
+  /** Сколько можно выдать без подтверждения: лимит на раунд для этого сервера,
+   * а для предмета без лимита — остаток на складе. */
+  function availableFor(identifier: string): number {
+    const it = warehouse?.items.find((row) => row.identifier === identifier)
+    if (!it) return 0
+    return it.rounds?.[serverName]?.available ?? it.quantity
+  }
+
+  /** Физический потолок: бесконечный предмет не ограничен складом вовсе. */
+  function stockCapFor(identifier: string): number {
+    const it = warehouse?.items.find((row) => row.identifier === identifier)
+    if (!it) return 0
+    return it.is_unlimited ? Number.POSITIVE_INFINITY : it.quantity
+  }
+
   function addToSlot(identifier: string) {
-    const stock = warehouse?.items.find((it) => it.identifier === identifier)?.quantity ?? 0
     const used = usedByIdentifier.get(identifier) ?? 0
-    if (used >= stock) { toast.error("На складе больше нет этого предмета"); return }
+    if (used >= stockCapFor(identifier)) { toast.error("На складе больше нет этого предмета"); return }
 
     setSlots((cur) => {
       const existingIdx = cur.findIndex((s) => s?.identifier === identifier)
@@ -80,15 +104,28 @@ export function CargoDialog({ open, onOpenChange, defaultServer }: {
 
   const filledSlots = slots.filter((s): s is Slot => s !== null)
 
+  const [limitPrompt, setLimitPrompt] = useState<string | null>(null)
+
   const sendMutation = useMutation({
-    mutationFn: () => dispatchActionsApi.cargo(serverName, filledSlots.map((s) => ({ identifier: s.identifier, quantity: s.quantity }))),
+    mutationFn: (allowLimitOverride: boolean) => dispatchActionsApi.cargo(
+      serverName,
+      filledSlots.map((s) => ({ identifier: s.identifier, quantity: s.quantity })),
+      allowLimitOverride,
+    ),
     onSuccess: () => {
       toast.success("Груз поставлен в очередь на спавн")
       queryClient.invalidateQueries({ queryKey: ["warehouse"] })
+      setLimitPrompt(null)
       onOpenChange(false)
       setSlots(emptySlots())
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      // 409 — только лимит на раунд: его оператор может перекрыть осознанно,
+      // в отличие от нехватки самого склада.
+      const status = (e as Error & { status?: number }).status
+      if (status === 409) { setLimitPrompt(e.message); return }
+      toast.error(e.message)
+    },
   })
 
   return (
@@ -137,18 +174,26 @@ export function CargoDialog({ open, onOpenChange, defaultServer }: {
           <div className="flex max-h-56 flex-wrap gap-2 overflow-y-auto rounded-md border p-2">
             {warehouse?.items.map((it) => {
               const used = usedByIdentifier.get(it.identifier) ?? 0
-              const remaining = it.quantity - used
+              const remaining = availableFor(it.identifier) - used
+              const stockLeft = stockCapFor(it.identifier) - used
+              const overLimit = remaining <= 0 && stockLeft > 0
               return (
                 <button
                   key={it.identifier}
                   onClick={() => addToSlot(it.identifier)}
-                  disabled={remaining <= 0}
-                  title={`${itemDisplayName(catalog, it.identifier)} — доступно ${remaining}`}
+                  disabled={stockLeft <= 0}
+                  title={
+                    `${itemDisplayName(catalog, it.identifier)} — доступно ${Math.max(0, remaining)}`
+                    + (it.per_round_limit !== null ? ` (лимит ${it.per_round_limit} за раунд)` : "")
+                    + (overLimit ? " — дальше только сверх лимита, с подтверждением" : "")
+                  }
                   className="relative flex flex-col items-center gap-1 rounded-md border p-1.5 text-[10px] hover:bg-accent disabled:opacity-30"
                 >
                   <ItemIcon identifier={it.identifier} size={30} />
                   <span className="max-w-[60px] truncate">{itemDisplayName(catalog, it.identifier)}</span>
-                  <span className="font-semibold">{remaining}</span>
+                  <span className={overLimit ? "font-semibold text-warning" : "font-semibold"}>
+                    {it.is_unlimited && it.per_round_limit === null ? "∞" : Math.max(0, remaining)}
+                  </span>
                 </button>
               )
             })}
@@ -158,10 +203,32 @@ export function CargoDialog({ open, onOpenChange, defaultServer }: {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-          <Button disabled={!filledSlots.length || sendMutation.isPending} onClick={() => sendMutation.mutate()}>
+          <Button disabled={!filledSlots.length || sendMutation.isPending} onClick={() => sendMutation.mutate(false)}>
             Отправить в очередь
           </Button>
         </DialogFooter>
+
+        <AlertDialog open={limitPrompt !== null} onOpenChange={(o) => { if (!o) setLimitPrompt(null) }}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Выдать сверх лимита на раунд?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {limitPrompt} Лимит настроен на карточке предмета и действует до конца раунда.
+                Выдача сверх него разрешена оператору, но попадёт в журнал.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Отмена</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={sendMutation.isPending}
+                onClick={(event) => { event.preventDefault(); sendMutation.mutate(true) }}
+              >
+                Выдать сверх лимита
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </DialogContent>
     </Dialog>
   )

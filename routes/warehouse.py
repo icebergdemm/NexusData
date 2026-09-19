@@ -28,6 +28,18 @@ from sqlalchemy.orm import Session, joinedload
 from database import get_db
 from security import check_permission, verify_client_api_key_dependency
 from models import AdminUser, AdminSession, WarehouseItem
+from services_warehouse import (
+    availability,
+    availability_across_servers,
+    current_round_ref,
+    issued_this_round,
+    remaining_this_round,
+    validate_limit_settings,
+)
+
+# Both live servers. Kept here rather than derived from the round table so an
+# idle server still reports its own budget instead of disappearing.
+DISPATCH_SERVERS = ("ASPER1", "ASPER2")
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +72,29 @@ def _item_name(identifier: str) -> str:
     return (entry or {}).get("name") or identifier
 
 
-def _serialize(w: WarehouseItem) -> dict:
-    return {
+def _serialize(w: WarehouseItem, db: Session | None = None) -> dict:
+    payload = {
         "id": w.id,
         "identifier": w.identifier,
         "name": _item_name(w.identifier),
         "quantity": w.quantity,
+        "is_unlimited": bool(w.is_unlimited),
+        "per_round_limit": w.per_round_limit,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
         "updated_by": w.updated_by.discord_username if w.updated_by else None,
     }
+    if db is not None:
+        # The operator needs to see how much of the ceiling this round already
+        # consumed on each server, not just the configured number.
+        payload["rounds"] = {
+            server: {
+                "issued": issued_this_round(db, w.identifier, server),
+                "remaining": remaining_this_round(db, w, server),
+                "available": availability(db, w, server),
+            }
+            for server in DISPATCH_SERVERS
+        }
+    return payload
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -88,7 +114,8 @@ async def api_list_warehouse(
         .all()
     )
     return JSONResponse({
-        "items": [_serialize(w) for w in rows],
+        "items": [_serialize(w, db) for w in rows],
+        "servers": list(DISPATCH_SERVERS),
         "can_edit": check_permission(current_admin, "dispatch", "manage_warehouse"),
     })
 
@@ -99,27 +126,56 @@ async def api_upsert_warehouse_item(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Add a new stock line, or set the absolute quantity of an existing
-    one (same endpoint — upsert by identifier)."""
+    """Add stock lines, or set the absolute quantity of existing ones.
+
+    Accepts either one item or ``{"items": [...]}``: picking twenty things out
+    of a 900-entry catalog one dialog at a time was the slowest part of setting
+    up a warehouse.
+    """
     _require_dispatch(current_admin, "manage_warehouse")
     body = await request.json()
-    identifier = (body.get("identifier") or "").strip()
-    quantity = body.get("quantity")
-    if not identifier:
-        raise HTTPException(status_code=400, detail="Укажите идентификатор предмета")
-    if not isinstance(quantity, int) or quantity < 0:
-        raise HTTPException(status_code=400, detail="Количество должно быть целым числом ≥ 0")
+    entries = body.get("items") if isinstance(body.get("items"), list) else [body]
+    if not entries:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы один предмет")
 
-    row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
-    if row:
+    saved = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise HTTPException(status_code=400, detail="Некорректный предмет в списке")
+        identifier = (entry.get("identifier") or "").strip()
+        quantity = entry.get("quantity", 0)
+        if not identifier:
+            raise HTTPException(status_code=400, detail="Укажите идентификатор предмета")
+        if len(identifier) > 100:
+            raise HTTPException(status_code=400, detail="Идентификатор длиннее 100 символов")
+        if identifier in seen:
+            raise HTTPException(status_code=400, detail=f"Предмет «{identifier}» указан дважды")
+        seen.add(identifier)
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
+            raise HTTPException(status_code=400, detail="Количество должно быть целым числом ≥ 0")
+        try:
+            per_round_limit = validate_limit_settings(
+                bool(entry.get("is_unlimited")), entry.get("per_round_limit"),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+        row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
+        if not row:
+            row = WarehouseItem(identifier=identifier)
+            db.add(row)
         row.quantity = quantity
-    else:
-        row = WarehouseItem(identifier=identifier, quantity=quantity)
-        db.add(row)
-    row.updated_by_admin_id = current_admin.id
+        row.is_unlimited = bool(entry.get("is_unlimited"))
+        row.per_round_limit = per_round_limit
+        row.updated_by_admin_id = current_admin.id
+        saved.append(row)
+
     db.commit()
-    db.refresh(row)
-    return JSONResponse(_serialize(row))
+    for row in saved:
+        db.refresh(row)
+    items = [_serialize(row, db) for row in saved]
+    return JSONResponse(items[0] if len(items) == 1 and "items" not in body else {"items": items})
 
 
 @admin_router.patch("/api/v1/admin/warehouse/items/{identifier}")
@@ -129,32 +185,47 @@ async def api_adjust_warehouse_item(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
-    """Either {"quantity": N} — set absolute — or {"delta": N} — relative
-    adjust (clamped at 0), whichever the caller provides. The +/- stepper
-    in the UI uses `delta`; a manual "set exact amount" field uses `quantity`."""
+    """Update one stock line.
+
+    ``{"quantity": N}`` sets the absolute amount (what the UI sends once the
+    operator stops clicking), ``{"delta": N}`` adjusts relatively, and
+    ``is_unlimited``/``per_round_limit`` change the availability rules. All of
+    them may arrive in the same request.
+    """
     _require_dispatch(current_admin, "manage_warehouse")
     row = db.query(WarehouseItem).filter(WarehouseItem.identifier == identifier).first()
     if not row:
         raise HTTPException(status_code=404, detail="Предмет не найден на складе")
 
     body = await request.json()
+    touches_limits = "is_unlimited" in body or "per_round_limit" in body
+    if not touches_limits and "quantity" not in body and "delta" not in body:
+        raise HTTPException(status_code=400, detail="Укажите quantity, delta или настройки лимита")
+
     if "quantity" in body:
         quantity = body.get("quantity")
-        if not isinstance(quantity, int) or quantity < 0:
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
             raise HTTPException(status_code=400, detail="Количество должно быть целым числом ≥ 0")
         row.quantity = quantity
     elif "delta" in body:
         delta = body.get("delta")
-        if not isinstance(delta, int):
+        if isinstance(delta, bool) or not isinstance(delta, int):
             raise HTTPException(status_code=400, detail="delta должно быть целым числом")
         row.quantity = max(0, row.quantity + delta)
-    else:
-        raise HTTPException(status_code=400, detail="Укажите quantity или delta")
+
+    if touches_limits:
+        is_unlimited = bool(body.get("is_unlimited", row.is_unlimited))
+        raw_limit = body.get("per_round_limit", row.per_round_limit)
+        try:
+            row.per_round_limit = validate_limit_settings(is_unlimited, raw_limit)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        row.is_unlimited = is_unlimited
 
     row.updated_by_admin_id = current_admin.id
     db.commit()
     db.refresh(row)
-    return JSONResponse(_serialize(row))
+    return JSONResponse(_serialize(row, db))
 
 
 @admin_router.delete("/api/v1/admin/warehouse/items/{identifier}")
@@ -177,13 +248,40 @@ async def api_delete_warehouse_item(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @client_router.get("/warehouse")
-async def api_client_warehouse(db: Session = Depends(get_db)):
-    """Current warehouse stock for external client integrations — always
-    the live table contents at request time, no caching layer."""
+async def api_client_warehouse(
+    server_name: str | None = None,
+    server: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Warehouse availability for external client integrations (the AI).
+
+    ``quantity`` is deliberately not the raw stock: it is how much can still be
+    delivered to ``server_name`` this round, once the per-round ceiling is
+    taken into account. A model shown "500 in stock" offers 500 and then has
+    its order rejected, so the single number it reads has to be the real one.
+    Without a server the smallest per-server figure is returned, because the
+    caller has not yet said where the delivery would go.
+    """
+    requested = (server_name or server or "").strip().upper() or None
+    if requested and requested not in DISPATCH_SERVERS:
+        raise HTTPException(status_code=400, detail="Неизвестный сервер")
+
     rows = db.query(WarehouseItem).order_by(WarehouseItem.identifier).all()
-    return JSONResponse({
-        "items": [
-            {"identifier": w.identifier, "name": _item_name(w.identifier), "quantity": w.quantity}
-            for w in rows
-        ],
-    })
+    items = []
+    for w in rows:
+        spread = availability_across_servers(db, w, DISPATCH_SERVERS)
+        effective = (
+            availability(db, w, requested) if requested else spread["safe"]
+        )
+        items.append({
+            "identifier": w.identifier,
+            "name": _item_name(w.identifier),
+            # Effective availability — what may actually be ordered.
+            "quantity": effective,
+            "available": effective,
+            "stock": w.quantity,
+            "is_unlimited": bool(w.is_unlimited),
+            "per_round_limit": w.per_round_limit,
+            "available_by_server": spread["per_server"],
+        })
+    return JSONResponse({"server_name": requested, "items": items})

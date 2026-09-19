@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import AdminUser, ServerAction, WarehouseItem
+from models import AdminUser, RoundEvent, ServerAction, WarehouseItem, WarehouseRoundUsage
 from routes.dispatch import _queue_cargo_action
 from security import check_permission
 from services import ServerModerationService
@@ -21,6 +21,9 @@ class SupplyDeliveryTests(unittest.TestCase):
                 AdminUser.__table__,
                 WarehouseItem.__table__,
                 ServerAction.__table__,
+                # Per-round issue ceilings are checked on every cargo order.
+                WarehouseRoundUsage.__table__,
+                RoundEvent.__table__,
             ],
         )
         self.db = Session(self.engine)
@@ -55,9 +58,11 @@ class SupplyDeliveryTests(unittest.TestCase):
         self.assertEqual(action.status_asper1, 0)
         self.assertEqual(action.status_asper2, 1)
         self.assertEqual(
-            action.payload,
-            {"items": [{"identifier": "oxygentank", "quantity": 5}]},
+            action.payload["items"],
+            [{"identifier": "oxygentank", "quantity": 5}],
         )
+        # Carried so a failed ACK returns both the stock and the round budget.
+        self.assertIn("warehouse_round_ref", action.payload)
 
     def test_duplicate_lines_are_checked_as_one_reservation(self):
         self.db.add(WarehouseItem(identifier="oxygentank", quantity=10))

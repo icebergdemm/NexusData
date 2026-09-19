@@ -2655,10 +2655,39 @@ class WarehouseItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     identifier = Column(String(100), unique=True, nullable=False, index=True)
     quantity = Column(Integer, nullable=False, default=0)
+    # An "unlimited" line models something the station can always produce, so
+    # `quantity` stops being the constraint. It is then only meaningful with a
+    # per-round ceiling, which is why the API refuses one without the other.
+    is_unlimited = Column(Boolean, nullable=False, default=False)
+    # NULL = no ceiling. Optional for a normal stocked line (keep 500 rounds in
+    # store but hand out at most 50 per round), mandatory for an unlimited one.
+    per_round_limit = Column(Integer, nullable=True)
     updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     updated_by = relationship("AdminUser", foreign_keys=[updated_by_admin_id])
+
+
+class WarehouseRoundUsage(Base):
+    """How much of one warehouse line was already issued in a given round.
+
+    Rounds run independently per server, so the ceiling is counted per
+    (item, server, round): a delivery to ASPER1 must not eat ASPER2's budget.
+    ``round_ref`` is the id of that server's last round-start RoundEvent, so a
+    new round starts counting from zero without anything having to reset it.
+    """
+    __tablename__ = "warehouse_round_usage"
+    __table_args__ = (
+        UniqueConstraint("identifier", "server_name", "round_ref", name="uq_warehouse_round_usage"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    identifier = Column(String(100), nullable=False, index=True)
+    server_name = Column(String(50), nullable=False, index=True)
+    round_ref = Column(String(64), nullable=False, index=True)
+    issued = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
 class SubCheckerConfig(Base):

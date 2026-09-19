@@ -14,8 +14,14 @@ export const dispatchActionsApi = {
     api.post<{ status: string; action_id: number }>("/api/v1/admin/dispatch/actions/torpedo", {
       server_name: serverName, x, y,
     }),
-  cargo: (serverName: string, items: { identifier: string; quantity: number }[]) =>
+  /** `allowLimitOverride` — осознанная выдача сверх лимита на раунд: сервер
+   * отклоняет такой груз с 409, пока оператор не подтвердит его явно. */
+  cargo: (
+    serverName: string,
+    items: { identifier: string; quantity: number }[],
+    allowLimitOverride = false,
+  ) =>
     api.post<{ status: string; action_id: number }>("/api/v1/admin/dispatch/actions/cargo", {
-      server_name: serverName, items,
+      server_name: serverName, items, allow_limit_override: allowLimitOverride,
     }),
 }

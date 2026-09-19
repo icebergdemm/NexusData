@@ -1781,6 +1781,7 @@ class ServerModerationService:
         """ACK an action from a specific server (v2 table)."""
         from datetime import datetime
         from models import ServerAction, WarehouseItem
+        import services_warehouse as warehouse_rules
 
         row = (
             self.db.query(ServerAction)
@@ -1850,8 +1851,18 @@ class ServerModerationService:
                 if stock is None:
                     stock = WarehouseItem(identifier=identifier, quantity=0)
                     self.db.add(stock)
-                stock.quantity += quantity
+                # An unlimited line has no stock to give back — only the
+                # per-round budget it consumed.
+                if not stock.is_unlimited:
+                    stock.quantity += quantity
                 stock.updated_by_admin_id = row.queued_by_admin_id
+                warehouse_rules.release_issue(
+                    self.db,
+                    identifier,
+                    row.target_server,
+                    quantity,
+                    payload.get("warehouse_round_ref"),
+                )
                 cargo_refunded = True
 
             # Persist the idempotency marker even if a malformed legacy action
