@@ -16,6 +16,8 @@ from security import (
     csrf_token_from_request,
     compute_department_site_permissions,
     get_permission_policy_mode,
+    get_active_admin_session,
+    hash_admin_session_token,
 )
 from services_player_privacy import can_view_player_ips
 from services_login_keys import resolve_api_login_key
@@ -77,7 +79,7 @@ def load_current_admin(request: Request, db: Session) -> AdminUser:
             raise HTTPException(status_code=401, detail="Not authenticated")
         admin_id = getattr(request.state, "nd_admin_id", None)
         if admin_id is None:
-            identity = resolve_api_login_key(db, login_key)
+            identity = resolve_api_login_key(db, login_key, request.client.host if request.client else None)
             admin_id = identity[1] if identity else None
         if admin_id is None:
             raise HTTPException(status_code=401, detail="Not authenticated")
@@ -96,12 +98,12 @@ def load_current_admin(request: Request, db: Session) -> AdminUser:
     token = request.cookies.get("admin_token")
     now = datetime.utcnow()
     if admin is None and token:
-        session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
-        if session and (session.expires_at is None or session.expires_at > now):
+        session = get_active_admin_session(db, token, request=request)
+        if session:
             admin = (
                 db.query(AdminUser)
                 .options(joinedload(AdminUser.privilege_group))
-                .filter(AdminUser.id == session.admin_id)
+                .filter(AdminUser.id == session.admin_id, AdminUser.is_deleted == 0)
                 .first()
             )
     if admin:
@@ -294,14 +296,24 @@ def _resolve_oauth_redirect_uri(request: Request) -> str:
 # Вход по ключу (/slogin) — запасной путь, когда Discord недоступен
 # ══════════════════════════════════════════════════════════════════════════
 
-def _issue_admin_session(db: Session, admin: AdminUser, response) -> None:
+def _issue_admin_session(db: Session, admin: AdminUser, response, request: Request, auth_type: str) -> None:
     """Создаёт серверную сессию и ставит куку — та же схема, что у входа
     через Discord (одна таблица сессий, один вид куки), чтобы способ входа
     дальше нигде не приходилось различать."""
     token = secrets.token_urlsafe(32)
     now = datetime.utcnow()
     expires = now + timedelta(seconds=settings.session_max_age)
-    db.add(AdminSession(admin_id=admin.id, token=token, created_at=now, expires_at=expires, revoked=0))
+    db.add(AdminSession(
+        admin_id=admin.id,
+        token=hash_admin_session_token(token),
+        created_at=now,
+        expires_at=expires,
+        last_seen_at=now,
+        last_seen_ip=request.client.host if request.client else None,
+        user_agent=(request.headers.get("user-agent") or "")[:500] or None,
+        auth_type=auth_type,
+        revoked=0,
+    ))
     admin.last_login = now
     db.commit()
     response.set_cookie(
@@ -323,10 +335,8 @@ async def key_login_page(request: Request, next: Optional[str] = Query(None), db
 
     token = request.cookies.get("admin_token")
     if token:
-        session = db.query(AdminSession).filter(
-            AdminSession.token == token, AdminSession.revoked == 0
-        ).first()
-        if session and (session.expires_at is None or session.expires_at > datetime.utcnow()):
+        session = get_active_admin_session(db, token, request=request)
+        if session:
             return RedirectResponse(url=next_path, status_code=302)
 
     return templates.TemplateResponse("slogin.html", {
@@ -362,7 +372,7 @@ async def key_login_submit(
         return RedirectResponse(url="/slogin?error=invalid", status_code=302)
 
     response = RedirectResponse(url=next_path, status_code=302)
-    _issue_admin_session(db, admin, response)
+    _issue_admin_session(db, admin, response, request, "login_key")
     request.session["username"] = admin.discord_username
     log_admin_action(db, admin.id, "login", {"method": "login_key", "ip": client_ip})
     logger.info(f"Вход по ключу: {admin.discord_username} (id={admin.id}) с {client_ip}")
@@ -398,8 +408,8 @@ async def login_page(request: Request, next: Optional[str] = Query(None), db: Se
     token = request.cookies.get("admin_token")
     if token:
         now = datetime.utcnow()
-        session = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
-        if session and (session.expires_at is None or session.expires_at > now):
+        session = get_active_admin_session(db, token, request=request)
+        if session:
             return RedirectResponse(url=next_path, status_code=302)
 
         # Stale/invalid token cookie: clear it to prevent redirect loops.
@@ -500,22 +510,8 @@ async def discord_callback(
         db.commit()
 
         # Create server-side admin session and set cookie
-        token = secrets.token_urlsafe(32)
-        now = datetime.utcnow()
-        expires = now + timedelta(seconds=settings.session_max_age)
-        admin_session = AdminSession(admin_id=admin.id, token=token, created_at=now, expires_at=expires, revoked=0)
-        db.add(admin_session)
-        db.commit()
-
         response = RedirectResponse(url=next_path, status_code=302)
-        response.set_cookie(
-            "admin_token",
-            token,
-            httponly=True,
-            max_age=settings.session_max_age,
-            samesite="lax",
-            secure=not settings.debug,
-        )
+        _issue_admin_session(db, admin, response, request, "discord_oauth")
         # Session keeps only non-authoritative display data; auth is cookie+DB session.
         request.session["username"] = fresh_display_name or admin.discord_username
 
@@ -560,13 +556,13 @@ async def logout(request: Request, csrf_token: Optional[str] = Form(None), db: S
         if not token:
             raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
-        s_check = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
+        s_check = get_active_admin_session(db, token, request=request)
         if not s_check:
             raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     # At this point either CSRF is valid or we have a valid admin_token session
     if token:
-        s = db.query(AdminSession).filter(AdminSession.token == token).first()
+        s = db.query(AdminSession).filter(AdminSession.token == hash_admin_session_token(token)).first()
         if s:
             s.revoked = 1
             db.commit()
@@ -1023,12 +1019,12 @@ async def api_create_login_key(
 
     body = await request.json() if await request.body() else {}
     expires_days = body.get("expires_days")
-    if expires_days is not None and (not isinstance(expires_days, int) or expires_days < 0):
-        raise HTTPException(status_code=400, detail="Срок действия — целое число дней")
+    if expires_days is not None and (not isinstance(expires_days, int) or expires_days <= 0):
+        raise HTTPException(status_code=400, detail="Срок действия — целое число дней больше нуля")
 
     row, raw_key = services_login_keys.create_key(
         db, admin_id, current_admin.id,
-        label=body.get("label"), expires_days=expires_days or None,
+        label=body.get("label"), expires_days=expires_days,
     )
     log_admin_action(db, current_admin.id, "login_key_create",
                      {"target_admin_id": admin_id, "key_id": row.id})
@@ -1037,7 +1033,7 @@ async def api_create_login_key(
 
 @router.delete("/api/v1/admin/users/{admin_id}/login-keys/{key_id}")
 async def api_revoke_login_key(
-    admin_id: int, key_id: int, db: Session = Depends(get_db),
+    admin_id: int, key_id: int, request: Request, db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     """Отзыв, а не удаление: строка остаётся, чтобы в аудите было видно, что
@@ -1046,6 +1042,7 @@ async def api_revoke_login_key(
     from models import AdminLoginKey
 
     _require_superuser(current_admin)
+    await ensure_csrf_or_valid_admin_session(request, db)
     row = db.query(AdminLoginKey).filter(
         AdminLoginKey.id == key_id, AdminLoginKey.admin_id == admin_id
     ).first()
@@ -2858,9 +2855,13 @@ async def api_sessions_list(db: Session = Depends(get_db), current_admin: AdminU
         "sessions": [
             {
                 "id": s.id, "admin_id": s.admin_id, "admin_name": admins_map.get(s.admin_id),
-                "token_preview": s.token[:12] + "…",
+                "token_preview": None,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+                "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
+                "last_seen_ip": s.last_seen_ip,
+                "user_agent": s.user_agent,
+                "auth_type": s.auth_type,
                 "revoked": bool(s.revoked),
             }
             for s in sessions
@@ -2870,9 +2871,10 @@ async def api_sessions_list(db: Session = Depends(get_db), current_admin: AdminU
 
 
 @router.post("/api/v1/admin/sessions/{session_id}/revoke")
-async def api_revoke_session(session_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+async def api_revoke_session(session_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     if not check_permission(current_admin, "sessions", "edit"):
         raise HTTPException(status_code=403, detail="Недостаточно прав для отзыва сессии")
+    await ensure_csrf_or_valid_admin_session(request, db)
 
     s = db.query(AdminSession).filter(AdminSession.id == session_id).first()
     if not s:
@@ -2885,6 +2887,31 @@ async def api_revoke_session(session_id: int, db: Session = Depends(get_db), cur
         "target": {"session_id": session_id, "admin_id": s.admin_id, "admin_username": target_admin.discord_username if target_admin else None}
     })
     return {"status": "ok"}
+
+
+@router.post("/api/v1/admin/sessions/revoke-all")
+async def api_revoke_all_sessions(
+    request: Request,
+    admin_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    if not check_permission(current_admin, "sessions", "edit"):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для отзыва сессий")
+    await ensure_csrf_or_valid_admin_session(request, db)
+    target_admin_id = admin_id or current_admin.id
+    if target_admin_id != current_admin.id and not current_admin.is_superuser:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для отзыва чужих сессий")
+    affected = db.query(AdminSession).filter(
+        AdminSession.admin_id == target_admin_id,
+        AdminSession.revoked == 0,
+    ).update({"revoked": 1}, synchronize_session=False)
+    db.commit()
+    log_admin_action(db, current_admin.id, "revoke_all_sessions", {
+        "target_admin_id": target_admin_id,
+        "affected": affected,
+    })
+    return {"status": "ok", "revoked": affected}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -23,7 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db, SessionLocal
-from security import check_permission, compute_department_site_permissions, get_permission_policy_mode
+from security import check_permission, compute_department_site_permissions, get_permission_policy_mode, get_active_admin_session
 from models import DiscordMember, PlayerData, AdminUser, AdminSession
 from datetime import datetime
 from services_login_keys import resolve_api_login_key
@@ -60,11 +60,8 @@ def _get_websocket_admin(websocket: WebSocket) -> Optional[AdminUser]:
 
         token = websocket.cookies.get("admin_token")
         if admin is None and token:
-            session = db.query(AdminSession).filter(
-                AdminSession.token == token,
-                AdminSession.revoked == 0,
-            ).first()
-            if session and (session.expires_at is None or session.expires_at > datetime.utcnow()):
+            session = get_active_admin_session(db, token, touch=False)
+            if session:
                 admin = (
                     db.query(AdminUser)
                     .options(joinedload(AdminUser.privilege_group))

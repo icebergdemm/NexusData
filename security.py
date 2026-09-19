@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import hashlib
 import secrets
 import threading
 import time
@@ -14,6 +15,42 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
+
+SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
+
+
+def hash_admin_session_token(token: str) -> str:
+    """Hash a browser bearer token before it reaches the database."""
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def get_active_admin_session(db, raw_token: str, request: Optional[Request] = None, touch: bool = True):
+    """Find and optionally touch a valid browser session without exposing its token."""
+    from models import AdminSession
+
+    if not raw_token:
+        return None
+    now = datetime.utcnow()
+    session = db.query(AdminSession).filter(
+        AdminSession.token == hash_admin_session_token(raw_token),
+        AdminSession.revoked == 0,
+    ).first()
+    if not session:
+        return None
+    last_seen = session.last_seen_at or session.created_at or now
+    if session.expires_at and session.expires_at <= now:
+        return None
+    if now - last_seen > timedelta(seconds=settings.session_idle_timeout):
+        session.revoked = 1
+        db.commit()
+        return None
+    if touch and (session.last_seen_at is None or now - last_seen >= SESSION_TOUCH_INTERVAL):
+        session.last_seen_at = now
+        if request is not None:
+            session.last_seen_ip = request.client.host if request.client else None
+            session.user_agent = (request.headers.get("user-agent") or "")[:500] or None
+        db.commit()
+    return session
 
 # JWT Config
 ALGORITHM = "HS256"

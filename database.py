@@ -136,6 +136,11 @@ def _apply_migrations():
         ("players_data", "discord_id_confirmed", "TINYINT DEFAULT 0"),
         # admin_users: soft-delete
         ("admin_users", "is_deleted", "TINYINT NOT NULL DEFAULT 0"),
+        # admin browser-session lifecycle hardening
+        ("admin_sessions", "last_seen_at", "DATETIME"),
+        ("admin_sessions", "last_seen_ip", "VARCHAR(45)"),
+        ("admin_sessions", "user_agent", "VARCHAR(500)"),
+        ("admin_sessions", "auth_type", "VARCHAR(32)"),
         # player_punishments: snapshot whether the issuing admin was a superuser
         ("player_punishments", "issued_by_was_superuser", "TINYINT NOT NULL DEFAULT 0"),
         # players_data: superuser-managed link to an ND admin account + a display
@@ -320,6 +325,7 @@ def _apply_migrations():
         ("department_access_levels", "can_bind_server_privilege", "TINYINT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
+    added_security_session_column = False
     with engine.connect() as conn:
         for table, column, col_def in migrations:
             exists = conn.execute(
@@ -337,12 +343,46 @@ def _apply_migrations():
                         )
                     )
                     conn.commit()
+                    if table == "admin_sessions":
+                        added_security_session_column = True
                 except Exception as e:
                     conn.rollback()
                     import logging as _logging
                     _logging.getLogger(__name__).warning(
                         "Migration failed for %s.%s: %s", table, column, e
                     )
+
+        # The session token column is retained for schema compatibility, but
+        # its values are now hashes.  The first lifecycle migration revokes and
+        # clears every legacy raw token; there is deliberately no compatibility
+        # path that keeps old bearer cookies alive.
+        if added_security_session_column:
+            try:
+                conn.execute(__import__('sqlalchemy').text(
+                    "UPDATE admin_sessions SET token=NULL, revoked=1"
+                ))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Admin session lifecycle migration failed: %s", e
+                )
+
+        # Permanent login keys are no longer valid. This is idempotent and
+        # catches legacy rows without adding a second migration ledger table.
+        try:
+            conn.execute(__import__('sqlalchemy').text(
+                "UPDATE admin_login_keys SET revoked=1 "
+                "WHERE revoked=0 AND expires_at IS NULL"
+            ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Login-key expiry migration failed: %s", e
+            )
 
         # The v2 identity pipeline deliberately has no local speaker identity
         # and stores WAV only for selected clips. Existing legacy rows retain

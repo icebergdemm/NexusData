@@ -34,6 +34,9 @@ _KEY_BYTES = 32
 # Ограничение попыток: 10 за 5 минут с одного адреса.
 _ATTEMPT_LIMIT = 10
 _ATTEMPT_WINDOW = 300
+DEFAULT_EXPIRY_DAYS = 7
+MAX_EXPIRY_DAYS = 30
+_USAGE_TOUCH_INTERVAL = timedelta(minutes=5)
 _attempts: dict = {}
 _attempts_lock = threading.Lock()
 
@@ -73,9 +76,11 @@ def create_key(db: Session, admin_id: int, created_by_admin_id: Optional[int],
     """Создаёт ключ. Возвращает (строку БД, сам ключ) — ключ вернуть можно
     только здесь и только один раз."""
     raw, key_hash, prefix = generate_key()
-    expires_at = None
-    if expires_days and expires_days > 0:
-        expires_at = datetime.utcnow() + timedelta(days=expires_days)
+    days = DEFAULT_EXPIRY_DAYS if expires_days is None else expires_days
+    if not isinstance(days, int) or days <= 0 or days > MAX_EXPIRY_DAYS:
+        raise ValueError(f"expires_days must be between 1 and {MAX_EXPIRY_DAYS}")
+    now = datetime.utcnow()
+    expires_at = now + timedelta(days=days)
 
     row = AdminLoginKey(
         admin_id=admin_id,
@@ -83,6 +88,7 @@ def create_key(db: Session, admin_id: int, created_by_admin_id: Optional[int],
         key_prefix=prefix,
         label=(label or "").strip() or None,
         created_by_admin_id=created_by_admin_id,
+        created_at=now,
         expires_at=expires_at,
     )
     db.add(row)
@@ -111,20 +117,22 @@ def resolve_admin(db: Session, raw_key: str, client_ip: Optional[str] = None) ->
     if not admin or getattr(admin, "is_deleted", 0) == 1:
         return None
 
-    row.last_used_at = datetime.utcnow()
-    row.last_used_ip = client_ip
-    row.use_count = (row.use_count or 0) + 1
-    db.commit()
+    _touch_usage(row, client_ip, db)
     return admin
 
 
-def resolve_api_login_key(db: Session, raw_key: str) -> Optional[Tuple[int, int]]:
-    """Resolve an API login key without mutating usage counters.
+def _touch_usage(row: AdminLoginKey, client_ip: Optional[str], db: Session) -> None:
+    now = datetime.utcnow()
+    if row.last_used_at and now - row.last_used_at < _USAGE_TOUCH_INTERVAL and row.last_used_ip == client_ip:
+        return
+    row.last_used_at = now
+    row.last_used_ip = client_ip
+    row.use_count = (row.use_count or 0) + 1
+    db.commit()
 
-    The rate-limit middleware runs before FastAPI dependencies and must be able
-    to identify the key bucket. Updating ``last_used`` on every request there
-    would turn a read-only API call into a database write hotspot.
-    """
+
+def resolve_api_login_key(db: Session, raw_key: str, client_ip: Optional[str] = None) -> Optional[Tuple[int, int]]:
+    """Resolve an API login key and record bounded usage metadata."""
     raw_key = (raw_key or "").strip()
     if not raw_key:
         return None
@@ -138,6 +146,7 @@ def resolve_api_login_key(db: Session, raw_key: str) -> Optional[Tuple[int, int]
     admin = db.query(AdminUser).filter(AdminUser.id == row.admin_id).first()
     if not admin or getattr(admin, "is_deleted", 0) == 1:
         return None
+    _touch_usage(row, client_ip, db)
     return row.id, admin.id
 
 

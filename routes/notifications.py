@@ -38,11 +38,9 @@ def _get_admin_id(request: Request, db: Session) -> int:
     token = request.cookies.get("admin_token")
     if not token:
         raise HTTPException(status_code=401)
-    now = datetime.utcnow()
-    session = db.query(AdminSession).filter(
-        AdminSession.token == token, AdminSession.revoked == 0
-    ).first()
-    if not session or (session.expires_at and session.expires_at < now):
+    from security import get_active_admin_session
+    session = get_active_admin_session(db, token, request=request)
+    if not session:
         raise HTTPException(status_code=401)
     return session.admin_id
 

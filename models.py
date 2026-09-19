@@ -185,9 +185,14 @@ class AdminSession(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     admin_id = Column(Integer)
+    # SHA-256 of the browser bearer token; raw cookies never enter the DB.
     token = Column(String(128), unique=True, index=True)
     created_at = Column(DateTime, default=func.now())
     expires_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    last_seen_ip = Column(String(45), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    auth_type = Column(String(32), nullable=True)
     revoked = Column(Integer, default=0)
 
 

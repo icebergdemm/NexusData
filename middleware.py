@@ -20,14 +20,14 @@ _EXEMPT_PREFIXES = ("/healthz", "/static", "/admin/assets", "/docs", "/redoc", "
 LOGIN_KEY_RATE_MULTIPLIER = 4
 
 
-def resolve_api_login_key(raw_key):
+def resolve_api_login_key(raw_key, source_ip=None):
     """Resolve a NexusData login key for middleware identity/rate data."""
     from database import SessionLocal
     from services_login_keys import resolve_api_login_key as _resolve
 
     db = SessionLocal()
     try:
-        return _resolve(db, raw_key)
+        return _resolve(db, raw_key, source_ip)
     finally:
         db.close()
 
@@ -75,7 +75,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             raw_login_key = request.headers.get("X-ND-Login-Key")
             if raw_login_key is not None:
                 login_key_header_present = True
-                identity = resolve_api_login_key(raw_login_key)
+                identity = resolve_api_login_key(raw_login_key, client_ip(request))
                 if identity:
                     login_key_id, admin_id = identity
                     request.state.nd_auth_type = "login_key"

@@ -219,8 +219,9 @@ async def ensure_csrf(request: Request, db: Session):
     token = request.cookies.get("admin_token")
     if token:
         now = datetime.utcnow()
-        s = db.query(AdminSession).filter(AdminSession.token == token, AdminSession.revoked == 0).first()
-        if s and (s.expires_at is None or s.expires_at > now):
+        from security import get_active_admin_session
+        s = get_active_admin_session(db, token, request=request)
+        if s:
             return
     raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
