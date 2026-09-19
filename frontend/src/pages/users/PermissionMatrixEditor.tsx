@@ -36,7 +36,7 @@ export function formatPermissionSource(source: { kind: string; [key: string]: un
 export function permissionSourceHref(source: { kind: string; [key: string]: unknown }): string | undefined {
   const groupId = sourceId(source.group_id)
   if (source.kind === "group" && Number.isInteger(groupId)) {
-    return `/users?tab=groups&group_id=${groupId}#group-${groupId}`
+    return `/security/admins?tab=groups&group_id=${groupId}#group-${groupId}`
   }
   const departmentId = sourceId(source.department_id)
   const levelId = sourceId(source.level_id)

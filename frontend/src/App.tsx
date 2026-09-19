@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react"
-import { Navigate, Route, Routes } from "react-router-dom"
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom"
 import { AlertTriangle, RotateCw } from "lucide-react"
 import { AppShell } from "@/components/layout/AppShell"
 import { OnboardingModal } from "@/components/layout/OnboardingModal"
@@ -35,13 +35,14 @@ const SubCheckerPage = lazy(() => import("@/pages/sub-checker").then(({ SubCheck
 const ReplaysListPage = lazy(() => import("@/pages/replays").then(({ ReplaysListPage }) => ({ default: ReplaysListPage })))
 const ReplayPlayerPage = lazy(() => import("@/pages/replays/player").then(({ ReplayPlayerPage }) => ({ default: ReplayPlayerPage })))
 const RoundDetailPage = lazy(() => import("@/pages/replays/round-detail").then(({ RoundDetailPage }) => ({ default: RoundDetailPage })))
-const SessionsPage = lazy(() => import("@/pages/sessions").then(({ SessionsPage }) => ({ default: SessionsPage })))
-const AuditPage = lazy(() => import("@/pages/audit").then(({ AuditPage }) => ({ default: AuditPage })))
 const ErrorLogPage = lazy(() => import("@/pages/error-log").then(({ ErrorLogPage }) => ({ default: ErrorLogPage })))
 const PerfMonitorPage = lazy(() => import("@/pages/perf-monitor").then(({ PerfMonitorPage }) => ({ default: PerfMonitorPage })))
 const LabelCategoriesPage = lazy(() => import("@/pages/label-categories").then(({ LabelCategoriesPage }) => ({ default: LabelCategoriesPage })))
-const UsersPage = lazy(() => import("@/pages/users").then(({ UsersPage }) => ({ default: UsersPage })))
-const UserDetailPage = lazy(() => import("@/pages/users/detail").then(({ UserDetailPage }) => ({ default: UserDetailPage })))
+const SecurityLayout = lazy(() => import("@/pages/security").then(({ SecurityLayout }) => ({ default: SecurityLayout })))
+const SecurityOverviewPage = lazy(() => import("@/pages/security/overview").then(({ SecurityOverviewPage }) => ({ default: SecurityOverviewPage })))
+const SecurityAdminsPage = lazy(() => import("@/pages/security").then(({ SecurityAdminsPage }) => ({ default: SecurityAdminsPage })))
+const SecuritySessionsPage = lazy(() => import("@/pages/security").then(({ SecuritySessionsPage }) => ({ default: SecuritySessionsPage })))
+const SecurityAuditPage = lazy(() => import("@/pages/security").then(({ SecurityAuditPage }) => ({ default: SecurityAuditPage })))
 const KitsPage = lazy(() => import("@/pages/kits").then(({ KitsPage }) => ({ default: KitsPage })))
 const ServerPrivilegesPage = lazy(() => import("@/pages/server-privileges").then(({ ServerPrivilegesPage }) => ({ default: ServerPrivilegesPage })))
 const DiscordBotPage = lazy(() => import("@/pages/discord-bot").then(({ DiscordBotPage }) => ({ default: DiscordBotPage })))
@@ -97,6 +98,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   )
 }
 
+function LegacySecurityRedirect({ target }: { target: string }) {
+  const location = useLocation()
+  return <Navigate to={`${target}${location.search}`} replace />
+}
+
+function LegacyAdminRedirect() {
+  const { adminId } = useParams<{ adminId: string }>()
+  return <Navigate to={`/security/admins?admin=${encodeURIComponent(adminId ?? "")}`} replace />
+}
+
 export default function App() {
   return (
     <RequireAuth>
@@ -135,14 +146,20 @@ export default function App() {
           <Route path="discord-bot" element={<DiscordBotPage />} />
           <Route path="tickets" element={<TicketsListPage />} />
           <Route path="tickets/:ticketId" element={<TicketDetailPage />} />
-          <Route path="users" element={<UsersPage />} />
-          <Route path="users/:adminId" element={<UserDetailPage />} />
+          <Route path="security" element={<SecurityLayout />}>
+            <Route index element={<SecurityOverviewPage />} />
+            <Route path="admins" element={<SecurityAdminsPage />} />
+            <Route path="sessions" element={<SecuritySessionsPage />} />
+            <Route path="audit" element={<SecurityAuditPage />} />
+          </Route>
+          <Route path="users/:adminId" element={<LegacyAdminRedirect />} />
+          <Route path="users" element={<LegacySecurityRedirect target="/security/admins" />} />
           <Route path="administration" element={<AdministrationPage />} />
           <Route path="ai-center" element={<AICenterPage />} />
           <Route path="server-privileges" element={<ServerPrivilegesPage />} />
           <Route path="kits" element={<KitsPage />} />
-          <Route path="sessions" element={<SessionsPage />} />
-          <Route path="audit" element={<AuditPage />} />
+          <Route path="sessions" element={<LegacySecurityRedirect target="/security/sessions" />} />
+          <Route path="audit" element={<LegacySecurityRedirect target="/security/audit" />} />
           <Route path="error-log" element={<ErrorLogPage />} />
           <Route path="perf-monitor" element={<PerfMonitorPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Link, useNavigate, useSearchParams } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { AlertTriangle, ChevronRight, UserCog } from "lucide-react"
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PageHeader } from "@/components/layout/PageHeader"
@@ -19,13 +20,13 @@ import { usePermissionRegistry } from "@/lib/auth"
 import { PermissionMatrixEditor, type PermissionValue } from "./PermissionMatrixEditor"
 import type { PrivilegeGroup, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
+import { UserDetailPage } from "./detail"
 
-export function UsersPage() {
-  const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+export function UsersPage({ embedded = false }: { embedded?: boolean }) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const { data: registryData } = usePermissionRegistry()
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState(() => searchParams.get("tab") === "groups" ? "groups" : "users")
+  const tab = searchParams.get("tab") === "groups" ? "groups" : "users"
   const [newDiscordId, setNewDiscordId] = useState("")
   const [search, setSearch] = useState("")
   const [groupFilter, setGroupFilter] = useState("all")
@@ -103,6 +104,13 @@ export function UsersPage() {
     setEditingGroupId(group.id); setGroupName(group.name); setGroupPerms(unwrapPages(group.permissions)); setGroupDialogOpen(true)
   }
   const linkedGroupId = Number(searchParams.get("group_id"))
+  const selectedAdminId = Number(searchParams.get("admin"))
+  const hasSelectedAdmin = Number.isInteger(selectedAdminId) && selectedAdminId > 0
+  const closeAdmin = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete("admin")
+    setSearchParams(next)
+  }
   useEffect(() => {
     if (tab !== "groups" || !Number.isInteger(linkedGroupId) || !data?.groups) return
     const group = data.groups.find((item) => item.id === linkedGroupId)
@@ -116,8 +124,8 @@ export function UsersPage() {
 
   return (
     <div>
-      <PageHeader title="Пользователи Nexus Data" description="Администраторы панели и группы прав доступа" icon={UserCog} />
-      <Tabs value={tab} onValueChange={setTab} className="mb-4">
+      {!embedded && <PageHeader title="Пользователи Nexus Data" description="Администраторы панели и группы прав доступа" icon={UserCog} />}
+        <Tabs value={tab} onValueChange={(value) => { const next = new URLSearchParams(searchParams); if (value === "groups") next.set("tab", "groups"); else next.delete("tab"); setSearchParams(next) }} className="mb-4">
         <TabsList><TabsTrigger value="users">Администраторы</TabsTrigger><TabsTrigger value="groups">Группы прав</TabsTrigger></TabsList>
       </Tabs>
 
@@ -151,7 +159,7 @@ export function UsersPage() {
                 <Table>
                   <TableHeader><TableRow><TableHead>Администратор</TableHead><TableHead>Группа</TableHead><TableHead>Департаменты</TableHead><TableHead>Конфликты</TableHead><TableHead>Роль</TableHead><TableHead className="w-8" /></TableRow></TableHeader>
                   <TableBody>
-                    {filteredAdmins.map((admin) => <TableRow key={admin.id} className="cursor-pointer" onClick={(event) => { if (event.target instanceof Element && event.target.closest("a,button")) return; navigate(`/users/${admin.id}`) }}>
+                    {filteredAdmins.map((admin) => <TableRow key={admin.id} className="cursor-pointer" onClick={(event) => { if (event.target instanceof Element && event.target.closest("a,button")) return; const next = new URLSearchParams(searchParams); next.set("admin", String(admin.id)); setSearchParams(next) }}>
                       <TableCell>
                         <div className="font-medium">{admin.discord_username ?? "Без имени"}</div>
                         <div className="font-mono text-xs text-muted-foreground">{admin.discord_id}</div>
@@ -181,6 +189,12 @@ export function UsersPage() {
           <DialogFooter><Button variant="ghost" onClick={closeGroupDialog}>Отмена</Button><Button disabled={!groupName.trim() || createGroup.isPending || updateGroup.isPending} onClick={() => editingGroupId ? updateGroup.mutate() : createGroup.mutate()}>{editingGroupId ? "Сохранить" : "Создать"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      <Sheet open={hasSelectedAdmin} onOpenChange={(open) => !open && closeAdmin()}>
+        <SheetContent side="right" className="w-full max-w-none overflow-y-auto p-0 sm:max-w-4xl">
+          <SheetHeader className="border-b px-5 py-4 pr-12"><SheetTitle>Профиль администратора</SheetTitle><SheetDescription>Права, департаменты, ключи, сессии и аудит</SheetDescription></SheetHeader>
+          {hasSelectedAdmin && <div className="p-4 sm:p-6"><UserDetailPage adminId={selectedAdminId} embedded onClose={closeAdmin} /></div>}
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

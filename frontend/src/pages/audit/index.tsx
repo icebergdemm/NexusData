@@ -1,9 +1,8 @@
-import { useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { useInfiniteQuery } from "@tanstack/react-query"
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
-import { ScrollText, Plus, Pencil, Trash2, LogIn, Activity, Search, RotateCcw, CalendarClock } from "lucide-react"
+import { ScrollText, Search, RotateCcw, CalendarClock } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -11,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
@@ -59,12 +59,12 @@ function actionCategory(action: string): ActionCategory {
   return "other"
 }
 
-const CATEGORY_META: Record<ActionCategory, { icon: typeof Plus; classes: string }> = {
-  create: { icon: Plus, classes: "bg-success/15 text-success" },
-  update: { icon: Pencil, classes: "bg-info/15 text-info" },
-  delete: { icon: Trash2, classes: "bg-destructive/15 text-destructive" },
-  auth: { icon: LogIn, classes: "bg-primary/15 text-primary" },
-  other: { icon: Activity, classes: "bg-muted text-muted-foreground" },
+const CATEGORY_META: Record<ActionCategory, { dot: string; classes: string }> = {
+  create: { dot: "bg-success", classes: "text-success" },
+  update: { dot: "bg-info", classes: "text-info" },
+  delete: { dot: "bg-destructive", classes: "text-destructive" },
+  auth: { dot: "bg-primary", classes: "text-primary" },
+  other: { dot: "bg-muted-foreground", classes: "text-muted-foreground" },
 }
 
 function initials(name: string | null, id: number): string {
@@ -72,32 +72,51 @@ function initials(name: string | null, id: number): string {
   return name.slice(0, 2).toUpperCase()
 }
 
-export function AuditPage() {
+function datetimeLocalValue(value: string): string {
+  if (!value) return ""
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return value
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const pad = (part: number) => String(part).padStart(2, "0")
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const adminIdFilter = Number(searchParams.get("admin_id"))
+  const adminIdFilter = Number(searchParams.get("admin") ?? searchParams.get("admin_id"))
   const hasAdminFilter = Number.isInteger(adminIdFilter) && adminIdFilter > 0
-  const [source, setSource] = useState<"" | "discord" | "all">("")
-  const [searchInput, setSearchInput] = useState("")
+  const source = (searchParams.get("source") as "panel" | "discord" | "all" | null) ?? "panel"
+  const searchInput = searchParams.get("q") ?? ""
   const debouncedSearch = useDebouncedValue(searchInput.trim(), 400)
-  const [category, setCategory] = useState("all")
-  const [actionFilter, setActionFilter] = useState("")
+  const category = searchParams.get("category") ?? "all"
+  const actionFilter = searchParams.get("action") ?? ""
   const debouncedAction = useDebouncedValue(actionFilter.trim(), 400)
-  const [dateFrom, setDateFrom] = useState("")
-  const [dateTo, setDateTo] = useState("")
-  const hasActiveFilters = hasAdminFilter || !!debouncedSearch || category !== "all" || !!debouncedAction || !!dateFrom || !!dateTo || source !== ""
+  const dateFrom = searchParams.get("from") ?? searchParams.get("date_from") ?? ""
+  const dateTo = searchParams.get("to") ?? searchParams.get("date_to") ?? ""
+  const dateFromInput = datetimeLocalValue(dateFrom)
+  const dateToInput = datetimeLocalValue(dateTo)
+  const showViews = searchParams.get("views") === "1"
+  const hasActiveFilters = hasAdminFilter || !!debouncedSearch || category !== "all" || !!debouncedAction || !!dateFrom || !!dateTo || source !== "panel" || showViews
+
+  const updateParam = (key: string, value: string) => {
+    const next = new URLSearchParams(searchParams)
+    if (value) next.set(key, value)
+    else next.delete(key)
+    setSearchParams(next)
+  }
 
   const { data: infiniteData, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage, isFetching } = useInfiniteQuery({
-    queryKey: ["audit-logs", source, adminIdFilter, debouncedSearch, category, debouncedAction, dateFrom, dateTo],
+    queryKey: ["audit-logs", source, adminIdFilter, debouncedSearch, category, debouncedAction, dateFrom, dateTo, showViews],
     queryFn: ({ pageParam = 1 }) => {
       const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
-      if (source === "discord" || source === "") params.set("source", source)
-      if (hasAdminFilter) params.set("admin_id", String(adminIdFilter))
-      // source === "all" — не отправляем параметр, бэкенд вернёт все
+      if (source !== "all") params.set("source", source)
+      if (hasAdminFilter) params.set("admin", String(adminIdFilter))
       if (debouncedSearch) params.set("q", debouncedSearch)
       if (category !== "all") params.set("category", category)
       if (debouncedAction) params.set("action", debouncedAction)
-      if (dateFrom) params.set("date_from", new Date(dateFrom).toISOString())
-      if (dateTo) params.set("date_to", new Date(dateTo).toISOString())
+      if (dateFrom) params.set("from", new Date(dateFrom).toISOString())
+      if (dateTo) params.set("to", new Date(dateTo).toISOString())
+      if (!showViews) params.set("exclude_views", "true")
       return api.get<AuditResponse>(`/api/v1/admin/audit/logs?${params.toString()}`)
     },
     initialPageParam: 1,
@@ -111,12 +130,13 @@ export function AuditPage() {
 
   return (
     <div>
-      <PageHeader
+      {!embedded && <PageHeader
         title="Аудит"
         description="Журнал всех действий администраторов в панели"
         icon={ScrollText}
         actions={<Badge variant="secondary" className="text-sm font-normal">{total} записей всего</Badge>}
-      />
+      />}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground"><span>{total} записей всего</span><label className="inline-flex items-center gap-2"><Checkbox checked={showViews} onCheckedChange={(checked) => updateParam("views", checked ? "1" : "")} /> показывать просмотры</label></div>
 
       <Card className="mb-4 py-0">
         <CardContent className="space-y-3 p-4">
@@ -125,13 +145,13 @@ export function AuditPage() {
               <Label className="mb-1.5 block text-xs">Поиск</Label>
               <SearchInput
                 value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
+                onChange={(e) => updateParam("q", e.target.value)}
                 placeholder="Действие, админ, детали, SteamID, reason… (мощный поиск по всем полям)"
               />
             </div>
             <div className="w-44">
               <Label className="mb-1.5 block text-xs">Категория</Label>
-              <Select value={category} onValueChange={setCategory}>
+              <Select value={category} onValueChange={(value) => updateParam("category", value === "all" ? "" : value)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Все категории</SelectItem>
@@ -147,7 +167,7 @@ export function AuditPage() {
               <Label className="mb-1.5 block text-xs">Действие (подстрока)</Label>
               <div className="relative">
                 <Search className="absolute left-2 top-2.5 size-3.5 text-muted-foreground" />
-                <Input value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} placeholder="напр. ban, create" className="pl-7" />
+                <Input value={actionFilter} onChange={(e) => updateParam("action", e.target.value)} placeholder="напр. ban, create" className="pl-7" />
               </div>
             </div>
             {(hasActiveFilters || isFetching) && (
@@ -159,12 +179,6 @@ export function AuditPage() {
                     size="sm"
                     variant="ghost"
                     onClick={() => {
-                      setSearchInput("")
-                      setCategory("all")
-                      setActionFilter("")
-                      setDateFrom("")
-                      setDateTo("")
-                      setSource("")
                       setSearchParams({})
                     }}
                   >
@@ -176,19 +190,19 @@ export function AuditPage() {
           </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex gap-2">
-              <Button size="sm" variant={source === "" ? "default" : "outline"} onClick={() => setSource("")}>Панель</Button>
-              <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => setSource("discord")}>Discord</Button>
-              <Button size="sm" variant={source === "all" ? "default" : "outline"} onClick={() => setSource("all")}>Все</Button>
+              <Button size="sm" variant={source === "panel" ? "default" : "outline"} onClick={() => updateParam("source", "panel")}>Панель</Button>
+              <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => updateParam("source", "discord")}>Discord</Button>
+              <Button size="sm" variant={source === "all" ? "default" : "outline"} onClick={() => updateParam("source", "all")}>Все</Button>
             </div>
             {hasAdminFilter && <Badge variant="outline">Только админ #{adminIdFilter}</Badge>}
             <div className="flex items-end gap-2">
               <div>
                 <Label className="mb-1.5 block text-xs flex items-center gap-1"><CalendarClock className="size-3" /> С даты</Label>
-                <Input type="datetime-local" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-44" />
+                <Input type="datetime-local" value={dateFromInput} onChange={(e) => updateParam("from", e.target.value)} className="w-44" />
               </div>
               <div>
                 <Label className="mb-1.5 block text-xs">По дату</Label>
-                <Input type="datetime-local" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-44" />
+                <Input type="datetime-local" value={dateToInput} onChange={(e) => updateParam("to", e.target.value)} className="w-44" />
               </div>
             </div>
           </div>
@@ -224,7 +238,7 @@ export function AuditPage() {
                         </TableCell>
                         <TableCell>
                           <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-mono text-xs ${meta.classes}`}>
-                            <meta.icon className="h-3 w-3" />
+                            <span className={`size-1.5 rounded-full ${meta.dot}`} aria-hidden="true" />
                             {l.action}
                           </span>
                         </TableCell>

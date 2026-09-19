@@ -65,7 +65,7 @@ test("permission details describe hidden source rows", () => {
 test("permission source links target the exact editable group or department level", () => {
   const href = model.permissionSourceHref!
 
-  assert.equal(href({ kind: "group", group_id: 7, group_name: "Модераторы" }), "/users?tab=groups&group_id=7#group-7")
+  assert.equal(href({ kind: "group", group_id: 7, group_name: "Модераторы" }), "/security/admins?tab=groups&group_id=7#group-7")
   assert.equal(href({ kind: "department_access_level", department_id: 12, level_id: 4 }), "/departments/12#level-4")
   assert.equal(href({ kind: "department_site", department_id: 12 }), "/departments/12")
   assert.equal(href({ kind: "individual", value: true }), undefined)

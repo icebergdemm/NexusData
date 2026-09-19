@@ -596,7 +596,20 @@ def create_app() -> FastAPI:
         # The legacy Jinja2 panel is disabled — every /adminold/* request bounces
         # to the React SPA before any of its 100 route handlers ever run.
         if request.url.path.startswith("/adminold"):
-            return RedirectResponse(url="/admin", status_code=302)
+            from urllib.parse import parse_qsl, urlencode
+            legacy_path = request.url.path.rstrip("/")
+            target = {
+                "/adminold/users": "/admin/security/admins",
+                "/adminold/privilege-groups": "/admin/security/admins",
+                "/adminold/sessions": "/admin/security/sessions",
+                "/adminold/audit": "/admin/security/audit",
+            }.get(legacy_path, "/admin")
+            query = dict(parse_qsl(request.url.query, keep_blank_values=True))
+            if legacy_path == "/adminold/privilege-groups":
+                query["tab"] = "groups"
+            if query:
+                target = f"{target}?{urlencode(query)}"
+            return RedirectResponse(url=target, status_code=302)
 
         # Method+path of the current request, for services_error_log's DB
         # error handler to attach to any ERROR/CRITICAL log raised while

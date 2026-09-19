@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, Radio, Users, ShieldAlert, Gavel, PlayCircle,
-  Ship, Star, Bot, Ticket, UserCog, Settings, KeyRound, Wrench,
-  Clock, ScrollText, BarChart3, Tags, FileText, NotebookText, Building2,
+  Ship, Star, Bot, Ticket, Settings, KeyRound, Wrench,
+  ShieldCheck, BarChart3, Tags, FileText, NotebookText, Building2,
   KanbanSquare, Globe2, Radar, Music, Mic2, UserPlus, ClipboardCheck, Trophy, Bug, Activity,
 } from "lucide-react"
 import { canDo, type CurrentAdmin, type PermissionPage } from "@/lib/auth"
@@ -96,7 +96,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Система",
     items: [
-      { label: "Пользователи Nexus Data", to: "/users", icon: UserCog, permission: "admin" },
+      { label: "Безопасность", to: "/security", icon: ShieldCheck, isVisible: (admin) => !!admin?.is_superuser },
       { label: "Администрирование", to: "/administration", icon: Settings, permission: "admin" },
       { label: "Шаблоны модерации", to: "/moderation-templates", icon: FileText, isVisible: (admin) => canDo(admin, "moderation_templates", "manage") },
       {
@@ -105,8 +105,6 @@ export const NAV_GROUPS: NavGroup[] = [
       },
       { label: "Серверные привилегии", to: "/server-privileges", icon: KeyRound, permission: "privileges" },
       { label: "Редактирование китов", to: "/kits", icon: Wrench, permission: "kits" },
-      { label: "Сессии", to: "/sessions", icon: Clock, permission: "sessions" },
-      { label: "Аудит", to: "/audit", icon: ScrollText, permission: "audit" },
       {
         label: "Журнал ошибок", to: "/error-log", icon: Bug,
         isVisible: (admin) => !!admin?.is_superuser,

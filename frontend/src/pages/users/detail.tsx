@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ExternalLink, KeyRound, ShieldCheck, Trash2, UserCog, Users } from "lucide-react"
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ExternalLink, KeyRound, Trash2, UserCog } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,10 +19,11 @@ import { formatPermissionSource, hasPermissionConflict, permissionSourceHref, pe
 import type { AuthorizationTrace, UsersResponse } from "./types"
 import { unwrapPages } from "./types"
 
-export function UserDetailPage() {
+export function UserDetailPage({ adminId: adminIdProp, embedded = false, onClose }: { adminId?: number; embedded?: boolean; onClose?: () => void } = {}) {
   const { adminId: adminIdParam } = useParams<{ adminId: string }>()
-  const adminId = Number(adminIdParam)
+  const adminId = adminIdProp ?? Number(adminIdParam)
   const navigate = useNavigate()
+  const close = onClose ?? (() => navigate("/security/admins"))
   const { data: me } = useCurrentAdmin()
   const { data: registryData } = usePermissionRegistry()
   const queryClient = useQueryClient()
@@ -55,12 +56,12 @@ export function UserDetailPage() {
   })
   const deleteAdmin = useMutation({
     mutationFn: () => api.delete(`/api/v1/admin/users/${adminId}`),
-    onSuccess: () => { toast.success("Администратор удалён"); navigate("/users") },
+    onSuccess: () => { toast.success("Администратор удалён"); close() },
     onError: (error: Error) => toast.error(error.message),
   })
 
   if (!Number.isInteger(adminId) || adminId < 1 || isError) {
-    return <Card><CardContent className="space-y-3 py-12 text-center"><p className="text-muted-foreground">Администратор не найден.</p><Button variant="outline" onClick={() => navigate("/users")}><ArrowLeft className="size-4" />К списку</Button></CardContent></Card>
+    return <Card><CardContent className="space-y-3 py-12 text-center"><p className="text-muted-foreground">Администратор не найден.</p><Button variant="outline" onClick={close}><ArrowLeft className="size-4" />К списку</Button></CardContent></Card>
   }
   if (isLoading || !trace) return <div className="space-y-4"><Skeleton className="h-40" /><Skeleton className="h-12" /><Skeleton className="h-96" /></div>
 
@@ -68,15 +69,15 @@ export function UserDetailPage() {
   const player = trace.linked_player
   return (
     <div className="space-y-4">
-      <PageHeader
+      {!embedded && <PageHeader
         title={profileName}
         description="Профиль администратора Nexus Data"
         icon={UserCog}
-        actions={<Button variant="outline" onClick={() => navigate("/users")}><ArrowLeft className="size-4" />К списку</Button>}
-      />
+        actions={<Button variant="outline" onClick={close}><ArrowLeft className="size-4" />К списку</Button>}
+      />}
 
       <Card className="overflow-hidden py-0">
-        <CardContent className="flex flex-wrap items-start justify-between gap-4 bg-gradient-to-r from-primary/10 via-card to-card px-6 py-5">
+        <CardContent className="flex flex-wrap items-start justify-between gap-4 bg-card px-6 py-5">
           <div className="flex min-w-0 items-start gap-3">
             <div className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary"><UserCog className="size-6" /></div>
             <div className="min-w-0">
@@ -86,7 +87,6 @@ export function UserDetailPage() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => setKeysOpen(true)}><KeyRound className="size-4" />Ключи</Button>
             {me?.is_superuser && adminId !== me.id && canEdit && <Button variant="outline" onClick={() => toggleSuperuser.mutate(!trace.admin.is_superuser)}>{trace.admin.is_superuser ? "Снять superuser" : "Выдать superuser"}</Button>}
             {usersData?.can_delete && adminId !== me?.id && <Button variant="destructive" onClick={() => { if (window.confirm(`Удалить администратора ${profileName}?`)) deleteAdmin.mutate() }}><Trash2 className="size-4" />Удалить</Button>}
           </div>
@@ -96,8 +96,13 @@ export function UserDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList className="w-full flex-wrap justify-start"><TabsTrigger value="overview">Обзор</TabsTrigger><TabsTrigger value="permissions">Права</TabsTrigger><TabsTrigger value="departments">Департаменты ({trace.departments.length})</TabsTrigger><TabsTrigger value="keys">Ключи и аудит</TabsTrigger></TabsList>
         <TabsContent value="overview" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-4"><SummaryCard label="Группа" value={group?.name ?? "Без группы"} icon={Users} /><SummaryCard label="Департаменты" value={String(trace.departments.length)} icon={ShieldCheck} /><SummaryCard label="Конфликты" value={String(countConflicts(trace))} icon={AlertTriangle} destructive={countConflicts(trace) > 0} /><SummaryCard label="Login keys" value={String(trace.login_keys.length)} icon={KeyRound} /></div>
-          <Card><CardHeader><CardTitle className="text-base">Группа прав</CardTitle></CardHeader><CardContent className="flex flex-wrap items-end gap-3"><div className="min-w-64 flex-1"><Label className="mb-1.5 block text-xs">Назначенная группа</Label><Select value={group ? String(group.id) : "none"} onValueChange={(value) => assignGroup.mutate(value === "none" ? null : Number(value))} disabled={!canEdit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Без группы</SelectItem>{(usersData?.groups ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div><Button variant="outline" onClick={() => navigate("/users?tab=groups")}>К настройке групп</Button></CardContent></Card>
+          <div className="grid border-y text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div className="border-b px-3 py-3 sm:border-r lg:border-b-0"><div className="text-xs text-muted-foreground">Группа</div><div className="mt-1 font-medium">{group?.name ?? "Без группы"}</div></div>
+            <div className="border-b px-3 py-3 lg:border-r lg:border-b-0"><div className="text-xs text-muted-foreground">Департаменты</div><div className="mt-1 font-medium">{trace.departments.length}</div></div>
+            <div className={`border-b px-3 py-3 sm:border-r lg:border-b-0 ${countConflicts(trace) > 0 ? "text-destructive" : ""}`}><div className="text-xs text-muted-foreground">Конфликты прав</div><div className="mt-1 font-medium">{countConflicts(trace)}</div></div>
+            <div className="px-3 py-3"><div className="text-xs text-muted-foreground">Ключи входа</div><div className="mt-1 font-medium">{trace.login_keys.length}</div></div>
+          </div>
+          <Card><CardHeader><CardTitle className="text-base">Группа прав</CardTitle></CardHeader><CardContent className="flex flex-wrap items-end gap-3"><div className="min-w-64 flex-1"><Label className="mb-1.5 block text-xs">Назначенная группа</Label><Select value={group ? String(group.id) : "none"} onValueChange={(value) => assignGroup.mutate(value === "none" ? null : Number(value))} disabled={!canEdit}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Без группы</SelectItem>{(usersData?.groups ?? []).map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.name}</SelectItem>)}</SelectContent></Select></div><Button variant="outline" onClick={() => navigate("/security/admins?tab=groups")}>К настройке групп</Button></CardContent></Card>
           <ResourceSummary trace={trace} />
         </TabsContent>
         <TabsContent value="permissions"><PermissionProfile trace={trace} registry={registryData?.pages} canEdit={canEdit} adminId={adminId} onChanged={() => invalidateUserQueries(queryClient, adminId)} /></TabsContent>
@@ -305,15 +310,11 @@ function DepartmentLinks({ trace }: { trace: AuthorizationTrace }) {
 }
 
 function KeysAndAudit({ trace, onOpenKeys }: { trace: AuthorizationTrace; onOpenKeys: () => void }) {
-  return <div className="space-y-4"><Card><CardHeader><CardTitle className="text-base">Ключи входа</CardTitle></CardHeader><CardContent className="flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-muted-foreground">Активные и отозванные ключи: {trace.login_keys.length}. Секреты здесь не показываются.</div><Button variant="outline" onClick={onOpenKeys}><KeyRound className="size-4" />Открыть ключи</Button></CardContent></Card><Card><CardHeader><CardTitle className="text-base">Аудит действий</CardTitle></CardHeader><CardContent><Button variant="outline" asChild><Link to={`/audit?admin_id=${trace.admin.id}`}><ExternalLink className="size-4" />Открыть аудит этого администратора</Link></Button></CardContent></Card></div>
+  return <div className="space-y-4"><Card><CardHeader><CardTitle className="text-base">Ключи входа</CardTitle></CardHeader><CardContent className="flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-muted-foreground">Активные и отозванные ключи: {trace.login_keys.length}. Секреты здесь не показываются.</div><Button variant="outline" onClick={onOpenKeys}><KeyRound className="size-4" />Открыть ключи</Button></CardContent></Card><Card><CardHeader><CardTitle className="text-base">Аудит действий</CardTitle></CardHeader><CardContent className="flex flex-wrap gap-2"><Button variant="outline" asChild><Link to={`/security/audit?admin=${trace.admin.id}`}><ExternalLink className="size-4" />Открыть аудит этого администратора</Link></Button><Button variant="outline" asChild><Link to={`/security/sessions?admin=${trace.admin.id}`}>Сессии этого администратора</Link></Button></CardContent></Card></div>
 }
 
 function ResourceSummary({ trace }: { trace: AuthorizationTrace }) {
   return <div className="grid gap-4 md:grid-cols-2"><Card><CardHeader><CardTitle className="text-sm">Документные ACL</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{trace.resource_acl.documents.length} применимых правил · уровни view/comment/edit</CardContent></Card><Card><CardHeader><CardTitle className="text-sm">ACL досок задач</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{trace.resource_acl.task_boards.length} применимых правил</CardContent></Card></div>
-}
-
-function SummaryCard({ label, value, icon: Icon, destructive = false }: { label: string; value: string; icon: typeof Users; destructive?: boolean }) {
-  return <Card><CardContent className="flex items-center gap-3 p-4"><Icon className={`size-5 ${destructive ? "text-destructive" : "text-muted-foreground"}`} /><div><div className="text-lg font-semibold">{value}</div><div className="text-xs text-muted-foreground">{label}</div></div></CardContent></Card>
 }
 
 function countConflicts(trace: AuthorizationTrace) {

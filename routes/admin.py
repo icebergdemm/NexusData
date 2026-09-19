@@ -83,6 +83,135 @@ def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[
     db.commit()
 
 
+# Security Hub deliberately uses a small explicit activity vocabulary. The
+# full audit remains the place for every action; the overview must stay a
+# useful warning feed instead of becoming audit v2 with a different heading.
+SECURITY_ATTENTION_ACTIONS = frozenset({"login_key_failure", "csrf_failure"})
+SECURITY_ACTIVITY_ACTIONS = frozenset({
+    "login", "logout", "login_key_failure", "login_key_use", "login_key_create", "login_key_revoke",
+    "csrf_failure", "discord_membership_denied", "revoke_session", "revoke_all_sessions",
+    "web_lockdown_change", "create_admin", "restore_admin", "update_admin_role", "delete_admin",
+    "user_assign_group", "privilege_group_create", "privilege_group_edit", "privilege_group_delete",
+    "task_create", "ticket_delete", "ticket_restore", "punishment_create", "achievement_create",
+    "achievement_delete", "achievement_grant", "achievement_revoke", "sub_project_create",
+})
+SECURITY_ACTIVITY_SUFFIXES = ("_delete", "_remove", "_revoke", "_void", "_unban")
+
+
+def is_security_activity_action(action: Optional[str]) -> bool:
+    """Return whether an audit action belongs in the overview activity feed."""
+    normalized = (action or "").strip().lower()
+    if not normalized or normalized.startswith("view_"):
+        return False
+    return (
+        normalized in SECURITY_ACTIVITY_ACTIONS
+        or normalized in {"moderation.kick", "moderation.ban"}
+        or normalized.endswith(SECURITY_ACTIVITY_SUFFIXES)
+    )
+
+
+def is_active_admin_session(session: AdminSession, now: Optional[datetime] = None) -> bool:
+    now = now or datetime.utcnow()
+    return not bool(session.revoked) and (session.expires_at is None or session.expires_at > now)
+
+
+def build_security_attention(logs, now: Optional[datetime] = None) -> list[dict]:
+    """Group recent authentication failures for the overview warning list."""
+    now = now or datetime.utcnow()
+    since = now - timedelta(hours=1)
+    grouped: dict[str, dict] = {}
+    for log in logs:
+        if log.action not in SECURITY_ATTENTION_ACTIONS or not log.created_at or log.created_at < since:
+            continue
+        item = grouped.setdefault(log.action, {
+            "action": log.action,
+            "count": 0,
+            "first_at": log.created_at.isoformat(),
+            "last_at": log.created_at.isoformat(),
+            "severity": log.severity or "high",
+            "href": f"/security/audit?action={log.action}",
+        })
+        item["count"] += 1
+        item["first_at"] = min(item["first_at"], log.created_at.isoformat())
+        item["last_at"] = max(item["last_at"], log.created_at.isoformat())
+    return sorted(grouped.values(), key=lambda item: item["last_at"], reverse=True)
+
+
+def build_new_device_attention(db: Session, sessions: list[AdminSession], now: Optional[datetime] = None) -> list[dict]:
+    """Flag recent sessions whose IP/UA pair was not seen for that admin."""
+    now = now or datetime.utcnow()
+    since = now - timedelta(hours=1)
+    recent = [
+        session for session in sessions
+        if session.created_at and session.created_at >= since and (session.last_seen_ip or session.user_agent)
+    ]
+    if not recent:
+        return []
+    admin_ids = {session.admin_id for session in recent}
+    historical = db.query(AdminSession).filter(
+        AdminSession.admin_id.in_(admin_ids),
+        AdminSession.created_at < since,
+    ).all()
+    known = {
+        session.admin_id: {(item.last_seen_ip, item.user_agent) for item in historical if item.last_seen_ip or item.user_agent}
+        for session in recent
+    }
+    result = []
+    for session in recent:
+        fingerprint = (session.last_seen_ip, session.user_agent)
+        if fingerprint in known.get(session.admin_id, set()):
+            continue
+        result.append({
+            "action": "new_device",
+            "count": 1,
+            "last_at": session.created_at.isoformat(),
+            "session_id": session.id,
+            "admin_id": session.admin_id,
+            "href": f"/security/audit?admin={session.admin_id}&action=login",
+        })
+    return sorted(result, key=lambda item: item["last_at"], reverse=True)
+
+
+def group_security_activity(logs, window_seconds: int = 300) -> list[dict]:
+    """Merge adjacent same-admin/action rows without hiding their details."""
+    grouped: list[dict] = []
+    for log in sorted(logs, key=lambda row: row.created_at or datetime.min, reverse=True):
+        if not is_security_activity_action(log.action):
+            continue
+        details = log.details if isinstance(log.details, dict) else {}
+        current = grouped[-1] if grouped else None
+        previous_at = datetime.fromisoformat(current["created_at"]) if current and current["created_at"] else None
+        close_enough = current and previous_at and log.created_at and abs((previous_at - log.created_at).total_seconds()) <= window_seconds
+        if current and close_enough and current["admin_id"] == log.admin_id and current["action"] == log.action:
+            current["count"] += 1
+            current["ids"].append(log.id)
+            current["details"].append(details)
+            current["created_at"] = max(current["created_at"], log.created_at.isoformat())
+            continue
+        grouped.append({
+            "id": log.id,
+            "ids": [log.id],
+            "admin_id": log.admin_id,
+            "admin_name": getattr(log, "admin_name", None),
+            "action": log.action,
+            "count": 1,
+            "details": [details],
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "reason": getattr(log, "reason", None),
+            "severity": getattr(log, "severity", None),
+            "outcome": getattr(log, "outcome", None),
+        })
+    return grouped
+
+
+def _security_activity_filter():
+    """SQL predicate matching the explicit overview activity vocabulary."""
+    return or_(
+        AdminActionLog.action.in_(SECURITY_ACTIVITY_ACTIONS | {"moderation.kick", "moderation.ban"}),
+        *(AdminActionLog.action.like(f"%{suffix}") for suffix in SECURITY_ACTIVITY_SUFFIXES),
+    )
+
+
 def redact_audit_details(details: Optional[dict], is_superuser: bool = False) -> dict:
     return details or {} if is_superuser else sanitize_audit_details(details or {})
 
@@ -2889,11 +3018,27 @@ async def revoke_session(request: Request, session_id: int, db: Session = Depend
 
 
 @router.get("/api/v1/admin/sessions")
-async def api_sessions_list(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+async def api_sessions_list(
+    request: Request,
+    active: bool = Query(True),
+    admin_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
     if not check_permission(current_admin, "sessions", "view"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
-    sessions = db.query(AdminSession).order_by(AdminSession.created_at.desc()).all()
+    now = datetime.utcnow()
+    query = db.query(AdminSession)
+    if admin_id is not None:
+        query = query.filter(AdminSession.admin_id == admin_id)
+    if active:
+        query = query.filter(
+            AdminSession.revoked == 0,
+            or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > now),
+        )
+    sessions = query.order_by(AdminSession.created_at.desc()).all()
     admin_ids = {s.admin_id for s in sessions}
     admins_map = {a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()} if admin_ids else {}
 
@@ -2909,15 +3054,19 @@ async def api_sessions_list(db: Session = Depends(get_db), current_admin: AdminU
                 "user_agent": s.user_agent,
                 "auth_type": s.auth_type,
                 "revoked": bool(s.revoked),
+                "is_current": getattr(request.state, "nd_session_id", None) == s.id,
             }
             for s in sessions
         ],
         "can_edit": check_permission(current_admin, "sessions", "edit"),
+        "current_session_id": getattr(request.state, "nd_session_id", None),
+        "active": active,
     }
 
 
 @router.post("/api/v1/admin/sessions/{session_id}/revoke")
 async def api_revoke_session(session_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_superuser(current_admin)
     if not check_permission(current_admin, "sessions", "edit"):
         raise HTTPException(status_code=403, detail="Недостаточно прав для отзыва сессии")
     await ensure_csrf_or_valid_admin_session(request, db)
@@ -2942,6 +3091,7 @@ async def api_revoke_all_sessions(
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
+    _require_superuser(current_admin)
     if not check_permission(current_admin, "sessions", "edit"):
         raise HTTPException(status_code=403, detail="Недостаточно прав для отзыва сессий")
     await ensure_csrf_or_valid_admin_session(request, db)
@@ -2962,12 +3112,27 @@ async def api_revoke_all_sessions(
 
 @router.get("/api/v1/admin/security/lockdown")
 async def api_web_lockdown_status(
+    db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
     _require_superuser(current_admin)
     import web_lockdown
     state = web_lockdown.read_state(force=True)
-    return {"enabled": state.enabled, "message": state.message, "updated_at": state.updated_at}
+    non_superuser_ids = db.query(AdminUser.id).filter(or_(
+        AdminUser.is_superuser.is_(False),
+        AdminUser.is_superuser.is_(None),
+    )).subquery()
+    active_non_superuser_sessions = db.query(AdminSession).filter(
+        AdminSession.admin_id.in_(non_superuser_ids),
+        AdminSession.revoked == 0,
+        or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > datetime.utcnow()),
+    ).count()
+    return {
+        "enabled": state.enabled,
+        "message": state.message,
+        "updated_at": state.updated_at,
+        "active_non_superuser_sessions": active_non_superuser_sessions,
+    }
 
 
 @router.post("/api/v1/admin/security/lockdown")
@@ -2994,7 +3159,105 @@ async def api_web_lockdown_update(
         details={"enabled": state.enabled, "revoked_sessions": revoked},
         severity="critical" if enabled else "high",
     )
-    return {"enabled": state.enabled, "message": state.message, "updated_at": state.updated_at, "revoked_sessions": revoked}
+    non_superuser_ids = db.query(AdminUser.id).filter(or_(
+        AdminUser.is_superuser.is_(False),
+        AdminUser.is_superuser.is_(None),
+    )).subquery()
+    active_non_superuser_sessions = db.query(AdminSession).filter(
+        AdminSession.admin_id.in_(non_superuser_ids),
+        AdminSession.revoked == 0,
+        or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > datetime.utcnow()),
+    ).count()
+    return {
+        "enabled": state.enabled,
+        "message": state.message,
+        "updated_at": state.updated_at,
+        "revoked_sessions": revoked,
+        "active_non_superuser_sessions": active_non_superuser_sessions,
+    }
+
+
+@router.get("/api/v1/admin/security/overview")
+async def api_security_overview(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Compact, bounded data source for the Security Hub overview."""
+    _require_superuser(current_admin)
+    now = datetime.utcnow()
+    since = now - timedelta(hours=1)
+
+    attention_logs = (
+        db.query(AdminActionLog)
+        .filter(AdminActionLog.created_at >= since, AdminActionLog.action.in_(SECURITY_ATTENTION_ACTIONS))
+        .order_by(AdminActionLog.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    activity_logs = (
+        db.query(AdminActionLog)
+        .filter(_security_activity_filter())
+        .order_by(AdminActionLog.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    admin_ids = {log.admin_id for log in attention_logs + activity_logs if log.admin_id}
+    admin_lookup = {
+        admin.id: admin.discord_username
+        for admin in db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all()
+    } if admin_ids else {}
+    for log in attention_logs + activity_logs:
+        log.admin_name = admin_lookup.get(log.admin_id)
+
+    active_sessions = (
+        db.query(AdminSession)
+        .filter(
+            AdminSession.revoked == 0,
+            or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > now),
+        )
+        .order_by(AdminSession.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    session_admin_ids = {session.admin_id for session in active_sessions}
+    session_admin_lookup = {
+        admin.id: admin.discord_username
+        for admin in db.query(AdminUser).filter(AdminUser.id.in_(session_admin_ids)).all()
+    } if session_admin_ids else {}
+
+    def serialize_session(session: AdminSession) -> dict:
+        return {
+            "id": session.id,
+            "admin_id": session.admin_id,
+            "admin_name": session_admin_lookup.get(session.admin_id),
+            "created_at": session.created_at.isoformat() if session.created_at else None,
+            "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+            "last_seen_at": session.last_seen_at.isoformat() if session.last_seen_at else None,
+            "last_seen_ip": session.last_seen_ip,
+            "user_agent": session.user_agent,
+            "auth_type": session.auth_type,
+            "revoked": bool(session.revoked),
+            "is_current": getattr(request.state, "nd_session_id", None) == session.id,
+        }
+
+    import web_lockdown
+    lockdown = web_lockdown.read_state(force=True)
+    return {
+        "lockdown": {
+            "enabled": lockdown.enabled,
+            "message": lockdown.message,
+            "updated_at": lockdown.updated_at,
+        },
+        "attention": sorted(
+            build_security_attention(attention_logs, now=now) + build_new_device_attention(db, active_sessions, now=now),
+            key=lambda item: item["last_at"],
+            reverse=True,
+        )[:20],
+        "active_sessions": [serialize_session(session) for session in active_sessions],
+        "current_session_id": getattr(request.state, "nd_session_id", None),
+        "recent_actions": group_security_activity(activity_logs)[:20],
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3866,15 +4129,20 @@ def api_system_health(
 @router.get("/api/v1/admin/audit/logs")
 async def api_audit_logs(
     request: Request,
-    source: Optional[str] = Query(None, pattern="^(discord)?$"),
+    source: Optional[str] = Query(None, pattern="^(|panel|discord)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=10, le=200),
     q: Optional[str] = Query(None, max_length=200, description="Полнотекстовый поиск по действию, админу и деталям"),
     category: Optional[str] = Query(None, pattern="^(create|update|delete|auth|other)$", description="Фильтр по категории действия"),
     admin_id: Optional[int] = Query(None, description="Фильтр по ID админа"),
+    admin: Optional[int] = Query(None, description="Канонический фильтр по ID админа"),
     date_from: Optional[str] = Query(None, description="ISO дата начала (включительно)"),
     date_to: Optional[str] = Query(None, description="ISO дата конца (включительно)"),
+    from_date: Optional[str] = Query(None, alias="from", description="Каноническая дата начала"),
+    to_date: Optional[str] = Query(None, alias="to", description="Каноническая дата конца"),
     action: Optional[str] = Query(None, max_length=100, description="Точный фильтр по action (подстрока)"),
+    actions: Optional[list[str]] = Query(None, description="Список точных action для ленты"),
+    exclude_views: bool = Query(False, description="Исключить view_* действия"),
     auth_type: Optional[str] = Query(None, max_length=32),
     outcome: Optional[str] = Query(None, pattern="^(success|failure)$"),
     severity: Optional[str] = Query(None, pattern="^(info|low|medium|high|critical)$"),
@@ -3887,6 +4155,7 @@ async def api_audit_logs(
     category — маппится на паттерны как в фронте actionCategory.
     date_from/date_to — ISO строки, фильтруют по created_at.
     """
+    _require_superuser(current_admin)
     if not check_permission(current_admin, "audit", "view"):
         raise HTTPException(status_code=403)
 
@@ -3897,8 +4166,15 @@ async def api_audit_logs(
     query = db.query(AdminActionLog)
     if source == "discord":
         query = query.filter(AdminActionLog.action.like("discord:%"))
-    elif source == "":
+    elif source in {"", "panel"}:
         query = query.filter(~AdminActionLog.action.like("discord:%"))
+
+    if actions:
+        normalized_actions = [item.strip() for item in actions if item.strip()]
+        if normalized_actions:
+            query = query.filter(AdminActionLog.action.in_(normalized_actions))
+    if exclude_views:
+        query = query.filter(~AdminActionLog.action.like("view_%"))
 
     # Фильтр по категории действия (как в фронте actionCategory)
     if category:
@@ -3938,23 +4214,26 @@ async def api_audit_logs(
 
     if action:
         query = query.filter(AdminActionLog.action.ilike(f"%{action}%"))
-    if admin_id is not None:
-        query = query.filter(AdminActionLog.admin_id == admin_id)
+    effective_admin_id = admin if admin is not None else admin_id
+    if effective_admin_id is not None:
+        query = query.filter(AdminActionLog.admin_id == effective_admin_id)
     if auth_type:
         query = query.filter(AdminActionLog.auth_type == auth_type)
     if outcome:
         query = query.filter(AdminActionLog.outcome == outcome)
     if severity:
         query = query.filter(AdminActionLog.severity == severity)
-    if date_from:
+    effective_date_from = from_date or date_from
+    effective_date_to = to_date or date_to
+    if effective_date_from:
         try:
-            dt_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+            dt_from = datetime.fromisoformat(effective_date_from.replace("Z", "+00:00"))
             query = query.filter(AdminActionLog.created_at >= dt_from)
         except Exception:
             pass
-    if date_to:
+    if effective_date_to:
         try:
-            dt_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            dt_to = datetime.fromisoformat(effective_date_to.replace("Z", "+00:00"))
             query = query.filter(AdminActionLog.created_at <= dt_to)
         except Exception:
             pass
@@ -3968,7 +4247,10 @@ async def api_audit_logs(
             from sqlalchemy import exists
             admin_exists = db.query(AdminUser.id).filter(
                 AdminUser.id == AdminActionLog.admin_id,
-                AdminUser.discord_username.ilike(like)
+                or_(
+                    AdminUser.discord_username.ilike(like),
+                    AdminUser.discord_id.ilike(like),
+                ),
             ).exists()
             query = query.filter(or_(
                 AdminActionLog.action.ilike(like),
