@@ -2960,6 +2960,43 @@ async def api_revoke_all_sessions(
     return {"status": "ok", "revoked": affected}
 
 
+@router.get("/api/v1/admin/security/lockdown")
+async def api_web_lockdown_status(
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    import web_lockdown
+    state = web_lockdown.read_state(force=True)
+    return {"enabled": state.enabled, "message": state.message, "updated_at": state.updated_at}
+
+
+@router.post("/api/v1/admin/security/lockdown")
+async def api_web_lockdown_update(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        raise HTTPException(status_code=422, detail="enabled must be boolean")
+
+    import web_lockdown
+    enabled = body["enabled"]
+    message = str(body.get("message") or "").strip()[:255]
+    state = web_lockdown.write_state(enabled, message)
+    revoked = web_lockdown.revoke_non_superuser_sessions(db) if enabled else 0
+    log_security_event(
+        db,
+        "web_lockdown_change",
+        request=request,
+        admin_id=current_admin.id,
+        details={"enabled": state.enabled, "revoked_sessions": revoked},
+        severity="critical" if enabled else "high",
+    )
+    return {"enabled": state.enabled, "message": state.message, "updated_at": state.updated_at, "revoked_sessions": revoked}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PRIVILEGE GROUPS
 # ═══════════════════════════════════════════════════════════════════════════

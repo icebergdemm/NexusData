@@ -26,6 +26,7 @@ import models  # ensure all models are registered before create_all
 from routes import status_router, kits_router, players_router, stats_router, admin_router, events_router, moderation_api_router, moderation_panel_router, sub_projects_router, sub_projects_polygon_router, sub_checker_router, game_api_router, game_public_router, ratings_router, rating_events_router, rating_admin_v2_router, discord_bot_panel_router, discord_viewer_router, tickets_panel_router, logs_router, dispatch_api_router, dispatch_panel_router, dispatch_client_router, replays_api_router, replays_ws_router, replays_panel_router, analytics_router, notifications_router, documents_router, onlyoffice_router, departments_router, tasks_router, world_state_router, world_state_admin_router, world_state_client_router, spawn_director_router, spawn_director_admin_router, warehouse_admin_router, warehouse_client_router, cache_sync_api_router, sounds_router, dolls_game_router, dolls_admin_router, achievements_game_router, achievements_admin_router, error_log_router, perf_monitor_router, ai_dossier_router, communications_router, server_restart_router, lobby_advertisement_router, voice_profiles_router
 from workers import start_playtime_worker, stop_all_workers, watch_runtime_state
 import runtime_control
+import web_lockdown
 from datetime import datetime
 
 settings = get_settings()
@@ -416,7 +417,7 @@ def create_app() -> FastAPI:
         the frontend's MaintenanceBanner and any external monitor can poll
         without credentials. Deliberately does not touch the database."""
         from healthz import build_healthz_response
-        return build_healthz_response(runtime_control.read_state())
+        return build_healthz_response(runtime_control.read_state(), web_lockdown.read_state())
 
     @app.get("/livez")
     async def livez():
@@ -426,7 +427,7 @@ def create_app() -> FastAPI:
     @app.get("/readyz")
     async def readyz():
         from healthz import build_readiness_response
-        return build_readiness_response(runtime_control.read_state())
+        return build_readiness_response(runtime_control.read_state(), web_lockdown.read_state())
 
     @app.get("/admin")
     async def spa_root():
@@ -669,6 +670,22 @@ def create_app() -> FastAPI:
 
         state = runtime_control.read_state()
         is_api = path.startswith("/api/")
+
+        lockdown = web_lockdown.read_state()
+        if lockdown.enabled:
+            from database import SessionLocal
+            db = None
+            try:
+                db = SessionLocal()
+                allowed = web_lockdown.can_access_web(request, db, settings)
+            except Exception:
+                logger.exception("Web lockdown identity check failed closed")
+                allowed = False
+            finally:
+                if db is not None:
+                    db.close()
+            if not allowed:
+                return _maintenance_response(request, lockdown.message or "Ведутся технические работы. Доступ временно ограничен.")
 
         if state.maintenance_mode:
             return _maintenance_response(request, state.maintenance_message or "Ведутся технические работы. Пожалуйста, зайдите позже.")

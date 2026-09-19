@@ -10,16 +10,20 @@ from typing import Any
 from starlette.responses import JSONResponse
 
 
-def healthz_status(state: Any) -> str:
-    if state.maintenance_mode:
+def healthz_status(state: Any, lockdown: Any = None) -> str:
+    lockdown_enabled = bool(getattr(lockdown, "enabled", False) if lockdown is not None else getattr(state, "web_lockdown", False))
+    if state.maintenance_mode or lockdown_enabled:
         return "maintenance"
     if not state.db_healthy or not state.api_enabled or not state.web_enabled:
         return "degraded"
     return "ok"
 
 
-def build_healthz_response(state: Any) -> JSONResponse:
-    status = healthz_status(state)
+def build_healthz_response(state: Any, lockdown: Any = None) -> JSONResponse:
+    status = healthz_status(state, lockdown)
+    lockdown_enabled = bool(getattr(lockdown, "enabled", False) if lockdown is not None else getattr(state, "web_lockdown", False))
+    lockdown_message = getattr(lockdown, "message", "") if lockdown is not None else getattr(state, "web_lockdown_message", "")
+    maintenance_message = lockdown_message if lockdown_enabled else state.maintenance_message
     response = JSONResponse(
         {
             "status": status,
@@ -27,8 +31,9 @@ def build_healthz_response(state: Any) -> JSONResponse:
             "api_enabled": state.api_enabled,
             "web_enabled": state.web_enabled,
             "workers_enabled": state.workers_enabled,
-            "maintenance_mode": state.maintenance_mode,
-            "maintenance_message": state.maintenance_message or None,
+            "maintenance_mode": bool(state.maintenance_mode or lockdown_enabled),
+            "maintenance_message": maintenance_message or None,
+            "web_lockdown": lockdown_enabled,
         },
         status_code=200 if status == "ok" else 503,
     )
@@ -43,6 +48,6 @@ def build_liveness_response() -> JSONResponse:
     return response
 
 
-def build_readiness_response(state: Any) -> JSONResponse:
+def build_readiness_response(state: Any, lockdown: Any = None) -> JSONResponse:
     """Readiness has the same diagnostic body as healthz, with probe semantics."""
-    return build_healthz_response(state)
+    return build_healthz_response(state, lockdown)
