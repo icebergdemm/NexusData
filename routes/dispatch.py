@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, or_
+from sqlalchemy import and_, desc, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -91,6 +91,13 @@ _AI_DEFAULT_NEARBY_CONTEXT_MESSAGES = 4
 _AI_DEFAULT_ALERT_HISTORY_MESSAGES = 5
 _AI_MAX_HISTORY_MESSAGES = 30
 _AI_IGNORED_SENDER_NAMES = frozenset({"console"})
+# The game plugin delivers every dispatcher line through a ``broadcast`` radio
+# action and reports what it delivered back to ``POST /dispatch``. That line is
+# our own transmission, not a player: storing it duplicated each message in the
+# journal, and the AI answered its own words as a player's reply — "это снова
+# эхо" — which fed the next echo in an endless loop.
+_DISPATCHER_ECHO_SENDER_IDS = frozenset({"broadcast"})
+_DISPATCHER_ECHO_MATCH_WINDOW = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -187,9 +194,50 @@ def get_round_state(db: Session, server_name: str) -> dict:
     }
 
 
+def _normalize_radio_text(text: Optional[str]) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _is_dispatcher_echo_sender(steamid: Optional[str], player_name: Optional[str]) -> bool:
+    return any(
+        (value or "").strip().casefold() in _DISPATCHER_ECHO_SENDER_IDS
+        for value in (steamid, player_name)
+    )
+
+
+def _is_dispatcher_echo(db: Session, body: DispatchMessageIn) -> bool:
+    """Recognize a dispatcher transmission reported back by the game server."""
+    if _is_dispatcher_echo_sender(body.steamid, body.player_name):
+        return True
+    text = _normalize_radio_text(body.text)
+    if not text.startswith(_DISPATCHER_PREFIX.strip()):
+        return False
+    # Otherwise only an exact copy of something we transmitted recently counts:
+    # a player who merely quotes the dispatcher still reaches the journal.
+    server_name = (body.server_name or "").strip().upper()
+    candidates = db.query(DispatchMessage.text).filter(
+        DispatchMessage.sender_type == "dispatcher",
+        or_(
+            DispatchMessage.server_name.is_(None),
+            func.upper(DispatchMessage.server_name) == server_name,
+        ),
+        DispatchMessage.created_at >= datetime.utcnow() - _DISPATCHER_ECHO_MATCH_WINDOW,
+    ).all()
+    return any(_normalize_radio_text(row.text) == text for row in candidates)
+
+
 @api_router.post("/dispatch")
 def post_dispatch_message(body: DispatchMessageIn, db: Session = Depends(get_game_db)):
     """Game server posts a radio terminal message from a player."""
+    if _is_dispatcher_echo(db, body):
+        # Acknowledge so the plugin does not retry, but never store, mirror to
+        # Discord/webhooks, or hand our own transmission to the AI as a reply.
+        logger.info(
+            "Dispatch echo ignored on %s from sender=%r",
+            body.server_name,
+            body.player_name or body.steamid,
+        )
+        return {"status": "ignored", "reason": "dispatcher_echo"}
     msg = DispatchMessage(
         steamid=body.steamid,
         player_name=body.player_name,
@@ -282,7 +330,22 @@ def get_dispatch_messages(
     db: Session = Depends(get_game_db),
 ):
     """Get recent dispatch messages (for polling)."""
-    q = db.query(DispatchMessage)
+    q = db.query(DispatchMessage).filter(
+        # Echoes stored before the ingest filter duplicate the dispatcher line
+        # right above them and read as a player answering.
+        or_(
+            DispatchMessage.sender_type != "player",
+            and_(
+                or_(
+                    DispatchMessage.player_name.is_(None),
+                    func.lower(func.trim(DispatchMessage.player_name)).notin_(
+                        tuple(_DISPATCHER_ECHO_SENDER_IDS)
+                    ),
+                ),
+                _not_dispatcher_echo_steamid(),
+            ),
+        )
+    )
     if after_id:
         q = q.filter(DispatchMessage.id > after_id)
     messages = q.order_by(desc(DispatchMessage.created_at)).limit(limit).all()
@@ -678,6 +741,15 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
     )
 
 
+def _not_dispatcher_echo_steamid():
+    return or_(
+        DispatchMessage.steamid.is_(None),
+        func.lower(func.trim(DispatchMessage.steamid)).notin_(
+            tuple(_DISPATCHER_ECHO_SENDER_IDS)
+        ),
+    )
+
+
 def _is_ai_visible_dispatch_message(msg: DispatchMessage) -> bool:
     """Hide game-console echoes such as ``msg_box``/``msg_box_to`` from AI.
 
@@ -687,7 +759,11 @@ def _is_ai_visible_dispatch_message(msg: DispatchMessage) -> bool:
     """
 
     sender_name = (msg.player_name or "").strip().casefold()
-    return sender_name not in _AI_IGNORED_SENDER_NAMES
+    if sender_name in _AI_IGNORED_SENDER_NAMES:
+        return False
+    # Echoes stored before the ingest filter existed must not keep feeding the
+    # model its own transmissions as player replies.
+    return not _is_dispatcher_echo_sender(msg.steamid, msg.player_name)
 
 
 def _world_round_matches_lifecycle_event(
@@ -939,9 +1015,10 @@ def _build_ai_communication_context(
                     or_(
                         DispatchMessage.player_name.is_(None),
                         func.lower(func.trim(DispatchMessage.player_name)).notin_(
-                            tuple(_AI_IGNORED_SENDER_NAMES)
+                            tuple(_AI_IGNORED_SENDER_NAMES | _DISPATCHER_ECHO_SENDER_IDS)
                         ),
                     ),
+                    _not_dispatcher_echo_steamid(),
                     # SQLite stores CURRENT_TIMESTAMP without fractions while
                     # SQLAlchemy binds ``.000000``; one-second tolerance also
                     # covers a radio line racing the round-start insert.
@@ -3263,9 +3340,10 @@ def client_round_conversation_context(
         or_(
             DispatchMessage.player_name.is_(None),
             func.lower(func.trim(DispatchMessage.player_name)).notin_(
-                tuple(_AI_IGNORED_SENDER_NAMES)
+                tuple(_AI_IGNORED_SENDER_NAMES | _DISPATCHER_ECHO_SENDER_IDS)
             ),
         ),
+        _not_dispatcher_echo_steamid(),
         DispatchMessage.created_at >= journal_started_at - timedelta(seconds=1),
     )
     clean_query = query.strip() if query and query.strip() else None

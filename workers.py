@@ -1175,14 +1175,24 @@ def task_sync_auto_server_privileges() -> dict:
 
 
 def task_auto_close_stale_tickets() -> dict:
-    """Queue evidence-first closure for unanswered tickets older than 72h.
+    """Queue evidence-first closure for unanswered tickets past the deadline.
 
     A ticket with a Discord channel stays open in SQL until the bot freezes the
     channel, archives its final history and confirms deletion. Failed actions
     remain retryable, and the bot revalidates the cutoff immediately before
     closing so a reply received while it was offline cancels the stale close.
+
+    Disabled by default (``ticket_auto_close_enabled``): an unanswered ticket
+    is a backlog item for the staff, not something the server should delete on
+    the player's behalf.
     """
-    STALE_HOURS = 72
+    from config import get_settings
+
+    settings = get_settings()
+    if not settings.ticket_auto_close_enabled:
+        return {"status": "disabled", "closed": 0, "queued": 0, "failed": 0}
+
+    STALE_HOURS = int(settings.ticket_auto_close_hours)
     db = SessionLocal()
     try:
         from models import Ticket

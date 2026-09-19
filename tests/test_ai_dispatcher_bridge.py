@@ -1610,3 +1610,68 @@ class AIConversationRoundTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DispatcherEchoTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(self.engine, tables=[DispatchMessage.__table__])
+        self.db = Session(self.engine)
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def _post(self, **fields):
+        from schemas import DispatchMessageIn
+
+        body = DispatchMessageIn(server_name="ASPER1", **fields)
+        with (
+            patch("routes.dispatch._queue_dispatch_discord_notification") as discord,
+            patch("routes.dispatch._send_dispatch_webhook") as webhook,
+            patch("routes.dispatch._queue_ai_dispatcher_request") as ai,
+        ):
+            result = dispatch_routes.post_dispatch_message(body, db=self.db)
+        return result, discord, webhook, ai
+
+    def test_broadcast_echo_is_acknowledged_but_never_stored_or_answered(self):
+        text = "[Диспетчер] -> «Борт «Гарпун»» «Гарпун», доложите состояние."
+        result, discord, webhook, ai = self._post(
+            steamid=None, player_name="broadcast", text=text,
+        )
+
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(self.db.query(DispatchMessage).count(), 0)
+        discord.assert_not_called()
+        webhook.assert_not_called()
+        ai.assert_not_called()
+
+    def test_exact_copy_of_recent_dispatcher_line_is_an_echo(self):
+        text = "[Диспетчер] -> «Гарпун» проверьте терминал."
+        self.db.add(DispatchMessage(
+            text=text, sender_type="dispatcher", server_name="ASPER1",
+            created_at=datetime.utcnow(),
+        ))
+        self.db.commit()
+
+        result, *_ = self._post(steamid="76561190000000001", player_name="Relay", text=f"  {text} ")
+
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(self.db.query(DispatchMessage).count(), 1)
+
+    def test_player_message_is_still_stored_and_forwarded(self):
+        result, discord, _webhook, ai = self._post(
+            steamid="76561190000000001", player_name="Гарпун", text="Корпус цел, реактор в норме.",
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(self.db.query(DispatchMessage).count(), 1)
+        discord.assert_called_once()
+        ai.assert_called_once()
+
+    def test_stored_echo_is_hidden_from_ai_context(self):
+        echo = DispatchMessage(
+            text="[Диспетчер] -> «Гарпун» тишина.", steamid="broadcast",
+            player_name=None, server_name="ASPER1", sender_type="player",
+        )
+        self.assertFalse(dispatch_routes._is_ai_visible_dispatch_message(echo))

@@ -368,6 +368,14 @@ class Settings(BaseSettings):
     ticket_history_backfill_channels_per_run: int = Field(4, ge=1, le=100)
     ticket_history_backfill_messages_per_channel: int = Field(250, ge=1, le=5000)
     ticket_history_backfill_pause_seconds: float = Field(0.10, ge=0, le=5)
+    # Unanswered tickets used to be closed and their Discord channel deleted
+    # after `ticket_auto_close_hours`. That surprised players — a complaint
+    # nobody answered simply vanished, with no warning and no DM — so the
+    # timer is off by default and an open ticket now stays open until a human
+    # closes it. The task itself is still registered: set this to true to
+    # bring the deadline back without redeploying different code.
+    ticket_auto_close_enabled: bool = False
+    ticket_auto_close_hours: int = Field(72, ge=1, le=8760)
 
     # ONLYOFFICE Document Server integration
     onlyoffice_document_server_url: str = "https://nd.rp-asper.ru/onlyoffice"  # public browser-facing URL, e.g. https://nd.rp-asper.ru:8082

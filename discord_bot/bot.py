@@ -2240,6 +2240,14 @@ async def execute_bot_action(action_type: str, payload: dict) -> Tuple[bool, Opt
             if not ticket or int(ticket["id"]) != ticket_id:
                 return False, "Ticket/channel binding could not be verified"
             auto_close_before = payload.get("auto_close_before")
+            if auto_close_before and not settings.ticket_auto_close_enabled:
+                # The deadline was switched off after this job was queued. It
+                # must not delete a channel the operators now expect to keep.
+                logger.info(
+                    "Ticket #%s stale auto-close dropped: the deadline is disabled",
+                    ticket_id,
+                )
+                return True, None
             if auto_close_before and not await asyncio.to_thread(
                 bot_data.ticket_is_stale_unanswered,
                 ticket_id,
