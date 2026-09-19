@@ -593,10 +593,17 @@
     return _curSnap;
   }
   let _nextSnap = null, _nextSnapIdx = -1;
+  // Один кадр запрашивает интерполированный снимок дважды: камера слежения и
+  // сам render. Пересобирать ради этого Map'ы сущностей/дверей незачем —
+  // ключ кэша включает demo, поэтому смена записи его сбрасывает.
+  let _interpSnap = null, _interpT = NaN, _interpDemo = null;
   function snapAtInterpolated(t){
     if(!demo||!demo.snaps.count)return null;
+    if(_interpDemo===demo&&_interpT===t&&_interpSnap)return _interpSnap;
     const idx=API.indexAtTime(demo.snaps,t);
     const current=snapAt(t);
+    // На последнем снимке интерполировать не с чем: отдаём его как есть и
+    // кэш не трогаем, иначе следующий момент времени получит чужие данные.
     if(!current||idx>=demo.snaps.count-1)return current;
     if(_nextSnapIdx!==idx+1){_nextSnap=API.decodeSnapshot(demo.snaps,idx+1);_nextSnapIdx=idx+1;}
     if(!_nextSnap)return current;
@@ -611,7 +618,8 @@
     for(const [id,p] of current.subPos){const n=_nextSnap.subPos.get(id);subPos.set(id,n?{x:p.x+(n.x-p.x)*alpha,y:p.y+(n.y-p.y)*alpha}:p);}
     const doors=new Map();
     for(const [id,p] of current.doors){const n=_nextSnap.doors.get(id);doors.set(id,n===undefined?p:p+(n-p)*alpha);}
-    return {...current,ents,subPos,doors};
+    _interpSnap={...current,ents,subPos,doors};_interpT=t;_interpDemo=demo;
+    return _interpSnap;
   }
 
   // ── Voice state ──────────────────────────────────────────────────────────
@@ -663,7 +671,7 @@
   function pickFollowTarget(){
     if(!demo)return null;
     if(!subCenters)buildSubCenters();
-    const snap=snapAt(currentTimeMs);
+    const snap=snapAtInterpolated(currentTimeMs);
     let best=null,bestD=Infinity;
     for(const sid of subCenters.keys()){
       const c=subCenterAt(snap,sid);
@@ -674,7 +682,7 @@
   }
 
   function resetFollowPosition(){
-    followSubPos=followSub&&followSubId!=null?subCenterAt(snapAt(currentTimeMs),followSubId):null;
+    followSubPos=followSub&&followSubId!=null?subCenterAt(snapAtInterpolated(currentTimeMs),followSubId):null;
   }
 
   function autoFit(){
@@ -1104,7 +1112,10 @@
     const prev=currentTimeMs;
     if(playing&&demo){currentTimeMs+=dt*speed;if(currentTimeMs>=demo.durationMs){currentTimeMs=demo.durationMs;setPlaying(false);}}
     if(followSub&&demo&&followSubId!=null){
-      const c=subCenterAt(snapAt(currentTimeMs),followSubId);
+      // Именно интерполированный снимок: render рисует лодку плавно между
+      // снимками, а камера раньше подтягивалась только на их границах — из-за
+      // этого при движении картинка дёргалась.
+      const c=subCenterAt(snapAtInterpolated(currentTimeMs),followSubId);
       if(followSubPos){cam.x+=c.x-followSubPos.x;cam.y+=c.y-followSubPos.y;}
       followSubPos=c;
     }
