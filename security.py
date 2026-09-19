@@ -4,6 +4,7 @@ import hashlib
 import secrets
 import threading
 import time
+import uuid
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
+_AUDIT_SENSITIVE_KEYS = frozenset({
+    "token", "secret", "password", "key", "ip", "user_agent",
+    "discord_id", "steam_id", "player_ip",
+})
 
 
 def hash_admin_session_token(token: str) -> str:
@@ -37,6 +42,9 @@ def get_active_admin_session(db, raw_token: str, request: Optional[Request] = No
     ).first()
     if not session:
         return None
+    if request is not None:
+        request.state.nd_auth_type = "cookie"
+        request.state.nd_session_id = session.id
     last_seen = session.last_seen_at or session.created_at or now
     if session.expires_at and session.expires_at <= now:
         return None
@@ -67,6 +75,52 @@ def enforce_cookie_csrf(request: Request) -> None:
     if provided and expected and secrets.compare_digest(str(provided), str(expected)):
         return
     raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+
+def sanitize_audit_details(value):
+    """Drop credential and direct-identifier fields before security logging."""
+    if isinstance(value, dict):
+        return {
+            str(key): sanitize_audit_details(item)
+            for key, item in value.items()
+            if str(key).lower() not in _AUDIT_SENSITIVE_KEYS
+        }
+    if isinstance(value, list):
+        return [sanitize_audit_details(item) for item in value]
+    return value
+
+
+def audit_context(request: Optional[Request], outcome: str = "success", reason: Optional[str] = None, severity: str = "info") -> dict:
+    """Extract bounded request/auth context for an admin security event."""
+    if request is None:
+        return {"outcome": outcome, "reason": reason, "severity": severity}
+    return {
+        "auth_type": getattr(request.state, "nd_auth_type", None),
+        "session_id": getattr(request.state, "nd_session_id", None),
+        "login_key_id": getattr(request.state, "nd_login_key_id", None),
+        "request_id": (request.headers.get("x-request-id") or getattr(request.state, "request_id", None) or uuid.uuid4().hex)[:128],
+        "source_ip": request.client.host if request.client else None,
+        "user_agent": (request.headers.get("user-agent") or "")[:500] or None,
+        "outcome": outcome,
+        "reason": reason,
+        "severity": severity,
+    }
+
+
+def log_security_event(db, action: str, request: Optional[Request] = None, admin_id: Optional[int] = None,
+                       details: Optional[dict] = None, outcome: str = "success",
+                       reason: Optional[str] = None, severity: str = "info") -> None:
+    """Persist a redacted security event without ever storing raw credentials."""
+    from models import AdminActionLog
+
+    context = audit_context(request, outcome=outcome, reason=reason, severity=severity)
+    db.add(AdminActionLog(
+        admin_id=admin_id,
+        action=action,
+        details=sanitize_audit_details(details or {}),
+        **context,
+    ))
+    db.commit()
 
 # JWT Config
 ALGORITHM = "HS256"

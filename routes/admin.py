@@ -19,6 +19,9 @@ from security import (
     get_active_admin_session,
     hash_admin_session_token,
     enforce_cookie_csrf,
+    audit_context,
+    log_security_event,
+    sanitize_audit_details,
 )
 from services_player_privacy import can_view_player_ips
 from services_login_keys import resolve_api_login_key
@@ -67,10 +70,21 @@ def has_fresh_discord_membership(db: Session, admin: AdminUser, now: Optional[da
     return (now or datetime.utcnow()) - synced_at <= DISCORD_MEMBERSHIP_MAX_AGE
 
 
-def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[dict] = None):
-    log = AdminActionLog(admin_id=admin_id, action=action, details=details or {})
+def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[dict] = None,
+                     request: Optional[Request] = None, outcome: str = "success",
+                     reason: Optional[str] = None, severity: str = "info"):
+    log = AdminActionLog(
+        admin_id=admin_id,
+        action=action,
+        details=details or {},
+        **audit_context(request, outcome=outcome, reason=reason, severity=severity),
+    )
     db.add(log)
     db.commit()
+
+
+def redact_audit_details(details: Optional[dict], is_superuser: bool = False) -> dict:
+    return details or {} if is_superuser else sanitize_audit_details(details or {})
 
 
 def push_flash(request: Request, level: str, message: str):
@@ -91,12 +105,16 @@ def load_current_admin(request: Request, db: Session) -> AdminUser:
     login_key = request.headers.get("X-ND-Login-Key") if request.url.path.startswith("/api/") else None
     if login_key is not None:
         if getattr(request.state, "nd_auth_type", None) == "invalid_login_key":
+            log_security_event(db, "login_key_failure", request, outcome="failure", reason="invalid_login_key", severity="high")
             raise HTTPException(status_code=401, detail="Not authenticated")
         admin_id = getattr(request.state, "nd_admin_id", None)
         if admin_id is None:
             identity = resolve_api_login_key(db, login_key, request.client.host if request.client else None)
-            admin_id = identity[1] if identity else None
+            if identity:
+                request.state.nd_login_key_id = identity[0]
+                admin_id = identity[1]
         if admin_id is None:
+            log_security_event(db, "login_key_failure", request, outcome="failure", reason="unknown_login_key", severity="high")
             raise HTTPException(status_code=401, detail="Not authenticated")
         admin = (
             db.query(AdminUser)
@@ -122,7 +140,13 @@ def load_current_admin(request: Request, db: Session) -> AdminUser:
                 .first()
             )
     if admin:
-        enforce_cookie_csrf(request)
+        try:
+            enforce_cookie_csrf(request)
+        except HTTPException:
+            log_security_event(db, "csrf_failure", request, admin_id=admin.id, outcome="failure", reason="invalid_csrf", severity="high")
+            raise
+        if getattr(request.state, "nd_auth_type", None) == "login_key" and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            log_security_event(db, "login_key_use", request, admin_id=admin.id, reason=request.method)
         request.session["username"] = admin.discord_username
         admin._department_site_permissions = compute_department_site_permissions(db, admin.id)
         admin._permission_policy_mode = get_permission_policy_mode(db)
@@ -384,13 +408,14 @@ async def key_login_submit(
 
     admin = services_login_keys.resolve_admin(db, key, client_ip)
     if not admin:
+        log_security_event(db, "login_key_failure", request, outcome="failure", reason="invalid_login_key", severity="high")
         logger.warning(f"Неудачная попытка входа по ключу с {client_ip}")
         return RedirectResponse(url="/slogin?error=invalid", status_code=302)
 
     response = RedirectResponse(url=next_path, status_code=302)
     _issue_admin_session(db, admin, response, request, "login_key")
     request.session["username"] = admin.discord_username
-    log_admin_action(db, admin.id, "login", {"method": "login_key", "ip": client_ip})
+    log_admin_action(db, admin.id, "login", {"method": "login_key"}, request=request)
     logger.info(f"Вход по ключу: {admin.discord_username} (id={admin.id}) с {client_ip}")
     return response
 
@@ -515,6 +540,7 @@ async def discord_callback(
             return RedirectResponse(url="/login?error=not_authorized", status_code=302)
 
         if not getattr(admin, "is_superuser", False) and not has_fresh_discord_membership(db, admin):
+            log_security_event(db, "discord_membership_denied", request, admin_id=admin.id, outcome="failure", reason="membership_unverified", severity="high")
             logger.warning(f"Discord membership unavailable or stale for admin login: Discord ID {discord_id}")
             return RedirectResponse(url="/login?error=membership_unverified", status_code=302)
 
@@ -536,7 +562,7 @@ async def discord_callback(
         request.session["username"] = fresh_display_name or admin.discord_username
 
         # Log action
-        log_admin_action(db, admin.id, "login", {"method": "discord_oauth"})
+        log_admin_action(db, admin.id, "login", {"method": "discord_oauth"}, request=request)
 
         return response
         
@@ -587,7 +613,7 @@ async def logout(request: Request, csrf_token: Optional[str] = Form(None), db: S
             s.revoked = 1
             db.commit()
             # log
-            log_admin_action(db, s.admin_id, "logout", {"revoked": True})
+            log_admin_action(db, s.admin_id, "logout", {"revoked": True}, request=request)
 
     request.session.clear()
     response = RedirectResponse(url="/login", status_code=302)
@@ -1047,7 +1073,7 @@ async def api_create_login_key(
         label=body.get("label"), expires_days=expires_days,
     )
     log_admin_action(db, current_admin.id, "login_key_create",
-                     {"target_admin_id": admin_id, "key_id": row.id})
+                     {"target_admin_id": admin_id, "key_id": row.id}, request=request)
     return {"key": services_login_keys.serialize(row), "secret": raw_key}
 
 
@@ -1072,7 +1098,7 @@ async def api_revoke_login_key(
     row.revoked = True
     db.commit()
     log_admin_action(db, current_admin.id, "login_key_revoke",
-                     {"target_admin_id": admin_id, "key_id": key_id})
+                     {"target_admin_id": admin_id, "key_id": key_id}, request=request)
     return {"key": services_login_keys.serialize(row)}
 
 
@@ -2905,7 +2931,7 @@ async def api_revoke_session(session_id: int, request: Request, db: Session = De
     db.commit()
     log_admin_action(db, current_admin.id, "revoke_session", {
         "target": {"session_id": session_id, "admin_id": s.admin_id, "admin_username": target_admin.discord_username if target_admin else None}
-    })
+    }, request=request)
     return {"status": "ok"}
 
 
@@ -2930,7 +2956,7 @@ async def api_revoke_all_sessions(
     log_admin_action(db, current_admin.id, "revoke_all_sessions", {
         "target_admin_id": target_admin_id,
         "affected": affected,
-    })
+    }, request=request)
     return {"status": "ok", "revoked": affected}
 
 
@@ -3812,6 +3838,9 @@ async def api_audit_logs(
     date_from: Optional[str] = Query(None, description="ISO дата начала (включительно)"),
     date_to: Optional[str] = Query(None, description="ISO дата конца (включительно)"),
     action: Optional[str] = Query(None, max_length=100, description="Точный фильтр по action (подстрока)"),
+    auth_type: Optional[str] = Query(None, max_length=32),
+    outcome: Optional[str] = Query(None, pattern="^(success|failure)$"),
+    severity: Optional[str] = Query(None, pattern="^(info|low|medium|high|critical)$"),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -3874,6 +3903,12 @@ async def api_audit_logs(
         query = query.filter(AdminActionLog.action.ilike(f"%{action}%"))
     if admin_id is not None:
         query = query.filter(AdminActionLog.admin_id == admin_id)
+    if auth_type:
+        query = query.filter(AdminActionLog.auth_type == auth_type)
+    if outcome:
+        query = query.filter(AdminActionLog.outcome == outcome)
+    if severity:
+        query = query.filter(AdminActionLog.severity == severity)
     if date_from:
         try:
             dt_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
@@ -3924,8 +3959,17 @@ async def api_audit_logs(
                 "admin_id": log.admin_id,
                 "admin_name": admin_lookup.get(log.admin_id, "Неизвестный"),
                 "action": log.action,
-                "details": log.details or {},
+                "details": redact_audit_details(log.details, bool(current_admin.is_superuser)),
                 "created_at": log.created_at.isoformat() if log.created_at else None,
+                "auth_type": log.auth_type,
+                "session_id": log.session_id,
+                "login_key_id": log.login_key_id,
+                "request_id": log.request_id,
+                "source_ip": log.source_ip if current_admin.is_superuser else None,
+                "user_agent": log.user_agent if current_admin.is_superuser else None,
+                "outcome": log.outcome,
+                "reason": log.reason,
+                "severity": log.severity,
             }
             for log in logs
         ],

@@ -237,6 +237,15 @@ class AdminActionLog(Base):
     action = Column(String(255))
     details = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.now(), index=True)
+    auth_type = Column(String(32), nullable=True, index=True)
+    session_id = Column(Integer, nullable=True, index=True)
+    login_key_id = Column(Integer, nullable=True, index=True)
+    request_id = Column(String(128), nullable=True, index=True)
+    source_ip = Column(String(45), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    outcome = Column(String(16), nullable=True, index=True)
+    reason = Column(String(255), nullable=True)
+    severity = Column(String(16), nullable=True, index=True)
 
 
 class ErrorLogEntry(Base):

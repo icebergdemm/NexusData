@@ -141,6 +141,16 @@ def _apply_migrations():
         ("admin_sessions", "last_seen_ip", "VARCHAR(45)"),
         ("admin_sessions", "user_agent", "VARCHAR(500)"),
         ("admin_sessions", "auth_type", "VARCHAR(32)"),
+        # admin security-event context
+        ("admin_action_logs", "auth_type", "VARCHAR(32)"),
+        ("admin_action_logs", "session_id", "INT"),
+        ("admin_action_logs", "login_key_id", "INT"),
+        ("admin_action_logs", "request_id", "VARCHAR(128)"),
+        ("admin_action_logs", "source_ip", "VARCHAR(45)"),
+        ("admin_action_logs", "user_agent", "VARCHAR(500)"),
+        ("admin_action_logs", "outcome", "VARCHAR(16)"),
+        ("admin_action_logs", "reason", "VARCHAR(255)"),
+        ("admin_action_logs", "severity", "VARCHAR(16)"),
         # player_punishments: snapshot whether the issuing admin was a superuser
         ("player_punishments", "issued_by_was_superuser", "TINYINT NOT NULL DEFAULT 0"),
         # players_data: superuser-managed link to an ND admin account + a display
@@ -383,6 +393,29 @@ def _apply_migrations():
             _logging.getLogger(__name__).warning(
                 "Login-key expiry migration failed: %s", e
             )
+
+        # New audit filters need indexes on existing installations too.
+        for index_name, table_name, column_name in (
+            ("ix_admin_action_logs_auth_type", "admin_action_logs", "auth_type"),
+            ("ix_admin_action_logs_outcome", "admin_action_logs", "outcome"),
+            ("ix_admin_action_logs_severity", "admin_action_logs", "severity"),
+        ):
+            try:
+                exists = conn.execute(__import__('sqlalchemy').text(
+                    "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                    "WHERE TABLE_SCHEMA=:db AND TABLE_NAME=:tbl AND INDEX_NAME=:idx"
+                ), {"db": db_name, "tbl": table_name, "idx": index_name}).scalar()
+                if not exists:
+                    conn.execute(__import__('sqlalchemy').text(
+                        f"CREATE INDEX `{index_name}` ON `{table_name}` (`{column_name}`)"
+                    ))
+                    conn.commit()
+            except Exception as e:
+                conn.rollback()
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Audit index migration failed for %s: %s", index_name, e
+                )
 
         # The v2 identity pipeline deliberately has no local speaker identity
         # and stores WAV only for selected clips. Existing legacy rows retain
