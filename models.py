@@ -2661,7 +2661,13 @@ class WarehouseItem(Base):
     is_unlimited = Column(Boolean, nullable=False, default=False)
     # NULL = no ceiling. Optional for a normal stocked line (keep 500 rounds in
     # store but hand out at most 50 per round), mandatory for an unlimited one.
+    # With `per_round_limit_min` set below it, this is the upper bound of a
+    # range instead of a fixed number.
     per_round_limit = Column(Integer, nullable=True)
+    # NULL (or equal to the ceiling) = the same budget every round. Otherwise
+    # each round draws its own ceiling from [min, per_round_limit], so the crew
+    # cannot count on a fixed allowance — a roll of 0 means "nothing this time".
+    per_round_limit_min = Column(Integer, nullable=True)
     updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

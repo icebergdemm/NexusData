@@ -6,6 +6,8 @@ export interface WarehouseRoundState {
   /** null — предмет без лимита на раунд. */
   remaining: number | null
   available: number
+  /** Потолок, выпавший на этот раунд (для диапазона — не максимум настройки). */
+  limit: number | null
 }
 
 export interface WarehouseItemRow {
@@ -20,6 +22,8 @@ export interface WarehouseItemRow {
   /** Предмет выдаётся всегда; ограничен только лимитом на раунд. */
   is_unlimited: boolean
   per_round_limit: number | null
+  /** Нижняя граница случайного лимита; null — лимит одинаковый каждый раунд. */
+  per_round_limit_min: number | null
   rounds?: Record<string, WarehouseRoundState>
   updated_at: string | null
   updated_by: string | null
@@ -30,6 +34,7 @@ export interface WarehouseItemInput {
   quantity: number
   is_unlimited?: boolean
   per_round_limit?: number | null
+  per_round_limit_min?: number | null
 }
 
 const base = "/api/v1/admin/warehouse"
@@ -43,10 +48,16 @@ export const warehouseApi = {
     api.patch<WarehouseItemRow>(`${base}/items/${encodeURIComponent(identifier)}`, { delta }),
   setQuantity: (identifier: string, quantity: number) =>
     api.patch<WarehouseItemRow>(`${base}/items/${encodeURIComponent(identifier)}`, { quantity }),
-  setLimits: (identifier: string, is_unlimited: boolean, per_round_limit: number | null) =>
+  setLimits: (
+    identifier: string,
+    is_unlimited: boolean,
+    per_round_limit: number | null,
+    per_round_limit_min: number | null,
+  ) =>
     api.patch<WarehouseItemRow>(`${base}/items/${encodeURIComponent(identifier)}`, {
       is_unlimited,
       per_round_limit,
+      per_round_limit_min,
     }),
   remove: (identifier: string) => api.delete(`${base}/items/${encodeURIComponent(identifier)}`),
 }

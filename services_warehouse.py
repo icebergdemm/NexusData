@@ -5,7 +5,8 @@ Two independent constraints decide how much of an item can be handed out:
 * **stock** — ``WarehouseItem.quantity``, ignored for an "unlimited" line that
   the station can always produce;
 * **per-round ceiling** — ``WarehouseItem.per_round_limit``, counted per server
-  and per round in ``WarehouseRoundUsage``.
+  and per round in ``WarehouseRoundUsage``. With ``per_round_limit_min`` set,
+  the ceiling is drawn anew each round from that range.
 
 Rounds run independently on each server, so a delivery to ASPER1 must not eat
 ASPER2's budget. The counter is keyed by that server's last round-start event
@@ -17,6 +18,7 @@ The AI dispatcher never sees these two rules separately — it is told a single
 stock of 500 will offer 500 no matter what the ceiling says.
 """
 
+import hashlib
 import logging
 from typing import Optional
 
@@ -74,6 +76,34 @@ def issued_this_round(
     return int(row.issued) if row else 0
 
 
+def round_limit(
+    db: Session,
+    item: WarehouseItem,
+    server_name: Optional[str],
+    round_ref: Optional[str] = None,
+) -> Optional[int]:
+    """The ceiling that applies to this item, on this server, this round.
+
+    A line configured with a range draws its own ceiling every round. The draw
+    is derived from (item, server, round) instead of being stored, which keeps
+    it identical for every worker process and every request within the round —
+    a number that changed between two reads would let a caller retry until it
+    liked the answer, and would make the figure shown to the AI a lie.
+    """
+    ceiling = item.per_round_limit
+    if ceiling is None:
+        return None
+    ceiling = int(ceiling)
+    floor = item.per_round_limit_min
+    if floor is None or int(floor) >= ceiling:
+        return ceiling
+    floor = max(0, int(floor))
+    ref = round_ref or current_round_ref(db, server_name)
+    seed = f"{item.identifier}|{normalize_server(server_name)}|{ref}|{floor}-{ceiling}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    return floor + int(digest, 16) % (ceiling - floor + 1)
+
+
 def remaining_this_round(
     db: Session,
     item: WarehouseItem,
@@ -81,10 +111,11 @@ def remaining_this_round(
     round_ref: Optional[str] = None,
 ) -> Optional[int]:
     """Units left under the per-round ceiling, or None when there is none."""
-    limit = item.per_round_limit
+    ref = round_ref or current_round_ref(db, server_name)
+    limit = round_limit(db, item, server_name, ref)
     if limit is None:
         return None
-    used = issued_this_round(db, item.identifier, server_name, round_ref)
+    used = issued_this_round(db, item.identifier, server_name, ref)
     return max(0, int(limit) - used)
 
 
@@ -206,8 +237,16 @@ def release_issue(
     row.issued = max(0, int(row.issued or 0) - int(quantity))
 
 
-def validate_limit_settings(is_unlimited: bool, per_round_limit) -> Optional[int]:
-    """Normalize the pair, or raise ValueError describing what is wrong."""
+def validate_limit_settings(
+    is_unlimited: bool,
+    per_round_limit,
+    per_round_limit_min=None,
+) -> tuple:
+    """Normalize the settings, or raise ValueError describing what is wrong.
+
+    Returns ``(per_round_limit, per_round_limit_min)``; the lower bound is None
+    whenever the ceiling is the same every round.
+    """
     if per_round_limit in (None, ""):
         normalized_limit = None
     else:
@@ -218,4 +257,22 @@ def validate_limit_settings(is_unlimited: bool, per_round_limit) -> Optional[int
         normalized_limit = int(per_round_limit)
     if is_unlimited and normalized_limit is None:
         raise ValueError("Для бесконечного предмета лимит на раунд обязателен")
-    return normalized_limit
+
+    if per_round_limit_min in (None, ""):
+        normalized_min = None
+    else:
+        if isinstance(per_round_limit_min, bool) or not isinstance(per_round_limit_min, int):
+            raise ValueError("Нижняя граница лимита должна быть целым числом")
+        if per_round_limit_min < 0:
+            raise ValueError("Нижняя граница лимита не может быть отрицательной")
+        normalized_min = int(per_round_limit_min)
+
+    if normalized_min is not None:
+        if normalized_limit is None:
+            raise ValueError("Случайный лимит требует верхнюю границу")
+        if normalized_min > normalized_limit:
+            raise ValueError("Нижняя граница лимита больше верхней")
+        if normalized_min == normalized_limit:
+            # Not a range at all — store it as a plain fixed ceiling.
+            normalized_min = None
+    return normalized_limit, normalized_min

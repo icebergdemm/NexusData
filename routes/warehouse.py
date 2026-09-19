@@ -34,6 +34,7 @@ from services_warehouse import (
     current_round_ref,
     issued_this_round,
     remaining_this_round,
+    round_limit,
     validate_limit_settings,
 )
 
@@ -80,6 +81,7 @@ def _serialize(w: WarehouseItem, db: Session | None = None) -> dict:
         "quantity": w.quantity,
         "is_unlimited": bool(w.is_unlimited),
         "per_round_limit": w.per_round_limit,
+        "per_round_limit_min": w.per_round_limit_min,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
         "updated_by": w.updated_by.discord_username if w.updated_by else None,
     }
@@ -91,6 +93,9 @@ def _serialize(w: WarehouseItem, db: Session | None = None) -> dict:
                 "issued": issued_this_round(db, w.identifier, server),
                 "remaining": remaining_this_round(db, w, server),
                 "available": availability(db, w, server),
+                # For a randomised range this is the ceiling actually drawn for
+                # the current round, not the configured maximum.
+                "limit": round_limit(db, w, server),
             }
             for server in DISPATCH_SERVERS
         }
@@ -155,8 +160,10 @@ async def api_upsert_warehouse_item(
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 0:
             raise HTTPException(status_code=400, detail="Количество должно быть целым числом ≥ 0")
         try:
-            per_round_limit = validate_limit_settings(
-                bool(entry.get("is_unlimited")), entry.get("per_round_limit"),
+            per_round_limit, per_round_limit_min = validate_limit_settings(
+                bool(entry.get("is_unlimited")),
+                entry.get("per_round_limit"),
+                entry.get("per_round_limit_min"),
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
@@ -168,6 +175,7 @@ async def api_upsert_warehouse_item(
         row.quantity = quantity
         row.is_unlimited = bool(entry.get("is_unlimited"))
         row.per_round_limit = per_round_limit
+        row.per_round_limit_min = per_round_limit_min
         row.updated_by_admin_id = current_admin.id
         saved.append(row)
 
@@ -198,7 +206,11 @@ async def api_adjust_warehouse_item(
         raise HTTPException(status_code=404, detail="Предмет не найден на складе")
 
     body = await request.json()
-    touches_limits = "is_unlimited" in body or "per_round_limit" in body
+    touches_limits = (
+        "is_unlimited" in body
+        or "per_round_limit" in body
+        or "per_round_limit_min" in body
+    )
     if not touches_limits and "quantity" not in body and "delta" not in body:
         raise HTTPException(status_code=400, detail="Укажите quantity, delta или настройки лимита")
 
@@ -216,10 +228,13 @@ async def api_adjust_warehouse_item(
     if touches_limits:
         is_unlimited = bool(body.get("is_unlimited", row.is_unlimited))
         raw_limit = body.get("per_round_limit", row.per_round_limit)
+        raw_min = body.get("per_round_limit_min", row.per_round_limit_min)
         try:
-            row.per_round_limit = validate_limit_settings(is_unlimited, raw_limit)
+            limit, limit_min = validate_limit_settings(is_unlimited, raw_limit, raw_min)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
+        row.per_round_limit = limit
+        row.per_round_limit_min = limit_min
         row.is_unlimited = is_unlimited
 
     row.updated_by_admin_id = current_admin.id
@@ -281,7 +296,9 @@ async def api_client_warehouse(
             "available": effective,
             "stock": w.quantity,
             "is_unlimited": bool(w.is_unlimited),
-            "per_round_limit": w.per_round_limit,
+            # The ceiling in force right now. For a randomised range the
+            # configured maximum would over-promise, so it is not sent.
+            "per_round_limit": round_limit(db, w, requested) if requested else w.per_round_limit,
             "available_by_server": spread["per_server"],
         })
     return JSONResponse({"server_name": requested, "items": items})

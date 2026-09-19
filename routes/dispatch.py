@@ -3175,6 +3175,7 @@ def _queue_cargo_action(
                 detail=f"На складе недостаточно «{identifier}» (нужно {qty}, есть {row.quantity})",
             )
         remaining = warehouse_rules.remaining_this_round(db, row, normalized_server, round_ref)
+        ceiling = warehouse_rules.round_limit(db, row, normalized_server, round_ref)
         if remaining is not None and qty > remaining:
             if not allow_limit_override:
                 # The AI never gets this flag: its orders are capped by the
@@ -3183,14 +3184,14 @@ def _queue_cargo_action(
                     status_code=409,
                     detail=(
                         f"Лимит на раунд для «{identifier}» исчерпан "
-                        f"(запрошено {qty}, доступно {remaining} из {row.per_round_limit})"
+                        f"(запрошено {qty}, доступно {remaining} из {ceiling})"
                     ),
                 )
             overrides.append({
                 "identifier": identifier,
                 "quantity": qty,
                 "remaining": remaining,
-                "per_round_limit": row.per_round_limit,
+                "per_round_limit": ceiling,
             })
         to_deduct.append((row, qty))
 

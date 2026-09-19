@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Plus, Minus, Trash2, Search, PackageSearch, Settings2, Infinity as InfinityIcon, Check, Image as ImageIcon } from "lucide-react"
+import { Plus, Minus, Trash2, Search, PackageSearch, Settings2, Infinity as InfinityIcon, Check, Image as ImageIcon, Dices } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,119 @@ const QUANTITY_COMMIT_DELAY_MS = 700
 type CatalogScope = "new" | "all" | "existing"
 type CatalogSort = "name" | "identifier"
 
+/** Everything the dialog needs to know about one item being added. The limit
+ * settings live here too: configuring twenty fresh lines one card at a time,
+ * after the dialog had already closed, was the slow part. */
+interface ItemDraft {
+  quantity: string
+  unlimited: boolean
+  limited: boolean
+  random: boolean
+  limit: string
+  limitMin: string
+}
+
+function emptyDraft(quantity = "1"): ItemDraft {
+  return { quantity, unlimited: false, limited: false, random: false, limit: "", limitMin: "0" }
+}
+
+/** Same rules the server enforces (see services_warehouse.validate_limit_settings),
+ * checked here so the operator is not told about a typo only after sending
+ * twenty items. */
+function draftError(draft: ItemDraft): string | null {
+  const quantity = Math.trunc(Number(draft.quantity))
+  if (!Number.isFinite(quantity) || quantity < 0) return "Количество — целое число не меньше нуля"
+  const limitActive = draft.unlimited || draft.limited
+  if (!limitActive) return null
+  const limit = Math.trunc(Number(draft.limit))
+  if (!Number.isFinite(limit) || limit < 1) return "Лимит на раунд — целое число больше нуля"
+  if (draft.random) {
+    const min = Math.trunc(Number(draft.limitMin))
+    if (!Number.isFinite(min) || min < 0 || min > limit) return "Нижняя граница — от нуля до верхней"
+  }
+  return null
+}
+
+function draftToInput(identifier: string, draft: ItemDraft): WarehouseItemInput {
+  const limitActive = draft.unlimited || draft.limited
+  return {
+    identifier,
+    quantity: Math.max(0, Math.trunc(Number(draft.quantity) || 0)),
+    is_unlimited: draft.unlimited,
+    per_round_limit: limitActive ? Math.trunc(Number(draft.limit)) : null,
+    per_round_limit_min: limitActive && draft.random ? Math.trunc(Number(draft.limitMin)) : null,
+  }
+}
+
+/** Per-round availability controls, shared by the per-item block and the
+ * "apply to everything selected" block above it. */
+function LimitFields({ draft, onChange, idPrefix }: {
+  draft: ItemDraft
+  onChange: (patch: Partial<ItemDraft>) => void
+  idPrefix: string
+}) {
+  const limitActive = draft.unlimited || draft.limited
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor={`${idPrefix}-unlimited`} className="text-[11px] font-normal">
+          Бесконечный запас
+        </Label>
+        <Switch
+          id={`${idPrefix}-unlimited`}
+          checked={draft.unlimited}
+          onCheckedChange={(value) => onChange(
+            // Без лимита бесконечный предмет не имеет смысла — сервер такое
+            // сочетание всё равно отклонит.
+            value ? { unlimited: true, limited: true } : { unlimited: false },
+          )}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor={`${idPrefix}-limited`} className="text-[11px] font-normal">
+          Лимит выдачи за раунд
+        </Label>
+        <Switch
+          id={`${idPrefix}-limited`}
+          checked={limitActive}
+          disabled={draft.unlimited}
+          onCheckedChange={(value) => onChange({ limited: value })}
+        />
+      </div>
+      {limitActive && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor={`${idPrefix}-random`} className="text-[11px] font-normal">
+              Случайный, от и до
+            </Label>
+            <Switch
+              id={`${idPrefix}-random`}
+              checked={draft.random}
+              onCheckedChange={(value) => onChange({ random: value })}
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            {draft.random && (
+              <Input
+                type="number" min={0} value={draft.limitMin}
+                onChange={(e) => onChange({ limitMin: e.target.value })}
+                className="h-7 text-xs" placeholder="от" aria-label="Нижняя граница лимита"
+              />
+            )}
+            <Input
+              type="number" min={1} value={draft.limit}
+              onChange={(e) => onChange({ limit: e.target.value })}
+              className="h-7 text-xs"
+              placeholder={draft.random ? "до" : "лимит"}
+              aria-label={draft.random ? "Верхняя граница лимита" : "Лимит на раунд"}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 /** Item picker — a full-height two-pane workspace rather than a narrow modal:
  * stocking a warehouse means scanning a 900-entry catalog and taking twenty
  * things out of it, which a six-row list made painful.
@@ -46,12 +159,16 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
   const [scope, setScope] = useState<CatalogScope>("new")
   const [sort, setSort] = useState<CatalogSort>("name")
   const [iconsOnly, setIconsOnly] = useState(false)
-  const [selected, setSelected] = useState<Record<string, string>>({})
+  const [selected, setSelected] = useState<Record<string, ItemDraft>>({})
+  const [expanded, setExpanded] = useState<string | null>(null)
   const [customId, setCustomId] = useState("")
-  const [bulkQuantity, setBulkQuantity] = useState("")
+  const [bulk, setBulk] = useState<ItemDraft>(emptyDraft(""))
 
   const selectedIds = Object.keys(selected)
   const trimmedSearch = search.trim()
+  const errors = selectedIds
+    .map((id) => [id, draftError(selected[id])] as const)
+    .filter(([, error]) => error !== null)
 
   const options = useMemo(() => {
     if (!catalog) return []
@@ -76,9 +193,20 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
   const hiddenCount = options.length - visible.length
 
   const reset = () => {
-    setSelected({}); setSearch(""); setCustomId(""); setBulkQuantity("")
-    setScope("new"); setSort("name"); setIconsOnly(false)
+    setSelected({}); setSearch(""); setCustomId(""); setBulk(emptyDraft(""))
+    setScope("new"); setSort("name"); setIconsOnly(false); setExpanded(null)
   }
+
+  /** New picks inherit whatever is configured in the "for everything" block,
+   * so a batch of twenty identical lines is set up once. */
+  const draftFromBulk = (): ItemDraft => ({
+    ...bulk,
+    quantity: bulk.quantity.trim() || "1",
+  })
+
+  const patchDraft = (id: string, patch: Partial<ItemDraft>) => setSelected((current) => (
+    current[id] ? { ...current, [id]: { ...current[id], ...patch } } : current
+  ))
 
   const toggle = (id: string) => setSelected((current) => {
     if (id in current) {
@@ -86,7 +214,7 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
       delete next[id]
       return next
     }
-    return { ...current, [id]: bulkQuantity.trim() || "1" }
+    return { ...current, [id]: draftFromBulk() }
   })
 
   const addCustom = () => {
@@ -96,26 +224,24 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
       toast.error("Этот предмет уже есть на складе")
       return
     }
-    setSelected((current) => ({ ...current, [id]: bulkQuantity.trim() || "1" }))
+    setSelected((current) => ({ ...current, [id]: draftFromBulk() }))
     setCustomId("")
   }
 
-  const applyBulkQuantity = () => {
-    const value = bulkQuantity.trim()
-    if (!value || !selectedIds.length) return
+  const applyBulk = () => {
+    if (!selectedIds.length) return
     setSelected((current) => Object.fromEntries(
-      Object.keys(current).map((id) => [id, value]),
+      Object.entries(current).map(([id, draft]) => [id, {
+        ...bulk,
+        quantity: bulk.quantity.trim() || draft.quantity,
+      }]),
     ))
   }
 
   const addMutation = useMutation({
-    mutationFn: () => {
-      const items: WarehouseItemInput[] = selectedIds.map((identifier) => ({
-        identifier,
-        quantity: Math.max(0, Math.trunc(Number(selected[identifier]) || 0)),
-      }))
-      return warehouseApi.addMany(items)
-    },
+    mutationFn: () => warehouseApi.addMany(
+      selectedIds.map((identifier) => draftToInput(identifier, selected[identifier])),
+    ),
     onSuccess: () => {
       toast.success(selectedIds.length > 1
         ? `Добавлено на склад: ${selectedIds.length}`
@@ -133,8 +259,8 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
         <DialogHeader className="shrink-0">
           <DialogTitle>Добавить предметы на склад</DialogTitle>
           <DialogDescription>
-            Отметьте нужные предметы — можно сразу несколько. Количество задаётся справа,
-            настройки лимита — потом, на карточке предмета.
+            Отметьте нужные предметы — можно сразу несколько. Количество и лимиты задаются справа,
+            для каждого предмета или сразу для всех.
           </DialogDescription>
         </DialogHeader>
 
@@ -175,7 +301,7 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
           </Button>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <div className="flex min-h-0 flex-col rounded-md border">
             <div className="flex shrink-0 items-center justify-between border-b px-2.5 py-1.5 text-[11px] text-muted-foreground">
               <span>Найдено: {options.length}</span>
@@ -225,44 +351,97 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
               )}
             </div>
 
-            <div className="flex shrink-0 items-end gap-1.5">
-              <div className="flex-1">
-                <Label className="mb-1 block text-[11px] text-muted-foreground">Количество всем сразу</Label>
+            <div className="shrink-0 space-y-2 rounded-md border p-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium">Настройки для всех выбранных</span>
+                <Button
+                  type="button" variant="outline" size="sm" className="h-6 px-2 text-[11px]"
+                  onClick={applyBulk} disabled={!selectedIds.length}
+                >
+                  Применить
+                </Button>
+              </div>
+              <div>
+                <Label className="mb-1 block text-[11px] text-muted-foreground">Количество</Label>
                 <Input
-                  type="number"
-                  min={0}
-                  value={bulkQuantity}
-                  onChange={(e) => setBulkQuantity(e.target.value)}
-                  placeholder="например, 10"
-                  className="h-8 text-xs"
+                  type="number" min={0} value={bulk.quantity}
+                  onChange={(e) => setBulk((current) => ({ ...current, quantity: e.target.value }))}
+                  placeholder="например, 10" className="h-7 text-xs"
                 />
               </div>
-              <Button type="button" variant="outline" size="sm" onClick={applyBulkQuantity} disabled={!bulkQuantity.trim() || !selectedIds.length}>
-                Применить
-              </Button>
+              <LimitFields
+                draft={bulk}
+                idPrefix="wh-bulk"
+                onChange={(patch) => setBulk((current) => ({ ...current, ...patch }))}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Эти настройки получают и новые отметки — отмечайте предметы после того, как задали их.
+              </p>
             </div>
 
             <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto rounded-md border p-2">
-              {selectedIds.map((id) => (
-                <div key={id} className="flex items-center gap-2">
-                  <ItemIcon identifier={id} size={22} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs">{itemDisplayName(catalog, id)}</div>
-                    <div className="truncate font-mono text-[9px] text-muted-foreground">{id}</div>
+              {selectedIds.map((id) => {
+                const draft = selected[id]
+                const error = draftError(draft)
+                const isOpen = expanded === id
+                const limitActive = draft.unlimited || draft.limited
+                return (
+                  <div key={id} className={cn("rounded-md border p-1.5", error && "border-destructive/50")}>
+                    <div className="flex items-center gap-2">
+                      <ItemIcon identifier={id} size={22} />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs">{itemDisplayName(catalog, id)}</div>
+                        <div className="truncate font-mono text-[9px] text-muted-foreground">{id}</div>
+                      </div>
+                      <Input
+                        type="number" min={0} value={draft.quantity}
+                        disabled={draft.unlimited}
+                        onChange={(e) => patchDraft(id, { quantity: e.target.value })}
+                        className="h-7 w-16 text-xs"
+                        aria-label={`Количество: ${itemDisplayName(catalog, id)}`}
+                      />
+                      <Button
+                        type="button" variant={isOpen ? "default" : "ghost"} size="icon-xs"
+                        onClick={() => setExpanded(isOpen ? null : id)}
+                        title="Настройки лимита"
+                      >
+                        <Settings2 className="size-3.5" />
+                      </Button>
+                      <Button type="button" variant="ghost" size="icon-xs" onClick={() => toggle(id)}>
+                        <Trash2 className="size-3.5 text-destructive" />
+                      </Button>
+                    </div>
+
+                    {!isOpen && (draft.unlimited || limitActive) && (
+                      <div className="mt-1 flex flex-wrap gap-1 pl-7">
+                        {draft.unlimited && (
+                          <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[9px]">
+                            <InfinityIcon className="size-2.5" />бесконечный
+                          </Badge>
+                        )}
+                        {limitActive && draft.limit && (
+                          <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[9px]">
+                            {draft.random && <Dices className="size-2.5" />}
+                            лимит {draft.random ? `${draft.limitMin || 0}–${draft.limit}` : draft.limit}/раунд
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+
+                    {isOpen && (
+                      <div className="mt-2 border-t pt-2">
+                        <LimitFields
+                          draft={draft}
+                          idPrefix={`wh-${id}`}
+                          onChange={(patch) => patchDraft(id, patch)}
+                        />
+                      </div>
+                    )}
+
+                    {error && <p className="mt-1 pl-7 text-[10px] text-destructive">{error}</p>}
                   </div>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={selected[id]}
-                    onChange={(e) => setSelected((current) => ({ ...current, [id]: e.target.value }))}
-                    className="h-7 w-20 text-xs"
-                    aria-label={`Количество: ${itemDisplayName(catalog, id)}`}
-                  />
-                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => toggle(id)}>
-                    <Trash2 className="size-3.5 text-destructive" />
-                  </Button>
-                </div>
-              ))}
+                )
+              })}
               {!selectedIds.length && (
                 <p className="py-8 text-center text-xs text-muted-foreground">
                   Ничего не выбрано
@@ -290,11 +469,19 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
           </div>
         </div>
 
-        <DialogFooter className="shrink-0">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-          <Button disabled={!selectedIds.length || addMutation.isPending} onClick={() => addMutation.mutate()}>
-            {addMutation.isPending ? "Добавление…" : `Добавить${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
-          </Button>
+        <DialogFooter className="shrink-0 sm:items-center sm:justify-between">
+          <span className="text-[11px] text-destructive">
+            {errors.length ? `Проверьте настройки: ${errors.length}` : ""}
+          </span>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
+            <Button
+              disabled={!selectedIds.length || errors.length > 0 || addMutation.isPending}
+              onClick={() => addMutation.mutate()}
+            >
+              {addMutation.isPending ? "Добавление…" : `Добавить${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -314,24 +501,33 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
   const [unlimited, setUnlimited] = useState(false)
   const [limited, setLimited] = useState(false)
   const [limit, setLimit] = useState("")
+  const [random, setRandom] = useState(false)
+  const [limitMin, setLimitMin] = useState("0")
 
   useEffect(() => {
     if (!item) return
     setUnlimited(item.is_unlimited)
     setLimited(item.per_round_limit !== null)
     setLimit(item.per_round_limit !== null ? String(item.per_round_limit) : "")
+    setRandom(item.per_round_limit_min !== null)
+    setLimitMin(item.per_round_limit_min !== null ? String(item.per_round_limit_min) : "0")
   }, [item])
 
   const parsedLimit = Math.trunc(Number(limit))
+  const parsedMin = Math.trunc(Number(limitMin))
   const limitRequired = unlimited
   const limitActive = unlimited || limited
   const limitInvalid = limitActive && (!Number.isFinite(parsedLimit) || parsedLimit < 1)
+  const minInvalid = limitActive && random && (
+    !Number.isFinite(parsedMin) || parsedMin < 0 || parsedMin > parsedLimit
+  )
 
   const saveMutation = useMutation({
     mutationFn: () => warehouseApi.setLimits(
       item!.identifier,
       unlimited,
       limitActive ? parsedLimit : null,
+      limitActive && random ? parsedMin : null,
     ),
     onSuccess: () => {
       toast.success("Настройки предмета сохранены")
@@ -392,7 +588,7 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
                 value={limit}
                 onChange={(e) => setLimit(e.target.value)}
                 placeholder="Например, 20"
-                aria-label="Лимит на раунд"
+                aria-label={random ? "Верхняя граница лимита" : "Лимит на раунд"}
               />
             )}
             {limitInvalid && (
@@ -400,14 +596,60 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
             )}
           </div>
 
+          {limitActive && (
+            <div className="space-y-2 rounded-md border p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <Label htmlFor="wh-random" className="text-sm">Случайный лимит на раунд</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Каждый раунд потолок разыгрывается заново в заданном диапазоне.
+                    Ноль в нижней границе означает, что в какой-то раунд предмета не будет вовсе.
+                  </p>
+                </div>
+                <Switch id="wh-random" checked={random} onCheckedChange={setRandom} />
+              </div>
+              {random && (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Label className="mb-1 block text-[11px] text-muted-foreground">От</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={limitMin}
+                      onChange={(e) => setLimitMin(e.target.value)}
+                      aria-label="Нижняя граница лимита"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Label className="mb-1 block text-[11px] text-muted-foreground">До</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={limit}
+                      onChange={(e) => setLimit(e.target.value)}
+                      aria-label="Верхняя граница лимита"
+                    />
+                  </div>
+                </div>
+              )}
+              {minInvalid && (
+                <p className="text-xs text-destructive">
+                  Нижняя граница — целое число от нуля до верхней границы
+                </p>
+              )}
+            </div>
+          )}
+
           {item.rounds && (
             <div className="space-y-1 rounded-md border p-3 text-xs">
-              <div className="mb-1 font-medium">Выдано в текущем раунде</div>
+              <div className="mb-1 font-medium">Текущий раунд</div>
               {Object.entries(item.rounds).map(([server, state]) => (
                 <div key={server} className="flex items-center justify-between text-muted-foreground">
                   <span className="font-mono text-[11px]">{server}</span>
                   <span>
-                    {state.issued}
+                    выдано {state.issued}
+                    {/* Для диапазона это выпавший потолок, а не максимум настройки. */}
+                    {state.limit !== null ? ` из ${state.limit}` : ""}
                     {state.remaining !== null ? ` · осталось ${state.remaining}` : ""}
                   </span>
                 </div>
@@ -418,7 +660,7 @@ function LimitsDialog({ item, open, onOpenChange, catalog }: {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-          <Button disabled={limitInvalid || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+          <Button disabled={limitInvalid || minInvalid || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
             {saveMutation.isPending ? "Сохранение…" : "Сохранить"}
           </Button>
         </DialogFooter>
@@ -502,8 +744,11 @@ function WarehouseCard({ item, canEdit, catalog, onCommit, onRemove, onOpenLimit
             </Badge>
           )}
           {item.per_round_limit !== null && (
-            <Badge variant="secondary" className="px-1.5 py-0 text-[9px]">
-              лимит {item.per_round_limit}/раунд
+            <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[9px]">
+              {item.per_round_limit_min !== null && <Dices className="size-2.5" />}
+              лимит {item.per_round_limit_min !== null
+                ? `${item.per_round_limit_min}–${item.per_round_limit}`
+                : item.per_round_limit}/раунд
             </Badge>
           )}
         </div>
@@ -555,6 +800,7 @@ function WarehouseCard({ item, canEdit, catalog, onCommit, onRemove, onOpenLimit
                 <span className="font-mono">{server}</span>
                 <span>
                   выдано {state.issued}
+                  {state.limit !== null ? `/${state.limit}` : ""}
                   {state.remaining !== null ? ` · доступно ${state.available}` : ""}
                 </span>
               </div>
