@@ -330,22 +330,9 @@ def get_dispatch_messages(
     db: Session = Depends(get_game_db),
 ):
     """Get recent dispatch messages (for polling)."""
-    q = db.query(DispatchMessage).filter(
-        # Echoes stored before the ingest filter duplicate the dispatcher line
-        # right above them and read as a player answering.
-        or_(
-            DispatchMessage.sender_type != "player",
-            and_(
-                or_(
-                    DispatchMessage.player_name.is_(None),
-                    func.lower(func.trim(DispatchMessage.player_name)).notin_(
-                        tuple(_DISPATCHER_ECHO_SENDER_IDS)
-                    ),
-                ),
-                _not_dispatcher_echo_steamid(),
-            ),
-        )
-    )
+    # Echoes stored before the ingest filter duplicate the dispatcher line
+    # right above them and read as a player answering.
+    q = db.query(DispatchMessage).filter(_not_dispatcher_echo_row())
     if after_id:
         q = q.filter(DispatchMessage.id > after_id)
     messages = q.order_by(desc(DispatchMessage.created_at)).limit(limit).all()
@@ -738,6 +725,26 @@ def _queue_ai_dispatcher_request(db: Session, msg: DispatchMessage) -> None:
             retry_delay_seconds=_AI_TERMINAL_RETRY_DELAY_SECONDS,
             max_attempts=_AI_TERMINAL_MAX_ATTEMPTS,
         )
+    )
+
+
+def _not_dispatcher_echo_row():
+    """Hide rows the game server reported back as if a player had sent them.
+
+    Only ``player`` rows can be echoes: the dispatcher's own row is the
+    original transmission and must stay visible.
+    """
+    return or_(
+        DispatchMessage.sender_type != "player",
+        and_(
+            or_(
+                DispatchMessage.player_name.is_(None),
+                func.lower(func.trim(DispatchMessage.player_name)).notin_(
+                    tuple(_DISPATCHER_ECHO_SENDER_IDS)
+                ),
+            ),
+            _not_dispatcher_echo_steamid(),
+        ),
     )
 
 
@@ -3203,7 +3210,7 @@ def dispatch_get_messages(
     """Get dispatch messages for the admin panel, filtered by server."""
     if not check_permission(current_admin, "dispatch", "view"):
         raise HTTPException(status_code=403)
-    q = db.query(DispatchMessage)
+    q = db.query(DispatchMessage).filter(_not_dispatcher_echo_row())
     if after_id:
         q = q.filter(DispatchMessage.id > after_id)
     if server:

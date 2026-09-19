@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import AppSetting, DispatchMessage, RoundEvent, ServerAction, WorldRound
+from models import AppSetting, DispatchMessage, PlayerData, RoundEvent, ServerAction, WorldRound
 import routes.dispatch as dispatch_routes
 from schemas import AIDispatcherConfigIn, RoundStartIn
 from routes.dispatch import (
@@ -1675,3 +1675,54 @@ class DispatcherEchoTests(unittest.TestCase):
             player_name=None, server_name="ASPER1", sender_type="player",
         )
         self.assertFalse(dispatch_routes._is_ai_visible_dispatch_message(echo))
+
+
+class DispatcherEchoVisibilityTests(unittest.TestCase):
+    """A broadcast echo must reach neither the AI nor any operator view."""
+
+    def setUp(self):
+        self.engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(
+            self.engine,
+            tables=[DispatchMessage.__table__, PlayerData.__table__],
+        )
+        self.db = Session(self.engine)
+        self.db.add_all([
+            DispatchMessage(
+                id=1, text="[Диспетчер] -> «Гарпун» доложите обстановку.",
+                sender_type="dispatcher", player_name="Оператор", server_name="ASPER1",
+            ),
+            DispatchMessage(  # echo reported back by the game plugin
+                id=2, text="[Диспетчер] -> «Гарпун» доложите обстановку.",
+                sender_type="player", steamid="broadcast", server_name="ASPER1",
+            ),
+            DispatchMessage(
+                id=3, text="Корпус цел.", sender_type="player",
+                steamid="76561190000000001", player_name="Гарпун", server_name="ASPER1",
+            ),
+        ])
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        self.engine.dispose()
+
+    def test_admin_journal_hides_the_echo(self):
+        with patch("routes.dispatch.check_permission", return_value=True):
+            rows = dispatch_routes.dispatch_get_messages(
+                after_id=None, server="ASPER1", limit=50,
+                db=self.db, current_admin=Mock(),
+            )
+
+        self.assertEqual([row["id"] for row in rows], [1, 3])
+
+    def test_game_server_polling_hides_the_echo(self):
+        rows = dispatch_routes.get_dispatch_messages(limit=50, after_id=None, db=self.db)
+
+        self.assertEqual([row["id"] for row in rows], [1, 3])
+
+    def test_echo_never_triggers_the_ai(self):
+        echo = self.db.get(DispatchMessage, 2)
+        with patch("routes.dispatch._ai_dispatcher_enabled") as enabled:
+            _queue_ai_dispatcher_request(self.db, echo)
+        enabled.assert_not_called()
