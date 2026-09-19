@@ -48,6 +48,7 @@ export interface AuditLog {
 }
 
 export interface AuditSession {
+  scope_key?: string
   session_id: number | null
   admin_id: number | null
   actor: AuditActor

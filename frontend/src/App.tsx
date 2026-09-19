@@ -41,7 +41,6 @@ const LabelCategoriesPage = lazy(() => import("@/pages/label-categories").then((
 const SecurityLayout = lazy(() => import("@/pages/security").then(({ SecurityLayout }) => ({ default: SecurityLayout })))
 const SecurityOverviewPage = lazy(() => import("@/pages/security/overview").then(({ SecurityOverviewPage }) => ({ default: SecurityOverviewPage })))
 const SecurityAdminsPage = lazy(() => import("@/pages/security").then(({ SecurityAdminsPage }) => ({ default: SecurityAdminsPage })))
-const SecuritySessionsPage = lazy(() => import("@/pages/security").then(({ SecuritySessionsPage }) => ({ default: SecuritySessionsPage })))
 const SecurityAuditPage = lazy(() => import("@/pages/security").then(({ SecurityAuditPage }) => ({ default: SecurityAuditPage })))
 const KitsPage = lazy(() => import("@/pages/kits").then(({ KitsPage }) => ({ default: KitsPage })))
 const ServerPrivilegesPage = lazy(() => import("@/pages/server-privileges").then(({ ServerPrivilegesPage }) => ({ default: ServerPrivilegesPage })))
@@ -100,7 +99,11 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 function LegacySecurityRedirect({ target }: { target: string }) {
   const location = useLocation()
-  return <Navigate to={`${target}${location.search}`} replace />
+  const [targetPath, targetQuery] = target.split("?")
+  const query = new URLSearchParams(targetQuery ?? "")
+  new URLSearchParams(location.search).forEach((value, key) => query.set(key, value))
+  const suffix = query.toString()
+  return <Navigate to={`${targetPath}${suffix ? `?${suffix}` : ""}`} replace />
 }
 
 function LegacyAdminRedirect() {
@@ -149,7 +152,7 @@ export default function App() {
           <Route path="security" element={<SecurityLayout />}>
             <Route index element={<SecurityOverviewPage />} />
             <Route path="admins" element={<SecurityAdminsPage />} />
-            <Route path="sessions" element={<SecuritySessionsPage />} />
+            <Route path="sessions" element={<LegacySecurityRedirect target="/security/audit?active=1" />} />
             <Route path="audit" element={<SecurityAuditPage />} />
           </Route>
           <Route path="users/:adminId" element={<LegacyAdminRedirect />} />
@@ -158,7 +161,7 @@ export default function App() {
           <Route path="ai-center" element={<AICenterPage />} />
           <Route path="server-privileges" element={<ServerPrivilegesPage />} />
           <Route path="kits" element={<KitsPage />} />
-          <Route path="sessions" element={<LegacySecurityRedirect target="/security/sessions" />} />
+          <Route path="sessions" element={<LegacySecurityRedirect target="/security/audit?active=1" />} />
           <Route path="audit" element={<LegacySecurityRedirect target="/security/audit" />} />
           <Route path="error-log" element={<ErrorLogPage />} />
           <Route path="perf-monitor" element={<PerfMonitorPage />} />

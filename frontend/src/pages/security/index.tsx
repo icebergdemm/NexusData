@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Link, Outlet, useLocation, useNavigate, useSearchParams } from "react-router-dom"
+import { Outlet, useLocation, useNavigate, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Search, ShieldCheck } from "lucide-react"
@@ -7,14 +7,12 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { ConfirmDialog } from "@/components/layout/ConfirmDialog"
 import { PageHeader } from "@/components/layout/PageHeader"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { useCurrentAdmin } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { UsersPage } from "@/pages/users"
-import { SessionsPage } from "@/pages/sessions"
 import { AuditPage } from "@/pages/audit"
-import { UserDetailPage } from "@/pages/users/detail"
 
 interface LockdownState {
   enabled: boolean
@@ -26,20 +24,17 @@ interface LockdownState {
 const tabs = [
   { label: "Обзор", to: "/security" },
   { label: "Администраторы", to: "/security/admins" },
-  { label: "Сессии", to: "/security/sessions" },
   { label: "Аудит", to: "/security/audit" },
 ]
 
 export function SecurityLayout() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [searchParams] = useSearchParams()
   const { data: admin, isLoading: adminLoading } = useCurrentAdmin()
   const queryClient = useQueryClient()
   const [quickSearch, setQuickSearch] = useState(searchParams.get("q") ?? "")
   const [confirmState, setConfirmState] = useState<boolean | null>(null)
-  const profileId = location.pathname.startsWith("/security/sessions") ? Number(searchParams.get("profile")) : 0
-  const hasSessionProfile = Number.isInteger(profileId) && profileId > 0
   const { data: lockdown } = useQuery({
     queryKey: ["security-lockdown"],
     queryFn: () => api.get<LockdownState>("/api/v1/admin/security/lockdown"),
@@ -86,28 +81,14 @@ export function SecurityLayout() {
             )}
           </div>}
         />
-        <nav aria-label="Разделы безопасности" className="mt-5 flex gap-1 overflow-x-auto">
-          {tabs.map((tab) => {
-            const active = tab.to === "/security" ? location.pathname === tab.to : location.pathname.startsWith(tab.to)
-            return <Link key={tab.to} to={tab.to} className={cn("whitespace-nowrap border-b-2 px-3 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", active ? "border-primary text-foreground" : "border-transparent")}>{tab.label}</Link>
-          })}
-        </nav>
+        <Tabs value={tabs.find((tab) => tab.to === "/security" ? location.pathname === tab.to : location.pathname.startsWith(tab.to))?.to ?? "/security"} onValueChange={navigate} className="mt-5">
+          <TabsList variant="line" aria-label="Разделы безопасности" className="max-w-full overflow-x-auto">
+            {tabs.map((tab) => <TabsTrigger key={tab.to} value={tab.to}>{tab.label}</TabsTrigger>)}
+          </TabsList>
+        </Tabs>
       </header>
 
       <Outlet />
-
-      <Sheet open={hasSessionProfile} onOpenChange={(open) => {
-        if (!open) {
-          const next = new URLSearchParams(searchParams)
-          next.delete("profile")
-          setSearchParams(next)
-        }
-      }}>
-        <SheetContent side="right" className="w-full max-w-none overflow-y-auto p-0 sm:max-w-4xl">
-          <SheetHeader className="border-b px-5 py-4 pr-12"><SheetTitle>Профиль администратора</SheetTitle><SheetDescription>Права, департаменты, ключи, сессии и аудит</SheetDescription></SheetHeader>
-          {hasSessionProfile && <div className="p-4 sm:p-6"><UserDetailPage adminId={profileId} embedded /></div>}
-        </SheetContent>
-      </Sheet>
 
       <ConfirmDialog
         open={confirmState !== null}
@@ -126,30 +107,19 @@ export function SecurityAdminsPage() {
   return <SecurityEmbeddedPage path="admins" />
 }
 
-export function SecuritySessionsPage() {
-  return <SecurityEmbeddedPage path="sessions" />
-}
-
 export function SecurityAuditPage() {
   return <SecurityEmbeddedPage path="audit" />
 }
 
-function SecurityEmbeddedPage({ path }: { path: "admins" | "sessions" | "audit" }) {
+function SecurityEmbeddedPage({ path }: { path: "admins" | "audit" }) {
   if (path === "admins") {
     return <UsersPageEmbedded />
-  }
-  if (path === "sessions") {
-    return <SessionsPageEmbedded />
   }
   return <AuditPageEmbedded />
 }
 
 function UsersPageEmbedded() {
   return <UsersPage embedded />
-}
-
-function SessionsPageEmbedded() {
-  return <SessionsPage embedded />
 }
 
 function AuditPageEmbedded() {

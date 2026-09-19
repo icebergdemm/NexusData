@@ -102,7 +102,7 @@ export function SecurityOverviewPage() {
       </section>
 
       <section aria-labelledby="security-sessions-title" className="rounded-lg border bg-card/30 p-4 sm:p-5">
-        <div className="flex flex-wrap items-baseline justify-between gap-2"><SectionHeading id="security-sessions-title" title="Сейчас в панели" /><Link className="text-sm text-primary underline-offset-4 hover:underline" to="/security/sessions">Все сессии</Link></div>
+        <div className="flex flex-wrap items-baseline justify-between gap-2"><SectionHeading id="security-sessions-title" title="Сейчас в панели" /><Link className="text-sm text-primary underline-offset-4 hover:underline" to="/security/audit?active=1">Все сессии в аудите</Link></div>
         <div className="divide-y divide-border border-y border-border">
           {data.active_sessions.map((session) => {
             const displayName = securityDisplayName(session.admin_display_name, session.admin_name, `#${session.admin_id}`)

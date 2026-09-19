@@ -4,11 +4,11 @@ import { cn } from "@/lib/utils"
 import { actorOf, actorName, actorSecondaryName, eventDotClass, eventLabel, eventTarget, eventToneClass, formatEventDate, formatEventTime } from "./audit-formatters"
 import type { AuditLog } from "./audit-types"
 
-export function AuditTimeline({ logs, selectedEventId, onSelect }: { logs: AuditLog[]; selectedEventId: number | null; onSelect: (log: AuditLog) => void }) {
+export function AuditTimeline({ logs, selectedEventId, onSelect, emptyMessage = "Событий не найдено." }: { logs: AuditLog[]; selectedEventId: number | null; onSelect: (log: AuditLog) => void; emptyMessage?: string }) {
   let lastDay = ""
   return (
     <div className="space-y-1 p-4 sm:p-5">
-      {!logs.length && <div className="border-y border-border py-12 text-center text-sm text-muted-foreground">В этой цепочке событий нет.</div>}
+      {!logs.length && <div className="border-y border-border py-12 text-center text-sm text-muted-foreground">{emptyMessage}</div>}
       {logs.map((log) => {
         const day = formatEventDate(log.created_at)
         const showDay = day !== lastDay

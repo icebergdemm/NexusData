@@ -137,3 +137,42 @@ def test_audit_api_filters_views_and_discord_id_search():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_audit_api_filters_active_sessions_and_searches_request_metadata():
+    engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    models.Base.metadata.create_all(engine, tables=[models.AdminUser.__table__, models.AdminSession.__table__, models.AdminActionLog.__table__])
+    db = Session(engine)
+    try:
+        now = datetime.utcnow()
+        admin = models.AdminUser(id=1, discord_id="123456", discord_username="Root", is_superuser=True)
+        db.add_all([
+            admin,
+            models.AdminSession(id=20, admin_id=1, created_at=now, expires_at=now + timedelta(hours=1), revoked=0),
+            models.AdminSession(id=21, admin_id=1, created_at=now, expires_at=now + timedelta(hours=1), revoked=1),
+            models.AdminActionLog(id=20, admin_id=1, session_id=20, login_key_id=7, action="login_key_use", details={"target": "route"}, created_at=now, route="/admin/security/audit", http_method="GET", reason="audit lookup"),
+            models.AdminActionLog(id=21, admin_id=1, session_id=21, login_key_id=8, action="login_key_use", details={"target": "history"}, created_at=now, route="/admin/old", http_method="POST", reason="old session"),
+        ])
+        db.commit()
+
+        def call(**kwargs):
+            params = dict(
+                request=SimpleNamespace(), source=None, page=1, page_size=50, q=None,
+                category=None, admin_id=None, admin=None, date_from=None, date_to=None,
+                from_date=None, to_date=None, action=None, actions=None, exclude_views=False,
+                session_id=None, unbound=False, active_sessions=False, actor_type=None,
+                auth_type=None, outcome=None, severity=None, db=db, current_admin=admin,
+            )
+            params.update(kwargs)
+            return asyncio.run(admin_routes.api_audit_logs(**params))
+
+        active = call(active_sessions=True)
+        by_key = call(q="7")
+        by_route = call(q="/admin/security/audit")
+
+        assert [item["id"] for item in active.body and __import__("json").loads(active.body)["logs"]] == [20]
+        assert [item["id"] for item in __import__("json").loads(by_key.body)["logs"]] == [20]
+        assert [item["id"] for item in __import__("json").loads(by_route.body)["logs"]] == [20]
+    finally:
+        db.close()
+        engine.dispose()

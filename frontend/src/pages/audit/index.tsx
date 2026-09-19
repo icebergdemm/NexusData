@@ -1,9 +1,11 @@
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { useSearchParams } from "react-router-dom"
 import { CalendarClock, RotateCcw, Search, ShieldCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -26,14 +28,41 @@ function datetimeLocalValue(value: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+function legacySessionGroup(sessions: AuditSession[]): AuditSession | null {
+  const actorSessions = sessions.filter((session) => session.status === "actor")
+  if (!actorSessions.length) return null
+  const last = actorSessions.map((session) => session.last_event_at).filter(Boolean).sort().at(-1) ?? null
+  return {
+    scope_key: "unbound",
+    session_id: null,
+    admin_id: null,
+    actor: { type: "legacy", discord_id: null, discord_name: "События без браузерной сессии", nexus_username: null },
+    admin_name: null,
+    admin_display_name: "События без браузерной сессии",
+    auth_type: null,
+    created_at: null,
+    expires_at: null,
+    last_seen_at: null,
+    first_event_at: actorSessions.map((session) => session.first_event_at).filter(Boolean).sort()[0] ?? null,
+    last_event_at: last,
+    event_count: actorSessions.reduce((total, session) => total + session.event_count, 0),
+    last_event: actorSessions.find((session) => session.last_event_at === last)?.last_event ?? null,
+    status: "actor",
+    is_current: false,
+  }
+}
+
 export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams()
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null)
   const adminId = Number(searchParams.get("admin") ?? searchParams.get("admin_id"))
   const hasAdmin = Number.isInteger(adminId) && adminId > 0
   const requestedSession = Number(searchParams.get("session"))
   const hasRequestedSession = Number.isInteger(requestedSession) && requestedSession > 0
+  const unbound = searchParams.get("unbound") === "1"
   const eventId = Number(searchParams.get("event"))
   const hasEvent = Number.isInteger(eventId) && eventId > 0
+  const activeSessions = searchParams.get("active") !== "0"
   const source = searchParams.get("source") || "all"
   const q = searchParams.get("q") || ""
   const action = searchParams.get("action") || ""
@@ -52,32 +81,40 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   }
 
   const sessionsQuery = useQuery({
-    queryKey: ["audit-sessions", adminId, hasAdmin, debouncedQ],
+    queryKey: ["audit-sessions", adminId, hasAdmin, debouncedQ, activeSessions],
     queryFn: () => {
-      const params = new URLSearchParams({ page: "1", page_size: "80" })
+      const params = new URLSearchParams({ page: "1", page_size: "80", active: String(activeSessions) })
       if (hasAdmin) params.set("admin_id", String(adminId))
       if (debouncedQ) params.set("q", debouncedQ)
       return api.get<AuditSessionsResponse>(`/api/v1/admin/audit/sessions?${params.toString()}`)
     },
   })
-  const sessions = sessionsQuery.data?.sessions ?? []
-  const selectedSessionId = hasRequestedSession ? requestedSession : (sessions.find((item) => item.session_id !== null)?.session_id ?? null)
-  const selectedSession = sessions.find((item) => item.session_id === selectedSessionId) ?? sessions[0] ?? null
+  const rawSessions = sessionsQuery.data?.sessions ?? []
+  const browserSessions = rawSessions.filter((session) => session.status !== "actor").map((session) => ({ ...session, scope_key: `session:${session.session_id}` }))
+  const unboundSession = legacySessionGroup(rawSessions)
+  const sessions = unboundSession ? [...browserSessions, unboundSession] : browserSessions
+  const selectedSessionId = hasRequestedSession ? requestedSession : null
+  const selectedKey = hasRequestedSession ? `session:${requestedSession}` : unbound ? "unbound" : "all"
+  const selectedSession = sessions.find((session) => (session.scope_key ?? "") === selectedKey) ?? null
 
   useEffect(() => {
-    if (!hasRequestedSession && selectedSession?.session_id != null) {
+    if (!sessionsQuery.isLoading && !sessionsQuery.isError && hasRequestedSession && !selectedSession) {
       const next = new URLSearchParams(searchParams)
-      next.set("session", String(selectedSession.session_id))
+      next.delete("session")
       setSearchParams(next, { replace: true })
+      setSelectionNotice("Выбранная сессия недоступна в текущем фильтре. Показаны все доступные события.")
     }
-  }, [hasRequestedSession, selectedSession?.session_id, searchParams, setSearchParams])
+  }, [hasRequestedSession, searchParams, selectedSession, sessionsQuery.isError, sessionsQuery.isLoading, setSearchParams])
 
   const logsQuery = useInfiniteQuery({
-    queryKey: ["audit-workspace-logs", source, adminId, selectedSessionId, debouncedQ, category, debouncedAction, from, to, showViews],
+    queryKey: ["audit-workspace-logs", source, adminId, selectedSessionId, unbound, activeSessions, debouncedQ, category, debouncedAction, from, to, showViews],
     queryFn: ({ pageParam = 1 }) => {
-      const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50", source })
+      const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
+      if (source !== "all") params.set("source", source)
       if (hasAdmin) params.set("admin", String(adminId))
       if (selectedSessionId != null) params.set("session_id", String(selectedSessionId))
+      if (unbound) params.set("unbound", "true")
+      if (activeSessions) params.set("active_sessions", "true")
       if (debouncedQ) params.set("q", debouncedQ)
       if (category !== "all") params.set("category", category)
       if (debouncedAction) params.set("action", debouncedAction)
@@ -87,8 +124,7 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
       return api.get<AuditResponse>(`/api/v1/admin/audit/logs?${params.toString()}`)
     },
     initialPageParam: 1,
-    getNextPageParam: (lastPage: AuditResponse) =>
-      lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined,
+    getNextPageParam: (lastPage: AuditResponse) => lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined,
   })
   const logs = logsQuery.data?.pages.flatMap((page) => page.logs) ?? []
   const total = logsQuery.data?.pages[0]?.total ?? 0
@@ -101,48 +137,62 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const selectedLog = selectedRemoteLog.data ?? selectedLoadedLog
   const lastPage = logsQuery.data?.pages.at(-1)
   const hasNextPage = Boolean(lastPage && lastPage.page < lastPage.total_pages)
-  const hasFilters = hasAdmin || hasRequestedSession || Boolean(debouncedQ || debouncedAction || from || to || category !== "all" || source !== "all" || showViews)
+  const hasFilters = hasAdmin || hasRequestedSession || unbound || !activeSessions || Boolean(debouncedQ || debouncedAction || from || to || category !== "all" || source !== "all" || showViews)
 
   const selectSession = (session: AuditSession) => {
     const next = new URLSearchParams(searchParams)
     next.delete("event")
-    if (session.session_id == null) next.delete("session")
-    else next.set("session", String(session.session_id))
+    if (session.scope_key === "unbound") {
+      next.delete("session")
+      next.set("unbound", "1")
+    } else if (session.session_id != null) {
+      next.delete("unbound")
+      next.set("session", String(session.session_id))
+    } else {
+      next.delete("session")
+      next.delete("unbound")
+    }
+    setSelectionNotice(null)
     setSearchParams(next)
   }
   const selectEvent = (log: AuditLog) => updateParam("event", String(log.id))
+  const clearFilters = () => setSearchParams(activeSessions ? {} : { active: "0" })
 
   return (
     <div className="space-y-4">
       {!embedded && <PageHeader title="Аудит" description="Цепочки доступа и действия администраторов" icon={ShieldCheck} actions={<Badge variant="secondary">{total} записей всего</Badge>} />}
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
         <div><span className="font-medium text-foreground">Рабочее место расследования</span><span className="ml-2">{total} событий в выборке</span></div>
-        <label className="inline-flex items-center gap-2 text-xs"><input type="checkbox" checked={showViews} onChange={(event) => updateParam("views", event.target.checked ? "1" : "")} /> показывать чувствительные просмотры</label>
+        <div className="flex flex-wrap items-center gap-4 text-xs">
+          <label className="inline-flex items-center gap-2"><Checkbox checked={activeSessions} onCheckedChange={(checked) => updateParam("active", checked ? "" : "0")} /> Активные сессии</label>
+          <label className="inline-flex items-center gap-2"><Checkbox checked={showViews} onCheckedChange={(checked) => updateParam("views", checked ? "1" : "")} /> Показывать чувствительные просмотры</label>
+        </div>
       </div>
-      <div className="rounded-lg border bg-card/30 p-3 sm:p-4">
-        <div className="flex flex-wrap items-end gap-3">
+      {selectionNotice && <div role="status" className="border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">{selectionNotice}</div>}
+      <Card className="gap-0 overflow-visible py-0">
+        <div className="flex flex-wrap items-end gap-3 p-3 sm:p-4">
           <div className="min-w-64 flex-1"><Label className="mb-1.5 block text-xs">Поиск по журналу</Label><SearchInput value={q} onChange={(event) => updateParam("q", event.target.value)} placeholder="Автор, Discord ID, действие или детали" /></div>
           <div className="w-40"><Label className="mb-1.5 block text-xs">Категория</Label><Select value={category} onValueChange={(value) => updateParam("category", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все категории</SelectItem><SelectItem value="create">Создание</SelectItem><SelectItem value="update">Изменение</SelectItem><SelectItem value="delete">Удаление</SelectItem><SelectItem value="auth">Авторизация</SelectItem><SelectItem value="other">Прочее</SelectItem></SelectContent></Select></div>
           <div className="w-48"><Label className="mb-1.5 block text-xs">Действие</Label><div className="relative"><Search className="pointer-events-none absolute left-2 top-2.5 size-3.5 text-muted-foreground" /><Input value={action} onChange={(event) => updateParam("action", event.target.value)} placeholder="ban, create…" className="pl-7" /></div></div>
         </div>
-        <div className="mt-3 flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3 border-t border-border px-3 py-3 sm:px-4">
           <div className="flex gap-2"><Button size="sm" variant={source === "panel" ? "default" : "outline"} onClick={() => updateParam("source", "panel")}>Панель</Button><Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => updateParam("source", "discord")}>Discord</Button><Button size="sm" variant={source === "all" ? "default" : "outline"} onClick={() => updateParam("source", "all")}>Все</Button></div>
           <div><Label className="mb-1.5 flex items-center gap-1 text-xs"><CalendarClock className="size-3" /> С даты</Label><Input type="datetime-local" value={datetimeLocalValue(from)} onChange={(event) => updateParam("from", event.target.value)} className="w-44" /></div>
           <div><Label className="mb-1.5 block text-xs">По дату</Label><Input type="datetime-local" value={datetimeLocalValue(to)} onChange={(event) => updateParam("to", event.target.value)} className="w-44" /></div>
-          {hasFilters && <Button size="sm" variant="ghost" onClick={() => setSearchParams({})}><RotateCcw className="size-3.5" /> Сбросить</Button>}
+          {hasFilters && <Button size="sm" variant="ghost" onClick={clearFilters}><RotateCcw className="size-3.5" /> Сбросить</Button>}
         </div>
-      </div>
+      </Card>
 
-      <div className="overflow-hidden rounded-lg border bg-card/20 xl:grid xl:grid-cols-[240px_minmax(420px,1fr)_320px]">
-        {sessionsQuery.isLoading ? <div className="p-4"><Skeleton className="h-40" /></div> : <AuditSessionRail sessions={sessions} selectedSessionId={selectedSessionId} onSelect={selectSession} />}
-        <main className="min-w-0 border-b border-border xl:border-b-0">
-          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5"><div><h2 className="font-semibold">Цепочка действий</h2><p className="mt-0.5 text-xs text-muted-foreground">{selectedSession ? `${selectedSession.admin_display_name || selectedSession.admin_name || "Актор"} · ${selectedSession.auth_type || "источник не указан"}` : "Все события"}</p></div>{selectedSession?.status === "active" && <Badge variant="default">активна</Badge>}</div>
-          {logsQuery.isLoading ? <div className="space-y-2 p-5">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-16" />)}</div> : <AuditTimeline logs={logs} selectedEventId={hasEvent ? eventId : null} onSelect={selectEvent} />}
+      <Card className="min-h-[520px] gap-0 overflow-hidden py-0 xl:grid xl:grid-cols-[240px_minmax(420px,1fr)_320px]">
+        {sessionsQuery.isLoading ? <div className="p-4"><Skeleton className="h-40" /></div> : sessionsQuery.isError ? <div role="alert" className="p-4 text-sm text-destructive">Не удалось загрузить список сессий.</div> : <AuditSessionRail sessions={sessions} selectedKey={selectedKey} onSelect={selectSession} />}
+        <main className="min-w-0 border-b border-border bg-card xl:border-b-0">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5"><div><h2 className="font-semibold">Лента событий</h2><p className="mt-0.5 text-xs text-muted-foreground">{selectedSession ? selectedSession.admin_display_name || selectedSession.admin_name : "Все доступные события"}</p></div>{selectedSession?.status === "active" && <Badge variant="default">активна</Badge>}</div>
+          {logsQuery.isLoading ? <div className="space-y-2 p-5">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-16" />)}</div> : logsQuery.isError ? <div role="alert" className="m-4 border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">Не удалось загрузить события аудита. Проверьте фильтры и повторите запрос.</div> : <AuditTimeline logs={logs} selectedEventId={hasEvent ? eventId : null} onSelect={selectEvent} emptyMessage={selectedSession?.status === "active" ? "В этой сессии пока нет событий." : "По заданным фильтрам событий не найдено."} />}
           {hasNextPage && <div className="border-t border-border p-3 text-center"><Button size="sm" variant="ghost" onClick={() => logsQuery.fetchNextPage()} disabled={logsQuery.isFetchingNextPage}>{logsQuery.isFetchingNextPage ? "Загрузка…" : "Загрузить ещё"}</Button></div>}
           {!hasNextPage && logs.length > 0 && <div className="border-t border-border px-4 py-2 text-center text-[10px] text-muted-foreground">Загружено {logs.length} из {total}</div>}
         </main>
         <AuditEventDetails log={selectedLog} />
-      </div>
+      </Card>
     </div>
   )
 }

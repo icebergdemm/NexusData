@@ -4273,8 +4273,6 @@ async def api_audit_sessions(
             AdminSession.revoked == 0,
             or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > now),
         )
-    elif active is False:
-        session_query = session_query.filter(or_(AdminSession.revoked != 0, AdminSession.expires_at <= now))
 
     if q:
         like = f"%{q.strip()}%"
@@ -4364,7 +4362,7 @@ async def api_audit_sessions(
             AdminActionLog.admin_id.in_(matching_admins),
             AdminActionLog.action.ilike(like),
         ))
-    actor_logs = actor_query.order_by(AdminActionLog.created_at.desc()).limit(500).all()
+    actor_logs = [] if active is True else actor_query.order_by(AdminActionLog.created_at.desc()).limit(500).all()
     actor_groups = {}
     for log in actor_logs:
         key = (
@@ -4428,6 +4426,8 @@ async def api_audit_logs(
     actions: Optional[list[str]] = Query(None, description="Список точных action для ленты"),
     exclude_views: bool = Query(False, description="Исключить view_* действия"),
     session_id: Optional[int] = Query(None, description="Фильтр по браузерной сессии"),
+    unbound: bool = Query(False, description="Только события без браузерной сессии"),
+    active_sessions: bool = Query(False, description="Только события активных браузерных сессий"),
     actor_type: Optional[str] = Query(None, max_length=16, description="Тип автора: web, discord или system"),
     auth_type: Optional[str] = Query(None, max_length=32),
     outcome: Optional[str] = Query(None, pattern="^(success|failure)$"),
@@ -4450,9 +4450,11 @@ async def api_audit_logs(
         session_id = None
     if not isinstance(actor_type, (str, type(None))):
         actor_type = None
+    unbound = unbound is True
+    active_sessions = active_sessions is True
 
     from fastapi.responses import JSONResponse
-    from sqlalchemy import or_, func, cast, String as SAString, inspect
+    from sqlalchemy import or_, func, cast, String as SAString, inspect, select
     has_discord_members = inspect(db.bind).has_table("discord_members")
 
     offset = (page - 1) * page_size
@@ -4512,6 +4514,14 @@ async def api_audit_logs(
         query = query.filter(AdminActionLog.admin_id == effective_admin_id)
     if session_id is not None:
         query = query.filter(AdminActionLog.session_id == session_id)
+    if unbound:
+        query = query.filter(AdminActionLog.session_id.is_(None))
+    if active_sessions:
+        active_session_ids = select(AdminSession.id).where(
+            AdminSession.revoked == 0,
+            or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > datetime.utcnow()),
+        )
+        query = query.filter(AdminActionLog.session_id.in_(active_session_ids))
     if actor_type:
         query = query.filter(AdminActionLog.actor_type == actor_type)
     if auth_type:
@@ -4552,6 +4562,15 @@ async def api_audit_logs(
             search_terms = [
                 AdminActionLog.action.ilike(like),
                 cast(AdminActionLog.details, SAString).ilike(like),
+                cast(AdminActionLog.admin_id, SAString).ilike(like),
+                cast(AdminActionLog.session_id, SAString).ilike(like),
+                cast(AdminActionLog.login_key_id, SAString).ilike(like),
+                AdminActionLog.auth_type.ilike(like),
+                AdminActionLog.outcome.ilike(like),
+                AdminActionLog.severity.ilike(like),
+                AdminActionLog.reason.ilike(like),
+                AdminActionLog.route.ilike(like),
+                AdminActionLog.http_method.ilike(like),
                 AdminActionLog.actor_discord_id.ilike(like),
                 AdminActionLog.actor_discord_name.ilike(like),
                 AdminActionLog.actor_nexus_username.ilike(like),

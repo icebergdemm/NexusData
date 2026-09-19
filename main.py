@@ -618,12 +618,17 @@ def create_app() -> FastAPI:
             target = {
                 "/adminold/users": "/admin/security/admins",
                 "/adminold/privilege-groups": "/admin/security/admins",
-                "/adminold/sessions": "/admin/security/sessions",
+                "/adminold/sessions": "/admin/security/audit",
                 "/adminold/audit": "/admin/security/audit",
             }.get(legacy_path, "/admin")
             query = dict(parse_qsl(request.url.query, keep_blank_values=True))
             if legacy_path == "/adminold/privilege-groups":
                 query["tab"] = "groups"
+            if legacy_path == "/adminold/sessions":
+                profile_id = query.pop("profile", None)
+                if profile_id and "admin" not in query:
+                    query["admin"] = profile_id
+                query.setdefault("active", "1")
             if query:
                 target = f"{target}?{urlencode(query)}"
             return RedirectResponse(url=target, status_code=302)

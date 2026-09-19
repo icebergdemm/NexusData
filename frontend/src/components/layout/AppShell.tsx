@@ -85,7 +85,6 @@ export function AppShell() {
     if (path.includes("/players/") && /\/ip(?:\/|$)/.test(path)) viewKey = "player_ip"
     else if (path.includes("/players/")) viewKey = "player_profile"
     else if (path.includes("/security/audit")) viewKey = "audit"
-    else if (path.includes("/security/sessions")) viewKey = "sessions"
     else if (path.includes("/security/admins")) viewKey = "admin_profile"
     else if (path.includes("/admin/users/") || path.includes("/adminold/users/")) viewKey = "admin_profile"
     if (!viewKey) return

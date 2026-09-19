@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { Link } from "react-router-dom"
 import { FileJson } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,20 +15,20 @@ export function AuditEventDetails({ log }: { log: AuditLog | null }) {
     queryFn: () => api.get<AuditLog>(`/api/v1/admin/audit/logs/${log?.id}?include_raw=true`),
     enabled: Boolean(log?.id && showRaw),
   })
-  if (!log) return <aside className="hidden min-h-[420px] place-items-center border-l border-border p-6 text-center text-sm text-muted-foreground xl:grid">Выберите событие, чтобы увидеть контекст.</aside>
+  if (!log) return <aside className="hidden min-h-[520px] place-items-center border-l border-border bg-card p-6 text-center text-sm text-muted-foreground xl:grid">Выберите событие, чтобы увидеть контекст.</aside>
   const actor = actorOf(log)
   const secondary = actorSecondaryName(actor)
   const structured = log.structured_details
   const raw = rawLog?.structured_details?.raw
   return (
-    <aside className="border-t border-border bg-card/20 xl:border-l xl:border-t-0">
+    <aside className="border-t border-border bg-card xl:border-l xl:border-t-0">
       <div className="border-b border-border px-4 py-3 sm:px-5">
         <div className="text-[10px] uppercase tracking-[0.12em] text-primary">Выбранное событие</div>
         <h2 className="mt-1 text-sm font-semibold">{eventLabel(log)}</h2>
         <Badge variant={log.outcome === "failure" ? "destructive" : "default"} className="mt-2">{log.outcome === "failure" ? "отклонено" : "успешно"}</Badge>
       </div>
       <div className="space-y-5 p-4 sm:p-5">
-        <section><div className="mb-2 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Автор</div><div className="text-sm font-semibold">{actorName(actor)}</div>{secondary && <div className="mt-0.5 text-xs text-muted-foreground">NexusData: {secondary}</div>}{actor.discord_id && <div className="mt-1 font-mono text-[10px] text-muted-foreground">Discord ID: {actor.discord_id}</div>}</section>
+        <section><div className="mb-2 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Автор</div>{log.admin_id ? <Link to={`/security/admins?admin=${log.admin_id}`} className="text-sm font-semibold text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{actorName(actor)}</Link> : <div className="text-sm font-semibold">{actorName(actor)}</div>}{secondary && <div className="mt-0.5 text-xs text-muted-foreground">NexusData: {secondary}</div>}{actor.discord_id && <div className="mt-1 font-mono text-[10px] text-muted-foreground">Discord ID: {actor.discord_id}</div>}</section>
         <section><div className="mb-2 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Событие</div><div className="font-mono text-xs text-primary">{log.action}</div><div className="mt-1 text-xs text-muted-foreground">{log.created_at ? new Date(log.created_at).toLocaleString("ru-RU") : "время не указано"} · {structured?.context.source ?? "Панель"}</div></section>
         {structured?.target && <section><div className="mb-2 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Объект</div><div className="text-sm">{structured.target.label || `${structured.target.type} #${structured.target.id}`}</div></section>}
         {structured?.changes?.length ? <section><div className="mb-2 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Изменения</div><div className="space-y-2">{structured.changes.map((change) => <div key={change.field} className="grid grid-cols-[1fr_auto_1fr] gap-2 font-mono text-[11px]"><span className="truncate text-destructive">{formatChangeValue(change.from)}</span><span className="text-muted-foreground">→</span><span className="truncate text-success">{formatChangeValue(change.to)}</span><span className="col-span-3 text-[10px] text-muted-foreground">{change.field}</span></div>)}</div></section> : null}

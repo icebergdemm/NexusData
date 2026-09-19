@@ -60,3 +60,35 @@ def test_audit_sessions_groups_events_by_real_browser_session():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_audit_sessions_active_filter_is_explicit_and_history_keeps_unbound_groups():
+    engine, db = _db()
+    try:
+        now = datetime.utcnow()
+        admin = models.AdminUser(id=1, discord_id="123", discord_username="Petr Gromov", is_superuser=True)
+        db.add_all([
+            admin,
+            models.AdminSession(id=51, admin_id=1, token="session-51", created_at=now, expires_at=now + timedelta(hours=1), revoked=0),
+            models.AdminSession(id=52, admin_id=1, token="session-52", created_at=now, expires_at=now + timedelta(hours=1), revoked=1),
+            models.AdminActionLog(id=11, admin_id=1, session_id=51, actor_type="web", action="login", details={}, created_at=now),
+            models.AdminActionLog(id=12, actor_type="discord", actor_discord_id="123", actor_discord_name="Petr Gromov", action="discord:close", details={}, created_at=now),
+        ])
+        db.commit()
+        request = SimpleNamespace(state=SimpleNamespace(nd_session_id=51))
+
+        active = asyncio.run(admin_routes.api_audit_sessions(
+            request=request, page=1, page_size=50, admin_id=None, actor_type=None,
+            q=None, active=True, db=db, current_admin=admin,
+        ))
+        history = asyncio.run(admin_routes.api_audit_sessions(
+            request=request, page=1, page_size=50, admin_id=None, actor_type=None,
+            q=None, active=False, db=db, current_admin=admin,
+        ))
+
+        assert [item["session_id"] for item in active["sessions"]] == [51]
+        assert all(item["status"] != "actor" for item in active["sessions"])
+        assert {item["session_id"] for item in history["sessions"]} == {51, 52, None}
+    finally:
+        db.close()
+        engine.dispose()
