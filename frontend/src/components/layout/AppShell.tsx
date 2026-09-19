@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useState } from "react"
+import { Suspense, useCallback, useEffect, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router-dom"
 import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, PanelsTopLeft } from "lucide-react"
 import {
@@ -15,6 +15,7 @@ import { NotificationBell } from "@/components/layout/NotificationBell"
 import { V2ThemeToggle } from "@/components/layout/V2ThemeToggle"
 import { IS_V2, buildUiVersionHref } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
+import { api } from "@/lib/api"
 
 const V2_SIDEBAR_STORAGE_KEY = "nexusdata-v2-sidebar-open"
 
@@ -77,6 +78,19 @@ export function AppShell() {
   const location = useLocation()
   const versionHref = buildUiVersionHref(IS_V2 ? "classic" : "v2", location)
   const [v2SidebarOpen, setV2SidebarOpen] = useState(readV2SidebarState)
+
+  useEffect(() => {
+    const path = location.pathname
+    let viewKey: string | null = null
+    if (path.includes("/players/") && /\/ip(?:\/|$)/.test(path)) viewKey = "player_ip"
+    else if (path.includes("/players/")) viewKey = "player_profile"
+    else if (path.includes("/security/audit")) viewKey = "audit"
+    else if (path.includes("/security/sessions")) viewKey = "sessions"
+    else if (path.includes("/security/admins")) viewKey = "admin_profile"
+    else if (path.includes("/admin/users/") || path.includes("/adminold/users/")) viewKey = "admin_profile"
+    if (!viewKey) return
+    void api.post("/api/v1/admin/audit/view", { view_key: viewKey, route: path }).catch(() => undefined)
+  }, [location.pathname])
   const handleV2SidebarOpenChange = useCallback((open: boolean) => {
     setV2SidebarOpen(open)
     try {

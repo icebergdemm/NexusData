@@ -194,6 +194,13 @@ def _apply_migrations():
         ("ai_creature_alerts", "reported_distance_from_yasa_m_approx", "INT"),
         # admin_users: flags accounts auto-provisioned by task_sync_department_roles
         ("admin_users", "created_by_worker", "TINYINT NOT NULL DEFAULT 0"),
+        # admin_action_logs: actor/session context for investigation workspace
+        ("admin_action_logs", "actor_type", "VARCHAR(16)"),
+        ("admin_action_logs", "actor_discord_id", "VARCHAR(25)"),
+        ("admin_action_logs", "actor_discord_name", "VARCHAR(255)"),
+        ("admin_action_logs", "actor_nexus_username", "VARCHAR(255)"),
+        ("admin_action_logs", "route", "VARCHAR(255)"),
+        ("admin_action_logs", "http_method", "VARCHAR(10)"),
         # discord_members: role IDs currently held, for department role sync
         ("discord_members", "role_ids", "JSON"),
         # documents: department-scoped documentation + nested sub-pages

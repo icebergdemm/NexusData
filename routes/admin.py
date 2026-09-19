@@ -3,7 +3,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, inspect
 from typing import Optional
 import secrets
 import threading
@@ -73,14 +73,18 @@ def has_fresh_discord_membership(db: Session, admin: AdminUser, now: Optional[da
 def log_admin_action(db: Session, admin_id: int, action: str, details: Optional[dict] = None,
                      request: Optional[Request] = None, outcome: str = "success",
                      reason: Optional[str] = None, severity: str = "info"):
-    log = AdminActionLog(
+    from audit_service import record_audit_event
+
+    return record_audit_event(
+        db,
+        action,
+        details,
+        request=request,
         admin_id=admin_id,
-        action=action,
-        details=details or {},
-        **audit_context(request, outcome=outcome, reason=reason, severity=severity),
+        outcome=outcome,
+        reason=reason,
+        severity=severity,
     )
-    db.add(log)
-    db.commit()
 
 
 # Security Hub deliberately uses a small explicit activity vocabulary. The
@@ -217,6 +221,42 @@ def redact_audit_details(details: Optional[dict], is_superuser: bool = False) ->
     return details or {} if is_superuser else sanitize_audit_details(details or {})
 
 
+def _audit_actor_payload(db: Session, log: AdminActionLog) -> dict:
+    """Return a truthful actor label for current and legacy audit rows."""
+    admin = db.query(AdminUser).filter(AdminUser.id == log.admin_id).first() if log.admin_id else None
+    member = None
+    discord_id = getattr(log, "actor_discord_id", None) or (getattr(admin, "discord_id", None) if admin else None)
+    if discord_id:
+        try:
+            member = db.query(DiscordMember).filter(DiscordMember.discord_id == str(discord_id)).first()
+        except Exception:
+            # Partial schemas are used by small API tests and during rolling
+            # startup migrations. The audit row itself must remain readable.
+            db.rollback()
+    discord_name = (
+        getattr(log, "actor_discord_name", None)
+        or getattr(member, "display_name", None)
+        or getattr(admin, "discord_username", None)
+    )
+    nexus_name = getattr(log, "actor_nexus_username", None) or getattr(admin, "discord_username", None)
+    if discord_name:
+        primary = discord_name
+    elif discord_id:
+        primary = f"Discord-актор · ID {discord_id}"
+    elif log.admin_id:
+        primary = f"Администратор #{log.admin_id}"
+    elif (log.action or "").startswith("discord:"):
+        primary = "Discord-актор"
+    else:
+        primary = "Системное событие"
+    return {
+        "display_name": primary,
+        "nexus_username": nexus_name,
+        "discord_id": str(discord_id) if discord_id else None,
+        "actor_type": getattr(log, "actor_type", None) or ("web" if log.admin_id else "system"),
+    }
+
+
 def push_flash(request: Request, level: str, message: str):
     flashes = request.session.get("_flashes", [])
     flashes.append({"level": level, "message": message})
@@ -270,6 +310,7 @@ def load_current_admin(request: Request, db: Session) -> AdminUser:
                 .first()
             )
     if admin:
+        request.state.nd_admin_id = admin.id
         try:
             enforce_cookie_csrf(request)
         except HTTPException:
@@ -1044,12 +1085,13 @@ async def _apply_permission_policy(request: Request, db: Session, current_admin:
         row = AppSetting(key="permission_policy_version")
         db.add(row)
     row.value = target
-    db.add(AdminActionLog(
-        admin_id=current_admin.id,
-        action="permission_policy_apply" if target == "deny_v2" else "permission_policy_rollback",
-        details={"policy": target, "digest": impact["digest"], "changed_permission_count": impact["changed_permission_count"]},
-    ))
-    db.commit()
+    log_admin_action(
+        db,
+        current_admin.id,
+        "permission_policy_apply" if target == "deny_v2" else "permission_policy_rollback",
+        {"policy": target, "digest": impact["digest"], "changed_permission_count": impact["changed_permission_count"]},
+        request=request,
+    )
     return {"status": "ok", "policy": target, "impact": impact}
 
 
@@ -3048,7 +3090,8 @@ async def api_sessions_list(
     session_admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
     admins_map = {a.id: a.discord_username for a in session_admins}
     discord_ids = {str(a.discord_id) for a in session_admins if a.discord_id}
-    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+    has_discord_members = inspect(db.bind).has_table("discord_members") if db.bind is not None else False
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids and has_discord_members else []
     discord_names = {member.discord_id: member.display_name for member in discord_members}
     admin_discord_names = {a.id: discord_names.get(str(a.discord_id)) for a in session_admins}
 
@@ -3959,13 +4002,13 @@ async def api_update_own_disguise(
             queued_by_admin_id=current_admin.id,
             payload={"policy_version": player.disguise_version, "player_steamid": player.player_steamid},
         ))
-    db.add(AdminActionLog(admin_id=current_admin.id, action="disguise_policy_update", details={
+    db.commit()
+    log_admin_action(db, current_admin.id, "disguise_policy_update", {
         "player_id": player.player_id,
         "enabled": enabled,
         "mode": mode,
         "policy_version": player.disguise_version,
-    }))
-    db.commit()
+    })
     return _disguise_response(db, player)
 
 
@@ -4149,6 +4192,224 @@ def api_system_health(
     return JSONResponse(result)
 
 
+@router.post("/api/v1/admin/audit/view")
+async def api_audit_view(
+    request: Request,
+    view_key: Optional[str] = Query(None),
+    route: str = Query(""),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Record allowlisted sensitive SPA views once per session and route."""
+    # Write-only telemetry: requiring read permission here would erase regular
+    # administrators from the very history we are trying to reconstruct.
+    if not view_key:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        view_key = body.get("view_key")
+        route = body.get("route") or route
+    view_actions = {
+        "player_profile": "view_player_profile",
+        "player_ip": "view_player_ip",
+        "login_keys": "view_login_keys",
+        "sessions": "view_sessions",
+        "permissions": "view_permissions",
+        "admin_profile": "view_admin_profile",
+        "audit": "view_audit",
+        "player_export": "player_export",
+    }
+    action = view_actions.get((view_key or "").strip())
+    if not action:
+        raise HTTPException(status_code=400, detail="Недопустимый тип чувствительного просмотра")
+    session_id = getattr(request.state, "nd_session_id", None)
+    duplicate = db.query(AdminActionLog).filter(
+        AdminActionLog.action == action,
+        AdminActionLog.session_id == session_id,
+        AdminActionLog.route == (route or "")[:255],
+        AdminActionLog.created_at >= datetime.utcnow() - timedelta(minutes=5),
+    ).first()
+    if duplicate:
+        return {"recorded": False, "event_id": duplicate.id}
+    from audit_service import record_audit_event
+
+    event = record_audit_event(
+        db,
+        action,
+        {"route": (route or "")[:255]},
+        request=request,
+        admin=current_admin,
+    )
+    return {"recorded": True, "event_id": event.id}
+
+
+@router.get("/api/v1/admin/audit/sessions")
+async def api_audit_sessions(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=10, le=200),
+    admin_id: Optional[int] = Query(None),
+    actor_type: Optional[str] = Query(None, max_length=16),
+    q: Optional[str] = Query(None, max_length=200),
+    active: Optional[bool] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    """Return browser-session chains plus Discord/system actor groups."""
+    _require_superuser(current_admin)
+    if not check_permission(current_admin, "audit", "view"):
+        raise HTTPException(status_code=403)
+
+    from sqlalchemy import func, select
+    from audit_service import format_audit_event
+
+    now = datetime.utcnow()
+    session_query = db.query(AdminSession)
+    if admin_id is not None:
+        session_query = session_query.filter(AdminSession.admin_id == admin_id)
+    if active is True:
+        session_query = session_query.filter(
+            AdminSession.revoked == 0,
+            or_(AdminSession.expires_at.is_(None), AdminSession.expires_at > now),
+        )
+    elif active is False:
+        session_query = session_query.filter(or_(AdminSession.revoked != 0, AdminSession.expires_at <= now))
+
+    if q:
+        like = f"%{q.strip()}%"
+        matching_admins = db.query(AdminUser.id).filter(or_(
+            AdminUser.discord_username.ilike(like),
+            AdminUser.discord_id.ilike(like),
+        )).subquery()
+        session_query = session_query.filter(AdminSession.admin_id.in_(matching_admins))
+
+    total_browser = session_query.count()
+    sessions = (
+        session_query
+        .order_by(AdminSession.created_at.desc(), AdminSession.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    session_ids = [session.id for session in sessions]
+    count_rows = {}
+    last_rows = {}
+    if session_ids:
+        count_rows = {
+            row.session_id: {"count": row.event_count, "first": row.first_at, "last": row.last_at}
+            for row in db.query(
+                AdminActionLog.session_id,
+                func.count(AdminActionLog.id).label("event_count"),
+                func.min(AdminActionLog.created_at).label("first_at"),
+                func.max(AdminActionLog.created_at).label("last_at"),
+            ).filter(AdminActionLog.session_id.in_(session_ids)).group_by(AdminActionLog.session_id).all()
+        }
+        latest_ids = db.query(func.max(AdminActionLog.id).label("id")).filter(
+            AdminActionLog.session_id.in_(session_ids)
+        ).group_by(AdminActionLog.session_id).subquery()
+        last_rows = {row.session_id: row for row in db.query(AdminActionLog).filter(AdminActionLog.id.in_(select(latest_ids.c.id))).all()}
+
+    admin_ids = {session.admin_id for session in sessions}
+    admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
+    admin_map = {admin.id: admin for admin in admins}
+    discord_ids = {str(admin.discord_id) for admin in admins if admin.discord_id}
+    member_map = {}
+    if discord_ids:
+        try:
+            member_map = {member.discord_id: member for member in db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all()}
+        except Exception:
+            db.rollback()
+
+    result = []
+    for session in sessions:
+        admin = admin_map.get(session.admin_id)
+        member = member_map.get(str(getattr(admin, "discord_id", ""))) if admin else None
+        actor_name = getattr(member, "display_name", None) or getattr(admin, "discord_username", None) or f"Администратор #{session.admin_id}"
+        nexus_name = getattr(admin, "discord_username", None)
+        aggregate = count_rows.get(session.id, {"count": 0, "first": session.created_at, "last": session.last_seen_at or session.created_at})
+        last_event = last_rows.get(session.id)
+        result.append({
+            "session_id": session.id,
+            "admin_id": session.admin_id,
+            "actor": {"type": "web", "discord_id": getattr(admin, "discord_id", None), "discord_name": actor_name, "nexus_username": nexus_name},
+            "admin_name": nexus_name or actor_name,
+            "admin_display_name": actor_name,
+            "auth_type": session.auth_type,
+            "created_at": session.created_at.isoformat() if session.created_at else None,
+            "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+            "last_seen_at": session.last_seen_at.isoformat() if session.last_seen_at else None,
+            "first_event_at": aggregate["first"].isoformat() if aggregate["first"] else None,
+            "last_event_at": aggregate["last"].isoformat() if aggregate["last"] else None,
+            "event_count": aggregate["count"],
+            "last_event": format_audit_event(last_event) if last_event else None,
+            "status": "revoked" if session.revoked else ("expired" if session.expires_at and session.expires_at <= now else "active"),
+            "is_current": getattr(request.state, "nd_session_id", None) == session.id,
+        })
+
+    # Discord and system work has no browser AdminSession. Keep it visible as
+    # an actor group instead of manufacturing a session row.
+    actor_query = db.query(AdminActionLog).filter(AdminActionLog.session_id.is_(None))
+    if actor_type:
+        actor_query = actor_query.filter(AdminActionLog.actor_type == actor_type)
+    if q:
+        like = f"%{q.strip()}%"
+        matching_admins = db.query(AdminUser.id).filter(or_(
+            AdminUser.discord_username.ilike(like),
+            AdminUser.discord_id.ilike(like),
+        )).subquery()
+        actor_query = actor_query.filter(or_(
+            AdminActionLog.actor_discord_name.ilike(like),
+            AdminActionLog.actor_discord_id.ilike(like),
+            AdminActionLog.admin_id.in_(matching_admins),
+            AdminActionLog.action.ilike(like),
+        ))
+    actor_logs = actor_query.order_by(AdminActionLog.created_at.desc()).limit(500).all()
+    actor_groups = {}
+    for log in actor_logs:
+        key = (
+            getattr(log, "actor_type", None) or ("web" if log.admin_id else "system"),
+            getattr(log, "actor_discord_id", None),
+            getattr(log, "actor_nexus_username", None),
+            log.admin_id,
+        )
+        group = actor_groups.setdefault(key, {"logs": [], "last": log})
+        group["logs"].append(log)
+        if log.created_at and (not group["last"].created_at or log.created_at > group["last"].created_at):
+            group["last"] = log
+    for (kind, discord_id, nexus_name, _admin_id), group in actor_groups.items():
+        last = group["last"]
+        actor = _audit_actor_payload(db, last)
+        actor_name = actor["display_name"]
+        discord_id = actor["discord_id"]
+        nexus_name = actor["nexus_username"] or nexus_name
+        result.append({
+            "session_id": None,
+            "admin_id": last.admin_id,
+            "actor": {"type": kind, "discord_id": discord_id, "discord_name": actor_name, "nexus_username": nexus_name},
+            "admin_name": nexus_name or actor_name,
+            "admin_display_name": actor_name,
+            "auth_type": None,
+            "created_at": None,
+            "expires_at": None,
+            "last_seen_at": None,
+            "first_event_at": min(log.created_at for log in group["logs"] if log.created_at).isoformat() if any(log.created_at for log in group["logs"]) else None,
+            "last_event_at": last.created_at.isoformat() if last.created_at else None,
+            "event_count": len(group["logs"]),
+            "last_event": format_audit_event(last),
+            "status": "actor",
+            "is_current": False,
+        })
+
+    return {
+        "sessions": result,
+        "total": total_browser + len(actor_groups),
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total_browser + page_size - 1) // page_size if total_browser else 1,
+    }
+
+
 @router.get("/api/v1/admin/audit/logs")
 async def api_audit_logs(
     request: Request,
@@ -4166,6 +4427,8 @@ async def api_audit_logs(
     action: Optional[str] = Query(None, max_length=100, description="Точный фильтр по action (подстрока)"),
     actions: Optional[list[str]] = Query(None, description="Список точных action для ленты"),
     exclude_views: bool = Query(False, description="Исключить view_* действия"),
+    session_id: Optional[int] = Query(None, description="Фильтр по браузерной сессии"),
+    actor_type: Optional[str] = Query(None, max_length=16, description="Тип автора: web, discord или system"),
     auth_type: Optional[str] = Query(None, max_length=32),
     outcome: Optional[str] = Query(None, pattern="^(success|failure)$"),
     severity: Optional[str] = Query(None, pattern="^(info|low|medium|high|critical)$"),
@@ -4182,8 +4445,15 @@ async def api_audit_logs(
     if not check_permission(current_admin, "audit", "view"):
         raise HTTPException(status_code=403)
 
+    # Direct unit calls bypass FastAPI's default-value coercion.
+    if not isinstance(session_id, (int, type(None))):
+        session_id = None
+    if not isinstance(actor_type, (str, type(None))):
+        actor_type = None
+
     from fastapi.responses import JSONResponse
-    from sqlalchemy import or_, func, cast, String as SAString
+    from sqlalchemy import or_, func, cast, String as SAString, inspect
+    has_discord_members = inspect(db.bind).has_table("discord_members")
 
     offset = (page - 1) * page_size
     query = db.query(AdminActionLog)
@@ -4240,6 +4510,10 @@ async def api_audit_logs(
     effective_admin_id = admin if admin is not None else admin_id
     if effective_admin_id is not None:
         query = query.filter(AdminActionLog.admin_id == effective_admin_id)
+    if session_id is not None:
+        query = query.filter(AdminActionLog.session_id == session_id)
+    if actor_type:
+        query = query.filter(AdminActionLog.actor_type == actor_type)
     if auth_type:
         query = query.filter(AdminActionLog.auth_type == auth_type)
     if outcome:
@@ -4275,17 +4549,21 @@ async def api_audit_logs(
                     AdminUser.discord_id.ilike(like),
                 ),
             ).exists()
-            discord_name_exists = db.query(DiscordMember.id).filter(
-                DiscordMember.discord_id == AdminUser.discord_id,
-                DiscordMember.display_name.ilike(like),
-                AdminUser.id == AdminActionLog.admin_id,
-            ).exists()
-            query = query.filter(or_(
+            search_terms = [
                 AdminActionLog.action.ilike(like),
                 cast(AdminActionLog.details, SAString).ilike(like),
+                AdminActionLog.actor_discord_id.ilike(like),
+                AdminActionLog.actor_discord_name.ilike(like),
+                AdminActionLog.actor_nexus_username.ilike(like),
                 admin_exists,
-                discord_name_exists,
-            ))
+            ]
+            if has_discord_members:
+                search_terms.append(db.query(DiscordMember.id).filter(
+                    DiscordMember.discord_id == AdminUser.discord_id,
+                    DiscordMember.display_name.ilike(like),
+                    AdminUser.id == AdminActionLog.admin_id,
+                ).exists())
+            query = query.filter(or_(*search_terms))
     total = query.count()
     logs = (
         query
@@ -4300,19 +4578,28 @@ async def api_audit_logs(
     admins = db.query(AdminUser).filter(AdminUser.id.in_(admin_ids)).all() if admin_ids else []
     admin_lookup = {a.id: a.discord_username for a in admins}
     discord_ids = {str(a.discord_id) for a in admins if a.discord_id}
-    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids else []
+    discord_members = db.query(DiscordMember).filter(DiscordMember.discord_id.in_(discord_ids)).all() if discord_ids and has_discord_members else []
     discord_names = {member.discord_id: member.display_name for member in discord_members}
     admin_display_lookup = {a.id: discord_names.get(str(a.discord_id)) for a in admins}
+
+    from audit_service import format_audit_event
 
     return JSONResponse({
         "logs": [
             {
                 "id": log.id,
                 "admin_id": log.admin_id,
-                "admin_name": admin_lookup.get(log.admin_id, "Неизвестный"),
-                "admin_display_name": admin_display_lookup.get(log.admin_id),
+                "admin_name": getattr(log, "actor_nexus_username", None) or admin_lookup.get(log.admin_id) or (f"Администратор #{log.admin_id}" if log.admin_id else None),
+                "admin_display_name": getattr(log, "actor_discord_name", None) or admin_display_lookup.get(log.admin_id) or (f"Discord-актор · ID {log.actor_discord_id}" if getattr(log, "actor_discord_id", None) else ("Discord-актор" if (log.action or "").startswith("discord:") else "Системное событие")),
+                "actor": {
+                    "type": getattr(log, "actor_type", None) or ("web" if log.admin_id else "system"),
+                    "discord_id": getattr(log, "actor_discord_id", None),
+                    "discord_name": getattr(log, "actor_discord_name", None) or admin_display_lookup.get(log.admin_id),
+                    "nexus_username": getattr(log, "actor_nexus_username", None) or admin_lookup.get(log.admin_id),
+                },
                 "action": log.action,
                 "details": redact_audit_details(log.details, bool(current_admin.is_superuser)),
+                "structured_details": format_audit_event(log),
                 "created_at": log.created_at.isoformat() if log.created_at else None,
                 "auth_type": log.auth_type,
                 "session_id": log.session_id,
@@ -4336,6 +4623,7 @@ async def api_audit_logs(
 @router.get("/api/v1/admin/audit/logs/{log_id}")
 async def api_audit_log_detail(
     log_id: int,
+    include_raw: bool = Query(False),
     db: Session = Depends(get_db),
     current_admin: AdminUser = Depends(get_current_admin),
 ):
@@ -4345,15 +4633,17 @@ async def api_audit_log_detail(
     log = db.query(AdminActionLog).filter(AdminActionLog.id == log_id).first()
     if not log:
         raise HTTPException(status_code=404, detail="Событие аудита не найдено")
-    admin = db.query(AdminUser).filter(AdminUser.id == log.admin_id).first() if log.admin_id else None
-    member = db.query(DiscordMember).filter(DiscordMember.discord_id == str(admin.discord_id)).first() if admin and admin.discord_id else None
+    actor = _audit_actor_payload(db, log)
+    from audit_service import format_audit_event
     return {
         "id": log.id,
         "admin_id": log.admin_id,
-        "admin_name": admin.discord_username if admin else "Неизвестный",
-        "admin_display_name": member.display_name if member else None,
+        "admin_name": actor["nexus_username"] or actor["display_name"],
+        "admin_display_name": actor["display_name"],
+        "actor": actor,
         "action": log.action,
         "details": redact_audit_details(log.details, bool(current_admin.is_superuser)),
+        "structured_details": format_audit_event(log, include_raw=include_raw),
         "created_at": log.created_at.isoformat() if log.created_at else None,
         "auth_type": log.auth_type,
         "session_id": log.session_id,

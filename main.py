@@ -735,7 +735,8 @@ def create_app() -> FastAPI:
     # Проверяются раньше вообще всего остального в приложении, включая
     # maintenance-режим: заблокированный по IP или пойманный на инъекции
     # клиент не должен тратить ресурсы даже на страницу техработ.
-    from middleware import InjectionGuardMiddleware, RateLimitMiddleware
+    from middleware import AuditCaptureMiddleware, InjectionGuardMiddleware, RateLimitMiddleware
+    app.add_middleware(AuditCaptureMiddleware)
     app.add_middleware(RateLimitMiddleware, requests_per_window=settings.rate_limit_requests, window_seconds=settings.rate_limit_window)
     app.add_middleware(InjectionGuardMiddleware)
 

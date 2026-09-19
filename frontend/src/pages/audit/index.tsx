@@ -1,79 +1,21 @@
-import { useSearchParams } from "react-router-dom"
+import { useEffect } from "react"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
-import { useInfiniteScroll } from "@/hooks/useInfiniteScroll"
-import { useDebouncedValue } from "@/hooks/use-debounced-value"
-import { ScrollText, Search, RotateCcw, CalendarClock } from "lucide-react"
-import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { useSearchParams } from "react-router-dom"
+import { CalendarClock, RotateCcw, Search, ShieldCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SearchInput } from "@/components/layout/SearchInput"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { api } from "@/lib/api"
-import { formatBrowserDate } from "@/lib/format-date"
-import { securityDisplayName, securitySecondaryName } from "@/lib/security-display"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-
-interface AuditLog {
-  id: number; admin_id: number; admin_name: string | null; admin_display_name: string | null; action: string
-  details: Record<string, unknown> | null; created_at: string | null
-  auth_type?: string | null; session_id?: number | null; outcome?: string | null; reason?: string | null; severity?: string | null
-}
-interface AuditResponse { logs: AuditLog[]; total: number; page: number; page_size: number; total_pages: number }
-
-function describeDetails(details: Record<string, unknown> | null): string {
-  if (!details) return ""
-  const target = details.target as Record<string, unknown> | undefined
-  const parts: string[] = []
-  if (target) {
-    if (target.name) parts.push(String(target.name))
-    if (target.steamid) parts.push(String(target.steamid))
-    if (target.username) parts.push(String(target.username))
-    if (target.player_id != null) parts.push(`player #${target.player_id}`)
-    if (target.admin_id != null) parts.push(`admin #${target.admin_id}`)
-    if (target.session_id != null) parts.push(`session #${target.session_id}`)
-    if (target.kit_id != null) parts.push(`kit #${target.kit_id}`)
-  }
-  if (Array.isArray(details.changes)) {
-    for (const c of details.changes as { field: string; from: unknown; to: unknown }[]) {
-      parts.push(`${c.field}: ${c.from} → ${c.to}`)
-    }
-  }
-  if (!parts.length) {
-    if (details.reason) parts.push(String(details.reason))
-    else if (details.steamid) parts.push(String(details.steamid))
-  }
-  return parts.join(" · ") || JSON.stringify(details).slice(0, 80)
-}
-
-type ActionCategory = "create" | "update" | "delete" | "auth" | "other"
-
-function actionCategory(action: string): ActionCategory {
-  const a = action.toLowerCase()
-  if (/(delete|revoke|remove|void|kick|ban)/.test(a)) return "delete"
-  if (/(create|add|assign|generate|grant|create_admin)/.test(a)) return "create"
-  if (/(update|edit|save|toggle|change)/.test(a)) return "update"
-  if (/(login|logout|auth)/.test(a)) return "auth"
-  return "other"
-}
-
-const CATEGORY_META: Record<ActionCategory, { dot: string; classes: string }> = {
-  create: { dot: "bg-success", classes: "text-success" },
-  update: { dot: "bg-info", classes: "text-info" },
-  delete: { dot: "bg-destructive", classes: "text-destructive" },
-  auth: { dot: "bg-primary", classes: "text-primary" },
-  other: { dot: "bg-muted-foreground", classes: "text-muted-foreground" },
-}
-
-function initials(name: string | null, id: number): string {
-  if (!name) return `#${id}`.slice(0, 2)
-  return name.slice(0, 2).toUpperCase()
-}
+import { AuditEventDetails } from "./AuditEventDetails"
+import { AuditSessionRail } from "./AuditSessionRail"
+import { AuditTimeline } from "./AuditTimeline"
+import type { AuditLog, AuditResponse, AuditSession, AuditSessionsResponse } from "./audit-types"
 
 function datetimeLocalValue(value: string): string {
   if (!value) return ""
@@ -86,22 +28,21 @@ function datetimeLocalValue(value: string): string {
 
 export function AuditPage({ embedded = false }: { embedded?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const adminIdFilter = Number(searchParams.get("admin") ?? searchParams.get("admin_id"))
-  const hasAdminFilter = Number.isInteger(adminIdFilter) && adminIdFilter > 0
-  const source = (searchParams.get("source") as "panel" | "discord" | "all" | null) ?? "panel"
-  const searchInput = searchParams.get("q") ?? ""
-  const debouncedSearch = useDebouncedValue(searchInput.trim(), 400)
-  const category = searchParams.get("category") ?? "all"
-  const actionFilter = searchParams.get("action") ?? ""
-  const debouncedAction = useDebouncedValue(actionFilter.trim(), 400)
-  const dateFrom = searchParams.get("from") ?? searchParams.get("date_from") ?? ""
-  const dateTo = searchParams.get("to") ?? searchParams.get("date_to") ?? ""
-  const dateFromInput = datetimeLocalValue(dateFrom)
-  const dateToInput = datetimeLocalValue(dateTo)
-  const showViews = searchParams.get("views") === "1"
+  const adminId = Number(searchParams.get("admin") ?? searchParams.get("admin_id"))
+  const hasAdmin = Number.isInteger(adminId) && adminId > 0
+  const requestedSession = Number(searchParams.get("session"))
+  const hasRequestedSession = Number.isInteger(requestedSession) && requestedSession > 0
   const eventId = Number(searchParams.get("event"))
   const hasEvent = Number.isInteger(eventId) && eventId > 0
-  const hasActiveFilters = hasAdminFilter || !!debouncedSearch || category !== "all" || !!debouncedAction || !!dateFrom || !!dateTo || source !== "panel" || showViews
+  const source = searchParams.get("source") || "all"
+  const q = searchParams.get("q") || ""
+  const action = searchParams.get("action") || ""
+  const category = searchParams.get("category") || "all"
+  const from = searchParams.get("from") || searchParams.get("date_from") || ""
+  const to = searchParams.get("to") || searchParams.get("date_to") || ""
+  const showViews = searchParams.get("views") === "1"
+  const debouncedQ = useDebouncedValue(q.trim(), 350)
+  const debouncedAction = useDebouncedValue(action.trim(), 350)
 
   const updateParam = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams)
@@ -110,212 +51,98 @@ export function AuditPage({ embedded = false }: { embedded?: boolean }) {
     setSearchParams(next)
   }
 
-  const { data: infiniteData, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage, isFetching } = useInfiniteQuery({
-    queryKey: ["audit-logs", source, adminIdFilter, debouncedSearch, category, debouncedAction, dateFrom, dateTo, showViews],
+  const sessionsQuery = useQuery({
+    queryKey: ["audit-sessions", adminId, hasAdmin, debouncedQ],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: "1", page_size: "80" })
+      if (hasAdmin) params.set("admin_id", String(adminId))
+      if (debouncedQ) params.set("q", debouncedQ)
+      return api.get<AuditSessionsResponse>(`/api/v1/admin/audit/sessions?${params.toString()}`)
+    },
+  })
+  const sessions = sessionsQuery.data?.sessions ?? []
+  const selectedSessionId = hasRequestedSession ? requestedSession : (sessions.find((item) => item.session_id !== null)?.session_id ?? null)
+  const selectedSession = sessions.find((item) => item.session_id === selectedSessionId) ?? sessions[0] ?? null
+
+  useEffect(() => {
+    if (!hasRequestedSession && selectedSession?.session_id != null) {
+      const next = new URLSearchParams(searchParams)
+      next.set("session", String(selectedSession.session_id))
+      setSearchParams(next, { replace: true })
+    }
+  }, [hasRequestedSession, selectedSession?.session_id, searchParams, setSearchParams])
+
+  const logsQuery = useInfiniteQuery({
+    queryKey: ["audit-workspace-logs", source, adminId, selectedSessionId, debouncedQ, category, debouncedAction, from, to, showViews],
     queryFn: ({ pageParam = 1 }) => {
-      const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50" })
-      if (source !== "all") params.set("source", source)
-      if (hasAdminFilter) params.set("admin", String(adminIdFilter))
-      if (debouncedSearch) params.set("q", debouncedSearch)
+      const params = new URLSearchParams({ page: String(pageParam as number), page_size: "50", source })
+      if (hasAdmin) params.set("admin", String(adminId))
+      if (selectedSessionId != null) params.set("session_id", String(selectedSessionId))
+      if (debouncedQ) params.set("q", debouncedQ)
       if (category !== "all") params.set("category", category)
       if (debouncedAction) params.set("action", debouncedAction)
-      if (dateFrom) params.set("from", new Date(dateFrom).toISOString())
-      if (dateTo) params.set("to", new Date(dateTo).toISOString())
+      if (from) params.set("from", new Date(from).toISOString())
+      if (to) params.set("to", new Date(to).toISOString())
       if (!showViews) params.set("exclude_views", "true")
       return api.get<AuditResponse>(`/api/v1/admin/audit/logs?${params.toString()}`)
     },
     initialPageParam: 1,
-    getNextPageParam: (last) => (last.page < last.total_pages ? last.page + 1 : undefined),
+    getNextPageParam: (lastPage: AuditResponse) =>
+      lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined,
   })
-  const allLogs = infiniteData?.pages.flatMap((p) => p.logs) ?? []
-  const total = infiniteData?.pages[0]?.total ?? 0
-  const selectedLoadedLog = allLogs.find((log) => log.id === eventId)
-  const { data: selectedRemoteLog } = useQuery({
+  const logs = logsQuery.data?.pages.flatMap((page) => page.logs) ?? []
+  const total = logsQuery.data?.pages[0]?.total ?? 0
+  const selectedLoadedLog = logs.find((log) => log.id === eventId) ?? null
+  const selectedRemoteLog = useQuery({
     queryKey: ["audit-log", eventId],
     queryFn: () => api.get<AuditLog>(`/api/v1/admin/audit/logs/${eventId}`),
     enabled: hasEvent && !selectedLoadedLog,
   })
-  const selectedLog = selectedRemoteLog ?? selectedLoadedLog
-  const sentinelRef = useInfiniteScroll(() => { if (hasNextPage) fetchNextPage() }, !!hasNextPage, isFetchingNextPage)
+  const selectedLog = selectedRemoteLog.data ?? selectedLoadedLog
+  const lastPage = logsQuery.data?.pages.at(-1)
+  const hasNextPage = Boolean(lastPage && lastPage.page < lastPage.total_pages)
+  const hasFilters = hasAdmin || hasRequestedSession || Boolean(debouncedQ || debouncedAction || from || to || category !== "all" || source !== "all" || showViews)
 
-  const filtered = allLogs
+  const selectSession = (session: AuditSession) => {
+    const next = new URLSearchParams(searchParams)
+    next.delete("event")
+    if (session.session_id == null) next.delete("session")
+    else next.set("session", String(session.session_id))
+    setSearchParams(next)
+  }
+  const selectEvent = (log: AuditLog) => updateParam("event", String(log.id))
 
   return (
-    <div>
-      {!embedded && <PageHeader
-        title="Аудит"
-        description="Журнал всех действий администраторов в панели"
-        icon={ScrollText}
-        actions={<Badge variant="secondary" className="text-sm font-normal">{total} записей всего</Badge>}
-      />}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground"><span>{total} записей всего</span><label className="inline-flex items-center gap-2"><Checkbox checked={showViews} onCheckedChange={(checked) => updateParam("views", checked ? "1" : "")} /> показывать просмотры</label></div>
+    <div className="space-y-4">
+      {!embedded && <PageHeader title="Аудит" description="Цепочки доступа и действия администраторов" icon={ShieldCheck} actions={<Badge variant="secondary">{total} записей всего</Badge>} />}
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+        <div><span className="font-medium text-foreground">Рабочее место расследования</span><span className="ml-2">{total} событий в выборке</span></div>
+        <label className="inline-flex items-center gap-2 text-xs"><input type="checkbox" checked={showViews} onChange={(event) => updateParam("views", event.target.checked ? "1" : "")} /> показывать чувствительные просмотры</label>
+      </div>
+      <div className="rounded-lg border bg-card/30 p-3 sm:p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-64 flex-1"><Label className="mb-1.5 block text-xs">Поиск по журналу</Label><SearchInput value={q} onChange={(event) => updateParam("q", event.target.value)} placeholder="Автор, Discord ID, действие или детали" /></div>
+          <div className="w-40"><Label className="mb-1.5 block text-xs">Категория</Label><Select value={category} onValueChange={(value) => updateParam("category", value === "all" ? "" : value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все категории</SelectItem><SelectItem value="create">Создание</SelectItem><SelectItem value="update">Изменение</SelectItem><SelectItem value="delete">Удаление</SelectItem><SelectItem value="auth">Авторизация</SelectItem><SelectItem value="other">Прочее</SelectItem></SelectContent></Select></div>
+          <div className="w-48"><Label className="mb-1.5 block text-xs">Действие</Label><div className="relative"><Search className="pointer-events-none absolute left-2 top-2.5 size-3.5 text-muted-foreground" /><Input value={action} onChange={(event) => updateParam("action", event.target.value)} placeholder="ban, create…" className="pl-7" /></div></div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <div className="flex gap-2"><Button size="sm" variant={source === "panel" ? "default" : "outline"} onClick={() => updateParam("source", "panel")}>Панель</Button><Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => updateParam("source", "discord")}>Discord</Button><Button size="sm" variant={source === "all" ? "default" : "outline"} onClick={() => updateParam("source", "all")}>Все</Button></div>
+          <div><Label className="mb-1.5 flex items-center gap-1 text-xs"><CalendarClock className="size-3" /> С даты</Label><Input type="datetime-local" value={datetimeLocalValue(from)} onChange={(event) => updateParam("from", event.target.value)} className="w-44" /></div>
+          <div><Label className="mb-1.5 block text-xs">По дату</Label><Input type="datetime-local" value={datetimeLocalValue(to)} onChange={(event) => updateParam("to", event.target.value)} className="w-44" /></div>
+          {hasFilters && <Button size="sm" variant="ghost" onClick={() => setSearchParams({})}><RotateCcw className="size-3.5" /> Сбросить</Button>}
+        </div>
+      </div>
 
-      <Card className="mb-4 py-0">
-        <CardContent className="space-y-3 p-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-64 flex-1">
-              <Label className="mb-1.5 block text-xs">Поиск</Label>
-              <SearchInput
-                value={searchInput}
-                onChange={(e) => updateParam("q", e.target.value)}
-                placeholder="Действие, админ, детали, SteamID, reason… (мощный поиск по всем полям)"
-              />
-            </div>
-            <div className="w-44">
-              <Label className="mb-1.5 block text-xs">Категория</Label>
-              <Select value={category} onValueChange={(value) => updateParam("category", value === "all" ? "" : value)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Все категории</SelectItem>
-                  <SelectItem value="create">Создание</SelectItem>
-                  <SelectItem value="update">Изменение</SelectItem>
-                  <SelectItem value="delete">Удаление</SelectItem>
-                  <SelectItem value="auth">Авторизация</SelectItem>
-                  <SelectItem value="other">Прочее</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="w-48">
-              <Label className="mb-1.5 block text-xs">Действие (подстрока)</Label>
-              <div className="relative">
-                <Search className="absolute left-2 top-2.5 size-3.5 text-muted-foreground" />
-                <Input value={actionFilter} onChange={(e) => updateParam("action", e.target.value)} placeholder="напр. ban, create" className="pl-7" />
-              </div>
-            </div>
-            {(hasActiveFilters || isFetching) && (
-              <div className="flex items-center gap-2">
-                {isFetching && <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />}
-                <Badge variant="secondary">{total} найдено</Badge>
-                {hasActiveFilters && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setSearchParams({})
-                    }}
-                  >
-                    <RotateCcw className="size-3.5" /> Сбросить
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex gap-2">
-              <Button size="sm" variant={source === "panel" ? "default" : "outline"} onClick={() => updateParam("source", "panel")}>Панель</Button>
-              <Button size="sm" variant={source === "discord" ? "default" : "outline"} onClick={() => updateParam("source", "discord")}>Discord</Button>
-              <Button size="sm" variant={source === "all" ? "default" : "outline"} onClick={() => updateParam("source", "all")}>Все</Button>
-            </div>
-            {hasAdminFilter && <Badge variant="outline">Только админ #{adminIdFilter}</Badge>}
-            <div className="flex items-end gap-2">
-              <div>
-                <Label className="mb-1.5 block text-xs flex items-center gap-1"><CalendarClock className="size-3" /> С даты</Label>
-                <Input type="datetime-local" value={dateFromInput} onChange={(e) => updateParam("from", e.target.value)} className="w-44" />
-              </div>
-              <div>
-                <Label className="mb-1.5 block text-xs">По дату</Label>
-                <Input type="datetime-local" value={dateToInput} onChange={(e) => updateParam("to", e.target.value)} className="w-44" />
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="overflow-hidden py-0">
-        <CardContent className="p-0">
-          {isLoading ? <div className="space-y-2 p-4">{Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-10" />)}</div> : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Админ</TableHead>
-                    <TableHead>Действие</TableHead>
-                    <TableHead>Детали</TableHead>
-                    <TableHead className="text-right">Время</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((l) => {
-                    const cat = actionCategory(l.action)
-                    const meta = CATEGORY_META[cat]
-                    const displayName = securityDisplayName(l.admin_display_name, l.admin_name, `#${l.admin_id}`)
-                    const nexusName = securitySecondaryName(l.admin_display_name, l.admin_name)
-                    const openEvent = () => { const next = new URLSearchParams(searchParams); next.set("event", String(l.id)); setSearchParams(next) }
-                    return (
-                      <TableRow
-                        key={l.id}
-                        className="cursor-pointer transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
-                        tabIndex={0}
-                        aria-label={`Открыть событие ${l.action}`}
-                        onClick={openEvent}
-                        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openEvent() } }}
-                      >
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-secondary text-[10px] font-semibold">
-                              {initials(l.admin_display_name || l.admin_name, l.admin_id)}
-                            </div>
-                            <div className="min-w-0"><span className="font-medium">{displayName}</span>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}</div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-mono text-xs ${meta.classes}`}>
-                            <span className={`size-1.5 rounded-full ${meta.dot}`} aria-hidden="true" />
-                            {l.action}
-                          </span>
-                        </TableCell>
-                        <TableCell className="max-w-md truncate text-sm text-muted-foreground" title={describeDetails(l.details)}>
-                          {describeDetails(l.details) || "-"}
-                        </TableCell>
-                        <TableCell className="text-right text-sm whitespace-nowrap text-muted-foreground">
-                          {formatBrowserDate(l.created_at)}
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
-                  {!filtered.length && <TableRow><TableCell colSpan={4} className="py-10 text-center text-muted-foreground">Записей не найдено</TableCell></TableRow>}
-                </TableBody>
-              </Table>
-              <div ref={sentinelRef as never} className="h-1" />
-              {isFetchingNextPage && (
-                <div className="flex justify-center gap-2 p-3 text-sm text-muted-foreground">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" /> Загрузка…
-                </div>
-              )}
-              {!hasNextPage && allLogs.length > 0 && (
-                <div className="border-t p-3 text-center text-xs text-muted-foreground">Загружено {allLogs.length} из {total} · конец списка</div>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
-      <Sheet open={hasEvent} onOpenChange={(open) => {
-        if (!open) {
-          const next = new URLSearchParams(searchParams)
-          next.delete("event")
-          setSearchParams(next)
-        }
-      }}>
-        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
-          <SheetHeader><SheetTitle>Событие аудита</SheetTitle><SheetDescription>Полная запись действия администратора</SheetDescription></SheetHeader>
-          {selectedLog ? <AuditEventDetails log={selectedLog} /> : <div className="px-6 pb-6 text-sm text-muted-foreground">Загрузка события…</div>}
-        </SheetContent>
-      </Sheet>
+      <div className="overflow-hidden rounded-lg border bg-card/20 xl:grid xl:grid-cols-[240px_minmax(420px,1fr)_320px]">
+        {sessionsQuery.isLoading ? <div className="p-4"><Skeleton className="h-40" /></div> : <AuditSessionRail sessions={sessions} selectedSessionId={selectedSessionId} onSelect={selectSession} />}
+        <main className="min-w-0 border-b border-border xl:border-b-0">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5"><div><h2 className="font-semibold">Цепочка действий</h2><p className="mt-0.5 text-xs text-muted-foreground">{selectedSession ? `${selectedSession.admin_display_name || selectedSession.admin_name || "Актор"} · ${selectedSession.auth_type || "источник не указан"}` : "Все события"}</p></div>{selectedSession?.status === "active" && <Badge variant="default">активна</Badge>}</div>
+          {logsQuery.isLoading ? <div className="space-y-2 p-5">{Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="h-16" />)}</div> : <AuditTimeline logs={logs} selectedEventId={hasEvent ? eventId : null} onSelect={selectEvent} />}
+          {hasNextPage && <div className="border-t border-border p-3 text-center"><Button size="sm" variant="ghost" onClick={() => logsQuery.fetchNextPage()} disabled={logsQuery.isFetchingNextPage}>{logsQuery.isFetchingNextPage ? "Загрузка…" : "Загрузить ещё"}</Button></div>}
+          {!hasNextPage && logs.length > 0 && <div className="border-t border-border px-4 py-2 text-center text-[10px] text-muted-foreground">Загружено {logs.length} из {total}</div>}
+        </main>
+        <AuditEventDetails log={selectedLog} />
+      </div>
     </div>
   )
-}
-
-function AuditEventDetails({ log }: { log: AuditLog }) {
-  const displayName = securityDisplayName(log.admin_display_name, log.admin_name, `#${log.admin_id}`)
-  const nexusName = securitySecondaryName(log.admin_display_name, log.admin_name)
-  return <div className="space-y-5 px-6 pb-6">
-    <div className="space-y-1"><div className="text-lg font-semibold">{log.action}</div><div className="text-sm">{displayName}</div>{nexusName && <div className="text-xs text-muted-foreground">Имя Nexus Data: {nexusName}</div>}<div className="text-xs text-muted-foreground">{formatBrowserDate(log.created_at)}</div></div>
-    <div className="grid gap-3 text-sm sm:grid-cols-2"><DetailField label="Источник" value={log.auth_type ?? "не указан"} /><DetailField label="Сессия" value={log.session_id ? `#${log.session_id}` : "не указана"} /><DetailField label="Результат" value={log.outcome ?? "не указан"} /><DetailField label="Важность" value={log.severity ?? "не указана"} /></div>
-    {log.reason && <div><div className="mb-1 text-xs font-medium text-muted-foreground">Причина</div><p className="text-sm">{log.reason}</p></div>}
-    <div><div className="mb-1 text-xs font-medium text-muted-foreground">Детали</div><pre className="max-h-80 overflow-auto rounded-md border bg-muted/30 p-3 text-xs leading-relaxed whitespace-pre-wrap break-words">{JSON.stringify(log.details ?? {}, null, 2)}</pre></div>
-  </div>
-}
-
-function DetailField({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-md border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 break-words font-medium">{value}</div></div>
 }

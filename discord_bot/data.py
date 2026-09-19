@@ -472,13 +472,20 @@ def remove_mute(discord_id: str) -> bool:
 
 
 def log_discord_command(action: str, details: dict) -> None:
-    """Discord operators do not necessarily have a site account, so admin_id is NULL."""
-    from models import AdminActionLog
+    """Persist a Discord action with the real Discord actor snapshot."""
+    from audit_service import record_audit_event
 
     db = SessionLocal()
     try:
-        db.add(AdminActionLog(admin_id=None, action=f"discord:{action}", details=details))
-        db.commit()
+        payload = dict(details or {})
+        record_audit_event(
+            db,
+            f"discord:{action}",
+            payload,
+            actor_type="discord",
+            actor_discord_id=str(payload.get("moderator_id") or "") or None,
+            actor_discord_name=payload.get("moderator"),
+        )
     finally:
         db.close()
 

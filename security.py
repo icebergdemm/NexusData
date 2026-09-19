@@ -20,8 +20,78 @@ security = HTTPBearer(auto_error=False)
 SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
 _AUDIT_SENSITIVE_KEYS = frozenset({
     "token", "secret", "password", "key", "ip", "user_agent",
-    "discord_id", "steam_id", "player_ip",
+    "discord_id", "steam_id", "player_ip", "moderator_id",
 })
+
+# One small vocabulary shared by the audit writer and the Security Hub.  Keep
+# the explicit list boring: action names are persisted data and renaming them
+# later is a needless historical migration.
+AUDIT_ACTION_CATEGORIES = {
+    action: category
+    for category, actions in {
+        "auth": {
+            "login", "logout", "csrf_failure", "login_key_failure",
+            "login_key_use", "discord_membership_denied", "auth_failure",
+        },
+        "admin": {
+            "create_admin", "restore_admin", "update_admin_role", "delete_admin",
+            "admin_update", "admin_delete",
+        },
+        "permissions": {
+            "permission_policy_apply", "permission_policy_rollback",
+            "user_assign_group", "privilege_group_create", "privilege_group_edit",
+            "privilege_group_delete", "permission_change", "group_change",
+        },
+        "session": {
+            "revoke_session", "revoke_all_sessions", "session_create",
+            "session_expire", "session_revoke",
+        },
+        "content": {
+            "task_create", "task_delete", "ticket_create", "ticket_delete",
+            "ticket_restore", "document_create", "document_update", "document_delete",
+            "achievement_create", "achievement_delete", "achievement_grant",
+            "achievement_revoke", "sub_project_create", "sub_project_update",
+            "sub_project_delete", "punishment_create", "punishment_void",
+            "punishment_delete", "login_key_create", "login_key_revoke",
+            "login_key_delete", "key_create", "key_revoke",
+        },
+        "system": {
+            "web_lockdown_change", "server_restart_config_update", "audit_retention_prune",
+        },
+    }.items()
+    for action in actions
+}
+
+SENSITIVE_AUDIT_ACTIONS = frozenset({
+    "view_player_profile", "view_player_ip", "view_login_keys", "view_sessions",
+    "view_permissions", "view_admin_profile", "view_audit", "player_export", "export_player_personal_file",
+})
+
+AUDIT_MUTATION_EXCLUSIONS = frozenset({
+    "healthz", "healthcheck", "polling", "static", "favicon.ico", "assets",
+})
+
+
+def classify_audit_action(action: str) -> str:
+    """Return the stable category used for filtering and display."""
+    normalized = (action or "").strip().lower()
+    if normalized in SENSITIVE_AUDIT_ACTIONS or normalized.startswith("view_"):
+        return "sensitive_view"
+    if normalized.startswith("moderation.") or normalized.startswith("discord:"):
+        return "moderation"
+    if normalized in AUDIT_ACTION_CATEGORIES:
+        return AUDIT_ACTION_CATEGORIES[normalized]
+    if normalized.startswith(("login", "logout", "csrf", "auth")):
+        return "auth"
+    if normalized.startswith(("permission", "privilege", "group", "role")):
+        return "permissions"
+    if normalized.startswith(("session", "revoke_session")):
+        return "session"
+    if normalized.endswith(("_delete", "_remove", "_revoke", "_void", "_create", "_update", "_edit")):
+        return "content"
+    if normalized in AUDIT_MUTATION_EXCLUSIONS:
+        return "system"
+    return "admin"
 
 
 def hash_admin_session_token(token: str) -> str:
@@ -111,16 +181,18 @@ def log_security_event(db, action: str, request: Optional[Request] = None, admin
                        details: Optional[dict] = None, outcome: str = "success",
                        reason: Optional[str] = None, severity: str = "info") -> None:
     """Persist a redacted security event without ever storing raw credentials."""
-    from models import AdminActionLog
+    from audit_service import record_audit_event
 
-    context = audit_context(request, outcome=outcome, reason=reason, severity=severity)
-    db.add(AdminActionLog(
+    record_audit_event(
+        db,
+        action,
+        details,
+        request=request,
         admin_id=admin_id,
-        action=action,
-        details=sanitize_audit_details(details or {}),
-        **context,
-    ))
-    db.commit()
+        outcome=outcome,
+        reason=reason,
+        severity=severity,
+    )
 
 # JWT Config
 ALGORITHM = "HS256"

@@ -19,6 +19,64 @@ _MAX_TRACKED_IPS = 5000
 _EXEMPT_PREFIXES = ("/healthz", "/static", "/admin/assets", "/docs", "/redoc", "/openapi.json")
 LOGIN_KEY_RATE_MULTIPLIER = 4
 
+_AUDIT_EXEMPT_PATHS = (
+    "/health", "/healthz", "/static", "/admin/assets", "/docs", "/redoc", "/openapi.json",
+)
+_AUDIT_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def should_capture_audit_request(request: Request, status_code: int) -> bool:
+    """Return whether the fallback audit hook should record this request."""
+    path = getattr(getattr(request, "url", None), "path", "") or ""
+    if getattr(getattr(request, "state", None), "audit_logged", False):
+        return False
+    if request.method.upper() not in _AUDIT_MUTATING_METHODS or not 200 <= status_code < 400:
+        return False
+    if path.startswith(_AUDIT_EXEMPT_PATHS):
+        return False
+    return path.startswith(("/api/v1/admin/", "/adminold/"))
+
+
+def audit_fallback_action(request: Request) -> str:
+    """Build a stable fallback action without IDs or query strings."""
+    path = (getattr(getattr(request, "url", None), "path", "") or "").strip("/")
+    if path.startswith("api/v1/"):
+        path = path[7:]
+    parts = [part for part in path.split("/") if part and not part.isdigit()]
+    return ".".join(["http", request.method.lower(), *parts[:2]])
+
+
+class AuditCaptureMiddleware(BaseHTTPMiddleware):
+    """Fallback logger for meaningful admin mutations without explicit events."""
+
+    async def dispatch(self, request: Request, call_next):
+        from audit_service import set_current_audit_request, reset_current_audit_request
+
+        context_token = set_current_audit_request(request)
+        try:
+            response = await call_next(request)
+        finally:
+            reset_current_audit_request(context_token)
+        if should_capture_audit_request(request, response.status_code):
+            try:
+                from audit_service import record_audit_event
+                from database import SessionLocal
+
+                db = SessionLocal()
+                try:
+                    record_audit_event(
+                        db,
+                        audit_fallback_action(request),
+                        {"route": request.scope.get("path"), "method": request.method},
+                        request=request,
+                        admin_id=getattr(request.state, "nd_admin_id", None),
+                    )
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception("Fallback audit capture failed for %s %s", request.method, request.url.path)
+        return response
+
 
 def resolve_api_login_key(raw_key, source_ip=None):
     """Resolve a NexusData login key for middleware identity/rate data."""
@@ -75,7 +133,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             raw_login_key = request.headers.get("X-ND-Login-Key")
             if raw_login_key is not None:
                 login_key_header_present = True
-                identity = resolve_api_login_key(raw_login_key, client_ip(request))
+                identity = resolve_api_login_key(raw_login_key)
                 if identity:
                     login_key_id, admin_id = identity
                     request.state.nd_auth_type = "login_key"

@@ -231,6 +231,10 @@ class AdminLoginKey(Base):
 
 class AdminActionLog(Base):
     __tablename__ = "admin_action_logs"
+    __table_args__ = (
+        Index("ix_admin_action_logs_session_created", "session_id", "created_at"),
+        Index("ix_admin_action_logs_actor_discord_created", "actor_discord_id", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     admin_id = Column(Integer, index=True)
@@ -246,6 +250,12 @@ class AdminActionLog(Base):
     outcome = Column(String(16), nullable=True, index=True)
     reason = Column(String(255), nullable=True)
     severity = Column(String(16), nullable=True, index=True)
+    actor_type = Column(String(16), nullable=True, index=True)
+    actor_discord_id = Column(String(25), nullable=True, index=True)
+    actor_discord_name = Column(String(255), nullable=True)
+    actor_nexus_username = Column(String(255), nullable=True)
+    route = Column(String(255), nullable=True, index=True)
+    http_method = Column(String(10), nullable=True)
 
 
 class ErrorLogEntry(Base):

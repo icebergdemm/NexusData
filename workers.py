@@ -110,6 +110,21 @@ def task_compensate_playtime() -> dict:
         db.close()
 
 
+def task_prune_audit_logs() -> dict:
+    """Keep one year of audit history and record the cleanup itself."""
+    from audit_service import prune_audit_logs
+
+    db = SessionLocal()
+    try:
+        deleted = prune_audit_logs(db, datetime.utcnow(), retention_days=365)
+        return {"deleted_audit_rows": deleted}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def task_sync_punishment_discord() -> dict:
     """Reconcile linked web punishment names and Discord embeds."""
     from models import AdminUser, DiscordMember, PlayerPunishment, PlayerPunishmentDiscordMessage
@@ -330,8 +345,6 @@ def task_server_restarts() -> dict:
         server_state_allows_restart,
         suspend_schedule_for_offline,
     )
-    from models import AdminActionLog
-
     db = SessionLocal()
     current = datetime.now(timezone.utc)
     result = {"checked": 0, "warnings": 0, "restarts": 0, "errors": 0}
@@ -408,15 +421,11 @@ def task_server_restarts() -> dict:
                 row.last_error = warning_error
                 row.processing_until = None
                 row.processing_token = None
-                db.add(AdminActionLog(
-                    admin_id=None,
-                    action="server_restart_automatic_warning",
-                    details={
-                        "server": row.server_name,
-                        "warning_error": warning_error,
-                    },
-                ))
-                db.commit()
+                from audit_service import record_audit_event
+                record_audit_event(db, "server_restart_automatic_warning", {
+                    "server": row.server_name,
+                    "warning_error": warning_error,
+                }, actor_type="system")
                 result["warnings"] += 1
                 continue
 
@@ -431,15 +440,11 @@ def task_server_restarts() -> dict:
                     row.execution_due_at = (current + timedelta(minutes=1)).replace(tzinfo=None)
                     row.processing_until = None
                     row.processing_token = None
-                    db.add(AdminActionLog(
-                        admin_id=None,
-                        action="server_restart_automatic_failed",
-                        details={
-                            "server": row.server_name,
-                            "error": str(exc),
-                        },
-                    ))
-                    db.commit()
+                    from audit_service import record_audit_event
+                    record_audit_event(db, "server_restart_automatic_failed", {
+                        "server": row.server_name,
+                        "error": str(exc),
+                    }, actor_type="system", outcome="failure", reason=str(exc))
                     result["errors"] += 1
                     continue
 
@@ -452,12 +457,8 @@ def task_server_restarts() -> dict:
                 row.last_action_at = current.replace(tzinfo=None)
                 row.processing_until = None
                 row.processing_token = None
-                db.add(AdminActionLog(
-                    admin_id=None,
-                    action="server_restart_automatic",
-                    details={"server": row.server_name},
-                ))
-                db.commit()
+                from audit_service import record_audit_event
+                record_audit_event(db, "server_restart_automatic", {"server": row.server_name}, actor_type="system")
                 result["restarts"] += 1
         return result
     except Exception:
@@ -1775,6 +1776,14 @@ def _start_scheduler():
         interval_secs=30 * 60,
         priority=Priority.BACKGROUND,
         task_id="ticket_deleted_cleanup",
+    )
+
+    # Audit retention: keep one year and protect active browser chains.
+    scheduler.register_periodic(
+        task_prune_audit_logs,
+        interval_secs=24 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="audit_retention",
     )
 
     # Reclaim interrupted `.part` files and files atomically written just

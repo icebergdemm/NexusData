@@ -132,7 +132,11 @@ def _touch_usage(row: AdminLoginKey, client_ip: Optional[str], db: Session) -> N
 
 
 def resolve_api_login_key(db: Session, raw_key: str, client_ip: Optional[str] = None) -> Optional[Tuple[int, int]]:
-    """Resolve an API login key and record bounded usage metadata."""
+    """Resolve an API key without mutating usage metadata.
+
+    The rate-limit middleware calls this on every request. Counting those
+    lookups as key usage made a read-only check write to the database.
+    """
     raw_key = (raw_key or "").strip()
     if not raw_key:
         return None
@@ -146,7 +150,6 @@ def resolve_api_login_key(db: Session, raw_key: str, client_ip: Optional[str] = 
     admin = db.query(AdminUser).filter(AdminUser.id == row.admin_id).first()
     if not admin or getattr(admin, "is_deleted", 0) == 1:
         return None
-    _touch_usage(row, client_ip, db)
     return row.id, admin.id
 
 
