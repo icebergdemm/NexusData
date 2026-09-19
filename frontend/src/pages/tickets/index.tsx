@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router-dom"
-import { AlertCircle, Inbox, RefreshCw, Search, Ticket } from "lucide-react"
+import { AlertCircle, Inbox, RefreshCw, Search, Settings2, Ticket } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,8 +18,10 @@ import { normalizeTicketListStatus } from "./components/ticket-utils"
 import { TicketActionsMenu } from "./TicketActionsMenu"
 import { TicketMemberDialog } from "./TicketMemberDialog"
 import { TicketMemberRemoveDialog } from "./TicketMemberRemoveDialog"
+import { TicketSettings } from "./TicketSettings"
 
 export function TicketsListPage() {
+  const [showSettings, setShowSettings] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const status = normalizeTicketListStatus(searchParams.get("status"))
   const [search, setSearch] = useState("")
@@ -120,15 +122,21 @@ export function TicketsListPage() {
           description="Обращения игроков, переписка и сохранённые материалы"
           icon={Ticket}
           actions={
-            <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()} disabled={query.isFetching}>
-              <RefreshCw data-icon="inline-start" className={query.isFetching ? "animate-spin" : undefined} />
-              Обновить
-            </Button>
+            <>
+              <Button type="button" variant={showSettings ? "default" : "outline"} size="sm" onClick={() => setShowSettings((value) => !value)}>
+                <Settings2 data-icon="inline-start" />
+                {showSettings ? "Очередь тикетов" : "Настройка Discord"}
+              </Button>
+              {!showSettings && <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()} disabled={query.isFetching}>
+                <RefreshCw data-icon="inline-start" className={query.isFetching ? "animate-spin" : undefined} />
+                Обновить
+              </Button>}
+            </>
           }
         />
       </div>
 
-      <section aria-label="Список тикетов" className="mx-3 mb-3 flex min-h-0 flex-1 flex-col overflow-hidden border bg-background sm:mx-6 sm:mb-6">
+      {showSettings ? <div className="mx-3 mb-3 min-h-0 flex-1 overflow-y-auto sm:mx-6 sm:mb-6"><TicketSettings /></div> : <section aria-label="Список тикетов" className="mx-3 mb-3 flex min-h-0 flex-1 flex-col overflow-hidden border bg-background sm:mx-6 sm:mb-6">
         <div className="flex shrink-0 flex-col gap-3 border-b p-3 sm:p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <Tabs value={status} onValueChange={handleStatusChange}>
@@ -192,7 +200,7 @@ export function TicketsListPage() {
             {query.isFetchingNextPage ? <><RefreshCw className="mr-2 size-3.5 animate-spin" />Загрузка следующей страницы…</> : query.hasNextPage ? "Прокрутите ниже, чтобы загрузить ещё" : tickets.length ? "Все тикеты загружены" : null}
           </div>
         </div>
-      </section>
+      </section>}
 
       <ConfirmDialog
         open={deleteTicket !== null}

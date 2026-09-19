@@ -304,55 +304,17 @@ async def api_admin_discord_bot_set_config(request: Request, db: Session = Depen
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TICKET SETTINGS — раньше правились только Discord-командами бота
-# (!setuptickets, !setticketcategory, !setticketstatus, ручное редактирование
-# config/tickets.json на сервере). Здесь — единая точка правки со страницы
-# «Discord бот»: типы обращений (название/эмодзи/цвет/роли уведомления/
-# шаблон), категория, канал статуса, роли персонала для /close и /ticket_add.
+# TICKET SETTINGS — the compatibility API remains here, while the editor lives
+# on /admin/tickets. The bot and both frontends consume the same normalized
+# config/tickets.json document.
 # ══════════════════════════════════════════════════════════════════════════════
 
-_TICKET_TYPE_FIELDS = {"name", "emoji", "color", "ping_roles", "template", "allow_cooldown"}
-
-
 def _validate_tickets_config(config: dict) -> Optional[str]:
-    """Текст ошибки, если конфигурация не годится для сохранения, иначе None.
-
-    Проверяется форма, а не факт существования ролей/каналов в Discord —
-    бот всё равно живёт в отдельном процессе внутри того же приложения, и
-    дёргать его API ради проверки одного ID усложнило бы сохранение без
-    реальной пользы: несуществующий ID просто не будет ничего делать в
-    Discord, как и раньше при правке файла руками."""
-    if not isinstance(config, dict):
-        return "Ожидается объект конфигурации"
-
-    types = config.get("types")
-    if not isinstance(types, dict):
-        return "types: ожидается объект {ключ: {...}}"
-    for key, tconf in types.items():
-        if not isinstance(key, str) or not key:
-            return "types: ключ типа обращения не может быть пустым"
-        if not isinstance(tconf, dict):
-            return f"types.{key}: ожидается объект"
-        extra = set(tconf.keys()) - _TICKET_TYPE_FIELDS
-        if extra:
-            return f"types.{key}: неизвестные поля {sorted(extra)}"
-        if not (tconf.get("name") or "").strip():
-            return f"types.{key}: название не может быть пустым"
-        ping_roles = tconf.get("ping_roles") or []
-        if not isinstance(ping_roles, list) or not all(isinstance(r, str) for r in ping_roles):
-            return f"types.{key}.ping_roles: ожидается список строк (Discord ID ролей)"
-
-    for field in ("category_id", "status_channel_id"):
-        if field in config and config[field] is not None and not isinstance(config[field], str):
-            return f"{field}: ожидается строка"
-
-    manager_role_ids = config.get("manager_role_ids", [])
-    if not isinstance(manager_role_ids, list) or not all(isinstance(r, str) for r in manager_role_ids):
-        return "manager_role_ids: ожидается список строк (Discord ID ролей)"
-
-    return None
+    from discord_bot.ticket_config import normalize_tickets_config, validate_tickets_config
+    return validate_tickets_config(normalize_tickets_config(config))
 
 
+@panel_router.get("/api/v1/admin/tickets/config")
 @panel_router.get("/api/v1/admin/discord-bot/tickets-config")
 async def api_admin_tickets_config(request: Request, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)
@@ -365,24 +327,26 @@ async def api_admin_tickets_config(request: Request, db: Session = Depends(get_d
     config.setdefault("category_id", "")
     config.setdefault("status_channel_id", "")
     config.setdefault("manager_role_ids", [])
+    from discord_bot import bot as discord_bot
     return {
         "config": config,
         "can_manage_config": check_permission(admin, "discord_bot", "manage_config"),
+        "panel_state": discord_bot.get_ticket_panel_state(),
     }
 
 
+@panel_router.put("/api/v1/admin/tickets/config")
 @panel_router.put("/api/v1/admin/discord-bot/tickets-config")
 async def api_admin_tickets_config_save(request: Request, db: Session = Depends(get_db)):
-    """Перезаписывает config/tickets.json целиком — тот же файл, который
-    читает бот (discord_bot/data.py: get_tickets_config), при следующем
-    создании тикета/проверке прав он подхватит новые значения без
-    перезапуска: файл читается заново на каждый вызов, не кэшируется."""
+    """Save policy; publishing Discord messages is an explicit second action."""
     admin = _get_admin(request, db)
     if not check_permission(admin, "discord_bot", "manage_config"):
         raise HTTPException(status_code=403)
 
     body = await request.json()
     config = body.get("config")
+    from discord_bot.ticket_config import normalize_tickets_config
+    config = normalize_tickets_config(config)
     error = _validate_tickets_config(config)
     if error:
         raise HTTPException(status_code=400, detail=error)
@@ -391,8 +355,24 @@ async def api_admin_tickets_config_save(request: Request, db: Session = Depends(
     bot_data.set_tickets_config(config)
 
     from routes.admin import log_admin_action
-    log_admin_action(db, admin.id, "discord_bot_tickets_config_set", {"types": list((config.get("types") or {}).keys())})
+    log_admin_action(db, admin.id, "discord_bot_tickets_config_set", {
+        "types": list((config.get("types") or {}).keys()),
+        "buttons": list((config.get("buttons") or {}).keys()),
+    })
     return {"status": "ok", "config": config}
+
+
+@panel_router.post("/api/v1/admin/tickets/config/apply")
+async def api_admin_tickets_config_apply(request: Request, db: Session = Depends(get_db)):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "manage_config"):
+        raise HTTPException(status_code=403)
+
+    from discord_bot import bot as discord_bot
+    result = await discord_bot.publish_ticket_panels()
+    from routes.admin import log_admin_action
+    log_admin_action(db, admin.id, "discord_bot_tickets_config_applied", result)
+    return {"status": "ok", **result}
 
 
 @panel_router.get("/api/v1/admin/discord-bot/role-sync/preview")

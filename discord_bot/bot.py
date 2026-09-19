@@ -773,12 +773,66 @@ def _save_ticket_status_id(message_id: Optional[int]) -> None:
 
 _ticket_status_msg_id = _load_ticket_status_id()
 
+TICKET_PANEL_IDS_FILE = os.path.join(_BOT_DIR, "ticket_panel_message_ids.json")
+
+
+def _load_ticket_panel_message_ids() -> dict[str, Optional[int]]:
+    result: dict[str, Optional[int]] = {"status": _ticket_status_msg_id, "public_panel": None}
+    try:
+        if os.path.exists(TICKET_PANEL_IDS_FILE):
+            with open(TICKET_PANEL_IDS_FILE, "r") as f:
+                stored = json.load(f)
+            for key in result:
+                value = stored.get(key)
+                if value:
+                    result[key] = int(value)
+    except Exception:
+        pass
+    return result
+
+
+_ticket_panel_message_ids = _load_ticket_panel_message_ids()
+_ticket_status_msg_id = _ticket_panel_message_ids.get("status") or _ticket_status_msg_id
+_public_panel_msg_id = _ticket_panel_message_ids.get("public_panel")
+
+
+def _save_ticket_panel_message_ids() -> None:
+    try:
+        with open(TICKET_PANEL_IDS_FILE, "w") as f:
+            json.dump({
+                "status": _ticket_status_msg_id,
+                "public_panel": _public_panel_msg_id,
+            }, f)
+    except Exception as e:
+        logger.warning("Failed to save ticket panel message IDs: %s", e)
+
+
+def get_ticket_panel_state() -> dict:
+    config = bot_data.get_tickets_config()
+    placements = config.get("placements") or {}
+    state = {}
+    for placement_id, placement in placements.items():
+        message_id = _ticket_status_msg_id if placement_id == "status" else _public_panel_msg_id if placement_id == "public_panel" else None
+        state[placement_id] = {
+            "channel_id": str(placement.get("channel_id") or ""),
+            "message_id": str(message_id) if message_id else None,
+            "published": bool(message_id),
+            "button_ids": list(placement.get("button_ids") or []),
+        }
+    return state
+
+
+def _ticket_placement_channel_id(placement_id: str, fallback: int) -> str:
+    config = bot_data.get_tickets_config()
+    placement = (config.get("placements") or {}).get(placement_id) or {}
+    return str(placement.get("channel_id") or fallback)
+
 
 async def refresh_ticket_status():
     """Update ticket status embed. Called on ticket create/message/close."""
     global _ticket_status_msg_id
 
-    status_channel_id = str(TECHNICAL_TICKET_STATUS_CHANNEL_ID)
+    status_channel_id = _ticket_placement_channel_id("status", TECHNICAL_TICKET_STATUS_CHANNEL_ID)
 
     try:
         channel = bot.get_channel(int(status_channel_id))
@@ -813,6 +867,7 @@ async def refresh_ticket_status():
         try:
             msg = await channel.fetch_message(_ticket_status_msg_id)
             await msg.edit(embed=embed, view=TechnicalTicketView())
+            _save_ticket_panel_message_ids()
             return
         except discord.NotFound:
             # Сообщение действительно удалено — только тогда заводим новое.
@@ -830,8 +885,64 @@ async def refresh_ticket_status():
         msg = await channel.send(embed=embed, view=TechnicalTicketView())
         _ticket_status_msg_id = msg.id
         _save_ticket_status_id(msg.id)
+        _save_ticket_panel_message_ids()
     except Exception as e:
         logger.error(f"Failed to send ticket status: {e}")
+
+
+def _public_ticket_panel_embed(config: dict) -> discord.Embed:
+    placement = (config.get("placements") or {}).get("public_panel") or {}
+    lines = []
+    for button_id in placement.get("button_ids") or []:
+        button = (config.get("buttons") or {}).get(button_id) or {}
+        if button.get("enabled", True):
+            lines.append(f"{button.get('emoji', '🎫')} **{button.get('label', button_id)}**")
+    description = (
+        "Если у вас возникла проблема или вопрос, создайте обращение нажатием на соответствующую кнопку ниже.\n\n"
+        + "\n".join(lines)
+        + "\n\nПосле создания обращения вам будет создан приватный канал."
+    )
+    embed = discord.Embed(title="🎫 Система обращений", description=description, color=0x1a68de)
+    embed.set_footer(text="Сделано за сухарики")
+    return embed
+
+
+async def publish_ticket_panels() -> dict:
+    """Apply the saved panel configuration to the managed Discord messages."""
+    global _public_panel_msg_id
+    config = bot_data.get_tickets_config()
+    result = {"placements": {}}
+
+    _register_ticket_views()
+    await refresh_ticket_status()
+    result["placements"]["status"] = get_ticket_panel_state().get("status", {})
+
+    public_channel_id = _ticket_placement_channel_id("public_panel", 1507830037338915017)
+    try:
+        channel = bot.get_channel(int(public_channel_id))
+    except (ValueError, TypeError):
+        channel = None
+    if not channel:
+        result["placements"]["public_panel"] = {"error": "Канал публичной панели не найден"}
+        return result
+
+    embed = _public_ticket_panel_embed(config)
+    view = TicketPanelView()
+    if _public_panel_msg_id:
+        try:
+            message = await channel.fetch_message(_public_panel_msg_id)
+            await message.edit(embed=embed, view=view)
+        except discord.NotFound:
+            _public_panel_msg_id = None
+        except discord.HTTPException as exc:
+            result["placements"]["public_panel"] = {"error": str(exc)}
+            return result
+    if not _public_panel_msg_id:
+        message = await channel.send(embed=embed, view=view)
+        _public_panel_msg_id = message.id
+    _save_ticket_panel_message_ids()
+    result["placements"]["public_panel"] = get_ticket_panel_state().get("public_panel", {})
+    return result
 
 
 # Round status message IDs (persisted to JSON file, keyed by server name)
@@ -2495,9 +2606,11 @@ async def _user_has_mute_permission(user) -> bool:
 
 
 def _user_has_technical_ticket_permission(user) -> bool:
-    return bool(TECHNICAL_TICKET_ADMIN_ROLE_IDS & {
-        str(role.id) for role in getattr(user, "roles", [])
-    })
+    config = bot_data.get_tickets_config()
+    button = (config.get("buttons") or {}).get("technical") or {
+        "allowed_role_ids": sorted(TECHNICAL_TICKET_ADMIN_ROLE_IDS),
+    }
+    return _user_has_ticket_button_permission(user, button)
 
 
 async def _restrict_voice_on_mute(member: discord.Member, reason: str):
@@ -2639,13 +2752,12 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
 
     category_id = (bot_config or {}).get("ticket_category_id") or config.get("category_id")
     type_config = config.get("types", {}).get(ticket_type, {})
-    if ticket_type == "technical":
-        type_config = {
-            "ping_roles": sorted(TECHNICAL_TICKET_ADMIN_ROLE_IDS),
-            "template": "Опишите цель технического обращения и приложите собранные материалы.",
-            **type_config,
-        }
-    ping_roles = type_config.get("ping_roles", [])
+    role_rules = type_config.get("role_rules") or []
+    access_roles = [str(rule.get("role_id")) for rule in role_rules if rule.get("access")]
+    notify_roles = [str(rule.get("role_id")) for rule in role_rules if rule.get("notify")]
+    if not role_rules:
+        access_roles = [str(role_id) for role_id in type_config.get("ping_roles", [])]
+        notify_roles = list(access_roles)
     template = type_config.get("template", "Опишите вашу проблему подробно.")
 
     overwrites = {
@@ -2653,7 +2765,7 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
         user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
         guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
     }
-    for role_id in ping_roles:
+    for role_id in access_roles:
         try:
             role = guild.get_role(int(role_id))
             if role:
@@ -2707,7 +2819,7 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
         return
 
     tinfo = TICKET_TYPES.get(ticket_type, {})
-    silent_pings = " ".join(f"||<@&{rid}>||" for rid in ping_roles if rid)
+    silent_pings = " ".join(f"||<@&{rid}>||" for rid in notify_roles if rid)
 
     embed = discord.Embed(
         title=f"{tinfo.get('emoji', '🎫')} {tinfo.get('name', 'Обращение')} #{ticket_id}",
@@ -2821,57 +2933,81 @@ class TicketCloseView(discord.ui.View):
         await refresh_ticket_status()
 
 
-class TechnicalTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+_DISCORD_BUTTON_STYLES = {
+    "primary": discord.ButtonStyle.primary,
+    "secondary": discord.ButtonStyle.secondary,
+    "success": discord.ButtonStyle.success,
+    "danger": discord.ButtonStyle.danger,
+}
 
-    @discord.ui.button(
-        label="Создать технический тикет",
-        style=discord.ButtonStyle.primary,
-        emoji="🛠️",
-        custom_id="ticket_technical",
-    )
-    async def btn_technical(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not _user_has_technical_ticket_permission(interaction.user):
-            await interaction.response.send_message(
-                "❌ Технические тикеты доступны только администраторам.",
-                ephemeral=True,
+
+def _user_has_ticket_button_permission(user, button_config: dict) -> bool:
+    if getattr(getattr(user, "guild_permissions", None), "administrator", False):
+        return True
+    allowed = {str(value) for value in button_config.get("allowed_role_ids") or []}
+    if not allowed:
+        return True
+    return bool(allowed & {str(role.id) for role in getattr(user, "roles", [])})
+
+
+async def _handle_ticket_button(interaction: discord.Interaction, button_id: str):
+    config = bot_data.get_tickets_config()
+    button_config = (config.get("buttons") or {}).get(button_id) or {}
+    if not button_config.get("enabled", True):
+        await interaction.response.send_message("❌ Эта кнопка отключена.", ephemeral=True)
+        return
+    if not _user_has_ticket_button_permission(interaction.user, button_config):
+        await interaction.response.send_message(
+            "❌ У вас нет роли для создания обращения этого типа.",
+            ephemeral=True,
+        )
+        return
+    await _create_ticket_channel(interaction, str(button_config.get("ticket_type") or button_id))
+
+
+class ConfiguredTicketView(discord.ui.View):
+    def __init__(self, placement_id: str):
+        super().__init__(timeout=None)
+        config = bot_data.get_tickets_config()
+        placement = (config.get("placements") or {}).get(placement_id) or {}
+        buttons = config.get("buttons") or {}
+        for index, button_id in enumerate(placement.get("button_ids") or []):
+            button_config = buttons.get(button_id) or {}
+            if not button_config.get("enabled", True):
+                continue
+            style = _DISCORD_BUTTON_STYLES.get(button_config.get("style"), discord.ButtonStyle.secondary)
+            item = discord.ui.Button(
+                label=str(button_config.get("label") or button_id)[:80],
+                style=style,
+                emoji=button_config.get("emoji") or None,
+                custom_id=f"ticket_{button_id}",
+                row=index // 5,
             )
-            return
-        await _create_ticket_channel(interaction, "technical")
+
+            async def on_click(interaction: discord.Interaction, current_id=button_id):
+                await _handle_ticket_button(interaction, current_id)
+
+            item.callback = on_click
+            self.add_item(item)
 
 
-class TicketPanelView(discord.ui.View):
+class TechnicalTicketView(ConfiguredTicketView):
+    """Compatibility name for the status panel's dynamic view."""
+
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__("status")
 
-    @discord.ui.button(label="Помощь с игрой", style=discord.ButtonStyle.primary, emoji="❓", custom_id="ticket_help")
-    async def btn_help(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "help")
 
-    @discord.ui.button(label="Жалоба на игрока", style=discord.ButtonStyle.secondary, emoji="⚠️", custom_id="ticket_player_report")
-    async def btn_player_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "player_report")
+class TicketPanelView(ConfiguredTicketView):
+    """Compatibility name for the public panel's dynamic view."""
 
-    @discord.ui.button(label="Сообщить о баге", style=discord.ButtonStyle.success, emoji="🐛", custom_id="ticket_bug")
-    async def btn_bug(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "bug")
+    def __init__(self):
+        super().__init__("public_panel")
 
-    @discord.ui.button(label="Жалоба на администрацию", style=discord.ButtonStyle.danger, emoji="🛡️", custom_id="ticket_admin_report")
-    async def btn_admin_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "admin_report")
 
-    @discord.ui.button(label="Жалоба на отделы", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="ticket_department_report")
-    async def btn_department_report(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "department_report")
-
-    @discord.ui.button(label="Обжалование наказания", style=discord.ButtonStyle.secondary, emoji="⚖️", custom_id="ticket_appeal")
-    async def btn_appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "appeal")
-
-    @discord.ui.button(label="Конструкторское бюро", style=discord.ButtonStyle.secondary, emoji="🔧", custom_id="ticket_construction_bureau")
-    async def btn_construction_bureau(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _create_ticket_channel(interaction, "construction_bureau")
+def _register_ticket_views() -> None:
+    bot.add_view(TicketPanelView())
+    bot.add_view(TechnicalTicketView())
 
 
 @bot.command(name="setuptickets")
@@ -2919,7 +3055,11 @@ async def _user_has_ticket_staff_permission(user, guild, config: dict) -> bool:
 
     role_ids = set(config.get("manager_role_ids") or [])
     for tconf in (config.get("types") or {}).values():
-        role_ids.update(tconf.get("ping_roles") or [])
+        rules = tconf.get("role_rules") or []
+        if rules:
+            role_ids.update(str(rule.get("role_id")) for rule in rules if rule.get("access") or rule.get("notify"))
+        else:
+            role_ids.update(tconf.get("ping_roles") or [])
 
     user_role_ids = {r.id for r in getattr(user, "roles", [])}
     for role_id_str in role_ids:
@@ -4981,9 +5121,8 @@ async def setup_hook():
     """Register persistent views so buttons work after restart, and sync
     slash commands. Runs on module import (not gated behind __main__ like it
     used to be) since this module is now imported, not exec'd as a script."""
-    bot.add_view(TicketPanelView())
+    _register_ticket_views()
     bot.add_view(TicketCloseView())
-    bot.add_view(TechnicalTicketView())
     # A global sync propagates lazily: for up to an hour after a command's
     # signature changes, clients keep the old definition and Discord answers a
     # click on it with "this command is outdated" instead of running it. The

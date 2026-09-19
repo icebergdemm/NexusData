@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -6,13 +6,11 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Bot, MessageSquare, Plus, RefreshCw, Save, Send, Settings, Ticket as TicketIcon, Trash2 } from "lucide-react"
+import { Bot, MessageSquare, RefreshCw, Send, Settings } from "lucide-react"
 import { PageHeader } from "@/components/layout/PageHeader"
-import { PlatformIconField } from "@/components/layout/PlatformIcon"
 import { api } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
 import { DiscordViewerTab } from "./viewer"
@@ -169,262 +167,6 @@ function RoleSyncCard() {
   )
 }
 
-// ── Настройки тикетов (config/tickets.json) ─────────────────────────────────
-// Раньше правилось только Discord-командами бота (!setuptickets,
-// !setticketcategory, !setticketstatus) или прямой правкой файла на сервере —
-// теперь один редактор на вкладке «Discord бот».
-
-interface TicketTypeConfig {
-  name: string
-  emoji: string
-  color: string
-  ping_roles: string[]
-  template: string
-  allow_cooldown?: boolean
-}
-interface TicketsConfig {
-  types: Record<string, TicketTypeConfig>
-  category_id: string
-  status_channel_id: string
-  /** Роли, которым доступны /close и /ticket_add — в дополнение к ping_roles
-   * каждого типа (сохранена прежняя логика бота: обладатель роли уведомления
-   * ЛЮБОГО типа тоже может управлять тикетами) и администраторам сервера. */
-  manager_role_ids: string[]
-}
-interface TicketsConfigResponse { config: TicketsConfig; can_manage_config: boolean }
-
-const EMPTY_TICKET_TYPE: TicketTypeConfig = { name: "", emoji: "🎫", color: "2b7af0", ping_roles: [], template: "", allow_cooldown: false }
-
-/** Список Discord ID (ролей и т.п.) как строка через запятую — тот же приём,
- * что и у CORS/Allowed IPs на странице «Администрирование»: отдельный
- * компонент-тегредактор под это в проекте не заводился. */
-function IdListInput({ value, onChange, disabled, placeholder }: {
-  value: string[]; onChange: (v: string[]) => void; disabled: boolean; placeholder?: string
-}) {
-  const [draft, setDraft] = useState(value.join(", "))
-  useEffect(() => { setDraft(value.join(", ")) }, [value])
-  return (
-    <Input
-      value={draft}
-      disabled={disabled}
-      placeholder={placeholder ?? "ID роли, ID роли, ..."}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => onChange(draft.split(",").map((s) => s.trim()).filter(Boolean))}
-    />
-  )
-}
-
-function TicketTypeEditor({ typeKey, type, onChange, onRename, onRemove, disabled }: {
-  typeKey: string
-  type: TicketTypeConfig
-  onChange: (key: string, type: TicketTypeConfig) => void
-  /** Ключ типа (идентификатор в конфиге) фиксируется ТОЛЬКО по потере фокуса,
-   * а не на каждый символ — иначе поле, у которого меняется React key на
-   * каждое нажатие, теряло бы фокус посреди набора. */
-  onRename: (oldKey: string, newKey: string) => void
-  onRemove: () => void
-  disabled: boolean
-}) {
-  const [keyDraft, setKeyDraft] = useState(typeKey)
-  useEffect(() => { setKeyDraft(typeKey) }, [typeKey])
-
-  return (
-    <div className="space-y-2 rounded-md border p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          className="h-8 max-w-[160px] font-mono text-xs"
-          value={keyDraft}
-          disabled={disabled}
-          title="Идентификатор типа — используется в имени канала тикета"
-          onChange={(e) => setKeyDraft(e.target.value)}
-          onBlur={() => { if (keyDraft.trim() && keyDraft !== typeKey) onRename(typeKey, keyDraft.trim()) }}
-        />
-        <PlatformIconField
-          className="h-8 max-w-[80px]"
-          v2ClassName="h-8 max-w-[170px]"
-          value={type.emoji}
-          disabled={disabled}
-          onChange={(emoji) => onChange(typeKey, { ...type, emoji })}
-          placeholder="🎫"
-        />
-        <Input
-          className="h-8 min-w-[200px] flex-1"
-          value={type.name}
-          disabled={disabled}
-          onChange={(e) => onChange(typeKey, { ...type, name: e.target.value })}
-          placeholder="Название типа обращения"
-        />
-        <Input
-          className="h-8 max-w-[110px] font-mono"
-          value={type.color}
-          disabled={disabled}
-          onChange={(e) => onChange(typeKey, { ...type, color: e.target.value.replace(/^#/, "") })}
-          placeholder="цвет hex"
-        />
-        {!disabled && (
-          <Button size="icon" variant="ghost" className="size-8 shrink-0" onClick={onRemove}>
-            <Trash2 className="size-4" />
-          </Button>
-        )}
-      </div>
-      <div>
-        <Label className="mb-1 block text-xs text-muted-foreground">Роли уведомления (пингуются при создании тикета этого типа)</Label>
-        <IdListInput
-          value={type.ping_roles}
-          disabled={disabled}
-          onChange={(v) => onChange(typeKey, { ...type, ping_roles: v })}
-        />
-      </div>
-      <div>
-        <Label className="mb-1 block text-xs text-muted-foreground">Шаблон (подсказка для заполнения при создании)</Label>
-        <Textarea
-          className="min-h-[80px] text-sm"
-          value={type.template}
-          disabled={disabled}
-          onChange={(e) => onChange(typeKey, { ...type, template: e.target.value })}
-        />
-      </div>
-      <label className="flex items-center gap-2 text-sm">
-        <Checkbox checked={!!type.allow_cooldown} disabled={disabled} onCheckedChange={(c)=>onChange(typeKey,{...type, allow_cooldown: c===true})} />
-        Разрешить кулдаун для этого типа (устанавливается через /close)
-      </label>
-    </div>
-  )
-}
-
-function slugifyTypeKey(name: string): string {
-  const base = name.trim().toLowerCase().replace(/[^a-zа-яё0-9]+/gi, "_").replace(/^_+|_+$/g, "")
-  return base || `type_${Date.now()}`
-}
-
-function TicketsSettingsCard() {
-  const queryClient = useQueryClient()
-  const [draft, setDraft] = useState<TicketsConfig | null>(null)
-
-  const { data, isLoading } = useQuery({
-    queryKey: ["discord-bot-tickets-config"],
-    queryFn: () => api.get<TicketsConfigResponse>("/api/v1/admin/discord-bot/tickets-config"),
-  })
-
-  useEffect(() => {
-    if (data?.config) setDraft(data.config)
-  }, [data?.config])
-
-  const save = useMutation({
-    mutationFn: (config: TicketsConfig) => api.put<TicketsConfigResponse>("/api/v1/admin/discord-bot/tickets-config", { config }),
-    onSuccess: (res) => {
-      toast.success("Настройки тикетов сохранены")
-      queryClient.setQueryData(["discord-bot-tickets-config"], res)
-      setDraft(res.config)
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  const dirty = useMemo(
-    () => !!draft && !!data && JSON.stringify(draft) !== JSON.stringify(data.config),
-    [draft, data],
-  )
-  const canEdit = !!data?.can_manage_config
-
-  if (isLoading || !draft) {
-    return <Card><CardHeader><CardTitle className="text-sm">Настройки тикетов</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">Загрузка…</p></CardContent></Card>
-  }
-
-  const setType = (key: string, type: TicketTypeConfig) => setDraft({ ...draft, types: { ...draft.types, [key]: type } })
-  const removeType = (key: string) => {
-    const types = { ...draft.types }
-    delete types[key]
-    setDraft({ ...draft, types })
-  }
-  const addType = () => {
-    let key = "new_type"
-    let i = 2
-    while (draft.types[key]) key = `new_type_${i++}`
-    setDraft({ ...draft, types: { ...draft.types, [key]: { ...EMPTY_TICKET_TYPE } } })
-  }
-  const renameType = (oldKey: string, rawNewKey: string) => {
-    const newKey = slugifyTypeKey(rawNewKey)
-    if (newKey === oldKey) return
-    if (draft.types[newKey]) {
-      toast.error(`Тип с ключом «${newKey}» уже существует`)
-      return
-    }
-    const types: Record<string, TicketTypeConfig> = {}
-    for (const [k, v] of Object.entries(draft.types)) types[k === oldKey ? newKey : k] = v
-    setDraft({ ...draft, types })
-  }
-
-  return (
-    <Card>
-      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-        <CardTitle className="flex items-center gap-1.5 text-sm"><TicketIcon className="size-4" /> Настройки тикетов</CardTitle>
-        {canEdit && (
-          <Button size="sm" disabled={!dirty || save.isPending} onClick={() => save.mutate(draft)}>
-            <Save className="size-3.5" /> Сохранить
-          </Button>
-        )}
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {!canEdit && <p className="text-xs text-muted-foreground">Только просмотр — нет права на изменение конфигурации бота.</p>}
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div>
-            <Label className="mb-1 block text-xs text-muted-foreground">Категория для тикет-каналов</Label>
-            <Input
-              value={draft.category_id}
-              disabled={!canEdit}
-              placeholder="Discord ID категории"
-              onChange={(e) => setDraft({ ...draft, category_id: e.target.value })}
-            />
-          </div>
-          <div>
-            <Label className="mb-1 block text-xs text-muted-foreground">Канал статуса обращений</Label>
-            <Input
-              value={draft.status_channel_id}
-              disabled={!canEdit}
-              placeholder="Discord ID канала"
-              onChange={(e) => setDraft({ ...draft, status_channel_id: e.target.value })}
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <Label className="mb-1 block text-xs text-muted-foreground">
-              Роли персонала (доступ к /close и /ticket_add — независимо от типа обращения)
-            </Label>
-            <IdListInput
-              value={draft.manager_role_ids}
-              disabled={!canEdit}
-              onChange={(v) => setDraft({ ...draft, manager_role_ids: v })}
-            />
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">Типы обращений</Label>
-            {canEdit && (
-              <Button size="sm" variant="outline" onClick={addType}>
-                <Plus className="size-3.5" /> Добавить тип
-              </Button>
-            )}
-          </div>
-          {Object.entries(draft.types).map(([key, type]) => (
-            <TicketTypeEditor
-              key={key}
-              typeKey={key}
-              type={type}
-              disabled={!canEdit}
-              onChange={setType}
-              onRename={renameType}
-              onRemove={() => removeType(key)}
-            />
-          ))}
-          {!Object.keys(draft.types).length && <p className="text-sm text-muted-foreground">Типов обращений нет.</p>}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
 export function DiscordBotPage() {
   const [newKey, setNewKey] = useState({ key: "", value: "" })
   const queryClient = useQueryClient()
@@ -479,8 +221,6 @@ export function DiscordBotPage() {
           )}
         </CardContent>
       </Card>
-
-      <TicketsSettingsCard />
 
       <Card>
         <CardHeader><CardTitle className="text-sm">Анти-рейд лог</CardTitle></CardHeader>

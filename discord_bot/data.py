@@ -825,24 +825,22 @@ def _tickets_config_path() -> str:
 
 def get_tickets_config() -> dict:
     import json
+    from discord_bot.ticket_config import normalize_tickets_config
 
     try:
         with open(_tickets_config_path(), "r", encoding="utf-8") as f:
-            return json.load(f)
+            return normalize_tickets_config(json.load(f))
     except Exception:
-        return {"types": {}, "category_id": "", "status_channel_id": "", "manager_role_ids": []}
+        return normalize_tickets_config({})
 
 
 def set_tickets_config(config: dict) -> None:
-    """Перезаписать config/tickets.json целиком — вызывается со страницы
-    «Discord бот» (routes/discord_bot_api.py), тем же файлом, который читает
-    и бот. Отдельной таблицы под это не заводилось: файл и так был
-    единственным источником правды, менять способ хранения ради веб-формы
-    незачем."""
+    """Persist the normalized ticket configuration as the bot source of truth."""
     import json
+    from discord_bot.ticket_config import normalize_tickets_config
 
     with open(_tickets_config_path(), "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(normalize_tickets_config(config), f, ensure_ascii=False, indent=2)
 
 
 def get_ticket_by_channel(channel_id: str, include_closed: bool = False) -> Optional[dict]:
