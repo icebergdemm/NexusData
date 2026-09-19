@@ -438,9 +438,20 @@ def set_nd_autoban_enabled(enabled: bool) -> None:
     set_bot_config("nd_autoban_enabled", "1" if enabled else "0")
 
 
-def get_active_mutes() -> dict:
-    """Return only unexpired mutes and prune stale records on read."""
+def get_stored_mutes() -> dict:
+    """Return mute records without pruning expired entries.
+
+    Expired records are still needed by the Discord cleanup task: removing a
+    record before the corresponding channel overwrite/server mute is cleared
+    leaves a restriction with no durable way to retry it.
+    """
     mutes = get_json_bot_config("discord_mutes", {})
+    return mutes if isinstance(mutes, dict) else {}
+
+
+def get_active_mutes() -> dict:
+    """Return only unexpired mutes without changing stored state."""
+    mutes = get_stored_mutes()
     now = datetime.utcnow()
     active = {}
     for discord_id, value in mutes.items():
@@ -449,23 +460,30 @@ def get_active_mutes() -> dict:
                 active[str(discord_id)] = value
         except (KeyError, TypeError, ValueError):
             continue
-    if active != mutes:
-        set_json_bot_config("discord_mutes", active)
     return active
 
 
 def set_mute(discord_id: str, expires_at: datetime, issued_by: dict, reason: str = "") -> None:
-    mutes = get_active_mutes()
+    mutes = get_stored_mutes()
     mutes[str(discord_id)] = {
         "expires_at": expires_at.isoformat(), "issued_by": issued_by, "reason": reason,
     }
     set_json_bot_config("discord_mutes", mutes)
 
 
-def remove_mute(discord_id: str) -> bool:
-    mutes = get_active_mutes()
+def remove_mute(discord_id: str, expected_expires_at: str | None = None) -> bool:
+    """Remove a mute, including an expired record.
+
+    ``expected_expires_at`` prevents a delayed cleanup pass from deleting a
+    newer mute issued for the same Discord member.
+    """
+    mutes = get_stored_mutes()
     if str(discord_id) not in mutes:
         return False
+    if expected_expires_at is not None:
+        current = mutes[str(discord_id)]
+        if not isinstance(current, dict) or current.get("expires_at") != expected_expires_at:
+            return False
     del mutes[str(discord_id)]
     set_json_bot_config("discord_mutes", mutes)
     return True

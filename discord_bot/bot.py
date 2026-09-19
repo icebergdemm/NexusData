@@ -386,7 +386,8 @@ async def on_ready():
             # discord.ext.tasks executes its first iteration immediately, so
             # old CDN-only ticket evidence starts migrating on bot startup.
             ticket_history_backfill_task.start()
-    mute_voice_cleanup_task.start()
+    if not mute_voice_cleanup_task.is_running():
+        mute_voice_cleanup_task.start()
 
     # Initial ticket status refresh
     await refresh_ticket_status()
@@ -744,6 +745,12 @@ async def publish_department_ratings_task():
 # message every single time instead of editing the old one, leaving a trail
 # of stale "📊 Статус обращений" embeds in the channel.
 TICKET_STATUS_ID_FILE = os.path.join(_BOT_DIR, "ticket_status_message_id.json")
+TECHNICAL_TICKET_STATUS_CHANNEL_ID = 1507830881832931482
+TECHNICAL_TICKET_ADMIN_ROLE_IDS = {
+    "1535306271568306216",
+    "1536021581258821642",
+    "1543720354520899817",
+}
 
 
 def _load_ticket_status_id() -> Optional[int]:
@@ -771,12 +778,7 @@ async def refresh_ticket_status():
     """Update ticket status embed. Called on ticket create/message/close."""
     global _ticket_status_msg_id
 
-    config = await asyncio.to_thread(bot_data.get_bot_config)
-    if not config:
-        return
-    status_channel_id = config.get("ticket_status_channel_id")
-    if not status_channel_id:
-        return
+    status_channel_id = str(TECHNICAL_TICKET_STATUS_CHANNEL_ID)
 
     try:
         channel = bot.get_channel(int(status_channel_id))
@@ -810,7 +812,7 @@ async def refresh_ticket_status():
     if _ticket_status_msg_id:
         try:
             msg = await channel.fetch_message(_ticket_status_msg_id)
-            await msg.edit(embed=embed)
+            await msg.edit(embed=embed, view=TechnicalTicketView())
             return
         except discord.NotFound:
             # Сообщение действительно удалено — только тогда заводим новое.
@@ -825,7 +827,7 @@ async def refresh_ticket_status():
             return
 
     try:
-        msg = await channel.send(embed=embed)
+        msg = await channel.send(embed=embed, view=TechnicalTicketView())
         _ticket_status_msg_id = msg.id
         _save_ticket_status_id(msg.id)
     except Exception as e:
@@ -1378,24 +1380,21 @@ async def ticket_bot_action_task():
 async def mute_voice_cleanup_task():
     """Авто-снятие голосовых ограничений после истечения мута (п.7)."""
     try:
-        raw = await asyncio.to_thread(bot_data.get_json_bot_config, "discord_mutes", {})
+        raw = await asyncio.to_thread(bot_data.get_stored_mutes)
         now = datetime.utcnow()
-        expired_ids = []
+        expired = []
         for did, val in list(raw.items()):
             try:
                 if datetime.fromisoformat(str(val.get("expires_at", ""))) <= now:
-                    expired_ids.append(did)
+                    expired.append((did, str(val.get("expires_at", ""))))
             except Exception:
-                expired_ids.append(did)
-        if not expired_ids:
-            # still prune stale via get_active_mutes
-            await asyncio.to_thread(bot_data.get_active_mutes)
+                logger.warning("mute_voice_cleanup ignored malformed record for %s", did)
+        if not expired:
             return
         guild = bot.get_guild(GUILD_ID)
         if not guild:
-            await asyncio.to_thread(bot_data.get_active_mutes)
             return
-        for did in expired_ids:
+        for did, expected_expires_at in expired:
             try:
                 member = guild.get_member(int(did))
                 if not member:
@@ -1403,11 +1402,15 @@ async def mute_voice_cleanup_task():
                         member = await guild.fetch_member(int(did))
                     except Exception:
                         continue
-                await _restore_voice_on_unmute(member, "авто-размут (истёк срок)")
+                restored = await _restore_voice_on_unmute(member, "авто-размут (истёк срок)")
+                if restored:
+                    await asyncio.to_thread(
+                        bot_data.remove_mute,
+                        str(did),
+                        expected_expires_at,
+                    )
             except Exception as e:
                 logger.warning(f"mute_voice_cleanup failed for {did}: {e}")
-        # после снятия ограничений — почистить хранилище мутов
-        await asyncio.to_thread(bot_data.get_active_mutes)
     except Exception as e:
         logger.warning(f"mute_voice_cleanup_task error: {e}")
 
@@ -2417,6 +2420,7 @@ TICKET_TYPES = {
     "department_report": {"name": "Жалоба на работу отделов", "emoji": "📋", "color": 0x8844cc},
     "appeal": {"name": "Обжалование наказания", "emoji": "⚖️", "color": 0xffcc00},
     "construction_bureau": {"name": "Обращение в конструкторское бюро", "emoji": "🔧", "color": 0x4a9eff},
+    "technical": {"name": "Технический тикет", "emoji": "🛠️", "color": 0x5865f2},
 }
 
 class _PendingTicketClose:
@@ -2490,21 +2494,29 @@ async def _user_has_mute_permission(user) -> bool:
     return bool(allowed & {str(r.id) for r in getattr(user, "roles", [])})
 
 
+def _user_has_technical_ticket_permission(user) -> bool:
+    return bool(TECHNICAL_TICKET_ADMIN_ROLE_IDS & {
+        str(role.id) for role in getattr(user, "roles", [])
+    })
+
+
 async def _restrict_voice_on_mute(member: discord.Member, reason: str):
     """п.7: ограничить доступ в голосовые каналы при муте — server mute + deny connect/speak."""
     guild = member.guild
     if not guild:
         return
-    # server-mute если уже в войсе
     try:
-        if member.voice and member.voice.channel:
-            await member.edit(mute=True, reason=f"Мут: {reason}"[:512])
+        await member.edit(mute=True, reason=f"Мут: {reason}"[:512])
     except Exception as e:
         logger.warning(f"Failed to server-mute {member}: {e}")
-    # deny на все голосовые каналы (включая будущие — cover через пермишены)
-    for ch in guild.voice_channels:
+    for ch in getattr(guild, "channels", ()):
+        if not isinstance(ch, VocalGuildChannel):
+            continue
         try:
-            await ch.set_permissions(member, connect=False, speak=False, reason=f"Мут: {reason}"[:512])
+            overwrite = ch.overwrites_for(member)
+            overwrite.connect = False
+            overwrite.speak = False
+            await ch.set_permissions(member, overwrite=overwrite, reason=f"Мут: {reason}"[:512])
         except Exception as e:
             logger.warning(f"Failed to set voice overwrite for {member} in {ch}: {e}")
 
@@ -2512,18 +2524,36 @@ async def _restrict_voice_on_mute(member: discord.Member, reason: str):
 async def _restore_voice_on_unmute(member: discord.Member, reason: str):
     guild = member.guild
     if not guild:
-        return
+        return False
+    restored = True
     try:
-        if member.voice and member.voice.channel:
-            await member.edit(mute=False, reason=f"Размут: {reason}"[:512] if reason else "Размут")
+        await member.edit(mute=False, reason=f"Размут: {reason}"[:512] if reason else "Размут")
     except Exception as e:
         logger.warning(f"Failed to server-unmute {member}: {e}")
-    for ch in guild.voice_channels:
+        restored = False
+    for ch in getattr(guild, "channels", ()):
+        if not isinstance(ch, VocalGuildChannel):
+            continue
         try:
-            # снимаем персональный оверрайт (возврат к ролям по умолчанию)
-            await ch.set_permissions(member, overwrite=None, reason=f"Размут: {reason}"[:512] if reason else "Размут")
+            overwrite = ch.overwrites_for(member)
+            overwrite.connect = None
+            overwrite.speak = None
+            if overwrite.is_empty():
+                await ch.set_permissions(
+                    member,
+                    overwrite=None,
+                    reason=f"Размут: {reason}"[:512] if reason else "Размут",
+                )
+            else:
+                await ch.set_permissions(
+                    member,
+                    overwrite=overwrite,
+                    reason=f"Размут: {reason}"[:512] if reason else "Размут",
+                )
         except Exception as e:
             logger.warning(f"Failed to clear voice overwrite for {member} in {ch}: {e}")
+            restored = False
+    return restored
 
 
 async def _send_mute_notification(channel, title: str, target, moderator, reason: str, expires_at: Optional[datetime] = None):
@@ -2609,6 +2639,12 @@ async def _create_ticket_channel(interaction: discord.Interaction, ticket_type: 
 
     category_id = (bot_config or {}).get("ticket_category_id") or config.get("category_id")
     type_config = config.get("types", {}).get(ticket_type, {})
+    if ticket_type == "technical":
+        type_config = {
+            "ping_roles": sorted(TECHNICAL_TICKET_ADMIN_ROLE_IDS),
+            "template": "Опишите цель технического обращения и приложите собранные материалы.",
+            **type_config,
+        }
     ping_roles = type_config.get("ping_roles", [])
     template = type_config.get("template", "Опишите вашу проблему подробно.")
 
@@ -2783,6 +2819,26 @@ class TicketCloseView(discord.ui.View):
 
         await _send_ticket_followup(interaction, "🔒 Тикет закрыт, история и файлы сохранены.")
         await refresh_ticket_status()
+
+
+class TechnicalTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Создать технический тикет",
+        style=discord.ButtonStyle.primary,
+        emoji="🛠️",
+        custom_id="ticket_technical",
+    )
+    async def btn_technical(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _user_has_technical_ticket_permission(interaction.user):
+            await interaction.response.send_message(
+                "❌ Технические тикеты доступны только администраторам.",
+                ephemeral=True,
+            )
+            return
+        await _create_ticket_channel(interaction, "technical")
 
 
 class TicketPanelView(discord.ui.View):
@@ -3210,19 +3266,18 @@ async def slash_unmute(interaction: discord.Interaction, member: discord.Member,
     if not await _user_has_mute_permission(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав на снятие мута.", ephemeral=True)
         return
-    removed = await asyncio.to_thread(bot_data.remove_mute, str(member.id))
-    if not removed:
-        await interaction.response.send_message("У этого пользователя нет активного мута.", ephemeral=True)
-        return
+    restored = await _restore_voice_on_unmute(member, reason or "")
+    removed = await asyncio.to_thread(bot_data.remove_mute, str(member.id)) if restored else False
     await asyncio.to_thread(bot_data.log_discord_command, "unmute", {
         "moderator_id": str(interaction.user.id), "moderator": interaction.user.display_name,
         "target_id": str(member.id), "target": member.display_name, "reason": reason or "",
+        "restored": restored, "removed": removed,
     })
-    await interaction.response.send_message(f"🔊 Мут с {member.mention} снят." + (f" Причина: {reason}" if reason else ""))
-    try:
-        await _restore_voice_on_unmute(member, reason or "")
-    except Exception as exc:
-        logger.warning(f"Failed to restore voice on unmute for {member}: {exc}")
+    if restored:
+        message = f"🔊 Мут с {member.mention} снят."
+    else:
+        message = f"⚠️ Ограничения для {member.mention} сняты не полностью; бот повторит попытку автоматически."
+    await interaction.response.send_message(message + (f" Причина: {reason}" if reason else ""))
     try:
         await _send_mute_notification(interaction.channel, "🔊 Мут снят", member, interaction.user, reason or "")
     except Exception as exc:
@@ -4928,6 +4983,7 @@ async def setup_hook():
     used to be) since this module is now imported, not exec'd as a script."""
     bot.add_view(TicketPanelView())
     bot.add_view(TicketCloseView())
+    bot.add_view(TechnicalTicketView())
     # A global sync propagates lazily: for up to an hour after a command's
     # signature changes, clients keep the old definition and Discord answers a
     # click on it with "this command is outdated" instead of running it. The
