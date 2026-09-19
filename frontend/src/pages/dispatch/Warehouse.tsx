@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Plus, Minus, Trash2, Search, PackageSearch, Settings2, Infinity as InfinityIcon, Check } from "lucide-react"
+import { Plus, Minus, Trash2, Search, PackageSearch, Settings2, Infinity as InfinityIcon, Check, Image as ImageIcon } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
@@ -21,10 +23,18 @@ import { warehouseApi, type WarehouseItemInput, type WarehouseItemRow } from "./
  * блокировал кнопку до ответа сервера. */
 const QUANTITY_COMMIT_DELAY_MS = 700
 
-/** Item picker — multi-select, because stocking a warehouse means adding
- * twenty things at once, not opening this dialog twenty times. Any identifier
- * may also be typed by hand: the bundled catalog covers vanilla Barotrauma,
- * and a server running mods legitimately needs items that are not in it. */
+type CatalogScope = "new" | "all" | "existing"
+type CatalogSort = "name" | "identifier"
+
+/** Item picker — a full-height two-pane workspace rather than a narrow modal:
+ * stocking a warehouse means scanning a 900-entry catalog and taking twenty
+ * things out of it, which a six-row list made painful.
+ *
+ * The bundled catalog only knows an item's name and whether it has an icon
+ * (static/item_catalog.json), so there is no category data to filter by —
+ * every filter here is backed by something that is actually in the data.
+ * Any identifier may also be typed by hand: a server running mods needs items
+ * the vanilla catalog has never heard of. */
 function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -33,8 +43,12 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
 }) {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState("")
+  const [scope, setScope] = useState<CatalogScope>("new")
+  const [sort, setSort] = useState<CatalogSort>("name")
+  const [iconsOnly, setIconsOnly] = useState(false)
   const [selected, setSelected] = useState<Record<string, string>>({})
   const [customId, setCustomId] = useState("")
+  const [bulkQuantity, setBulkQuantity] = useState("")
 
   const selectedIds = Object.keys(selected)
   const trimmedSearch = search.trim()
@@ -42,18 +56,29 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
   const options = useMemo(() => {
     if (!catalog) return []
     const q = trimmedSearch.toLowerCase()
-    return Object.entries(catalog)
-      .filter(([id, entry]) => !existingIdentifiers.has(id)
-        && (!q || entry.name.toLowerCase().includes(q) || id.toLowerCase().includes(q)))
-      .sort((a, b) => a[1].name.localeCompare(b[1].name, "ru"))
-  }, [catalog, trimmedSearch, existingIdentifiers])
+    const rows = Object.entries(catalog).filter(([id, entry]) => {
+      const known = existingIdentifiers.has(id)
+      if (scope === "new" && known) return false
+      if (scope === "existing" && !known) return false
+      if (iconsOnly && !entry.has_icon) return false
+      if (!q) return true
+      return entry.name.toLowerCase().includes(q) || id.toLowerCase().includes(q)
+    })
+    rows.sort(([idA, a], [idB, b]) => (
+      sort === "name" ? a.name.localeCompare(b.name, "ru") : idA.localeCompare(idB)
+    ))
+    return rows
+  }, [catalog, trimmedSearch, existingIdentifiers, scope, sort, iconsOnly])
 
-  // Only the visible slice is rendered, but the count below reports the whole
-  // match set, so a search that hits 300 entries no longer looks like 150.
-  const visible = options.slice(0, 200)
+  // Only a slice is rendered, but the count reports the whole match set so a
+  // search that hits 300 entries never silently looks like 200.
+  const visible = options.slice(0, 300)
   const hiddenCount = options.length - visible.length
 
-  const reset = () => { setSelected({}); setSearch(""); setCustomId("") }
+  const reset = () => {
+    setSelected({}); setSearch(""); setCustomId(""); setBulkQuantity("")
+    setScope("new"); setSort("name"); setIconsOnly(false)
+  }
 
   const toggle = (id: string) => setSelected((current) => {
     if (id in current) {
@@ -61,7 +86,7 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
       delete next[id]
       return next
     }
-    return { ...current, [id]: "1" }
+    return { ...current, [id]: bulkQuantity.trim() || "1" }
   })
 
   const addCustom = () => {
@@ -71,8 +96,16 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
       toast.error("Этот предмет уже есть на складе")
       return
     }
-    setSelected((current) => ({ ...current, [id]: "1" }))
+    setSelected((current) => ({ ...current, [id]: bulkQuantity.trim() || "1" }))
     setCustomId("")
+  }
+
+  const applyBulkQuantity = () => {
+    const value = bulkQuantity.trim()
+    if (!value || !selectedIds.length) return
+    setSelected((current) => Object.fromEntries(
+      Object.keys(current).map((id) => [id, value]),
+    ))
   }
 
   const addMutation = useMutation({
@@ -96,90 +129,168 @@ function AddItemDialog({ open, onOpenChange, existingIdentifiers, catalog }: {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { onOpenChange(o); if (!o) reset() }}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex h-[85vh] max-h-[85vh] flex-col gap-3 sm:max-w-5xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Добавить предметы на склад</DialogTitle>
           <DialogDescription>
-            Отметьте нужные предметы — можно сразу несколько. Количество задаётся для каждого,
+            Отметьте нужные предметы — можно сразу несколько. Количество задаётся справа,
             настройки лимита — потом, на карточке предмета.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по названию или ID…" className="pl-8" autoFocus />
-        </div>
-
-        <div className="max-h-56 overflow-y-auto rounded-md border">
-          {visible.map(([id, entry]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => toggle(id)}
-              className="flex w-full items-center gap-2 border-b px-2.5 py-1.5 text-left text-sm last:border-b-0 hover:bg-accent"
-            >
-              <Checkbox checked={id in selected} className="pointer-events-none" tabIndex={-1} />
-              <ItemIcon identifier={id} size={24} />
-              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{id}</span>
-            </button>
-          ))}
-          {!visible.length && (
-            <div className="py-6 text-center text-xs text-muted-foreground">
-              В каталоге ничего не найдено — добавьте идентификатор вручную ниже
-            </div>
-          )}
-          {hiddenCount > 0 && (
-            <div className="border-t py-2 text-center text-[10px] text-muted-foreground">
-              Показаны первые {visible.length} из {options.length} — уточните поиск
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-end gap-2">
-          <div className="flex-1">
-            <Label className="mb-1.5 block text-xs text-muted-foreground">
-              Предмета нет в каталоге? Укажите идентификатор вручную
-            </Label>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="relative min-w-52 flex-1">
+            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              value={customId}
-              onChange={(e) => setCustomId(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom() } }}
-              placeholder="например, mod_customitem"
-              className="font-mono text-xs"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск по названию или ID…"
+              className="pl-8"
+              autoFocus
             />
           </div>
-          <Button type="button" variant="outline" onClick={addCustom} disabled={!customId.trim()}>
-            <Plus className="size-4" />
+          <Select value={scope} onValueChange={(value) => setScope(value as CatalogScope)}>
+            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="new">Которых нет на складе</SelectItem>
+              <SelectItem value="all">Все предметы</SelectItem>
+              <SelectItem value="existing">Уже на складе</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={sort} onValueChange={(value) => setSort(value as CatalogSort)}>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="name">Сортировка: название</SelectItem>
+              <SelectItem value="identifier">Сортировка: ID</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            variant={iconsOnly ? "default" : "outline"}
+            size="sm"
+            onClick={() => setIconsOnly((value) => !value)}
+            title="Скрыть служебные записи без иконки"
+          >
+            <ImageIcon className="mr-1 size-3.5" />С иконкой
           </Button>
         </div>
 
-        {selectedIds.length > 0 && (
-          <div className="max-h-44 space-y-1.5 overflow-y-auto rounded-md border p-2">
-            {selectedIds.map((id) => (
-              <div key={id} className="flex items-center gap-2">
-                <ItemIcon identifier={id} size={22} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs">{itemDisplayName(catalog, id)}</div>
-                  <div className="truncate font-mono text-[9px] text-muted-foreground">{id}</div>
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="flex min-h-0 flex-col rounded-md border">
+            <div className="flex shrink-0 items-center justify-between border-b px-2.5 py-1.5 text-[11px] text-muted-foreground">
+              <span>Найдено: {options.length}</span>
+              {hiddenCount > 0 && <span>показаны первые {visible.length} — уточните поиск</span>}
+            </div>
+            <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-2 content-start gap-1 overflow-y-auto p-1.5 sm:grid-cols-3 xl:grid-cols-4">
+              {visible.map(([id, entry]) => {
+                const known = existingIdentifiers.has(id)
+                const checked = id in selected
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => { if (!known) toggle(id) }}
+                    disabled={known}
+                    title={known ? "Уже на складе" : `${entry.name}\n${id}`}
+                    className={cn(
+                      "flex items-center gap-2 rounded-md border p-1.5 text-left transition-colors",
+                      checked ? "border-primary bg-primary/10" : "hover:bg-accent",
+                      known && "opacity-40",
+                    )}
+                  >
+                    <Checkbox checked={checked} disabled={known} className="pointer-events-none shrink-0" tabIndex={-1} />
+                    <ItemIcon identifier={id} size={26} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs">{entry.name}</span>
+                      <span className="block truncate font-mono text-[9px] text-muted-foreground">{id}</span>
+                    </span>
+                  </button>
+                )
+              })}
+              {!visible.length && (
+                <div className="col-span-full py-10 text-center text-xs text-muted-foreground">
+                  Ничего не найдено — измените фильтр или добавьте идентификатор вручную
                 </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col gap-2">
+            <div className="flex shrink-0 items-center justify-between text-xs">
+              <span className="font-medium">Выбрано: {selectedIds.length}</span>
+              {selectedIds.length > 0 && (
+                <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setSelected({})}>
+                  Очистить
+                </Button>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-end gap-1.5">
+              <div className="flex-1">
+                <Label className="mb-1 block text-[11px] text-muted-foreground">Количество всем сразу</Label>
                 <Input
                   type="number"
                   min={0}
-                  value={selected[id]}
-                  onChange={(e) => setSelected((current) => ({ ...current, [id]: e.target.value }))}
-                  className="h-7 w-20 text-xs"
-                  aria-label={`Количество: ${itemDisplayName(catalog, id)}`}
+                  value={bulkQuantity}
+                  onChange={(e) => setBulkQuantity(e.target.value)}
+                  placeholder="например, 10"
+                  className="h-8 text-xs"
                 />
-                <Button type="button" variant="ghost" size="icon-xs" onClick={() => toggle(id)}>
-                  <Trash2 className="size-3.5 text-destructive" />
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={applyBulkQuantity} disabled={!bulkQuantity.trim() || !selectedIds.length}>
+                Применить
+              </Button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto rounded-md border p-2">
+              {selectedIds.map((id) => (
+                <div key={id} className="flex items-center gap-2">
+                  <ItemIcon identifier={id} size={22} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs">{itemDisplayName(catalog, id)}</div>
+                    <div className="truncate font-mono text-[9px] text-muted-foreground">{id}</div>
+                  </div>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={selected[id]}
+                    onChange={(e) => setSelected((current) => ({ ...current, [id]: e.target.value }))}
+                    className="h-7 w-20 text-xs"
+                    aria-label={`Количество: ${itemDisplayName(catalog, id)}`}
+                  />
+                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => toggle(id)}>
+                    <Trash2 className="size-3.5 text-destructive" />
+                  </Button>
+                </div>
+              ))}
+              {!selectedIds.length && (
+                <p className="py-8 text-center text-xs text-muted-foreground">
+                  Ничего не выбрано
+                </p>
+              )}
+            </div>
+
+            <div className="shrink-0">
+              <Label className="mb-1 block text-[11px] text-muted-foreground">
+                Предмета нет в каталоге? Укажите идентификатор
+              </Label>
+              <div className="flex gap-1.5">
+                <Input
+                  value={customId}
+                  onChange={(e) => setCustomId(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom() } }}
+                  placeholder="например, mod_customitem"
+                  className="h-8 font-mono text-xs"
+                />
+                <Button type="button" variant="outline" size="sm" onClick={addCustom} disabled={!customId.trim()}>
+                  <Plus className="size-4" />
                 </Button>
               </div>
-            ))}
+            </div>
           </div>
-        )}
+        </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
           <Button disabled={!selectedIds.length || addMutation.isPending} onClick={() => addMutation.mutate()}>
             {addMutation.isPending ? "Добавление…" : `Добавить${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
