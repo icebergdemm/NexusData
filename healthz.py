@@ -10,20 +10,20 @@ from typing import Any
 from starlette.responses import JSONResponse
 
 
-def healthz_status(state: Any, lockdown: Any = None) -> str:
+def healthz_status(state: Any, lockdown: Any = None, lockdown_bypassed: bool = False) -> str:
     lockdown_enabled = bool(getattr(lockdown, "enabled", False) if lockdown is not None else getattr(state, "web_lockdown", False))
-    if state.maintenance_mode or lockdown_enabled:
+    if state.maintenance_mode or (lockdown_enabled and not lockdown_bypassed):
         return "maintenance"
     if not state.db_healthy or not state.api_enabled or not state.web_enabled:
         return "degraded"
     return "ok"
 
 
-def build_healthz_response(state: Any, lockdown: Any = None) -> JSONResponse:
-    status = healthz_status(state, lockdown)
+def build_healthz_response(state: Any, lockdown: Any = None, lockdown_bypassed: bool = False) -> JSONResponse:
+    status = healthz_status(state, lockdown, lockdown_bypassed)
     lockdown_enabled = bool(getattr(lockdown, "enabled", False) if lockdown is not None else getattr(state, "web_lockdown", False))
     lockdown_message = getattr(lockdown, "message", "") if lockdown is not None else getattr(state, "web_lockdown_message", "")
-    maintenance_message = lockdown_message if lockdown_enabled else state.maintenance_message
+    maintenance_message = lockdown_message if lockdown_enabled and not lockdown_bypassed else state.maintenance_message
     response = JSONResponse(
         {
             "status": status,
@@ -31,9 +31,10 @@ def build_healthz_response(state: Any, lockdown: Any = None) -> JSONResponse:
             "api_enabled": state.api_enabled,
             "web_enabled": state.web_enabled,
             "workers_enabled": state.workers_enabled,
-            "maintenance_mode": bool(state.maintenance_mode or lockdown_enabled),
+            "maintenance_mode": bool(state.maintenance_mode or (lockdown_enabled and not lockdown_bypassed)),
             "maintenance_message": maintenance_message or None,
             "web_lockdown": lockdown_enabled,
+            "lockdown_bypassed": bool(lockdown_bypassed and lockdown_enabled),
         },
         status_code=200 if status == "ok" else 503,
     )

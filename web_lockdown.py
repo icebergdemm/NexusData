@@ -114,7 +114,7 @@ def _valid_service_key(request, settings) -> bool:
     return False
 
 
-def can_access_web(request, db, settings) -> bool:
+def can_access_web(request, db, settings, touch_session: bool = True) -> bool:
     """Return whether a request may pass the lockdown gate."""
     if _valid_service_key(request, settings):
         return True
@@ -132,7 +132,7 @@ def can_access_web(request, db, settings) -> bool:
     token = request.cookies.get("admin_token")
     if not token:
         return False
-    session = get_active_admin_session(db, token, request=request)
+    session = get_active_admin_session(db, token, request=request, touch=touch_session)
     if not session:
         return False
     admin = db.query(AdminUser).filter(
@@ -142,14 +142,17 @@ def can_access_web(request, db, settings) -> bool:
     return bool(admin and admin.is_superuser)
 
 
-def revoke_non_superuser_sessions(db) -> int:
+def revoke_non_superuser_sessions(db, exclude_session_id: Optional[int] = None) -> int:
     non_superuser_ids = select(AdminUser.id).where(or_(
         AdminUser.is_superuser.is_(False),
         AdminUser.is_superuser.is_(None),
     ))
-    affected = db.query(AdminSession).filter(
+    query = db.query(AdminSession).filter(
         AdminSession.admin_id.in_(non_superuser_ids),
         AdminSession.revoked == 0,
-    ).update({"revoked": 1}, synchronize_session=False)
+    )
+    if exclude_session_id is not None:
+        query = query.filter(AdminSession.id != exclude_session_id)
+    affected = query.update({"revoked": 1}, synchronize_session=False)
     db.commit()
     return affected

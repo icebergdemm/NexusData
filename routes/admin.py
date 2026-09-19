@@ -3150,7 +3150,13 @@ async def api_web_lockdown_update(
     enabled = body["enabled"]
     message = str(body.get("message") or "").strip()[:255]
     state = web_lockdown.write_state(enabled, message)
-    revoked = web_lockdown.revoke_non_superuser_sessions(db) if enabled else 0
+    revoked = (
+        web_lockdown.revoke_non_superuser_sessions(
+            db,
+            exclude_session_id=getattr(request.state, "nd_session_id", None),
+        )
+        if enabled else 0
+    )
     log_security_event(
         db,
         "web_lockdown_change",

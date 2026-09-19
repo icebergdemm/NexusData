@@ -45,7 +45,7 @@ export function SecurityLayout() {
     onSuccess: (state) => {
       queryClient.setQueryData(["security-lockdown"], state)
       queryClient.invalidateQueries({ queryKey: ["security-overview"] })
-      toast.success(state.enabled ? `Аварийная блокировка включена. Отозвано сессий: ${state.revoked_sessions}.` : "Аварийная блокировка выключена")
+      toast.success(state.enabled ? `Аварийная блокировка включена. Отозвано сессий обычных пользователей: ${state.revoked_sessions}. Суперпользователи остаются подключены.` : "Аварийная блокировка выключена")
       setConfirmState(null)
     },
     onError: (error: Error) => toast.error(error.message),
@@ -98,7 +98,7 @@ export function SecurityLayout() {
         open={confirmState !== null}
         onOpenChange={(open) => !open && setConfirmState(null)}
         title={confirmState ? "Включить аварийную блокировку?" : "Выключить аварийную блокировку?"}
-        description={confirmState ? `Обычные пользователи потеряют доступ к сайту. Будет отозвано активных сессий: ${lockdown?.active_non_superuser_sessions ?? "неизвестно"}. Сервисные API-ключи продолжат работать.` : "Обычные пользователи снова получат доступ к сайту."}
+        description={confirmState ? `Обычные пользователи потеряют доступ к сайту. Будет отозвано активных сессий обычных пользователей: ${lockdown?.active_non_superuser_sessions ?? "неизвестно"}. Вы останетесь подключены как суперпользователь. Сервисные API-ключи продолжат работать.` : "Обычные пользователи снова получат доступ к сайту."}
         confirmLabel={confirmState ? "Включить шатдаун" : "Выключить шатдаун"}
         confirmDisabled={updateLockdown.isPending}
         onConfirm={() => confirmState !== null && updateLockdown.mutate(confirmState)}

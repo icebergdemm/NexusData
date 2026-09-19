@@ -411,13 +411,30 @@ def create_app() -> FastAPI:
         raise StarletteHTTPException(status_code=503, detail="Frontend not built yet — run `npm run build` in frontend/")
 
     @app.get("/healthz")
-    async def healthz():
-        """Unauthenticated, DB-free liveness probe — unlike /api/v1/health
-        (which requires the API key when require_auth is on), this is what
-        the frontend's MaintenanceBanner and any external monitor can poll
-        without credentials. Deliberately does not touch the database."""
+    async def healthz(request: Request):
+        """Health probe used by both external monitors and the SPA.
+
+        Lockdown remains visible to unauthenticated callers, but a valid
+        superuser session must not be covered by the SPA's maintenance mask.
+        The database lookup is limited to the lockdown case; ordinary health
+        checks stay dependency-light and fail closed if identity resolution
+        cannot be completed.
+        """
         from healthz import build_healthz_response
-        return build_healthz_response(runtime_control.read_state(), web_lockdown.read_state())
+        lockdown = web_lockdown.read_state()
+        lockdown_bypassed = False
+        if lockdown.enabled:
+            from database import SessionLocal
+            db = None
+            try:
+                db = SessionLocal()
+                lockdown_bypassed = web_lockdown.can_access_web(request, db, settings, touch_session=False)
+            except Exception:
+                logger.exception("Health probe lockdown identity check failed closed")
+            finally:
+                if db is not None:
+                    db.close()
+        return build_healthz_response(runtime_control.read_state(), lockdown, lockdown_bypassed=lockdown_bypassed)
 
     @app.get("/livez")
     async def livez():
