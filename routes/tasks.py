@@ -71,37 +71,6 @@ def _get_system_board_settings(db: Session) -> dict:
     return settings
 
 
-@router.get("/api/v1/admin/tasks/system-board/settings")
-async def api_get_system_board_settings(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_task_developer(current_admin)
-    return {"settings": _get_system_board_settings(db)}
-
-
-@router.put("/api/v1/admin/tasks/system-board/settings")
-async def api_update_system_board_settings(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
-    _require_task_developer(current_admin)
-    body = await request.json()
-    request_limit = body.get("request_limit") if isinstance(body, dict) else None
-    if not isinstance(request_limit, dict) or type(request_limit.get("enabled")) is not bool:
-        raise HTTPException(status_code=400, detail="Укажите enabled и max_active для лимита заявок")
-    max_active = request_limit.get("max_active")
-    if type(max_active) is not int or not 1 <= max_active <= 1000:
-        raise HTTPException(status_code=400, detail="Лимит должен быть целым числом от 1 до 1000")
-
-    settings = _get_system_board_settings(db)
-    settings["request_limit"] = {"enabled": request_limit["enabled"], "max_active": max_active}
-    row = db.query(AppSetting).filter(AppSetting.key == SYSTEM_BOARD_SETTINGS_KEY).first()
-    value = json.dumps(settings, ensure_ascii=False)
-    if row:
-        row.value = value
-    else:
-        db.add(AppSetting(key=SYSTEM_BOARD_SETTINGS_KEY, value=value))
-    db.commit()
-    from routes.admin import log_admin_action
-    log_admin_action(db, current_admin.id, "task_board_settings_update", settings)
-    return {"status": "ok", "settings": settings}
-
-
 def system_board_column_for_status(status: str, mode: str) -> Optional[str]:
     try:
         columns = SYSTEM_BOARD_COLUMNS[mode]
@@ -200,6 +169,37 @@ def get_current_admin(request: Request, db: Session = Depends(get_db)) -> AdminU
     except Exception:
         admin._has_task_board_view = False
     return admin
+
+
+@router.get("/api/v1/admin/tasks/system-board/settings")
+async def api_get_system_board_settings(db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_task_developer(current_admin)
+    return {"settings": _get_system_board_settings(db)}
+
+
+@router.put("/api/v1/admin/tasks/system-board/settings")
+async def api_update_system_board_settings(request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
+    _require_task_developer(current_admin)
+    body = await request.json()
+    request_limit = body.get("request_limit") if isinstance(body, dict) else None
+    if not isinstance(request_limit, dict) or type(request_limit.get("enabled")) is not bool:
+        raise HTTPException(status_code=400, detail="Укажите enabled и max_active для лимита заявок")
+    max_active = request_limit.get("max_active")
+    if type(max_active) is not int or not 1 <= max_active <= 1000:
+        raise HTTPException(status_code=400, detail="Лимит должен быть целым числом от 1 до 1000")
+
+    settings = _get_system_board_settings(db)
+    settings["request_limit"] = {"enabled": request_limit["enabled"], "max_active": max_active}
+    row = db.query(AppSetting).filter(AppSetting.key == SYSTEM_BOARD_SETTINGS_KEY).first()
+    value = json.dumps(settings, ensure_ascii=False)
+    if row:
+        row.value = value
+    else:
+        db.add(AppSetting(key=SYSTEM_BOARD_SETTINGS_KEY, value=value))
+    db.commit()
+    from routes.admin import log_admin_action
+    log_admin_action(db, current_admin.id, "task_board_settings_update", settings)
+    return {"status": "ok", "settings": settings}
 
 
 def require_tasks_page(admin: AdminUser, action: str = "view"):
