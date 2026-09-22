@@ -1,7 +1,7 @@
 import { api } from "@/lib/api"
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent" | "ultra"
-export type TaskStatus = "review" | "submitted" | "in_dev_queue" | "in_progress" | "blocked" | "testing" | "done" | "rejected" | "archived"
+export type TaskStatus = "review" | "submitted" | "in_dev_queue" | "in_progress" | "testing" | "done" | "rejected" | "archived"
 export type TaskViewMode = "requests" | "development"
 export type ProductTag = "game" | "site" | "discord"
 
@@ -9,6 +9,10 @@ export interface SystemTaskBoardSettings {
   request_limit: {
     enabled: boolean
     max_active: number
+  }
+  archive_cleanup: {
+    enabled: boolean
+    retention_days: number
   }
   [section: string]: unknown
 }
@@ -32,7 +36,6 @@ export const PRIORITY_COLORS: Record<TaskPriority, string> = {
 export const STATUS_LABELS: Record<TaskStatus, string> = {
   submitted: "Рассмотрение",
   in_dev_queue: "Новые",
-  blocked: "Заблокировано",
   testing: "Тестирование",
   rejected: "Отклонено",
   archived: "Архив",
@@ -44,7 +47,6 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 export const STATUS_COLORS: Record<TaskStatus, string> = {
   submitted: "#8B9ECF",
   in_dev_queue: "#5A646E",
-  blocked: "#F59E0B",
   testing: "#8B5CF6",
   rejected: "#EF4444",
   archived: "#6B7280",

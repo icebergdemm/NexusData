@@ -589,6 +589,19 @@ def task_cleanup_replays() -> dict:
         db.close()
 
 
+def task_cleanup_system_task_archive() -> dict:
+    """Check archive-retention settings daily and purge at most monthly."""
+    from routes.tasks import run_system_task_archive_cleanup
+    db = SessionLocal()
+    try:
+        return run_system_task_archive_cleanup(db)
+    except Exception:
+        logger.exception("[Tasks] Archive cleanup failed")
+        raise
+    finally:
+        db.close()
+
+
 def task_finalize_replay_streams() -> dict:
     """Pack abandoned replay streams (>5 min without new chunks) into demos.
 
@@ -1654,6 +1667,15 @@ def _start_scheduler():
         interval_secs=6 * 60 * 60,
         priority=Priority.BACKGROUND,
         task_id="replay_cleanup",
+    )
+
+    # System-board archive cleanup is checked daily; its database marker
+    # enforces the monthly cadence and keeps restarts from triggering a purge.
+    scheduler.register_periodic(
+        task_cleanup_system_task_archive,
+        interval_secs=24 * 60 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="task_archive_cleanup",
     )
 
     # Abandoned replay streams: assemble into broken demos in the common

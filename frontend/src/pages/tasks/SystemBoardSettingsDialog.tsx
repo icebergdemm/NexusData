@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ClipboardList, LoaderCircle, Settings2 } from "lucide-react"
+import { Archive, ClipboardList, LoaderCircle, Settings2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -37,7 +37,9 @@ export function SystemBoardSettingsDialog({ open, onOpenChange }: {
   })
 
   const limit = draft?.request_limit
+  const cleanup = draft?.archive_cleanup
   const validLimit = !!limit && Number.isInteger(limit.max_active) && limit.max_active >= 1 && limit.max_active <= 1000
+  const validCleanup = !!cleanup && Number.isInteger(cleanup.retention_days) && cleanup.retention_days >= 1 && cleanup.retention_days <= 3650
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -57,6 +59,7 @@ export function SystemBoardSettingsDialog({ open, onOpenChange }: {
             <Button className="mt-3" size="sm" variant="outline" onClick={() => settingsQuery.refetch()}>Повторить</Button>
           </div>
         ) : (
+          <div className="space-y-6">
           <section aria-labelledby="request-limit-heading" className="space-y-3">
             <div className="flex items-start gap-3 border-b pb-3">
               <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -115,12 +118,71 @@ export function SystemBoardSettingsDialog({ open, onOpenChange }: {
               )}
             </div>
           </section>
+          <section aria-labelledby="archive-cleanup-heading" className="space-y-3">
+            <div className="flex items-start gap-3 border-b pb-3">
+              <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                <Archive className="size-4" />
+              </div>
+              <div>
+                <h3 id="archive-cleanup-heading" className="text-sm font-semibold">Очистка архива</h3>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Старые отклонённые и архивные заявки удаляются автоматически раз в месяц.</p>
+              </div>
+            </div>
+
+            <div className="rounded-md border bg-card p-4">
+              {settingsQuery.isLoading || !cleanup ? (
+                <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Загружаю настройки…</div>
+              ) : (
+                <>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <Label htmlFor="archive-cleanup-enabled" className="text-sm font-medium">Автоматически очищать архив</Label>
+                      <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">Активные заявки очистка не затрагивает.</p>
+                    </div>
+                    <Switch
+                      id="archive-cleanup-enabled"
+                      checked={cleanup.enabled}
+                      disabled={saveMutation.isPending}
+                      onCheckedChange={(enabled) => setDraft((current) => current ? { ...current, archive_cleanup: { ...current.archive_cleanup, enabled } } : current)}
+                    />
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+                    <div className="space-y-1">
+                      <Label htmlFor="archive-retention-days" className="text-sm font-medium">Хранить в архиве</Label>
+                      <p className="text-xs text-muted-foreground">Срок после отклонения или архивации</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="archive-retention-days"
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={3650}
+                        step={1}
+                        value={cleanup.retention_days}
+                        disabled={saveMutation.isPending}
+                        onChange={(event) => {
+                          const value = event.target.valueAsNumber
+                          setDraft((current) => current ? { ...current, archive_cleanup: { ...current.archive_cleanup, retention_days: Number.isNaN(value) ? 0 : value } } : current)
+                        }}
+                        className="w-24 text-center tabular-nums"
+                      />
+                      <span className="text-xs text-muted-foreground">дней</span>
+                    </div>
+                  </div>
+                  {!validCleanup && <p role="alert" className="mt-3 text-xs text-destructive">Введите целое число от 1 до 3650 дней.</p>}
+                </>
+              )}
+            </div>
+          </section>
+          </div>
         )}
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Отмена</Button>
           <Button
-            disabled={!draft || !validLimit || settingsQuery.isLoading || settingsQuery.isError || saveMutation.isPending}
+            disabled={!draft || !validLimit || !validCleanup || settingsQuery.isLoading || settingsQuery.isError || saveMutation.isPending}
             onClick={() => saveMutation.mutate()}
           >
             {saveMutation.isPending && <LoaderCircle className="size-4 animate-spin" />}

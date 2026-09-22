@@ -143,14 +143,13 @@ function TaskStatusBadge({ status, label, color }: { status: TaskStatus; label?:
   return <Badge style={{ backgroundColor: `${badgeColor}22`, color: badgeColor }} className="text-[10px]">{label ?? STATUS_LABELS[status] ?? status}</Badge>
 }
 
+const BAROTRAUMA_ICON_DATA = "data:image/png;base64,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"
+
 function ProductTagBadge({ tag }: { tag: ProductTag }) {
   const label = tag === "game" ? "Barotrauma" : tag === "site" ? "NexusData" : "Discord"
   return <Badge variant="outline" className="gap-1 text-[10px]">
-    {tag === "site" ? <img src="/static/favicon.ico" alt="" className="size-3.5 object-contain" /> : tag === "game" ? (
-      <svg viewBox="0 0 20 20" aria-hidden="true" className="size-3.5 fill-current text-sky-400">
-        <path d="M2 11h12.7l3.3 2.1c-1.2 2.7-3.6 4-7.2 4H7c-2.3 0-4.1-1.7-5-4.5L2 11Zm6-1V7h3l1 2H8Zm2-4V4h1v2h-1Z" />
-        <circle cx="7" cy="13" r=".7" /><circle cx="10" cy="13" r=".7" /><circle cx="13" cy="13" r=".7" />
-      </svg>
+    {tag === "site" || tag === "game" ? (
+      <img src={tag === "site" ? "/static/favicon.ico" : BAROTRAUMA_ICON_DATA} alt="" className="size-3.5 rounded-[2px] object-contain" />
     ) : (
       <svg viewBox="0 0 24 24" aria-hidden="true" className="size-3.5 fill-[#5865F2]">
         <path d="M19.7 5.2a18 18 0 0 0-4.4-1.4l-.5 1a16 16 0 0 0-5.6 0l-.5-1a18 18 0 0 0-4.4 1.4C1.5 9.3.7 13.3 1.1 17.3a18 18 0 0 0 5.4 2.7l1.2-2a12 12 0 0 1-1.9-.9l.5-.4a13 13 0 0 0 11.4 0l.5.4a12 12 0 0 1-1.9.9l1.2 2a18 18 0 0 0 5.4-2.7c.5-4.7-.8-8.7-3.2-12.1ZM8.7 14.5c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" />
@@ -198,7 +197,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }),
     onError: (e: Error) => toast.error(e.message),
   })
-  const publicStatusLabel = viewMode === "requests" && ["in_dev_queue", "in_progress", "blocked", "testing"].includes(task.status)
+  const publicStatusLabel = viewMode === "requests" && ["in_dev_queue", "in_progress", "testing"].includes(task.status)
     ? "Передано в разработку" : undefined
 
   const moveActions = (canEdit && !isSystemBoard ? columns.filter(c => c.id !== task.column_id).map(c => ({
@@ -247,7 +246,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
           {!isSystemBoard && task.rejection_reason && <Badge variant="outline" className="text-[10px] border-destructive/40 text-destructive">Отклонено</Badge>}
         </div>
         {task.status === "rejected" && task.rejection_reason && <p className="line-clamp-2 text-xs text-muted-foreground">Причина: {task.rejection_reason}</p>}
-        {viewMode === "development" && task.status === "in_dev_queue" && !task.assignee_admin_id && !task.assignee_department_id && <Button size="sm" variant="outline" className="w-full" onClick={(e) => { e.stopPropagation(); takeMutation.mutate() }} disabled={takeMutation.isPending}>{takeMutation.isPending ? "Назначаем…" : "Взять в работу"}</Button>}
+        {viewMode === "development" && ["in_dev_queue", "in_progress"].includes(task.status) && !task.assignee_admin_id && !task.assignee_department_id && <Button size="sm" variant="outline" className="w-full" onClick={(e) => { e.stopPropagation(); takeMutation.mutate() }} disabled={takeMutation.isPending}>{takeMutation.isPending ? "Назначаем…" : "Взять в работу"}</Button>}
         {(task.assignee_admin_name || task.assignee_department_name) && (
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             {task.assignee_admin_name && <span className="flex items-center gap-1"><User className="size-3" /> {task.assignee_admin_name}</span>}
@@ -347,7 +346,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
         )}
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="order-2 flex flex-col gap-2">
         {tasks.map((t) => (
           <TaskCard
             key={t.id}
@@ -393,7 +392,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             </div>
           </div>
         ) : (
-          <Button size="sm" variant="ghost" className="justify-start text-muted-foreground" onClick={() => setAddingTask(true)}>
+          <Button size="sm" variant="ghost" className="order-1 justify-start text-muted-foreground" onClick={() => setAddingTask(true)}>
             <Plus className="size-4" /> Задача
           </Button>
         )

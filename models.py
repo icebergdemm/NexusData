@@ -2385,6 +2385,7 @@ class Task(Base):
     status = Column(String(20), nullable=False, default="review")
     is_hidden = Column(Boolean, nullable=False, default=False)  # custom boards only; ignored on system board
     rejection_reason = Column(String(1000), nullable=True)
+    archived_at = Column(DateTime, nullable=True, index=True)
     # p.2: превью скриншота
     preview_attachment_id = Column(Integer, ForeignKey("task_attachments.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=func.now())

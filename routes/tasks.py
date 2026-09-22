@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import Optional, List
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import json
 import os
@@ -37,21 +37,24 @@ PRODUCT_TAGS = {"game", "site", "discord"}
 SYSTEM_BOARD_COLUMNS = {
     "requests": (
         {"key": "submitted", "name": "Рассмотрение", "color": "#8B9ECF", "statuses": ("submitted",)},
-        {"key": "development", "name": "Передано в разработку", "color": "#3B82F6", "statuses": ("in_dev_queue", "in_progress", "blocked", "testing")},
+        {"key": "development", "name": "Передано в разработку", "color": "#3B82F6", "statuses": ("in_dev_queue", "in_progress", "testing")},
         {"key": "done", "name": "Готово", "color": "#22C55E", "statuses": ("done",)},
         {"key": "archive", "name": "Архив", "color": "#6B7280", "statuses": ("archived", "rejected")},
     ),
     "development": (
         {"key": "in_dev_queue", "name": "Новые", "color": "#5A646E", "statuses": ("in_dev_queue",)},
         {"key": "in_progress", "name": "В работе", "color": "#3B82F6", "statuses": ("in_progress",)},
-        {"key": "blocked", "name": "Блок.", "color": "#F59E0B", "statuses": ("blocked",)},
         {"key": "testing", "name": "Тестирование", "color": "#8B5CF6", "statuses": ("testing",)},
         {"key": "done", "name": "Готово", "color": "#22C55E", "statuses": ("done",)},
     ),
 }
 SYSTEM_TASK_STATUSES = {status for columns in SYSTEM_BOARD_COLUMNS.values() for col in columns for status in col["statuses"]}
 SYSTEM_BOARD_SETTINGS_KEY = "system_task_board"
-DEFAULT_SYSTEM_BOARD_SETTINGS = {"request_limit": {"enabled": True, "max_active": 3}}
+SYSTEM_BOARD_ARCHIVE_CLEANUP_LAST_RUN_KEY = "system_task_board_archive_cleanup_last_run"
+DEFAULT_SYSTEM_BOARD_SETTINGS = {
+    "request_limit": {"enabled": True, "max_active": 3},
+    "archive_cleanup": {"enabled": True, "retention_days": 30},
+}
 
 
 def _get_system_board_settings(db: Session) -> dict:
@@ -67,6 +70,13 @@ def _get_system_board_settings(db: Session) -> dict:
     settings["request_limit"] = {
         "enabled": limit.get("enabled") if type(limit.get("enabled")) is bool else True,
         "max_active": max_active if type(max_active) is int and 1 <= max_active <= 1000 else 3,
+    }
+    cleanup = settings.get("archive_cleanup")
+    cleanup = cleanup if isinstance(cleanup, dict) else {}
+    retention_days = cleanup.get("retention_days", 30)
+    settings["archive_cleanup"] = {
+        "enabled": cleanup.get("enabled") if type(cleanup.get("enabled")) is bool else True,
+        "retention_days": retention_days if type(retention_days) is int and 1 <= retention_days <= 3650 else 30,
     }
     return settings
 
@@ -187,9 +197,16 @@ async def api_update_system_board_settings(request: Request, db: Session = Depen
     max_active = request_limit.get("max_active")
     if type(max_active) is not int or not 1 <= max_active <= 1000:
         raise HTTPException(status_code=400, detail="Лимит должен быть целым числом от 1 до 1000")
+    archive_cleanup = body.get("archive_cleanup") if isinstance(body, dict) else None
+    if not isinstance(archive_cleanup, dict) or type(archive_cleanup.get("enabled")) is not bool:
+        raise HTTPException(status_code=400, detail="Укажите enabled и retention_days для очистки архива")
+    retention_days = archive_cleanup.get("retention_days")
+    if type(retention_days) is not int or not 1 <= retention_days <= 3650:
+        raise HTTPException(status_code=400, detail="Срок хранения архива должен быть целым числом от 1 до 3650 дней")
 
     settings = _get_system_board_settings(db)
     settings["request_limit"] = {"enabled": request_limit["enabled"], "max_active": max_active}
+    settings["archive_cleanup"] = {"enabled": archive_cleanup["enabled"], "retention_days": retention_days}
     row = db.query(AppSetting).filter(AppSetting.key == SYSTEM_BOARD_SETTINGS_KEY).first()
     value = json.dumps(settings, ensure_ascii=False)
     if row:
@@ -200,6 +217,70 @@ async def api_update_system_board_settings(request: Request, db: Session = Depen
     from routes.admin import log_admin_action
     log_admin_action(db, current_admin.id, "task_board_settings_update", settings)
     return {"status": "ok", "settings": settings}
+
+
+def cleanup_expired_system_tasks(db: Session, *, now: Optional[datetime] = None, retention_days: Optional[int] = None) -> int:
+    """Permanently delete only old archived/rejected requests from the system board."""
+    now = now or datetime.utcnow()
+    if retention_days is None:
+        retention_days = _get_system_board_settings(db)["archive_cleanup"]["retention_days"]
+    cutoff = now - timedelta(days=retention_days)
+    expired = db.query(Task).join(TaskBoard, TaskBoard.id == Task.board_id).filter(
+        TaskBoard.board_type == "system",
+        Task.status.in_(("archived", "rejected")),
+        Task.archived_at.is_not(None),
+        Task.archived_at < cutoff,
+    ).all()
+    attachment_paths = [
+        attachment.stored_path
+        for task in expired
+        for attachment in db.query(TaskAttachment).filter(TaskAttachment.task_id == task.id).all()
+        if attachment.stored_path
+    ]
+    deleted = len(expired)
+    for task in expired:
+        db.delete(task)
+    db.commit()
+    for path in attachment_paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            logger.exception("Не удалось удалить файл архивной заявки: %s", path)
+    logger.info("Очистка архива системной доски: удалено %s заявок (на %s)", deleted, now.isoformat())
+    return deleted
+
+
+def run_system_task_archive_cleanup(db: Session, *, now: Optional[datetime] = None) -> dict:
+    """Run at most once per 30 days; the scheduler polls this once per day."""
+    now = now or datetime.utcnow()
+    config = _get_system_board_settings(db)["archive_cleanup"]
+    if not config["enabled"]:
+        return {"status": "disabled", "deleted": 0}
+
+    marker = db.query(AppSetting).filter(AppSetting.key == SYSTEM_BOARD_ARCHIVE_CLEANUP_LAST_RUN_KEY).with_for_update().first()
+    if marker and marker.value:
+        try:
+            last_run = datetime.fromisoformat(marker.value)
+        except (TypeError, ValueError):
+            last_run = None
+        if last_run and now - last_run < timedelta(days=30):
+            return {"status": "not_due", "deleted": 0}
+    else:
+        # Arm the first run instead of deleting old data on the deployment tick.
+        if marker is None:
+            marker = AppSetting(key=SYSTEM_BOARD_ARCHIVE_CLEANUP_LAST_RUN_KEY, value=now.isoformat())
+            db.add(marker)
+        else:
+            marker.value = now.isoformat()
+        db.commit()
+        logger.info("Очистка архива системной доски запланирована на ежемесячный цикл")
+        return {"status": "armed", "deleted": 0}
+
+    marker.value = now.isoformat()
+    deleted = cleanup_expired_system_tasks(db, now=now, retention_days=config["retention_days"])
+    db.commit()
+    return {"status": "done", "deleted": deleted}
 
 
 def require_tasks_page(admin: AdminUser, action: str = "view"):
@@ -363,6 +444,7 @@ def serialize_task(task: Task, comment_count: int = 0, attachment_count: int = 0
         "sort_order": task.sort_order,
         "status": getattr(task, "status", "review"),
         "rejection_reason": getattr(task, "rejection_reason", None),
+        "archived_at": task.archived_at.isoformat() if task.archived_at else None,
         "preview_attachment_id": getattr(task, "preview_attachment_id", None),
         "preview_url": preview_url,
         "attachment_count": attachment_count,
@@ -682,7 +764,8 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
             raise HTTPException(status_code=400, detail="Выберите тип заявки")
         column = None
         status = "submitted"
-        max_order = db.query(func.max(Task.sort_order)).filter(Task.board_id == board.id).scalar() or 0
+        min_order = db.query(func.min(Task.sort_order)).filter(Task.board_id == board.id).scalar()
+        new_order = (min_order if min_order is not None else 0) - 1
     else:
         product_tag = None
         column = None
@@ -694,6 +777,7 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
             raise HTTPException(status_code=400, detail="На доске нет колонок")
         status = "review"
         max_order = db.query(func.max(Task.sort_order)).filter(Task.column_id == column.id).scalar() or 0
+        new_order = max_order + 1
 
     priority = body.get("priority") or None
     if priority and priority not in TASK_PRIORITIES:
@@ -734,7 +818,7 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
         product_tag=product_tag,
         limit_eligible=limit_eligible,
         assignee_admin_id=assignee_admin_id, assignee_department_id=assignee_department_id,
-        created_by_admin_id=current_admin.id, sort_order=max_order + 1, status=status,
+        created_by_admin_id=current_admin.id, sort_order=new_order, status=status,
     )
     db.add(task)
     db.commit()
@@ -820,12 +904,24 @@ async def api_update_task(task_id: int, request: Request, db: Session = Depends(
         if board.board_type == "system" and old_status == "in_dev_queue" and st == "in_progress" and not task.assignee_admin_id and not task.assignee_department_id:
             raise HTTPException(status_code=409, detail="Используйте кнопку «Взять в работу»")
         task.status = st
+        if board.board_type == "system":
+            was_archived = old_status in {"archived", "rejected"}
+            is_archived = st in {"archived", "rejected"}
+            if is_archived and not was_archived:
+                task.archived_at = datetime.utcnow()
+            elif was_archived and not is_archived:
+                task.archived_at = None
         if old_status != st:
             _log_task_activity(db, task.id, current_admin.id, "status_change", f"{old_status} -> {st}")
             if board.board_type == "system" and st in {"in_progress", "done", "rejected"}:
                 notification_event = st
         if st == "rejected":
             task.rejection_reason = reason[:1000]
+            task.priority = None
+    if board.board_type == "system" and task.status == "in_dev_queue" and (task.assignee_admin_id or task.assignee_department_id):
+        task.status = "in_progress"
+        _log_task_activity(db, task.id, current_admin.id, "status_change", "in_dev_queue -> in_progress (назначен исполнитель)")
+        notification_event = "in_progress"
     if "rejection_reason" in body:
         if board.board_type == "system" and body.get("status") != "rejected":
             raise HTTPException(status_code=400, detail="Причину можно указать только при отклонении")
@@ -1147,6 +1243,7 @@ async def api_reject_task(task_id: int, request: Request, db: Session = Depends(
             raise HTTPException(status_code=403, detail="Недостаточно прав")
         task.is_hidden = True
         task.rejection_reason = reason[:1000]
+        task.priority = None
         db.commit()
         _log_task_activity(db, task_id, current_admin.id, "reject", reason)
         db.commit()
@@ -1154,6 +1251,9 @@ async def api_reject_task(task_id: int, request: Request, db: Session = Depends(
     old_status = task.status
     task.status = "rejected"
     task.rejection_reason = reason[:1000]
+    task.priority = None
+    if old_status not in {"archived", "rejected"}:
+        task.archived_at = datetime.utcnow()
     db.commit()
     _log_task_activity(db, task_id, current_admin.id, "status_change", f"{old_status} -> rejected; {reason[:1000]}")
     db.commit()
@@ -1185,22 +1285,28 @@ async def api_take_task(task_id: int, db: Session = Depends(get_db), current_adm
         raise HTTPException(status_code=409, detail="Взять в работу можно только заявку системной доски")
 
     # Conditional UPDATE makes the claim a single-winner operation under concurrent requests.
+    old_status = task.status
     claimed = db.query(Task).filter(
         Task.id == task_id,
         Task.board_id == task.board_id,
-        Task.status == "in_dev_queue",
+        Task.status.in_(("in_dev_queue", "in_progress")),
         Task.assignee_admin_id.is_(None),
         Task.assignee_department_id.is_(None),
     ).update({Task.assignee_admin_id: current_admin.id, Task.status: "in_progress"}, synchronize_session=False)
     if not claimed:
+        db.rollback()
+        task = get_task_or_404(db, task_id)
         winner = db.query(AdminUser).filter(AdminUser.id == task.assignee_admin_id).first() if task.assignee_admin_id else None
         if winner:
             raise HTTPException(status_code=409, detail=f"Уже взято в работу пользователем {winner.discord_username or winner.id}")
+        department = db.query(Department).filter(Department.id == task.assignee_department_id).first() if task.assignee_department_id else None
+        if department:
+            raise HTTPException(status_code=409, detail=f"Заявка уже назначена на отдел {department.name}")
         raise HTTPException(status_code=409, detail="Заявка уже не в очереди разработки")
     db.commit()
     db.expire_all()
     task = get_task_or_404(db, task_id)
-    _log_task_activity(db, task_id, current_admin.id, "status_change", "in_dev_queue -> in_progress")
+    _log_task_activity(db, task_id, current_admin.id, "status_change", f"{old_status} -> in_progress (взято в работу)")
     db.commit()
     _schedule_task_dm(db, task, current_admin, "in_progress")
     return {"status": "ok", "task": serialize_task(task)}

@@ -194,6 +194,8 @@ def _apply_migrations():
         ("ai_creature_alerts", "reported_distance_from_yasa_m_approx", "INT"),
         # admin_users: flags accounts auto-provisioned by task_sync_department_roles
         ("admin_users", "created_by_worker", "TINYINT NOT NULL DEFAULT 0"),
+        # System task archive retention timestamp.
+        ("tasks", "archived_at", "DATETIME NULL"),
         # admin_action_logs: actor/session context for investigation workspace
         ("admin_action_logs", "actor_type", "VARCHAR(16)"),
         ("admin_action_logs", "actor_discord_id", "VARCHAR(25)"),
@@ -918,11 +920,50 @@ def _migrate_task_board_system():
         log.exception("Task-board migration failed")
         raise
 
+
+def _migrate_system_task_states(bind=None):
+    """Move obsolete/misrepresented statuses and backfill archive timestamps."""
+    from sqlalchemy import text
+
+    bind = bind or engine
+    with bind.begin() as conn:
+        legacy = conn.execute(text(
+            "SELECT t.id, t.status FROM tasks t JOIN task_boards b ON b.id=t.board_id "
+            "WHERE b.board_type='system' AND (t.status='blocked' OR "
+            "(t.status='in_dev_queue' AND (t.assignee_admin_id IS NOT NULL OR t.assignee_department_id IS NOT NULL)))"
+        )).mappings().all()
+        for task in legacy:
+            target = "in_progress"
+            reason = "status removed" if task["status"] == "blocked" else "legacy assignee retained"
+            conn.execute(text("UPDATE tasks SET status=:status WHERE id=:id"), {"status": target, "id": task["id"]})
+            conn.execute(text(
+                "INSERT INTO task_activity_logs (task_id, admin_id, action, detail, created_at) "
+                "VALUES (:task_id, NULL, 'status_change', :detail, CURRENT_TIMESTAMP)"
+            ), {"task_id": task["id"], "detail": f"{task['status']} -> {target} ({reason}, migration)"})
+
+        archived = conn.execute(text(
+            "SELECT t.id, COALESCE(t.updated_at, CURRENT_TIMESTAMP) AS updated_at FROM tasks t JOIN task_boards b ON b.id=t.board_id "
+            "WHERE b.board_type='system' AND t.status IN ('archived','rejected') AND t.archived_at IS NULL"
+        )).mappings().all()
+        for task in archived:
+            logs = conn.execute(text(
+                "SELECT detail, created_at FROM task_activity_logs WHERE task_id=:task_id "
+                "AND action='status_change' ORDER BY created_at DESC, id DESC"
+            ), {"task_id": task["id"]}).mappings().all()
+            archive_time = next((
+                log["created_at"] for log in logs
+                if log["detail"] and ("-> archived" in log["detail"] or "-> rejected" in log["detail"])
+            ), task["updated_at"])
+            conn.execute(text("UPDATE tasks SET archived_at=:archived_at WHERE id=:id"), {
+                "archived_at": archive_time, "id": task["id"],
+            })
+
 def init_db():
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
     _apply_migrations()
     _migrate_task_board_system()
+    _migrate_system_task_states()
     # Preserve ownership for masks that were already active before the
     # persistent claim flag existed.
     with engine.begin() as conn:
