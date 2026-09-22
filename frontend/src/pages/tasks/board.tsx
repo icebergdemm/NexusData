@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, EyeOff, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink, ArrowRightLeft,
+  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink, ArrowRightLeft,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -27,9 +27,10 @@ import { UI_BASENAME } from "@/lib/ui-version"
 import { ImageLightbox, type LightboxImage } from "@/components/ui/image-lightbox"
 import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
-  type TaskBoardRow, type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type AssigneeCandidates,
+  type TaskBoardRow, type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type TaskViewMode, type ProductTag, type AssigneeCandidates,
 } from "./api"
 import { BoardPermissionsDialog } from "./BoardPermissionsDialog"
+import { SystemBoardSettingsDialog } from "./SystemBoardSettingsDialog"
 
 function isOverdue(task: TaskRow): boolean {
   return !!task.deadline && new Date(task.deadline).getTime() < Date.now()
@@ -61,7 +62,7 @@ function MoveTaskDialog({ task, currentBoardId, open, onOpenChange, onMoved }: {
     queryFn: () => tasksApi.boards.list(),
     enabled: open,
   })
-  const availableBoards = boardsData?.boards.filter((board) => board.id !== currentBoardId) ?? []
+  const availableBoards = boardsData?.boards.filter((board) => board.id !== currentBoardId && board.board_type !== "system") ?? []
   const selectedBoardId = Number(targetBoardId)
   const { data: selectedBoard, isLoading: columnsLoading } = useQuery({
     queryKey: ["task-move-board", selectedBoardId],
@@ -137,13 +138,31 @@ function MoveTaskDialog({ task, currentBoardId, open, onOpenChange, onMoved }: {
   )
 }
 
-function TaskStatusBadge({ status }: { status: TaskStatus }) {
-  return <Badge style={{ backgroundColor: `${STATUS_COLORS[status as TaskStatus]}22`, color: STATUS_COLORS[status as TaskStatus] }} className="text-[10px]">{STATUS_LABELS[status as TaskStatus] ?? status}</Badge>
+function TaskStatusBadge({ status, label, color }: { status: TaskStatus; label?: string; color?: string }) {
+  const badgeColor = color ?? STATUS_COLORS[status]
+  return <Badge style={{ backgroundColor: `${badgeColor}22`, color: badgeColor }} className="text-[10px]">{label ?? STATUS_LABELS[status] ?? status}</Badge>
+}
+
+function ProductTagBadge({ tag }: { tag: ProductTag }) {
+  const label = tag === "game" ? "Barotrauma" : tag === "site" ? "NexusData" : "Discord"
+  return <Badge variant="outline" className="gap-1 text-[10px]">
+    {tag === "site" ? <img src="/static/favicon.ico" alt="" className="size-3.5 object-contain" /> : tag === "game" ? (
+      <svg viewBox="0 0 20 20" aria-hidden="true" className="size-3.5 fill-current text-sky-400">
+        <path d="M2 11h12.7l3.3 2.1c-1.2 2.7-3.6 4-7.2 4H7c-2.3 0-4.1-1.7-5-4.5L2 11Zm6-1V7h3l1 2H8Zm2-4V4h1v2h-1Z" />
+        <circle cx="7" cy="13" r=".7" /><circle cx="10" cy="13" r=".7" /><circle cx="13" cy="13" r=".7" />
+      </svg>
+    ) : (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="size-3.5 fill-[#5865F2]">
+        <path d="M19.7 5.2a18 18 0 0 0-4.4-1.4l-.5 1a16 16 0 0 0-5.6 0l-.5-1a18 18 0 0 0-4.4 1.4C1.5 9.3.7 13.3 1.1 17.3a18 18 0 0 0 5.4 2.7l1.2-2a12 12 0 0 1-1.9-.9l.5-.4a13 13 0 0 0 11.4 0l.5.4a12 12 0 0 1-1.9.9l1.2 2a18 18 0 0 0 5.4-2.7c.5-4.7-.8-8.7-3.2-12.1ZM8.7 14.5c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" />
+      </svg>
+    )}
+    {label}
+  </Badge>
 }
 
 // ── Board Permissions Dialog с поиском ───────────────────────────────────────
 // ── Task Card (без тегов, с анимацией) ───────────────────────────────────────
-function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, columns, canEdit, canDelete, canManageBoards }: {
+function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, columns, canEdit, canDelete, canManageBoards, viewMode, isSystemBoard, canChangeStatus }: {
   task: TaskRow
   onOpen: () => void
   onDragStart: (e: React.DragEvent) => void
@@ -154,6 +173,9 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
   canEdit: boolean
   canDelete: boolean
   canManageBoards: boolean
+  viewMode: TaskViewMode | "custom"
+  isSystemBoard: boolean
+  canChangeStatus: boolean
 }) {
   const overdue = isOverdue(task)
   const queryClient = useQueryClient()
@@ -171,11 +193,18 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
     const newPriority = task.priority === "urgent" ? null : "urgent" as TaskPriority
     tasksApi.tasks.update(task.id, { priority: newPriority }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }))
   }
+  const takeMutation = useMutation({
+    mutationFn: () => tasksApi.tasks.take(task.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }),
+    onError: (e: Error) => toast.error(e.message),
+  })
+  const publicStatusLabel = viewMode === "requests" && ["in_dev_queue", "in_progress", "blocked", "testing"].includes(task.status)
+    ? "Передано в разработку" : undefined
 
-  const moveActions = (canEdit ? columns.filter(c => c.id !== task.column_id).map(c => ({
+  const moveActions = (canEdit && !isSystemBoard ? columns.filter(c => c.id !== task.column_id).map(c => ({
     label: `Переместить → ${c.name}`,
     icon: GripVertical,
-    onSelect: () => tasksApi.tasks.update(task.id, { column_id: c.id }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })),
+    onSelect: () => tasksApi.tasks.update(task.id, { column_id: Number(c.id) }).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })),
   })) : [])
 
   return (
@@ -187,34 +216,38 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
         { label: "Отправить ссылку в чат", icon: Send, onSelect: () => sendLinkToChat(`task://${task.id}`) },
         ...moveActions.slice(0, 5),
         ...(canManageBoards ? [{ label: "Перенести на другую доску", icon: ArrowRightLeft, onSelect: onMove, separatorBefore: true }] : []),
-        ...(canEdit ? [
+        ...(canEdit && (!isSystemBoard || canChangeStatus) ? [
           { label: task.priority === "urgent" ? "Снять высокий приоритет" : "Выделить высоким приоритетом", icon: Flag, onSelect: toggleUrgent, separatorBefore: true },
-          { label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : EyeOff, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) },
-          { label: "Отклонить с причиной", icon: Ban, onSelect: () => { const r = prompt("Причина отклонения:"); if (r) tasksApi.tasks.reject(task.id, r).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) }, separatorBefore: true, destructive: true },
+          ...(!isSystemBoard ? [{ label: task.is_hidden ? "Показать задачу" : "Скрыть задачу", icon: task.is_hidden ? Eye : Ban, onSelect: () => tasksApi.tasks.toggleHidden(task.id).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) }] : []),
         ] : []),
+        ...(canChangeStatus && isSystemBoard && task.status !== "rejected" ? [{ label: "Отклонить с причиной", icon: Ban, onSelect: () => { const r = prompt("Причина отклонения:"); if (r) tasksApi.tasks.reject(task.id, r).then(() => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })) }, separatorBefore: true, destructive: true }] : []),
         ...(canDelete ? [
           { label: "Удалить", icon: Trash2, destructive: true, separatorBefore: !canEdit, onSelect: () => deleteMutation.mutate() },
         ] : []),
       ]}
     >
     <Card
-      draggable={canEdit}
-      onDragStart={canEdit ? onDragStart : undefined}
+      draggable={isSystemBoard ? canChangeStatus : canEdit}
+      onDragStart={isSystemBoard ? (canChangeStatus ? onDragStart : undefined) : (canEdit ? onDragStart : undefined)}
       onClick={onOpen}
-      className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-[0.98] data-[dragging=true]:opacity-50 ${task.is_hidden ? "opacity-60 border-dashed" : ""} ${task.priority === "urgent" ? "ring-1 ring-urgent/30" : ""} ${task.priority === "ultra" ? "task-priority-ultra" : ""}`}
+      className={`group cursor-pointer gap-0 overflow-hidden py-0 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/50 animate-in fade-in-0 zoom-in-[0.98] data-[dragging=true]:opacity-50 ${!isSystemBoard && task.is_hidden ? "opacity-60 border-dashed" : ""} ${task.priority === "urgent" ? "ring-1 ring-urgent/30" : ""} ${task.priority === "ultra" ? "task-priority-ultra" : ""}`}
     >
       {task.preview_url && <img src={task.preview_url} alt="" className="h-28 w-full object-cover" />}
       <CardContent className="space-y-1.5 p-3">
         <div className="flex items-start justify-between gap-1">
           <div className="line-clamp-2 text-sm font-medium leading-tight">{task.title}</div>
-          {task.is_hidden && <Badge variant="outline" className="text-[10px] border-warning/40 text-warning shrink-0">скрыта</Badge>}
+          <span className="shrink-0 text-[10px] text-muted-foreground">#{task.id}</span>
+          {!isSystemBoard && task.is_hidden && <Badge variant="outline" className="text-[10px] border-warning/40 text-warning shrink-0">скрыта</Badge>}
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          <TaskStatusBadge status={task.status} />
+          <TaskStatusBadge status={task.status} label={publicStatusLabel} color={publicStatusLabel ? "#3B82F6" : undefined} />
+          {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
           {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className={`text-[10px] ${task.priority === "ultra" ? "max-w-full min-w-0 truncate" : ""}`}>{PRIORITY_LABELS[task.priority]}</Badge>}
           {task.attachment_count > 0 && <Badge variant="outline" className="gap-1 text-[10px]"><ImageIcon className="size-3" />{task.attachment_count}</Badge>}
-          {task.rejection_reason && <Badge variant="outline" className="text-[10px] border-destructive/40 text-destructive">отклонена</Badge>}
+          {!isSystemBoard && task.rejection_reason && <Badge variant="outline" className="text-[10px] border-destructive/40 text-destructive">Отклонено</Badge>}
         </div>
+        {task.status === "rejected" && task.rejection_reason && <p className="line-clamp-2 text-xs text-muted-foreground">Причина: {task.rejection_reason}</p>}
+        {viewMode === "development" && task.status === "in_dev_queue" && !task.assignee_admin_id && !task.assignee_department_id && <Button size="sm" variant="outline" className="w-full" onClick={(e) => { e.stopPropagation(); takeMutation.mutate() }} disabled={takeMutation.isPending}>{takeMutation.isPending ? "Назначаем…" : "Взять в работу"}</Button>}
         {(task.assignee_admin_name || task.assignee_department_name) && (
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             {task.assignee_admin_name && <span className="flex items-center gap-1"><User className="size-3" /> {task.assignee_admin_name}</span>}
@@ -239,16 +272,16 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
-function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn }: {
+function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, viewMode, isSystemBoard, canChangeStatus }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
   canManageBoards: boolean
   onOpenTask: (id: number) => void
-  onDropTask: (columnId: number, taskId: number) => void
+  onDropTask: (columnId: number | string, taskId: number) => void
   onEditColumn: () => void
   onDeleteColumn: () => void
-  onCreateTask: (columnId: number, title: string) => void
+  onCreateTask: (columnId: number | string, title: string, productTag?: ProductTag) => void
   onTaskDeleted: () => void
   onMoveTask: (task: TaskRow) => void
   boardId: number
@@ -258,21 +291,33 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   canEditOwn: boolean
   canDeleteAll: boolean
   canDeleteOwn: boolean
+  viewMode: TaskViewMode | "custom"
+  isSystemBoard: boolean
+  canChangeStatus: boolean
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
   const [newTitle, setNewTitle] = useState("")
+  const [productTag, setProductTag] = useState<ProductTag | "">("")
 
   const taskRights = (t: TaskRow) => {
     const isOwn = t.created_by_admin_id === currentAdminId || t.assignee_admin_id === currentAdminId
-    return { edit: canEditAll || (isOwn && canEditOwn), delete: canDeleteAll || (isOwn && canDeleteOwn) }
+    const isAuthor = t.created_by_admin_id === currentAdminId
+    const authorEdit = isSystemBoard && isAuthor && !canChangeStatus
+    const authorDelete = isSystemBoard && isAuthor && !canChangeStatus
+    return {
+      edit: authorEdit ? t.status === "submitted" : canEditAll || (isOwn && canEditOwn),
+      delete: authorDelete ? t.status === "submitted" : (!isSystemBoard || ["archived", "rejected"].includes(t.status)) && (canDeleteAll || (isOwn && canDeleteOwn)),
+    }
   }
 
   const submitNewTask = () => {
     const title = newTitle.trim()
     if (!title) { setAddingTask(false); return }
-    onCreateTask(column.id, title)
+    if (isSystemBoard && !productTag) { toast.error("Выберите тип заявки"); return }
+    onCreateTask(column.id, title, productTag || undefined)
     setNewTitle("")
+    setProductTag("")
     setAddingTask(false)
   }
 
@@ -312,6 +357,9 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             canEdit={taskRights(t).edit}
             canDelete={taskRights(t).delete}
             canManageBoards={canManageBoards}
+            viewMode={viewMode}
+            isSystemBoard={isSystemBoard}
+            canChangeStatus={canChangeStatus}
             onOpen={() => onOpenTask(t.id)}
             onMove={() => onMoveTask(t)}
             onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
@@ -330,8 +378,17 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
               onKeyDown={(e) => { if (e.key === "Enter") submitNewTask(); if (e.key === "Escape") { setAddingTask(false); setNewTitle("") } }}
               placeholder="Название задачи"
             />
+            {isSystemBoard && <Select value={productTag || "none"} onValueChange={(value) => setProductTag(value === "none" ? "" : value as ProductTag)}>
+              <SelectTrigger className="h-8"><SelectValue placeholder="Тип заявки" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Выберите тип</SelectItem>
+                <SelectItem value="game"><ProductTagBadge tag="game" /></SelectItem>
+                <SelectItem value="site"><ProductTagBadge tag="site" /></SelectItem>
+                <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
+              </SelectContent>
+            </Select>}
             <div className="flex gap-1.5">
-              <Button size="sm" onClick={submitNewTask}>Добавить</Button>
+              <Button size="sm" disabled={isSystemBoard && !productTag} onClick={submitNewTask}>Добавить</Button>
               <Button size="sm" variant="ghost" onClick={() => { setAddingTask(false); setNewTitle("") }}>Отмена</Button>
             </div>
           </div>
@@ -346,7 +403,7 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
 }
 
 // ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
-function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, canManageBoards, onMove, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
+function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, canManageBoards, canChangeStatus, isSystemBoard, viewMode, onMove, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
@@ -356,6 +413,9 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
   canDeleteAll: boolean
   canDeleteOwn: boolean
   canManageBoards: boolean
+  canChangeStatus: boolean
+  isSystemBoard: boolean
+  viewMode: TaskViewMode | "custom"
   onMove: () => void
   currentAdminId: number | undefined
   boardId: number
@@ -383,8 +443,12 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
   // Сервер разрешает правку любых задач доски при can_edit_all, а «свои»
   // (созданные/назначенные) — только при глобальном tasks:edit / tasks:delete.
   const isOwn = !!task && (task.created_by_admin_id === currentAdminId || task.assignee_admin_id === currentAdminId)
-  const canEditThis = !!task && (canEditAll || (isOwn && canEditOwn))
-  const canDeleteThis = !!task && (canDeleteAll || (isOwn && canDeleteOwn))
+  const isAuthor = !!task && task.created_by_admin_id === currentAdminId
+  const authorRestricted = isSystemBoard && isAuthor && !canChangeStatus
+  const canEditThis = !!task && (authorRestricted ? task.status === "submitted" : canEditAll || (isOwn && canEditOwn))
+  const canDeleteThis = !!task && (authorRestricted
+    ? task.status === "submitted"
+    : (!isSystemBoard || ["archived", "rejected"].includes(task.status)) && (canDeleteAll || (isOwn && canDeleteOwn)))
 
   const invalidateBoard = () => { if (task) queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }); queryClient.invalidateQueries({ queryKey: ["task-activity", taskId] }); queryClient.invalidateQueries({ queryKey: ["task-attachments", taskId] }) }
 
@@ -475,9 +539,11 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
             />
             <Button size="icon-xs" variant="ghost" onClick={copyLink} title="Копировать ссылку"><Link2 className="size-4" /></Button>
           </DialogTitle>
-          <DialogDescription className="flex flex-wrap gap-1">
+          <DialogDescription className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-xs text-muted-foreground">#{task.id}</span>
             <TaskStatusBadge status={task.status} />
-            {task.is_hidden && <Badge variant="outline" className="border-warning/40 text-warning">скрыта</Badge>}
+            {!isSystemBoard && task.is_hidden && <Badge variant="outline" className="border-warning/40 text-warning">скрыта</Badge>}
+            {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
             {task.rejection_reason && <span className="text-xs text-destructive">Отклонена: {task.rejection_reason}</span>}
           </DialogDescription>
           {canManageBoards && <Button variant="outline" size="sm" className="w-fit" onClick={onMove}><ArrowRightLeft className="size-4" /> Перенести на другую доску</Button>}
@@ -486,10 +552,13 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
         <div className="space-y-4">
           <div className="grid grid-cols-[100px_1fr] items-center gap-2 text-sm">
             <span className="text-muted-foreground">Статус</span>
-            <Select value={task.status} disabled={!canEditThis} onValueChange={(v) => updateMutation.mutate({ status: v as TaskStatus })}>
+            <Select value={task.status} disabled={isSystemBoard ? !canChangeStatus : !canEditThis} onValueChange={(v) => updateMutation.mutate({ status: v as TaskStatus })}>
               <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {Object.entries(STATUS_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                {(isSystemBoard
+                  ? Object.entries(STATUS_LABELS).filter(([key]) => key !== "rejected" && (viewMode !== "development" || !["archived"].includes(key)))
+                  : Object.entries(STATUS_LABELS).filter(([key]) => ["review", "in_progress", "done"].includes(key))
+                ).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
               </SelectContent>
             </Select>
 
@@ -505,9 +574,25 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
               <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Не задан</SelectItem>
-                {(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => <SelectItem key={p} value={p}>{PRIORITY_LABELS[p]}</SelectItem>)}
+                {(Object.keys(PRIORITY_LABELS) as TaskPriority[]).filter((p) => !isSystemBoard || canChangeStatus || !["urgent", "ultra"].includes(p)).map((p) => <SelectItem key={p} value={p}>{PRIORITY_LABELS[p]}</SelectItem>)}
               </SelectContent>
             </Select>
+
+            {isSystemBoard && <>
+              <span className="text-muted-foreground">Тип заявки</span>
+              <Select
+                value={task.product_tag ?? "none"}
+                disabled={!canEditThis}
+                onValueChange={(v) => v !== "none" && updateMutation.mutate({ product_tag: v as ProductTag })}
+              >
+                <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="game"><ProductTagBadge tag="game" /></SelectItem>
+                  <SelectItem value="site"><ProductTagBadge tag="site" /></SelectItem>
+                  <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
+                </SelectContent>
+              </Select>
+            </>}
 
             <span className="text-muted-foreground">Дедлайн</span>
             <Input
@@ -604,10 +689,10 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {canEditThis && (
+            {(isSystemBoard ? canChangeStatus : canEditThis) && (
               <>
                 <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)} className="text-destructive"><Ban className="size-3.5" /> Отклонить</Button>
-                <Button size="sm" variant="outline" onClick={() => tasksApi.tasks.toggleHidden(task.id).then(() => invalidateBoard())}>{task.is_hidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />} {task.is_hidden ? "Показать" : "Скрыть"}</Button>
+                {!isSystemBoard && <Button size="sm" variant="outline" onClick={() => tasksApi.tasks.toggleHidden(task.id).then(() => invalidateBoard())}>{task.is_hidden ? <Eye className="size-3.5" /> : <Ban className="size-3.5" />} {task.is_hidden ? "Показать" : "Скрыть"}</Button>}
               </>
             )}
             {canDeleteThis && (
@@ -664,11 +749,11 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
 
     <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
       <DialogContent className="sm:max-w-sm">
-        <DialogHeader><DialogTitle>Отклонить задачу</DialogTitle><DialogDescription>Укажите причину — задача станет скрытой.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Отклонить задачу</DialogTitle><DialogDescription>Укажите причину. Заявка останется в архиве с этим пояснением.</DialogDescription></DialogHeader>
         <Textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Причина отклонения" rows={3} />
         <DialogFooter>
           <Button variant="ghost" onClick={() => setRejectOpen(false)}>Отмена</Button>
-          <Button variant="destructive" disabled={!rejectReason.trim()} onClick={async () => { await tasksApi.tasks.reject(task.id, rejectReason.trim()); queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }); setRejectOpen(false); setRejectReason(""); onClose() }}>Отклонить и скрыть</Button>
+          <Button variant="destructive" disabled={!rejectReason.trim()} onClick={async () => { await tasksApi.tasks.reject(task.id, rejectReason.trim()); queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }); setRejectOpen(false); setRejectReason(""); onClose() }}>Отклонить и архивировать</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -850,20 +935,24 @@ export function TaskBoardPage() {
   const [editColumn, setEditColumn] = useState<TaskColumnRow | null>(null)
   const [deleteColumn, setDeleteColumn] = useState<TaskColumnRow | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [systemSettingsOpen, setSystemSettingsOpen] = useState(false)
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null)
   const [moveTask, setMoveTask] = useState<TaskRow | null>(null)
   const [highlightCommentId, setHighlightCommentId] = useState<number | null>(null)
   const [showHidden, setShowHidden] = useState(false)
+  const [tagFilter, setTagFilter] = useState<ProductTag | "all">("all")
   const [permsOpen, setPermsOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null)
   const openLightbox = (images: LightboxImage[], index: number) => setLightbox({ images, index })
 
   const boardIdNum = Number(boardId)
+  const requestedMode = searchParams.get("view") === "requests" || searchParams.get("view") === "development"
+    ? searchParams.get("view") as TaskViewMode : undefined
 
   const { data, isLoading } = useQuery({
-    queryKey: ["task-board", boardIdNum, showHidden],
-    queryFn: () => tasksApi.boards.get(boardIdNum, showHidden),
+    queryKey: ["task-board", boardIdNum, requestedMode ?? "default", showHidden],
+    queryFn: () => tasksApi.boards.get(boardIdNum, requestedMode, showHidden),
     enabled: !!boardId,
   })
 
@@ -912,20 +1001,20 @@ export function TaskBoardPage() {
   })
 
   const updateColumnMutation = useMutation({
-    mutationFn: (body: { name: string; color: string }) => tasksApi.columns.update(boardIdNum, (editColumn as TaskColumnRow).id, body),
+    mutationFn: (body: { name: string; color: string }) => tasksApi.columns.update(boardIdNum, Number((editColumn as TaskColumnRow).id), body),
     onSuccess: () => { invalidate(); setEditColumn(null) },
     onError: (e: Error) => toast.error(e.message),
   })
 
   const deleteColumnMutation = useMutation({
-    mutationFn: () => tasksApi.columns.delete(boardIdNum, (deleteColumn as TaskColumnRow).id),
+    mutationFn: () => tasksApi.columns.delete(boardIdNum, Number((deleteColumn as TaskColumnRow).id)),
     onSuccess: () => { invalidate(); setDeleteColumn(null) },
     onError: (e: Error) => { toast.error(e.message); setDeleteColumn(null) },
   })
 
   const createTaskMutation = useMutation({
-    mutationFn: ({ columnId, title }: { columnId: number; title: string }) =>
-      tasksApi.tasks.create(boardIdNum, { title, column_id: columnId }),
+    mutationFn: ({ columnId, title, productTag }: { columnId: number | string; title: string; productTag?: ProductTag }) =>
+      tasksApi.tasks.create(boardIdNum, { title, ...(typeof columnId === "number" ? { column_id: columnId } : {}), ...(productTag ? { product_tag: productTag } : {}) }),
     onSuccess: invalidate,
     onError: (e: Error) => toast.error(e.message),
   })
@@ -940,15 +1029,29 @@ export function TaskBoardPage() {
     return <div className="space-y-3"><Skeleton className="h-10 w-64" /><div className="flex gap-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-96 w-72" />)}</div></div>
   }
 
-  const tasksByColumn = new Map<number, TaskRow[]>()
+  const tasksByColumn = new Map<number | string, TaskRow[]>()
   for (const col of data.columns) tasksByColumn.set(col.id, [])
-  for (const t of data.tasks) tasksByColumn.get(t.column_id)?.push(t)
+  for (const t of data.tasks) {
+    if (data.is_system_board && data.view_mode === "requests" && tagFilter !== "all" && t.product_tag !== tagFilter) continue
+    const projected = data.is_system_board
+      ? data.columns.find((col) => col.statuses?.includes(t.status))?.id
+      : t.column_id
+    if (projected !== undefined && projected !== null) tasksByColumn.get(projected)?.push(t)
+  }
 
-  const handleDropTask = (targetColumnId: number, taskId: number) => {
+  const handleDropTask = (targetColumnId: number | string, taskId: number) => {
     const task = data.tasks.find((t) => t.id === taskId)
     if (!task) return
+    if (data.is_system_board) {
+      const destination = data.columns.find((col) => col.id === targetColumnId)
+      const nextStatus = destination?.statuses?.[0]
+      const source = data.columns.find((col) => col.statuses?.includes(task.status))
+      if (source?.id === targetColumnId || !nextStatus || !data.can_change_status) return
+      tasksApi.tasks.update(taskId, { status: nextStatus }).then(invalidate).catch((e: Error) => toast.error(e.message))
+      return
+    }
     const sourceColumnId = task.column_id
-    if (sourceColumnId === targetColumnId) return
+    if (sourceColumnId === null || typeof targetColumnId !== "number" || sourceColumnId === targetColumnId) return
     const destIds = (tasksByColumn.get(targetColumnId) ?? []).map((t) => t.id)
     destIds.push(taskId)
     const sourceIds = (tasksByColumn.get(sourceColumnId) ?? []).filter((t) => t.id !== taskId).map((t) => t.id)
@@ -972,10 +1075,24 @@ export function TaskBoardPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <label className="flex items-center gap-1.5 text-xs"><Switch checked={showHidden} onCheckedChange={setShowHidden} /> Показывать скрытые</label>
+            {data.is_system_board && data.can_develop && <div className="flex items-center rounded-md border p-0.5">
+              <Button size="sm" variant={data.view_mode === "requests" ? "secondary" : "ghost"} onClick={() => setSearchParams((prev) => { prev.set("view", "requests"); return prev })}>Заявки</Button>
+              <Button size="sm" variant={data.view_mode === "development" ? "secondary" : "ghost"} onClick={() => setSearchParams((prev) => { prev.set("view", "development"); return prev })}>Разработка</Button>
+            </div>}
+            {data.is_system_board && data.can_develop && <Button variant="outline" size="sm" onClick={() => setSystemSettingsOpen(true)}><Settings className="size-4" />Настройки</Button>}
+            {data.is_system_board && data.view_mode === "requests" && <Select value={tagFilter} onValueChange={(value) => setTagFilter(value as ProductTag | "all")}>
+              <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все типы</SelectItem>
+                <SelectItem value="game"><ProductTagBadge tag="game" /></SelectItem>
+                <SelectItem value="site"><ProductTagBadge tag="site" /></SelectItem>
+                <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
+              </SelectContent>
+            </Select>}
+            {!data.is_system_board && <label className="flex items-center gap-1.5 text-xs"><Switch checked={showHidden} onCheckedChange={setShowHidden} /> Показывать скрытые</label>}
             <Button variant="outline" size="sm" onClick={() => setPermsOpen(true)}><Shield className="size-4" /> Права</Button>
             <Button variant={chatOpen ? "secondary" : "outline"} size="sm" onClick={() => setChatOpen(!chatOpen)}><MessageSquare className="size-4" /> {chatOpen ? "Скрыть чат" : "Чат"}</Button>
-            {data.can_manage_boards && (
+            {data.can_manage_boards && !data.is_system_board && (
               <>
                 <Button variant="outline" size="sm" onClick={() => setAddColumnOpen(true)}><Plus className="size-4" /> Колонка</Button>
                 <Button variant="outline" size="icon" onClick={() => setSettingsOpen(true)}><Settings className="size-4" /></Button>
@@ -990,13 +1107,13 @@ export function TaskBoardPage() {
               key={col.id}
               column={col}
               tasks={tasksByColumn.get(col.id) ?? []}
-              canCreate={data.can_create}
-              canManageBoards={data.can_manage_boards}
+              canCreate={data.can_create && (!data.is_system_board || (data.view_mode === "requests" && col.id === "submitted"))}
+              canManageBoards={data.can_manage_boards && !data.is_system_board}
               onOpenTask={(id) => { setSelectedTaskId(id); setHighlightCommentId(null) }}
               onDropTask={handleDropTask}
               onEditColumn={() => setEditColumn(col)}
               onDeleteColumn={() => setDeleteColumn(col)}
-              onCreateTask={(columnId, title) => createTaskMutation.mutate({ columnId, title })}
+              onCreateTask={(columnId, title, productTag) => createTaskMutation.mutate({ columnId, title, productTag })}
               onTaskDeleted={invalidate}
               onMoveTask={setMoveTask}
               boardId={boardIdNum}
@@ -1006,6 +1123,9 @@ export function TaskBoardPage() {
               canEditOwn={canEditOwn}
               canDeleteAll={data.can_delete_all}
               canDeleteOwn={canDeleteOwn}
+              viewMode={data.view_mode}
+              isSystemBoard={data.is_system_board}
+              canChangeStatus={data.can_change_status}
             />
           ))}
           {!data.columns.length && (
@@ -1027,6 +1147,9 @@ export function TaskBoardPage() {
         canDeleteAll={data.can_delete_all}
         canDeleteOwn={canDeleteOwn}
         canManageBoards={data.can_manage_boards}
+        canChangeStatus={data.can_change_status}
+        isSystemBoard={data.is_system_board}
+        viewMode={data.view_mode}
         onMove={() => selectedTask && setMoveTask(selectedTask)}
         currentAdminId={admin?.id}
         boardId={boardIdNum}
@@ -1043,6 +1166,7 @@ export function TaskBoardPage() {
       />
 
       <BoardPermissionsDialog boardId={boardIdNum} open={permsOpen} onOpenChange={setPermsOpen} />
+      {data.is_system_board && data.can_develop && <SystemBoardSettingsDialog open={systemSettingsOpen} onOpenChange={setSystemSettingsOpen} />}
 
       <ColumnFormDialog
         open={addColumnOpen}

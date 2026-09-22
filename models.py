@@ -2325,6 +2325,7 @@ class TaskBoard(Base):
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
     is_archived = Column(Boolean, nullable=False, default=False)
+    board_type = Column(String(20), nullable=False, default="custom")  # custom | system
 
     department = relationship("Department")
     created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
@@ -2366,21 +2367,23 @@ class Task(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     board_id = Column(Integer, ForeignKey("task_boards.id", ondelete="CASCADE"), nullable=False, index=True)
-    column_id = Column(Integer, ForeignKey("task_columns.id", ondelete="CASCADE"), nullable=False, index=True)
+    column_id = Column(Integer, ForeignKey("task_columns.id", ondelete="CASCADE"), nullable=True, index=True)
     title = Column(String(500), nullable=False)
     description = Column(String(4000), nullable=True)
     deadline = Column(DateTime, nullable=True)
     priority = Column(String(10), nullable=True)  # "low" | "medium" | "high" | "urgent" | "ultra"
     tags = Column(JSON, default=lambda: [])
+    product_tag = Column(String(16), nullable=True)  # game | site | discord; system boards only
+    limit_eligible = Column(Boolean, nullable=False, default=False)  # post-feature user requests only
     # An assignee can be an admin, a department, or both (e.g. "this
     # employee, on behalf of this department") — either may be NULL.
     assignee_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
     assignee_department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     sort_order = Column(Integer, default=0)
-    # p.3: статус и скрытость
-    status = Column(String(20), nullable=False, default="review")  # review | in_progress | done | rejected
-    is_hidden = Column(Boolean, nullable=False, default=False)
+    # System-board status is authoritative; custom boards retain legacy status values.
+    status = Column(String(20), nullable=False, default="review")
+    is_hidden = Column(Boolean, nullable=False, default=False)  # custom boards only; ignored on system board
     rejection_reason = Column(String(1000), nullable=True)
     # p.2: превью скриншота
     preview_attachment_id = Column(Integer, ForeignKey("task_attachments.id", ondelete="SET NULL"), nullable=True)

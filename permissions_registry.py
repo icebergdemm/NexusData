@@ -224,6 +224,7 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
     # "manage_boards" covers creating/editing/archiving boards and columns.
     "tasks": {"label": "Задачи", "actions": [
         {"key": "view", "label": "Просмотр досок и задач"},
+        {"key": "developer", "label": "Режим разработки и смена статусов"},
         {"key": "create", "label": "Создание задач"},
         {"key": "edit", "label": "Редактирование своих задач (созданных или назначенных)"},
         {"key": "edit_all", "label": "Редактирование любых задач"},
