@@ -350,6 +350,7 @@ def _apply_migrations():
         ("department_access_levels", "can_bind_server_privilege", "TINYINT NOT NULL DEFAULT 0"),
         # Tasks: one canonical request board with status-derived views.
         ("task_boards", "board_type", "VARCHAR(20) NOT NULL DEFAULT 'custom'"),
+        ("task_boards", "is_private", "TINYINT NOT NULL DEFAULT 0"),
         ("tasks", "product_tag", "VARCHAR(16)"),
         ("tasks", "limit_eligible", "TINYINT NOT NULL DEFAULT 0"),
         ("tasks", "is_private", "TINYINT NOT NULL DEFAULT 0"),

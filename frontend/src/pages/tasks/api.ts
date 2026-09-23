@@ -61,6 +61,7 @@ export interface TaskBoardRow {
   description: string | null
   icon: string
   color: string
+  is_private: boolean
   department_id: number | null
   department_name: string | null
   created_by_name: string | null
@@ -126,6 +127,7 @@ export interface TaskBoardDetail {
   can_develop: boolean
   can_change_status: boolean
   can_manage_boards: boolean
+  can_manage_private_tasks: boolean
   can_create: boolean
   can_edit_all: boolean
   can_delete_all: boolean
@@ -204,9 +206,9 @@ export const tasksApi = {
       if (showHidden) qs.set("show_hidden", "true")
       return api.get<TaskBoardDetail>(`${base}/boards/${boardId}${qs.size ? `?${qs}` : ""}`)
     },
-    create: (body: { name: string; description?: string; icon?: string; color?: string; department_id?: number | null }) =>
+    create: (body: { name: string; description?: string; icon?: string; color?: string; department_id?: number | null; is_private?: boolean }) =>
       api.post<{ status: string; board: TaskBoardRow }>(`${base}/boards`, body),
-    update: (boardId: number, body: { name?: string; description?: string; icon?: string; color?: string; department_id?: number | null }) =>
+    update: (boardId: number, body: { name?: string; description?: string; icon?: string; color?: string; department_id?: number | null; is_private?: boolean }) =>
       api.patch<{ status: string; board: TaskBoardRow }>(`${base}/boards/${boardId}`, body),
     archive: (boardId: number) => api.delete<{ status: string }>(`${base}/boards/${boardId}`),
     permissions: {
@@ -254,8 +256,6 @@ export const tasksApi = {
     move: (taskId: number, body: { target_board_id: number; target_column_id: number }) =>
       api.post<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}/move`, body),
     delete: (taskId: number) => api.delete<{ status: string }>(`${base}/tasks/${taskId}`),
-    reorder: (boardId: number, columns: Record<number, number[]>) =>
-      api.post<{ status: string }>(`${base}/boards/${boardId}/tasks/reorder`, { columns }),
     reject: (taskId: number, reason: string) => api.post<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}/reject`, { reason }),
     take: (taskId: number) => api.post<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}/take`, {}),
     toggleHidden: (taskId: number) => api.post<{ status: string; is_hidden: boolean }>(`${base}/tasks/${taskId}/toggle-hidden`, {}),

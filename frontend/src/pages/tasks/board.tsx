@@ -241,7 +241,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
         </div>
         <div className="flex flex-wrap items-center gap-1">
           <TaskStatusBadge status={task.status} label={publicStatusBadge?.label} color={publicStatusBadge?.color} />
-          {isSystemBoard && task.is_private && <Badge variant="outline" className="gap-1 border-violet-400/40 text-violet-300 text-[10px]"><LockKeyhole className="size-3" />Приватная</Badge>}
+          {task.is_private && <Badge variant="outline" className="gap-1 border-violet-400/40 text-violet-300 text-[10px]"><LockKeyhole className="size-3" />Приватная</Badge>}
           {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
           {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className={`text-[10px] ${task.priority === "ultra" ? "max-w-full min-w-0 truncate" : ""}`}>{PRIORITY_LABELS[task.priority]}</Badge>}
           {task.attachment_count > 0 && <Badge variant="outline" className="gap-1 text-[10px]"><ImageIcon className="size-3" />{task.attachment_count}</Badge>}
@@ -273,11 +273,11 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
-function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, viewMode, isSystemBoard, canChangeStatus }: {
+function TaskColumnView({ column, tasks, canCreate, canManagePrivateTasks, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, viewMode, isSystemBoard, canChangeStatus }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
-  canDevelop: boolean
+  canManagePrivateTasks: boolean
   canManageBoards: boolean
   onOpenTask: (id: number) => void
   onDropTask: (columnId: number | string, taskId: number) => void
@@ -371,7 +371,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
                 <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
               </SelectContent>
             </Select>}
-            {isSystemBoard && canDevelop && <label className="flex items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
+            {canManagePrivateTasks && <label className="flex items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
               <Checkbox checked={isPrivate} onCheckedChange={(checked) => setIsPrivate(checked === true)} />
               Приватная задача
             </label>}
@@ -412,7 +412,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
 }
 
 // ── Task Detail Dialog (center, без тегов, логи внизу, большое поле файлов) ──
-function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, canManageBoards, canChangeStatus, isSystemBoard, viewMode, onMove, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
+function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, canManageBoards, canManagePrivateTasks, canChangeStatus, isSystemBoard, viewMode, onMove, currentAdminId, boardId, onOpenLightbox, highlightCommentId }: {
   taskId: number | null
   task: TaskRow | undefined
   onClose: () => void
@@ -422,6 +422,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
   canDeleteAll: boolean
   canDeleteOwn: boolean
   canManageBoards: boolean
+  canManagePrivateTasks: boolean
   canChangeStatus: boolean
   isSystemBoard: boolean
   viewMode: TaskViewMode | "custom"
@@ -606,6 +607,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
           <DialogDescription className="flex flex-wrap items-center gap-1">
             <span className="mr-1 text-xs text-muted-foreground">#{task.id}</span>
             <TaskStatusBadge status={task.status} />
+            {task.is_private && <Badge variant="outline" className="gap-1 border-violet-400/40 text-violet-300 text-[10px]"><LockKeyhole className="size-3" />Приватная</Badge>}
             {!isSystemBoard && task.is_hidden && <Badge variant="outline" className="border-warning/40 text-warning">скрыта</Badge>}
             {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
             {task.rejection_reason && <span className="text-xs text-destructive">Отклонена: {task.rejection_reason}</span>}
@@ -658,7 +660,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
               </Select>
             </>}
 
-            {isSystemBoard && canChangeStatus && <>
+            {canManagePrivateTasks && <>
               <span className="text-muted-foreground">Приватность</span>
               <label className="flex items-center gap-2">
                 <Switch checked={task.is_private} disabled={updateMutation.isPending} onCheckedChange={(isPrivate) => updateMutation.mutate({ is_private: isPrivate })} />
@@ -1104,12 +1106,6 @@ export function TaskBoardPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
-  const reorderMutation = useMutation({
-    mutationFn: (columns: Record<number, number[]>) => tasksApi.tasks.reorder(boardIdNum, columns),
-    onSuccess: invalidate,
-    onError: (e: Error) => toast.error(e.message),
-  })
-
   if (isLoading || !data) {
     return <div className="space-y-3"><Skeleton className="h-10 w-64" /><div className="flex gap-3">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-96 w-72" />)}</div></div>
   }
@@ -1137,10 +1133,7 @@ export function TaskBoardPage() {
     }
     const sourceColumnId = task.column_id
     if (sourceColumnId === null || typeof targetColumnId !== "number" || sourceColumnId === targetColumnId) return
-    const destIds = (tasksByColumn.get(targetColumnId) ?? []).map((t) => t.id)
-    destIds.push(taskId)
-    const sourceIds = (tasksByColumn.get(sourceColumnId) ?? []).filter((t) => t.id !== taskId).map((t) => t.id)
-    reorderMutation.mutate({ [targetColumnId]: destIds, [sourceColumnId]: sourceIds })
+    tasksApi.tasks.update(taskId, { column_id: targetColumnId }).then(invalidate).catch((e: Error) => toast.error(e.message))
   }
 
   const selectedTask = data.tasks.find((t) => t.id === selectedTaskId)
@@ -1155,7 +1148,7 @@ export function TaskBoardPage() {
               <PlatformIcon value={data.board.icon} fallback={KanbanSquare} className="size-5 text-primary" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">{data.board.name}</h1>
+              <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight">{data.board.name}{data.board.is_private && <LockKeyhole className="size-4 text-violet-300" aria-label="Приватная доска" />}</h1>
               {data.board.description && <p className="text-sm text-muted-foreground">{data.board.description}</p>}
             </div>
           </div>
@@ -1193,7 +1186,7 @@ export function TaskBoardPage() {
               column={col}
               tasks={tasksByColumn.get(col.id) ?? []}
               canCreate={data.can_create && (!data.is_system_board || (data.view_mode === "requests" && col.id === "submitted"))}
-              canDevelop={data.can_develop}
+              canManagePrivateTasks={data.can_manage_private_tasks}
               canManageBoards={data.can_manage_boards && !data.is_system_board}
               onOpenTask={(id) => { setSelectedTaskId(id); setHighlightCommentId(null) }}
               onDropTask={handleDropTask}
@@ -1233,6 +1226,7 @@ export function TaskBoardPage() {
         canDeleteAll={data.can_delete_all}
         canDeleteOwn={canDeleteOwn}
         canManageBoards={data.can_manage_boards}
+        canManagePrivateTasks={data.can_manage_private_tasks}
         canChangeStatus={data.can_change_status}
         isSystemBoard={data.is_system_board}
         viewMode={data.view_mode}
@@ -1283,7 +1277,7 @@ export function TaskBoardPage() {
         boardId={boardIdNum}
         initial={{
           name: data.board.name, description: data.board.description ?? "",
-          icon: data.board.icon, color: data.board.color, department_id: data.board.department_id,
+          icon: data.board.icon, color: data.board.color, department_id: data.board.department_id, is_private: data.board.is_private,
         }}
         candidates={candidates}
       />
@@ -1339,7 +1333,7 @@ function BoardSettingsDialog({ open, onOpenChange, boardId, initial, candidates 
   open: boolean
   onOpenChange: (open: boolean) => void
   boardId: number
-  initial: { name: string; description: string; icon: string; color: string; department_id: number | null }
+  initial: { name: string; description: string; icon: string; color: string; department_id: number | null; is_private: boolean }
   candidates?: AssigneeCandidates
 }) {
   const queryClient = useQueryClient()
@@ -1409,6 +1403,10 @@ function BoardSettingsDialog({ open, onOpenChange, boardId, initial, candidates 
               </SelectContent>
             </Select>
           </div>
+          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+            <Switch checked={form.is_private} onCheckedChange={(is_private) => setForm((f) => ({ ...f, is_private }))} />
+            <span><span className="font-medium">Приватная доска</span><span className="mt-0.5 block text-xs text-muted-foreground">Доступ останется у суперпользователей, управляющих досками и пользователей с явным правом просмотра.</span></span>
+          </label>
         </div>
         <DialogFooter className="justify-between sm:justify-between">
           <Button variant="ghost" className="text-destructive" onClick={() => archiveMutation.mutate()}>Архивировать доску</Button>

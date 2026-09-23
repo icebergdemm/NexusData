@@ -2326,6 +2326,7 @@ class TaskBoard(Base):
     created_at = Column(DateTime, default=func.now())
     is_archived = Column(Boolean, nullable=False, default=False)
     board_type = Column(String(20), nullable=False, default="custom")  # custom | system
+    is_private = Column(Boolean, nullable=False, default=False)
 
     department = relationship("Department")
     created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])

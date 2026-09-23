@@ -17,7 +17,7 @@ from routes.tasks import system_board_column_for_status
         ("development", "in_progress", "В работе"),
         ("development", "testing", "Тестирование"),
         ("development", "done", "Готово"),
-        ("development", "submitted", None),
+        ("development", "submitted", "Рассмотрение"),
         ("development", "rejected", None),
         ("development", "archived", None),
     ],
