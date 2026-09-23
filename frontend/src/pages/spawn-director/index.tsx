@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Radar, RotateCcw, ShieldAlert, Swords } from "lucide-react"
+import { Radar, RotateCcw, Settings, ShieldAlert, Swords } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -16,6 +16,7 @@ type Wave = { id: number; species: string; amount: number; original_amount: numb
 type Server = { server_name: string; mode: string; crew_power: number; learned_baseline: number; baseline_samples: number; threat_multiplier: number; explanation: string; waves: Wave[]; updated_at: string }
 type CreatureTarget = { tag: string; state: string; priority: string; react?: number; attack?: number }
 type Creature = { id: string; name_ru?: string; group: string; base_hp: number; needs_water: boolean; needs_air: boolean; combat_strength: number; sight: number; hearing: number; aggression_hurt: number; aggression_greed: number; flee_health_threshold: number; aggressive_boarding: boolean; targets: CreatureTarget[] }
+type DirectorConfig = { server: string; config: { mode: string; base_budget: number; alpha: number; spawn_frequency: number; initial_grace_progress: number; initial_grace_seconds: number; large_crew_threshold: number; large_crew_grace_seconds: number; min_monster_health_multiplier: number; min_monster_health_fixed: number; species_hp_overrides: Record<string, number>; [key: string]: any }; desired_revision: number; applied_revision: number; updated_at: string | null; last_seen_at: string | null }
 
 const TAG_RU: Record<string, string> = {
   human: "человек", weaker: "более слабый противник", stronger: "более сильный противник",
@@ -39,11 +40,12 @@ function meters(value: number | undefined): string {
   return `${Number.isInteger(m) ? m : m.toFixed(1)} м`
 }
 
-function StatBar({ label, display, value, max }: { label: string; display: string; value: number; max: number }) {
+function StatBar({ label, display, value, max, modified }: { label: string; display: string; value: number; max: number; modified?: boolean }) {
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0
   return <div>
     <div className="flex items-baseline justify-between gap-2"><p className="text-xs text-muted-foreground">{label}</p><p className="text-xs font-medium">{display}</p></div>
     <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} /></div>
+    {modified && <p className="mt-0.5 text-[10px] text-emerald-600">HP изменено</p>}
   </div>
 }
 
@@ -62,6 +64,10 @@ export function SpawnDirectorPage() {
   const [fixed, setFixed] = useState("0")
   const [saving, setSaving] = useState(false)
   const [savedFor, setSavedFor] = useState<string | null>(null)
+  const [configLocal, setConfigLocal] = useState({ spawn_frequency: 1.0, initial_grace_progress: 0.05, initial_grace_seconds: 900, large_crew_threshold: 15, large_crew_grace_seconds: 300, mode: "observe", species_hp_overrides: {} as Record<string, number> })
+  const [configDirty, setConfigDirty] = useState(false)
+  const [configSaving, setConfigSaving] = useState(false)
+  const [configSaved, setConfigSaved] = useState(false)
   const [search, setSearch] = useState("")
   const [groupFilter, setGroupFilter] = useState("__all__")
   const [habitatFilter, setHabitatFilter] = useState("__all__")
@@ -72,13 +78,20 @@ export function SpawnDirectorPage() {
   const { data } = useQuery({ queryKey: ["spawn-director", selectedServer], queryFn: () => api.get<{ servers: Server[] }>(`/api/v1/admin/spawn-director/state${selectedServer === "__all__" ? "" : `?server_name=${encodeURIComponent(selectedServer)}`}`), refetchInterval: 3000 })
   const { data: creatureData, isError: creaturesError } = useQuery({ queryKey: ["spawn-director-creatures"], queryFn: async () => { try { return await api.get<{ creatures: Creature[] }>("/api/v1/admin/spawn-director/creatures") } catch { const res = await fetch("/static/creature_catalog.json"); if (!res.ok) throw new Error(`Статический каталог недоступен: HTTP ${res.status}`); return (await res.json()) as { creatures: Creature[] } } }, staleTime: Infinity, retry: 1 })
   const { data: knownServers } = useQuery({ queryKey: ["spawn-director-known-servers"], queryFn: () => worldStateApi.listServers(), refetchInterval: 5000 })
+  const configServer = selectedServer !== "__all__" ? selectedServer : null
+  const showConfig = !!admin?.is_superuser && !!configServer
+  const { data: configData } = useQuery({ queryKey: ["spawn-director-config", configServer], queryFn: () => api.get<DirectorConfig>(`/api/v1/admin/spawn-director/config?server_name=${encodeURIComponent(configServer!)}`), enabled: showConfig, staleTime: 300_000 })
   const servers = data?.servers ?? []
   const serverNames = [...new Set([...(knownServers?.servers ?? []), ...servers.map(server => server.server_name)])].sort()
   const creatures = creatureData?.creatures ?? []
   const { data: rounds } = useQuery({ queryKey: ["spawn-director-rounds", selectedServer], queryFn: () => worldStateApi.listRounds(selectedServer === "__all__" ? null : selectedServer), refetchInterval: 5000 })
   useEffect(() => { if (!roundId) setRoundId(rounds?.rounds[0]?.round_id ?? null) }, [roundId, rounds])
+  useEffect(() => { if (configData?.config && !configDirty) { const c = configData.config; setConfigLocal({ spawn_frequency: c.spawn_frequency ?? 1.0, initial_grace_progress: c.initial_grace_progress ?? 0.05, initial_grace_seconds: c.initial_grace_seconds ?? 900, large_crew_threshold: c.large_crew_threshold ?? 15, large_crew_grace_seconds: c.large_crew_grace_seconds ?? 300, mode: c.mode ?? "observe", species_hp_overrides: c.species_hp_overrides ?? {} }); setConfigDirty(false) } }, [configData])
   const { data: geometry } = useQuery({ queryKey: ["spawn-director-geometry", roundId], queryFn: () => worldStateApi.getGeometry(roundId as string), enabled: !!roundId, staleTime: Infinity })
   const { data: state } = useQuery({ queryKey: ["spawn-director-world", roundId], queryFn: () => worldStateApi.getState(roundId as string), enabled: !!roundId, refetchInterval: 1000 })
+  const speciesHpOverride = (speciesId: string) => configLocal.species_hp_overrides[speciesId] ?? 0
+  const setSpeciesHpOverride = (speciesId: string, value: number) => { setConfigLocal(prev => ({ ...prev, species_hp_overrides: { ...prev.species_hp_overrides, [speciesId]: value } })); setConfigDirty(true); setConfigSaved(false) }
+  const saveConfig = async () => { if (!configServer) return; setConfigSaving(true); setConfigSaved(false); try { await api.put(`/api/v1/admin/spawn-director/config/${encodeURIComponent(configServer)}`, { mode: configLocal.mode, spawn_frequency: configLocal.spawn_frequency, initial_grace_progress: configLocal.initial_grace_progress, initial_grace_seconds: configLocal.initial_grace_seconds, large_crew_threshold: configLocal.large_crew_threshold, large_crew_grace_seconds: configLocal.large_crew_grace_seconds, species_hp_overrides: configLocal.species_hp_overrides }); setConfigSaved(true); setConfigDirty(false) } finally { setConfigSaving(false) } }
 
   const groups = useMemo(() => [...new Set(creatures.map(c => c.group || "без группы"))].sort(), [creatures])
   const targetTags = useMemo(() => [...new Set(creatures.flatMap(c => c.targets.map(t => t.tag)).filter(Boolean))].sort(), [creatures])
@@ -120,6 +133,39 @@ export function SpawnDirectorPage() {
       {admin?.is_superuser && <Card><CardContent className="flex flex-wrap items-end gap-3 py-4"><div><p className="mb-1 text-xs text-muted-foreground">Мин. множитель HP</p><Input className="w-40" type="number" min="0" step="0.05" value={multiplier} onChange={e => setMultiplier(e.target.value)} /></div><div><p className="mb-1 text-xs text-muted-foreground">Мин. фиксированный HP</p><Input className="w-40" type="number" min="0" step="1" value={fixed} onChange={e => setFixed(e.target.value)} /></div><Button disabled={saving} onClick={async () => { setSaving(true); try { await api.put(`/api/v1/admin/spawn-director/health-floor/${encodeURIComponent(server.server_name)}`, { multiplier: Number(multiplier), fixed: Number(fixed) }); setSavedFor(server.server_name) } finally { setSaving(false) } }}>{saving ? "Сохранение..." : "Применить"}</Button>{savedFor === server.server_name && <span className="text-xs text-emerald-600">Отправлено директору</span>}<p className="basis-full text-xs text-muted-foreground">Используется больший из двух минимумов. Плагин применит настройку в течение 3 секунд.</p></CardContent></Card>}
       <div className="grid gap-3 md:grid-cols-3"><Card><CardContent className="flex items-center gap-3 py-4"><ShieldAlert className="size-5 text-primary" /><div><p className="text-xs text-muted-foreground">Сила экипажа (EMA)</p><p className="text-2xl font-semibold">{server.crew_power.toFixed(2)}</p></div></CardContent></Card><Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">Самообученная норма</p><p className="text-2xl font-semibold">{server.learned_baseline.toFixed(2)}</p><p className="text-xs text-muted-foreground">{server.baseline_samples} измерений, без ручной установки</p></CardContent></Card><Card><CardContent className="flex items-center gap-3 py-4"><Swords className="size-5 text-destructive" /><div><p className="text-xs text-muted-foreground">Множитель угрозы</p><p className="text-2xl font-semibold">x{server.threat_multiplier.toFixed(2)}</p></div></CardContent></Card></div>
       <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">{server.explanation}</p>
+      {showConfig && <Card><CardContent className="space-y-4 py-4">
+        <div className="flex items-center gap-2"><Settings className="size-4 text-muted-foreground" /><h3 className="text-sm font-medium">Глобальные настройки</h3></div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Частота спавна</p>
+            <div className="flex items-center gap-3"><input type="range" min="0.1" max="3.0" step="0.1" value={configLocal.spawn_frequency} onChange={e => { setConfigLocal(prev => ({ ...prev, spawn_frequency: Number(e.target.value) })); setConfigDirty(true); setConfigSaved(false) }} className="flex-1 accent-primary" /><span className="w-10 text-right text-sm font-medium">{configLocal.spawn_frequency.toFixed(1)}</span></div>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Стартовая зона (% прогресса)</p>
+            <Input type="number" min="0" max="1" step="0.01" value={configLocal.initial_grace_progress} onChange={e => { setConfigLocal(prev => ({ ...prev, initial_grace_progress: Number(e.target.value) })); setConfigDirty(true); setConfigSaved(false) }} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Стартовый таймер (сек)</p>
+            <Input type="number" min="0" max="3600" step="30" value={configLocal.initial_grace_seconds} onChange={e => { setConfigLocal(prev => ({ ...prev, initial_grace_seconds: Number(e.target.value) })); setConfigDirty(true); setConfigSaved(false) }} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Большой экипаж (чел)</p>
+            <Input type="number" min="0" max="50" step="1" value={configLocal.large_crew_threshold} onChange={e => { setConfigLocal(prev => ({ ...prev, large_crew_threshold: Number(e.target.value) })); setConfigDirty(true); setConfigSaved(false) }} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Таймер для большого экипажа (сек)</p>
+            <Input type="number" min="0" max="1800" step="30" value={configLocal.large_crew_grace_seconds} onChange={e => { setConfigLocal(prev => ({ ...prev, large_crew_grace_seconds: Number(e.target.value) })); setConfigDirty(true); setConfigSaved(false) }} />
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-muted-foreground">Режим</p>
+            <Select value={configLocal.mode} onValueChange={mode => { setConfigLocal(prev => ({ ...prev, mode })); setConfigDirty(true); setConfigSaved(false) }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="observe">observe</SelectItem><SelectItem value="control">control</SelectItem><SelectItem value="native">native</SelectItem><SelectItem value="disabled">disabled</SelectItem></SelectContent></Select>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button disabled={configSaving || !configDirty} onClick={saveConfig}>{configSaving ? "Сохранение..." : "Сохранить настройки"}</Button>
+          {configSaved && !configDirty && <span className="text-xs text-emerald-600">Настройки сохранены</span>}
+        </div>
+      </CardContent></Card>}
       <Card><CardContent className="p-0"><div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 border-b px-4 py-2 text-xs text-muted-foreground"><span>Волна / решение</span><span>Количество</span><span>HP</span><span>Точка</span></div>{server.waves.map(w => <div key={w.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-3 px-4 py-3 text-sm"><span><b>#{w.id}</b> {w.species}<p className="text-xs text-muted-foreground">{w.state === "pending" ? "План: ванильная точка ещё не подтверждена" : "Применено: "}{w.adjustment}</p></span><span>{w.amount} <span className="text-muted-foreground">/ {w.original_amount}</span></span><span>x{w.hp_multiplier.toFixed(2)}</span><span className="font-mono text-xs">{w.x == null ? "ожидание точки" : `${Math.round(w.x)}, ${Math.round(w.y!)}`}</span></div>)}</CardContent></Card>
     </section>)}
     <section className="space-y-3">
@@ -150,10 +196,11 @@ export function SpawnDirectorPage() {
         const multiplierFloor = creature.base_hp * Number(multiplier || 0)
         const finalFloor = Math.max(multiplierFloor, Number(fixed || 0))
         const sortedTargets = [...creature.targets].sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
+        const hpOverride = speciesHpOverride(creature.id)
         return <Card key={creature.id}><CardContent className="space-y-3 py-4">
           <div className="flex items-start justify-between gap-2"><div><h3 className="font-semibold">{creature.name_ru || creature.id}</h3><p className="font-mono text-xs text-muted-foreground">{creature.id}</p><p className="mt-0.5 text-xs text-muted-foreground">{creature.group || "без группы"} · {creature.needs_water ? "водная среда" : "суша/амфибия"}</p></div><Badge variant="outline">CS {creature.combat_strength}</Badge></div>
           <div className="space-y-2">
-            <StatBar label="Ванильное HP" display={Number(multiplier) > 0 ? `${creature.base_hp} → мин. ${Math.round(finalFloor)} HP` : `${creature.base_hp} HP`} value={creature.base_hp} max={maxima.hp} />
+            <StatBar label="Ванильное HP" display={hpOverride !== 0 ? `${creature.base_hp} HP | override: x${hpOverride.toFixed(1)}` : (Number(multiplier) > 0 ? `${creature.base_hp} → мин. ${Math.round(finalFloor)} HP` : `${creature.base_hp} HP`)} value={creature.base_hp} max={maxima.hp} modified={hpOverride !== 0} />
             <div className="grid grid-cols-2 gap-x-3 gap-y-2">
               <StatBar label="Боевая мощь" display={`${creature.combat_strength}`} value={creature.combat_strength} max={maxima.cs} />
               <StatBar label="Бегство при HP" display={`${creature.flee_health_threshold}%`} value={creature.flee_health_threshold} max={100} />
@@ -161,6 +208,7 @@ export function SpawnDirectorPage() {
               <StatBar label="Слух" display={`${creature.hearing}`} value={creature.hearing} max={maxima.hearing} />
             </div>
           </div>
+          {showConfig && <div className="border-t pt-2"><p className="mb-1 text-xs text-muted-foreground">Множитель HP для вида</p><div className="flex items-center gap-2"><Input className="w-24" type="number" min="0" max="10" step="0.1" value={speciesHpOverride(creature.id) || ""} placeholder="0 = авто" onChange={e => { const v = Number(e.target.value); setSpeciesHpOverride(creature.id, v) }} /><span className="text-xs text-muted-foreground">0 = без оверрайда</span></div></div>}
           <div className="border-t pt-2 text-xs text-muted-foreground space-y-1">
             <p>Реакция на урон: <b className="text-foreground">{creature.aggression_hurt}</b> <span>(+{(creature.aggression_hurt / 10).toFixed(1)} ненависти за удар на 10% HP)</span></p>
             <p>Жадность: <b className="text-foreground">{creature.aggression_greed}</b> <span>(+{(creature.aggression_greed / 10).toFixed(1)} азарта за добивание 10% HP)</span>; штурм: {creature.aggressive_boarding ? "да" : "нет"}</p>

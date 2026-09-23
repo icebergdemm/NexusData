@@ -2773,3 +2773,20 @@ class SubCheckResult(Base):
     checked_by = relationship("AdminUser", foreign_keys=[checked_by_admin_id])
     project = relationship("SubProject", foreign_keys=[project_id])
     version = relationship("SubProjectVersion", foreign_keys=[version_id])
+
+
+class SpawnDirectorConfig(Base):
+    """Desired AdaptiveSpawnDirector state for one game server."""
+
+    __tablename__ = "spawn_director_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server = Column(String(100), unique=True, nullable=False, index=True)
+    config = Column(JSON, nullable=False, default=lambda: {})
+    desired_revision = Column(Integer, nullable=False, default=1)
+    applied_revision = Column(Integer, nullable=False, default=0)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_seen_at = Column(DateTime, nullable=True, index=True)
+
+    updated_by = relationship("AdminUser", foreign_keys=[updated_by_admin_id])
