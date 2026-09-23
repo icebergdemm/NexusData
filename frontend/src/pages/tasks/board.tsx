@@ -30,7 +30,7 @@ import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
   type TaskBoardRow, type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type TaskViewMode, type ProductTag, type AssigneeCandidates,
 } from "./api"
-import { getPublicTaskStatusBadge, splitReviewTasks } from "./task-board-utils"
+import { getPublicTaskStatusBadge } from "./task-board-utils"
 import { BoardPermissionsDialog } from "./BoardPermissionsDialog"
 import { SystemBoardSettingsDialog } from "./SystemBoardSettingsDialog"
 
@@ -301,10 +301,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
   const [newTitle, setNewTitle] = useState("")
   const [productTag, setProductTag] = useState<ProductTag | "">("")
   const [isPrivate, setIsPrivate] = useState(false)
-  const compactReviewColumn = isSystemBoard && viewMode === "requests" && column.id === "submitted"
-  const { full: fullTasks, compact: compactTasks } = compactReviewColumn
-    ? splitReviewTasks(tasks)
-    : { full: tasks, compact: [] }
+  const scrollableReviewColumn = isSystemBoard && viewMode === "requests" && column.id === "submitted"
 
   const taskRights = (t: TaskRow) => {
     const isOwn = t.created_by_admin_id === currentAdminId || t.assignee_admin_id === currentAdminId
@@ -330,7 +327,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
 
   return (
     <div
-      className={`flex w-72 shrink-0 flex-col gap-2 rounded-lg border p-2 transition-colors ${compactReviewColumn ? "max-h-[calc(100dvh-12rem)] overflow-hidden" : ""} ${dragOver ? "border-primary bg-primary/5" : "border-transparent bg-muted/20"}`}
+      className={`flex w-72 shrink-0 flex-col gap-2 rounded-lg border p-2 transition-colors ${scrollableReviewColumn ? "max-h-[calc(100dvh-12rem)] overflow-hidden" : ""} ${dragOver ? "border-primary bg-primary/5" : "border-transparent bg-muted/20"}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
@@ -389,8 +386,8 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
         )
       )}
 
-      <div className={`order-2 flex flex-col gap-2 ${compactReviewColumn ? "min-h-0 flex-1 overflow-y-auto pr-1" : ""}`}>
-        {fullTasks.map((t) => (
+      <div className={`order-2 flex flex-col gap-2 ${scrollableReviewColumn ? "min-h-0 flex-1 overflow-y-auto pr-1" : ""}`}>
+        {tasks.map((t) => (
           <TaskCard
             key={t.id}
             task={t}
@@ -407,24 +404,6 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
             onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
             onDeleted={onTaskDeleted}
           />
-        ))}
-        {compactTasks.length > 0 && <div className="flex items-center gap-2 px-1 pt-1 text-[11px] font-medium text-muted-foreground">
-          <span className="h-px flex-1 bg-border" />
-          Ещё {compactTasks.length} заявок
-          <span className="h-px flex-1 bg-border" />
-        </div>}
-        {compactTasks.map((task) => (
-          <button
-            key={task.id}
-            type="button"
-            onClick={() => onOpenTask(task.id)}
-            className="flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <span className="min-w-0 flex-1 truncate font-medium">{task.title}</span>
-            <span className="shrink-0 text-[10px] text-muted-foreground">#{task.id}</span>
-            {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
-            {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className="max-w-24 shrink-0 truncate text-[10px]">{PRIORITY_LABELS[task.priority]}</Badge>}
-          </button>
         ))}
       </div>
     </div>
