@@ -386,7 +386,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
         )
       )}
 
-      <div className={`order-2 flex flex-col gap-2 ${scrollableReviewColumn ? "min-h-0 flex-1 overflow-y-auto pr-1" : ""}`}>
+      <div className={`order-2 ${scrollableReviewColumn ? "min-h-0 flex-1 overflow-y-auto space-y-2 pr-1" : "flex flex-col gap-2"}`}>
         {tasks.map((t) => (
           <TaskCard
             key={t.id}
