@@ -9,6 +9,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
@@ -29,6 +30,7 @@ import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
   type TaskBoardRow, type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type TaskViewMode, type ProductTag, type AssigneeCandidates,
 } from "./api"
+import { getPublicTaskStatusBadge, splitReviewTasks } from "./task-board-utils"
 import { BoardPermissionsDialog } from "./BoardPermissionsDialog"
 import { SystemBoardSettingsDialog } from "./SystemBoardSettingsDialog"
 
@@ -197,8 +199,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }),
     onError: (e: Error) => toast.error(e.message),
   })
-  const publicStatusLabel = viewMode === "requests" && ["in_dev_queue", "in_progress", "testing"].includes(task.status)
-    ? "Передано в разработку" : undefined
+  const publicStatusBadge = viewMode === "requests" ? getPublicTaskStatusBadge(task.status) : null
 
   const moveActions = (canEdit && !isSystemBoard ? columns.filter(c => c.id !== task.column_id).map(c => ({
     label: `Переместить → ${c.name}`,
@@ -239,7 +240,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
           {!isSystemBoard && task.is_hidden && <Badge variant="outline" className="text-[10px] border-warning/40 text-warning shrink-0">скрыта</Badge>}
         </div>
         <div className="flex flex-wrap items-center gap-1">
-          <TaskStatusBadge status={task.status} label={publicStatusLabel} color={publicStatusLabel ? "#3B82F6" : undefined} />
+          <TaskStatusBadge status={task.status} label={publicStatusBadge?.label} color={publicStatusBadge?.color} />
           {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
           {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className={`text-[10px] ${task.priority === "ultra" ? "max-w-full min-w-0 truncate" : ""}`}>{PRIORITY_LABELS[task.priority]}</Badge>}
           {task.attachment_count > 0 && <Badge variant="outline" className="gap-1 text-[10px]"><ImageIcon className="size-3" />{task.attachment_count}</Badge>}
@@ -271,16 +272,17 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
 }
 
 // ── Column ───────────────────────────────────────────────────────────────────
-function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, viewMode, isSystemBoard, canChangeStatus }: {
+function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards, onOpenTask, onDropTask, onEditColumn, onDeleteColumn, onCreateTask, onTaskDeleted, onMoveTask, boardId, allColumns, currentAdminId, canEditAll, canEditOwn, canDeleteAll, canDeleteOwn, viewMode, isSystemBoard, canChangeStatus }: {
   column: TaskColumnRow
   tasks: TaskRow[]
   canCreate: boolean
+  canDevelop: boolean
   canManageBoards: boolean
   onOpenTask: (id: number) => void
   onDropTask: (columnId: number | string, taskId: number) => void
   onEditColumn: () => void
   onDeleteColumn: () => void
-  onCreateTask: (columnId: number | string, title: string, productTag?: ProductTag) => void
+  onCreateTask: (columnId: number | string, title: string, productTag?: ProductTag, isPrivate?: boolean) => void
   onTaskDeleted: () => void
   onMoveTask: (task: TaskRow) => void
   boardId: number
@@ -298,6 +300,11 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
   const [addingTask, setAddingTask] = useState(false)
   const [newTitle, setNewTitle] = useState("")
   const [productTag, setProductTag] = useState<ProductTag | "">("")
+  const [isPrivate, setIsPrivate] = useState(false)
+  const compactReviewColumn = isSystemBoard && viewMode === "requests" && column.id === "submitted"
+  const { full: fullTasks, compact: compactTasks } = compactReviewColumn
+    ? splitReviewTasks(tasks)
+    : { full: tasks, compact: [] }
 
   const taskRights = (t: TaskRow) => {
     const isOwn = t.created_by_admin_id === currentAdminId || t.assignee_admin_id === currentAdminId
@@ -314,15 +321,16 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
     const title = newTitle.trim()
     if (!title) { setAddingTask(false); return }
     if (isSystemBoard && !productTag) { toast.error("Выберите тип заявки"); return }
-    onCreateTask(column.id, title, productTag || undefined)
+    onCreateTask(column.id, title, productTag || undefined, isPrivate)
     setNewTitle("")
     setProductTag("")
+    setIsPrivate(false)
     setAddingTask(false)
   }
 
   return (
     <div
-      className={`flex w-72 shrink-0 flex-col gap-2 rounded-lg border p-2 transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-transparent bg-muted/20"}`}
+      className={`flex w-72 shrink-0 flex-col gap-2 rounded-lg border p-2 transition-colors ${compactReviewColumn ? "max-h-[calc(100dvh-12rem)] overflow-hidden" : ""} ${dragOver ? "border-primary bg-primary/5" : "border-transparent bg-muted/20"}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
@@ -346,8 +354,43 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
         )}
       </div>
 
-      <div className="order-2 flex flex-col gap-2">
-        {tasks.map((t) => (
+      {canCreate && (
+        addingTask ? (
+          <div className="order-1 flex flex-col gap-1.5 rounded-md border bg-card p-2 animate-in fade-in-0">
+            <Input
+              autoFocus
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitNewTask(); if (e.key === "Escape") { setAddingTask(false); setNewTitle(""); setIsPrivate(false) } }}
+              placeholder="Название задачи"
+            />
+            {isSystemBoard && <Select value={productTag || "none"} onValueChange={(value) => setProductTag(value === "none" ? "" : value as ProductTag)}>
+              <SelectTrigger className="h-8"><SelectValue placeholder="Тип заявки" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Выберите тип</SelectItem>
+                <SelectItem value="game"><ProductTagBadge tag="game" /></SelectItem>
+                <SelectItem value="site"><ProductTagBadge tag="site" /></SelectItem>
+                <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
+              </SelectContent>
+            </Select>}
+            {isSystemBoard && canDevelop && <label className="flex items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
+              <Checkbox checked={isPrivate} onCheckedChange={(checked) => setIsPrivate(checked === true)} />
+              Приватная задача
+            </label>}
+            <div className="flex gap-1.5">
+              <Button size="sm" disabled={isSystemBoard && !productTag} onClick={submitNewTask}>Добавить</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setAddingTask(false); setNewTitle(""); setIsPrivate(false) }}>Отмена</Button>
+            </div>
+          </div>
+        ) : (
+          <Button size="sm" variant="ghost" className="order-1 justify-start text-muted-foreground" onClick={() => setAddingTask(true)}>
+            <Plus className="size-4" /> Задача
+          </Button>
+        )
+      )}
+
+      <div className={`order-2 flex flex-col gap-2 ${compactReviewColumn ? "min-h-0 flex-1 overflow-y-auto pr-1" : ""}`}>
+        {fullTasks.map((t) => (
           <TaskCard
             key={t.id}
             task={t}
@@ -365,38 +408,25 @@ function TaskColumnView({ column, tasks, canCreate, canManageBoards, onOpenTask,
             onDeleted={onTaskDeleted}
           />
         ))}
+        {compactTasks.length > 0 && <div className="flex items-center gap-2 px-1 pt-1 text-[11px] font-medium text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          Ещё {compactTasks.length} заявок
+          <span className="h-px flex-1 bg-border" />
+        </div>}
+        {compactTasks.map((task) => (
+          <button
+            key={task.id}
+            type="button"
+            onClick={() => onOpenTask(task.id)}
+            className="flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span className="min-w-0 flex-1 truncate font-medium">{task.title}</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">#{task.id}</span>
+            {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
+            {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className="max-w-24 shrink-0 truncate text-[10px]">{PRIORITY_LABELS[task.priority]}</Badge>}
+          </button>
+        ))}
       </div>
-
-      {canCreate && (
-        addingTask ? (
-          <div className="flex flex-col gap-1.5 rounded-md border bg-card p-2 animate-in fade-in-0">
-            <Input
-              autoFocus
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") submitNewTask(); if (e.key === "Escape") { setAddingTask(false); setNewTitle("") } }}
-              placeholder="Название задачи"
-            />
-            {isSystemBoard && <Select value={productTag || "none"} onValueChange={(value) => setProductTag(value === "none" ? "" : value as ProductTag)}>
-              <SelectTrigger className="h-8"><SelectValue placeholder="Тип заявки" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">Выберите тип</SelectItem>
-                <SelectItem value="game"><ProductTagBadge tag="game" /></SelectItem>
-                <SelectItem value="site"><ProductTagBadge tag="site" /></SelectItem>
-                <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
-              </SelectContent>
-            </Select>}
-            <div className="flex gap-1.5">
-              <Button size="sm" disabled={isSystemBoard && !productTag} onClick={submitNewTask}>Добавить</Button>
-              <Button size="sm" variant="ghost" onClick={() => { setAddingTask(false); setNewTitle("") }}>Отмена</Button>
-            </div>
-          </div>
-        ) : (
-          <Button size="sm" variant="ghost" className="order-1 justify-start text-muted-foreground" onClick={() => setAddingTask(true)}>
-            <Plus className="size-4" /> Задача
-          </Button>
-        )
-      )}
     </div>
   )
 }
@@ -1012,8 +1042,8 @@ export function TaskBoardPage() {
   })
 
   const createTaskMutation = useMutation({
-    mutationFn: ({ columnId, title, productTag }: { columnId: number | string; title: string; productTag?: ProductTag }) =>
-      tasksApi.tasks.create(boardIdNum, { title, ...(typeof columnId === "number" ? { column_id: columnId } : {}), ...(productTag ? { product_tag: productTag } : {}) }),
+    mutationFn: ({ columnId, title, productTag, isPrivate }: { columnId: number | string; title: string; productTag?: ProductTag; isPrivate?: boolean }) =>
+      tasksApi.tasks.create(boardIdNum, { title, ...(typeof columnId === "number" ? { column_id: columnId } : {}), ...(productTag ? { product_tag: productTag } : {}), ...(isPrivate ? { is_private: true } : {}) }),
     onSuccess: invalidate,
     onError: (e: Error) => toast.error(e.message),
   })
@@ -1107,12 +1137,13 @@ export function TaskBoardPage() {
               column={col}
               tasks={tasksByColumn.get(col.id) ?? []}
               canCreate={data.can_create && (!data.is_system_board || (data.view_mode === "requests" && col.id === "submitted"))}
+              canDevelop={data.can_develop}
               canManageBoards={data.can_manage_boards && !data.is_system_board}
               onOpenTask={(id) => { setSelectedTaskId(id); setHighlightCommentId(null) }}
               onDropTask={handleDropTask}
               onEditColumn={() => setEditColumn(col)}
               onDeleteColumn={() => setDeleteColumn(col)}
-              onCreateTask={(columnId, title, productTag) => createTaskMutation.mutate({ columnId, title, productTag })}
+              onCreateTask={(columnId, title, productTag, isPrivate) => createTaskMutation.mutate({ columnId, title, productTag, isPrivate })}
               onTaskDeleted={invalidate}
               onMoveTask={setMoveTask}
               boardId={boardIdNum}

@@ -88,6 +88,7 @@ export interface TaskRow {
   priority: TaskPriority | null
   tags: string[]
   product_tag: ProductTag | null
+  is_private: boolean
   assignee_admin_id: number | null
   assignee_admin_name: string | null
   assignee_department_id: number | null
@@ -238,7 +239,7 @@ export const tasksApi = {
 
   tasks: {
     create: (boardId: number, body: {
-      title: string; column_id?: number; product_tag?: ProductTag; description?: string; deadline?: string | null
+      title: string; column_id?: number; product_tag?: ProductTag; is_private?: boolean; description?: string; deadline?: string | null
       priority?: TaskPriority | null; tags?: string[]
       assignee_admin_id?: number | null; assignee_department_id?: number | null
     }) => api.post<{ status: string; task: TaskRow }>(`${base}/boards/${boardId}/tasks`, body),

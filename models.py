@@ -2375,6 +2375,7 @@ class Task(Base):
     tags = Column(JSON, default=lambda: [])
     product_tag = Column(String(16), nullable=True)  # game | site | discord; system boards only
     limit_eligible = Column(Boolean, nullable=False, default=False)  # post-feature user requests only
+    is_private = Column(Boolean, nullable=False, default=False)
     # An assignee can be an admin, a department, or both (e.g. "this
     # employee, on behalf of this department") — either may be NULL.
     assignee_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)

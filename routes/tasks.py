@@ -15,7 +15,7 @@ the full action list.
 
 from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 import logging
@@ -42,6 +42,7 @@ SYSTEM_BOARD_COLUMNS = {
         {"key": "archive", "name": "Архив", "color": "#6B7280", "statuses": ("archived", "rejected")},
     ),
     "development": (
+        {"key": "submitted", "name": "Рассмотрение", "color": "#8B9ECF", "statuses": ("submitted",)},
         {"key": "in_dev_queue", "name": "Новые", "color": "#5A646E", "statuses": ("in_dev_queue",)},
         {"key": "in_progress", "name": "В работе", "color": "#3B82F6", "statuses": ("in_progress",)},
         {"key": "testing", "name": "Тестирование", "color": "#8B5CF6", "statuses": ("testing",)},
@@ -369,9 +370,16 @@ def get_column_or_404(db: Session, board_id: int, column_id: int) -> TaskColumn:
     return col
 
 
-def get_task_or_404(db: Session, task_id: int) -> Task:
+def get_task_or_404(db: Session, task_id: int, current_admin: Optional[AdminUser] = None) -> Task:
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    if (
+        current_admin is not None
+        and task.board.board_type == "system"
+        and task.is_private
+        and not _can_develop_tasks(current_admin)
+    ):
         raise HTTPException(status_code=404, detail="Задача не найдена")
     return task
 
@@ -435,6 +443,7 @@ def serialize_task(task: Task, comment_count: int = 0, attachment_count: int = 0
         "priority": task.priority,
         "tags": task.tags or [],
         "product_tag": task.product_tag,
+        "is_private": bool(getattr(task, "is_private", False)),
         "assignee_admin_id": task.assignee_admin_id,
         "assignee_admin_name": task.assignee_admin.discord_username if task.assignee_admin else None,
         "assignee_department_id": task.assignee_department_id,
@@ -516,12 +525,12 @@ async def api_list_task_boards(db: Session = Depends(get_db), current_admin: Adm
     # (правила доски приоритетнее глобального tasks:view)
     if not current_admin.is_superuser:
         boards = [b for b in boards if _has_board_perm(db, current_admin, b.id, "view")]
-    counts = dict(
-        db.query(Task.board_id, func.count(Task.id))
-        .filter(Task.board_id.in_([b.id for b in boards]))
-        .group_by(Task.board_id)
-        .all()
-    ) if boards else {}
+    counts_query = db.query(Task.board_id, func.count(Task.id)).join(TaskBoard).filter(
+        Task.board_id.in_([b.id for b in boards])
+    )
+    if not _can_develop_tasks(current_admin):
+        counts_query = counts_query.filter(or_(TaskBoard.board_type != "system", Task.is_private.is_(False)))
+    counts = dict(counts_query.group_by(Task.board_id).all()) if boards else {}
     return {
         "boards": [serialize_board(b, counts.get(b.id, 0)) for b in boards],
         "can_manage_boards": check_permission(current_admin, "tasks", "manage_boards"),
@@ -572,14 +581,25 @@ async def api_get_task_board(board_id: int, view_mode: Optional[str] = None, sho
     board = get_board_or_404(db, board_id)
     q = db.query(Task).options(joinedload(Task.assignee_admin), joinedload(Task.assignee_department), joinedload(Task.created_by)).filter(Task.board_id == board.id)
     if board.board_type == "system":
+        is_developer = _can_develop_tasks(current_admin)
         if view_mode is None:
-            view_mode = "development" if _can_develop_tasks(current_admin) else "requests"
+            view_mode = "development" if is_developer else "requests"
         if view_mode not in SYSTEM_BOARD_COLUMNS:
             raise HTTPException(status_code=400, detail="Некорректный режим доски")
+        if not is_developer:
+            q = q.filter(Task.is_private.is_(False))
         if view_mode == "development":
             _require_task_developer(current_admin)
-            visible_statuses = tuple(status for col in SYSTEM_BOARD_COLUMNS[view_mode] for status in col["statuses"])
-            q = q.filter(Task.status.in_(visible_statuses))
+            visible_statuses = tuple(
+                status
+                for col in SYSTEM_BOARD_COLUMNS[view_mode]
+                for status in col["statuses"]
+                if status != "submitted"
+            )
+            q = q.filter(or_(
+                Task.status.in_(visible_statuses),
+                (Task.status == "submitted") & Task.is_private.is_(True),
+            ))
         columns = [
             {"id": col["key"], "board_id": board.id, "name": col["name"], "color": col["color"],
              "sort_order": order, "statuses": list(col["statuses"])}
@@ -593,6 +613,19 @@ async def api_get_task_board(board_id: int, view_mode: Optional[str] = None, sho
             q = q.filter(Task.is_hidden.is_(False))
         columns = db.query(TaskColumn).filter(TaskColumn.board_id == board.id).order_by(TaskColumn.sort_order).all()
     tasks = q.order_by(Task.sort_order).all()
+    if board.board_type == "system" and view_mode == "development" and not any(
+        task.status == "submitted" for task in tasks
+    ):
+        columns = [column for column in columns if column["id"] != "submitted"]
+    if board.board_type == "system" and view_mode == "requests":
+        review_tasks = [task for task in tasks if task.status == "submitted"]
+        other_tasks = [task for task in tasks if task.status != "submitted"]
+
+        def request_order(task: Task):
+            group = 2 if is_developer and task.is_private else 1 if task.created_by_admin_id == current_admin.id else 0
+            return (group, task.created_at or datetime.min, task.id)
+
+        tasks = sorted(review_tasks, key=request_order, reverse=True) + other_tasks
     comment_counts = dict(
         db.query(TaskComment.task_id, func.count(TaskComment.id))
         .filter(TaskComment.task_id.in_([t.id for t in tasks]))
@@ -783,6 +816,11 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
     if priority and priority not in TASK_PRIORITIES:
         raise HTTPException(status_code=400, detail="Некорректный приоритет")
     is_developer = _can_develop_tasks(current_admin)
+    is_private = body.get("is_private", False)
+    if type(is_private) is not bool:
+        raise HTTPException(status_code=400, detail="Некорректное значение приватности")
+    if is_private and (board.board_type != "system" or not is_developer):
+        raise HTTPException(status_code=403, detail="Приватные заявки доступны только разработчикам")
     if board.board_type == "system" and priority in {"urgent", "ultra"} and not is_developer:
         raise HTTPException(status_code=403, detail="Приоритет «Срочно» доступен только разработчикам")
 
@@ -816,6 +854,7 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
         deadline=deadline, priority=priority,
         tags=[] if board.board_type == "system" else [str(t).strip() for t in (body.get("tags") or []) if str(t).strip()][:20],
         product_tag=product_tag,
+        is_private=is_private if board.board_type == "system" else False,
         limit_eligible=limit_eligible,
         assignee_admin_id=assignee_admin_id, assignee_department_id=assignee_department_id,
         created_by_admin_id=current_admin.id, sort_order=new_order, status=status,
@@ -832,7 +871,7 @@ async def api_create_task(board_id: int, request: Request, db: Session = Depends
 @router.patch("/api/v1/admin/tasks/tasks/{task_id}")
 async def api_update_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     board = task.board
     body = await request.json()
     status_only_patch = "status" in body and set(body).issubset({"status", "rejection_reason"})
@@ -949,7 +988,7 @@ async def api_update_task(task_id: int, request: Request, db: Session = Depends(
 async def api_move_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "manage_boards")
 
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     body = await request.json()
     try:
         target_board_id = int(body.get("target_board_id"))
@@ -985,7 +1024,7 @@ async def api_move_task(task_id: int, request: Request, db: Session = Depends(ge
 @router.delete("/api/v1/admin/tasks/tasks/{task_id}")
 async def api_delete_task(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     is_system = task.board.board_type == "system"
     is_author = task.created_by_admin_id == current_admin.id
     is_developer = _can_develop_tasks(current_admin)
@@ -1049,7 +1088,7 @@ async def api_reorder_tasks(board_id: int, request: Request, db: Session = Depen
 @router.get("/api/v1/admin/tasks/tasks/{task_id}/comments")
 async def api_list_task_comments(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     comments = (
         db.query(TaskComment)
         .options(joinedload(TaskComment.admin))
@@ -1063,7 +1102,7 @@ async def api_list_task_comments(task_id: int, db: Session = Depends(get_db), cu
 @router.post("/api/v1/admin/tasks/tasks/{task_id}/comments")
 async def api_add_task_comment(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     body = await request.json()
     content = (body.get("content") or "").strip()
     if not content:
@@ -1082,7 +1121,8 @@ async def api_delete_task_comment(task_id: int, comment_id: int, db: Session = D
     comment = db.query(TaskComment).filter(TaskComment.id == comment_id, TaskComment.task_id == task_id).first()
     if not comment:
         raise HTTPException(status_code=404, detail="Комментарий не найден")
-    if comment.admin_id != current_admin.id and not _can_edit_task(db, current_admin, get_task_or_404(db, task_id)):
+    task = get_task_or_404(db, task_id, current_admin)
+    if comment.admin_id != current_admin.id and not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     db.delete(comment)
@@ -1147,7 +1187,7 @@ def _ensure_task_upload_dir(task_id: int) -> str:
 @router.get("/api/v1/admin/tasks/tasks/{task_id}/attachments")
 async def api_list_task_attachments(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    get_task_or_404(db, task_id)
+    get_task_or_404(db, task_id, current_admin)
     atts = db.query(TaskAttachment).filter(TaskAttachment.task_id == task_id).order_by(TaskAttachment.created_at).all()
     return {"attachments": [serialize_attachment(a) for a in atts]}
 
@@ -1155,7 +1195,7 @@ async def api_list_task_attachments(task_id: int, db: Session = Depends(get_db),
 @router.post("/api/v1/admin/tasks/tasks/{task_id}/attachments")
 async def api_upload_task_attachment(task_id: int, file: UploadFile = File(...), is_preview: bool = Form(False), db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     if file.size and file.size > 10 * 1024 * 1024:
@@ -1184,7 +1224,7 @@ async def api_delete_task_attachment(task_id: int, attachment_id: int, db: Sessi
     att = db.query(TaskAttachment).filter(TaskAttachment.id == attachment_id, TaskAttachment.task_id == task_id).first()
     if not att:
         raise HTTPException(status_code=404, detail="Вложение не найдено")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     if not _can_edit_task(db, current_admin, task):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
     try:
@@ -1207,6 +1247,7 @@ async def api_get_task_attachment_file(attachment_id: int, db: Session = Depends
     att = db.query(TaskAttachment).filter(TaskAttachment.id == attachment_id).first()
     if not att or not att.stored_path or not os.path.exists(att.stored_path):
         raise HTTPException(status_code=404, detail="Файл не найден")
+    get_task_or_404(db, att.task_id, current_admin)
     from fastapi.responses import FileResponse
     return FileResponse(att.stored_path, filename=att.filename, media_type=att.mime_type or "application/octet-stream")
 
@@ -1218,7 +1259,7 @@ async def api_get_task_attachment_file(attachment_id: int, db: Session = Depends
 @router.get("/api/v1/admin/tasks/tasks/{task_id}/activity")
 async def api_get_task_activity(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    get_task_or_404(db, task_id)
+    get_task_or_404(db, task_id, current_admin)
     logs = db.query(TaskActivityLog).filter(TaskActivityLog.task_id == task_id).order_by(TaskActivityLog.created_at.desc()).limit(100).all()
     for l in logs:
         if l.admin_id:
@@ -1231,7 +1272,7 @@ async def api_get_task_activity(task_id: int, db: Session = Depends(get_db), cur
 @router.post("/api/v1/admin/tasks/tasks/{task_id}/reject")
 async def api_reject_task(task_id: int, request: Request, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     if task.board.board_type == "system":
         _require_task_developer(current_admin)
     body = await request.json()
@@ -1264,7 +1305,7 @@ async def api_reject_task(task_id: int, request: Request, db: Session = Depends(
 @router.post("/api/v1/admin/tasks/tasks/{task_id}/toggle-hidden")
 async def api_toggle_task_hidden(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     if task.board.board_type == "system":
         raise HTTPException(status_code=409, detail="Скрытие отключено для системной доски")
     if not _can_edit_task(db, current_admin, task):
@@ -1280,7 +1321,7 @@ async def api_toggle_task_hidden(task_id: int, db: Session = Depends(get_db), cu
 async def api_take_task(task_id: int, db: Session = Depends(get_db), current_admin: AdminUser = Depends(get_current_admin)):
     require_tasks_page(current_admin, "view")
     _require_task_developer(current_admin)
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     if task.board.board_type != "system":
         raise HTTPException(status_code=409, detail="Взять в работу можно только заявку системной доски")
 
@@ -1295,7 +1336,7 @@ async def api_take_task(task_id: int, db: Session = Depends(get_db), current_adm
     ).update({Task.assignee_admin_id: current_admin.id, Task.status: "in_progress"}, synchronize_session=False)
     if not claimed:
         db.rollback()
-        task = get_task_or_404(db, task_id)
+        task = get_task_or_404(db, task_id, current_admin)
         winner = db.query(AdminUser).filter(AdminUser.id == task.assignee_admin_id).first() if task.assignee_admin_id else None
         if winner:
             raise HTTPException(status_code=409, detail=f"Уже взято в работу пользователем {winner.discord_username or winner.id}")
@@ -1305,7 +1346,7 @@ async def api_take_task(task_id: int, db: Session = Depends(get_db), current_adm
         raise HTTPException(status_code=409, detail="Заявка уже не в очереди разработки")
     db.commit()
     db.expire_all()
-    task = get_task_or_404(db, task_id)
+    task = get_task_or_404(db, task_id, current_admin)
     _log_task_activity(db, task_id, current_admin.id, "status_change", f"{old_status} -> in_progress (взято в работу)")
     db.commit()
     _schedule_task_dm(db, task, current_admin, "in_progress")

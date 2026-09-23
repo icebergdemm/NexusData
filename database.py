@@ -352,6 +352,7 @@ def _apply_migrations():
         ("task_boards", "board_type", "VARCHAR(20) NOT NULL DEFAULT 'custom'"),
         ("tasks", "product_tag", "VARCHAR(16)"),
         ("tasks", "limit_eligible", "TINYINT NOT NULL DEFAULT 0"),
+        ("tasks", "is_private", "TINYINT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     added_security_session_column = False
