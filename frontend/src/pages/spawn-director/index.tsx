@@ -49,6 +49,45 @@ function StatBar({ label, display, value, max, modified }: { label: string; disp
   </div>
 }
 
+/** Безопасный показ множителя HP волны: плагин присылает 0 / пропуск, когда оверрайда нет. */
+function formatHpMultiplier(value: unknown): string {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return "ваниль (x1.00)"
+  return `x${n.toFixed(2)}`
+}
+
+function effectiveHp(baseHp: number | undefined, hpMultiplier: unknown): number | null {
+  if (baseHp == null) return null
+  const n = Number(hpMultiplier)
+  if (!Number.isFinite(n) || n <= 0) return Math.round(baseHp)
+  return Math.round(baseHp * n)
+}
+
+function WaveRow({ w, baseHp }: { w: Wave; baseHp?: number }) {
+  const speciesKey = typeof w.species === "string" ? w.species.toLowerCase() : ""
+  const speciesKnown = speciesKey !== "" && speciesKey !== "unknown"
+  const hpLabel = formatHpMultiplier(w.hp_multiplier)
+  const eff = effectiveHp(baseHp, w.hp_multiplier)
+  const hasPoint = w.x != null && w.y != null
+  const stateLine = w.state === "pending"
+    ? `План: ванильная точка ещё не подтверждена${w.adjustment ? ` · ${w.adjustment}` : ""}`
+    : `Применено${w.adjustment ? `: ${w.adjustment}` : " (без деталей от директора)"}`
+  return <details className="border-b px-4 py-3 last:border-b-0">
+    <summary className="grid cursor-pointer grid-cols-[1fr_auto_auto_auto] items-baseline gap-3 text-sm">
+      <span><b>#{w.id}</b> {speciesKnown ? w.species : <span className="text-muted-foreground">вид неизвестен</span>}<span className="block text-xs text-muted-foreground">{stateLine}</span></span>
+      <span>{w.amount ?? "—"} <span className="text-muted-foreground">/ {w.original_amount ?? "—"}</span></span>
+      <span>{hpLabel}</span>
+      <span className="font-mono text-xs">{hasPoint ? `${Math.round(w.x!)}, ${Math.round(w.y!)}` : "ожидание точки"}</span>
+    </summary>
+    <div className="mt-2 space-y-1 rounded-md bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+      <p>Состояние: <span className="font-mono">{w.state || "—"}</span></p>
+      {eff != null ? <p>HP вида: {baseHp} → {eff} HP ({hpLabel})</p> : <p>HP вида: неизвестно (вид не опознан в каталоге)</p>}
+      <p>Точка (сырые координаты): <span className="font-mono">{hasPoint ? `${w.x}, ${w.y}` : "—"}</span></p>
+      <details><summary className="cursor-pointer">Сырые данные волны</summary><pre className="mt-1 overflow-x-auto font-mono text-[11px]">{JSON.stringify(w, null, 2)}</pre></details>
+    </div>
+  </details>
+}
+
 const NUM_FILTERS = [
   { key: "hp", label: "HP", get: (c: Creature) => c.base_hp },
   { key: "cs", label: "Сила", get: (c: Creature) => c.combat_strength },
@@ -95,6 +134,7 @@ export function SpawnDirectorPage() {
 
   const groups = useMemo(() => [...new Set(creatures.map(c => c.group || "без группы"))].sort(), [creatures])
   const targetTags = useMemo(() => [...new Set(creatures.flatMap(c => c.targets.map(t => t.tag)).filter(Boolean))].sort(), [creatures])
+  const creatureById = useMemo(() => new Map(creatures.map(c => [c.id.toLowerCase(), c])), [creatures])
   const maxima = useMemo(() => ({
     hp: Math.max(1, ...creatures.map(c => c.base_hp)),
     cs: Math.max(1, ...creatures.map(c => c.combat_strength)),
@@ -166,7 +206,7 @@ export function SpawnDirectorPage() {
           {configSaved && !configDirty && <span className="text-xs text-emerald-600">Настройки сохранены</span>}
         </div>
       </CardContent></Card>}
-      <Card><CardContent className="p-0"><div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 border-b px-4 py-2 text-xs text-muted-foreground"><span>Волна / решение</span><span>Количество</span><span>HP</span><span>Точка</span></div>{server.waves.map(w => <div key={w.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-3 px-4 py-3 text-sm"><span><b>#{w.id}</b> {w.species}<p className="text-xs text-muted-foreground">{w.state === "pending" ? "План: ванильная точка ещё не подтверждена" : "Применено: "}{w.adjustment}</p></span><span>{w.amount} <span className="text-muted-foreground">/ {w.original_amount}</span></span><span>x{w.hp_multiplier.toFixed(2)}</span><span className="font-mono text-xs">{w.x == null ? "ожидание точки" : `${Math.round(w.x)}, ${Math.round(w.y!)}`}</span></div>)}</CardContent></Card>
+      <Card><CardContent className="p-0"><div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 border-b px-4 py-2 text-xs text-muted-foreground"><span>Волна / решение</span><span>Количество</span><span>HP</span><span>Точка</span></div>{!server.waves.length && <p className="px-4 py-3 text-sm text-muted-foreground">Волн пока нет.</p>}{server.waves.map((w, i) => <WaveRow key={w.id ?? i} w={w} baseHp={typeof w.species === "string" ? creatureById.get(w.species.toLowerCase())?.base_hp : undefined} />)}</CardContent></Card>
     </section>)}
     <section className="space-y-3">
       <div><h2 className="font-semibold">Ванильный каталог существ</h2><p className="text-sm text-muted-foreground">Данные извлечены из `Content/Characters`: базовая vitality, параметры AI и приоритеты целей. При множителе показывается итоговый нижний порог HP для каждого вида.</p></div>
@@ -197,10 +237,12 @@ export function SpawnDirectorPage() {
         const finalFloor = Math.max(multiplierFloor, Number(fixed || 0))
         const sortedTargets = [...creature.targets].sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
         const hpOverride = speciesHpOverride(creature.id)
+        const hasHpOverride = Number.isFinite(hpOverride) && hpOverride > 0
+        const overriddenHp = hasHpOverride ? Math.round(creature.base_hp * hpOverride) : null
         return <Card key={creature.id}><CardContent className="space-y-3 py-4">
           <div className="flex items-start justify-between gap-2"><div><h3 className="font-semibold">{creature.name_ru || creature.id}</h3><p className="font-mono text-xs text-muted-foreground">{creature.id}</p><p className="mt-0.5 text-xs text-muted-foreground">{creature.group || "без группы"} · {creature.needs_water ? "водная среда" : "суша/амфибия"}</p></div><Badge variant="outline">CS {creature.combat_strength}</Badge></div>
           <div className="space-y-2">
-            <StatBar label="Ванильное HP" display={hpOverride !== 0 ? `${creature.base_hp} HP | override: x${hpOverride.toFixed(1)}` : (Number(multiplier) > 0 ? `${creature.base_hp} → мин. ${Math.round(finalFloor)} HP` : `${creature.base_hp} HP`)} value={creature.base_hp} max={maxima.hp} modified={hpOverride !== 0} />
+            <StatBar label="Ванильное HP" display={hasHpOverride ? `${creature.base_hp} HP → ${overriddenHp} HP (x${hpOverride.toFixed(1)})` : (Number(multiplier) > 0 ? `${creature.base_hp} → мин. ${Math.round(finalFloor)} HP` : `${creature.base_hp} HP`)} value={hasHpOverride ? (overriddenHp as number) : creature.base_hp} max={hasHpOverride ? Math.max(maxima.hp, overriddenHp as number) : maxima.hp} modified={hasHpOverride} />
             <div className="grid grid-cols-2 gap-x-3 gap-y-2">
               <StatBar label="Боевая мощь" display={`${creature.combat_strength}`} value={creature.combat_strength} max={maxima.cs} />
               <StatBar label="Бегство при HP" display={`${creature.flee_health_threshold}%`} value={creature.flee_health_threshold} max={100} />
@@ -208,7 +250,7 @@ export function SpawnDirectorPage() {
               <StatBar label="Слух" display={`${creature.hearing}`} value={creature.hearing} max={maxima.hearing} />
             </div>
           </div>
-          {showConfig && <div className="border-t pt-2"><p className="mb-1 text-xs text-muted-foreground">Множитель HP для вида</p><div className="flex items-center gap-2"><Input className="w-24" type="number" min="0" max="10" step="0.1" value={speciesHpOverride(creature.id) || ""} placeholder="0 = авто" onChange={e => { const v = Number(e.target.value); setSpeciesHpOverride(creature.id, v) }} /><span className="text-xs text-muted-foreground">0 = без оверрайда</span></div></div>}
+          {showConfig && <div className="border-t pt-2"><p className="mb-1 text-xs text-muted-foreground">Множитель HP для вида</p><div className="flex items-center gap-2"><Input className="w-24" type="number" min="0" max="10" step="0.1" value={speciesHpOverride(creature.id) || ""} placeholder="0 = авто" onChange={e => { const v = Number(e.target.value); setSpeciesHpOverride(creature.id, v) }} /><span className="text-xs text-muted-foreground">{hasHpOverride ? `→ ${overriddenHp} HP` : "0 = без оверрайда"}</span></div></div>}
           <div className="border-t pt-2 text-xs text-muted-foreground space-y-1">
             <p>Реакция на урон: <b className="text-foreground">{creature.aggression_hurt}</b> <span>(+{(creature.aggression_hurt / 10).toFixed(1)} ненависти за удар на 10% HP)</span></p>
             <p>Жадность: <b className="text-foreground">{creature.aggression_greed}</b> <span>(+{(creature.aggression_greed / 10).toFixed(1)} азарта за добивание 10% HP)</span>; штурм: {creature.aggressive_boarding ? "да" : "нет"}</p>
