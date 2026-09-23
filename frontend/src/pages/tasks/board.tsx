@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   ArrowLeft, Plus, Settings, Trash2, MessageSquare, CalendarClock,
-  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink, ArrowRightLeft,
+  User, Building2, X, Pencil, KanbanSquare, Copy, Eye, Image as ImageIcon, Pin, PinOff, Send, Paperclip, Star, Shield, Link2, Ban, GripVertical, Flag, ExternalLink, ArrowRightLeft, LockKeyhole,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -241,6 +241,7 @@ function TaskCard({ task, onOpen, onDragStart, onDeleted, onMove, boardId, colum
         </div>
         <div className="flex flex-wrap items-center gap-1">
           <TaskStatusBadge status={task.status} label={publicStatusBadge?.label} color={publicStatusBadge?.color} />
+          {isSystemBoard && task.is_private && <Badge variant="outline" className="gap-1 border-violet-400/40 text-violet-300 text-[10px]"><LockKeyhole className="size-3" />Приватная</Badge>}
           {task.product_tag && <ProductTagBadge tag={task.product_tag} />}
           {task.priority && <Badge title={PRIORITY_LABELS[task.priority]} style={{ backgroundColor: `${PRIORITY_COLORS[task.priority]}22`, color: PRIORITY_COLORS[task.priority] }} className={`text-[10px] ${task.priority === "ultra" ? "max-w-full min-w-0 truncate" : ""}`}>{PRIORITY_LABELS[task.priority]}</Badge>}
           {task.attachment_count > 0 && <Badge variant="outline" className="gap-1 text-[10px]"><ImageIcon className="size-3" />{task.attachment_count}</Badge>}
@@ -600,6 +601,14 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
                   <SelectItem value="discord"><ProductTagBadge tag="discord" /></SelectItem>
                 </SelectContent>
               </Select>
+            </>}
+
+            {isSystemBoard && canChangeStatus && <>
+              <span className="text-muted-foreground">Приватность</span>
+              <label className="flex items-center gap-2">
+                <Switch checked={task.is_private} disabled={updateMutation.isPending} onCheckedChange={(isPrivate) => updateMutation.mutate({ is_private: isPrivate })} />
+                <span>Приватная задача</span>
+              </label>
             </>}
 
             <span className="text-muted-foreground">Дедлайн</span>

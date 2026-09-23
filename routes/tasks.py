@@ -875,9 +875,22 @@ async def api_update_task(task_id: int, request: Request, db: Session = Depends(
     board = task.board
     body = await request.json()
     status_only_patch = "status" in body and set(body).issubset({"status", "rejection_reason"})
-    if not _can_edit_task(db, current_admin, task) and not (board.board_type == "system" and status_only_patch and _can_develop_tasks(current_admin)):
+    private_only_patch = set(body) == {"is_private"}
+    if "is_private" in body:
+        if board.board_type != "system":
+            raise HTTPException(status_code=400, detail="Приватность доступна только для системной доски")
+        _require_task_developer(current_admin)
+        if type(body["is_private"]) is not bool:
+            raise HTTPException(status_code=400, detail="Некорректное значение приватности")
+    if not _can_edit_task(db, current_admin, task) and not (
+        board.board_type == "system"
+        and _can_develop_tasks(current_admin)
+        and (status_only_patch or private_only_patch)
+    ):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
 
+    if "is_private" in body:
+        task.is_private = body["is_private"]
     if "title" in body:
         title = (body.get("title") or "").strip()
         if not title:

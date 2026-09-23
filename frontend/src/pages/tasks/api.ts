@@ -249,6 +249,7 @@ export const tasksApi = {
       assignee_admin_id: number | null; assignee_department_id: number | null
       column_id: number; sort_order: number
       status: TaskStatus; is_hidden: boolean; product_tag: ProductTag; rejection_reason: string | null; preview_attachment_id: number | null
+      is_private: boolean
     }>) => api.patch<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}`, body),
     move: (taskId: number, body: { target_board_id: number; target_column_id: number }) =>
       api.post<{ status: string; task: TaskRow }>(`${base}/tasks/${taskId}/move`, body),
