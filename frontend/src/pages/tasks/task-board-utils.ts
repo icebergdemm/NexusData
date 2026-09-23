@@ -7,3 +7,7 @@ export function getPublicTaskStatusBadge(status: TaskStatus): { label: string; c
   }
   return null
 }
+
+export function shouldScrollTaskColumn(isSystemBoard: boolean, taskCount: number): boolean {
+  return isSystemBoard && taskCount > 10
+}

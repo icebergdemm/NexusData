@@ -623,7 +623,8 @@ async def api_get_task_board(board_id: int, view_mode: Optional[str] = None, sho
 
         def request_order(task: Task):
             group = 2 if is_developer and task.is_private else 1 if task.created_by_admin_id == current_admin.id else 0
-            return (group, task.created_at or datetime.min, task.id)
+            priority = {"ultra": 5, "urgent": 4, "high": 3, "medium": 2, "low": 1}.get(task.priority, 0)
+            return (group, priority, task.created_at or datetime.min, task.id)
 
         tasks = sorted(review_tasks, key=request_order, reverse=True) + other_tasks
     comment_counts = dict(

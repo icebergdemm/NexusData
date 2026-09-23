@@ -30,7 +30,7 @@ import {
   tasksApi, PRIORITY_LABELS, PRIORITY_COLORS, STATUS_LABELS, STATUS_COLORS,
   type TaskBoardRow, type TaskColumnRow, type TaskRow, type TaskPriority, type TaskStatus, type TaskViewMode, type ProductTag, type AssigneeCandidates,
 } from "./api"
-import { getPublicTaskStatusBadge } from "./task-board-utils"
+import { getPublicTaskStatusBadge, shouldScrollTaskColumn } from "./task-board-utils"
 import { BoardPermissionsDialog } from "./BoardPermissionsDialog"
 import { SystemBoardSettingsDialog } from "./SystemBoardSettingsDialog"
 
@@ -302,7 +302,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
   const [newTitle, setNewTitle] = useState("")
   const [productTag, setProductTag] = useState<ProductTag | "">("")
   const [isPrivate, setIsPrivate] = useState(false)
-  const scrollableReviewColumn = isSystemBoard && viewMode === "requests" && column.id === "submitted"
+  const scrollableSystemColumn = shouldScrollTaskColumn(isSystemBoard, tasks.length)
 
   const taskRights = (t: TaskRow) => {
     const isOwn = t.created_by_admin_id === currentAdminId || t.assignee_admin_id === currentAdminId
@@ -328,7 +328,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
 
   return (
     <div
-      className={`flex w-72 shrink-0 flex-col gap-2 rounded-lg border p-2 transition-colors ${scrollableReviewColumn ? "max-h-[calc(100dvh-12rem)] overflow-hidden" : ""} ${dragOver ? "border-primary bg-primary/5" : "border-transparent bg-muted/20"}`}
+      className={`flex w-72 shrink-0 flex-col gap-2 rounded-lg border p-2 transition-colors ${scrollableSystemColumn ? "max-h-[calc(100dvh-12rem)] overflow-hidden" : ""} ${dragOver ? "border-primary bg-primary/5" : "border-transparent bg-muted/20"}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
@@ -387,7 +387,7 @@ function TaskColumnView({ column, tasks, canCreate, canDevelop, canManageBoards,
         )
       )}
 
-      <div className={`order-2 ${scrollableReviewColumn ? "min-h-0 flex-1 overflow-y-auto space-y-2 pr-1" : "flex flex-col gap-2"}`}>
+      <div className={`order-2 ${scrollableSystemColumn ? "min-h-0 flex-1 overflow-y-auto space-y-2 pr-1" : "flex flex-col gap-2"}`}>
         {tasks.map((t) => (
           <TaskCard
             key={t.id}
@@ -435,19 +435,36 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
   const queryClient = useQueryClient()
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
+  const [savingDescriptionOnClose, setSavingDescriptionOnClose] = useState(false)
   const [commentText, setCommentText] = useState("")
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState("")
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const descriptionRef = useRef(task?.description ?? "")
+  const savedDescriptionRef = useRef(task?.description ?? "")
+  const pendingDescriptionSaveRef = useRef<Promise<void> | null>(null)
+  const closeAttemptRef = useRef(false)
+  const lastTaskIdRef = useRef<number | null>(task?.id ?? null)
 
   const { data: activityData } = useQuery({ queryKey: ["task-activity", taskId], queryFn: () => tasksApi.tasks.activity(taskId as number), enabled: !!taskId })
   const { data: attachmentsData } = useQuery({ queryKey: ["task-attachments", taskId], queryFn: () => tasksApi.tasks.attachments.list(taskId as number), enabled: !!taskId })
 
   useEffect(() => {
-    if (task) { setTitle(task.title); setDescription(task.description ?? "") }
-  }, [task])
+    if (!task || taskId === null) {
+      lastTaskIdRef.current = null
+      return
+    }
+    setTitle(task.title)
+    const serverDescription = task.description ?? ""
+    if (lastTaskIdRef.current !== task.id || descriptionRef.current === savedDescriptionRef.current) {
+      descriptionRef.current = serverDescription
+      savedDescriptionRef.current = serverDescription
+      setDescription(serverDescription)
+    }
+    lastTaskIdRef.current = task.id
+  }, [taskId, task?.id, task?.title, task?.description])
 
   // Сервер разрешает правку любых задач доски при can_edit_all, а «свои»
   // (созданные/назначенные) — только при глобальном tasks:edit / tasks:delete.
@@ -466,6 +483,44 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
     onSuccess: invalidateBoard,
     onError: (e: Error) => toast.error(e.message),
   })
+
+  const persistDescription = async (value: string) => {
+    if (pendingDescriptionSaveRef.current) {
+      await pendingDescriptionSaveRef.current
+      if (savedDescriptionRef.current === value) return
+    }
+    if (savedDescriptionRef.current === value) return
+
+    const pending = updateMutation.mutateAsync({ description: value }).then(() => {
+      savedDescriptionRef.current = value
+    })
+    pendingDescriptionSaveRef.current = pending
+    try {
+      await pending
+    } finally {
+      if (pendingDescriptionSaveRef.current === pending) pendingDescriptionSaveRef.current = null
+    }
+  }
+
+  const requestDialogClose = async () => {
+    if (closeAttemptRef.current) return
+    if (!task || (!pendingDescriptionSaveRef.current && descriptionRef.current === savedDescriptionRef.current)) {
+      onClose()
+      return
+    }
+
+    closeAttemptRef.current = true
+    setSavingDescriptionOnClose(true)
+    try {
+      await persistDescription(descriptionRef.current)
+      onClose()
+    } catch {
+      // The mutation reports the error; keep the dialog and draft available for retry.
+    } finally {
+      closeAttemptRef.current = false
+      setSavingDescriptionOnClose(false)
+    }
+  }
 
   const deleteMutation = useMutation({
     mutationFn: () => tasksApi.tasks.delete(taskId as number),
@@ -535,7 +590,7 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
 
   return (
     <>
-    <Dialog open={!!taskId} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={!!taskId} onOpenChange={(o) => !o && void requestDialogClose()}>
       <DialogContent className={`max-h-[90vh] w-full max-w-2xl overflow-y-auto ${task.priority === "ultra" ? "task-priority-ultra" : ""}`} onOpenAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -652,13 +707,15 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
           </div>
 
           <div>
-            <Label className="mb-1.5 block text-xs text-muted-foreground">Описание задачи</Label>
+            <Label className="mb-1.5 block text-xs text-muted-foreground">
+              Описание задачи {savingDescriptionOnClose && <span className="ml-2">Сохраняем…</span>}
+            </Label>
             <Textarea
               rows={4}
               disabled={!canEditThis}
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              onBlur={() => description !== (task.description ?? "") && updateMutation.mutate({ description })}
+              onChange={(e) => { descriptionRef.current = e.target.value; setDescription(e.target.value) }}
+              onBlur={() => { void persistDescription(descriptionRef.current).catch(() => {}) }}
               placeholder="Описание..."
             />
           </div>
@@ -770,7 +827,18 @@ function TaskDetailDialog({ taskId, task, onClose, candidates, canEditAll, canEd
         <Textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Причина отклонения" rows={3} />
         <DialogFooter>
           <Button variant="ghost" onClick={() => setRejectOpen(false)}>Отмена</Button>
-          <Button variant="destructive" disabled={!rejectReason.trim()} onClick={async () => { await tasksApi.tasks.reject(task.id, rejectReason.trim()); queryClient.invalidateQueries({ queryKey: ["task-board", boardId] }); setRejectOpen(false); setRejectReason(""); onClose() }}>Отклонить и архивировать</Button>
+          <Button variant="destructive" disabled={!rejectReason.trim()} onClick={async () => {
+            try {
+              await persistDescription(descriptionRef.current)
+            } catch {
+              return
+            }
+            await tasksApi.tasks.reject(task.id, rejectReason.trim())
+            queryClient.invalidateQueries({ queryKey: ["task-board", boardId] })
+            setRejectOpen(false)
+            setRejectReason("")
+            onClose()
+          }}>Отклонить и архивировать</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
