@@ -183,6 +183,24 @@ class Settings(BaseSettings):
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
 
+    # LLM assistant for MonsterSpawnController. Transport is ALWAYS the shared
+    # AI aggregator (AI_DOSSIER_URL + AI_DOSSIER_API_KEY, TLS via
+    # AI_DOSSIER_TLS_CA_FILE — see services_ai_client.py): the assistant is a
+    # client of the same queue as player dossiers, so generations never run
+    # concurrently on the Qwen/KoboldCpp host. The fields below are only the
+    # monster-specific generation params; there is no separate endpoint.
+    # Per-server runtime state (enabled/auto_apply/last run) lives in
+    # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
+    # admin UI; these fields are just the deployment defaults.
+    monster_llm_model: str = Field("qwen3-4b-instruct")
+    monster_llm_timeout_seconds: float = Field(90.0, gt=0, le=300)
+    # Anti-hallucination defaults: low temperature, small top_p and a hard
+    # JSON-schema validation on every response (see services_llm_monster.py).
+    monster_llm_temperature: float = Field(0.15, ge=0.0, le=2.0)
+    monster_llm_top_p: float = Field(0.8, gt=0.0, le=1.0)
+    # Auto-cycle interval in minutes (0 = manual runs only).
+    monster_llm_auto_interval_minutes: int = Field(0, ge=0, le=1440)
+
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"

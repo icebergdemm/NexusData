@@ -1510,6 +1510,31 @@ def task_check_db_health() -> dict:
         db.close()
 
 
+def task_llm_monster_auto_cycle() -> dict:
+    """LLM-assistant auto-cycle for MonsterSpawnController: for every server with
+    the assistant enabled and its per-server interval elapsed, runs one
+    validated apply-cycle. The scheduler calls this every 5 min at BACKGROUND
+    priority; the service itself decides per server whether a run is due and
+    never raises (all failures are captured per server)."""
+    import services_llm_monster
+    try:
+        results = services_llm_monster.run_auto_cycle_for_all_servers()
+        return {"status": "ok", "servers": results}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
+def task_process_monster_llm_runs() -> dict:
+    """Execute queued manual monster LLM runs (async: POST returns 202, the
+    UI polls runtime). Runs in a worker thread, never in a request."""
+    import services_llm_monster
+    try:
+        results = services_llm_monster.process_pending_llm_runs()
+        return {"status": "ok", "servers": results}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
 def task_refresh_analytics() -> dict:
     """Recompute the analytics dashboard's default-view snapshot. Runs every 5 min.
 
@@ -1903,6 +1928,17 @@ def _start_scheduler():
         task_id="db_health_check",
     )
 
+    # LLM-assistant auto-cycle for MonsterSpawnController: BACKGROUND priority,
+    # every 5 min; the service self-gates per server on its configured
+    # interval (0 = manual runs only), so this stays a cheap no-op until the
+    # operator enables the assistant.
+    scheduler.register_periodic(
+        task_llm_monster_auto_cycle,
+        interval_secs=5 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="llm_monster_auto_cycle",
+    )
+
     # Мониторинг производительности: BACKGROUND priority — сам по себе не
     # должен ни на миг задержать обслуживание запросов (см. services_perf_
     # monitor.py). Every 30s — тот же порядок, что и у liveness-проверки
@@ -1931,6 +1967,16 @@ def _start_scheduler():
         task_id="ai_dispatcher_reminders",
     )
 
+    # Queued manual monster LLM runs: same rationale as the dossier worker —
+    # a generation behind the shared aggregator lock outlives any HTTP
+    # timeout, so POST /llm/run only queues and this worker executes.
+    scheduler.register_periodic(
+        task_process_monster_llm_runs,
+        interval_secs=10,
+        priority=Priority.NORMAL,
+        task_id="monster_llm_runs",
+        timeout=None,
+    )
     # One task id plus a single durable claim keeps KoboldCpp from receiving
     # concurrent prompts even when a previous generation is slow.
     scheduler.register_periodic(

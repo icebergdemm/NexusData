@@ -1,6 +1,6 @@
 """Shared transport client for the site's AI aggregator.
 
-All server-side LLM consumers (player dossiers,
+All server-side LLM consumers (player dossiers, monster-spawn assistant,
 health checks) talk to the SAME OpenAI-compatible endpoint
 (AI_DOSSIER_URL + AI_DOSSIER_API_KEY, TLS via AI_DOSSIER_TLS_CA_FILE) and go
 through this module as clients — in particular they all serialize on the
