@@ -49,6 +49,11 @@ from services_voice_profiles import (
     voice_profile_scanner_enabled,
 )
 from services_voice_profile_import import commit_import_package, validate_import_package
+from services_voice_synthetic import (
+    set_voice_synthetic_worker_enabled,
+    voice_synthetic_model_status,
+    voice_synthetic_monitor_payload,
+)
 
 
 router = APIRouter(prefix="/api/v1/admin/voice-profiles", tags=["voice-profiles"])
@@ -827,6 +832,33 @@ async def set_voiceprint_monitor(
     db.commit()
     log_admin_action(db, current_admin.id, "voiceprint_worker_toggle", {"enabled": enabled})
     return _voiceprint_monitor_payload(db)
+
+
+@router.get("/voice-synthetic-monitor")
+async def get_voice_synthetic_monitor(
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    return voice_synthetic_monitor_payload(db)
+
+
+@router.patch("/voice-synthetic-monitor")
+async def set_voice_synthetic_monitor(
+    body: dict[str, Any],
+    db: Session = Depends(get_db),
+    current_admin: AdminUser = Depends(get_current_admin),
+):
+    _require_superuser(current_admin)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled должен быть boolean")
+    if enabled and voice_synthetic_model_status()["status"] != "ready":
+        raise HTTPException(status_code=409, detail="Удалённый классификатор не готов")
+    set_voice_synthetic_worker_enabled(db, enabled)
+    db.commit()
+    log_admin_action(db, current_admin.id, "voice_synthetic_worker_toggle", {"enabled": enabled})
+    return voice_synthetic_monitor_payload(db)
 
 
 @router.get("/players/{player_id}")

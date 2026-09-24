@@ -354,6 +354,8 @@ def _apply_migrations():
         ("tasks", "product_tag", "VARCHAR(16)"),
         ("tasks", "limit_eligible", "TINYINT NOT NULL DEFAULT 0"),
         ("tasks", "is_private", "TINYINT NOT NULL DEFAULT 0"),
+        # voice_synthetic_player_detections: total successfully classified windows
+        ("voice_synthetic_player_detections", "analyzed_window_count", "INT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     added_security_session_column = False

@@ -312,13 +312,19 @@ class Settings(BaseSettings):
     replays_upload_dir: str = "uploads/replays"
     replays_retention_days: int = 30  # auto-delete demos older than this
 
-    # Replay-independent voice profile processing. Disabled until the first
-    # historical backfill has been reviewed manually.
+    # Replay-independent voice profile processing. Disabled until enabled in
+    # the admin UI.
     voice_profiles_enabled: bool = False
     voice_profiles_process_new_replays: bool = False
     voice_profile_decoder_path: str = ""
     # Persistent, release-pinned ONNX model. The worker never downloads it.
     voiceprint_model_dir: str = "data/voiceprint-models"
+    # Audio bytes are sent only from the background voice worker to this
+    # separately hosted classifier service. Credentials are never exposed in UI.
+    voice_synthetic_api_url: str = Field("")
+    voice_synthetic_api_key: str = Field("")
+    voice_synthetic_tls_ca_file: str = Field("")
+    voice_synthetic_timeout_seconds: float = Field(30.0, gt=0, le=120)
 
     # Steam Web API (avatar auto-fetch) — https://steamcommunity.com/dev/apikey
     steam_api_key: str = ""

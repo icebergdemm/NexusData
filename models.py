@@ -1488,6 +1488,48 @@ class VoiceProfileSignature(Base):
     )
 
 
+class VoiceSyntheticClipResult(Base):
+    """One cached fake-voice classification result per clip and model revision."""
+
+    __tablename__ = "voice_synthetic_clip_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    clip_id = Column(Integer, ForeignKey("voice_profile_clips.id", ondelete="CASCADE"), nullable=False)
+    model_revision = Column(String(64), nullable=False)
+    state = Column(String(16), nullable=False)  # fake | real | no_speech | partial
+    fake_score = Column(Float, nullable=True)
+    window_count = Column(Integer, nullable=False, default=0)
+    next_window_index = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("clip_id", "model_revision", name="uq_voice_synthetic_clip_revision"),
+        Index("ix_voice_synthetic_clip_revision_state", "model_revision", "state"),
+    )
+
+
+class VoiceSyntheticPlayerDetection(Base):
+    """A conclusive fake-voice result and its automated player-label state."""
+
+    __tablename__ = "voice_synthetic_player_detections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True)
+    model_revision = Column(String(64), nullable=False)
+    confidence = Column(Float, nullable=False)
+    evidence_clip_id = Column(Integer, ForeignKey("voice_profile_clips.id", ondelete="SET NULL"), nullable=True)
+    analyzed_clip_count = Column(Integer, nullable=False, default=0)
+    analyzed_window_count = Column(Integer, nullable=False, default=0)
+    detected_at = Column(DateTime, default=func.now(), nullable=False)
+    label_applied_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "model_revision", name="uq_voice_synthetic_player_revision"),
+        Index("ix_voice_synthetic_player_label_pending", "label_applied_at", "detected_at"),
+    )
+
+
 class PlayerCommunication(Base):
     """A chat message or one final voice utterance from a game server."""
     __tablename__ = "player_communications"

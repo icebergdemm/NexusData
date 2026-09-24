@@ -641,6 +641,21 @@ def task_process_voice_profiles() -> dict:
         db.close()
 
 
+def task_process_voice_synthetic() -> dict:
+    """Process one bounded synthetic-voice clip batch outside web requests."""
+    from services_voice_synthetic import process_next_voice_synthetic_player
+
+    db = SessionLocal()
+    try:
+        return process_next_voice_synthetic_player(db)
+    except Exception:
+        db.rollback()
+        logger.exception("Synthetic voice worker failed")
+        raise
+    finally:
+        db.close()
+
+
 def task_cleanup_communications() -> dict:
     """Delete expired chat/voice metadata using the admin-configured retention."""
     from routes.communications import purge_expired_communications
@@ -1577,6 +1592,7 @@ def _start_simple_workers():
         (task_cleanup_replays, 6 * 60 * 60),
         (task_finalize_replay_streams, 60),
         (task_process_voice_profiles, 60),
+        (task_process_voice_synthetic, 60),
         (task_cleanup_communications, 6 * 60 * 60),
         (task_auto_link_admins, 10 * 60),
         (task_sync_department_roles, 10 * 60),
@@ -1699,6 +1715,14 @@ def _start_scheduler():
         interval_secs=60,
         priority=Priority.BACKGROUND,
         task_id="voice_profile_worker",
+        timeout=None,
+    )
+
+    scheduler.register_periodic(
+        task_process_voice_synthetic,
+        interval_secs=60,
+        priority=Priority.BACKGROUND,
+        task_id="voice_synthetic_classifier",
         timeout=None,
     )
 
@@ -1983,6 +2007,11 @@ def stop_all_workers() -> None:
         stop_playtime_stats_worker()
     except Exception:
         logger.exception("[Workers] Failed to stop playtime stats worker")
+    try:
+        from services_voice_synthetic_client import close_voice_synthetic_client
+        close_voice_synthetic_client()
+    except Exception:
+        logger.exception("[Workers] Failed to close synthetic voice client")
     try:
         from services_replays import stop_replay_worker
         stop_replay_worker()
