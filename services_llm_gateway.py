@@ -205,8 +205,9 @@ def finish(ticket_id: int, status: str, result=None, error=None) -> None:
             bounded = result
             if result is not None:
                 encoded = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
-                if len(encoded) > MAX_RESULT_CHARS:
-                    bounded = {"truncated": True, "content": encoded[:MAX_RESULT_CHARS]}
+                limit = 120000 if row.client_id == "monster_llm" else MAX_RESULT_CHARS
+                if len(encoded) > limit:
+                    bounded = {"truncated": True, "content": encoded[:limit]}
             row.status, row.result_ref, row.error = status, bounded, str(error)[:2000] if error else None
             row.finished_at, row.lease_expires_at = datetime.utcnow(), None
             db.commit()
