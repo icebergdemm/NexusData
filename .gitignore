@@ -73,6 +73,9 @@ data/
 # Одноразовые/вспомогательные скрипты и dev-инструменты
 /tools/*
 !/tools/voice_profile_backfill.py
+!/tools/voice_synthetic_api.py
+!/tools/voice_synthetic_constants.py
+!/tools/voice_synthetic_runtime.py
 !/tools/VoiceProfileDecoder/
 !/tools/VoiceProfileDecoder/*
 /tools/VoiceProfileDecoder/bin/

@@ -1,6 +1,6 @@
 """Stage-by-stage progress log for AI tasks (AI Centre "Журнал задач").
 
-Every AI worker (player dossiers, health
+Every AI worker (player dossiers, monster-spawn LLM assistant, health
 checks) appends bounded entries as its task moves through stages: claimed,
 packet built, request sent, response received, validated, applied, failed.
 The AI Centre renders these grouped per task so an operator can trace
@@ -16,6 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 TASK_KIND_DOSSIER = "dossier"
+TASK_KIND_MONSTER_LLM = "monster_llm"
 TASK_KIND_HEALTH = "health"
 # Gateway clients use their client_id directly as task kind.
 TASK_STAGES = {"queued", "claimed", "request_sent", "response_received", "validated", "failed", "cancelled"}

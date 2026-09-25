@@ -2158,6 +2158,29 @@ class PlayerLabelService:
         self.db.refresh(lbl)
         return lbl
 
+    def assign_automatically_if_missing(
+        self, player_id: int, category_id: int, note: str,
+    ) -> PlayerLabel:
+        """Add a system label without overwriting a moderator's label note."""
+        existing = (self.db.query(PlayerLabel)
+                    .filter(PlayerLabel.player_id == player_id,
+                            PlayerLabel.category_id == category_id)
+                    .first())
+        if existing is not None:
+            if existing.assigned_by_admin_id is None:
+                existing.note = note[:500]
+                self.db.flush()
+            return existing
+        label = PlayerLabel(
+            player_id=player_id,
+            category_id=category_id,
+            note=note[:500],
+            assigned_by_admin_id=None,
+        )
+        self.db.add(label)
+        self.db.flush()
+        return label
+
     def update_note(self, label_id: int, player_id: int, note: Optional[str]) -> Optional[PlayerLabel]:
         note = note.strip() if isinstance(note, str) else None
         note = note or None

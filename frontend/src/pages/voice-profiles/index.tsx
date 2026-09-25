@@ -16,6 +16,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError, api } from "@/lib/api";
 import { formatBrowserDate } from "@/lib/format-date";
@@ -131,6 +139,34 @@ interface VoiceprintMonitor {
   };
   log: VoiceprintMonitorLogEntry[];
 }
+interface VoiceSyntheticPlayerReport {
+  player_id: number;
+  steam_id: string;
+  display_name: string;
+  result: "synthetic" | "processing" | "waiting" | "clear";
+  confidence: number | null;
+  replays: number;
+  speech_ms: number;
+  analyzed_clips: number;
+  processed_fragments: number;
+  pending_clips: number;
+}
+interface VoiceSyntheticMonitor {
+  enabled: boolean;
+  model: {
+    status: "ready" | "not_configured" | "unavailable" | "revision_mismatch";
+    revision?: string;
+    device?: "cpu" | "cuda" | null;
+  };
+  criteria: { min_replays: number; min_speech_ms: number };
+  counts: {
+    eligible_players: number;
+    synthetic_players: number;
+    processing_players: number;
+    waiting_players: number;
+  };
+  players: VoiceSyntheticPlayerReport[];
+}
 interface GlobalVoiceprintRankingPlayer {
   steam_id: string;
   player_id: number | null;
@@ -177,6 +213,24 @@ function voiceprintLogClass(state: VoiceprintMonitorLogEntry["state"]) {
 }
 function voiceprintDuration(durationMs: number | null) {
   return durationMs === null ? "—" : `${(durationMs / 1000).toFixed(2)} с`;
+}
+function syntheticResultLabel(result: VoiceSyntheticPlayerReport["result"]) {
+  return result === "synthetic"
+    ? "Синтетический"
+    : result === "clear"
+      ? "Не обнаружен"
+      : result === "processing"
+        ? "Обрабатывается"
+        : "Ожидает запуска";
+}
+function syntheticResultClass(result: VoiceSyntheticPlayerReport["result"]) {
+  return result === "synthetic"
+    ? "text-red-300"
+    : result === "clear"
+      ? "text-emerald-400"
+      : result === "processing"
+        ? "text-sky-300"
+        : "text-amber-300";
 }
 function scannerElapsed(ms: number) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -682,6 +736,168 @@ function VoiceprintMonitorConsole({
   );
 }
 
+function SyntheticVoiceConsole({
+  openProfile,
+}: {
+  openProfile: (player: { player_id: number; display_name: string }) => void;
+}) {
+  const queryClient = useQueryClient();
+  const monitor = useQuery({
+    queryKey: ["voice-synthetic-monitor"],
+    queryFn: () =>
+      api.get<VoiceSyntheticMonitor>(
+        "/api/v1/admin/voice-profiles/voice-synthetic-monitor",
+      ),
+    refetchInterval: 15_000,
+  });
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api.patch<VoiceSyntheticMonitor>(
+        "/api/v1/admin/voice-profiles/voice-synthetic-monitor",
+        { enabled },
+      ),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["voice-synthetic-monitor"], data);
+      toast.success(
+        data.enabled ? "Анализ синтетического голоса включён" : "Анализ приостановлен",
+      );
+    },
+    onError: (error: ApiError) => toast.error(error.message),
+  });
+  const data = monitor.data;
+  const modelReady = data?.model.status === "ready";
+
+  return (
+    <div className="space-y-4">
+      <Card className={modelReady ? "border-sky-900/70 bg-sky-950/10" : "border-amber-900/60"}>
+        <CardHeader className="flex-row items-center justify-between gap-4 space-y-0">
+          <div className="min-w-0">
+            <CardTitle className="text-base">Анализ синтетического голоса</CardTitle>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Игрок попадает в отчёт после {data?.criteria.min_replays ?? 3} реплеев и {voiceprintDuration(data?.criteria.min_speech_ms ?? 15_000)} подтверждённой речи.
+            </p>
+          </div>
+          <Switch
+            checked={data?.enabled ?? false}
+            disabled={!data || !modelReady || toggle.isPending}
+            onCheckedChange={(enabled) => toggle.mutate(enabled)}
+            aria-label="Включить анализ синтетического голоса"
+          />
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2">
+          <Badge variant={modelReady ? "default" : "destructive"}>
+            {modelReady
+              ? "удалённая модель готова"
+              : data?.model.status === "not_configured"
+                ? "сервис не настроен"
+                : data?.model.status === "revision_mismatch"
+                  ? "версия модели не совпадает"
+                  : "сервис недоступен"}
+          </Badge>
+          <Badge variant={data?.enabled ? "secondary" : "outline"}>
+            {data?.enabled ? "анализ включён" : "анализ выключен"}
+          </Badge>
+          <span className="text-sm text-muted-foreground">
+            {modelReady
+              ? `Положительный вывод автоматически ставит игроку метку «Модуляция голоса». Устройство: ${data.model.device === "cuda" ? "GPU" : "CPU"}.`
+              : "Нужен доступный защищённый сервис с закреплённой версией модели."}
+          </span>
+          <Button
+            className="ml-auto"
+            size="sm"
+            variant="ghost"
+            onClick={() => monitor.refetch()}
+            disabled={monitor.isFetching}
+          >
+            <RefreshCw className={monitor.isFetching ? "size-4 animate-spin" : "size-4"} />{" "}
+            Обновить
+          </Button>
+        </CardContent>
+      </Card>
+      {monitor.isError && (
+        <p className="text-sm text-destructive">Состояние анализа не загрузилось.</p>
+      )}
+      {data && (
+        <>
+          <div className="grid overflow-hidden rounded-lg border bg-card sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              ["eligible", "В отчёте", data.counts.eligible_players, "text-sky-300"],
+              ["synthetic", "Синтетический голос", data.counts.synthetic_players, "text-red-300"],
+              ["processing", "Обрабатываются", data.counts.processing_players, "text-emerald-400"],
+              ["waiting", "Ожидают анализа", data.counts.waiting_players, "text-amber-300"],
+            ].map(([key, label, value, color]) => (
+              <div key={String(key)} className="border-b p-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+                <p className="text-xs text-muted-foreground">{label}</p>
+                <p className={`mt-1 font-mono text-2xl ${color}`}>{value}</p>
+              </div>
+            ))}
+          </div>
+          <Card className="overflow-hidden">
+            <CardHeader className="border-b border-border/70 py-3">
+              <CardTitle className="text-sm">Отчёт по игрокам</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground sm:hidden">
+                Прокрутите таблицу по горизонтали, чтобы увидеть оценку.
+              </p>
+            </CardHeader>
+            <CardContent className="p-0">
+              {monitor.isLoading ? (
+                <p className="p-4 text-sm text-muted-foreground">Загружаем результаты…</p>
+              ) : !data.players.length ? (
+                <p className="p-4 text-sm text-muted-foreground">
+                  Пока нет игроков с {data.criteria.min_replays} реплеями и {voiceprintDuration(data.criteria.min_speech_ms)} подтверждённой речи.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Игрок</TableHead>
+                        <TableHead>Результат</TableHead>
+                        <TableHead>Материал</TableHead>
+                        <TableHead>Обработано</TableHead>
+                        <TableHead className="text-right">Оценка</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {data.players.map((player) => (
+                        <TableRow key={player.steam_id}>
+                          <TableCell>
+                            <button
+                              type="button"
+                              onClick={() => openProfile({ player_id: player.player_id, display_name: player.display_name })}
+                              className="max-w-64 text-left font-medium text-foreground underline decoration-transparent underline-offset-2 hover:text-sky-300 hover:decoration-sky-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              <span className="block truncate">{player.display_name}</span>
+                              <span className="block font-mono text-xs text-muted-foreground">{player.steam_id}</span>
+                            </button>
+                          </TableCell>
+                          <TableCell className={syntheticResultClass(player.result)}>
+                            {syntheticResultLabel(player.result)}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-muted-foreground">
+                            {player.replays} репл. · {voiceprintDuration(player.speech_ms)} речи
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-muted-foreground">
+                            {player.analyzed_clips} клип. · {player.processed_fragments} фрагм.
+                            {player.pending_clips > 0 && ` · ${player.pending_clips} в очереди`}
+                          </TableCell>
+                          <TableCell className="text-right font-mono tabular-nums">
+                            {player.confidence === null ? "—" : player.confidence.toFixed(3)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function GlobalVoiceprintRanking({
   openProfile,
 }: {
@@ -805,10 +1021,11 @@ export function VoiceProfilesPage() {
         icon={Mic2}
       />
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList variant="line" className="mb-5">
+        <TabsList variant="line" className="mb-5 max-w-full justify-start overflow-x-auto">
           <TabsTrigger value="profiles">Профили игроков</TabsTrigger>
           <TabsTrigger value="scanner">Сканнер и журнал</TabsTrigger>
           <TabsTrigger value="voiceprint">Обработка и embeddings</TabsTrigger>
+          <TabsTrigger value="synthetic">Синтетический голос</TabsTrigger>
         </TabsList>
         <TabsContent value="profiles" className="space-y-4">
           <Card>
@@ -947,6 +1164,9 @@ export function VoiceProfilesPage() {
         </TabsContent>
         <TabsContent value="voiceprint">
           <VoiceprintMonitorConsole openProfile={openProfile} />
+        </TabsContent>
+        <TabsContent value="synthetic">
+          <SyntheticVoiceConsole openProfile={openProfile} />
         </TabsContent>
       </Tabs>
     </div>

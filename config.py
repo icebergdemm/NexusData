@@ -186,6 +186,24 @@ class Settings(BaseSettings):
     ai_large_creature_species_list: List[str] = []
     ai_abyss_creature_species_list: List[str] = []
 
+    # LLM assistant for MonsterSpawnController. Transport is ALWAYS the shared
+    # AI aggregator (AI_DOSSIER_URL + AI_DOSSIER_API_KEY, TLS via
+    # AI_DOSSIER_TLS_CA_FILE — see services_ai_client.py): the assistant is a
+    # client of the same queue as player dossiers, so generations never run
+    # concurrently on the Qwen/KoboldCpp host. The fields below are only the
+    # monster-specific generation params; there is no separate endpoint.
+    # Per-server runtime state (enabled/auto_apply/last run) lives in
+    # AppSetting key "monster_spawn_llm_config_v1" and is editable from the
+    # admin UI; these fields are just the deployment defaults.
+    monster_llm_model: str = Field("qwen3-4b-instruct")
+    monster_llm_timeout_seconds: float = Field(90.0, gt=0, le=300)
+    # Anti-hallucination defaults: low temperature, small top_p and a hard
+    # JSON-schema validation on every response (see services_llm_monster.py).
+    monster_llm_temperature: float = Field(0.15, ge=0.0, le=2.0)
+    monster_llm_top_p: float = Field(0.8, gt=0.0, le=1.0)
+    # Auto-cycle interval in minutes (0 = manual runs only).
+    monster_llm_auto_interval_minutes: int = Field(0, ge=0, le=1440)
+
     require_auth: bool = True
     # stored as plain str; converted to List[str] in __init__
     allowed_ips: str = "92.38.222.172"
@@ -315,13 +333,19 @@ class Settings(BaseSettings):
     replays_upload_dir: str = "uploads/replays"
     replays_retention_days: int = 30  # auto-delete demos older than this
 
-    # Replay-independent voice profile processing. Disabled until the first
-    # historical backfill has been reviewed manually.
+    # Replay-independent voice profile processing. Disabled until enabled in
+    # the admin UI.
     voice_profiles_enabled: bool = False
     voice_profiles_process_new_replays: bool = False
     voice_profile_decoder_path: str = ""
     # Persistent, release-pinned ONNX model. The worker never downloads it.
     voiceprint_model_dir: str = "data/voiceprint-models"
+    # Audio bytes are sent only from the background voice worker to this
+    # separately hosted classifier service. Credentials are never exposed in UI.
+    voice_synthetic_api_url: str = Field("")
+    voice_synthetic_api_key: str = Field("")
+    voice_synthetic_tls_ca_file: str = Field("")
+    voice_synthetic_timeout_seconds: float = Field(30.0, gt=0, le=120)
 
     # Steam Web API (avatar auto-fetch) — https://steamcommunity.com/dev/apikey
     steam_api_key: str = ""

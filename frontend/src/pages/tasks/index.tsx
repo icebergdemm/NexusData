@@ -2,13 +2,14 @@ import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { KanbanSquare, Plus, ListTodo, Building2 } from "lucide-react"
+import { KanbanSquare, Plus, ListTodo, Building2, LockKeyhole } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -20,7 +21,7 @@ import { tasksApi } from "./api"
 
 function CreateBoardDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState({ name: "", description: "", icon: "📋", color: "#1a68de", department_id: null as number | null })
+  const [form, setForm] = useState({ name: "", description: "", icon: "📋", color: "#1a68de", department_id: null as number | null, is_private: false })
 
   const { data: candidates } = useQuery({
     queryKey: ["tasks-assignee-candidates"],
@@ -34,7 +35,7 @@ function CreateBoardDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       toast.success("Доска создана")
       queryClient.invalidateQueries({ queryKey: ["task-boards"] })
       onOpenChange(false)
-      setForm({ name: "", description: "", icon: "📋", color: "#1a68de", department_id: null })
+      setForm({ name: "", description: "", icon: "📋", color: "#1a68de", department_id: null, is_private: false })
       void res
     },
     onError: (e: Error) => toast.error(e.message),
@@ -84,6 +85,10 @@ function CreateBoardDialog({ open, onOpenChange }: { open: boolean; onOpenChange
               </SelectContent>
             </Select>
           </div>
+          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+            <Switch checked={form.is_private} onCheckedChange={(is_private) => setForm((f) => ({ ...f, is_private }))} />
+            <span><span className="font-medium">Приватная доска</span><span className="mt-0.5 block text-xs text-muted-foreground">Видна управляющим досками и тем, кому выдали право просмотра.</span></span>
+          </label>
         </div>
 
         <DialogFooter>
@@ -141,6 +146,7 @@ export function TasksListPage() {
                   </div>
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{b.name}</div>
+                    {b.is_private && <Badge variant="outline" className="mt-1 w-fit gap-1 border-violet-400/40 text-violet-300"><LockKeyhole className="size-3" />Приватная</Badge>}
                     {b.description && <div className="line-clamp-2 text-xs text-muted-foreground">{b.description}</div>}
                   </div>
                 </div>

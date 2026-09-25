@@ -35,7 +35,7 @@ type Run = { id: number; player_id: number | null; player_name: string | null; s
 
 const statusLabel: Record<string, string> = { none: "Нет отчёта", queued: "В очереди", running: "В работе", succeeded: "Готово", failed: "Ошибка" }
 const sourceLabel: Record<string, string> = { manual: "вручную", manual_batch: "полный запуск", daily: "ежедневно", test: "тест", health: "health-check" }
-const kindLabel: Record<string, string> = { dossier: "досье", health: "health-check" }
+const kindLabel: Record<string, string> = { dossier: "досье", monster_llm: "монстры · LLM", health: "health-check" }
 const stageLabel: Record<string, string> = {
   claimed: "задача взята воркером", packet_built: "packet собран", request_sent: "запрос отправлен",
   response_received: "ответ получен", result_validated: "результат валиден", json_validated: "JSON валиден",
@@ -126,6 +126,7 @@ function TaskLogCard() {
       <select className="rounded border bg-background px-2 py-1 text-xs" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
         <option value="">все виды задач</option>
         <option value="dossier">досье</option>
+        <option value="monster_llm">монстры · LLM</option>
         <option value="health">health-check</option>
         <option value="dispatcher">диспетчер</option>
         <option value="future">будущие клиенты</option>

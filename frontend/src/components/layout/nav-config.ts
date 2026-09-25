@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Radio, Users, ShieldAlert, Gavel, PlayCircle,
   Ship, Star, Bot, Ticket, Settings, KeyRound, Wrench,
   ShieldCheck, BarChart3, Tags, FileText, NotebookText, Building2,
-  KanbanSquare, Globe2, Radar, Music, Mic2, UserPlus, ClipboardCheck, Trophy, Bug, Activity,
+  KanbanSquare, Globe2, Music, Mic2, UserPlus, ClipboardCheck, Trophy, Bug, Activity, Skull,
 } from "lucide-react"
 import { canDo, type CurrentAdmin, type PermissionPage } from "@/lib/auth"
 
@@ -60,7 +60,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Диспетчерская", to: "/dispatch", icon: Radio, permission: "dispatch" },
       { label: "Обзор мира", to: "/world-overview", icon: Globe2, permission: "world_state" },
-      { label: "Директор волн", to: "/spawn-director", icon: Radar, permission: "world_state" },
+      { label: "Управление монстрами", to: "/monster-spawn", icon: Skull, permission: "monster_spawn" },
       { label: "Прошедшие раунды", to: "/replays", icon: PlayCircle, permission: "replays" },
     ],
   },

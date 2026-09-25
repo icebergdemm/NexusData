@@ -224,6 +224,7 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
     # "manage_boards" covers creating/editing/archiving boards and columns.
     "tasks": {"label": "Задачи", "actions": [
         {"key": "view", "label": "Просмотр досок и задач"},
+        {"key": "developer", "label": "Режим разработки и смена статусов"},
         {"key": "create", "label": "Создание задач"},
         {"key": "edit", "label": "Редактирование своих задач (созданных или назначенных)"},
         {"key": "edit_all", "label": "Редактирование любых задач"},
@@ -235,6 +236,11 @@ PERMISSION_REGISTRY: dict[str, PageDef] = {
     # plugin (see WORLD_STATE_API_GUIDE.md / routes/world_state.py) — no
     # write actions exist on the admin side, just "can see it".
     "world_state": {"label": "Обзор мира", "actions": [{"key": "view", "label": "Просмотр"}]},
+    "monster_spawn": {"label": "Управление монстрами", "actions": [
+        {"key": "view", "label": "Просмотр"},
+        {"key": "edit", "label": "Редактирование настроек и планов"},
+        {"key": "manage_memory", "label": "Редактирование долговременной памяти"},
+    ]},
 }
 
 # Registry keys that were split off an existing generic action when this

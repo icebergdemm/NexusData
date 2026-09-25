@@ -194,6 +194,8 @@ def _apply_migrations():
         ("ai_creature_alerts", "reported_distance_from_yasa_m_approx", "INT"),
         # admin_users: flags accounts auto-provisioned by task_sync_department_roles
         ("admin_users", "created_by_worker", "TINYINT NOT NULL DEFAULT 0"),
+        # System task archive retention timestamp.
+        ("tasks", "archived_at", "DATETIME NULL"),
         # admin_action_logs: actor/session context for investigation workspace
         ("admin_action_logs", "actor_type", "VARCHAR(16)"),
         ("admin_action_logs", "actor_discord_id", "VARCHAR(25)"),
@@ -346,6 +348,14 @@ def _apply_migrations():
         ("department_access_levels", "sort_order", "INT NOT NULL DEFAULT 0"),
         ("department_access_levels", "description", "VARCHAR(500)"),
         ("department_access_levels", "can_bind_server_privilege", "TINYINT NOT NULL DEFAULT 0"),
+        # Tasks: one canonical request board with status-derived views.
+        ("task_boards", "board_type", "VARCHAR(20) NOT NULL DEFAULT 'custom'"),
+        ("task_boards", "is_private", "TINYINT NOT NULL DEFAULT 0"),
+        ("tasks", "product_tag", "VARCHAR(16)"),
+        ("tasks", "limit_eligible", "TINYINT NOT NULL DEFAULT 0"),
+        ("tasks", "is_private", "TINYINT NOT NULL DEFAULT 0"),
+        # voice_synthetic_player_detections: total successfully classified windows
+        ("voice_synthetic_player_detections", "analyzed_window_count", "INT NOT NULL DEFAULT 0"),
     ]
     db_name = settings.database_url.split("/")[-1].split("?")[0]
     added_security_session_column = False
@@ -853,10 +863,111 @@ def _seed_blank_templates():
             _logging.getLogger(__name__).warning("Blank template seeding failed: %s", e)
 
 
+def _migrate_task_board_system():
+    """Fold the legacy request and Dev boards into one status-driven board."""
+    from sqlalchemy import text
+    import logging as _logging
+
+    log = _logging.getLogger(__name__)
+    if engine.dialect.name == "mysql":
+        with engine.begin() as conn:
+            nullable = conn.execute(text(
+                "SELECT IS_NULLABLE FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tasks' AND COLUMN_NAME='column_id'"
+            )).scalar()
+            if nullable == "NO":
+                conn.execute(text("ALTER TABLE tasks MODIFY COLUMN column_id INT NULL"))
+    try:
+        with engine.begin() as conn:
+            requests = conn.execute(text(
+                "SELECT id, board_type FROM task_boards WHERE name='Запросы функционала' AND is_archived=0"
+            )).mappings().all()
+            if len(requests) > 1:
+                raise RuntimeError("Several active 'Запросы функционала' boards found; refusing ambiguous migration")
+            if not requests or requests[0]["board_type"] == "system":
+                return
+            request_id = requests[0]["id"]
+            dev_boards = conn.execute(text(
+                "SELECT id FROM task_boards WHERE name='Dev' AND is_archived=0 AND id<>:request_id"
+            ), {"request_id": request_id}).scalars().all()
+            if len(dev_boards) > 1:
+                raise RuntimeError("Several active Dev boards found; refusing ambiguous task migration")
+
+            conn.execute(text(
+                "UPDATE tasks t JOIN task_columns c ON c.id=t.column_id "
+                "SET t.product_tag=CASE LOWER(TRIM(c.name)) "
+                "WHEN 'nexusdata (сайт)' THEN 'site' WHEN 'discord' THEN 'discord' "
+                "WHEN 'barotrauma' THEN 'game' ELSE NULL END "
+                "WHERE t.board_id=:request_id"
+            ), {"request_id": request_id})
+
+            dev_id = dev_boards[0] if dev_boards else None
+            if dev_id is not None:
+                conn.execute(text("UPDATE tasks SET board_id=:request_id, product_tag=NULL WHERE board_id=:dev_id"), {
+                    "request_id": request_id, "dev_id": dev_id,
+                })
+
+            conn.execute(text(
+                "INSERT INTO task_activity_logs (task_id, admin_id, action, detail, created_at) "
+                "SELECT id, NULL, 'status_change', CONCAT(COALESCE(status, 'review'), ' -> archived (migration)'), CURRENT_TIMESTAMP "
+                "FROM tasks WHERE board_id=:request_id AND status<>'archived'"
+            ), {"request_id": request_id})
+            conn.execute(text(
+                "UPDATE tasks SET status='archived', column_id=NULL WHERE board_id=:request_id"
+            ), {"request_id": request_id})
+            conn.execute(text("UPDATE task_boards SET board_type='system' WHERE id=:request_id"), {
+                "request_id": request_id,
+            })
+            if dev_id is not None:
+                conn.execute(text("UPDATE task_boards SET is_archived=1 WHERE id=:dev_id"), {"dev_id": dev_id})
+    except Exception:
+        log.exception("Task-board migration failed")
+        raise
+
+
+def _migrate_system_task_states(bind=None):
+    """Move obsolete/misrepresented statuses and backfill archive timestamps."""
+    from sqlalchemy import text
+
+    bind = bind or engine
+    with bind.begin() as conn:
+        legacy = conn.execute(text(
+            "SELECT t.id, t.status FROM tasks t JOIN task_boards b ON b.id=t.board_id "
+            "WHERE b.board_type='system' AND (t.status='blocked' OR "
+            "(t.status='in_dev_queue' AND (t.assignee_admin_id IS NOT NULL OR t.assignee_department_id IS NOT NULL)))"
+        )).mappings().all()
+        for task in legacy:
+            target = "in_progress"
+            reason = "status removed" if task["status"] == "blocked" else "legacy assignee retained"
+            conn.execute(text("UPDATE tasks SET status=:status WHERE id=:id"), {"status": target, "id": task["id"]})
+            conn.execute(text(
+                "INSERT INTO task_activity_logs (task_id, admin_id, action, detail, created_at) "
+                "VALUES (:task_id, NULL, 'status_change', :detail, CURRENT_TIMESTAMP)"
+            ), {"task_id": task["id"], "detail": f"{task['status']} -> {target} ({reason}, migration)"})
+
+        archived = conn.execute(text(
+            "SELECT t.id, COALESCE(t.updated_at, CURRENT_TIMESTAMP) AS updated_at FROM tasks t JOIN task_boards b ON b.id=t.board_id "
+            "WHERE b.board_type='system' AND t.status IN ('archived','rejected') AND t.archived_at IS NULL"
+        )).mappings().all()
+        for task in archived:
+            logs = conn.execute(text(
+                "SELECT detail, created_at FROM task_activity_logs WHERE task_id=:task_id "
+                "AND action='status_change' ORDER BY created_at DESC, id DESC"
+            ), {"task_id": task["id"]}).mappings().all()
+            archive_time = next((
+                log["created_at"] for log in logs
+                if log["detail"] and ("-> archived" in log["detail"] or "-> rejected" in log["detail"])
+            ), task["updated_at"])
+            conn.execute(text("UPDATE tasks SET archived_at=:archived_at WHERE id=:id"), {
+                "archived_at": archive_time, "id": task["id"],
+            })
+
 def init_db():
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
     _apply_migrations()
+    _migrate_task_board_system()
+    _migrate_system_task_states()
     # Preserve ownership for masks that were already active before the
     # persistent claim flag existed.
     with engine.begin() as conn:

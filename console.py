@@ -54,6 +54,7 @@ _HELP = """
   db check                     — принудительно проверить подключение к БД
   voiceprint-model status       — состояние pinned ONNX-модели голоса
   voiceprint-model install      — скачать release asset, проверить SHA-256
+  voice-synthetic status        — состояние удалённого классификатора
   update [restart|norestart]   — забрать код из git (git pull --ff-only),
                                  при изменениях во frontend/ пересобрать его;
                                  аргумент разово перекрывает настройку
@@ -215,6 +216,20 @@ def _voiceprint_model_cmd(rest: str):
         print("Использование: voiceprint-model install|status")
 
 
+def _voice_synthetic_cmd(rest: str):
+    from services_voice_synthetic import voice_synthetic_model_status
+
+    if rest.strip().lower() == "status":
+        result = voice_synthetic_model_status()
+        print(
+            f"voice-synthetic: {result['status']}  "
+            f"revision={result.get('revision') or 'unknown'}  "
+            f"device={result.get('device') or 'unknown'}"
+        )
+    else:
+        print("Использование: voice-synthetic status")
+
+
 def _handle(line: str):
     parts = line.strip().split(maxsplit=1)
     if not parts:
@@ -240,6 +255,8 @@ def _handle(line: str):
         _update_cmd(rest)
     elif cmd == "voiceprint-model":
         _voiceprint_model_cmd(rest)
+    elif cmd == "voice-synthetic":
+        _voice_synthetic_cmd(rest)
     else:
         print(f"Неизвестная команда: {line!r}. 'help' — список команд.")
 

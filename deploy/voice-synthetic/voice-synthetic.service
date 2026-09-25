@@ -1,0 +1,35 @@
+[Unit]
+Description=MelodyMachine synthetic-voice inference API
+After=network-online.target qwen-llama.service qwen-firewall.service
+Wants=network-online.target qwen-firewall.service
+
+[Service]
+Type=simple
+User=qwen
+Group=qwen
+WorkingDirectory=/opt/voice-synthetic-service
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=VOICE_SYNTHETIC_DEVICE=cpu
+LoadCredential=api-keys:/etc/llama-server/player-dossier-api-keys
+ExecStart=/opt/voice-synthetic-service/.venv/bin/python -m tools.voice_synthetic_api --model-dir /opt/models/voice-synthetic-model --api-key-file %d/api-keys --tls-cert /etc/koboldcpp/player-dossier.crt --tls-key /etc/koboldcpp/player-dossier.key --device ${VOICE_SYNTHETIC_DEVICE} --host 0.0.0.0 --port 8443
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUQuota=100%
+MemoryHigh=1536M
+MemoryMax=2G
+LimitNOFILE=128
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/models/voice-synthetic-model /etc/koboldcpp
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

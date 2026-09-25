@@ -1488,6 +1488,48 @@ class VoiceProfileSignature(Base):
     )
 
 
+class VoiceSyntheticClipResult(Base):
+    """One cached fake-voice classification result per clip and model revision."""
+
+    __tablename__ = "voice_synthetic_clip_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    clip_id = Column(Integer, ForeignKey("voice_profile_clips.id", ondelete="CASCADE"), nullable=False)
+    model_revision = Column(String(64), nullable=False)
+    state = Column(String(16), nullable=False)  # fake | real | no_speech | partial
+    fake_score = Column(Float, nullable=True)
+    window_count = Column(Integer, nullable=False, default=0)
+    next_window_index = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("clip_id", "model_revision", name="uq_voice_synthetic_clip_revision"),
+        Index("ix_voice_synthetic_clip_revision_state", "model_revision", "state"),
+    )
+
+
+class VoiceSyntheticPlayerDetection(Base):
+    """A conclusive fake-voice result and its automated player-label state."""
+
+    __tablename__ = "voice_synthetic_player_detections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    steam_id = Column(String(50), nullable=False)
+    player_id = Column(Integer, ForeignKey("players_data.player_id", ondelete="SET NULL"), nullable=True)
+    model_revision = Column(String(64), nullable=False)
+    confidence = Column(Float, nullable=False)
+    evidence_clip_id = Column(Integer, ForeignKey("voice_profile_clips.id", ondelete="SET NULL"), nullable=True)
+    analyzed_clip_count = Column(Integer, nullable=False, default=0)
+    analyzed_window_count = Column(Integer, nullable=False, default=0)
+    detected_at = Column(DateTime, default=func.now(), nullable=False)
+    label_applied_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("steam_id", "model_revision", name="uq_voice_synthetic_player_revision"),
+        Index("ix_voice_synthetic_player_label_pending", "label_applied_at", "detected_at"),
+    )
+
+
 class PlayerCommunication(Base):
     """A chat message or one final voice utterance from a game server."""
     __tablename__ = "player_communications"
@@ -2325,6 +2367,8 @@ class TaskBoard(Base):
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     created_at = Column(DateTime, default=func.now())
     is_archived = Column(Boolean, nullable=False, default=False)
+    board_type = Column(String(20), nullable=False, default="custom")  # custom | system
+    is_private = Column(Boolean, nullable=False, default=False)
 
     department = relationship("Department")
     created_by = relationship("AdminUser", foreign_keys=[created_by_admin_id])
@@ -2366,22 +2410,26 @@ class Task(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     board_id = Column(Integer, ForeignKey("task_boards.id", ondelete="CASCADE"), nullable=False, index=True)
-    column_id = Column(Integer, ForeignKey("task_columns.id", ondelete="CASCADE"), nullable=False, index=True)
+    column_id = Column(Integer, ForeignKey("task_columns.id", ondelete="CASCADE"), nullable=True, index=True)
     title = Column(String(500), nullable=False)
     description = Column(String(4000), nullable=True)
     deadline = Column(DateTime, nullable=True)
     priority = Column(String(10), nullable=True)  # "low" | "medium" | "high" | "urgent" | "ultra"
     tags = Column(JSON, default=lambda: [])
+    product_tag = Column(String(16), nullable=True)  # game | site | discord; system boards only
+    limit_eligible = Column(Boolean, nullable=False, default=False)  # post-feature user requests only
+    is_private = Column(Boolean, nullable=False, default=False)
     # An assignee can be an admin, a department, or both (e.g. "this
     # employee, on behalf of this department") — either may be NULL.
     assignee_admin_id = Column(Integer, ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True, index=True)
     assignee_department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
     created_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
     sort_order = Column(Integer, default=0)
-    # p.3: статус и скрытость
-    status = Column(String(20), nullable=False, default="review")  # review | in_progress | done | rejected
-    is_hidden = Column(Boolean, nullable=False, default=False)
+    # System-board status is authoritative; custom boards retain legacy status values.
+    status = Column(String(20), nullable=False, default="review")
+    is_hidden = Column(Boolean, nullable=False, default=False)  # custom boards only; ignored on system board
     rejection_reason = Column(String(1000), nullable=True)
+    archived_at = Column(DateTime, nullable=True, index=True)
     # p.2: превью скриншота
     preview_attachment_id = Column(Integer, ForeignKey("task_attachments.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=func.now())
@@ -2561,7 +2609,7 @@ class WorldRound(Base):
 
 
 class AITaskLog(Base):
-    """Stage-by-stage progress log for AI tasks (dossiers, health).
+    """Stage-by-stage progress log for AI tasks (dossiers, monster LLM, health).
 
     Each worker appends bounded entries while a task moves through its
     stages, so an operator can trace where a task sits and what happened
@@ -2570,7 +2618,7 @@ class AITaskLog(Base):
     __tablename__ = "ai_task_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    task_kind = Column(String(30), nullable=False, index=True)  # dossier | health
+    task_kind = Column(String(30), nullable=False, index=True)  # dossier | monster_llm | health
     task_ref = Column(String(120), nullable=False, index=True)
     stage = Column(String(40), nullable=False)
     level = Column(String(10), nullable=False, default="info")  # info | warning | error
@@ -2767,3 +2815,55 @@ class SubCheckResult(Base):
     checked_by = relationship("AdminUser", foreign_keys=[checked_by_admin_id])
     project = relationship("SubProject", foreign_keys=[project_id])
     version = relationship("SubProjectVersion", foreign_keys=[version_id])
+
+
+class MonsterSpawnControl(Base):
+    """Desired and observed MonsterSpawnController state for one server."""
+
+    __tablename__ = "monster_spawn_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server = Column(String(100), unique=True, nullable=False, index=True)
+    config = Column(JSON, nullable=False, default=lambda: {})
+    memory = Column(JSON, nullable=False, default=lambda: {})
+    plans = Column(JSON, nullable=False, default=lambda: [])
+    telemetry = Column(JSON, nullable=False, default=lambda: {})
+    # MariaDB treats JSON as LONGTEXT and may contain legacy empty strings.
+    # Keep this append-only report envelope as text and parse it defensively
+    # in the route, so one malformed historical report cannot break the panel.
+    round_reports = Column(Text, nullable=False, default="[]")
+    desired_revision = Column(Integer, nullable=False, default=0)
+    applied_revision = Column(Integer, nullable=False, default=0)
+    updated_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_seen_at = Column(DateTime, nullable=True, index=True)
+
+
+class MonsterSpawnLLMRun(Base):
+    """Durable record of one monster-spawn LLM assistant cycle.
+
+    Lives in the main DB because the AppSetting runtime row is String(2000)
+    and silently truncates full analyzer results; this table keeps every run
+    with its validated outcome so the operator can always see what the model
+    decided (and what was rejected)."""
+
+    __tablename__ = "monster_spawn_llm_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server = Column(String(100), nullable=False, index=True)
+    run_id = Column(String(32), nullable=False, index=True)
+    mode = Column(String(10), nullable=False, default="analyze")
+    source = Column(String(10), nullable=False, default="manual")  # manual | auto
+    instruction = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="queued", index=True)  # queued | running | succeeded | failed
+    requested_by_admin_id = Column(Integer, nullable=True)
+    requested_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    confidence = Column(Float, nullable=True)
+    applied_count = Column(Integer, nullable=False, default=0)
+    rejected_count = Column(Integer, nullable=False, default=0)
+    spawned_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(String(2000), nullable=True)
+    result_json = Column(JSON, nullable=True)
