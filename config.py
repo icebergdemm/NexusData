@@ -149,7 +149,10 @@ class Settings(BaseSettings):
     # dispatch post, otherwise its reply is queued back into the game.
     ai_dispatcher_url: str = Field("")
     ai_dispatcher_api_key: str = Field("")
-    ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0, le=180)
+    # Верхняя граница снята: столько, сколько реально думает выбранная модель,
+    # решает владелец стенда. Значение должно быть не меньше AGENT_TIMEOUT_SECONDS
+    # диспетчера, иначе NexusData бросит запрос раньше, чем придёт ответ.
+    ai_dispatcher_timeout_seconds: float = Field(60.0, gt=0)
     # Dedicated player-dossier bridge. It deliberately has its own endpoint
     # and credential: the radio dispatcher and moderator dossier have
     # different data sensitivity and failure domains.

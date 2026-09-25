@@ -8,7 +8,7 @@
     "build": "npm run lint:replay && tsc -b && vite build",
     "lint": "oxlint && npm run lint:replay",
     "lint:replay": "cd .. && oxlint -c frontend/oxlint-replay.json -D no-undef static/js/replay_player.js",
-    "test": "tsx --tsconfig tsconfig.app.json --test ../tests/player_filters.test.mjs ../tests/player_communications.test.mjs ../tests/replay_voice_utils.test.mjs tests/logs-workspace.test.tsx tests/replay-voice-workspace.test.tsx ../tests/moderation_session.test.mjs tests/server-restart-utils.test.ts tests/maintenance-state.test.ts tests/permission-matrix.test.ts tests/admin-users-profile.test.ts tests/tasks-priority.test.ts tests/label-categories.test.ts tests/player-export.test.ts tests/player-history.test.ts",
+    "test": "tsx --tsconfig tsconfig.app.json --test ../tests/player_filters.test.mjs ../tests/player_communications.test.mjs ../tests/replay_voice_utils.test.mjs tests/logs-workspace.test.tsx tests/replay-voice-workspace.test.tsx ../tests/moderation_session.test.mjs tests/server-restart-utils.test.ts tests/maintenance-state.test.ts tests/permission-matrix.test.ts tests/admin-users-profile.test.ts tests/tasks-priority.test.ts tests/label-categories.test.ts tests/player-export.test.ts tests/player-history.test.ts tests/v2-skin.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

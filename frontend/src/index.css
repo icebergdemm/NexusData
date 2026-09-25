@@ -178,8 +178,33 @@ body {
   render the same React pages and call the same APIs; only this scoped layer
   changes presentation.
 */
+/*
+  V2 design tokens — the "hard edge" language.
+
+  Two colours: `--v2-ink` (foreground) and `--v2-paper` (background); the
+  light theme simply swaps them. Tone is never a grey value: it is ink mixed
+  into paper at a fixed share, which is ink at that opacity, so contrast stays
+  correct in both themes for free. Status colours (destructive, success,
+  warning) are the one deliberate exception — this is a moderation console,
+  and a ban button must not look like a save button.
+
+  Components read role tokens, not ink/paper directly, so a second design
+  (`data-v2-skin="mission"`, further below) re-points the roles without any
+  page knowing which design is active.
+*/
 html[data-ui-version="v2"] {
   color-scheme: dark;
+
+  --v2-paper: #000000;
+  --v2-ink: #ffffff;
+  --v2-edge: 2px;
+
+  --v2-line: var(--v2-ink);      /* rules, borders, bevel shells, focus */
+  --v2-face: var(--v2-paper);    /* card, popover and panel surfaces */
+  --v2-control: var(--v2-paper); /* idle face of a control */
+  --v2-hot: var(--v2-ink);       /* the "on" state: hover, selected, open */
+  --v2-on-hot: var(--v2-paper);
+  --v2-tone: color-mix(in srgb, var(--v2-ink) 8%, var(--v2-paper));
 
   --radius: 0px;
   --radius-sm: 0px;
@@ -190,36 +215,42 @@ html[data-ui-version="v2"] {
   --radius-3xl: 0px;
   --radius-4xl: 0px;
 
-  --background: #050505;
-  --foreground: #f5f5f5;
-  --card: #080808;
-  --card-foreground: #f5f5f5;
-  --popover: #0a0a0a;
-  --popover-foreground: #f5f5f5;
-  --primary: #f5f5f5;
-  --primary-foreground: #050505;
-  --secondary: #111111;
-  --secondary-foreground: #f5f5f5;
-  --muted: #111111;
-  --muted-foreground: #a3a3a3;
-  --accent: #181818;
-  --accent-foreground: #ffffff;
+  --background: var(--v2-paper);
+  --foreground: var(--v2-ink);
+  --card: var(--v2-face);
+  --card-foreground: var(--v2-ink);
+  --popover: var(--v2-face);
+  --popover-foreground: var(--v2-ink);
+  --primary: var(--v2-ink);
+  --primary-foreground: var(--v2-paper);
+  --secondary: var(--v2-tone);
+  --secondary-foreground: var(--v2-ink);
+  --muted: var(--v2-tone);
+  --muted-foreground: color-mix(in srgb, var(--v2-ink) 60%, var(--v2-paper));
+  /*
+    Generic hovers stay a tone, not a full inversion: dozens of rows across
+    the pages set `hover:bg-accent` without the paired foreground, and a solid
+    ink fill there would hide their text. Controls invert explicitly below.
+  */
+  --accent: color-mix(in srgb, var(--v2-ink) 14%, var(--v2-paper));
+  --accent-foreground: var(--v2-ink);
   --destructive: #f05252;
   --destructive-foreground: #ffffff;
   --success: #65c466;
   --warning: #e8b339;
-  --info: #d4d4d4;
-  --border: #2b2b2b;
-  --input: #343434;
-  --ring: #f5f5f5;
-  --sidebar: #050505;
-  --sidebar-foreground: #f5f5f5;
-  --sidebar-primary: #f5f5f5;
-  --sidebar-primary-foreground: #050505;
-  --sidebar-accent: #151515;
-  --sidebar-accent-foreground: #ffffff;
-  --sidebar-border: #2b2b2b;
-  --sidebar-ring: #f5f5f5;
+  --info: var(--v2-ink);
+  --border: var(--v2-line);
+  --input: var(--v2-line);
+  --ring: var(--v2-line);
+  --sidebar: var(--v2-paper);
+  --sidebar-foreground: var(--v2-ink);
+  --sidebar-primary: var(--v2-ink);
+  --sidebar-primary-foreground: var(--v2-paper);
+  /* The sidebar always pairs accent with its foreground, so it can invert. */
+  --sidebar-accent: var(--v2-hot);
+  --sidebar-accent-foreground: var(--v2-on-hot);
+  --sidebar-border: var(--v2-line);
+  --sidebar-ring: var(--v2-line);
   --chart-1: #f4f4f5;
   --chart-2: #c7c7ca;
   --chart-3: #96969c;
@@ -233,36 +264,12 @@ html[data-ui-version="v2"] {
 html[data-ui-version="v2"].light {
   color-scheme: light;
 
-  --background: #ffffff;
-  --foreground: #080808;
-  --card: #ffffff;
-  --card-foreground: #080808;
-  --popover: #ffffff;
-  --popover-foreground: #080808;
-  --primary: #080808;
-  --primary-foreground: #ffffff;
-  --secondary: #f2f2f2;
-  --secondary-foreground: #080808;
-  --muted: #f1f1f1;
-  --muted-foreground: #626262;
-  --accent: #e9e9e9;
-  --accent-foreground: #000000;
+  --v2-paper: #ffffff;
+  --v2-ink: #000000;
+
   --destructive: #c92d2d;
-  --destructive-foreground: #ffffff;
   --success: #247a31;
   --warning: #9a6500;
-  --info: #454545;
-  --border: #cecece;
-  --input: #bdbdbd;
-  --ring: #080808;
-  --sidebar: #fafafa;
-  --sidebar-foreground: #080808;
-  --sidebar-primary: #080808;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #e9e9e9;
-  --sidebar-accent-foreground: #000000;
-  --sidebar-border: #cecece;
-  --sidebar-ring: #080808;
   --chart-1: #111111;
   --chart-2: #3d3d3d;
   --chart-3: #686868;
@@ -273,10 +280,6 @@ html[data-ui-version="v2"].light {
 html[data-ui-version="v2"] body {
   min-height: 100svh;
   background-color: var(--background);
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--border) 24%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--border) 18%, transparent) 1px, transparent 1px);
-  background-size: 32px 32px;
 }
 
 html[data-ui-version="v2"] *,
@@ -563,4 +566,390 @@ html[data-ui-version="v2"] ::selection {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   V2 structure — shared by every V2 design.
+
+   Written as unlayered selectors on the shadcn `data-slot` / `data-variant`
+   attributes, so no page has to change: an unlayered rule beats Tailwind's
+   layered utilities regardless of specificity, which is what lets one
+   stylesheet restyle every screen of the shell.
+
+   A button is matched by `[data-variant][data-size]` as well as by its slot:
+   Radix triggers rendered `asChild` overwrite `data-slot` with their own
+   ("dropdown-menu-trigger", "dialog-trigger"…), and only <Button> sets both
+   of those attributes on one element.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Chrome is monospaced, uppercase and tracked; prose stays sans. Uppercase
+   is a CSS transform, so the DOM keeps normal casing for screen readers. */
+html[data-ui-version="v2"] :is(
+  :is([data-slot="button"], [data-variant][data-size]),
+  [data-slot="badge"],
+  [data-slot="label"],
+  [data-slot="tabs-trigger"],
+  [data-slot="table-head"],
+  [data-slot="card-title"],
+  [data-slot="dropdown-menu-label"],
+  [data-slot="page-header-title"]
+) {
+  font-family: var(--font-mono, monospace);
+  text-transform: uppercase;
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size]) {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  transition: background-color 75ms linear, color 75ms linear, border-color 75ms linear;
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-size="xs"],
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-size="icon-xs"] {
+  font-size: 0.625rem;
+}
+
+html[data-ui-version="v2"] [data-slot="badge"] {
+  border-width: var(--v2-edge);
+  font-size: 0.625rem;
+  letter-spacing: 0.15em;
+}
+
+html[data-ui-version="v2"] [data-slot="label"] {
+  font-size: 0.625rem;
+  letter-spacing: 0.2em;
+}
+
+html[data-ui-version="v2"] [data-slot="card-title"] {
+  font-size: 0.75rem;
+  letter-spacing: 0.2em;
+}
+
+html[data-ui-version="v2"] [data-slot="page-header-title"] {
+  letter-spacing: 0.25em;
+}
+
+html[data-ui-version="v2"] [data-slot="table-head"] {
+  letter-spacing: 0.15em;
+}
+
+/* Rules: every container edge is the full --v2-edge in the line colour. Rows
+   inside a table keep a hairline, or dense lists turn into a cage of bars. */
+html[data-ui-version="v2"] :is(
+  [data-slot="card"],
+  [data-slot="input"],
+  [data-slot="textarea"],
+  [data-slot="select-trigger"],
+  [data-slot="popover-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="select-content"],
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="sheet-content"]
+) {
+  border-width: var(--v2-edge);
+  border-color: var(--v2-line);
+}
+
+html[data-ui-version="v2"] :is([data-slot="input"], [data-slot="textarea"], [data-slot="select-trigger"]) {
+  background-color: var(--v2-control);
+}
+
+html[data-ui-version="v2"] [data-slot="table-row"] {
+  border-color: color-mix(in srgb, var(--v2-line) 22%, transparent);
+}
+
+/* One gesture: a control is an outline that flips to solid on hover, focus
+   or selection. Background and colour always change together here, never as
+   two competing utilities (DESIGN.md §3). */
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size]):is([data-variant="outline"], [data-variant="secondary"]) {
+  border: var(--v2-edge) solid var(--v2-line);
+  background-color: var(--v2-control);
+  color: var(--v2-ink);
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="ghost"] {
+  background-color: transparent;
+  color: var(--v2-ink);
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size]):is([data-variant="outline"], [data-variant="secondary"], [data-variant="ghost"]):is(:hover, :focus-visible, [aria-pressed="true"], [data-state="open"]) {
+  background-color: var(--v2-hot);
+  color: var(--v2-on-hot);
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="destructive"] {
+  border: var(--v2-edge) solid var(--destructive);
+  background-color: transparent;
+  color: var(--destructive);
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="destructive"]:is(:hover, :focus-visible) {
+  background-color: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size]):disabled {
+  opacity: 0.3;
+}
+
+/*
+  Primary actions carry the cut corner. A clip-path also cuts away a CSS
+  border along the diagonal, so the border is faked with two stacked layers:
+  the button itself is the line-coloured shell, `::before` is the face inset
+  by --v2-edge with a cut smaller by the same amount. The visible margin of
+  the shell *is* the border, and it follows the diagonal.
+*/
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"] {
+  --v2-cut: 9px;
+  isolation: isolate;
+  border: 0;
+  background: var(--v2-line);
+  color: var(--v2-ink);
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--v2-cut)) 0,
+    100% var(--v2-cut),
+    100% 100%,
+    var(--v2-cut) 100%,
+    0 calc(100% - var(--v2-cut))
+  );
+}
+
+/* The face is positioned against the button; a button that is already
+   absolutely/fixed/sticky positioned keeps its own position. */
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"]:not([class*="absolute"], [class*="fixed"], [class*="sticky"]) {
+  position: relative;
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"]::before {
+  --v2-cut: calc(9px - var(--v2-edge));
+  content: "";
+  position: absolute;
+  inset: var(--v2-edge);
+  z-index: -1;
+  background: var(--v2-control);
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--v2-cut)) 0,
+    100% var(--v2-cut),
+    100% 100%,
+    var(--v2-cut) 100%,
+    0 calc(100% - var(--v2-cut))
+  );
+  transition: background-color 75ms linear;
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"]:is(:hover, :focus-visible, [aria-pressed="true"], [data-state="open"]) {
+  color: var(--v2-on-hot);
+}
+
+html[data-ui-version="v2"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"]:is(:hover, :focus-visible, [aria-pressed="true"], [data-state="open"])::before {
+  background: var(--v2-hot);
+}
+
+/* Menus, selects and tabs use the same inversion. */
+html[data-ui-version="v2"] :is(
+  [data-slot="dropdown-menu-item"],
+  [data-slot="dropdown-menu-checkbox-item"],
+  [data-slot="dropdown-menu-radio-item"],
+  [data-slot="context-menu-item"],
+  [data-slot="context-menu-checkbox-item"],
+  [data-slot="context-menu-radio-item"],
+  [data-slot="select-item"]
+)[data-highlighted] {
+  background-color: var(--v2-hot);
+  color: var(--v2-on-hot);
+}
+
+html[data-ui-version="v2"] :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])[data-variant="destructive"][data-highlighted] {
+  background-color: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
+html[data-ui-version="v2"] [data-slot="tabs-list"][data-variant="default"] {
+  gap: 0;
+  padding: 0;
+  border: var(--v2-edge) solid var(--v2-line);
+  background: var(--v2-control);
+}
+
+html[data-ui-version="v2"] [data-slot="tabs-list"][data-variant="default"] [data-slot="tabs-trigger"] {
+  height: 100%;
+  border: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  color: var(--v2-ink);
+  transition: background-color 75ms linear, color 75ms linear;
+}
+
+html[data-ui-version="v2"] [data-slot="tabs-list"][data-variant="default"] [data-slot="tabs-trigger"] + [data-slot="tabs-trigger"] {
+  border-left: var(--v2-edge) solid var(--v2-line);
+}
+
+html[data-ui-version="v2"] [data-slot="tabs-list"][data-variant="default"] [data-slot="tabs-trigger"]:is(:hover, [data-state="active"]) {
+  background-color: var(--v2-hot);
+  color: var(--v2-on-hot);
+}
+
+/* Waiting is never a pulsing grey block: diagonal hatching with a bar
+   sweeping down it, in the line colour (DESIGN.md §4). */
+html[data-ui-version="v2"] [data-slot="skeleton"] {
+  overflow: hidden;
+  animation: none;
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--v2-line) 16%, transparent) 0 1px,
+    transparent 1px 9px
+  );
+}
+
+html[data-ui-version="v2"] [data-slot="skeleton"]:not([class*="absolute"], [class*="fixed"]) {
+  position: relative;
+}
+
+html[data-ui-version="v2"] [data-slot="skeleton"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: var(--v2-edge);
+  background: var(--v2-line);
+  animation: v2-sweep 1.6s linear infinite;
+}
+
+@keyframes v2-sweep {
+  0% { transform: translateY(-110%); }
+  100% { transform: translateY(2100%); }
+}
+
+/* Confirmations that still arrive as toasts get the same hard frame. */
+html[data-ui-version="v2"] [data-sonner-toast] {
+  border: var(--v2-edge) solid var(--v2-line) !important;
+  border-radius: 0 !important;
+  background: var(--v2-face) !important;
+  color: var(--v2-ink) !important;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+
+html[data-ui-version="v2"] ::selection {
+  background: var(--v2-hot);
+  color: var(--v2-on-hot);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Design 2 of V2: "mission" — a starship mission computer.
+
+   Deep navy, cyan instrument lines on dark console panels, teal control bars
+   and one warm colour — orange — for what is selected or under the pointer.
+   Same markup, same structure as above; only the role tokens and the
+   silhouette of primary actions change. Declared after `.light` with equal
+   specificity, so a light theme left in storage cannot override it: this
+   design has one fixed palette.
+   ───────────────────────────────────────────────────────────────────────── */
+html[data-ui-version="v2"][data-v2-skin="mission"] {
+  color-scheme: dark;
+
+  --v2-paper: #040d18;
+  --v2-ink: #d4f3ff;
+  --v2-line: #4ccfee;
+  /* Opaque on purpose: the bevel's border is the shell showing around its
+     face, and a translucent face lets the whole shell show through. */
+  --v2-face: #07202f;
+  --v2-control: #146f8b;
+  --v2-hot: #ff7a1f;
+  --v2-on-hot: #fff5ea;
+  --v2-tone: #0b2c3d;
+
+  --primary: var(--v2-hot);
+  --primary-foreground: var(--v2-on-hot);
+  --muted-foreground: #8fbccc;
+  --accent: color-mix(in srgb, var(--v2-line) 16%, var(--v2-face));
+  --accent-foreground: var(--v2-ink);
+  --border: color-mix(in srgb, var(--v2-line) 55%, transparent);
+  --destructive: #ff5a5a;
+  --success: #5fd38d;
+  --warning: #ffd166;
+  --info: var(--v2-line);
+  --sidebar: #031019;
+  --sidebar-border: color-mix(in srgb, var(--v2-line) 45%, transparent);
+
+  /* A wide technical face for the chrome. None is bundled: the first one
+     installed wins, otherwise the sans stack. */
+  --font-mono: "Orbitron", "Michroma", "Eurostile", "Rajdhani", "Exo 2", Inter, ui-sans-serif, system-ui, sans-serif;
+
+  background-color: var(--v2-paper);
+  background-image:
+    radial-gradient(ellipse 70% 55% at 55% 38%, rgb(38 128 168 / 0.36), transparent 70%),
+    radial-gradient(ellipse 90% 45% at 50% 112%, rgb(14 70 120 / 0.6), transparent 70%);
+  background-attachment: fixed;
+}
+
+/* Let the rings of <V2SkinBackdrop> through: they sit on the <html> canvas,
+   below every opaque page layer. */
+html[data-ui-version="v2"][data-v2-skin="mission"] :is(body, [data-slot="sidebar-wrapper"], [data-slot="sidebar-inset"]) {
+  background: transparent;
+}
+
+html[data-ui-version="v2"][data-v2-skin="mission"] body {
+  text-shadow: 0 0 10px rgb(76 207 238 / 0.22);
+}
+
+html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="app-header"] {
+  background: color-mix(in srgb, var(--v2-paper) 82%, transparent);
+}
+
+/* Primary actions end in a chevron on both short sides, like the bars of
+   the reference console. */
+html[data-ui-version="v2"][data-v2-skin="mission"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"] {
+  --v2-cut: 12px;
+  clip-path: polygon(
+    var(--v2-cut) 0,
+    calc(100% - var(--v2-cut)) 0,
+    100% 50%,
+    calc(100% - var(--v2-cut)) 100%,
+    var(--v2-cut) 100%,
+    0 50%
+  );
+}
+
+html[data-ui-version="v2"][data-v2-skin="mission"] :is([data-slot="button"], [data-variant][data-size])[data-variant="default"]::before {
+  --v2-cut: calc(12px - var(--v2-edge));
+  clip-path: polygon(
+    var(--v2-cut) 0,
+    calc(100% - var(--v2-cut)) 0,
+    100% 50%,
+    calc(100% - var(--v2-cut)) 100%,
+    var(--v2-cut) 100%,
+    0 50%
+  );
+}
+
+html[data-ui-version="v2"][data-v2-skin="mission"] :is([data-slot="button"], [data-variant][data-size]):is(:hover, [aria-pressed="true"], [data-state="open"]),
+html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="tabs-trigger"][data-state="active"],
+html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="sidebar-menu-button"][data-active="true"] {
+  text-shadow: 0 0 10px rgb(255 160 90 / 0.5);
+}
+
+html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="sidebar-menu-button"][data-active="true"] {
+  border-left-color: var(--v2-hot);
+}
+
+@keyframes v2-orbit {
+  to { transform: rotate(360deg); }
+}
+
+.v2-orbit {
+  transform-origin: 50% 50%;
+  animation: v2-orbit 90s linear infinite;
+}
+
+.v2-orbit-reverse {
+  transform-origin: 50% 50%;
+  animation: v2-orbit 140s linear infinite reverse;
 }

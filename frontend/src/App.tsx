@@ -60,6 +60,11 @@ const TaskBoardPage = lazy(() => import("@/pages/tasks/board").then(({ TaskBoard
 const DocumentEditorPage = lazy(() =>
   import("@/pages/documents/OnlyOfficeEditorPage").then((m) => ({ default: m.OnlyOfficeEditorPage }))
 )
+// Development only: the constant `false` in production builds drops both the
+// route and the chunk, so the preview never ships.
+const DesignPreviewPage = import.meta.env.DEV
+  ? lazy(() => import("@/pages/design-preview").then(({ DesignPreviewPage }) => ({ default: DesignPreviewPage })))
+  : null
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isError, error, refetch } = useCurrentAdmin()
@@ -117,6 +122,7 @@ export default function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<DashboardPage />} />
+          {DesignPreviewPage && <Route path="design-preview" element={<DesignPreviewPage />} />}
           <Route path="round-status" element={<RoundStatusPage />} />
           <Route path="dispatch" element={<DispatchPage />} />
           <Route path="world-overview" element={<WorldOverviewPage />} />

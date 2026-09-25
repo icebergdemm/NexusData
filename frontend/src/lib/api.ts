@@ -46,8 +46,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (res.status === 401) {
-    const next = encodeURIComponent(window.location.pathname + window.location.search)
-    window.location.href = `/login?next=${next}`
+    // The dev-only design preview runs on a mock session; a background poll
+    // answered 401 by a locally running backend must not throw the reviewer
+    // out to /login.
+    if (!(import.meta.env.DEV && /\/design-preview\/?$/.test(window.location.pathname))) {
+      const next = encodeURIComponent(window.location.pathname + window.location.search)
+      window.location.href = `/login?next=${next}`
+    }
     // Navigation is async; throw so callers' promise chains stop here.
     throw new ApiError(401, "Not authenticated")
   }

@@ -13,6 +13,8 @@ import { NAV_GROUPS } from "@/components/layout/nav-config"
 import { canView, useCurrentAdmin } from "@/lib/auth"
 import { NotificationBell } from "@/components/layout/NotificationBell"
 import { V2ThemeToggle } from "@/components/layout/V2ThemeToggle"
+import { V2SkinPicker } from "@/components/layout/V2SkinPicker"
+import { useV2Skin, v2SkinHasLightDark } from "@/lib/v2-skin"
 import { IS_V2, buildUiVersionHref } from "@/lib/ui-version"
 import { cn } from "@/lib/utils"
 import { api } from "@/lib/api"
@@ -76,6 +78,7 @@ function V2SidebarTrigger() {
 export function AppShell() {
   const { data: admin } = useCurrentAdmin()
   const location = useLocation()
+  const [v2Skin] = useV2Skin()
   const versionHref = buildUiVersionHref(IS_V2 ? "classic" : "v2", location)
   const [v2SidebarOpen, setV2SidebarOpen] = useState(readV2SidebarState)
 
@@ -231,7 +234,9 @@ export function AppShell() {
             </div>
           )}
           <div className="flex-1" />
-          {IS_V2 && <V2ThemeToggle />}
+          {IS_V2 && <V2SkinPicker />}
+          {/* The mission design has a single fixed palette. */}
+          {IS_V2 && v2SkinHasLightDark(v2Skin) && <V2ThemeToggle />}
           <NotificationBell />
           {admin && (
             <div className="flex items-center gap-2">
