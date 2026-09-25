@@ -2867,3 +2867,20 @@ class MonsterSpawnLLMRun(Base):
     spawned_count = Column(Integer, nullable=False, default=0)
     error_message = Column(String(2000), nullable=True)
     result_json = Column(JSON, nullable=True)
+
+
+class MonsterSpawnRoundReport(Base):
+    """Full controller report and its durable LLM conclusion."""
+
+    __tablename__ = "monster_spawn_round_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    server = Column(String(100), nullable=False, index=True)
+    round_key = Column(String(160), nullable=False, index=True)
+    received_at = Column(DateTime, default=func.now(), nullable=False)
+    report_json = Column(JSON, nullable=False)
+    analysis_status = Column(String(20), nullable=False, default="pending")
+    analysis_started_at = Column(DateTime, nullable=True)
+    analysis_text = Column(Text, nullable=True)
+    analysis_error = Column(String(2000), nullable=True)
+    analysis_at = Column(DateTime, nullable=True)

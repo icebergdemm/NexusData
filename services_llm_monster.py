@@ -1,10 +1,8 @@
 """LLM assistant for MonsterSpawnController (via the shared AI aggregator).
 
-The site-side assistant is a CLIENT of the same AI aggregator that serves
-player dossiers (AI_DOSSIER_URL + AI_DOSSIER_API_KEY, see
-services_ai_client.py): every generation is queued on the single
-AI_REQUEST_LOCK, so monster cycles never run concurrently with dossier or
-health-check generations on the Qwen/KoboldCpp host. Per-consumer settings
+The site-side assistant is a client of the durable AI Centre gateway
+(services_llm_gateway.py): every generation joins the shared worker queue.
+Per-consumer settings
 (model name, sampling, timeout) stay in MONSTER_LLM_*; endpoint, auth and
 TLS always come from the aggregator.
 
@@ -45,7 +43,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import get_settings
-from services_ai_client import AIClientError, chat_content, post_chat_completions
+from services_ai_client import chat_content
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +207,7 @@ def save_llm_runtime(db, server: str, runtime: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# LLM client — via the shared AI aggregator (queues on AI_REQUEST_LOCK)
+# LLM client — via the durable shared AI Centre gateway
 # ---------------------------------------------------------------------------
 
 class LLMError(Exception):
@@ -218,23 +216,28 @@ class LLMError(Exception):
 
 def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float,
                       temperature: float, top_p: float) -> str:
-    """One generation through the shared AI aggregator as a client.
+    """Submit to the durable AI Centre queue and wait for its worker result."""
+    from services_llm_gateway import LLMGatewayError, poll, submit
 
-    Endpoint/auth/TLS/queueing are owned by services_ai_client; only the
-    model name and sampling params are monster-specific."""
-    payload = {
+    params = {
         "model": model,
-        "messages": messages,
         "temperature": temperature,
         "top_p": top_p,
-        "max_tokens": 2048,
-        # Thinking mode: disable for deterministic JSON output.
-        "chat_template_kwargs": {"enable_thinking": False},
+        "max_tokens": 4096,
     }
     try:
-        data, _elapsed_ms = post_chat_completions(payload, timeout=timeout)
-        return chat_content(data)
-    except AIClientError as exc:
+        ticket = submit("monster_llm", messages, params, timeout=timeout,
+                        idempotency_key=uuid.uuid4().hex)
+        deadline = time.monotonic() + max(timeout + 600, 900)
+        while time.monotonic() < deadline:
+            outcome = poll(ticket)
+            if outcome["status"] == "succeeded":
+                return chat_content(outcome["result"])
+            if outcome["status"] in ("failed", "cancelled"):
+                raise LLMError(outcome.get("error") or "Запрос LLM отменён")
+            time.sleep(2)
+        raise LLMError("Превышено время ожидания в общей очереди LLM")
+    except LLMGatewayError as exc:
         raise LLMError(str(exc)) from exc
 
 
@@ -298,6 +301,19 @@ known_species. count не больше 6, hp_multiplier в пределах 0.5-
 5. Никогда не выдумывай данные, которых нет в JSON. Если состояние неполное — верни пустые списки \
 и опиши, чего не хватает, в "situation".
 6. Ничего кроме JSON. Никакого markdown, никаких комментариев."""
+
+ROUND_PROMPT = """Проанализируй завершённый раунд Barotrauma по переданному отчёту.
+Укажи характер волн, причины появления, время устранения, исходы, потери и динамику экипажа.
+Не выдумывай отсутствующие данные. Верни только JSON по схеме:
+{"conclusion":"содержательное заключение по-русски"}."""
+
+REPORT_PROMPT = """Оцени последние не более 15 завершённых раундов Barotrauma.
+Сопоставь частоту и причины волн, длительность боёв, потери, обходы и тенденцию сложности.
+Предложи только обоснованные плавные изменения глобальных настроек из editable_keys.
+При недостатке данных оставь config_changes пустым. Верни строго JSON по схеме:
+{"situation":"вывод", "crew_summary":"анализ", "recommendations":[{"title":"совет","detail":"обоснование"}],
+"config_changes":[{"key":"разрешённый ключ","new_value":0.3,"reason":"обоснование"}],
+"spawn_requests":[],"confidence":0.7}. Не выдумывай данные."""
 
 
 def _build_user_prompt(state: dict, instruction: Optional[str], known_species: List[str]) -> str:
@@ -372,6 +388,8 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
         "memory_brief": brief_memory,
         "auto_interval_minutes": settings.monster_llm_auto_interval_minutes,
     }
+    if state.get("round_reports"):
+        payload["round_reports"] = state["round_reports"][-15:]
     if instruction:
         payload["operator_instruction"] = instruction
 
@@ -410,8 +428,9 @@ def _validate_config_changes(state: dict, changes: Any) -> Tuple[List[dict], Lis
             if not isinstance(value, bool):
                 rejected.append(f"{key}: new_value не bool")
                 continue
+            _, current = _get_path(config, f"global.{key}")
             _set_path(config, f"global.{key}", value)
-            applied.append({"key": key, "new_value": value, "reason": reason})
+            applied.append({"key": key, "new_value": value, "old_value": current, "reason": reason})
             continue
 
         low, high, max_step = registry[key]
@@ -698,7 +717,7 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     _task(TASK_KIND, ref, "request_sent", f"отправка запроса в агрегатор (модель {settings.monster_llm_model}, режим {mode})")
     content = _chat_completions(
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": REPORT_PROMPT if state.get("round_reports") else SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         model=settings.monster_llm_model,
@@ -716,7 +735,7 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         _task(TASK_KIND, ref, "retry", "ответ не был валидным JSON — повторная генерация с строгим напоминанием", "warning")
         content = _chat_completions(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": REPORT_PROMPT if state.get("round_reports") else SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
                 {"role": "assistant", "content": content[:2000]},
                 {"role": "user", "content": "Предыдущий ответ не был валидным JSON. "
@@ -737,7 +756,9 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     except (TypeError, ValueError):
         confidence = 0.0
 
-    config_applied, config_rejected = _validate_config_changes(state, decision.get("config_changes"))
+    import copy
+    proposal_state = {**state, "config": copy.deepcopy(state.get("config") or {})}
+    config_applied, config_rejected = _validate_config_changes(proposal_state, decision.get("config_changes"))
     spawn_applied, spawn_rejected = _validate_spawn_requests(state, decision.get("spawn_requests"))
     crew_summary, recommendations = _validate_recommendations(decision)
 
@@ -745,6 +766,8 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     # analyzer text (situation + crew summary + recommendations) is still
     # returned and persisted so the operator can read it in the UI.
     applied_changes: List[dict] = config_applied if mode in ("apply", "spawn") else []
+    if applied_changes:
+        state["config"] = proposal_state["config"]
     spawn_plans: List[dict] = []
     if mode == "spawn" and spawn_applied:
         spawn_plans = _spawn_requests_to_plans(state, spawn_applied, datetime.utcnow())
@@ -758,6 +781,7 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         "recommendations": recommendations,
         "confidence": round(confidence, 2),
         "applied_changes": applied_changes,
+        "proposed_changes": config_applied,
         "rejected": config_rejected + spawn_rejected,
         "spawn_requests": spawn_applied if mode == "spawn" else [],
         "spawn_plans": spawn_plans,
@@ -897,9 +921,8 @@ def _active_run_live(active: Any, now: datetime) -> bool:
 
 
 def _run_lease_seconds() -> float:
-    """An active run holds the aggregator lock for at most two model
-    timeouts; the lease covers that plus queue/DB overhead."""
-    return float(get_settings().monster_llm_timeout_seconds) * 2.0 + 120.0
+    """Cover queue wait and a possible JSON retry before reclaiming work."""
+    return 2 * max(float(get_settings().monster_llm_timeout_seconds) + 600, 900) + 120
 
 
 def _reap_stale_active(runtime: dict, now: datetime, main_db=None, server: str = "") -> bool:
@@ -1060,7 +1083,7 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
         "dashboard": {},
     }
     mode = active.get("mode") or "analyze"
-    instruction = active.get("instruction") or None
+    instruction = (run_row.instruction if run_row is not None else active.get("instruction")) or None
     try:
         result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction, task_ref=task_ref)
     except LLMError as exc:
@@ -1154,6 +1177,126 @@ def process_pending_llm_runs() -> List[Dict[str, Any]]:
             game_db.close()
     finally:
         main_db.close()
+    results.extend(process_pending_round_reports())
+    return results
+
+
+def _round_brief(report: dict, limit: int = 80) -> dict:
+    """Bound LLM input while retaining encounter evidence."""
+    brief = {key: report.get(key) for key in (
+        "round_start_utc", "round_end_utc", "round_duration_seconds",
+        "submarine_name", "summary") if key in report}
+    waves = report.get("waves") if isinstance(report.get("waves"), list) else []
+    brief["total_waves"] = len(waves)
+    brief["waves"] = [{key: value for key, value in wave.items() if key in (
+        "wave_name", "name", "spawn_reason", "reason", "outcome", "fate",
+        "repel_seconds", "expected_repel_seconds", "engagement_seconds",
+        "crew_deaths", "sub_health_loss", "performance", "monster_counts",
+        "effective_difficulty", "resolved_at_seconds")}
+        for wave in waves[:limit] if isinstance(wave, dict)]
+    return brief
+
+
+def process_pending_round_reports() -> List[Dict[str, Any]]:
+    """Analyze each new round and refresh the 15-round proposal every third round."""
+    from database import GameSessionLocal, SessionLocal
+    from models import MonsterSpawnControl, MonsterSpawnLLMRun, MonsterSpawnRoundReport
+
+    results = []
+    game_db = GameSessionLocal()
+    main_db = SessionLocal()
+    try:
+        # Existing installations kept up to 50 reports in the control row.
+        # Import that history once so it remains visible and receives analysis.
+        for control in game_db.query(MonsterSpawnControl).all():
+            try:
+                legacy = json.loads(control.round_reports or "[]")
+            except (TypeError, ValueError):
+                legacy = []
+            if not isinstance(legacy, list):
+                continue
+            existing_keys = {key for (key,) in game_db.query(MonsterSpawnRoundReport.round_key).filter_by(
+                server=control.server).all()}
+            for report in legacy:
+                if not isinstance(report, dict):
+                    continue
+                round_key = str(report.get("round_start_utc") or report.get("round_id") or
+                                report.get("received_at_utc") or "")[:160]
+                if not round_key:
+                    continue
+                if round_key not in existing_keys:
+                    game_db.add(MonsterSpawnRoundReport(
+                        server=control.server, round_key=round_key, report_json=report))
+                    existing_keys.add(round_key)
+        game_db.commit()
+        servers = [name for (name,) in game_db.query(MonsterSpawnRoundReport.server).distinct().all()]
+        for server in servers:
+            game_db.query(MonsterSpawnRoundReport).filter(
+                MonsterSpawnRoundReport.server == server,
+                MonsterSpawnRoundReport.analysis_status == "running",
+                MonsterSpawnRoundReport.analysis_started_at < datetime.utcnow() - timedelta(minutes=45),
+            ).update({"analysis_status": "pending"}, synchronize_session=False)
+            game_db.commit()
+            pending = game_db.query(MonsterSpawnRoundReport).filter_by(
+                server=server, analysis_status="pending").order_by(MonsterSpawnRoundReport.id).first()
+            if pending is not None:
+                pending.analysis_status = "running"
+                pending.analysis_started_at = datetime.utcnow()
+                game_db.commit()
+                try:
+                    content = _chat_completions(
+                        [{"role": "system", "content": ROUND_PROMPT},
+                         {"role": "user", "content": json.dumps(_round_brief(pending.report_json or {}), ensure_ascii=False)}],
+                        get_settings().monster_llm_model, get_settings().monster_llm_timeout_seconds,
+                        get_settings().monster_llm_temperature, get_settings().monster_llm_top_p)
+                    conclusion = str(_extract_json(content).get("conclusion") or "").strip()[:8000]
+                    if not conclusion:
+                        raise LLMError("Модель не вернула заключение")
+                    pending.analysis_text = conclusion
+                    pending.analysis_status = "succeeded"
+                    pending.analysis_at = datetime.utcnow()
+                    results.append({"server": server, "round_id": pending.id, "status": "succeeded"})
+                except Exception as exc:
+                    pending.analysis_status = "failed"
+                    pending.analysis_error = str(exc)[:2000]
+                    results.append({"server": server, "round_id": pending.id, "status": "failed"})
+                game_db.commit()
+
+            all_rounds = game_db.query(MonsterSpawnRoundReport).filter_by(server=server).order_by(
+                MonsterSpawnRoundReport.id.asc()).all()
+            existing_markers = {instruction for (instruction,) in main_db.query(
+                MonsterSpawnLLMRun.instruction).filter(
+                    MonsterSpawnLLMRun.server == server,
+                    MonsterSpawnLLMRun.instruction.like("round-report:%")).all()}
+            milestone = next((index for index in range(3, len(all_rounds) + 1, 3)
+                              if f"round-report:{all_rounds[index - 1].id}" not in existing_markers), None)
+            if milestone is None:
+                continue
+            latest = list(reversed(all_rounds[max(0, milestone - 15):milestone]))
+            if any(entry.analysis_status in ("pending", "running") for entry in latest):
+                continue
+            marker = f"round-report:{latest[0].id}"
+            control = game_db.query(MonsterSpawnControl).filter_by(server=server).first()
+            if control is None:
+                continue
+            run_id = uuid.uuid4().hex[:12]
+            record = _create_run_record(main_db, server, "analyze", marker, "auto", run_id, None)
+            record.status = "running"
+            record.started_at = datetime.utcnow()
+            main_db.commit()
+            state = {"config": control.config or {}, "memory": control.memory or {},
+                     "telemetry": {}, "dashboard": {},
+                     "round_reports": [_round_brief(entry.report_json or {}, 20) for entry in reversed(latest)]}
+            try:
+                result = run_llm_cycle(main_db, server, state, mode="analyze", task_ref=f"{server}:{run_id}")
+                _finish_run_record(main_db, record, result, None)
+                results.append({"server": server, "report_run_id": run_id, "status": "succeeded"})
+            except Exception as exc:
+                _finish_run_record(main_db, record, {}, str(exc))
+                results.append({"server": server, "report_run_id": run_id, "status": "failed"})
+    finally:
+        main_db.close()
+        game_db.close()
     return results
 
 
@@ -1190,11 +1333,12 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
                     "dashboard": {},
                 }
                 run_id = uuid.uuid4().hex[:12]
-                _create_run_record(main_db, server, "apply", None, "auto", run_id, None)
+                mode = "apply" if runtime.get("auto_apply") else "analyze"
+                _create_run_record(main_db, server, mode, None, "auto", run_id, None)
                 task_ref = f"{server}:{run_id}"
                 _task(TASK_KIND, task_ref, "claimed", "автоцикл запущен планировщиком")
                 try:
-                    result = run_llm_cycle(main_db, server, state, mode="apply", task_ref=task_ref)
+                    result = run_llm_cycle(main_db, server, state, mode=mode, task_ref=task_ref)
                     if result.get("applied_changes"):
                         row.config = state["config"]
                         row.desired_revision = (row.desired_revision or 0) + 1

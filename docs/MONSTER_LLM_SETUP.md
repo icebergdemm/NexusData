@@ -2,9 +2,9 @@
 
 Сайт обращается к модели ТОЛЬКО через общий AI-агрегатор
 (`AI_DOSSIER_URL` + `AI_DOSSIER_API_KEY`, TLS — `AI_DOSSIER_TLS_CA_FILE`,
-код — `services_ai_client.py`). Ассистент монстров — обычный клиент этой
-очереди: каждая генерация ждёт общий `AI_REQUEST_LOCK`, поэтому циклы
-монстров никогда не идут параллельно с досье или health-check на
+код — `services_ai_client.py`). Ассистент монстров — клиент долговременной
+очереди `services_llm_gateway.py` (`monster_llm`): общий воркер выполняет
+его генерации последовательно с досье и другими клиентами на
 Qwen/KoboldCpp хосте. Отдельного endpoint/ключа у монстров нет.
 Ассистент анализирует состояние спавн-контроллера, даёт текстовые
 рекомендации и сводку эффективности экипажа, корректирует параметры
@@ -30,7 +30,7 @@ AI_DOSSIER_TLS_CA_FILE=config/koboldcpp-ca.pem
 
 Старые ключи `MONSTER_LLM_BASE_URL` / `MONSTER_LLM_API_KEY` больше не
 используются и удалены: второй путь в обход очереди не заводится
-намеренно (см. `services_ai_client.py`).
+намеренно (см. `services_llm_gateway.py`).
 
 ## 2. Настройки сайта (`.env`)
 
@@ -113,12 +113,12 @@ MONSTER_LLM_AUTO_INTERVAL_MINUTES=0   # 0 = только ручные запус
 
 POST `/api/v1/admin/monster-spawn/llm/run?server=ASPER1` только СТАВИТ цикл
 в очередь и сразу возвращает **HTTP 202** `{"status": "queued", "run": {...}}`
-— HTTP-запрос никогда не ждёт генерацию: цикл за общим локом агрегатора
+— HTTP-запрос никогда не ждёт генерацию: цикл в общей очереди AI-центра
 плюс до двух таймаутов модели легко переживает 180-секундный read-таймаут
 прокси (раньше это выглядело как зависшая кнопка «Модель думает…» и HTTP 504).
 Если цикл уже стоит в очереди или выполняется — **HTTP 409**. Исполняет
-воркер `monster_llm_runs` (раз в 10 с), результат появляется в `llm/runtime`
-(`last_result`, `pending_run`/`active_run`) — UI опрашивает его раз в 10 с.
+воркер `monster_llm_runs` (раз в 10 с), результат появляется в `llm/runs`
+(`result`, `pending_run`/`active_run`) — UI опрашивает его раз в 10 с.
 
 ```json
 {"mode": "spawn", "instruction": "Заспавни 2 мадрэпторов впереди по курсу, экипаж скучает"}
@@ -135,5 +135,7 @@ POST `/api/v1/admin/monster-spawn/llm/run?server=ASPER1` только СТАВИ
 | GET | `/api/v1/admin/monster-spawn/llm/runtime?server=` | статус ассистента + deployment |
 | PUT | `/api/v1/admin/monster-spawn/llm/runtime?server=` | включить/выключить, интервал автопилота |
 | POST | `/api/v1/admin/monster-spawn/llm/run?server=` | поставить LLM-цикл в очередь (202; 409 если занято) |
+| POST | `/api/v1/admin/monster-spawn/llm/apply-proposal?server=` | применить проверенные предложения к неизменённому конфигу |
+| GET | `/api/v1/admin/monster-spawn/reports?server=` | все сохранённые раунды со статусом и заключением LLM |
 
 Права: просмотр — `monster_spawn:view`, запуск/настройка — `monster_spawn:edit`.

@@ -98,6 +98,10 @@ export interface MonsterSpawnState {
 }
 
 export interface RoundReport {
+  id?: number
+  analysis_status?: "pending" | "running" | "succeeded" | "failed"
+  analysis_text?: string | null
+  analysis_error?: string | null
   round_start_utc?: string
   round_end_utc?: string
   round_duration_seconds?: number
@@ -357,6 +361,7 @@ export interface LLMRunRecord {
     crew_summary?: string
     recommendations?: { title: string; detail: string }[]
     applied_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
+    proposed_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
     rejected?: string[]
     spawn_requests?: { species: string; count: number; hp_multiplier: number; position_hint: string; reason?: string }[]
     plan_ids?: string[]
@@ -463,6 +468,8 @@ export const monsterSpawnApi = {
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
   analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
   reports: (server: string) => api.get<{ server: string; reports: RoundReport[] }>(`/api/v1/admin/monster-spawn/reports?server=${encodeURIComponent(server)}`),
+  retryRoundAnalysis: (server: string, reportId: number) =>
+    api.post<{ status: string }>(`/api/v1/admin/monster-spawn/reports/${reportId}/retry?server=${encodeURIComponent(server)}`, {}),
   creatures: () => api.get<{ creatures: CreatureInfo[] }>(`/api/v1/admin/monster-spawn/creatures`),
   llmRuntime: (server: string) =>
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
@@ -472,4 +479,6 @@ export const monsterSpawnApi = {
     api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
   runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>
     api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
+  applyProposal: (server: string, runId: string) =>
+    api.post<{ status: string; revision: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId }),
 }

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from config import get_settings
 from database import get_db, get_game_db
-from models import AdminSession, AdminUser, MonsterSpawnControl
+from models import AdminSession, AdminUser, MonsterSpawnControl, MonsterSpawnRoundReport
 from security import check_permission, verify_external_api_key_dependency
 
 settings = get_settings()
@@ -422,8 +422,13 @@ def plugin_round_report(payload: RoundReportPayload, db: Session = Depends(get_g
     reports = _round_reports(row)
     report = dict(payload.report)
     report.setdefault("received_at_utc", datetime.utcnow().isoformat())
-    reports.append(report)
-    row.round_reports = json.dumps(reports[-50:], ensure_ascii=False, separators=(",", ":"))
+    round_key = str(report.get("round_start_utc") or report.get("round_id") or
+                    report["received_at_utc"])[:160]
+    existing = db.query(MonsterSpawnRoundReport).filter_by(server=server, round_key=round_key).first()
+    if existing is None:
+        reports.append(report)
+        row.round_reports = json.dumps(reports[-50:], ensure_ascii=False, separators=(",", ":"))
+        db.add(MonsterSpawnRoundReport(server=server, round_key=round_key, report_json=report))
     row.last_seen_at = datetime.utcnow()
     db.commit()
     return {"status": "ok", "reports": len(reports[-50:])}
@@ -498,7 +503,36 @@ def admin_reports(
     _require(admin, "view")
     row = _get_or_create(db, _normalize_server(server))
     db.commit()
-    return {"server": row.server, "reports": _round_reports(row)}
+    stored = db.query(MonsterSpawnRoundReport).filter_by(server=row.server).order_by(
+        MonsterSpawnRoundReport.id.asc()).all()
+    if not stored:
+        return {"server": row.server, "reports": _round_reports(row)}
+    return {"server": row.server, "reports": [
+        {**(entry.report_json or {}), "id": entry.id,
+         "analysis_status": entry.analysis_status, "analysis_text": entry.analysis_text,
+         "analysis_error": entry.analysis_error}
+        for entry in stored
+    ]}
+
+
+@admin_router.post("/reports/{report_id}/retry")
+def admin_retry_round_analysis(
+    report_id: int,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    _require(admin, "edit")
+    report = db.query(MonsterSpawnRoundReport).filter_by(
+        id=report_id, server=_normalize_server(server)).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Раунд не найден")
+    if report.analysis_status == "running":
+        raise HTTPException(status_code=409, detail="Анализ уже выполняется")
+    report.analysis_status = "pending"
+    report.analysis_error = None
+    db.commit()
+    return {"status": "queued"}
 
 
 _CATALOG_PATHS = (
@@ -549,6 +583,10 @@ class LLMRuntimeUpdate(BaseModel):
 class LLMRunRequest(BaseModel):
     mode: str = Field("analyze", pattern="^(analyze|apply|spawn)$")
     instruction: Optional[str] = Field(None, max_length=2000)
+
+
+class LLMApplyProposal(BaseModel):
+    run_id: str
 
 
 def _get_main_db() -> Session:
@@ -651,3 +689,48 @@ def admin_llm_run(
     finally:
         main_db.close()
     return JSONResponse(status_code=202, content={"status": "queued", "run": run})
+
+
+@admin_router.post("/llm/apply-proposal")
+def admin_llm_apply_proposal(
+    payload: LLMApplyProposal,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+    db: Session = Depends(get_game_db),
+):
+    """Apply a validated proposal only against the config it was based on."""
+    import copy
+    from models import MonsterSpawnLLMRun
+    from services_llm_monster import _validate_config_changes
+
+    _require(admin, "edit")
+    server_key = _normalize_server(server)
+    main_db = _get_main_db()
+    try:
+        run = main_db.query(MonsterSpawnLLMRun).filter_by(
+            server=server_key, run_id=payload.run_id, status="succeeded").first()
+        changes = (run.result_json or {}).get("proposed_changes") if run else None
+        if not isinstance(changes, list) or not changes:
+            raise HTTPException(status_code=404, detail="Предложение не найдено")
+        row = _get_or_create(db, server_key)
+        config = copy.deepcopy(row.config or {})
+        current = config.get("global") or {}
+        for change in changes:
+            key = change.get("key")
+            if "old_value" in change:
+                node = current
+                for part in str(key).split("."):
+                    node = node.get(part) if isinstance(node, dict) else None
+                if node != change["old_value"]:
+                    raise HTTPException(status_code=409, detail=f"{key}: настройка уже изменилась")
+        accepted, rejected = _validate_config_changes({"config": config}, changes)
+        if rejected or len(accepted) != len(changes):
+            raise HTTPException(status_code=409, detail="Предложение устарело или не прошло проверку")
+        row.config = config
+        row.desired_revision = (row.desired_revision or 0) + 1
+        row.updated_by_admin_id = admin.id
+        row.updated_at = datetime.utcnow()
+        db.commit()
+        return {"status": "ok", "revision": row.desired_revision, "changes": accepted}
+    finally:
+        main_db.close()

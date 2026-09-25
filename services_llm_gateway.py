@@ -25,6 +25,8 @@ LLM_CLIENTS = {
                 "timeout": 180.0, "max_tokens": 260, "max_queue_depth": 5},
     "log_analysis_dry_run": {"backend": "dossier", "priority": 150, "quota_min": 12,
                               "timeout": 240.0, "max_tokens": 2048, "max_queue_depth": 20},
+    "monster_llm": {"backend": "dossier", "priority": 120, "quota_min": 12,
+                    "timeout": 180.0, "max_tokens": 4096, "max_queue_depth": 50},
 }
 BACKENDS = {
     "dossier": {"url_key": "ai_dossier_url", "key": "ai_dossier_api_key",

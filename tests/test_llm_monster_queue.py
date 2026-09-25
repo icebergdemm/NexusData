@@ -4,10 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from database import Base
-from models import AppSetting, MonsterSpawnLLMRun
+from models import AppSetting, MonsterSpawnControl, MonsterSpawnLLMRun, MonsterSpawnRoundReport
 import services_llm_monster
 from services_llm_monster import (
     QueueBusyError,
@@ -55,6 +55,46 @@ class MonsterLLMQueueTests(unittest.TestCase):
 
     def tearDown(self):
         self._task_patch.stop()
+
+    def test_generation_uses_ai_centre_gateway(self):
+        response = {"choices": [{"message": {"content": '{"conclusion":"ok"}'}}]}
+        with patch("services_llm_gateway.submit", return_value=42) as submit, \
+                patch("services_llm_gateway.poll", return_value={"status": "succeeded", "result": response}):
+            content = services_llm_monster._chat_completions(
+                [{"role": "user", "content": "round"}], "model", 30, 0.1, 0.8)
+        self.assertEqual(content, '{"conclusion":"ok"}')
+        self.assertEqual(submit.call_args.args[0], "monster_llm")
+
+    def test_three_rounds_get_conclusions_and_one_aggregate_report(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine, tables=[
+            AppSetting.__table__, MonsterSpawnControl.__table__,
+            MonsterSpawnLLMRun.__table__, MonsterSpawnRoundReport.__table__])
+        factory = sessionmaker(bind=engine)
+        db = factory()
+        try:
+            db.add(MonsterSpawnControl(server="ASPER1", config={"global": {"intensity_threshold": 0.2}},
+                                       memory={}, telemetry={}, plans=[], round_reports="[]"))
+            for index in range(3):
+                db.add(MonsterSpawnRoundReport(server="ASPER1", round_key=f"r{index}",
+                                               report_json={"round_start_utc": f"r{index}",
+                                                            "waves": [{"wave_name": "crawler", "repel_seconds": 40}]}))
+            db.commit()
+            with patch("database.GameSessionLocal", factory), patch("database.SessionLocal", factory), \
+                    patch.object(services_llm_monster, "get_settings", return_value=_configured_settings()), \
+                    patch.object(services_llm_monster, "_chat_completions", return_value='{"conclusion":"Бой завершён"}'), \
+                    patch.object(services_llm_monster, "run_llm_cycle", return_value={
+                        "confidence": 0.8, "duration_ms": 10, "proposed_changes": [],
+                        "applied_changes": [], "rejected": [], "spawn_plans": []}):
+                for _ in range(3):
+                    services_llm_monster.process_pending_round_reports()
+            db.expire_all()
+            self.assertEqual(db.query(MonsterSpawnRoundReport).filter_by(analysis_status="succeeded").count(), 3)
+            self.assertEqual(db.query(MonsterSpawnLLMRun).filter_by(
+                source="auto", status="succeeded").count(), 1)
+        finally:
+            db.close()
+            engine.dispose()
 
     def test_queue_stores_pending_run_and_durable_record(self):
         db = _main_db()
@@ -223,6 +263,24 @@ class MonsterLLMQueueTests(unittest.TestCase):
             record = db.query(MonsterSpawnLLMRun).one()
             self.assertEqual(record.status, "failed")
             self.assertIn("недоступен", record.error_message)
+        finally:
+            _close(db)
+
+    def test_analyze_returns_validated_proposal_without_changing_config(self):
+        db = _main_db()
+        state = {"config": {"global": {"intensity_threshold": 0.2}},
+                 "memory": {}, "telemetry": {}, "dashboard": {}}
+        answer = ('{"situation":"ровный темп","crew_summary":"экипаж справляется",'
+                  '"recommendations":[],"config_changes":['
+                  '{"key":"intensity_threshold","new_value":0.25,"reason":"темп"}],'
+                  '"spawn_requests":[],"confidence":0.8}')
+        try:
+            with patch.object(services_llm_monster, "get_settings", return_value=_configured_settings()), \
+                    patch.object(services_llm_monster, "_chat_completions", return_value=answer):
+                result = services_llm_monster.run_llm_cycle(db, "ASPER1", state)
+            self.assertEqual(result["proposed_changes"][0]["new_value"], 0.25)
+            self.assertEqual(result["applied_changes"], [])
+            self.assertEqual(state["config"]["global"]["intensity_threshold"], 0.2)
         finally:
             _close(db)
 
