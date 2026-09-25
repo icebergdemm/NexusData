@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -132,6 +133,18 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         "pace_adaptive_max_progress_per_minute": 25,
         "pace_crew_influence": 0.65,
         "pace_size_influence": 0.65,
+        # Холодный старт pace-модели: минимальный знаменатель, пока нет samples.
+        "pace_cold_start_min_baseline_pixels": 50,
+        # Порог интенсивности: откат к базе, когда давление спало (иначе гейт
+        # душит спавн к концу раунда).
+        "intensity_threshold_decay_multiplier": 2.0,
+        # Потолок живых отслеживаемых монстров (все волны).
+        "max_tracked_alive_monsters": 60,
+        # Фиксированное HP по видам (множитель вместо волнового скейла) и
+        # нижние пороги HP, как species_hp_overrides в AdaptiveSpawnDirector.
+        "species_hp_overrides": {},
+        "min_monster_health_multiplier": 0,
+        "min_monster_health_fixed": 0,
     }
     config["global"] = {**defaults, **global_config}
     # null = derive from single_wave_mode on the plugin side; materialize the
@@ -486,6 +499,41 @@ def admin_reports(
     row = _get_or_create(db, _normalize_server(server))
     db.commit()
     return {"server": row.server, "reports": _round_reports(row)}
+
+
+_CATALOG_PATHS = (
+    Path("/home/container/static/creature_catalog.json"),
+    Path(__file__).resolve().parent.parent / "static" / "creature_catalog.json",
+    Path.cwd() / "static" / "creature_catalog.json",
+)
+_catalog_cache: Dict[str, Any] = {"mtime": None, "creatures": []}
+
+
+def _creature_catalog() -> List[Dict[str, Any]]:
+    """Vanilla creature catalog (Content/Characters) for the species HP section."""
+    for catalog_path in _CATALOG_PATHS:
+        try:
+            mtime = catalog_path.stat().st_mtime
+        except OSError:
+            continue
+        if _catalog_cache["mtime"] == mtime and _catalog_cache["creatures"]:
+            return _catalog_cache["creatures"]
+        try:
+            with open(catalog_path, encoding="utf-8") as source:
+                creatures = json.load(source).get("creatures", [])
+        except (OSError, ValueError):
+            continue
+        if creatures:
+            _catalog_cache["mtime"] = mtime
+            _catalog_cache["creatures"] = creatures
+            return creatures
+    return _catalog_cache["creatures"]
+
+
+@admin_router.get("/creatures")
+def admin_creatures(admin: AdminUser = Depends(_current_admin)):
+    _require(admin, "view")
+    return {"creatures": _creature_catalog()}
 
 
 # ---------------------------------------------------------------------------

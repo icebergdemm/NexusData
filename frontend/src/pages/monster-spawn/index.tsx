@@ -29,6 +29,7 @@ import {
   monsterSpawnApi,
   telemetryList,
   type ActiveWaveTelemetry,
+  type CreatureInfo,
   type HeldVanillaTelemetry,
   type LearnedWaveTelemetry,
   type LLMRunRecord,
@@ -44,6 +45,7 @@ import {
   type SpawnPlan,
   type SpawnScheme,
   type SpawnWave,
+  type SpeciesBaselineTelemetry,
   type SpeciesThreatTelemetry,
   type WaveOverride,
   type RoundReport,
@@ -402,7 +404,10 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
 }) {
   const modified = wave.modifications?.length > 0
   const engaged = wave.engaged === true
-  const blocking = wave.blocking === true
+  const bypassed = wave.bypassed === true
+  // in_combat_now приходит с новых снапшотов; для старых — engaged.
+  const inCombat = wave.in_combat_now ?? engaged
+  const blocking = wave.blocking === true && !bypassed
   return <div className="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs">
     <div className="flex flex-wrap items-center gap-2">
       <Radar className="size-4 text-destructive" />
@@ -410,6 +415,7 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
       <Badge variant="outline" className="text-[10px]">ID {wave.wave_id}</Badge>
       <Badge variant="secondary" className="text-[10px]">{reasonLabel(wave.spawn_reason)}</Badge>
       {wave.struggling && <Badge variant="destructive" className="text-[10px]">экипаж не справляется</Badge>}
+      {bypassed && <Badge variant="outline" className="text-[10px] text-warning border-warning/40">обойдена — бой окончен</Badge>}
       {wave.non_blocking ? <Badge variant="outline" className="text-[10px] text-muted-foreground">неблокирующая</Badge>
         : blocking ? <Badge variant="outline" className="text-[10px] text-success border-success/40">блокирует спавн</Badge>
         : <Badge variant="outline" className="text-[10px] text-warning">не блокирует (афк)</Badge>}
@@ -418,7 +424,7 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
     </div>
     <div className="text-muted-foreground">Состав: <span className="text-foreground">{monsterCountsText(wave.monster_counts)}</span>{wave.spawn_scheme && <span> · схема <b className="text-foreground">{wave.spawn_scheme}</b>{wave.spawn_zone ? ` (${wave.spawn_zone})` : ""}</span>}</div>
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <div><div className="font-mono text-sm">{Math.round(wave.elapsed_seconds)}с</div><div className="text-[10px] text-muted-foreground">в бою (ожидалось {Math.round(wave.expected_repel_seconds)}с)</div></div>
+      <div><div className="font-mono text-sm">{Math.round(wave.elapsed_seconds)}с</div><div className="text-[10px] text-muted-foreground">{inCombat ? "в бою" : engaged ? "бой завершён" : "без боя"} (ожидалось {Math.round(wave.expected_repel_seconds)}с)</div></div>
       <div><div className="font-mono text-sm">{wave.monsters_alive}/{wave.monsters_total}</div><div className="text-[10px] text-muted-foreground">живых монстров</div></div>
       <div><div className="font-mono text-sm">{Math.round(wave.engagement_seconds)}с</div><div className="text-[10px] text-muted-foreground">вовлечённость</div></div>
       <div><div className="font-mono text-sm">{wave.effective_difficulty.toFixed(1)}</div><div className="text-[10px] text-muted-foreground">сложность</div></div>
@@ -431,6 +437,65 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
     </div>}
     {modified && <ModificationsList modifications={wave.modifications} />}
   </div>
+}
+
+/** Фиксированное HP по видам (как в Директоре волн): каталог + множитель
+ *  вместо волнового скейла. Итог = база × множитель, иначе — больший из
+ *  нижних порогов. Множитель применяется плагином в течение ~10 секунд. */
+function SpeciesHpCard({ creatures, baseline, overrides, minMult, minFixed, setSpeciesHp, setMinMult, setMinFixed }: {
+  creatures: CreatureInfo[]
+  baseline: SpeciesBaselineTelemetry[]
+  overrides: Record<string, number>
+  minMult: number
+  minFixed: number
+  setSpeciesHp: (species: string, value: number | null) => void
+  setMinMult: (value: number) => void
+  setMinFixed: (value: number) => void
+}) {
+  const [search, setSearch] = useState("")
+  const byId = useMemo(() => {
+    const map = new Map<string, CreatureInfo>()
+    for (const creature of creatures) map.set(creature.id.toLowerCase(), creature)
+    return map
+  }, [creatures])
+  const rows = useMemo(() => {
+    const keys = new Map<string, string>()
+    for (const entry of baseline) keys.set(entry.species.toLowerCase(), entry.species)
+    for (const key of Object.keys(overrides ?? {})) { const lower = key.toLowerCase(); if (!keys.has(lower)) keys.set(lower, key) }
+    const query = search.trim().toLowerCase()
+    return [...keys.entries()]
+      .map(([lower, original]) => {
+        const info = byId.get(lower)
+        const base = baseline.find((entry) => entry.species.toLowerCase() === lower)
+        const overrideKey = Object.keys(overrides ?? {}).find((key) => key.toLowerCase() === lower)
+        const raw = overrideKey != null ? Number(overrides[overrideKey]) : 0
+        return {
+          id: info?.id ?? base?.species ?? original,
+          nameRu: info?.name_ru ?? "",
+          group: info?.group ?? "",
+          baseHp: Number(info?.base_hp ?? base?.base_hp ?? 0),
+          threat: Number(base?.effective_threat ?? base?.base_threat ?? 1),
+          override: Number.isFinite(raw) && raw > 0 ? raw : 0,
+          overrideKey: overrideKey ?? original,
+        }
+      })
+      .filter((row) => !query || row.id.toLowerCase().includes(query) || row.nameRu.toLowerCase().includes(query))
+      .sort((a, b) => b.threat - a.threat || b.baseHp - a.baseHp)
+  }, [baseline, overrides, byId, search])
+  const effective = (baseHp: number, override: number) =>
+    override > 0 ? Math.round(baseHp * override) : Math.max(Math.round(baseHp * minMult), Math.round(minFixed), baseHp)
+  return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">HP по видам</CardTitle><CardDescription className="text-xs">Фиксированный множитель вида побеждает волновой скейл. Пусто = авто. Нижние пороги действуют, когда множителя нет.</CardDescription></CardHeader><CardContent className="space-y-3 p-4">
+    <div className="flex flex-wrap items-end gap-3">
+      <div><p className="mb-1 text-xs text-muted-foreground">Мин. множитель HP</p><Input className="w-36" type="number" min="0" step="0.05" value={String(minMult)} onChange={(event) => setMinMult(number(event.target.value))} /></div>
+      <div><p className="mb-1 text-xs text-muted-foreground">Мин. фиксированный HP</p><Input className="w-36" type="number" min="0" step="1" value={String(minFixed)} onChange={(event) => setMinFixed(number(event.target.value))} /></div>
+      <div className="relative min-w-52 flex-1"><Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-7" placeholder="Поиск вида" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+    </div>
+    <p className="text-[11px] text-muted-foreground">Используется больший из двух минимумов. Изменения попадут на сервер после «Сохранить».</p>
+    <div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[640px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Базовое HP</th><th className="px-3 py-2 font-medium">Множитель</th><th className="px-3 py-2 font-medium">Итог HP</th><th className="px-3 py-2 font-medium">Угроза</th><th className="w-8 px-2" /></tr></thead><tbody>{rows.map((row) => {
+      const total = effective(row.baseHp, row.override)
+      return <tr key={row.id.toLowerCase()} className="border-t"><td className="px-3 py-2"><span className="font-medium">{row.id}</span>{row.nameRu && <span className="ml-2 text-muted-foreground">{row.nameRu}</span>}{row.override > 0 && <p className="mt-0.5 text-[10px] text-emerald-600">HP изменено</p>}</td><td className="px-3 py-2 font-mono">{row.baseHp}</td><td className="px-3 py-2"><Input type="number" min="0" step="0.1" className="h-7 w-24 text-xs" placeholder="авто" value={row.override > 0 ? String(row.override) : ""} onChange={(event) => { const raw = event.target.value.trim(); setSpeciesHp(row.overrideKey, raw === "" ? null : number(raw)) }} /></td><td className={`px-3 py-2 font-mono ${row.override > 0 ? "text-warning" : ""}`}>{row.override > 0 ? `${row.baseHp} → ${total} HP (x${row.override})` : `${total} HP`}</td><td className={`px-3 py-2 font-mono ${row.threat >= 1.5 ? "text-warning" : row.threat <= 0.8 ? "text-success" : ""}`}>{row.threat.toFixed(2)}</td><td className="px-2 py-2"><Button size="sm" variant="ghost" className="size-7 p-0" title="Сбросить множитель" onClick={() => setSpeciesHp(row.overrideKey, null)}><X className="size-3.5" /></Button></td></tr>
+    })}{!rows.length && <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">Виды не найдены</td></tr>}</tbody></table></div>
+  </CardContent></Card>
 }
 
 function RecentWaveCard({ wave }: { wave: RecentWaveTelemetry }) {
@@ -721,6 +786,7 @@ export function MonsterSpawnPage() {
   const geometry = useQuery({ queryKey: ["world-geometry", round?.round_id], queryFn: () => worldStateApi.getGeometry(round!.round_id), enabled: !!round, staleTime: Infinity })
   const world = useQuery({ queryKey: ["world-state", round?.round_id], queryFn: () => worldStateApi.getState(round!.round_id), enabled: !!round, refetchInterval: 3000 })
   const state = useQuery({ queryKey: ["monster-spawn", server], queryFn: () => monsterSpawnApi.get(server), refetchInterval: 5000 })
+  const creaturesQuery = useQuery({ queryKey: ["monster-spawn-creatures"], queryFn: () => monsterSpawnApi.creatures(), staleTime: Infinity, refetchOnWindowFocus: false })
   const analysis = useQuery({ queryKey: ["monster-spawn-analysis", server], queryFn: () => monsterSpawnApi.analysis(server), refetchInterval: 15000, staleTime: 5000 })
   const reports = useQuery({ queryKey: ["monster-spawn-reports", server], queryFn: () => monsterSpawnApi.reports(server), refetchInterval: 15000 })
   // История интенсивности за текущий раунд: точка на каждый свежий опрос
@@ -777,6 +843,8 @@ export function MonsterSpawnPage() {
   const recentWaves = telemetryList<RecentWaveTelemetry>(telemetry.recent_waves)
   const learnedWaves = telemetryList<LearnedWaveTelemetry>(telemetry.learned_waves)
   const speciesThreats = telemetryList<SpeciesThreatTelemetry>(telemetry.species_threats)
+  const speciesBaseline = telemetryList<SpeciesBaselineTelemetry>(telemetry.species_baseline)
+  const creatures: CreatureInfo[] = creaturesQuery.data?.creatures ?? []
   const heldVanilla = telemetryList<HeldVanillaTelemetry>(telemetry.held_vanilla_events)
   const pendingWaveDetails = telemetryList<PendingWaveTelemetry>(telemetry.pending_wave_details)
   const plannedAction: PlannedActionTelemetry = isRecord(telemetry.planned_action)
@@ -789,6 +857,13 @@ export function MonsterSpawnPage() {
     : { action: "unknown", probability: 0, detail: "Плагин ещё не прислал план действий", next_spawn_possible_at: 0 }
   const global = isRecord(draft.config.global) ? draft.config.global : {}
   const vanilla = isRecord(global.vanilla_events) ? global.vanilla_events : {}
+  const speciesHpOverrides: Record<string, number> = isRecord(global.species_hp_overrides) ? global.species_hp_overrides as Record<string, number> : {}
+  const setSpeciesHp = (species: string, value: number | null) => updateDraft((next) => {
+    const current = isRecord(next.config.global.species_hp_overrides) ? { ...(next.config.global.species_hp_overrides as Record<string, number>) } : {}
+    if (value == null || !(value > 0)) delete current[species]
+    else current[species] = value
+    next.config.global.species_hp_overrides = current
+  })
   // 6: схемы позиционирования спавна из конфига.
   const schemeList: SpawnScheme[] = Array.isArray(global.spawn_schemes) ? global.spawn_schemes as SpawnScheme[] : []
   const report: MonsterSpawnAnalysis = analysis.data ?? { generated_at: "", read_only: true, global_performance_ema: 1, wave_logs: [], ship_logs: [], recommendations: [{ id: "loading", severity: "info", title: "Собираю рекомендации", reason: "Анализ памяти контроллера выполняется автоматически.", evidence: {}, suggested_adjustment: "Не менять настройки до загрузки анализа.", confidence: 0, read_only: true }] }
@@ -950,7 +1025,7 @@ export function MonsterSpawnPage() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric icon={ShipWheel} label="Корабль раунда" value={dashboard.submarine_name || "Нет активного раунда"} detail={`${Math.floor((dashboard.round_seconds || 0) / 60)} мин · ${dashboard.known_submarines} кораблей в памяти`} tone="primary" /><Metric icon={Gauge} label="Текущее давление" value={`${intensityPercent.toFixed(0)}%`} detail={`Порог vanilla event ${thresholdPercent.toFixed(0)}%`} tone="warning" /><Metric icon={BrainCircuit} label="Global performance EMA" value={report.global_performance_ema.toFixed(2)} detail="Больше 1.0: экипаж справляется быстрее ожиданий" tone="success" /><Metric icon={Anchor} label="Ожидают триггера" value={String(dashboard.pending_waves)} detail={`${telemetry.vanilla_events ?? 0} vanilla events · ${draft.config.waves.length} волн в пуле`} tone="info" /></div>
          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]"><ChartCard title="Наблюдаемая интенсивность" description="История интенсивности и порога за текущий раунд">{intensityHistory.length ? <Line options={intensityChartOptions} data={intensityChart} /> : <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground">{dashboard.round_active ? "Собираю историю — первые точки появятся через несколько секунд" : "Нет активного раунда — история начнёт собираться после старта раунда"}</div>}</ChartCard>
           <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Radar className="size-4 text-destructive" /> Волны под атакой и недавние</CardTitle><CardDescription className="text-xs">Живые волны, их статусы и исходы последних столкновений</CardDescription></CardHeader><CardContent className="max-h-96 space-y-2 overflow-y-auto p-4">
-            {activeWaves.length > 0 ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Активных волн нет — корабль вне боя</div>}
+            {activeWaves.length > 0 ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.in_combat_now ?? wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Активных волн нет — корабль вне боя</div>}
             {recentWaves.slice(0, 4).map((wave) => <RecentWaveCard key={wave.wave_id + String(wave.resolved_at_seconds)} wave={wave} />)}
             {!activeWaves.length && !recentWaves.length && <Button variant="ghost" className="w-full justify-between" onClick={() => setActiveTab("logs")}>Открыть полный анализ <ChevronRight className="size-4" /></Button>}
           </CardContent></Card></div>
@@ -975,7 +1050,7 @@ export function MonsterSpawnPage() {
           <Metric icon={Radar} label="Ванильные события" value={String(telemetry.vanilla_events ?? 0)} detail={`${telemetry.pending_waves ?? 0} волн ждут триггера · режим ${telemetry.vanilla_event_mode ?? "controller"}`} tone="primary" />
         </div>
         <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Активные волны</CardTitle><CardDescription className="text-xs">Правка сложности и пометки — во всплывающем окне, применяются сразу после сохранения</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
-          {activeWaves.length ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Нет активных волн</div>}
+          {activeWaves.length ? activeWaves.map((wave) => <ActiveWaveCard key={wave.wave_id} wave={wave} override={getWaveOverride(wave.wave_name)} onToggleNonBlocking={() => setWaveOverride(wave.wave_name, { non_blocking: !(getWaveOverride(wave.wave_name)?.non_blocking === true) })} onOpenOverride={() => setOverrideDialogWave({ name: wave.wave_name, difficulty: wave.effective_difficulty, alive: wave.monsters_alive, engaged: wave.in_combat_now ?? wave.engaged === true })} />) : <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Нет активных волн</div>}
         </CardContent></Card>
         <div className="grid gap-4 lg:grid-cols-2">
           <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Изученные ванильные волны</CardTitle><CardDescription className="text-xs">Клик по волне — всплывающее окно с правкой шаблона и пометок (сохраняется в памяти)</CardDescription></CardHeader><CardContent className="p-4"><div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[520px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Волна</th><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Наблюдений</th><th className="px-3 py-2 font-medium">В пуле</th><th className="w-8 px-2" /></tr></thead><tbody>{learnedWaves.map((wave) => <tr key={wave.wave_name} className="cursor-pointer border-t transition hover:bg-muted/40" onClick={() => { setSelectedLearned(wave.wave_name); setLearnedDialogOpen(true) }}><td className="px-3 py-2 font-mono">{wave.wave_name}{wave.non_blocking && <Badge variant="outline" className="ml-2 text-[9px] text-muted-foreground">неблок.</Badge>}</td><td className="px-3 py-2">{wave.species}</td><td className="px-3 py-2">{wave.times_seen}</td><td className="px-3 py-2">{wave.registered_in_pool ? <Check className="size-3.5 text-success" /> : <X className="size-3.5 text-muted-foreground" />}</td><td className="px-2 py-2"><Button size="sm" variant="ghost" className="size-7 p-0" onClick={(event) => { event.stopPropagation(); setSelectedLearned(wave.wave_name); setLearnedDialogOpen(true) }}><Pencil className="size-3.5" /></Button></td></tr>)}{!learnedWaves.length && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">Пока ничего не изучено</td></tr>}</tbody></table></div></CardContent></Card>
@@ -985,6 +1060,7 @@ export function MonsterSpawnPage() {
             return <tr key={threat.species} className="border-t"><td className="px-3 py-2 font-medium">{threat.species}{manual && <Badge variant="outline" className="ml-2 text-[9px] text-warning">ручная</Badge>}</td><td className={`px-3 py-2 font-mono ${threat.threat_ema >= 1.2 ? "text-warning" : threat.threat_ema <= 0.8 ? "text-success" : ""}`}>{threat.threat_ema.toFixed(2)}</td><td className="px-3 py-2 font-mono text-primary">{Number(effective).toFixed(2)}</td><td className="px-3 py-2">{threat.samples}</td><td className="px-3 py-2"><div className="flex items-center gap-1"><Input type="number" step="0.05" className="h-7 w-20 text-xs" placeholder="авто" value={manual ? String(manual.threat_value) : ""} onChange={(event) => { const raw = event.target.value.trim(); setSpeciesDangerOverride(threat.species, raw === "" ? null : number(raw)) }} /><Button size="sm" variant="ghost" className="size-7 p-0" title="Убрать ручную угрозу" onClick={() => setSpeciesDangerOverride(threat.species, null)}><X className="size-3.5" /></Button></div></td></tr>
           })}{!speciesThreats.length && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">Данных ещё нет</td></tr>}</tbody></table></div></CardContent></Card>
         </div>
+        <SpeciesHpCard creatures={creatures} baseline={speciesBaseline} overrides={speciesHpOverrides} minMult={Number(global.min_monster_health_multiplier ?? 0)} minFixed={Number(global.min_monster_health_fixed ?? 0)} setSpeciesHp={setSpeciesHp} setMinMult={(value) => setGlobal("min_monster_health_multiplier", value)} setMinFixed={(value) => setGlobal("min_monster_health_fixed", value)} />
         <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Удержанные ванильные спавны и волны в ожидании</CardTitle><CardDescription className="text-xs">Пойманные события держатся hold_seconds перед спавном — идёт корректировка</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
           {heldVanilla.length ? heldVanilla.map((event, index) => <div key={index} className="rounded-xl border bg-muted/10 p-3 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{event.wave_name}</span><span className="text-muted-foreground">{event.species} x{event.original_amount}</span><Badge variant="outline" className="text-[10px]">осталось {Math.round(event.hold_remaining_seconds ?? 0)}с</Badge></div></div>) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Ничего не удерживается</div>}
           {pendingWaveDetails.length > 0 && <div className="space-y-1 pt-1">{pendingWaveDetails.map((wave, index) => <div key={index} className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/20 px-3 py-2 text-[11px]"><Anchor className="size-3.5" /><span className="font-medium">{wave.wave_name}</span><Badge variant="secondary" className="text-[9px]">{REASON_LABELS[wave.spawn_reason ?? ""] ?? wave.spawn_reason}</Badge><span className="text-muted-foreground">{wave.pos_type} · ждёт {Math.round(wave.waiting_seconds ?? 0)}с</span></div>)}</div>}

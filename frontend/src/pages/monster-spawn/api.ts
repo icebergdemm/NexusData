@@ -213,6 +213,10 @@ export interface ActiveWaveTelemetry {
   modifications: string[]
   blocking?: boolean
   engaged?: boolean
+  /** Корабль ушёл дальше bypass_distance — волна обойдена, бой окончен по факту */
+  bypassed?: boolean
+  /** Бой идёт прямо сейчас (недавний урон или монстры рядом); engaged залипает */
+  in_combat_now?: boolean
   damage_taken?: number
   last_damage_seconds_ago?: number | null
   non_blocking?: boolean
@@ -262,6 +266,32 @@ export interface SpeciesThreatTelemetry {
   effective_threat?: number
   manual_override?: boolean
   samples: number
+}
+
+/** Ванильный вид из creature_catalog.json (Content/Characters) */
+export interface CreatureInfo {
+  id: string
+  name_ru?: string
+  group?: string
+  base_hp?: number
+  needs_water?: boolean
+  needs_air?: boolean
+  combat_strength?: number
+  sight?: number
+  hearing?: number
+  aggression_hurt?: number
+  aggression_greed?: number
+  flee_health_threshold?: number
+  aggressive_boarding?: boolean
+}
+
+/** Базовая строка видов из телеметрии плагина (species_baseline) */
+export interface SpeciesBaselineTelemetry {
+  species: string
+  base_hp: number
+  base_threat: number
+  hp_override?: number
+  effective_threat?: number
 }
 
 export interface PendingWaveTelemetry {
@@ -433,6 +463,7 @@ export const monsterSpawnApi = {
     api.put<MonsterSpawnState>(`/api/v1/admin/monster-spawn?server=${encodeURIComponent(server)}`, body).then(normalizeMonsterSpawnState),
   analysis: (server: string) => api.get<MonsterSpawnAnalysis>(`/api/v1/admin/monster-spawn/analysis?server=${encodeURIComponent(server)}`),
   reports: (server: string) => api.get<{ server: string; reports: RoundReport[] }>(`/api/v1/admin/monster-spawn/reports?server=${encodeURIComponent(server)}`),
+  creatures: () => api.get<{ creatures: CreatureInfo[] }>(`/api/v1/admin/monster-spawn/creatures`),
   llmRuntime: (server: string) =>
     api.get<{ runtime: LLMRuntime; deployment: LLMDeployment; endpoint_configured: boolean }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`),
   llmRuns: (server: string, limit = 30) =>
