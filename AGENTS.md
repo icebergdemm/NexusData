@@ -4,8 +4,6 @@
 
 This repository contains the NexusData website and its data/API integrations.
 
-Before changing player data, replay data, SFTP deployment, production rollout, or related Barotrauma data flows, read the `barotrauma-nexus-data` skill.
-
 Keep changes focused. Do not invent a second implementation, deployment path, or workflow because the existing one is inconvenient.
 
 ## Core operating rules

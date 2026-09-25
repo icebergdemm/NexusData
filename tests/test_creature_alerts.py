@@ -404,13 +404,17 @@ def test_world_snapshot_creates_and_queues_yasa_perimeter_event():
                 "characters": [
                     {
                         "id": 7,
+                        "name": "Crawler 7",
                         "species": "Crawler",
                         "human": False,
                         "dead": False,
                         "x": 25_000,
                         "y": 10_000,
+                        "hp": 73.5,
+                        "oxygen": 12,
                     }
                 ],
+                "items": [{"id": 91, "item": "oxygenite", "owner_t": "character", "owner_id": 7}],
             }
         )
 
@@ -428,6 +432,10 @@ def test_world_snapshot_creates_and_queues_yasa_perimeter_event():
         assert alert.distance_from_yasa_m_approx == 150
         assert alert.yasa_perimeter is True
         assert queue_alert.call_args.args[2][0].id == alert.id
+        stored_character = db.query(WorldRound).filter_by(round_id="world-round").one().last_characters[0]
+        assert stored_character["name"] == "Crawler 7" and stored_character["hp"] == 73.5
+        assert "oxygen" not in stored_character
+        assert db.query(WorldRound).filter_by(round_id="world-round").one().last_items[0]["owner_id"] == 7
     finally:
         db.close()
         engine.dispose()

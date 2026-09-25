@@ -766,7 +766,10 @@
       if(selectedEntityId===e.id){ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.strokeRect(X-sz/2-4,Y-sz/2-4,sz+8,sz+8);}
       if(sp&&isHumanSpecies(sp.species)&&!dead){
         const bw=sz*1.5,bh=2;ctx.fillStyle="#333";ctx.fillRect(X-bw/2,Y-sz/2-6,bw,bh);
-        ctx.fillStyle=lerpColor("#5ADC5A","#DC4646",1-e.healthPct/200);ctx.fillRect(X-bw/2,Y-sz/2-6,bw*Math.max(0,Math.min(1,e.healthPct/200)),bh);
+        const hp=Math.max(0,Math.min(100,e.healthPct));
+        const left=X-bw/2,top=Y-sz/2-6,fill=bw*hp/100;
+        ctx.fillStyle="rgba(10,16,22,.9)";ctx.fillRect(left,top,bw,bh);
+        ctx.fillStyle=`hsl(${hp*1.2} 76% 47%)`;ctx.fillRect(left,top,fill,bh);
       }
       if(cam.zoom>0.02&&sp&&sp.name){ctx.fillStyle="#cdd6e0";ctx.font="10px sans-serif";ctx.textAlign="center";ctx.fillText(sp.name,X,Y-sz/2-9);}
     }

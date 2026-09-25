@@ -41,9 +41,27 @@ export function CharacterInfoCard({ character, items, onClose, className }: {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-        <div>HP: <span className={`font-medium ${character.hp < 30 ? "text-destructive" : ""}`}>{Math.round(character.hp)}</span></div>
-        <div>O2: <span className="font-medium">{Math.round(character.oxygen)}%</span></div>
+      <div className="mt-1.5">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-muted-foreground">HP</span>
+          <span className="font-mono font-semibold">{Math.round(character.hp)}%</span>
+        </div>
+        <div
+          role="progressbar"
+          aria-label={`Здоровье ${character.name}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(Math.max(0, Math.min(100, character.hp)))}
+          className="h-2 overflow-hidden rounded-full bg-muted/70 ring-1 ring-border/70"
+        >
+          <div
+            className="h-full rounded-full shadow-[0_0_8px_color-mix(in_srgb,currentColor_45%,transparent)] transition-[width,background-color] duration-300"
+            style={{
+              width: `${Math.max(0, Math.min(100, character.hp))}%`,
+              backgroundColor: `hsl(${Math.max(0, Math.min(100, character.hp)) * 1.2} 76% 47%)`,
+            }}
+          />
+        </div>
       </div>
       {(character.dead || (character.ragdoll && !character.dead) || character.water) && (
         <div className="mt-1.5 flex flex-wrap gap-1">

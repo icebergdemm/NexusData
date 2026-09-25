@@ -231,7 +231,7 @@ def test_v6_layouts_still_parse():
     data = _header(version=6) + _origin() + _spawn(version=6) + _snapshot(version=6) + _inventory(version=6)
     p = _parse_demo_chunk(data)
     assert p["spawns"][3]["job"] is None
-    assert p["characters"][0]["oxygen"] == 0
+    assert "oxygen" not in p["characters"][0]
     assert p["characters"][0]["hull"] is None
     assert p["items"][0]["owner_t"] == "character"
 
@@ -246,7 +246,7 @@ def test_v7_full_roundtrip():
     p = _parse_demo_chunk(data)
     assert p["spawns"][3]["job"] == "captain", p["spawns"]
     ch = p["characters"][0]
-    assert ch["oxygen"] == 87, ch
+    assert "oxygen" not in ch, ch
     assert p["hull_assign"] == {3: 12}, p.get("hull_assign")
     by_id = {it["id"]: it for it in p["items"]}
     assert by_id[901]["owner_t"] == "character" and by_id[901]["owner_id"] == 3
@@ -263,7 +263,7 @@ def test_hull_stamping_and_despawn_cleanup():
     _apply_parsed_to_state(state, _parse_demo_chunk(
         _header(version=7) + _spawn(job="mechanic") + _hullassign() + _snapshot(oxy=99)))
     assert state["characters"][0]["hull"] == 12, state["characters"]
-    assert state["characters"][0]["oxygen"] == 99
+    assert "oxygen" not in state["characters"][0]
     assert state["characters"][0]["job"] == "mechanic"
     _apply_parsed_to_state(state, _parse_demo_chunk(_despawn()))
     assert state["characters"] == []
@@ -281,7 +281,7 @@ def test_origin_fallback_across_chunks():
 
 def test_version_defaults_to_latest_without_header():
     p = _parse_demo_chunk(_snapshot(oxy=64))
-    assert p["characters"][0]["oxygen"] == 64
+    assert "oxygen" not in p["characters"][0]
 
 
 TESTS = [

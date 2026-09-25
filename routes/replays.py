@@ -599,10 +599,7 @@ def _parse_demo_chunk_into(data: bytes, result: dict, demo_version: int, base_or
                 x, y, flags, health = struct.unpack_from("<hhBB", data, offset)
                 offset += 6
                 if version >= 7:
-                    oxygen = data[offset]
                     offset += 1
-                else:
-                    oxygen = 0
                 characters.append({
                     "id": character_id,
                     "name": "",
@@ -614,7 +611,6 @@ def _parse_demo_chunk_into(data: bytes, result: dict, demo_version: int, base_or
                     "x": origin_x + x * 4,
                     "y": origin_y + y * 4,
                     "hp": health * 200.0 / 255.0,
-                    "oxygen": oxygen,
                     "dead": bool(flags & 1),
                     "water": bool(flags & 8),
                     "ragdoll": bool(flags & 16),

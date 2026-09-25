@@ -102,7 +102,6 @@ export interface WorldCharacter {
   x: number
   y: number
   hp: number
-  oxygen: number
   dead: boolean
   water: boolean
   ragdoll: boolean

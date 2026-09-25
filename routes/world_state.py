@@ -278,7 +278,19 @@ async def world_snapshot(request: Request, db: Session = Depends(get_game_db)):
     if "reactors" in body:
         row.last_reactors = body.get("reactors")
     if "characters" in body:
-        row.last_characters = _merge_id_rows(row.last_characters, body.get("characters"))
+        characters = body.get("characters")
+        if isinstance(characters, list):
+            characters = [
+                {key: value for key, value in character.items() if key != "oxygen"}
+                for character in characters
+                if isinstance(character, dict)
+            ]
+        merged_characters = _merge_id_rows(row.last_characters, characters)
+        row.last_characters = [
+            {key: value for key, value in character.items() if key != "oxygen"}
+            for character in (merged_characters or [])
+            if isinstance(character, dict)
+        ]
     # null here means IncludeItems:false on the plugin side — "don't update
     # items this tick", NOT "all items vanished". Only overwrite on a real value.
     items = body.get("items")
