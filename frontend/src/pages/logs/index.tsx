@@ -473,7 +473,10 @@ export function LogsPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                {/* One per row: a datetime value ("дд.мм.рррр, --:--") plus its
+                    picker icon does not fit half of this panel, and the icon
+                    ended up covering the date and hiding the time. */}
+                <div className="grid grid-cols-1 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="logs-time-from-v2">С даты</Label>
                     <Input

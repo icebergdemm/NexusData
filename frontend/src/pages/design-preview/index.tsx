@@ -1,7 +1,8 @@
 import { useState } from "react"
 import { toast } from "sonner"
 import { useTheme } from "next-themes"
-import { MoreHorizontal, Palette, Plus, Radio, Send, ShieldAlert, Trash2 } from "lucide-react"
+import { MoreHorizontal, Palette, Plus, Radio, Send, ShieldAlert, SlidersHorizontal, Trash2 } from "lucide-react"
+import { V2MissionTuningDialog } from "@/components/layout/V2MissionTuningDialog"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -49,6 +50,7 @@ export function DesignPreviewPage() {
   const { resolvedTheme, setTheme } = useTheme()
   const [pressed, setPressed] = useState(2)
   const [notify, setNotify] = useState(true)
+  const [tuningOpen, setTuningOpen] = useState(false)
 
   return (
     <div className="space-y-6">
@@ -63,6 +65,11 @@ export function DesignPreviewPage() {
                 {V2_SKIN_LABELS[option]}
               </Button>
             ))}
+            {skin === "mission" && (
+              <Button variant="outline" size="sm" onClick={() => setTuningOpen(true)}>
+                <SlidersHorizontal /> Настроить
+              </Button>
+            )}
             {v2SkinHasLightDark(skin) && (
               <Button variant="outline" size="sm" onClick={() => setTheme(resolvedTheme === "light" ? "dark" : "light")}>
                 {resolvedTheme === "light" ? "Тёмная" : "Светлая"} тема
@@ -234,6 +241,8 @@ export function DesignPreviewPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <V2MissionTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />
 
       <Card>
         <CardHeader>

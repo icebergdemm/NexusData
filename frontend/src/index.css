@@ -855,39 +855,54 @@ html[data-ui-version="v2"] ::selection {
 html[data-ui-version="v2"][data-v2-skin="mission"] {
   color-scheme: dark;
 
+  /* `--v2-mission-*` come from the fine-tuning panel (lib/v2-mission-tuning.ts)
+     as inline properties on <html>; the fallbacks are the defaults. */
   --v2-paper: #040d18;
   --v2-ink: #d4f3ff;
-  --v2-line: #4ccfee;
+  --v2-line: var(--v2-mission-line, #4ccfee);
   /* Opaque on purpose: the bevel's border is the shell showing around its
      face, and a translucent face lets the whole shell show through. */
-  --v2-face: #07202f;
-  --v2-control: #146f8b;
-  --v2-hot: #ff7a1f;
+  /* Surfaces are tinted from the line colour, so a recoloured console stays
+     one hue. Mixed from two opaque colours, so they stay opaque. With the
+     default cyan these land on the original navy panels and teal bars. */
+  --v2-face: color-mix(in srgb, var(--v2-line) 8%, #03161f);
+  --v2-control: color-mix(in srgb, var(--v2-line) 40%, #032a3a);
+  --v2-hot: var(--v2-mission-accent, #ff7a1f);
   --v2-on-hot: #fff5ea;
-  --v2-tone: #0b2c3d;
+  --v2-tone: color-mix(in srgb, var(--v2-line) 14%, #03161f);
 
   --primary: var(--v2-hot);
   --primary-foreground: var(--v2-on-hot);
   --muted-foreground: #8fbccc;
   --accent: color-mix(in srgb, var(--v2-line) 16%, var(--v2-face));
   --accent-foreground: var(--v2-ink);
-  --border: color-mix(in srgb, var(--v2-line) 55%, transparent);
+  --border: color-mix(in srgb, var(--v2-line) calc(var(--v2-mission-borders, 0.55) * 100%), transparent);
   --destructive: #ff5a5a;
   --success: #5fd38d;
   --warning: #ffd166;
   --info: var(--v2-line);
   --sidebar: #031019;
-  --sidebar-border: color-mix(in srgb, var(--v2-line) 45%, transparent);
+  --sidebar-border: color-mix(in srgb, var(--v2-line) calc(var(--v2-mission-borders, 0.55) * 80%), transparent);
 
   /* A wide technical face for the chrome. None is bundled: the first one
      installed wins, otherwise the sans stack. */
   --font-mono: "Orbitron", "Michroma", "Eurostile", "Rajdhani", "Exo 2", Inter, ui-sans-serif, system-ui, sans-serif;
 
+  /* Not `background-attachment: fixed`: the shell scrolls its content pane,
+     not the page, so fixed bought nothing and cost frames while scrolling. */
   background-color: var(--v2-paper);
   background-image:
-    radial-gradient(ellipse 70% 55% at 55% 38%, rgb(38 128 168 / 0.36), transparent 70%),
-    radial-gradient(ellipse 90% 45% at 50% 112%, rgb(14 70 120 / 0.6), transparent 70%);
-  background-attachment: fixed;
+    radial-gradient(ellipse 70% 55% at 55% 38%, color-mix(in srgb, var(--v2-line) calc(var(--v2-mission-backdrop, 1) * 28%), transparent), transparent 70%),
+    radial-gradient(ellipse 90% 45% at 50% 112%, color-mix(in srgb, #0e4678 calc(var(--v2-mission-backdrop, 1) * 60%), transparent), transparent 70%);
+}
+
+/* Chrome typeface, chosen in the fine-tuning panel. */
+html[data-ui-version="v2"][data-v2-skin="mission"][data-v2-mission-font="mono"] {
+  --font-mono: "IBM Plex Mono", monospace;
+}
+
+html[data-ui-version="v2"][data-v2-skin="mission"][data-v2-mission-font="sans"] {
+  --font-mono: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
 /* Let the rings of <V2SkinBackdrop> through: they sit on the <html> canvas,
@@ -897,11 +912,14 @@ html[data-ui-version="v2"][data-v2-skin="mission"] :is(body, [data-slot="sidebar
 }
 
 html[data-ui-version="v2"][data-v2-skin="mission"] body {
-  text-shadow: 0 0 10px rgb(76 207 238 / 0.22);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--v2-line) calc(var(--v2-mission-glow, 0.3) * 75%), transparent);
 }
 
+/* No backdrop blur here: over the animated rings it had to be recomputed
+   every frame. A near-opaque bar reads the same. */
 html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="app-header"] {
-  background: color-mix(in srgb, var(--v2-paper) 82%, transparent);
+  backdrop-filter: none;
+  background: color-mix(in srgb, var(--v2-paper) 92%, transparent);
 }
 
 /* Primary actions end in a chevron on both short sides, like the bars of
@@ -933,7 +951,7 @@ html[data-ui-version="v2"][data-v2-skin="mission"] :is([data-slot="button"], [da
 html[data-ui-version="v2"][data-v2-skin="mission"] :is([data-slot="button"], [data-variant][data-size]):is(:hover, [aria-pressed="true"], [data-state="open"]),
 html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="tabs-trigger"][data-state="active"],
 html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="sidebar-menu-button"][data-active="true"] {
-  text-shadow: 0 0 10px rgb(255 160 90 / 0.5);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--v2-hot) min(100%, calc(var(--v2-mission-glow, 0.3) * 160%)), transparent);
 }
 
 html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="sidebar-menu-button"][data-active="true"] {
@@ -944,12 +962,23 @@ html[data-ui-version="v2"][data-v2-skin="mission"] [data-slot="sidebar-menu-butt
   to { transform: rotate(360deg); }
 }
 
-.v2-orbit {
+/* Applied to HTML layers wrapping static SVGs, never to SVG groups: a
+   transform on its own composited layer is rotated by the GPU without any
+   repaint, which is what keeps the mission design at full frame rate. */
+.v2-orbit,
+.v2-orbit-reverse {
   transform-origin: 50% 50%;
-  animation: v2-orbit 90s linear infinite;
+  will-change: transform;
+}
+
+/* Stepped rather than linear: 16 updates a second, a quarter of a degree
+   each. At this speed the eye still reads a smooth turn, but where the
+   browser composites in software (weaker PCs, no GPU) a per-frame rotation
+   of a 1400px layer cost ~10 fps and 33 ms stutters while scrolling. */
+.v2-orbit {
+  animation: v2-orbit 90s steps(1440) infinite;
 }
 
 .v2-orbit-reverse {
-  transform-origin: 50% 50%;
-  animation: v2-orbit 140s linear infinite reverse;
+  animation: v2-orbit 140s steps(2240) infinite reverse;
 }

@@ -1,8 +1,10 @@
-import { Palette } from "lucide-react"
+import { useState } from "react"
+import { Palette, SlidersHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -10,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { V2_SKINS, V2_SKIN_LABELS, normalizeV2Skin, useV2Skin } from "@/lib/v2-skin"
+import { V2MissionTuningDialog } from "@/components/layout/V2MissionTuningDialog"
 
 const DESCRIPTIONS = {
   edge: "Чёрное и белое, жёсткие грани",
@@ -19,8 +22,10 @@ const DESCRIPTIONS = {
 /** Lets every operator pick their own design; the choice stays in this browser. */
 export function V2SkinPicker() {
   const [skin, setSkin] = useV2Skin()
+  const [tuningOpen, setTuningOpen] = useState(false)
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -44,7 +49,17 @@ export function V2SkinPicker() {
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
+        {skin === "mission" && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setTuningOpen(true)}>
+              <SlidersHorizontal /> Настроить «Миссию»…
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
+    <V2MissionTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />
+    </>
   )
 }

@@ -12,6 +12,7 @@ import { AppErrorBoundary } from '@/components/layout/AppErrorBoundary'
 import { V2SkinBackdrop } from '@/components/layout/V2SkinBackdrop'
 import { IS_V2, UI_BASENAME, installUiVersionAttribute } from '@/lib/ui-version'
 import { installV2SkinAttribute } from '@/lib/v2-skin'
+import { installMissionTuning } from '@/lib/v2-mission-tuning'
 import { installDesignPreviewSession } from '@/pages/design-preview/session'
 
 /*
@@ -30,6 +31,7 @@ installUiVersionAttribute()
 // Before the first render: without SSR, a design applied from an effect would
 // repaint the whole screen once in the wrong one.
 installV2SkinAttribute()
+installMissionTuning()
 
 const queryClient = new QueryClient({
   defaultOptions: {
