@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { V2_SKINS, V2_SKIN_LABELS, normalizeV2Skin, useV2Skin } from "@/lib/v2-skin"
 import { V2MissionTuningDialog } from "@/components/layout/V2MissionTuningDialog"
+import { V2EdgeTuningDialog } from "@/components/layout/V2EdgeTuningDialog"
 
 const DESCRIPTIONS = {
   edge: "Чёрное и белое, жёсткие грани",
@@ -49,17 +50,15 @@ export function V2SkinPicker() {
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
-        {skin === "mission" && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setTuningOpen(true)}>
-              <SlidersHorizontal /> Настроить «Миссию»…
-            </DropdownMenuItem>
-          </>
-        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => setTuningOpen(true)}>
+          <SlidersHorizontal /> Настроить «{V2_SKIN_LABELS[skin]}»…
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-    <V2MissionTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />
+    {skin === "mission"
+      ? <V2MissionTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />
+      : <V2EdgeTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />}
     </>
   )
 }

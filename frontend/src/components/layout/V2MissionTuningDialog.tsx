@@ -12,6 +12,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { ColorField, RangeField } from "@/components/layout/V2TuningFields"
 import {
   MISSION_ACCENT_PRESETS,
   MISSION_FONTS,
@@ -21,72 +22,6 @@ import {
   useMissionTuning,
   type MissionFont,
 } from "@/lib/v2-mission-tuning"
-
-function ColorField({ label, value, presets, onChange }: {
-  label: string
-  value: string
-  presets: readonly string[]
-  onChange: (value: string) => void
-}) {
-  const id = useId()
-  return (
-    <div className="space-y-2">
-      <Label htmlFor={id}>{label}</Label>
-      <div className="flex items-center gap-2">
-        {presets.map((preset) => (
-          <button
-            key={preset}
-            type="button"
-            className="size-7 border-2 transition-transform hover:scale-110"
-            style={{ backgroundColor: preset, borderColor: value === preset ? "var(--v2-ink)" : "transparent" }}
-            aria-label={`${label}: ${preset}`}
-            aria-pressed={value === preset}
-            onClick={() => onChange(preset)}
-          />
-        ))}
-        <input
-          id={id}
-          type="color"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-7 w-10 cursor-pointer border-0 bg-transparent p-0"
-          title="Свой цвет"
-        />
-        <span className="font-mono text-[10px] uppercase opacity-60">{value}</span>
-      </div>
-    </div>
-  )
-}
-
-function RangeField({ label, value, min, max, onChange, hint }: {
-  label: string
-  value: number
-  min: number
-  max: number
-  onChange: (value: number) => void
-  hint?: string
-}) {
-  const id = useId()
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <Label htmlFor={id}>{label}</Label>
-        <span className="font-mono text-[10px] tabular-nums opacity-70">{value}%</span>
-      </div>
-      <input
-        id={id}
-        type="range"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="w-full cursor-pointer"
-        style={{ accentColor: "var(--v2-hot)" }}
-      />
-      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
-    </div>
-  )
-}
 
 /** Live fine-tuning of the "mission" design; every change applies at once. */
 export function V2MissionTuningDialog({ open, onOpenChange }: {

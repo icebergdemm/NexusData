@@ -3,6 +3,7 @@ import { toast } from "sonner"
 import { useTheme } from "next-themes"
 import { MoreHorizontal, Palette, Plus, Radio, Send, ShieldAlert, SlidersHorizontal, Trash2 } from "lucide-react"
 import { V2MissionTuningDialog } from "@/components/layout/V2MissionTuningDialog"
+import { V2EdgeTuningDialog } from "@/components/layout/V2EdgeTuningDialog"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -65,11 +66,9 @@ export function DesignPreviewPage() {
                 {V2_SKIN_LABELS[option]}
               </Button>
             ))}
-            {skin === "mission" && (
-              <Button variant="outline" size="sm" onClick={() => setTuningOpen(true)}>
-                <SlidersHorizontal /> Настроить
-              </Button>
-            )}
+            <Button variant="outline" size="sm" onClick={() => setTuningOpen(true)}>
+              <SlidersHorizontal /> Настроить
+            </Button>
             {v2SkinHasLightDark(skin) && (
               <Button variant="outline" size="sm" onClick={() => setTheme(resolvedTheme === "light" ? "dark" : "light")}>
                 {resolvedTheme === "light" ? "Тёмная" : "Светлая"} тема
@@ -242,7 +241,9 @@ export function DesignPreviewPage() {
         </CardContent>
       </Card>
 
-      <V2MissionTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />
+      {skin === "mission"
+        ? <V2MissionTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />
+        : <V2EdgeTuningDialog open={tuningOpen} onOpenChange={setTuningOpen} />}
 
       <Card>
         <CardHeader>

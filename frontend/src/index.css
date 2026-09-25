@@ -199,7 +199,11 @@ html[data-ui-version="v2"] {
   --v2-ink: #ffffff;
   --v2-edge: 2px;
 
-  --v2-line: var(--v2-ink);      /* rules, borders, bevel shells, focus */
+  /* Frames are ink at a share set in the tuning panel (40% by default):
+     full ink at 2px on black glared. The light under the pointer brings the
+     hovered card back to full ink (see "light under the pointer" below). */
+  --v2-line: color-mix(in srgb, var(--v2-ink) calc(var(--v2-edge-lines, 0.4) * 100%), var(--v2-paper));
+  --v2-rule: color-mix(in srgb, var(--v2-ink) 16%, transparent); /* hairlines between rows */
   --v2-face: var(--v2-paper);    /* card, popover and panel surfaces */
   --v2-control: var(--v2-paper); /* idle face of a control */
   --v2-hot: var(--v2-ink);       /* the "on" state: hover, selected, open */
@@ -241,7 +245,8 @@ html[data-ui-version="v2"] {
   --info: var(--v2-ink);
   --border: var(--v2-line);
   --input: var(--v2-line);
-  --ring: var(--v2-line);
+  /* Focus stays at full ink whatever the frames are dimmed to. */
+  --ring: var(--v2-ink);
   --sidebar: var(--v2-paper);
   --sidebar-foreground: var(--v2-ink);
   --sidebar-primary: var(--v2-ink);
@@ -658,7 +663,7 @@ html[data-ui-version="v2"] :is([data-slot="input"], [data-slot="textarea"], [dat
 }
 
 html[data-ui-version="v2"] [data-slot="table-row"] {
-  border-color: color-mix(in srgb, var(--v2-line) 22%, transparent);
+  border-color: var(--v2-rule);
 }
 
 /* One gesture: a control is an outline that flips to solid on hover, focus
@@ -794,6 +799,26 @@ html[data-ui-version="v2"] [data-slot="tabs-list"][data-variant="default"] [data
   color: var(--v2-on-hot);
 }
 
+/*
+  Light under the pointer (hard-edge design). lib/v2-spotlight.ts marks the
+  hovered card with `data-v2-lit` and the pointer position; its frame is then
+  drawn as a radial gradient from full ink at the pointer to the dimmed line,
+  and its face gets a faint glow. `border-image` paints the real 2px border,
+  so it is not clipped by cards that hide their overflow.
+*/
+html[data-ui-version="v2"][data-v2-spotlight="on"]:not([data-v2-skin="mission"]) [data-slot="card"][data-v2-lit] {
+  border-image: radial-gradient(
+      var(--v2-spot-size, 260px) circle at var(--v2-mx, 50%) var(--v2-my, 50%),
+      color-mix(in srgb, var(--v2-ink) calc(var(--v2-spot-strength, 0.8) * 100%), var(--v2-line)),
+      var(--v2-line) 70%
+    ) 1;
+  background-image: radial-gradient(
+      calc(var(--v2-spot-size, 260px) * 1.6) circle at var(--v2-mx, 50%) var(--v2-my, 50%),
+      color-mix(in srgb, var(--v2-ink) calc(var(--v2-spot-strength, 0.8) * 7%), transparent),
+      transparent 70%
+    );
+}
+
 /* Waiting is never a pulsing grey block: diagonal hatching with a bar
    sweeping down it, in the line colour (DESIGN.md §4). */
 html[data-ui-version="v2"] [data-slot="skeleton"] {
@@ -870,6 +895,7 @@ html[data-ui-version="v2"][data-v2-skin="mission"] {
   --v2-hot: var(--v2-mission-accent, #ff7a1f);
   --v2-on-hot: #fff5ea;
   --v2-tone: color-mix(in srgb, var(--v2-line) 14%, #03161f);
+  --v2-rule: color-mix(in srgb, var(--v2-line) 22%, transparent);
 
   --primary: var(--v2-hot);
   --primary-foreground: var(--v2-on-hot);

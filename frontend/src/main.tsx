@@ -13,6 +13,8 @@ import { V2SkinBackdrop } from '@/components/layout/V2SkinBackdrop'
 import { IS_V2, UI_BASENAME, installUiVersionAttribute } from '@/lib/ui-version'
 import { installV2SkinAttribute } from '@/lib/v2-skin'
 import { installMissionTuning } from '@/lib/v2-mission-tuning'
+import { installEdgeTuning } from '@/lib/v2-edge-tuning'
+import { installV2Spotlight } from '@/lib/v2-spotlight'
 import { installDesignPreviewSession } from '@/pages/design-preview/session'
 
 /*
@@ -32,6 +34,8 @@ installUiVersionAttribute()
 // repaint the whole screen once in the wrong one.
 installV2SkinAttribute()
 installMissionTuning()
+installEdgeTuning()
+if (IS_V2) installV2Spotlight()
 
 const queryClient = new QueryClient({
   defaultOptions: {
