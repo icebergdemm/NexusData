@@ -106,6 +106,7 @@ export interface RoundReport {
   round_end_utc?: string
   round_duration_seconds?: number
   submarine_name?: string
+  controller_mode?: string
   summary?: Record<string, unknown>
   waves?: Array<Record<string, unknown>>
   events?: Array<{ time_seconds?: number; direction?: string; kind?: string; payload?: string }>
@@ -303,6 +304,8 @@ export interface PendingWaveTelemetry {
   spawn_reason?: string
   pos_type?: string
   waiting_seconds?: number
+  x?: number
+  y?: number
 }
 
 export interface HeldVanillaTelemetry {
@@ -317,6 +320,7 @@ export interface PlannedActionTelemetry {
   probability: number
   detail: string
   next_spawn_possible_at?: number
+  checks?: Record<string, string | number | boolean>
 }
 
 export interface LLMRun {

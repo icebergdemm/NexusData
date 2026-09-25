@@ -95,7 +95,7 @@ function RoundReports({ reports, server }: { reports: RoundReport[]; server: str
   }
   return <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><Files className="size-4 text-info" /> Подробные отчёты раундов</CardTitle><CardDescription className="text-xs">Полный timeline решений, обмена с сайтом, спавнов, исходов и адаптивности. JSON скачивается без потери данных.</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
     {!reports.length && <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Отчёты появятся после завершения раунда</div>}
-    {reports.slice(-visibleCount).reverse().map((report, index) => <details key={String(report.id ?? report.round_start_utc ?? index)} className="rounded-xl border bg-muted/10 p-3 text-xs"><summary className="flex cursor-pointer list-none flex-wrap items-center gap-2"><span className="font-medium">{report.submarine_name ?? "Корабль не указан"}</span><Badge variant="outline">{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "без даты"}</Badge><span className="text-muted-foreground">{Math.round(Number(report.round_duration_seconds ?? 0) / 60)} мин · волн: {Array.isArray(report.waves) ? report.waves.length : 0} · событий: {Array.isArray(report.events) ? report.events.length : 0}</span><Badge variant={report.analysis_status === "failed" ? "destructive" : "secondary"}>{report.analysis_status === "succeeded" ? "LLM: готово" : report.analysis_status === "running" ? "LLM: анализирует" : report.analysis_status === "failed" ? "LLM: ошибка" : "LLM: ожидает"}</Badge><Button className="ml-auto" size="sm" variant="outline" onClick={(event) => { event.preventDefault(); download(report) }}>JSON</Button></summary><div className="mt-3 space-y-3 border-t pt-3">{report.analysis_text && <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 leading-relaxed">{report.analysis_text}</div>}{report.analysis_error && <div className="flex items-center gap-2 text-destructive">{report.analysis_error}{report.id && <Button size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(report.id!)}>Повторить анализ</Button>}</div>}<div className="grid gap-2 sm:grid-cols-4">{Object.entries(report.summary ?? {}).map(([key, value]) => <div key={key} className="rounded-lg bg-background/70 p-2"><div className="text-[10px] text-muted-foreground">{key}</div><div className="font-mono">{String(value)}</div></div>)}</div><div className="space-y-2">{(report.waves ?? []).map((wave, waveIndex) => <div key={waveIndex} className="rounded-lg border bg-background p-3"><div className="font-medium">{String(wave.wave_name ?? wave.name ?? `Волна ${waveIndex + 1}`)}</div><div className="mt-1 grid gap-x-4 gap-y-1 text-muted-foreground sm:grid-cols-3">{Object.entries(wave).filter(([key]) => key !== "wave_name" && key !== "name").map(([key, value]) => <div key={key}><span className="font-medium text-foreground">{key}:</span> {typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div></div>)}</div><details><summary className="cursor-pointer text-muted-foreground">Хронология событий · {(report.events ?? []).length}</summary><div className="mt-2 max-h-72 overflow-auto rounded-lg bg-background p-2 font-mono text-[10px]">{(report.events ?? []).map((event, eventIndex) => <div key={eventIndex} className="border-b border-border/50 py-1 last:border-0"><span className="text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)}s</span> <b>{event.direction}</b> {event.kind} <span className="break-all text-muted-foreground">{event.payload}</span></div>)}</div></details></div></details>)}
+    {reports.slice(-visibleCount).reverse().map((report, index) => <details key={String(report.id ?? report.round_start_utc ?? index)} className="rounded-xl border bg-muted/10 p-3 text-xs"><summary className="flex cursor-pointer list-none flex-wrap items-center gap-2"><span className="font-medium">{report.submarine_name ?? "Корабль не указан"}</span>{report.controller_mode === "learning" && <Badge variant="outline">Обучение · ванильный спавн</Badge>}<Badge variant="outline">{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "без даты"}</Badge><span className="text-muted-foreground">{Math.round(Number(report.round_duration_seconds ?? 0) / 60)} мин · волн: {Array.isArray(report.waves) ? report.waves.length : 0} · событий: {Array.isArray(report.events) ? report.events.length : 0}</span><Badge variant={report.analysis_status === "failed" ? "destructive" : "secondary"}>{report.analysis_status === "succeeded" ? "LLM: готово" : report.analysis_status === "running" ? "LLM: анализирует" : report.analysis_status === "failed" ? "LLM: ошибка" : "LLM: ожидает"}</Badge><Button className="ml-auto" size="sm" variant="outline" onClick={(event) => { event.preventDefault(); download(report) }}>JSON</Button></summary><div className="mt-3 space-y-3 border-t pt-3">{report.analysis_text && <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 leading-relaxed">{report.analysis_text}</div>}{report.analysis_error && <div className="flex items-center gap-2 text-destructive">{report.analysis_error}{report.id && <Button size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(report.id!)}>Повторить анализ</Button>}</div>}<div className="grid gap-2 sm:grid-cols-4">{Object.entries(report.summary ?? {}).map(([key, value]) => <div key={key} className="rounded-lg bg-background/70 p-2"><div className="text-[10px] text-muted-foreground">{key}</div><div className="font-mono">{String(value)}</div></div>)}</div><div className="space-y-2">{(report.waves ?? []).map((wave, waveIndex) => <div key={waveIndex} className="rounded-lg border bg-background p-3"><div className="font-medium">{String(wave.wave_name ?? wave.name ?? `Волна ${waveIndex + 1}`)}</div><div className="mt-1 grid gap-x-4 gap-y-1 text-muted-foreground sm:grid-cols-3">{Object.entries(wave).filter(([key]) => key !== "wave_name" && key !== "name").map(([key, value]) => <div key={key}><span className="font-medium text-foreground">{key}:</span> {typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div></div>)}</div><details><summary className="cursor-pointer text-muted-foreground">Хронология событий · {(report.events ?? []).length}</summary><div className="mt-2 max-h-72 overflow-auto rounded-lg bg-background p-2 font-mono text-[10px]">{(report.events ?? []).map((event, eventIndex) => <div key={eventIndex} className="border-b border-border/50 py-1 last:border-0"><span className="text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)}s</span> <b>{event.direction}</b> {event.kind} <span className="break-all text-muted-foreground">{event.payload}</span></div>)}</div></details></div></details>)}
     {reports.length > visibleCount && <Button variant="outline" size="sm" onClick={() => setVisibleCount((count) => count + 20)}>Показать ещё 20 раундов</Button>}
   </CardContent></Card>
 }
@@ -443,13 +443,15 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
 /** Фиксированное HP по видам (как в Директоре волн): каталог + множитель
  *  вместо волнового скейла. Итог = база × множитель, иначе — больший из
  *  нижних порогов. Множитель применяется плагином в течение ~10 секунд. */
-function SpeciesHpCard({ creatures, baseline, overrides, minMult, minFixed, setSpeciesHp, setMinMult, setMinFixed }: {
+function SpeciesHpCard({ creatures, baseline, overrides, baseOverrides, minMult, minFixed, setSpeciesHp, setBaseHp, setMinMult, setMinFixed }: {
   creatures: CreatureInfo[]
   baseline: SpeciesBaselineTelemetry[]
   overrides: Record<string, number>
+  baseOverrides: Record<string, number>
   minMult: number
   minFixed: number
   setSpeciesHp: (species: string, value: number | null) => void
+  setBaseHp: (species: string, value: number | null) => void
   setMinMult: (value: number) => void
   setMinFixed: (value: number) => void
 }) {
@@ -461,8 +463,10 @@ function SpeciesHpCard({ creatures, baseline, overrides, minMult, minFixed, setS
   }, [creatures])
   const rows = useMemo(() => {
     const keys = new Map<string, string>()
+    for (const creature of creatures) if (creature.group !== "human") keys.set(creature.id.toLowerCase(), creature.id)
     for (const entry of baseline) keys.set(entry.species.toLowerCase(), entry.species)
     for (const key of Object.keys(overrides ?? {})) { const lower = key.toLowerCase(); if (!keys.has(lower)) keys.set(lower, key) }
+    for (const key of Object.keys(baseOverrides ?? {})) { const lower = key.toLowerCase(); if (!keys.has(lower)) keys.set(lower, key) }
     const query = search.trim().toLowerCase()
     return [...keys.entries()]
       .map(([lower, original]) => {
@@ -475,26 +479,28 @@ function SpeciesHpCard({ creatures, baseline, overrides, minMult, minFixed, setS
           nameRu: info?.name_ru ?? "",
           group: info?.group ?? "",
           baseHp: Number(info?.base_hp ?? base?.base_hp ?? 0),
-          threat: Number(base?.effective_threat ?? base?.base_threat ?? 1),
+          threat: Number(base?.effective_threat ?? base?.base_threat ?? Math.max(0.3, Math.min(2.5, Number(info?.combat_strength ?? 100) / 100))),
+          baseOverride: Number(baseOverrides[original] ?? baseOverrides[info?.id ?? ""] ?? 0),
           override: Number.isFinite(raw) && raw > 0 ? raw : 0,
           overrideKey: overrideKey ?? original,
         }
       })
       .filter((row) => !query || row.id.toLowerCase().includes(query) || row.nameRu.toLowerCase().includes(query))
       .sort((a, b) => b.threat - a.threat || b.baseHp - a.baseHp)
-  }, [baseline, overrides, byId, search])
+  }, [baseline, overrides, baseOverrides, byId, creatures, search])
   const effective = (baseHp: number, override: number) =>
     override > 0 ? Math.round(baseHp * override) : Math.max(Math.round(baseHp * minMult), Math.round(minFixed), baseHp)
-  return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">HP по видам</CardTitle><CardDescription className="text-xs">Фиксированный множитель вида побеждает волновой скейл. Пусто = авто. Нижние пороги действуют, когда множителя нет.</CardDescription></CardHeader><CardContent className="space-y-3 p-4">
+  return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Каталог ванильных монстров</CardTitle><CardDescription className="text-xs">Базовая опасность рассчитана по боевой силе вида; адаптивность корректирует её по наблюдениям. Базовое HP можно изменить вручную.</CardDescription></CardHeader><CardContent className="space-y-3 p-4">
     <div className="flex flex-wrap items-end gap-3">
       <div><p className="mb-1 text-xs text-muted-foreground">Мин. множитель HP</p><Input className="w-36" type="number" min="0" step="0.05" value={String(minMult)} onChange={(event) => setMinMult(number(event.target.value))} /></div>
       <div><p className="mb-1 text-xs text-muted-foreground">Мин. фиксированный HP</p><Input className="w-36" type="number" min="0" step="1" value={String(minFixed)} onChange={(event) => setMinFixed(number(event.target.value))} /></div>
       <div className="relative min-w-52 flex-1"><Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="pl-7" placeholder="Поиск вида" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
     </div>
     <p className="text-[11px] text-muted-foreground">Используется больший из двух минимумов. Изменения попадут на сервер после «Сохранить».</p>
-    <div className="overflow-x-auto rounded-xl border"><table className="w-full min-w-[640px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Базовое HP</th><th className="px-3 py-2 font-medium">Множитель</th><th className="px-3 py-2 font-medium">Итог HP</th><th className="px-3 py-2 font-medium">Угроза</th><th className="w-8 px-2" /></tr></thead><tbody>{rows.map((row) => {
-      const total = effective(row.baseHp, row.override)
-      return <tr key={row.id.toLowerCase()} className="border-t"><td className="px-3 py-2"><span className="font-medium">{row.id}</span>{row.nameRu && <span className="ml-2 text-muted-foreground">{row.nameRu}</span>}{row.override > 0 && <p className="mt-0.5 text-[10px] text-emerald-600">HP изменено</p>}</td><td className="px-3 py-2 font-mono">{row.baseHp}</td><td className="px-3 py-2"><Input type="number" min="0" step="0.1" className="h-7 w-24 text-xs" placeholder="авто" value={row.override > 0 ? String(row.override) : ""} onChange={(event) => { const raw = event.target.value.trim(); setSpeciesHp(row.overrideKey, raw === "" ? null : number(raw)) }} /></td><td className={`px-3 py-2 font-mono ${row.override > 0 ? "text-warning" : ""}`}>{row.override > 0 ? `${row.baseHp} → ${total} HP (x${row.override})` : `${total} HP`}</td><td className={`px-3 py-2 font-mono ${row.threat >= 1.5 ? "text-warning" : row.threat <= 0.8 ? "text-success" : ""}`}>{row.threat.toFixed(2)}</td><td className="px-2 py-2"><Button size="sm" variant="ghost" className="size-7 p-0" title="Сбросить множитель" onClick={() => setSpeciesHp(row.overrideKey, null)}><X className="size-3.5" /></Button></td></tr>
+    <div className="max-h-[560px] overflow-auto rounded-xl border"><table className="w-full min-w-[700px] text-left text-xs"><thead className="sticky top-0 bg-muted text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Вид</th><th className="px-3 py-2 font-medium">Ванильное HP</th><th className="px-3 py-2 font-medium">Базовое HP</th><th className="px-3 py-2 font-medium">Множитель</th><th className="px-3 py-2 font-medium">Итог HP</th><th className="px-3 py-2 font-medium">Угроза</th></tr></thead><tbody>{rows.map((row) => {
+      const hp = row.baseOverride > 0 ? row.baseOverride : row.baseHp
+      const total = effective(hp, row.override)
+      return <tr key={row.id.toLowerCase()} className="border-t"><td className="px-3 py-2"><span className="font-medium">{row.nameRu || row.id}</span><span className="ml-2 text-muted-foreground">{row.id}</span>{row.group && <p className="text-[10px] text-muted-foreground">{row.group}</p>}</td><td className="px-3 py-2 font-mono">{row.baseHp}</td><td className="px-3 py-2"><Input type="number" min="1" step="1" className="h-7 w-24 text-xs" placeholder={String(row.baseHp)} value={row.baseOverride > 0 ? String(row.baseOverride) : ""} onChange={(event) => { const raw = event.target.value.trim(); setBaseHp(row.id, raw === "" ? null : number(raw)) }} /></td><td className="px-3 py-2"><Input type="number" min="0" step="0.1" className="h-7 w-24 text-xs" placeholder="авто" value={row.override > 0 ? String(row.override) : ""} onChange={(event) => { const raw = event.target.value.trim(); setSpeciesHp(row.overrideKey, raw === "" ? null : number(raw)) }} /></td><td className={`px-3 py-2 font-mono ${row.override > 0 || row.baseOverride > 0 ? "text-warning" : ""}`}>{total} HP</td><td className={`px-3 py-2 font-mono ${row.threat >= 1.5 ? "text-warning" : row.threat <= 0.8 ? "text-success" : ""}`}>{row.threat.toFixed(2)}</td></tr>
     })}{!rows.length && <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">Виды не найдены</td></tr>}</tbody></table></div>
   </CardContent></Card>
 }
@@ -530,6 +536,7 @@ function RecentWaveCard({ wave }: { wave: RecentWaveTelemetry }) {
 
 function PlannedActionCard({ planned }: { planned: PlannedActionTelemetry }) {
   const probabilityPercent = Math.round((planned.probability ?? 0) * 100)
+  const checkLabels: Record<string, string> = { mode: "Режим", round_active: "Раунд", grace_active: "Стартовая задержка", active_waves: "Активные волны", wave_limit: "Лимит волн", pending_waves: "Ожидают спавна", short_term_difficulty: "Текущая сложность", difficulty_budget: "Бюджет", pace_ratio: "Темп", idle_seconds: "Простой, с" }
   return <Card className="py-0"><CardContent className="space-y-2 p-4">
     <div className="flex items-center gap-2 text-sm font-medium"><Zap className="size-4 text-primary" /> Что планирует контроллер</div>
     <div className="flex flex-wrap items-center gap-2">
@@ -538,6 +545,7 @@ function PlannedActionCard({ planned }: { planned: PlannedActionTelemetry }) {
       <span className="font-mono text-sm text-primary">{probabilityPercent}%</span>
     </div>
     <div className="text-xs text-muted-foreground">{planned.detail}</div>
+    {planned.checks && <div className="grid gap-1.5 border-t pt-3 text-xs sm:grid-cols-2 xl:grid-cols-5">{Object.entries(planned.checks).map(([key, value]) => <div key={key} className="rounded-md bg-muted/35 px-2.5 py-2"><span className="text-muted-foreground">{checkLabels[key] ?? key}</span><span className="ml-2 font-medium">{typeof value === "boolean" ? value ? "да" : "нет" : String(value)}</span></div>)}</div>}
   </CardContent></Card>
 }
 
@@ -675,7 +683,7 @@ function SchemeRow({ scheme, index, onEdit, onDelete, overrideTag }: {
   </div>
 }
 
-function LLMPanel({ server, reports }: { server: string; reports: RoundReport[] }) {
+function LLMPanel({ server, reports, learning }: { server: string; reports: RoundReport[]; learning: boolean }) {
   const queryClient = useQueryClient()
   const [instruction, setInstruction] = useState("")
   const [mode, setMode] = useState<"analyze" | "apply" | "spawn">("analyze")
@@ -714,6 +722,7 @@ function LLMPanel({ server, reports }: { server: string; reports: RoundReport[] 
     <CardDescription className="text-xs">{deployment?.has_base_url ? `агрегатор: ${deployment.base_url} · модель: ${deployment.model} · t=${deployment.temperature}` : "Не настроен — задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY в .env (см. docs/MONSTER_LLM_SETUP.md)"}</CardDescription>
   </CardHeader>
     <CardContent className="space-y-4 p-4">
+      {learning && <div className="rounded-lg border border-info/30 bg-info/5 p-3 text-xs">Режим обучения: модель анализирует ванильные волны и предлагает настройки для будущего активного режима. Автоцикл не применяет изменения и не создаёт спавны.</div>}
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Ассистент включён</span><Switch checked={r?.enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ enabled: value })} /></div>
         <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Автоприменение</span><Switch checked={r?.auto_apply === true} onCheckedChange={(value) => saveRuntime.mutate({ auto_apply: value })} /></div>
@@ -781,6 +790,7 @@ export function MonsterSpawnPage() {
   const [server, setServer] = useState("ASPER1")
   const [draft, setDraft] = useState<MonsterSpawnState | null>(null)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [selectedMapCharacterId, setSelectedMapCharacterId] = useState<number | null>(null)
   const [selectedWave, setSelectedWave] = useState(0)
   const [placing, setPlacing] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -873,16 +883,24 @@ export function MonsterSpawnPage() {
         probability: Number(telemetry.planned_action.probability ?? 0),
         detail: String(telemetry.planned_action.detail ?? ""),
         next_spawn_possible_at: Number(telemetry.planned_action.next_spawn_possible_at ?? 0),
+        checks: isRecord(telemetry.planned_action.checks) ? telemetry.planned_action.checks as PlannedActionTelemetry["checks"] : undefined,
       }
     : { action: "unknown", probability: 0, detail: "Плагин ещё не прислал план действий", next_spawn_possible_at: 0 }
   const global = isRecord(draft.config.global) ? draft.config.global : {}
   const vanilla = isRecord(global.vanilla_events) ? global.vanilla_events : {}
   const speciesHpOverrides: Record<string, number> = isRecord(global.species_hp_overrides) ? global.species_hp_overrides as Record<string, number> : {}
+  const speciesBaseHpOverrides: Record<string, number> = isRecord(global.species_base_hp_overrides) ? global.species_base_hp_overrides as Record<string, number> : {}
   const setSpeciesHp = (species: string, value: number | null) => updateDraft((next) => {
     const current = isRecord(next.config.global.species_hp_overrides) ? { ...(next.config.global.species_hp_overrides as Record<string, number>) } : {}
     if (value == null || !(value > 0)) delete current[species]
     else current[species] = value
     next.config.global.species_hp_overrides = current
+  })
+  const setSpeciesBaseHp = (species: string, value: number | null) => updateDraft((next) => {
+    const current = isRecord(next.config.global.species_base_hp_overrides) ? { ...(next.config.global.species_base_hp_overrides as Record<string, number>) } : {}
+    if (value == null || !(value > 0)) delete current[species]
+    else current[species] = value
+    next.config.global.species_base_hp_overrides = current
   })
   // 6: схемы позиционирования спавна из конфига.
   const schemeList: SpawnScheme[] = Array.isArray(global.spawn_schemes) ? global.spawn_schemes as SpawnScheme[] : []
@@ -892,7 +910,23 @@ export function MonsterSpawnPage() {
   const waveLogs = report.wave_logs
   const shipLogs = report.ship_logs
   const selectedPlan = draft.plans.find((plan) => plan.id === selectedPlanId) ?? null
-  const markers: WorldMarker[] = draft.plans.map((plan) => ({ id: plan.id, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: plan.source === "manual" ? "#59D6C2" : "#F6C453", muted: plan.status === "cancelled" }))
+  const markers: WorldMarker[] = draft.plans.map((plan) => ({ id: plan.id, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: plan.source === "manual" ? "#59D6C2" : "#F6C453", muted: plan.status === "cancelled", draggable: true }))
+  const wavePalette = ["#F6C453", "#E879F9", "#60A5FA", "#FB7185", "#34D399", "#A78BFA", "#F97316"]
+  const waveMapRows = telemetryList<Record<string, unknown>>(telemetry.map_waves)
+  const characterColors: Record<number, string> = {}
+  const waveMarkers: WorldMarker[] = waveMapRows.map((wave, index) => {
+    const waveId = String(wave.wave_id ?? index)
+    const color = wavePalette[[...waveId].reduce((sum, character) => sum + character.charCodeAt(0), 0) % wavePalette.length]
+    const counts = isRecord(wave.monster_counts) ? Object.entries(wave.monster_counts).map(([species, count]) => `${species} ×${count}`).join(", ") : "Состав неизвестен"
+    if (Array.isArray(wave.monster_ids)) for (const id of wave.monster_ids) characterColors[Number(id)] = color
+    return { id: `wave:${waveId}`, x: Number(wave.x), y: Number(wave.y), label: String(wave.wave_name ?? "Волна"), color,
+      detail: `${wave.observational ? "Ванильная волна (наблюдение)" : "Волна контроллера"}\nПричина: ${String(wave.spawn_reason ?? "—")}\nСущества: ${counts}${wave.outcome ? `\nИсход: ${wave.outcome}` : ""}` }
+  }).filter((marker) => Number.isFinite(marker.x) && Number.isFinite(marker.y))
+  const plannedMarkers: WorldMarker[] = [
+    ...draft.plans.filter((plan) => plan.status === "planned").map((plan) => ({ id: `planned:${plan.id}`, x: plan.x, y: plan.y, label: plan.wave_name || plan.name, color: "#59D6C2", pulse: true, detail: `Запланирована вручную\n${plan.monsters.map((monster) => `${monster.species} ×${monster.count}`).join(", ") || "Состав пока не задан"}` })),
+    ...pendingWaveDetails.filter((wave) => wave.x != null && wave.y != null && Number.isFinite(Number(wave.x)) && Number.isFinite(Number(wave.y))).map((wave, index) => ({ id: `pending:${index}`, x: Number(wave.x), y: Number(wave.y), label: wave.wave_name ?? "Ожидаемая волна", color: "#F6C453", pulse: true, detail: `Ожидает спавна\n${wave.wave_name ?? "Волна"}` })),
+  ]
+  const roundMapMarkers = [...waveMarkers, ...plannedMarkers]
   const waveChart = { labels: waveLogs.slice(0, 8).map((item) => item.name.replace("vanilla:", "")), datasets: [{ label: "Среднее время зачистки, с", data: waveLogs.slice(0, 8).map((item) => Math.round(item.avg_repel_seconds)), backgroundColor: CHART_COLORS[0], ...barDatasetDefaults }] }
   const shipChart = { labels: shipLogs.slice(0, 8).map((item) => item.name), datasets: [{ label: "Performance EMA", data: shipLogs.slice(0, 8).map((item) => item.performance_ema), backgroundColor: CHART_COLORS[1], ...barDatasetDefaults }] }
   const trendValues = shipLogs.flatMap((item) => item.recent_performance).slice(-24)
@@ -1075,11 +1109,11 @@ export function MonsterSpawnPage() {
             {!activeWaves.length && !recentWaves.length && <Button variant="ghost" className="w-full justify-between" onClick={() => setActiveTab("logs")}>Открыть полный анализ <ChevronRight className="size-4" /></Button>}
           </CardContent></Card></div>
         <div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Самые долгие волны" description="Среднее время от спавна до разрешения"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={waveChart} /></ChartCard><ChartCard title="Корабли по эффективности" description="Ниже 1.0 означает более тяжёлое прохождение"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div>
-        <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="size-4 text-primary" /> Карта раунда</CardTitle><CardDescription className="text-xs">Карта текущего раунда с планами спавна из ручной настройки</CardDescription></CardHeader><CardContent className="p-4"><div className="relative h-[380px] overflow-hidden rounded-xl border">
+        <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="size-4 text-primary" /> Карта раунда</CardTitle><CardDescription className="text-xs">Цвет точки волны совпадает с цветом её существ. Мигающие метки — планируемый спавн. Нажмите на метку или существо для подробностей.</CardDescription></CardHeader><CardContent className="p-4"><div className="relative h-[380px] overflow-hidden rounded-xl border">
           {rounds.isError ? <MapPlaceholder>Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>
             : !round ? <MapPlaceholder>Для {server} сейчас нет активного раунда — мир не транслируется</MapPlaceholder>
               : geometry.isError || world.isError ? <MapPlaceholder>Ошибка загрузки карты: {((geometry.error ?? world.error) as Error | null)?.message ?? "нет данных"}</MapPlaceholder>
-                 : geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={null} onSelectCharacter={() => {}} targetMode={false} markers={markers} selectedMarkerId={selectedPlanId} onSelectMarker={(id) => { setSelectedPlanId(id); setActiveTab("manual") }} onMoveMarker={() => {}} startZone={geometry.data.start_x != null && geometry.data.end_x != null ? { startX: geometry.data.start_x, endX: geometry.data.end_x, progress: Number(global.spawn_start_zone_progress ?? 0.1), enabled: global.spawn_start_zone_enabled !== false, left: telemetry.spawn_start_zone_left === true } : null} abyssStartY={geometry.data.abyss_start_y ?? null} />
+                 : geometry.data && world.data ? <WorldCanvas geometry={geometry.data} state={world.data} selectedCharacterId={selectedMapCharacterId} onSelectCharacter={setSelectedMapCharacterId} targetMode={false} markers={roundMapMarkers} selectedMarkerId={selectedPlanId} onSelectMarker={setSelectedPlanId} characterColors={characterColors} startZone={geometry.data.start_x != null && geometry.data.end_x != null ? { startX: geometry.data.start_x, endX: geometry.data.end_x, progress: Number(global.spawn_start_zone_progress ?? 0.1), enabled: global.spawn_start_zone_enabled !== false, left: telemetry.spawn_start_zone_left === true } : null} abyssStartY={geometry.data.abyss_start_y ?? null} />
                   : <MapPlaceholder>Загрузка карты раунда…</MapPlaceholder>}
         </div></CardContent></Card>
 
@@ -1105,7 +1139,6 @@ export function MonsterSpawnPage() {
             return <tr key={threat.species} className="border-t"><td className="px-3 py-2 font-medium">{threat.species}{manual && <Badge variant="outline" className="ml-2 text-[9px] text-warning">ручная</Badge>}</td><td className={`px-3 py-2 font-mono ${threat.threat_ema >= 1.2 ? "text-warning" : threat.threat_ema <= 0.8 ? "text-success" : ""}`}>{threat.threat_ema.toFixed(2)}</td><td className="px-3 py-2 font-mono text-primary">{Number(effective).toFixed(2)}</td><td className="px-3 py-2">{threat.samples}</td><td className="px-3 py-2"><div className="flex items-center gap-1"><Input type="number" step="0.05" className="h-7 w-20 text-xs" placeholder="авто" value={manual ? String(manual.threat_value) : ""} onChange={(event) => { const raw = event.target.value.trim(); setSpeciesDangerOverride(threat.species, raw === "" ? null : number(raw)) }} /><Button size="sm" variant="ghost" className="size-7 p-0" title="Убрать ручную угрозу" onClick={() => setSpeciesDangerOverride(threat.species, null)}><X className="size-3.5" /></Button></div></td></tr>
           })}{!speciesThreats.length && <tr><td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">Данных ещё нет</td></tr>}</tbody></table></div></CardContent></Card>
         </div>
-        <SpeciesHpCard creatures={creatures} baseline={speciesBaseline} overrides={speciesHpOverrides} minMult={Number(global.min_monster_health_multiplier ?? 0)} minFixed={Number(global.min_monster_health_fixed ?? 0)} setSpeciesHp={setSpeciesHp} setMinMult={(value) => setGlobal("min_monster_health_multiplier", value)} setMinFixed={(value) => setGlobal("min_monster_health_fixed", value)} />
         <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Удержанные ванильные спавны и волны в ожидании</CardTitle><CardDescription className="text-xs">Пойманные события держатся hold_seconds перед спавном — идёт корректировка</CardDescription></CardHeader><CardContent className="space-y-2 p-4">
           {heldVanilla.length ? heldVanilla.map((event, index) => <div key={index} className="rounded-xl border bg-muted/10 p-3 text-xs"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{event.wave_name}</span><span className="text-muted-foreground">{event.species} x{event.original_amount}</span><Badge variant="outline" className="text-[10px]">осталось {Math.round(event.hold_remaining_seconds ?? 0)}с</Badge></div></div>) : <div className="rounded-xl border border-dashed p-4 text-center text-xs text-muted-foreground">Ничего не удерживается</div>}
           {pendingWaveDetails.length > 0 && <div className="space-y-1 pt-1">{pendingWaveDetails.map((wave, index) => <div key={index} className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/20 px-3 py-2 text-[11px]"><Anchor className="size-3.5" /><span className="font-medium">{wave.wave_name}</span><Badge variant="secondary" className="text-[9px]">{REASON_LABELS[wave.spawn_reason ?? ""] ?? wave.spawn_reason}</Badge><span className="text-muted-foreground">{wave.pos_type} · ждёт {Math.round(wave.waiting_seconds ?? 0)}с</span></div>)}</div>}
@@ -1116,13 +1149,14 @@ export function MonsterSpawnPage() {
       </TabsContent>
 
       <TabsContent value="llm" className="space-y-4 pt-2">
-        <LLMPanel server={server} reports={reports.data?.reports ?? []} />
+        <LLMPanel server={server} reports={reports.data?.reports ?? []} learning={vanilla.mode === "learning"} />
       </TabsContent>
 
       <TabsContent value="control" className="space-y-4 pt-2">
         <ExpressTuning global={global} vanilla={vanilla} setGlobal={setGlobal} setVanilla={setVanilla} />
+        <SpeciesHpCard creatures={creatures} baseline={speciesBaseline} overrides={speciesHpOverrides} baseOverrides={speciesBaseHpOverrides} setBaseHp={setSpeciesBaseHp} minMult={Number(global.min_monster_health_multiplier ?? 0)} minFixed={Number(global.min_monster_health_fixed ?? 0)} setSpeciesHp={setSpeciesHp} setMinMult={(value) => setGlobal("min_monster_health_multiplier", value)} setMinFixed={(value) => setGlobal("min_monster_health_fixed", value)} />
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]"><Card className="overflow-hidden py-0"><CardHeader className="border-b px-4 py-3"><CardTitle className="text-sm">Адаптация ванильных событий</CardTitle><CardDescription className="text-xs">Насколько история эффективности влияет на здоровье и количество монстров.</CardDescription></CardHeader><CardContent className="grid gap-3 p-4 sm:grid-cols-2"><SliderField label="Влияние памяти на HP" value={Number(vanilla.adaptive_influence ?? 1)} min={0} max={1} step={0.05} onChange={(value) => setVanilla("adaptive_influence", value)} /><SliderField label="Влияние памяти на количество" value={Number(vanilla.adaptive_amount_influence ?? 0)} min={0} max={1} step={0.05} onChange={(value) => setVanilla("adaptive_amount_influence", value)} /></CardContent></Card>
-          <div className="space-y-4"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Режим vanilla pipeline</CardTitle><CardDescription className="text-xs">События выбирает игра, фактический спавн контролирует режим.</CardDescription></CardHeader><CardContent className="space-y-3"><Select value={String(vanilla.mode ?? "controller")} onValueChange={(value) => setVanilla("mode", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="controller">controller · анализ и корреляция</SelectItem><SelectItem value="native">native · штатный спавн</SelectItem><SelectItem value="disabled">disabled · заблокировать</SelectItem></SelectContent></Select><div className="rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-2 text-foreground"><Info className="size-3.5 text-info" /> Безопасный принцип</div>Анализатор не меняет параметры сам. Все предложения остаются на этой странице до ручного подтверждения оператором.</div></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Предохранители</CardTitle></CardHeader><CardContent className="space-y-3"><div className="flex items-center justify-between gap-3 text-xs"><span>Intensity gate</span><Switch checked={global.intensity_gate_enabled !== false} onCheckedChange={(value) => setGlobal("intensity_gate_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Adaptive-memory</span><Switch checked={global.adaptive_memory_enabled !== false} onCheckedChange={(value) => setGlobal("adaptive_memory_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Уважать server monster settings</span><Switch checked={global.respect_server_monster_settings !== false} onCheckedChange={(value) => setGlobal("respect_server_monster_settings", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Swarm behavior</span><Switch checked={global.use_swarm_behavior !== false} onCheckedChange={(value) => setGlobal("use_swarm_behavior", value)} /></div></CardContent></Card></div></div>
+          <div className="space-y-4"><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Режим vanilla pipeline</CardTitle><CardDescription className="text-xs">События выбирает игра, фактический спавн контролирует режим.</CardDescription></CardHeader><CardContent className="space-y-3"><Select value={String(vanilla.mode ?? "controller")} onValueChange={(value) => setVanilla("mode", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="controller">controller · анализ и корреляция</SelectItem><SelectItem value="learning">обучение · только наблюдение</SelectItem><SelectItem value="native">native · штатный спавн</SelectItem><SelectItem value="disabled">disabled · заблокировать</SelectItem></SelectContent></Select><div className="rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-2 text-foreground"><Info className="size-3.5 text-info" /> Безопасный принцип</div>Анализатор не меняет параметры сам. Все предложения остаются на этой странице до ручного подтверждения оператором.</div></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Предохранители</CardTitle></CardHeader><CardContent className="space-y-3"><div className="flex items-center justify-between gap-3 text-xs"><span>Intensity gate</span><Switch checked={global.intensity_gate_enabled !== false} onCheckedChange={(value) => setGlobal("intensity_gate_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Adaptive-memory</span><Switch checked={global.adaptive_memory_enabled !== false} onCheckedChange={(value) => setGlobal("adaptive_memory_enabled", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Уважать server monster settings</span><Switch checked={global.respect_server_monster_settings !== false} onCheckedChange={(value) => setGlobal("respect_server_monster_settings", value)} /></div><div className="flex items-center justify-between gap-3 text-xs"><span>Swarm behavior</span><Switch checked={global.use_swarm_behavior !== false} onCheckedChange={(value) => setGlobal("use_swarm_behavior", value)} /></div></CardContent></Card></div></div>
         <Card><CardHeader className="pb-3"><CardTitle className="text-sm">Как читать регуляторы</CardTitle></CardHeader><CardContent className="grid gap-3 text-xs text-muted-foreground md:grid-cols-3"><div><b className="text-foreground">Amount</b><br />Масштабирует ванильное количество. Значение 1.0 сохраняет исходное поведение.</div><div><b className="text-foreground">Difficulty</b><br />Масштабирует HP и difficulty наблюдаемой волны, не меняя vanilla event selection.</div><div><b className="text-foreground">Adaptive</b><br />Подмешивает накопленную эффективность экипажей и кораблей в будущие vanilla события.</div></CardContent></Card>
       </TabsContent>
 

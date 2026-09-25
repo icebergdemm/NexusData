@@ -304,11 +304,13 @@ known_species. count не больше 6, hp_multiplier в пределах 0.5-
 
 ROUND_PROMPT = """Проанализируй завершённый раунд Barotrauma по переданному отчёту.
 Укажи характер волн, причины появления, время устранения, исходы, потери и динамику экипажа.
+Если controller_mode=learning, плагин лишь наблюдал ванильный спавн: не приписывай ему изменения сложности или размещения.
 Не выдумывай отсутствующие данные. Верни только JSON по схеме:
 {"conclusion":"содержательное заключение по-русски"}."""
 
 REPORT_PROMPT = """Оцени последние не более 15 завершённых раундов Barotrauma.
 Сопоставь частоту и причины волн, длительность боёв, потери, обходы и тенденцию сложности.
+Раунды с controller_mode=learning отражают только ванильный спавн: не приписывай их исходы контроллеру; настройки предлагай для будущего активного режима.
 Предложи только обоснованные плавные изменения глобальных настроек из editable_keys.
 При недостатке данных оставь config_changes пустым. Верни строго JSON по схеме:
 {"situation":"вывод", "crew_summary":"анализ", "recommendations":[{"title":"совет","detail":"обоснование"}],
@@ -387,11 +389,20 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
         "telemetry": telemetry,
         "memory_brief": brief_memory,
         "auto_interval_minutes": settings.monster_llm_auto_interval_minutes,
+        "controller_mode": str((global_config.get("vanilla_events") or {}).get("mode") or "controller"),
     }
     if state.get("round_reports"):
         payload["round_reports"] = state["round_reports"][-15:]
     if instruction:
         payload["operator_instruction"] = instruction
+
+    if payload["controller_mode"] == "learning":
+        payload["learning_mode_note"] = (
+            "Плагин только наблюдает за ванильными событиями: не меняет спавн, "
+            "HP и частоту. Оценивай естественный баланс игры; изменения настроек "
+            "предлагай как гипотезу для будущего активного режима. "
+            "Нельзя приписывать исходы решениям контроллера. spawn_requests=[]"
+        )
 
     return "Состояние контроллера:\n" + json.dumps(payload, ensure_ascii=False, indent=1)
 
@@ -759,17 +770,18 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
     import copy
     proposal_state = {**state, "config": copy.deepcopy(state.get("config") or {})}
     config_applied, config_rejected = _validate_config_changes(proposal_state, decision.get("config_changes"))
-    spawn_applied, spawn_rejected = _validate_spawn_requests(state, decision.get("spawn_requests"))
+    learning_mode = ((((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode") == "learning")
+    spawn_applied, spawn_rejected = ([], []) if learning_mode else _validate_spawn_requests(state, decision.get("spawn_requests"))
     crew_summary, recommendations = _validate_recommendations(decision)
 
     # In analyze mode nothing is written back to config/plans, but the
     # analyzer text (situation + crew summary + recommendations) is still
     # returned and persisted so the operator can read it in the UI.
-    applied_changes: List[dict] = config_applied if mode in ("apply", "spawn") else []
+    applied_changes: List[dict] = config_applied if mode in ("apply", "spawn") and not learning_mode else []
     if applied_changes:
         state["config"] = proposal_state["config"]
     spawn_plans: List[dict] = []
-    if mode == "spawn" and spawn_applied:
+    if mode == "spawn" and spawn_applied and not learning_mode:
         spawn_plans = _spawn_requests_to_plans(state, spawn_applied, datetime.utcnow())
 
     result = {
@@ -1184,7 +1196,7 @@ def process_pending_llm_runs() -> List[Dict[str, Any]]:
 def _round_brief(report: dict, limit: int = 80) -> dict:
     """Bound LLM input while retaining encounter evidence."""
     brief = {key: report.get(key) for key in (
-        "round_start_utc", "round_end_utc", "round_duration_seconds",
+        "round_start_utc", "round_end_utc", "round_duration_seconds", "controller_mode",
         "submarine_name", "summary") if key in report}
     waves = report.get("waves") if isinstance(report.get("waves"), list) else []
     brief["total_waves"] = len(waves)
@@ -1333,7 +1345,8 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
                     "dashboard": {},
                 }
                 run_id = uuid.uuid4().hex[:12]
-                mode = "apply" if runtime.get("auto_apply") else "analyze"
+                learning_mode = ((((state.get("config") or {}).get("global") or {}).get("vanilla_events") or {}).get("mode") == "learning")
+                mode = "apply" if runtime.get("auto_apply") and not learning_mode else "analyze"
                 _create_run_record(main_db, server, mode, None, "auto", run_id, None)
                 task_ref = f"{server}:{run_id}"
                 _task(TASK_KIND, task_ref, "claimed", "автоцикл запущен планировщиком")

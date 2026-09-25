@@ -14,7 +14,7 @@ const TEAM_COLORS: Record<string, string> = {
 
 interface View { scale: number; offsetX: number; offsetY: number }
 interface WorldBounds { minX: number; maxX: number; minY: number; maxY: number }
-export interface WorldMarker { id: string; x: number; y: number; label: string; color?: string; muted?: boolean }
+export interface WorldMarker { id: string; x: number; y: number; label: string; color?: string; muted?: boolean; detail?: string; pulse?: boolean; draggable?: boolean }
 
 const POPUP_WIDTH = 260
 
@@ -78,7 +78,7 @@ export function WorldCanvas({
   geometry, state, selectedCharacterId, onSelectCharacter,
   targetMode = false, targetPoint = null, onPickTarget,
    markers = [], selectedMarkerId = null, onSelectMarker, onMoveMarker,
-   onMapContextMenu, startZone = null, abyssStartY = null,
+   onMapContextMenu, startZone = null, abyssStartY = null, characterColors,
 }: {
   geometry: WorldGeometry
   state: WorldState
@@ -94,6 +94,7 @@ export function WorldCanvas({
   onMapContextMenu?: (info: { wx: number; wy: number; markerId: string | null; screenX: number; screenY: number }) => void
   startZone?: { startX: number; endX: number; progress: number; enabled: boolean; left: boolean } | null
   abyssStartY?: number | null
+  characterColors?: Record<number, string>
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -107,6 +108,7 @@ export function WorldCanvas({
   const previousStateRef = useRef(state)
   const transitionRef = useRef<{ from: WorldState; to: WorldState; started: number } | null>(null)
   const [animationNow, setAnimationNow] = useState(0)
+  const hasPulse = markers.some((marker) => marker.pulse)
   const renderState = (() => {
     const transition = transitionRef.current
     if (!transition) return state
@@ -120,14 +122,15 @@ export function WorldCanvas({
       previousStateRef.current = state
     }
     let frame = 0
+    let lastPaint = 0
     const animate = (now: number) => {
-      setAnimationNow(now)
-      if (transitionRef.current && now - transitionRef.current.started < 333) frame = requestAnimationFrame(animate)
+      if (now - lastPaint >= (hasPulse ? 50 : 16)) { setAnimationNow(now); lastPaint = now }
+      if ((transitionRef.current && now - transitionRef.current.started < 333) || hasPulse) frame = requestAnimationFrame(animate)
       else transitionRef.current = null
     }
     frame = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(frame)
-  }, [state])
+  }, [state, hasPulse])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -327,7 +330,7 @@ export function WorldCanvas({
       const radius = c.human ? 5 : 7
       ctx.beginPath()
       ctx.arc(sx, sy, radius, 0, Math.PI * 2)
-       ctx.fillStyle = c.dead ? "#5A5A5A" : c.human ? "#5AA0FF" : (TEAM_COLORS[c.team] ?? "#B4B4B4")
+       ctx.fillStyle = c.dead ? "#5A5A5A" : characterColors?.[c.id] ?? (c.human ? "#5AA0FF" : (TEAM_COLORS[c.team] ?? "#B4B4B4"))
       ctx.fill()
       if (c.id === selectedCharacterId) {
         ctx.lineWidth = 2
@@ -346,6 +349,14 @@ export function WorldCanvas({
       const [sx, sy] = toScreen(marker.x, marker.y, view)
       const selected = marker.id === selectedMarkerId
       const hovered = marker.id === hoveredMarkerId
+      if (marker.pulse) {
+        ctx.beginPath()
+        ctx.arc(sx, sy, 13 + 5 * (1 + Math.sin(animationNow / 430)), 0, Math.PI * 2)
+        ctx.strokeStyle = marker.color || "#F6C453"
+        ctx.globalAlpha = 0.25 + 0.3 * (1 + Math.sin(animationNow / 430))
+        ctx.lineWidth = 2
+        ctx.stroke()
+      }
       ctx.globalAlpha = marker.muted ? 0.35 : 1
       ctx.fillStyle = marker.color || "#F6C453"
       ctx.beginPath()
@@ -387,7 +398,7 @@ export function WorldCanvas({
       ctx.stroke()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId, startZone, abyssStartY])
+  }, [geometry, renderState, animationNow, view, selectedCharacterId, targetMode, targetPoint, markers, selectedMarkerId, hoveredMarkerId, startZone, abyssStartY, characterColors])
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (!targetMode && onMoveMarker) {
@@ -400,7 +411,7 @@ export function WorldCanvas({
           const [sx, sy] = toScreen(m.x, m.y, view)
           return Math.hypot(sx - mx, sy - my) < 14
         })
-        if (hit) {
+        if (hit?.draggable) {
           markerDragRef.current = hit.id
           onSelectMarker?.(hit.id)
           return
@@ -419,7 +430,7 @@ export function WorldCanvas({
       return
     }
     // hover-подсветка для ПКМ по существующим меткам
-    if (!dragRef.current && onMapContextMenu && markers.length) {
+    if (!dragRef.current && markers.length) {
       const container = containerRef.current
       if (container) {
         const rect = container.getBoundingClientRect()
@@ -460,6 +471,13 @@ export function WorldCanvas({
       return
     }
 
+    const marker = markers.find((item) => {
+      const [sx, sy] = toScreen(item.x, item.y, view)
+      return Math.hypot(sx - mx, sy - my) < 14
+    })
+    if (marker) { onSelectMarker?.(marker.id); onSelectCharacter(null); return }
+    onSelectMarker?.(null)
+
     // Click (not a drag) — hit-test the nearest character within ~10px.
     let closest: WorldCharacter | null = null
     let closestDist = 12 // px
@@ -474,6 +492,7 @@ export function WorldCanvas({
   const selectedCharacter = !targetMode && selectedCharacterId != null
     ? state.characters.find((c) => c.id === selectedCharacterId) ?? null
     : null
+  const selectedMarker = !targetMode ? markers.find((marker) => marker.id === selectedMarkerId && marker.detail) : null
 
   // Anchor the popup next to the character on screen, clamped so it never
   // spills outside the canvas viewport (item 1 — used to only show details
@@ -546,6 +565,10 @@ export function WorldCanvas({
           />
         </div>
       )}
+      {selectedMarker && <div className="absolute bottom-3 left-3 z-10 max-w-72 rounded-lg border bg-background/95 p-3 text-xs shadow-lg" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between gap-3 font-medium"><span style={{ color: selectedMarker.color }}>{selectedMarker.label}</span><button aria-label="Закрыть" onClick={() => onSelectMarker?.(null)}>×</button></div>
+        <div className="mt-1 whitespace-pre-line text-muted-foreground">{selectedMarker.detail}</div>
+      </div>}
     </div>
   )
 }

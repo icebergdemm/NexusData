@@ -284,6 +284,28 @@ class MonsterLLMQueueTests(unittest.TestCase):
         finally:
             _close(db)
 
+    def test_learning_mode_proposes_settings_without_spawning_or_applying(self):
+        db = _main_db()
+        state = {"config": {"global": {"intensity_threshold": 0.2,
+                 "vanilla_events": {"mode": "learning"}}}, "memory": {},
+                 "telemetry": {}, "dashboard": {}}
+        answer = ('{"situation":"ванильный раунд","crew_summary":"тяжело",'
+                  '"recommendations":[],"config_changes":['
+                  '{"key":"intensity_threshold","new_value":0.25,"reason":"темп"}],'
+                  '"spawn_requests":[{"species":"crawler","count":1}],"confidence":0.8}')
+        try:
+            with patch.object(services_llm_monster, "get_settings", return_value=_configured_settings()), \
+                    patch.object(services_llm_monster, "_chat_completions", return_value=answer):
+                result = services_llm_monster.run_llm_cycle(db, "ASPER1", state, mode="apply")
+            self.assertEqual(result["proposed_changes"][0]["new_value"], 0.25)
+            self.assertEqual(result["applied_changes"], [])
+            self.assertEqual(result["spawn_plans"], [])
+            self.assertEqual(state["config"]["global"]["intensity_threshold"], 0.2)
+            prompt = services_llm_monster._build_user_prompt(state, None, [])
+            self.assertIn("learning_mode_note", prompt)
+        finally:
+            _close(db)
+
 
 if __name__ == "__main__":
     unittest.main()

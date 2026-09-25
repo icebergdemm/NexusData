@@ -143,6 +143,7 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
         # Фиксированное HP по видам (множитель вместо волнового скейла) и
         # нижние пороги HP, как species_hp_overrides в AdaptiveSpawnDirector.
         "species_hp_overrides": {},
+        "species_base_hp_overrides": {},
         "min_monster_health_multiplier": 0,
         "min_monster_health_fixed": 0,
     }
