@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -153,6 +154,7 @@ interface VoiceSyntheticPlayerReport {
 }
 interface VoiceSyntheticMonitor {
   enabled: boolean;
+  show_worker_labels: boolean;
   model: {
     status: "ready" | "not_configured" | "unavailable" | "revision_mismatch";
     revision?: string;
@@ -764,6 +766,18 @@ function SyntheticVoiceConsole({
     },
     onError: (error: ApiError) => toast.error(error.message),
   });
+  const labelVisibility = useMutation({
+    mutationFn: (show_worker_labels: boolean) =>
+      api.patch<VoiceSyntheticMonitor>(
+        "/api/v1/admin/voice-profiles/voice-synthetic-monitor",
+        { show_worker_labels },
+      ),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["voice-synthetic-monitor"], data);
+      toast.success(data.show_worker_labels ? "Метки воркера показываются" : "Метки воркера скрыты");
+    },
+    onError: (error: ApiError) => toast.error(error.message),
+  });
   const data = monitor.data;
   const modelReady = data?.model.status === "ready";
 
@@ -812,6 +826,15 @@ function SyntheticVoiceConsole({
             <RefreshCw className={monitor.isFetching ? "size-4 animate-spin" : "size-4"} />{" "}
             Обновить
           </Button>
+          <label className="flex basis-full items-center gap-2 border-t border-border/70 pt-3 text-sm text-muted-foreground">
+            <Checkbox
+              checked={data?.show_worker_labels ?? true}
+              disabled={!data || labelVisibility.isPending}
+              onCheckedChange={(checked) => labelVisibility.mutate(checked === true)}
+              aria-label="Показывать метки, поставленные воркером"
+            />
+            <span>Показывать метки, поставленные воркером</span>
+          </label>
         </CardContent>
       </Card>
       {monitor.isError && (

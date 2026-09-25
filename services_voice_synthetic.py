@@ -29,6 +29,7 @@ _model_status_cache: tuple[float, dict] | None = None
 _model_status_lock = threading.Lock()
 LABEL_NAME = "Модуляция голоса"
 VOICE_SYNTHETIC_WORKER_SETTING = "voice_synthetic_worker_enabled"
+VOICE_SYNTHETIC_LABELS_VISIBLE_SETTING = "voice_synthetic_worker_labels_visible"
 
 
 def voice_synthetic_worker_enabled(db) -> bool:
@@ -48,6 +49,31 @@ def set_voice_synthetic_worker_enabled(db, enabled: bool) -> bool:
     setting.value = "true" if enabled else "false"
     db.flush()
     return bool(enabled)
+
+
+def voice_synthetic_worker_labels_visible(db) -> bool:
+    from models import AppSetting
+
+    setting = db.query(AppSetting).filter(
+        AppSetting.key == VOICE_SYNTHETIC_LABELS_VISIBLE_SETTING,
+    ).first()
+    if setting is None:
+        return True
+    return str(setting.value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def set_voice_synthetic_worker_labels_visible(db, visible: bool) -> bool:
+    from models import AppSetting
+
+    setting = db.query(AppSetting).filter(
+        AppSetting.key == VOICE_SYNTHETIC_LABELS_VISIBLE_SETTING,
+    ).first()
+    if setting is None:
+        setting = AppSetting(key=VOICE_SYNTHETIC_LABELS_VISIBLE_SETTING)
+        db.add(setting)
+    setting.value = "true" if visible else "false"
+    db.flush()
+    return bool(visible)
 
 
 def voice_synthetic_model_status() -> dict:
@@ -84,6 +110,7 @@ def voice_synthetic_monitor_payload(db) -> dict:
     )
 
     enabled = voice_synthetic_worker_enabled(db)
+    show_worker_labels = voice_synthetic_worker_labels_visible(db)
     model = voice_synthetic_model_status()
     clip_stats = db.query(
         PlayerData.player_id,
@@ -188,6 +215,7 @@ def voice_synthetic_monitor_payload(db) -> dict:
     players.sort(key=lambda player: (player["result"] != "synthetic", player["display_name"].casefold()))
     return {
         "enabled": enabled,
+        "show_worker_labels": show_worker_labels,
         "model": model,
         "criteria": {
             "min_replays": VOICEPRINT_MIN_SAMPLE_COUNT,

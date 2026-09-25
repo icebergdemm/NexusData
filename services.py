@@ -52,6 +52,19 @@ def filter_visible_label_pairs(label_pairs, admin) -> list:
     ]
 
 
+def filter_synthetic_worker_label_pairs(label_pairs, *, show_worker_labels: bool) -> list:
+    """Hide only system-assigned synthetic-voice labels when globally disabled."""
+    if show_worker_labels:
+        return list(label_pairs)
+    return [
+        pair for pair in label_pairs
+        if not (
+            getattr(pair[1], "name", None) == "Модуляция голоса"
+            and getattr(pair[0], "assigned_by_admin_id", None) is None
+        )
+    ]
+
+
 def merge_visible_label_category_order(all_categories, visible_ids, requested_ids) -> list:
     """Merge a visible order into the persisted global order without moving hidden rows."""
     visible_ids = set(visible_ids)

@@ -189,13 +189,17 @@ def recover_stale_nwdemo_processing(db, *, now: _datetime.datetime | None = None
         attempts = int(replay.voice_profile_attempts or 0)
         previous_progress = replay.voice_profile_progress if isinstance(replay.voice_profile_progress, dict) else {}
         is_voiceprint = previous_progress.get("mode") == "voiceprint"
+        is_speech_gate_queue = previous_progress.get("mode") == "speech_gate_queue"
         replay.voice_profile_heartbeat_at = None
         replay.voice_profile_started_at = None
-        replay.voice_profile_progress = {
-            "phase": "recovery",
-            "percent": 0,
-            "recovered_at": current.isoformat(),
-        }
+        replay.voice_profile_progress = (
+            {**previous_progress, "recovered_at": current.isoformat()}
+            if is_speech_gate_queue else {
+                "phase": "recovery",
+                "percent": 0,
+                "recovered_at": current.isoformat(),
+            }
+        )
         if attempts >= VOICE_PROFILE_MAX_ATTEMPTS:
             replay.voice_profile_state = "failed"
             replay.voice_profile_error = (
@@ -297,22 +301,22 @@ def select_speech_profile_candidates(
     *,
     inspect,
     max_attempts: int = SPEECH_GATE_MAX_RECONCILE_DECODES,
+    new_replay_id: int | None = None,
 ) -> tuple[list[Mapping[str, object]], int]:
-    """Select 3/3/5 while bounding unknown-candidate inspections."""
+    """Select 3/3/5, speech-gating only the new replay in bounded batches."""
     ordered = sorted(candidates, key=_candidate_sort_key)
     accepted = [candidate for candidate in ordered if candidate.get("speech_status") == "accepted"]
     attempts = 0
-    if len(accepted) < VOICE_PROFILE_LIMIT:
-        for candidate in ordered:
-            if candidate.get("speech_status") != "unknown":
-                continue
-            if attempts >= max(0, int(max_attempts)):
-                break
-            attempts += 1
-            if inspect(candidate):
-                accepted.append(candidate)
-            if len(accepted) >= VOICE_PROFILE_LIMIT:
-                break
+    for candidate in ordered:
+        if candidate.get("speech_status") != "unknown":
+            continue
+        if new_replay_id is not None and int(candidate.get("replay_id") or 0) != int(new_replay_id):
+            continue
+        if attempts >= max(0, int(max_attempts)):
+            break
+        attempts += 1
+        if inspect(candidate):
+            accepted.append(candidate)
     return select_profile_candidates(accepted), attempts
 
 
@@ -2065,6 +2069,60 @@ def process_voice_profile_job(db) -> dict:
         raise
 
 
+def _process_nwdemo_speech_gate_queue(db, replay, service) -> dict:
+    from models import RoundReplay
+
+    replay_id = int(replay.id)
+    progress = replay.voice_profile_progress or {}
+    pending = [str(steam_id) for steam_id in progress.get("pending_steam_ids", [])]
+    if not pending:
+        replay.voice_profile_state = "ready"
+        replay.voice_profile_progress = None
+        db.commit()
+        return {"status": "speech_gate_complete", "replay_id": replay_id}
+
+    steam_id = pending[0]
+    now = _datetime.datetime.utcnow()
+    replay.voice_profile_state = "processing"
+    replay.voice_profile_started_at = now
+    replay.voice_profile_heartbeat_at = now
+    replay.voice_profile_progress = {"mode": "speech_gate_queue", "pending_steam_ids": pending}
+    db.commit()
+
+    try:
+        service.reconcile_steam_id(steam_id, new_replay_id=replay_id)
+        if not service.has_unknown_speech_gate_clips(steam_id, replay_id):
+            pending.pop(0)
+        replay = db.query(RoundReplay).filter(RoundReplay.id == replay_id).one()
+        replay.voice_profile_state = "pending" if pending else "ready"
+        replay.voice_profile_started_at = None
+        replay.voice_profile_heartbeat_at = None
+        replay.voice_profile_progress = (
+            {"mode": "speech_gate_queue", "pending_steam_ids": pending}
+            if pending else None
+        )
+        replay.voice_profile_error = None
+        db.commit()
+        return {
+            "status": "speech_gate_pending" if pending else "speech_gate_complete",
+            "replay_id": replay_id,
+            "steam_id": steam_id,
+            "pending_players": len(pending),
+        }
+    except Exception as exc:
+        db.rollback()
+        replay = db.query(RoundReplay).filter(RoundReplay.id == replay_id).one()
+        replay.voice_profile_attempts = int(replay.voice_profile_attempts or 0) + 1
+        replay.voice_profile_state = (
+            "failed" if replay.voice_profile_attempts >= VOICE_PROFILE_MAX_ATTEMPTS else "pending"
+        )
+        replay.voice_profile_started_at = None
+        replay.voice_profile_heartbeat_at = None
+        replay.voice_profile_error = str(exc)[:2000]
+        db.commit()
+        raise
+
+
 def process_next_nwdemo_voice_profile(db) -> dict:
     """Process one pending NewWorldStreamer archive; legacy jobs stay inert."""
     from models import RoundReplay, VoiceProfileClip
@@ -2129,6 +2187,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
             replay.voice_profile_error = f"voiceprint: {exc}"[:2000]
             db.commit()
             raise
+    if (replay.voice_profile_progress or {}).get("mode") == "speech_gate_queue":
+        return _process_nwdemo_speech_gate_queue(db, replay, service)
     # Rows uploaded before v2 columns existed are admitted only because their
     # extension narrows the candidate set; index_replay still validates every
     # manifest/world/voice byte contract before writing a profile.
@@ -2156,7 +2216,8 @@ def process_next_nwdemo_voice_profile(db) -> dict:
         replay = db.query(RoundReplay).filter(RoundReplay.id == replay.id).one()
         replay.voice_profile_started_at = None
         replay.voice_profile_heartbeat_at = None
-        replay.voice_profile_progress = None
+        if not result.get("speech_gate_pending"):
+            replay.voice_profile_progress = None
         db.commit()
         return {"status": "processed", **result}
     except Exception as exc:
@@ -2521,8 +2582,18 @@ class NwdemoVoiceProfileService(VoiceProfileService):
         self._update_signature(steam_id, "radio", ONNX_VOICEPRINT_ALGORITHM)
         return True
 
-    def reconcile_steam_id(self, steam_id: str) -> int:
-        """Select 3/3/5 and materialize WAV only for those selected clips."""
+    def has_unknown_speech_gate_clips(self, steam_id: str, replay_id: int) -> bool:
+        from models import VoiceProfileClip
+
+        return self.db.query(VoiceProfileClip.id).filter(
+            VoiceProfileClip.steam_id == steam_id,
+            VoiceProfileClip.source_replay_id == replay_id,
+            VoiceProfileClip.source_format == "nwdemo-v2",
+            VoiceProfileClip.speech_status == "unknown",
+        ).first() is not None
+
+    def reconcile_steam_id(self, steam_id: str, *, new_replay_id: int | None = None) -> int:
+        """Select 3/3/5; inspect only new replay clips in bounded speech-gate batches."""
         from models import VoiceProfileClip, VoiceProfileSelection
         from services_replays import get_upload_dir
 
@@ -2563,7 +2634,11 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             clip.speech_gate_version = SPEECH_GATE_VERSION
             return analysis.accepted
 
-        selected, _attempts = select_speech_profile_candidates(candidates, inspect=inspect)
+        selected, _attempts = select_speech_profile_candidates(
+            candidates,
+            inspect=inspect,
+            new_replay_id=new_replay_id,
+        )
         selected_ids = {candidate["clip"].id for candidate in selected}
         materialized = 0
         with tempfile.TemporaryDirectory(prefix="nwdemo-voice-profile-") as temp_dir:
@@ -2736,9 +2811,15 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                 )
             self.db.flush()
             materialized = 0
+            pending_speech_gate: list[str] = []
             if self.decoder_path:
-                for steam_id in affected:
-                    materialized += self.reconcile_steam_id(steam_id)
+                for steam_id in sorted(affected):
+                    materialized += self.reconcile_steam_id(
+                        steam_id,
+                        new_replay_id=int(replay.id),
+                    )
+                    if self.has_unknown_speech_gate_clips(steam_id, int(replay.id)):
+                        pending_speech_gate.append(steam_id)
                 if model["status"] == "ready":
                     session = voiceprint_onnx_session(str(model["path"]))
                     if progress_callback is not None:
@@ -2757,9 +2838,13 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                     replay.voiceprint_processed_at = _datetime.datetime.utcnow()
                 if progress_callback is not None:
                     progress_callback("finalizing", 95, speakers_completed=len(affected))
-                replay.voice_profile_state = "ready"
+                replay.voice_profile_state = "pending" if pending_speech_gate else "ready"
                 replay.voice_profile_error = None if model["status"] == "ready" else "voiceprint model is not installed"
                 replay.voice_profile_processed_at = _datetime.datetime.utcnow()
+                replay.voice_profile_progress = (
+                    {"mode": "speech_gate_queue", "pending_steam_ids": pending_speech_gate}
+                    if pending_speech_gate else None
+                )
             else:
                 replay.voice_profile_state = "awaiting_decoder"
                 replay.voice_profile_error = "VOICE_PROFILE_DECODER_PATH is not configured"
@@ -2770,12 +2855,14 @@ class NwdemoVoiceProfileService(VoiceProfileService):
             "mapped_speakers": len(affected),
             "unresolved_speakers": [],
             "materialized_clips": materialized,
+            "speech_gate_pending": bool(pending_speech_gate),
+            "speech_gate_pending_players": len(pending_speech_gate),
             "warnings": [],
         }
 
     def backfill_voiceprint(self, replay_id: int, *, progress_callback=None) -> dict:
-        """Add ONNX observations and lazily reconcile stale speech selections."""
-        from models import RoundReplay, VoiceProfileClip
+        """Add ONNX observations without reprocessing historical speech gates."""
+        from models import RoundReplay
         from services_replays import ReplayService
 
         model = voiceprint_model_status()
@@ -2810,15 +2897,6 @@ class NwdemoVoiceProfileService(VoiceProfileService):
                 )
                 if not used_normal and radio:
                     self._update_onnx_fingerprint(replay, steam_id, radio, temporary, session)
-                stale_clip = self.db.query(VoiceProfileClip.id).filter(
-                    VoiceProfileClip.steam_id == steam_id,
-                    VoiceProfileClip.source_format == "nwdemo-v2",
-                ).filter(
-                    (VoiceProfileClip.speech_gate_version != SPEECH_GATE_VERSION)
-                    | (VoiceProfileClip.speech_status == "unknown")
-                ).first()
-                if stale_clip is not None:
-                    self.reconcile_steam_id(steam_id)
                 if progress_callback is not None:
                     progress_callback(
                         "embedding",

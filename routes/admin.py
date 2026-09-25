@@ -37,6 +37,7 @@ from services import (
     format_admin_issuer_name,
     can_manage_secret_labels, filter_visible_label_categories,
     filter_visible_label_folders, filter_visible_label_pairs,
+    filter_synthetic_worker_label_pairs,
 )
 from models import (
     AdminUser, AdminSession, AdminActionLog, PlayerStats, PlayerData,
@@ -1775,6 +1776,11 @@ async def admin_player_detail(
 
     notes = note_svc.get_notes(player_id)
     label_pairs = filter_visible_label_pairs(label_svc.get_labels(player_id), current_admin)
+    from services_voice_synthetic import voice_synthetic_worker_labels_visible
+    label_pairs = filter_synthetic_worker_label_pairs(
+        label_pairs,
+        show_worker_labels=voice_synthetic_worker_labels_visible(db),
+    )
     traps = trap_svc.get_traps(player_id)
     label_categories = filter_visible_label_categories(cat_svc.get_all(), current_admin)
     punishments_raw = punishment_svc.get_for_player(player_id)
@@ -2241,6 +2247,11 @@ async def api_player_detail(
             a.id: a.discord_username for a in db.query(AdminUser).filter(AdminUser.id.in_(note_admin_ids)).all()
         }
     label_pairs = filter_visible_label_pairs(PlayerLabelService(db).get_labels(player_id), current_admin)
+    from services_voice_synthetic import voice_synthetic_worker_labels_visible
+    label_pairs = filter_synthetic_worker_label_pairs(
+        label_pairs,
+        show_worker_labels=voice_synthetic_worker_labels_visible(db),
+    )
     traps = PlayerTrapService(db).get_traps(player_id)
     all_label_categories = LabelCategoryService(db).get_all()
     label_categories = filter_visible_label_categories(all_label_categories, current_admin)

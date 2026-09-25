@@ -51,6 +51,7 @@ from services_voice_profiles import (
 from services_voice_profile_import import commit_import_package, validate_import_package
 from services_voice_synthetic import (
     set_voice_synthetic_worker_enabled,
+    set_voice_synthetic_worker_labels_visible,
     voice_synthetic_model_status,
     voice_synthetic_monitor_payload,
 )
@@ -851,13 +852,27 @@ async def set_voice_synthetic_monitor(
 ):
     _require_superuser(current_admin)
     enabled = body.get("enabled")
-    if not isinstance(enabled, bool):
+    show_worker_labels = body.get("show_worker_labels")
+    if enabled is None and show_worker_labels is None:
+        raise HTTPException(status_code=400, detail="Нужна настройка enabled или show_worker_labels")
+    if enabled is not None and not isinstance(enabled, bool):
         raise HTTPException(status_code=400, detail="enabled должен быть boolean")
-    if enabled and voice_synthetic_model_status()["status"] != "ready":
+    if show_worker_labels is not None and not isinstance(show_worker_labels, bool):
+        raise HTTPException(status_code=400, detail="show_worker_labels должен быть boolean")
+    if enabled is True and voice_synthetic_model_status()["status"] != "ready":
         raise HTTPException(status_code=409, detail="Удалённый классификатор не готов")
-    set_voice_synthetic_worker_enabled(db, enabled)
+    if enabled is not None:
+        set_voice_synthetic_worker_enabled(db, enabled)
+        log_admin_action(db, current_admin.id, "voice_synthetic_worker_toggle", {"enabled": enabled})
+    if show_worker_labels is not None:
+        set_voice_synthetic_worker_labels_visible(db, show_worker_labels)
+        log_admin_action(
+            db,
+            current_admin.id,
+            "voice_synthetic_worker_labels_visibility",
+            {"visible": show_worker_labels},
+        )
     db.commit()
-    log_admin_action(db, current_admin.id, "voice_synthetic_worker_toggle", {"enabled": enabled})
     return voice_synthetic_monitor_payload(db)
 
 
