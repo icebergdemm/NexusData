@@ -16,6 +16,7 @@ with a direct HTTP call.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from threading import Lock
 from typing import Any, Dict, Tuple
@@ -145,7 +146,23 @@ def post_chat_completions(payload: Dict[str, Any], timeout: float) -> Tuple[Dict
         raise
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code if exc.response is not None else "?"
-        raise AIClientError(f"AI-агрегатор вернул HTTP {status}") from exc
+        detail = ""
+        if exc.response is not None:
+            try:
+                body = exc.response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                error = body.get("error") if isinstance(body.get("error"), dict) else body
+                message = error.get("message") or error.get("detail") or error.get("code")
+                if isinstance(message, str):
+                    message = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [скрыто]", message)
+                    message = re.sub(r"(?i)(api[_-]?key|token|authorization)(\s*[:=]\s*)[^\s,;]+",
+                                     r"\1\2[скрыто]", message)
+                    message = " ".join(message.split())[:300]
+                    if message:
+                        detail = f" ({message})"
+        raise AIClientError(f"AI-агрегатор вернул HTTP {status}{detail}") from exc
     except httpx.RequestError as exc:
         raise AIClientError(f"AI-агрегатор недоступен ({url}): {exc}") from exc
     except ValueError as exc:

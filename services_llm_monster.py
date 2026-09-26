@@ -357,6 +357,8 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
     telemetry = state.get("telemetry") or {}
     dashboard = state.get("dashboard") or {}
     memory = state.get("memory") or {}
+    if state.get("live_analysis"):
+        telemetry = _live_telemetry_brief(telemetry)
 
     brief_memory = {
         "global_performance_ema": memory.get("global_performance_ema"),
@@ -381,7 +383,11 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
                     else None
                 ),
             }
-            for name, entry in (memory.get("waves") or {}).items()
+            for name, entry in sorted(
+                (memory.get("waves") or {}).items(),
+                key=lambda item: _number((item[1] or {}).get("times_spawned")) if isinstance(item[1], dict) else 0,
+                reverse=True,
+            )[:12 if state.get("live_analysis") else None]
             if isinstance(entry, dict) and (entry.get("times_spawned") or 0) > 0
         },
         "ships": [
@@ -423,7 +429,50 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
             "Нельзя приписывать исходы решениям контроллера. spawn_requests=[]"
         )
 
-    return "Состояние контроллера:\n" + json.dumps(payload, ensure_ascii=False, indent=1)
+    return "Состояние контроллера:\n" + json.dumps(
+        payload, ensure_ascii=False,
+        separators=(",", ":") if state.get("live_analysis") else None,
+        indent=None if state.get("live_analysis") else 1,
+    )
+
+
+def _live_telemetry_brief(telemetry: dict) -> dict:
+    """Keep only current-round evidence needed for live analysis."""
+    brief = {
+        key: telemetry[key]
+        for key in ("round_active", "round_seconds", "submarine_name", "intensity",
+                    "event_threshold", "pending_waves", "blocking_wave_count",
+                    "tracked_wave_count", "max_simultaneous_waves", "short_term_difficulty",
+                    "difficulty_budget", "pace_ratio", "idle_seconds")
+        if key in telemetry and not isinstance(telemetry[key], (list, dict))
+    }
+    wave_fields = (
+        "wave_name", "spawn_reason", "elapsed_seconds", "expected_repel_seconds",
+        "monsters_alive", "monsters_total", "monster_counts", "effective_difficulty",
+        "base_difficulty", "engaged", "in_combat_now", "bypassed", "damage_taken",
+        "last_damage_seconds_ago", "blocking", "non_blocking",
+    )
+    for key, limit in (("active_waves", 12), ("recent_waves", 8), ("pending_waves", 8),
+                       ("species_threats", 24), ("pending_wave_details", 8),
+                       ("learned_waves", 8)):
+        rows = telemetry.get(key)
+        if not isinstance(rows, list):
+            continue
+        if key in ("active_waves", "pending_waves"):
+            brief[key] = [{field: row[field] for field in wave_fields if field in row}
+                          for row in rows[:limit] if isinstance(row, dict)]
+        elif key == "species_threats":
+            fields = ("species", "effective_threat", "threat_ema", "samples", "manual_override")
+            brief[key] = [{field: row[field] for field in fields if field in row}
+                          for row in rows[:limit] if isinstance(row, dict)]
+        elif key == "recent_waves":
+            fields = ("wave_name", "outcome", "fate", "repel_seconds", "performance",
+                      "crew_deaths", "sub_health_loss", "effective_difficulty", "monster_counts")
+            brief[key] = [{field: row[field] for field in fields if field in row}
+                          for row in rows[:limit] if isinstance(row, dict)]
+        else:
+            brief[key] = rows[:limit]
+    return brief
 
 
 # ---------------------------------------------------------------------------
@@ -1679,9 +1728,16 @@ def enqueue_live_analyses() -> List[Dict[str, Any]]:
             latest = main_db.query(MonsterSpawnLLMRun).filter(
                 MonsterSpawnLLMRun.server == server,
                 MonsterSpawnLLMRun.source == "live",
-            ).order_by(MonsterSpawnLLMRun.requested_at.desc()).first()
-            last_requested = latest.requested_at if latest else None
-            if last_requested and (datetime.utcnow() - last_requested).total_seconds() < interval:
+            ).order_by(MonsterSpawnLLMRun.requested_at.desc()).limit(6).all()
+            last_run = latest[0] if latest else None
+            consecutive_failures = 0
+            for prior in latest:
+                if prior.status != "failed":
+                    break
+                consecutive_failures += 1
+            backoff_seconds = min(900, interval * (2 ** consecutive_failures)) if consecutive_failures else interval
+            last_requested = last_run.requested_at if last_run else None
+            if last_requested and (datetime.utcnow() - last_requested).total_seconds() < backoff_seconds:
                 continue
 
             run_id = uuid.uuid4().hex[:12]
