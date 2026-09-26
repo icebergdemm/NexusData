@@ -745,7 +745,7 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
   // обрезался 2000-символьным лимитом и «терялся»), а в таблице циклов.
   const runsQuery = useQuery({ queryKey: ["monster-spawn-llm-runs", server], queryFn: () => monsterSpawnApi.llmRuns(server, 30), refetchInterval: 5000 })
   const saveRuntime = useMutation({
-    mutationFn: (body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes">>) => monsterSpawnApi.updateLLMRuntime(server, body),
+    mutationFn: (body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes" | "live_analysis_enabled" | "live_analysis_interval_seconds">>) => monsterSpawnApi.updateLLMRuntime(server, body),
     onSuccess: () => { toast.success("Настройки ассистента обновлены"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
@@ -776,7 +776,7 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
   const records: LLMRunRecord[] = runsQuery.data?.runs ?? []
   const last = records[0] ?? null
   const latestProposal = records.find((record) => record.source === "auto" && record.instruction?.startsWith("round-report:"))
-    ?? records.find((record) => record.status === "succeeded" && (record.result?.proposed_changes?.length ?? 0) > 0)
+    ?? records.find((record) => record.source !== "live" && record.status === "succeeded" && (record.result?.proposed_changes?.length ?? 0) > 0)
   const queued = r?.pending_run ?? null
   const active = r?.active_run ?? null
   const busy = run.isPending || queued !== null || active !== null
@@ -787,11 +787,14 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
   </CardHeader>
     <CardContent className="space-y-4 p-4">
       {learning && <div className="rounded-lg border border-info/30 bg-info/5 p-3 text-xs">Режим обучения: модель анализирует ванильные волны и предлагает настройки для будущего активного режима. Автоцикл не применяет изменения и не создаёт спавны.</div>}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Ассистент включён</span><Switch checked={r?.enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ enabled: value })} /></div>
         <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Автоприменение</span><Switch checked={r?.auto_apply === true} onCheckedChange={(value) => saveRuntime.mutate({ auto_apply: value })} /></div>
         <Label className="space-y-1 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Автоцикл, мин (0 = вручную)</span><Input type="number" min={0} max={1440} value={r?.auto_interval_minutes ?? 0} onChange={(event) => saveRuntime.mutate({ auto_interval_minutes: Math.max(0, Number(event.target.value) || 0) })} /></Label>
+        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Анализ раунда в реальном времени</span><Switch checked={r?.live_analysis_enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ live_analysis_enabled: value })} /></div>
+        <Label className="space-y-1 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Интервал live-анализа, сек. (30–600)</span><Input type="number" min={30} max={600} value={r?.live_analysis_interval_seconds ?? 60} onChange={(event) => saveRuntime.mutate({ live_analysis_interval_seconds: Math.max(30, Math.min(600, Number(event.target.value) || 60)) })} /></Label>
       </div>
+      <p className="text-[11px] text-muted-foreground">Запускается только при включённом ассистенте, активном раунде и свежем снимке обзора мира. Отчёт сохраняется в журнале; настройки остаются предложениями для оператора.</p>
       <div className="space-y-2">
         <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Промпт для LLM (необязательно; дополняет системный промпт анализа)</span><Textarea rows={3} maxLength={2000} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Например: удели внимание длительным столкновениям и потерям экипажа" /></Label>
         <div className="flex flex-wrap gap-2">
@@ -823,14 +826,23 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={last.status === "succeeded" ? "default" : last.status === "failed" ? "destructive" : "secondary"}>{last.status === "succeeded" ? "готово" : last.status === "failed" ? "ошибка" : last.status === "cancelled" ? "отменено" : last.status === "running" ? "выполняется" : "в очереди"}</Badge>
           <Badge variant="outline">{last.mode}</Badge>
-          <Badge variant="secondary">{last.source === "auto" ? "автоцикл" : "вручную"}</Badge>
+          <Badge variant="secondary">{last.source === "live" ? "мониторинг раунда" : last.source === "auto" ? "автоцикл" : "вручную"}</Badge>
           <span className="text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${last.duration_ms}мс` : ""}{last.confidence != null ? ` · уверенность ${Math.round(last.confidence * 100)}%` : ""}{last.applied_count ? ` · применено ${last.applied_count}` : ""}{last.spawned_count ? ` · спавн ${last.spawned_count}` : ""}{last.rejected_count ? ` · отклонено ${last.rejected_count}` : ""}</span>
         </div>
         {last.instruction && <div className="text-muted-foreground">Команда оператора: «{last.instruction}»</div>}
         {last.status === "failed" && <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-destructive">Ошибка: {last.error_message || "неизвестная ошибка"}</div>}
         {last.result && <div className="space-y-2">
           {last.result.situation && <div className="text-foreground">{last.result.situation}</div>}
+          {last.result.scores && <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{([
+            ["Эффективность экипажа", last.result.scores.crew_effectiveness],
+            ["Сила монстров", last.result.scores.monster_strength],
+            ["Давление волн", last.result.scores.wave_pressure],
+            ["Эффективность корабля", last.result.scores.ship_efficiency],
+          ] as const).map(([label, score]) => <div key={label} className="rounded-lg bg-background/60 p-2"><div className="text-muted-foreground">{label}</div><div className="mt-1 text-lg font-semibold">{score == null ? "—" : `${Math.round(score)}/100`}</div></div>)}</div>}
+          {last.result.scores?.basis && <div className="text-muted-foreground">Основание оценок: {last.result.scores.basis}</div>}
           {last.result.crew_summary && <div className="rounded-lg bg-background/60 p-3"><div className="mb-1 font-medium text-foreground">Эффективность экипажа</div><div className="text-muted-foreground">{last.result.crew_summary}</div></div>}
+          {(last.result.proposed_changes?.length ?? 0) > 0 && <div><div className="font-medium">Предложения настроек (не применены):</div><ul className="mt-1 space-y-1">{last.result.proposed_changes!.map((change, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-mono">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)}</span>{change.reason && <span className="text-muted-foreground"> — {change.reason}</span>}</li>)}</ul></div>}
+          {last.result.live_metrics && <details><summary className="cursor-pointer text-muted-foreground">Показатели снимка мира и расчётной силы волн</summary><pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-background p-2">{JSON.stringify(last.result.live_metrics, null, 2)}</pre></details>}
           {(last.result.recommendations?.length ?? 0) > 0 && <div><div className="font-medium">Рекомендации оператору:</div><ul className="mt-1 space-y-1">{last.result.recommendations!.map((rec, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-medium text-foreground">{rec.title}</span>{rec.detail && <span className="text-muted-foreground"> — {rec.detail}</span>}</li>)}</ul></div>}
           {(last.result.applied_changes?.length ?? 0) > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.result.applied_changes!.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
           {(last.result.spawn_requests?.length ?? 0) > 0 && <div><div className="font-medium">Спавн:</div><ul className="mt-1 space-y-1">{last.result.spawn_requests!.map((request, index) => <li key={index} className="font-mono text-[11px] text-info">{request.species} x{request.count} ({request.position_hint}) {request.reason ? `— ${request.reason}` : ""}</li>)}</ul></div>}
@@ -844,7 +856,7 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
           <Badge variant={record.status === "succeeded" ? "secondary" : record.status === "failed" ? "destructive" : "outline"} className="text-[9px]">{record.status}</Badge>
           <Badge variant="outline" className="text-[9px]">{record.mode}</Badge>
           <span>применено {record.applied_count}, отклонено {record.rejected_count}</span>
-          {record.source === "auto" && <span className="text-[9px]">авто</span>}
+          {record.source === "auto" && <span className="text-[9px]">авто</span>}{record.source === "live" && <span className="text-[9px]">live</span>}
           <span className="truncate">{record.status === "failed" ? record.error_message : record.result?.situation}</span>
         </div>)}
       </div>}

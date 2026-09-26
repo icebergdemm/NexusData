@@ -579,6 +579,8 @@ class LLMRuntimeUpdate(BaseModel):
     enabled: Optional[bool] = None
     auto_apply: Optional[bool] = None
     auto_interval_minutes: Optional[int] = Field(None, ge=0, le=1440)
+    live_analysis_enabled: Optional[bool] = None
+    live_analysis_interval_seconds: Optional[int] = Field(None, ge=30, le=600)
 
 
 class LLMRunRequest(BaseModel):
@@ -653,6 +655,10 @@ def admin_llm_runtime_update(
             runtime["auto_apply"] = payload.auto_apply
         if payload.auto_interval_minutes is not None:
             runtime["auto_interval_minutes"] = payload.auto_interval_minutes
+        if payload.live_analysis_enabled is not None:
+            runtime["live_analysis_enabled"] = payload.live_analysis_enabled
+        if payload.live_analysis_interval_seconds is not None:
+            runtime["live_analysis_interval_seconds"] = payload.live_analysis_interval_seconds
         save_llm_runtime(main_db, server_key, runtime)
     finally:
         main_db.close()

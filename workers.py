@@ -1524,6 +1524,15 @@ def task_llm_monster_auto_cycle() -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def task_llm_monster_live_monitor() -> dict:
+    """Queue due live-round observations; the shared LLM worker executes them."""
+    import services_llm_monster
+    try:
+        return {"status": "ok", "servers": services_llm_monster.enqueue_live_analyses()}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
 def task_process_monster_round_reports() -> dict:
     """Analyze newly received round reports independently of auto-cycle settings."""
     import services_llm_monster
@@ -1946,6 +1955,13 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.BACKGROUND,
         task_id="llm_monster_auto_cycle",
+    )
+
+    scheduler.register_periodic(
+        task_llm_monster_live_monitor,
+        interval_secs=30,
+        priority=Priority.BACKGROUND,
+        task_id="llm_monster_live_monitor",
     )
 
     # Every submitted round gets its own durable LLM conclusion, even when
