@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
+from starlette.responses import Response
 
 import models
 from routes.admin import _issue_admin_session
@@ -186,7 +187,7 @@ def test_login_without_fingerprint_issues_three_day_session():
         session = db.query(models.AdminSession).one()
         assert session.browser_fingerprint_bound is False
         assert timedelta(days=2, hours=23) < session.expires_at - before <= timedelta(days=3)
-        assert cookie["expires"] == session.expires_at
+        assert cookie["expires"] == session.expires_at.replace(tzinfo=timezone.utc)
         assert "max_age" not in cookie
     finally:
         db.close()
@@ -219,9 +220,23 @@ def test_login_with_fingerprint_issues_fourteen_day_session():
         assert session.browser_fingerprint_hash
         assert session.browser_fingerprint_hash != "browser-id"
         assert timedelta(days=13, hours=23) < session.expires_at - before <= timedelta(days=14)
-        assert cookie["expires"] == session.expires_at
+        assert cookie["expires"] == session.expires_at.replace(tzinfo=timezone.utc)
         assert "max_age" not in cookie
         assert session.auth_type == "discord_oauth"
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_session_cookie_expiry_is_accepted_by_starlette():
+    engine, db = _database()
+    try:
+        response = Response()
+        request = _request()
+
+        _issue_admin_session(db, SimpleNamespace(id=1, last_login=None), response, request, "discord_oauth")
+
+        assert "expires=" in response.headers["set-cookie"].lower()
     finally:
         db.close()
         engine.dispose()

@@ -8,7 +8,7 @@ from typing import Optional
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import get_db
 from security import (
     check_permission,
@@ -538,7 +538,7 @@ def _issue_admin_session(db: Session, admin: AdminUser, response, request: Reque
     db.commit()
     response.set_cookie(
         "admin_token", token,
-        httponly=True, expires=expires,
+        httponly=True, expires=expires.replace(tzinfo=timezone.utc),
         samesite="lax", secure=not settings.debug,
     )
 
