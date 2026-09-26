@@ -1246,7 +1246,8 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             game_db.query(MonsterSpawnRoundReport).filter(
                 MonsterSpawnRoundReport.server == server,
                 MonsterSpawnRoundReport.analysis_status == "running",
-                MonsterSpawnRoundReport.analysis_started_at < datetime.utcnow() - timedelta(minutes=45),
+                (MonsterSpawnRoundReport.analysis_started_at.is_(None)) |
+                (MonsterSpawnRoundReport.analysis_started_at < datetime.utcnow() - timedelta(minutes=45)),
             ).update({"analysis_status": "pending"}, synchronize_session=False)
             game_db.commit()
             pending = game_db.query(MonsterSpawnRoundReport).filter_by(

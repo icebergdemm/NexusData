@@ -1524,6 +1524,15 @@ def task_llm_monster_auto_cycle() -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def task_process_monster_round_reports() -> dict:
+    """Analyze newly received round reports independently of auto-cycle settings."""
+    import services_llm_monster
+    try:
+        return {"status": "ok", "reports": services_llm_monster.process_pending_round_reports()}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e)}
+
+
 def task_process_monster_llm_runs() -> dict:
     """Execute queued manual monster LLM runs (async: POST returns 202, the
     UI polls runtime). Runs in a worker thread, never in a request."""
@@ -1937,6 +1946,15 @@ def _start_scheduler():
         interval_secs=5 * 60,
         priority=Priority.BACKGROUND,
         task_id="llm_monster_auto_cycle",
+    )
+
+    # Every submitted round gets its own durable LLM conclusion, even when
+    # automatic adaptation is disabled or the assistant is in learning mode.
+    scheduler.register_periodic(
+        task_process_monster_round_reports,
+        interval_secs=5 * 60,
+        priority=Priority.BACKGROUND,
+        task_id="llm_monster_round_reports",
     )
 
     # Мониторинг производительности: BACKGROUND priority — сам по себе не
