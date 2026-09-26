@@ -696,7 +696,7 @@ def _task(kind: str, ref: str, stage: str, message: str = "", level: str = "info
     from services_ai_tasklog import ai_task_log
 
     from database import SessionLocal
-    db_session = next(SessionLocal())
+    db_session = SessionLocal()
     try:
         ai_task_log(db_session, kind, ref, stage, message, level)
     finally:
@@ -1151,14 +1151,14 @@ def process_pending_llm_runs() -> List[Dict[str, Any]]:
     from models import AppSetting, MonsterSpawnControl
 
     results: List[Dict[str, Any]] = []
-    main_db = next(SessionLocal())
+    main_db = SessionLocal()
     try:
         # AppSetting contains one JSON object keyed by server. Find queued
         # servers there first so a missing game-state row cannot strand a run.
         setting = main_db.query(AppSetting).filter(AppSetting.key == SETTINGS_KEY).first()
         queued_servers = _pending_servers_from_setting(setting.value if setting is not None else None)
 
-        game_db = next(GameSessionLocal())
+        game_db = GameSessionLocal()
         try:
             rows = game_db.query(MonsterSpawnControl).all()
             rows_by_server = {
@@ -1328,9 +1328,9 @@ def run_auto_cycle_for_all_servers() -> List[Dict[str, Any]]:
     from models import MonsterSpawnControl
 
     results: List[Dict[str, Any]] = []
-    main_db = next(SessionLocal())
+    main_db = SessionLocal()
     try:
-        game_db = next(GameSessionLocal())
+        game_db = GameSessionLocal()
         try:
             rows = game_db.query(MonsterSpawnControl).all()
             for row in rows:
