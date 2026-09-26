@@ -692,6 +692,25 @@ def admin_llm_run(
     return JSONResponse(status_code=202, content={"status": "queued", "run": run})
 
 
+@admin_router.post("/llm/runs/{run_id}/cancel")
+def admin_cancel_llm_run(
+    run_id: str,
+    server: str = Query(...),
+    admin: AdminUser = Depends(_current_admin),
+):
+    _require(admin, "edit")
+    from services_llm_monster import cancel_llm_run
+
+    main_db = _get_main_db()
+    try:
+        cancelled = cancel_llm_run(main_db, _normalize_server(server), run_id)
+    finally:
+        main_db.close()
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Активный LLM-цикл не найден")
+    return {"status": "cancelled"}
+
+
 @admin_router.post("/llm/apply-proposal")
 def admin_llm_apply_proposal(
     payload: LLMApplyProposal,

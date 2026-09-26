@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import or_, update
 
 from config import get_settings
 from database import SessionLocal
@@ -154,10 +154,19 @@ def cancel(ticket_id: int) -> bool:
         row = db.query(AILlmRequest).filter(AILlmRequest.id == ticket_id).first()
         if not row:
             raise LLMGatewayError("Unknown LLM ticket", 404)
-        if row.status != "queued":
+        result = db.execute(update(AILlmRequest).where(
+            AILlmRequest.id == ticket_id,
+            AILlmRequest.status.in_(("queued", "running")),
+        ).values(status="cancelled", finished_at=datetime.utcnow(), lease_expires_at=None))
+        if not result.rowcount:
+            db.rollback()
             return False
-        row.status, row.finished_at = "cancelled", datetime.utcnow()
         db.commit()
+        try:
+            from services_ai_tasklog import ai_task_log
+            ai_task_log(db, row.client_id, str(row.id), "cancelled", "задача принудительно снята оператором")
+        except Exception:
+            logger.exception("Failed to write LLM cancellation task log")
         return True
     finally:
         db.close()
@@ -197,20 +206,26 @@ def claim_next(last_client: str | None = None) -> AILlmRequest | None:
         db.close()
 
 
-def finish(ticket_id: int, status: str, result=None, error=None) -> None:
+def finish(ticket_id: int, status: str, result=None, error=None) -> bool:
     db = SessionLocal()
     try:
         row = db.query(AILlmRequest).filter(AILlmRequest.id == ticket_id).first()
-        if row:
+        if row and row.status != "cancelled":
             bounded = result
             if result is not None:
                 encoded = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
                 limit = 120000 if row.client_id == "monster_llm" else MAX_RESULT_CHARS
                 if len(encoded) > limit:
                     bounded = {"truncated": True, "content": encoded[:limit]}
-            row.status, row.result_ref, row.error = status, bounded, str(error)[:2000] if error else None
-            row.finished_at, row.lease_expires_at = datetime.utcnow(), None
+            result = db.execute(update(AILlmRequest).where(
+                AILlmRequest.id == ticket_id,
+                AILlmRequest.status != "cancelled",
+            ).values(status=status, result_ref=bounded,
+                     error=str(error)[:2000] if error else None,
+                     finished_at=datetime.utcnow(), lease_expires_at=None))
             db.commit()
+            return bool(result.rowcount)
+        return False
     finally:
         db.close()
 

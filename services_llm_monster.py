@@ -215,7 +215,7 @@ class LLMError(Exception):
 
 
 def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float,
-                      temperature: float, top_p: float) -> str:
+                      temperature: float, top_p: float, on_ticket=None) -> str:
     """Submit to the durable AI Centre queue and wait for its worker result."""
     from services_llm_gateway import LLMGatewayError, poll, submit
 
@@ -228,6 +228,8 @@ def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float
     try:
         ticket = submit("monster_llm", messages, params, timeout=timeout,
                         idempotency_key=uuid.uuid4().hex)
+        if on_ticket is not None:
+            on_ticket(ticket)
         deadline = time.monotonic() + max(timeout + 600, 900)
         while time.monotonic() < deadline:
             outcome = poll(ticket)
@@ -708,7 +710,8 @@ def _task(kind: str, ref: str, stage: str, message: str = "", level: str = "info
 # ---------------------------------------------------------------------------
 
 def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
-                  instruction: Optional[str] = None, task_ref: Optional[str] = None) -> Dict[str, Any]:
+                  instruction: Optional[str] = None, task_ref: Optional[str] = None,
+                  on_ticket=None) -> Dict[str, Any]:
     """mode: analyze (read-only analyzer: situation + crew summary +
     recommendations, no config writes), apply (config changes applied by
     bumping desired_revision), spawn (also add spawn plans)."""
@@ -735,6 +738,7 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
         timeout=settings.monster_llm_timeout_seconds,
         temperature=settings.monster_llm_temperature,
         top_p=settings.monster_llm_top_p,
+        on_ticket=on_ticket,
     )
     _task(TASK_KIND, ref, "response_received", f"ответ получен за {int((time.monotonic() - started) * 1000)} мс, {len(content)} симв.")
 
@@ -756,6 +760,7 @@ def run_llm_cycle(db, server: str, state: dict, mode: str = "analyze",
             timeout=settings.monster_llm_timeout_seconds,
             temperature=0.0,
             top_p=settings.monster_llm_top_p,
+            on_ticket=on_ticket,
         )
         decision = _extract_json(content)
 
@@ -1054,6 +1059,45 @@ def _record_run_failure(main_db, server: str, active: dict, error: str) -> None:
     _task(TASK_KIND, f"{server}:{active.get('id')}", "failed", f"Ошибка цикла: {error}"[:300], "error")
 
 
+def _run_cancelled(main_db, server: str, run_id: str) -> bool:
+    run_row = _find_run_record(main_db, server, run_id)
+    return run_row is not None and run_row.status == "cancelled"
+
+
+def cancel_llm_run(main_db, server: str, run_id: str) -> bool:
+    """Cancel a queued or active manual run and its shared-gateway ticket."""
+    from services_llm_gateway import cancel as cancel_ticket
+
+    runtime = get_llm_runtime(main_db, server)
+    pending = runtime.get("pending_run")
+    active = runtime.get("active_run")
+    run = pending if isinstance(pending, dict) and str(pending.get("id")) == run_id else None
+    if run is None and isinstance(active, dict) and str(active.get("id")) == run_id:
+        run = active
+    if run is None:
+        return False
+    ticket_id = run.get("gateway_ticket_id")
+    if ticket_id:
+        cancel_ticket(int(ticket_id))
+    if run is pending:
+        runtime["pending_run"] = None
+    else:
+        runtime["active_run"] = None
+    _record_history(runtime, {
+        "at": datetime.utcnow().isoformat(), "mode": str(run.get("mode") or "?"),
+        "summary": "LLM-цикл отменён оператором", "applied": 0, "rejected": 0, "confidence": 0.0,
+    })
+    save_llm_runtime(main_db, server, runtime)
+    run_row = _find_run_record(main_db, server, run_id)
+    if run_row is not None and run_row.status in ("queued", "running"):
+        run_row.status = "cancelled"
+        run_row.finished_at = datetime.utcnow()
+        run_row.error_message = "Отменено оператором"
+        main_db.commit()
+    _task(TASK_KIND, f"{server}:{run_id}", "cancelled", "LLM-цикл отменён оператором")
+    return True
+
+
 def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Dict[str, Any]]:
     """Claim and execute at most one queued manual run for a server."""
     runtime = get_llm_runtime(main_db, server)
@@ -1097,15 +1141,37 @@ def _process_server_llm_queue(main_db, game_db, server: str, row) -> Optional[Di
     mode = active.get("mode") or "analyze"
     instruction = (run_row.instruction if run_row is not None else active.get("instruction")) or None
     try:
-        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction, task_ref=task_ref)
+        def remember_ticket(ticket_id: int) -> None:
+            main_db.expire_all()
+            current = get_llm_runtime(main_db, server)
+            current_active = current.get("active_run")
+            if isinstance(current_active, dict) and str(current_active.get("id")) == run_id:
+                current_active["gateway_ticket_id"] = ticket_id
+                save_llm_runtime(main_db, server, current)
+            else:
+                from services_llm_gateway import cancel as cancel_ticket
+                cancel_ticket(ticket_id)
+                raise LLMError("LLM-цикл отменён")
+
+        result = run_llm_cycle(main_db, server, state, mode=mode, instruction=instruction,
+                               task_ref=task_ref, on_ticket=remember_ticket)
     except LLMError as exc:
+        main_db.expire_all()
+        if _run_cancelled(main_db, server, run_id):
+            return {"server": server, "status": "cancelled", "run_id": run_id}
         _record_run_failure(main_db, server, active, str(exc))
         return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
+        main_db.expire_all()
+        if _run_cancelled(main_db, server, run_id):
+            return {"server": server, "status": "cancelled", "run_id": run_id}
         logger.warning("LLM manual run failed for %s: %s", server, exc)
         _record_run_failure(main_db, server, active, f"Ошибка LLM-цикла: {exc}")
         return {"server": server, "status": "error", "run_id": active.get("id"), "error": str(exc)}
 
+    main_db.expire_all()
+    if _run_cancelled(main_db, server, run_id):
+        return {"server": server, "status": "cancelled", "run_id": run_id}
     admin_id = active.get("requested_by")
     _apply_llm_result(game_db, row, state, result, admin_id)
     game_db.commit()
@@ -1294,8 +1360,6 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             if milestone is None:
                 continue
             latest = list(reversed(all_rounds[max(0, milestone - 15):milestone]))
-            if any(entry.analysis_status in ("pending", "running") for entry in latest):
-                continue
             marker = f"round-report:{latest[0].id}"
             control = game_db.query(MonsterSpawnControl).filter_by(server=server).first()
             if control is None:

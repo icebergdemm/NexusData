@@ -480,6 +480,8 @@ export const monsterSpawnApi = {
     api.put<{ status: string; runtime: LLMRuntime }>(`/api/v1/admin/monster-spawn/llm/runtime?server=${encodeURIComponent(server)}`, body),
   runLLM: (server: string, body: { mode: "analyze" | "apply" | "spawn"; instruction?: string }) =>
     api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
+  cancelLLMRun: (server: string, runId: string) =>
+    api.post<{ status: string }>(`/api/v1/admin/monster-spawn/llm/runs/${encodeURIComponent(runId)}/cancel?server=${encodeURIComponent(server)}`, {}),
   applyProposal: (server: string, runId: string) =>
     api.post<{ status: string; revision: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId }),
 }

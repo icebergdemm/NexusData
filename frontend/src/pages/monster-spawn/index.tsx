@@ -705,6 +705,17 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
     onSuccess: () => { toast.success("Цикл поставлен в очередь — результат появится ниже"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
+  const cancelRun = useMutation({
+    mutationFn: (runId: string) => monsterSpawnApi.cancelLLMRun(server, runId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] })
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] })
+      queryClient.invalidateQueries({ queryKey: ["ai-center-task-log"] })
+      queryClient.invalidateQueries({ queryKey: ["ai-llm-queue"] })
+      toast.success("LLM-цикл отменён")
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
   const applyProposal = useMutation({
     mutationFn: (runId: string) => monsterSpawnApi.applyProposal(server, runId),
     onSuccess: () => { toast.success("Предложенные настройки применены"); queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] }) },
@@ -743,7 +754,10 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
           <Button disabled={busy || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" /> {active ? "Модель думает…" : queued ? "В очереди…" : run.isPending ? "Отправка…" : "Запустить LLM-цикл"}</Button>
         </div>
         {(queued || active) && <div className="text-[11px] text-muted-foreground">
-          {active ? `Выполняется ${active.mode} (запущен ${active.started_at.slice(0, 16).replace("T", " ")}, попытка ${active.attempts}) — страница опрашивает статус, её можно закрыть.` : `В очереди ${queued!.mode} (запрошен ${queued!.requested_at.slice(0, 16).replace("T", " ")}) — выполняется воркером, результат появится ниже.`}
+          <div className="flex flex-wrap items-center gap-2">
+            <span>{active ? `Выполняется ${active.mode} (запущен ${active.started_at.slice(0, 16).replace("T", " ")}, попытка ${active.attempts}) — страница опрашивает статус, её можно закрыть.` : `В очереди ${queued!.mode} (запрошен ${queued!.requested_at.slice(0, 16).replace("T", " ")}) — выполняется воркером, результат появится ниже.`}</span>
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-destructive" onClick={() => cancelRun.mutate((active ?? queued)!.id)} disabled={cancelRun.isPending}><Ban className="mr-1 size-3" />Отменить цикл</Button>
+          </div>
         </div>}
       </div>
       <div className="rounded-xl border bg-muted/10 p-3 text-xs">
@@ -758,7 +772,7 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
       <RoundReports reports={reports} server={server} />
       {last && <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={last.status === "succeeded" ? "default" : last.status === "failed" ? "destructive" : "secondary"}>{last.status === "succeeded" ? "готово" : last.status === "failed" ? "ошибка" : last.status === "running" ? "выполняется" : "в очереди"}</Badge>
+          <Badge variant={last.status === "succeeded" ? "default" : last.status === "failed" ? "destructive" : "secondary"}>{last.status === "succeeded" ? "готово" : last.status === "failed" ? "ошибка" : last.status === "cancelled" ? "отменено" : last.status === "running" ? "выполняется" : "в очереди"}</Badge>
           <Badge variant="outline">{last.mode}</Badge>
           <Badge variant="secondary">{last.source === "auto" ? "автоцикл" : "вручную"}</Badge>
           <span className="text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${last.duration_ms}мс` : ""}{last.confidence != null ? ` · уверенность ${Math.round(last.confidence * 100)}%` : ""}{last.applied_count ? ` · применено ${last.applied_count}` : ""}{last.spawned_count ? ` · спавн ${last.spawned_count}` : ""}{last.rejected_count ? ` · отклонено ${last.rejected_count}` : ""}</span>

@@ -39,7 +39,7 @@ const kindLabel: Record<string, string> = { dossier: "досье", monster_llm: 
 const stageLabel: Record<string, string> = {
   claimed: "задача взята воркером", packet_built: "packet собран", request_sent: "запрос отправлен",
   response_received: "ответ получен", result_validated: "результат валиден", json_validated: "JSON валиден",
-  state_built: "состояние собрано", validated: "изменения валидированы", applied: "применено",
+  state_built: "состояние собрано", validated: "изменения валидированы", cancelled: "снята оператором", applied: "применено",
   completed: "завершено", succeeded: "успешно", failed: "ошибка", retry: "повторная генерация",
 }
 const levelColor: Record<string, string> = { info: "text-muted-foreground", warning: "text-warning", error: "text-destructive" }
@@ -97,14 +97,24 @@ function LlmQueueCard() {
         <div className="flex items-center gap-2"><span className="text-xs font-medium">Активные tickets</span><Badge variant="outline">{snapshot?.total ?? 0}</Badge></div>
         <select className="rounded border bg-background px-2 py-1 text-xs" value={clientFilter} onChange={(event) => setClientFilter(event.target.value)}><option value="">все клиенты</option>{clients.map(([clientId]) => <option key={clientId} value={clientId}>{clientLabel[clientId] || clientId}</option>)}</select>
       </div>
-      <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[620px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="p-2">Ticket</th><th className="p-2">Клиент</th><th className="p-2">Статус</th><th className="p-2">Приоритет</th><th className="p-2">Попытки</th><th className="p-2 text-right">Действия</th></tr></thead><tbody>{isLoading && <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">Загрузка очереди…</td></tr>}{!isLoading && !tickets.length && <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">Активных tickets нет. Новые запросы появятся здесь автоматически.</td></tr>}{tickets.map((ticket) => <tr key={ticket.ticket_id} className="border-t"><td className="p-2 font-mono">#{ticket.ticket_id}</td><td className="p-2">{clientLabel[ticket.client_id] || ticket.client_id}<div className="text-[10px] text-muted-foreground">{ticket.backend}</div></td><td className="p-2"><Badge variant={ticket.status === "running" ? "default" : "secondary"}>{ticketStatusLabel[ticket.status] || ticket.status}</Badge></td><td className="p-2 font-mono">{ticket.priority}</td><td className="p-2">{ticket.attempts}</td><td className="p-2 text-right"><div className="flex justify-end gap-1"><Button title="Повысить приоритет" size="icon" variant="ghost" className="size-7" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/${ticket.ticket_id}/boost`, body: { priority: Math.max(0, ticket.priority - 10) } })} disabled={ticket.status !== "queued" || action.isPending}><Zap className="size-3.5" /></Button><Button title="Отменить" size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/${ticket.ticket_id}/cancel` })} disabled={ticket.status !== "queued" || action.isPending}><Ban className="size-3.5" /></Button></div></td></tr>)}</tbody></table></div>
+      <div className="overflow-x-auto rounded-lg border"><table className="w-full min-w-[620px] text-left text-xs"><thead className="bg-muted/30 text-muted-foreground"><tr><th className="p-2">Ticket</th><th className="p-2">Клиент</th><th className="p-2">Статус</th><th className="p-2">Приоритет</th><th className="p-2">Попытки</th><th className="p-2 text-right">Действия</th></tr></thead><tbody>{isLoading && <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">Загрузка очереди…</td></tr>}{!isLoading && !tickets.length && <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">Активных tickets нет. Новые запросы появятся здесь автоматически.</td></tr>}{tickets.map((ticket) => <tr key={ticket.ticket_id} className="border-t"><td className="p-2 font-mono">#{ticket.ticket_id}</td><td className="p-2">{clientLabel[ticket.client_id] || ticket.client_id}<div className="text-[10px] text-muted-foreground">{ticket.backend}</div></td><td className="p-2"><Badge variant={ticket.status === "running" ? "default" : "secondary"}>{ticketStatusLabel[ticket.status] || ticket.status}</Badge></td><td className="p-2 font-mono">{ticket.priority}</td><td className="p-2">{ticket.attempts}</td><td className="p-2 text-right"><div className="flex justify-end gap-1"><Button title="Повысить приоритет" size="icon" variant="ghost" className="size-7" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/${ticket.ticket_id}/boost`, body: { priority: Math.max(0, ticket.priority - 10) } })} disabled={ticket.status !== "queued" || action.isPending}><Zap className="size-3.5" /></Button><Button title="Принудительно снять с работы" size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => action.mutate({ path: `/api/v1/admin/ai-llm/${ticket.ticket_id}/cancel` })} disabled={action.isPending}><Ban className="size-3.5" /></Button></div></td></tr>)}</tbody></table></div>
       {snapshot?.last_status && <p className="text-[11px] text-muted-foreground">Последний результат worker: {snapshot.last_status}. Lease зависшего запроса автоматически возвращается в очередь.</p>}
     </CardContent>
   </Card>
 }
 
 function TaskLogCard() {
+  const queryClient = useQueryClient()
   const [kindFilter, setKindFilter] = useState("")
+  const cancelTicket = useMutation({
+    mutationFn: (ticketId: string) => api.post(`/api/v1/admin/ai-llm/${ticketId}/cancel`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ai-center-task-log"] })
+      queryClient.invalidateQueries({ queryKey: ["ai-llm-queue"] })
+      toast.success("Задача снята с работы")
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
   const { data } = useQuery({
     queryKey: ["ai-center-task-log", kindFilter],
     queryFn: () => api.get<{ entries: TaskLogEntry[] }>(`/api/v1/admin/ai-dossiers/task-log?limit=300${kindFilter ? `&kind=${kindFilter}` : ""}`),
@@ -136,12 +146,17 @@ function TaskLogCard() {
     {!groups.length && <p className="text-sm text-muted-foreground">Пока нет записей — журнал заполняется, когда AI-задачи доходят до воркеров.</p>}
     {groups.slice(0, 25).map((group) => {
       const failed = group.entries.some((e) => e.level === "error")
-      const running = group.entries.some((e) => e.stage === "claimed" || e.stage === "request_sent") && group.entries.every((e) => e.stage !== "succeeded" && e.stage !== "completed" && e.stage !== "applied" && e.stage !== "failed")
+      const cancelled = group.entries.some((e) => e.stage === "cancelled")
+      const terminal = group.entries.some((e) => ["succeeded", "completed", "applied", "failed", "cancelled", "validated"].includes(e.stage))
+      const running = group.entries.some((e) => e.stage === "claimed" || e.stage === "request_sent") && !terminal
+      const ticketId = /^\d+$/.test(group.entries[0].ref) ? group.entries[0].ref : null
+      const gatewayTask = ["dossier", "dispatcher", "future", "log_analysis_dry_run", "monster_llm"].includes(group.entries[0].kind)
       return <div key={group.key} className={`rounded-lg border p-2 ${failed ? "border-destructive/30 bg-destructive/5" : running ? "border-primary/30 bg-primary/5" : ""}`}>
         <div className="mb-1 flex flex-wrap items-center gap-2">
           <Badge variant="secondary">{kindLabel[group.entries[0].kind] || group.entries[0].kind}</Badge>
           <span className="font-mono text-[10px]">{group.entries[0].ref}</span>
-          <Badge variant={failed ? "destructive" : running ? "default" : "outline"} className="text-[9px]">{failed ? "ошибка" : running ? "в работе" : "завершено"}</Badge>
+          <Badge variant={failed ? "destructive" : running ? "default" : "outline"} className="text-[9px]">{failed ? "ошибка" : cancelled ? "отменено" : running ? "в работе" : "завершено"}</Badge>
+          {running && ticketId && gatewayTask && <Button size="sm" variant="ghost" className="h-6 px-2 text-destructive" title="Принудительно снять задачу с работы" onClick={() => cancelTicket.mutate(ticketId)} disabled={cancelTicket.isPending}><Ban className="mr-1 size-3" />Снять</Button>}
         </div>
         <ol className="space-y-0.5">
           {group.entries.slice().reverse().map((entry) => <li key={entry.id} className="flex flex-wrap items-baseline gap-2 text-[11px]">
