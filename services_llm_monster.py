@@ -1250,12 +1250,20 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
                 (MonsterSpawnRoundReport.analysis_started_at < datetime.utcnow() - timedelta(minutes=45)),
             ).update({"analysis_status": "pending"}, synchronize_session=False)
             game_db.commit()
-            pending = game_db.query(MonsterSpawnRoundReport).filter_by(
+            pending_id = game_db.query(MonsterSpawnRoundReport.id).filter_by(
                 server=server, analysis_status="pending").order_by(MonsterSpawnRoundReport.id).first()
-            if pending is not None:
-                pending.analysis_status = "running"
-                pending.analysis_started_at = datetime.utcnow()
+            if pending_id is not None:
+                pending_id = pending_id[0]
+                claimed_at = datetime.utcnow()
+                claimed = game_db.query(MonsterSpawnRoundReport).filter_by(
+                    id=pending_id, analysis_status="pending").update(
+                        {"analysis_status": "running", "analysis_started_at": claimed_at},
+                        synchronize_session=False)
                 game_db.commit()
+                pending = game_db.query(MonsterSpawnRoundReport).filter_by(id=pending_id).first() if claimed else None
+            else:
+                pending = None
+            if pending is not None:
                 try:
                     content = _chat_completions(
                         [{"role": "system", "content": ROUND_PROMPT},
