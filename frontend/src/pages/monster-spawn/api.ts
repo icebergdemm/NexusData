@@ -205,9 +205,7 @@ export interface ActiveWaveTelemetry {
   spawn_reason: string
   elapsed_seconds: number
   expected_repel_seconds: number
-  struggling: boolean
-  engagement_seconds: number
-  in_sub_seconds: number
+  tracking_timeout_seconds?: number
   monsters_alive: number
   monsters_total: number
   monster_counts: Record<string, number>
@@ -246,7 +244,6 @@ export interface RecentWaveTelemetry {
   crew_deaths: number
   sub_health_loss: number
   effective_difficulty: number
-  engagement_seconds: number
   progress_at_spawn: number
   modifications: string
   monster_counts: Record<string, number>

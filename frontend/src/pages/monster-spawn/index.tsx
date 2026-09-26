@@ -406,16 +406,17 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
   const modified = wave.modifications?.length > 0
   const engaged = wave.engaged === true
   const bypassed = wave.bypassed === true
-  // in_combat_now приходит с новых снапшотов; для старых — engaged.
-  const inCombat = wave.in_combat_now ?? engaged
   const blocking = wave.blocking === true && !bypassed
+  const trackingTimeout = Math.max(wave.tracking_timeout_seconds ?? 600, 1)
+  const timeoutProgress = Math.max(0, Math.min(wave.elapsed_seconds / trackingTimeout, 1))
+  const timeoutRemaining = Math.max(0, Math.ceil(trackingTimeout - wave.elapsed_seconds))
+  const timerColor = `hsl(${120 * (1 - timeoutProgress)} 82% 50%)`
   return <div className="space-y-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs">
     <div className="flex flex-wrap items-center gap-2">
       <Radar className="size-4 text-destructive" />
       <span className="font-semibold">{wave.wave_name}</span>
       <Badge variant="outline" className="text-[10px]">ID {wave.wave_id}</Badge>
       <Badge variant="secondary" className="text-[10px]">{reasonLabel(wave.spawn_reason)}</Badge>
-      {wave.struggling && <Badge variant="destructive" className="text-[10px]">экипаж не справляется</Badge>}
       {bypassed && <Badge variant="outline" className="text-[10px] text-warning border-warning/40">обойдена — бой окончен</Badge>}
       {wave.non_blocking ? <Badge variant="outline" className="text-[10px] text-muted-foreground">неблокирующая</Badge>
         : blocking ? <Badge variant="outline" className="text-[10px] text-success border-success/40">блокирует спавн</Badge>
@@ -424,10 +425,14 @@ function ActiveWaveCard({ wave, override, onToggleNonBlocking, onOpenOverride }:
       {engaged && wave.damage_taken != null && wave.damage_taken > 0 && <Badge variant="outline" className="text-[10px] text-info">урон монстрам {wave.damage_taken.toFixed(0)}</Badge>}
     </div>
     <div className="text-muted-foreground">Состав: <span className="text-foreground">{monsterCountsText(wave.monster_counts)}</span>{wave.spawn_scheme && <span> · схема <b className="text-foreground">{wave.spawn_scheme}</b>{wave.spawn_zone ? ` (${wave.spawn_zone})` : ""}</span>}</div>
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <div><div className="font-mono text-sm">{Math.round(wave.elapsed_seconds)}с</div><div className="text-[10px] text-muted-foreground">{inCombat ? "в бою" : engaged ? "бой завершён" : "без боя"} (ожидалось {Math.round(wave.expected_repel_seconds)}с)</div></div>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <div>
+        <div className="font-mono text-sm transition-colors duration-500" style={{ color: timerColor }}>{Math.round(wave.elapsed_seconds)}с</div>
+        <div className="text-[10px] text-muted-foreground">Существует уже:</div>
+        <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted/60"><div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${timeoutProgress * 100}%`, background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)" }} /></div>
+        <div className="mt-1 text-[10px] text-muted-foreground">таймаут через {timeoutRemaining}с</div>
+      </div>
       <div><div className="font-mono text-sm">{wave.monsters_alive}/{wave.monsters_total}</div><div className="text-[10px] text-muted-foreground">живых монстров</div></div>
-      <div><div className="font-mono text-sm">{Math.round(wave.engagement_seconds)}с</div><div className="text-[10px] text-muted-foreground">вовлечённость</div></div>
       <div><div className="font-mono text-sm">{wave.effective_difficulty.toFixed(1)}</div><div className="text-[10px] text-muted-foreground">сложность</div></div>
     </div>
     {wave.distance_to_sub_meters != null && <div className="text-[11px] text-muted-foreground">Дистанция до корабля: <span className="font-mono text-foreground">{wave.distance_to_sub_meters.toFixed(0)} м</span>{wave.min_distance_meters != null && <> (минимум {wave.min_distance_meters.toFixed(0)} м)</>}</div>}
@@ -523,10 +528,9 @@ function RecentWaveCard({ wave }: { wave: RecentWaveTelemetry }) {
       <Badge variant="secondary" className="text-[10px]">{reasonLabel(wave.spawn_reason)}</Badge>
     </div>
     <div className="text-muted-foreground">Состав: <span className="text-foreground">{monsterCountsText(wave.monster_counts)}</span></div>
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       <div><div className="font-mono text-sm">{Math.round(wave.repel_seconds)}с</div><div className="text-[10px] text-muted-foreground">зачистка (ожидалось {Math.round(wave.expected_repel_seconds)}с)</div></div>
       <div><div className="font-mono text-sm">{wave.performance.toFixed(2)}</div><div className="text-[10px] text-muted-foreground">performance</div></div>
-      <div><div className="font-mono text-sm">{Math.round(wave.engagement_seconds)}с</div><div className="text-[10px] text-muted-foreground">вовлечённость</div></div>
       <div><div className="font-mono text-sm">{wave.crew_deaths}</div><div className="text-[10px] text-muted-foreground">потери экипажа</div></div>
       <div><div className="font-mono text-sm">{wave.sub_health_loss.toFixed(1)}%</div><div className="text-[10px] text-muted-foreground">урон лодке</div></div>
     </div>
