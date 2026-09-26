@@ -2033,6 +2033,8 @@ def _start_scheduler():
     scheduler.start()
     from services_ai_dossier_worker import start_ai_dossier_worker
     start_ai_dossier_worker()
+    from services_llm_worker import start_ai_llm_worker
+    start_ai_llm_worker()
     logger.info("[Workers] All periodic tasks registered and scheduler started")
 
 
@@ -2092,6 +2094,8 @@ def start_all_workers() -> None:
         scheduler.start()
         from services_ai_dossier_worker import start_ai_dossier_worker
         start_ai_dossier_worker()
+        from services_llm_worker import start_ai_llm_worker
+        start_ai_llm_worker()
     from services_logs import start_log_worker
     start_log_worker()
     from services_playtime_stats import start_playtime_stats_worker
