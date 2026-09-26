@@ -211,7 +211,6 @@ class Settings(BaseSettings):
 
     # Sessions
     session_max_age: int = 60 * 60 * 24 * 7  # 7 days
-    session_idle_timeout: int = 60 * 60 * 2  # 2 hours
     session_cookie_name: str = "session"
 
     # CSRF

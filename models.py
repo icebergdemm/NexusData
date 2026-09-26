@@ -193,6 +193,9 @@ class AdminSession(Base):
     last_seen_ip = Column(String(45), nullable=True)
     user_agent = Column(String(500), nullable=True)
     auth_type = Column(String(32), nullable=True)
+    browser_fingerprint_hash = Column(String(64), nullable=True)
+    # NULL marks legacy sessions; False is the explicit three-day fallback.
+    browser_fingerprint_bound = Column(Boolean, nullable=True)
     revoked = Column(Integer, default=0)
 
 

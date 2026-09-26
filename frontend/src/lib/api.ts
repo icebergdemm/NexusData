@@ -1,9 +1,10 @@
+import { readBrowserFingerprintCookie } from "./browser-fingerprint"
+
 /**
  * Typed fetch client for the NexusData API.
  *
- * Auth rides on the existing `admin_token` cookie (set by the Discord OAuth
- * login flow) — same-origin in prod, proxied to :8000 in dev (see
- * vite.config.ts), so `credentials: "include"` is all that's needed.
+ * Auth rides on `admin_token`; browser-bound sessions also send the current
+ * FingerprintJS ID from their first-party cookie.
  */
 
 export class ApiError extends Error {
@@ -37,6 +38,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (method !== "GET" && csrfToken) {
     headers.set("X-CSRF-Token", csrfToken)
   }
+  const browserFingerprint = await readBrowserFingerprintCookie()
+  if (browserFingerprint) headers.set("X-ND-Browser-Fingerprint", browserFingerprint)
 
   const res = await fetch(path, {
     ...init,

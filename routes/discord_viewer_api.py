@@ -60,7 +60,7 @@ def _get_websocket_admin(websocket: WebSocket) -> Optional[AdminUser]:
 
         token = websocket.cookies.get("admin_token")
         if admin is None and token:
-            session = get_active_admin_session(db, token, touch=False)
+            session = get_active_admin_session(db, token, request=websocket, touch=False)
             if session:
                 admin = (
                     db.query(AdminUser)

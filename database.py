@@ -141,6 +141,8 @@ def _apply_migrations():
         ("admin_sessions", "last_seen_ip", "VARCHAR(45)"),
         ("admin_sessions", "user_agent", "VARCHAR(500)"),
         ("admin_sessions", "auth_type", "VARCHAR(32)"),
+        ("admin_sessions", "browser_fingerprint_hash", "VARCHAR(64)"),
+        ("admin_sessions", "browser_fingerprint_bound", "TINYINT"),
         # admin security-event context
         ("admin_action_logs", "auth_type", "VARCHAR(32)"),
         ("admin_action_logs", "session_id", "INT"),

@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta
 from typing import Optional
 import hashlib
+import hmac
 import secrets
 import threading
 import time
 import uuid
+from urllib.parse import unquote
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.requests import HTTPConnection
 import jwt
 import logging
 
@@ -18,6 +21,10 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
+ADMIN_SESSION_FINGERPRINTED_TTL = timedelta(days=14)
+ADMIN_SESSION_FALLBACK_TTL = timedelta(days=3)
+ADMIN_BROWSER_FINGERPRINT_COOKIE = "nd_browser_fingerprint"
+ADMIN_BROWSER_FINGERPRINT_HEADER = "x-nd-browser-fingerprint"
 _AUDIT_SENSITIVE_KEYS = frozenset({
     "token", "secret", "password", "key", "ip", "user_agent",
     "discord_id", "steam_id", "player_ip", "moderator_id",
@@ -99,7 +106,25 @@ def hash_admin_session_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
-def get_active_admin_session(db, raw_token: str, request: Optional[Request] = None, touch: bool = True):
+def hash_admin_browser_fingerprint(fingerprint: Optional[str]) -> Optional[str]:
+    """Key the client fingerprint before storing it beside an admin session."""
+    value = unquote(str(fingerprint or "")).strip()
+    if not value or len(value) > 256:
+        return None
+    return hmac.new(settings.secret_key.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _request_admin_browser_fingerprint(request: Optional[HTTPConnection]) -> Optional[str]:
+    if request is None:
+        return None
+    header_hash = hash_admin_browser_fingerprint(request.headers.get(ADMIN_BROWSER_FINGERPRINT_HEADER))
+    cookie_hash = hash_admin_browser_fingerprint(request.cookies.get(ADMIN_BROWSER_FINGERPRINT_COOKIE))
+    if header_hash and cookie_hash and not hmac.compare_digest(header_hash, cookie_hash):
+        return None
+    return header_hash or cookie_hash
+
+
+def get_active_admin_session(db, raw_token: str, request: Optional[HTTPConnection] = None, touch: bool = True):
     """Find and optionally touch a valid browser session without exposing its token."""
     from models import AdminSession
 
@@ -115,13 +140,23 @@ def get_active_admin_session(db, raw_token: str, request: Optional[Request] = No
     if request is not None:
         request.state.nd_auth_type = "cookie"
         request.state.nd_session_id = session.id
-    last_seen = session.last_seen_at or session.created_at or now
-    if session.expires_at and session.expires_at <= now:
+    if not session.expires_at or session.expires_at <= now:
         return None
-    if now - last_seen > timedelta(seconds=settings.session_idle_timeout):
+    fingerprint_invalid = (
+        session.browser_fingerprint_bound is None
+        or (session.browser_fingerprint_bound and not session.browser_fingerprint_hash)
+        or (not session.browser_fingerprint_bound and bool(session.browser_fingerprint_hash))
+    )
+    if session.browser_fingerprint_bound:
+        current_fingerprint = _request_admin_browser_fingerprint(request)
+        fingerprint_invalid = fingerprint_invalid or not current_fingerprint or not hmac.compare_digest(
+            session.browser_fingerprint_hash or "", current_fingerprint or ""
+        )
+    if fingerprint_invalid:
         session.revoked = 1
         db.commit()
         return None
+    last_seen = session.last_seen_at or session.created_at or now
     if touch and (session.last_seen_at is None or now - last_seen >= SESSION_TOUCH_INTERVAL):
         session.last_seen_at = now
         if request is not None:
