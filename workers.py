@@ -620,19 +620,12 @@ def task_finalize_replay_streams() -> dict:
 
 
 def task_process_voice_profiles() -> dict:
-    """Scan one pending direct-identity nwdemo-v2 archive when enabled."""
-    from services_voice_profiles import (
-        process_next_nwdemo_voice_profile,
-        recover_stale_nwdemo_processing,
-        voice_profile_scanner_enabled,
-    )
+    """Dispatch voice-profile extraction to registered external workers."""
+    from services_external_worker import dispatch_voice_profile_work
 
     db = SessionLocal()
     try:
-        recovery = recover_stale_nwdemo_processing(db)
-        if not voice_profile_scanner_enabled(db):
-            return {"status": "disabled", **recovery}
-        return {**recovery, **process_next_nwdemo_voice_profile(db)}
+        return dispatch_voice_profile_work(db)
     except Exception:
         db.rollback()
         logger.exception("Voice profile worker failed")
@@ -1751,8 +1744,8 @@ def _start_scheduler():
         timeout=None,
     )
 
-    # Voice profile backfill/processing is deliberately disabled by config
-    # until historical mappings and audio quality have been reviewed.
+    # Voice profile extraction is dispatched to external workers; this
+    # scheduler only manages durable jobs and applies returned packages.
     scheduler.register_periodic(
         task_process_voice_profiles,
         interval_secs=60,

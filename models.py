@@ -1786,6 +1786,57 @@ class AppSetting(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class ExternalWorkerNode(Base):
+    """Registered outbound-only worker client and its current heartbeat."""
+    __tablename__ = "external_worker_nodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(120), nullable=False, unique=True)
+    token_hash = Column(String(64), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    status = Column(String(24), nullable=False, default="offline", index=True)
+    current_job_id = Column(Integer, nullable=True, index=True)
+    capabilities = Column(JSON, nullable=False, default=list)
+    version = Column(String(80), nullable=True)
+    last_seen_at = Column(DateTime, nullable=True, index=True)
+    pending_command = Column(String(24), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class ExternalWorkerJob(Base):
+    """Durable generic job queue consumed by external worker modules."""
+    __tablename__ = "external_worker_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_type = Column(String(100), nullable=False, index=True)
+    dedupe_key = Column(String(160), nullable=True, unique=True, index=True)
+    status = Column(String(24), nullable=False, default="queued", index=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    result = Column(JSON, nullable=True)
+    result_artifact_path = Column(String(1000), nullable=True)
+    worker_id = Column(Integer, ForeignKey("external_worker_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=5)
+    lease_until = Column(DateTime, nullable=True, index=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+    error = Column(String(2000), nullable=True)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class ExternalWorkerLog(Base):
+    """Bounded worker and task event log shown in administration."""
+    __tablename__ = "external_worker_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(Integer, ForeignKey("external_worker_nodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(Integer, nullable=True, index=True)
+    level = Column(String(12), nullable=False, default="info")
+    message = Column(String(2000), nullable=False)
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+
+
 class AIPlayerDossier(Base):
     """Latest AI dossier and its durable generation state for one player."""
     __tablename__ = "ai_player_dossiers"

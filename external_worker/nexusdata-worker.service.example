@@ -1,0 +1,22 @@
+[Unit]
+Description=NexusData external task worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexusdata-worker
+WorkingDirectory=/opt/nexusdata
+EnvironmentFile=/etc/nexusdata-worker.env
+Environment=NEXUSDATA_WORKER_DATA=/var/lib/nexusdata-worker
+ExecStart=/opt/nexusdata/.venv/bin/python -m external_worker.runner
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexusdata-worker
+
+[Install]
+WantedBy=multi-user.target
