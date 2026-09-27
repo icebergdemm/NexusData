@@ -1534,7 +1534,7 @@ _PLAYER_FILTER_CANDIDATE_LIMIT = 3000
 
 
 @panel_router.get("/api/v1/admin/replays/rounds")
-async def api_rounds_list(
+def api_rounds_list(
     request: Request,
     page: int = Query(1, ge=1),
     server: Optional[str] = Query(None),
