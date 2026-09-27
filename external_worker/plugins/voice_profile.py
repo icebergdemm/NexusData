@@ -18,8 +18,11 @@ from services_voice_profiles import (
 
 def available():
     decoder = os.environ.get("VOICE_PROFILE_DECODER_PATH", "")
-    return bool((Path(decoder).is_file() or shutil.which(decoder)) and
-                (not decoder.lower().endswith((".dll", ".csproj")) or shutil.which("dotnet")))
+    resolved = shutil.which(decoder) or decoder
+    path = Path(resolved)
+    if path.suffix.lower() in {".dll", ".csproj"}:
+        return path.is_file() and bool(shutil.which("dotnet"))
+    return path.is_file() and os.access(path, os.X_OK)
 
 
 def _read_wav(path: Path) -> list[int]:

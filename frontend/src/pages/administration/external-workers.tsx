@@ -50,7 +50,7 @@ export function ExternalWorkersPanel() {
     <CardHeader className="border-b bg-muted/30 py-3"><CardTitle className="flex items-center justify-between text-sm font-semibold">Внешние воркеры <Button size="sm" variant="ghost" onClick={() => query.refetch()}><RefreshCw className="mr-1 size-3.5" />Обновить</Button></CardTitle></CardHeader>
     <CardContent className="space-y-5 py-4">
       <p className="text-sm text-muted-foreground">Воркеры подключаются к NexusData по исходящему HTTPS-соединению. Доступа к БД и файловому хранилищу у них нет. Задания и журнал сохраняются в NexusData; незавершённые задания повторяются после истечения аренды.</p>
-      <p className="text-xs text-muted-foreground">Для голосовых задач установите на машине Python 3.12, .NET 8 и путь <code>VOICE_PROFILE_DECODER_PATH</code>. Модель ONNX воркер получает от NexusData только на время назначенного задания.</p>
+      <p className="text-xs text-muted-foreground">Для голосовых задач используйте Python 3.12 и укажите <code>VOICE_PROFILE_DECODER_PATH</code> на self-contained Linux-декодер из worker bundle. .NET нужен только на машине сборки. Модель ONNX воркер получает от NexusData только на время назначенного задания.</p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-56 flex-1"><Label className="text-xs">Имя нового воркера</Label><Input className="mt-1" value={name} onChange={(e) => setName(e.target.value)} /></div>
         <Button onClick={() => register.mutate()} disabled={register.isPending || !name.trim()}>Зарегистрировать и получить настройки</Button>

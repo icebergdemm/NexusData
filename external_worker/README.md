@@ -4,7 +4,14 @@ This process connects out to NexusData. It has no database or shared-filesystem 
 
 ## Run
 
-Create the decoder on a controlled build host with `dotnet build tools/VoiceProfileDecoder/VoiceProfileDecoder.csproj -c Release`, then create a minimal bundle in a new empty directory with `python external_worker/build_bundle.py <empty-output-directory>`. The script includes the compiled decoder when present. Copy the bundle to the remote machine. It excludes NexusData's `config.py`, `database.py`, `.env`, DB settings, and application credentials; the worker does not import the DB engine. Use Python 3.12 and the .NET 8 runtime. The pinned ONNX model is streamed from NexusData only to an assigned voiceprint job, so the worker makes no external download requests at runtime.
+On a controlled build host with the .NET 8 SDK, publish the voice decoder as a self-contained Linux x64 executable, then create the worker bundle in a new empty directory:
+
+```sh
+dotnet publish tools/VoiceProfileDecoder/VoiceProfileDecoder.csproj -c Release -r linux-x64 --self-contained true
+python external_worker/build_bundle.py /tmp/nexusdata-worker
+```
+
+Copy the bundle to the remote machine. It excludes NexusData's `config.py`, `database.py`, `.env`, DB settings, and application credentials; the worker does not import the DB engine. The remote worker needs Python 3.12, but does not need .NET installed when using the self-contained decoder. The pinned ONNX model is streamed from NexusData only to an assigned voiceprint job, so the worker makes no external download requests at runtime.
 
 On the remote machine, from the bundle directory:
 
@@ -21,7 +28,7 @@ NEXUSDATA_URL=https://your-nexusdata-host
 NEXUSDATA_WORKER_TOKEN=<one-time token from the admin panel>
 NEXUSDATA_WORKER_NAME=voice-worker-1
 NEXUSDATA_WORKER_DATA=/var/lib/nexusdata-worker
-VOICE_PROFILE_DECODER_PATH=/opt/nexusdata-tools/VoiceProfileDecoder.dll
+VOICE_PROFILE_DECODER_PATH=/opt/nexusdata/tools/VoiceProfileDecoder/VoiceProfileDecoder
 ```
 
 Start it from the repository root with `python -m external_worker.runner`. Keep it under a service manager such as systemd so a process exit or machine restart brings it back. The local SQLite spool retains completed results until NexusData acknowledges them. NexusData requeues leases after a worker stops heartbeating; handlers therefore need to be idempotent.

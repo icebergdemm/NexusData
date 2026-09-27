@@ -1,6 +1,7 @@
 """Create a minimal deployable bundle without NexusData application config or secrets."""
 import argparse
 import shutil
+import stat
 from pathlib import Path
 
 
@@ -30,9 +31,20 @@ def main():
     shutil.copy2(repo / "external_worker" / "requirements.txt", output / "requirements.txt")
     shutil.copy2(repo / "external_worker" / ".env.example", output / ".env.example")
     shutil.copy2(repo / "external_worker" / "README.md", output / "README.md")
+    decoder_publish = (repo / "tools" / "VoiceProfileDecoder" / "bin" / "Release" /
+                       "net8.0" / "linux-x64" / "publish")
     decoder_build = repo / "tools" / "VoiceProfileDecoder" / "bin" / "Release" / "net8.0"
-    if decoder_build.is_dir():
-        decoder_output = output / "tools" / "VoiceProfileDecoder"
+    decoder_output = output / "tools" / "VoiceProfileDecoder"
+    if decoder_publish.is_dir():
+        decoder_output.mkdir(parents=True, exist_ok=True)
+        for artifact in decoder_publish.iterdir():
+            if artifact.is_file():
+                destination = decoder_output / artifact.name
+                shutil.copy2(artifact, destination)
+                if artifact.name == "VoiceProfileDecoder":
+                    destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    elif decoder_build.is_dir():
+        # Framework-dependent fallback for worker images that include .NET 8.
         decoder_output.mkdir(parents=True, exist_ok=True)
         for suffix in (".dll", ".deps.json", ".runtimeconfig.json"):
             for artifact in decoder_build.glob(f"*{suffix}"):
