@@ -194,7 +194,7 @@ def _normalize_config(value: Any) -> Dict[str, Any]:
     return config
 
 
-def _serialize(row: MonsterSpawnControl) -> dict:
+def _serialize(row: MonsterSpawnControl, *, include_reports: bool = True) -> dict:
     telemetry = row.telemetry if isinstance(row.telemetry, dict) else {}
     memory = row.memory if isinstance(row.memory, dict) else {}
     submarines = memory.get("submarines") if isinstance(memory.get("submarines"), dict) else {}
@@ -203,13 +203,12 @@ def _serialize(row: MonsterSpawnControl) -> dict:
     if not isinstance(current_submarine, dict):
         current_submarine = None
 
-    return {
+    result = {
         "server": row.server,
         "config": _normalize_config(row.config),
         "memory": memory,
         "plans": row.plans if isinstance(row.plans, list) else [],
         "telemetry": telemetry,
-        "round_reports": _round_reports(row),
         "dashboard": {
             "round_active": bool(telemetry.get("round_active", False)),
             "round_seconds": telemetry.get("round_seconds", 0),
@@ -233,6 +232,9 @@ def _serialize(row: MonsterSpawnControl) -> dict:
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
     }
+    if include_reports:
+        result["round_reports"] = _round_reports(row)
+    return result
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -390,7 +392,10 @@ def plugin_state(server: str = Query(...), db: Session = Depends(get_game_db)):
     row.last_seen_at = datetime.utcnow()
     db.commit()
     db.refresh(row)
-    return _serialize(row)
+    # The game plugin polls this endpoint every 10 seconds and ignores
+    # round_reports. Those historical reports can be large, so keep them on
+    # the admin snapshot only instead of retransmitting them to the server.
+    return _serialize(row, include_reports=False)
 
 
 @game_router.post("/telemetry")
