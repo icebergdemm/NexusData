@@ -15,7 +15,11 @@
     <ConcentusProject Condition="!Exists('$(ConcentusProject)') and Exists('../../../../LuaCsForBarotrauma/Libraries/Concentus/CSharp/Concentus/Concentus.NetStandard.csproj')">../../../../LuaCsForBarotrauma/Libraries/Concentus/CSharp/Concentus/Concentus.NetStandard.csproj</ConcentusProject>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="$(ConcentusProject)" Condition="Exists('$(ConcentusProject)')" />
+  <ItemGroup Condition="Exists('$(ConcentusProject)')">
+    <ProjectReference Include="$(ConcentusProject)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('$(ConcentusProject)')">
+    <PackageReference Include="Concentus" Version="2.2.2" />
   </ItemGroup>
 </Project>
