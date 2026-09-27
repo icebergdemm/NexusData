@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Bar, Line } from "react-chartjs-2"
 import {
-  Activity, Anchor, Ban, Bot, BrainCircuit, Check, ChevronRight,
-  Copy, Crosshair, Eye, EyeOff, Files, Filter, FlaskConical, Gauge, Info, Layers, LocateFixed,
+  Activity, Anchor, Ban, Bot, BrainCircuit, CalendarDays, Check, ChevronRight, Clock3,
+  Copy, Crosshair, Download, Eye, EyeOff, Files, Filter, FlaskConical, Gauge, Info, Layers, LocateFixed,
   MapPin, Pencil, Plus, Radar, Save, Search, ShipWheel, Skull, SlidersHorizontal, Sparkles,
   Target, Trash2, TrendingDown, TrendingUp, Wand2, X, Zap,
 } from "lucide-react"
@@ -76,35 +76,122 @@ function Metric({ icon: Icon, label, value, detail, tone = "primary" }: { icon: 
   </Card>
 }
 
-function RoundReportItem({ report, defaultOpen, retrying, onRetry, onDownload }: {
+const reportStatus = (report: RoundReport) => ({
+  label: report.analysis_status === "succeeded" ? "Анализ готов" : report.analysis_status === "running" ? "Анализируется" : report.analysis_status === "failed" ? "Ошибка анализа" : "Ожидает анализа",
+  variant: report.analysis_status === "failed" ? "destructive" as const : report.analysis_status === "succeeded" ? "default" as const : "secondary" as const,
+})
+
+const roundSummaryFields = [
+  ["total_waves_spawned", "Волн за раунд", "count"],
+  ["unresolved_waves", "Не завершено", "count"],
+  ["total_crew_deaths", "Потери экипажа", "count"],
+  ["total_sub_health_loss", "Потеря прочности", "percent"],
+  ["average_performance", "Средняя эффективность", "ratio"],
+] as const
+
+const waveFieldLabels: Record<string, string> = {
+  spawn_reason: "Причина", outcome: "Исход", fate: "Судьба монстров", engagement_seconds: "Столкновение, сек.",
+  repel_seconds: "Время отражения, сек.", expected_repel_seconds: "Ожидалось, сек.", crew_deaths: "Потери экипажа",
+  sub_health_loss: "Потеря прочности", effective_difficulty: "Сложность", performance: "Эффективность",
+  unresolved: "Не завершена", resolved_by_timeout: "Завершена по таймауту", pace_ratio_at_spawn: "Темп раунда",
+  progress_at_spawn: "Прогресс уровня", players_alive_at_start: "Игроков в начале", players_alive_at_end: "Игроков в конце",
+  crew_alive_at_start: "Экипаж в начале", crew_alive_at_end: "Экипаж в конце", is_idle_horde: "Орда простоя",
+}
+
+const outcomeLabels: Record<string, string> = {
+  repelled: "Отбита", unresolved: "Не завершена", timeout_engaged: "Отбита по таймауту", bypassed: "Обойдена", afk: "Без контакта",
+}
+
+function reportDateLabel(value?: string, options?: Intl.DateTimeFormatOptions) {
+  if (!value || Number.isNaN(Date.parse(value))) return "Дата неизвестна"
+  return new Intl.DateTimeFormat("ru-RU", options ?? { day: "numeric", month: "long", year: "numeric" }).format(new Date(value))
+}
+
+function RoundReportRow({ report, onOpen }: { report: RoundReport; onOpen: (report: RoundReport) => void }) {
+  const status = reportStatus(report)
+  const waves = Number(report.summary?.total_waves_spawned ?? report.waves?.length ?? 0)
+  const deaths = Number(report.summary?.total_crew_deaths ?? 0)
+  return <div className="grid gap-3 rounded-xl border bg-card px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-4">
+    <div className="min-w-0 space-y-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="truncate text-sm font-semibold">{report.submarine_name || "Корабль не указан"}</span>
+        <Badge variant="outline" className="text-[10px]">{report.controller_mode === "learning" ? "Обучение" : "Контроллер"}</Badge>
+        <Badge variant={status.variant} className="text-[10px]">{status.label}</Badge>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5"><CalendarDays className="size-3.5" />{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "Дата неизвестна"}</span>
+        <span className="inline-flex items-center gap-1.5"><Clock3 className="size-3.5" />{Math.max(0, Math.round(Number(report.round_duration_seconds ?? 0) / 60))} мин</span>
+        <span>{Number.isFinite(waves) ? waves : report.waves?.length ?? 0} волн</span><span>{Number.isFinite(deaths) ? deaths : 0} потерь</span>
+        {report.events?.length ? <span>{report.events.length} событий</span> : null}
+      </div>
+    </div>
+    <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={() => onOpen(report)}>Подробнее <ChevronRight className="size-3.5" /></Button>
+  </div>
+}
+
+function RoundReportDetails({ report, server, retrying, onRetry, onDownload, onClose }: {
   report: RoundReport
-  defaultOpen?: boolean
+  server: string
   retrying: boolean
   onRetry: (id: number) => void
   onDownload: (report: RoundReport) => void
+  onClose: () => void
 }) {
-  return <details open={defaultOpen} className="rounded-xl border bg-muted/10 p-3 text-xs">
-    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2">
-      <span className="font-medium">{report.submarine_name ?? "Корабль не указан"}</span>
-      {report.controller_mode === "learning" && <Badge variant="outline">Обучение · ванильный спавн</Badge>}
-      <Badge variant="outline">{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "без даты"}</Badge>
-      <span className="text-muted-foreground">{Math.round(Number(report.round_duration_seconds ?? 0) / 60)} мин · волн: {Array.isArray(report.waves) ? report.waves.length : 0} · событий: {Array.isArray(report.events) ? report.events.length : 0}</span>
-      <Badge variant={report.analysis_status === "failed" ? "destructive" : "secondary"}>{report.analysis_status === "succeeded" ? "LLM: готово" : report.analysis_status === "running" ? "LLM: анализирует" : report.analysis_status === "failed" ? "LLM: ошибка" : "LLM: ожидает"}</Badge>
-      <Button className="ml-auto" size="sm" variant="outline" onClick={(event) => { event.preventDefault(); onDownload(report) }}>JSON</Button>
-    </summary>
-    <div className="mt-3 space-y-3 border-t pt-3">
-      {report.analysis_text && <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 leading-relaxed">{report.analysis_text}</div>}
-      {report.analysis_error && <div className="flex flex-wrap items-center gap-2 text-destructive">{report.analysis_error}{report.id && <Button size="sm" variant="outline" disabled={retrying} onClick={() => onRetry(report.id!)}>Повторить анализ</Button>}</div>}
-      <div className="grid gap-2 sm:grid-cols-4">{Object.entries(report.summary ?? {}).map(([key, value]) => <div key={key} className="rounded-lg bg-background/70 p-2"><div className="text-[10px] text-muted-foreground">{key}</div><div className="font-mono">{String(value)}</div></div>)}</div>
-      <div className="space-y-2">{(report.waves ?? []).map((wave, waveIndex) => <div key={waveIndex} className="rounded-lg border bg-background p-3"><div className="font-medium">{String(wave.wave_name ?? wave.name ?? `Волна ${waveIndex + 1}`)}</div><div className="mt-1 grid gap-x-4 gap-y-1 text-muted-foreground sm:grid-cols-3">{Object.entries(wave).filter(([key]) => key !== "wave_name" && key !== "name").map(([key, value]) => <div key={key}><span className="font-medium text-foreground">{key}:</span> {typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div></div>)}</div>
-      <details><summary className="cursor-pointer text-muted-foreground">Хронология событий · {(report.events ?? []).length}</summary><div className="mt-2 max-h-72 overflow-auto rounded-lg bg-background p-2 font-mono text-[10px]">{(report.events ?? []).map((event, eventIndex) => <div key={eventIndex} className="border-b border-border/50 py-1 last:border-0"><span className="text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)}s</span> <b>{event.direction}</b> {event.kind} <span className="break-all text-muted-foreground">{event.payload}</span></div>)}</div></details>
-    </div>
-  </details>
+  const status = reportStatus(report)
+  const summary = report.summary ?? {}
+  const waves = report.waves ?? []
+  const events = report.events ?? []
+  return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+    <DialogContent className="flex max-h-[92vh] flex-col overflow-hidden p-0 sm:max-w-5xl">
+      <DialogHeader className="border-b px-6 py-5 pr-12">
+        <div className="flex flex-wrap items-center gap-2"><Badge variant={status.variant}>{status.label}</Badge><Badge variant="outline">{server}</Badge></div>
+        <DialogTitle className="mt-2 text-lg">{report.submarine_name || "Отчёт раунда"}</DialogTitle>
+        <DialogDescription>{report.round_start_utc ? formatBrowserDate(report.round_start_utc) : "Дата неизвестна"} · {report.controller_mode === "learning" ? "Обучение · ванильный спавн" : "Контроллер монстров"} · {Math.max(0, Math.round(Number(report.round_duration_seconds ?? 0) / 60))} мин</DialogDescription>
+      </DialogHeader>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Заключение LLM</h3>
+          {report.analysis_text ? <div className="whitespace-pre-wrap rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm leading-relaxed">{report.analysis_text}</div> : report.analysis_error ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span className="text-destructive">{report.analysis_error}</span>{report.id && <Button size="sm" variant="outline" disabled={retrying} onClick={() => onRetry(report.id!)}>Повторить анализ</Button>}</div> : <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{report.analysis_status === "running" ? "Модель анализирует раунд…" : "Заключение пока не сформировано."}{report.analysis_status === "failed" && report.id && <Button className="ml-3" size="sm" variant="outline" disabled={retrying} onClick={() => onRetry(report.id!)}>Повторить анализ</Button>}</div>}
+        </section>
+        <section className="space-y-2">
+          <h3 className="text-sm font-semibold">Итоги раунда</h3>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">{roundSummaryFields.map(([key, label, format]) => {
+            const raw = summary[key]
+            const value = Number(raw)
+            const display = raw == null || !Number.isFinite(value) ? "—" : format === "count" ? String(Math.round(value)) : format === "percent" ? `${Math.round(value)}%` : value.toFixed(2)
+            return <div key={key} className="rounded-xl border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-lg font-semibold tabular-nums">{display}</div></div>
+          })}</div>
+        </section>
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Волны <span className="font-normal text-muted-foreground">· {waves.length}</span></h3></div>
+          {waves.length ? <div className="space-y-2">{waves.map((wave, index) => {
+            const name = String(wave.wave_name ?? wave.name ?? `Волна ${index + 1}`)
+            const outcome = String(wave.outcome ?? "")
+            const monsters = isRecord(wave.monster_counts) ? Object.entries(wave.monster_counts).map(([species, count]) => `${species} × ${count}`).join(" · ") : ""
+            const fields = Object.entries(wave).filter(([key, value]) => waveFieldLabels[key] && value != null && key !== "outcome")
+            return <div key={String(wave.wave_id ?? index)} className="rounded-xl border p-3 sm:p-4">
+              <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{name}</span>{outcome && <Badge variant={outcome === "unresolved" ? "destructive" : "secondary"}>{outcomeLabels[outcome] ?? outcome}</Badge>}</div>
+              {monsters && <p className="mt-1 text-xs text-muted-foreground">{monsters}</p>}
+              <div className="mt-3 grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2 lg:grid-cols-3">{fields.map(([key, value]) => <div key={key} className="flex justify-between gap-3 border-b border-border/50 pb-1"><span className="text-muted-foreground">{waveFieldLabels[key]}</span><span className="text-right font-medium">{typeof value === "boolean" ? (value ? "Да" : "Нет") : typeof value === "number" && key.includes("seconds") ? `${value.toFixed(1)} с` : typeof value === "number" ? value.toFixed(2) : String(value)}</span></div>)}</div>
+            </div>
+          })}</div> : <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">За раунд волн не зафиксировано.</div>}
+        </section>
+        <details className="rounded-xl border p-3">
+          <summary className="cursor-pointer text-sm font-medium">Хронология событий <span className="text-muted-foreground">· {events.length}</span></summary>
+          {events.length ? <div className="mt-3 max-h-72 overflow-y-auto rounded-lg bg-muted/20 px-3"><div className="divide-y divide-border/60">{events.map((event, index) => <div key={index} className="grid gap-1 py-2 text-xs sm:grid-cols-[5rem_7rem_minmax(0,1fr)] sm:items-start"><span className="font-mono text-muted-foreground">{Number(event.time_seconds ?? 0).toFixed(1)} с</span><span className="font-medium">{[event.direction, event.kind].filter(Boolean).join(" · ") || "Событие"}</span><span className="break-all text-muted-foreground">{event.payload || "—"}</span></div>)}</div></div> : <p className="mt-3 text-xs text-muted-foreground">Событий нет.</p>}
+        </details>
+      </div>
+      <div className="flex flex-wrap justify-end gap-2 border-t px-6 py-4"><Button variant="outline" onClick={() => onDownload(report)}><Download className="size-4" />Скачать JSON</Button><Button onClick={onClose}>Закрыть</Button></div>
+    </DialogContent>
+  </Dialog>
 }
 
 function RoundReports({ reports, server }: { reports: RoundReport[]; server: string }) {
   const queryClient = useQueryClient()
   const [allReportsOpen, setAllReportsOpen] = useState(false)
+  const [selectedReport, setSelectedReport] = useState<RoundReport | null>(null)
+  const [reportSearch, setReportSearch] = useState("")
+  const [statusFilter, setStatusFilter] = useState("all")
   const retry = useMutation({
     mutationFn: (id: number) => monsterSpawnApi.retryRoundAnalysis(server, id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["monster-spawn-reports", server] }),
@@ -119,33 +206,70 @@ function RoundReports({ reports, server }: { reports: RoundReport[]; server: str
     link.click()
     URL.revokeObjectURL(url)
   }
-  const latest = reports[reports.length - 1]
+  const sortedReports = reports.slice().sort((a, b) => {
+    const dateA = Date.parse(a.round_start_utc ?? "") || 0
+    const dateB = Date.parse(b.round_start_utc ?? "") || 0
+    return dateB - dateA || Number(b.id ?? 0) - Number(a.id ?? 0)
+  })
+  const visibleReports = sortedReports.filter((report) => {
+    const query = reportSearch.trim().toLocaleLowerCase("ru")
+    const matchesQuery = !query || [report.submarine_name, report.round_start_utc, report.controller_mode, report.analysis_text]
+      .some((value) => String(value ?? "").toLocaleLowerCase("ru").includes(query))
+    const matchesStatus = statusFilter === "all" || report.analysis_status === statusFilter || (statusFilter === "pending" && !report.analysis_status)
+    return matchesQuery && matchesStatus
+  })
+  const groupedReports = visibleReports.reduce<Array<{ key: string; label: string; reports: RoundReport[] }>>((groups, report) => {
+    const date = report.round_start_utc ? new Date(report.round_start_utc) : null
+    const key = date && !Number.isNaN(date.getTime()) ? `${date.getFullYear()}-${date.getMonth()}` : "unknown"
+    let group = groups[groups.length - 1]
+    if (!group || group.key !== key) {
+      group = { key, label: date && !Number.isNaN(date.getTime()) ? reportDateLabel(report.round_start_utc, { month: "long", year: "numeric" }) : "Без даты", reports: [] }
+      groups.push(group)
+    }
+    group.reports.push(report)
+    return groups
+  }, [])
+  const openDetails = (report: RoundReport, fromArchive = false) => {
+    if (fromArchive) setAllReportsOpen(false)
+    setSelectedReport(report)
+  }
+  const latest = sortedReports[0]
   return <>
     <Card className="overflow-hidden py-0">
       <CardHeader className="border-b bg-muted/20 px-4 py-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle className="flex items-center gap-2 text-sm"><Files className="size-4 text-info" /> Последний отчёт · {server}</CardTitle>
-            <CardDescription className="text-xs">Отчёт последнего завершённого раунда выбранного сервера.</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-sm"><Files className="size-4 text-info" /> Отчёты раундов · {server}</CardTitle>
+            <CardDescription className="text-xs">Заключения модели и сводка по каждому завершённому раунду.</CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={() => setAllReportsOpen(true)} disabled={!reports.length}>Все отчёты · {reports.length}</Button>
         </div>
       </CardHeader>
-      <CardContent className="p-4">
-        {latest ? <RoundReportItem report={latest} defaultOpen retrying={retry.isPending} onRetry={(id) => retry.mutate(id)} onDownload={download} /> : <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Для {server} отчётов пока нет. Они появятся после завершения и отправки раунда.</div>}
+      <CardContent className="space-y-2 p-4">
+        {latest ? <>
+          <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted-foreground"><CalendarDays className="size-3.5" />Последний завершённый раунд</div>
+          <RoundReportRow report={latest} onOpen={openDetails} />
+          {sortedReports.length > 1 && <div className="space-y-2 pt-3"><div className="text-xs font-medium text-muted-foreground">Предыдущие раунды</div>{sortedReports.slice(1, 5).map((report, index) => <RoundReportRow key={String(report.id ?? report.round_start_utc ?? index)} report={report} onOpen={openDetails} />)}</div>}
+          {sortedReports.length > 5 && <div className="pt-1 text-center text-xs text-muted-foreground">Ещё {sortedReports.length - 5} отчётов в архиве</div>}
+        </> : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">Для {server} отчётов пока нет. Они появятся после завершения раунда.</div>}
       </CardContent>
     </Card>
     <Dialog open={allReportsOpen} onOpenChange={setAllReportsOpen}>
-      <DialogContent className="max-h-[90vh] max-w-5xl overflow-hidden">
+      <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-4xl">
         <DialogHeader>
-          <DialogTitle>Все отчёты раундов · {server}</DialogTitle>
-          <DialogDescription>{reports.length} сохранённых отчётов. Список обновляется автоматически.</DialogDescription>
+          <DialogTitle>Архив отчётов · {server}</DialogTitle>
+          <DialogDescription>{reports.length} сохранённых раундов. Список сгруппирован по месяцам.</DialogDescription>
         </DialogHeader>
-        <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
-          {reports.slice().reverse().map((report, index) => <RoundReportItem key={String(report.id ?? report.round_start_utc ?? index)} report={report} defaultOpen={index === 0} retrying={retry.isPending} onRetry={(id) => retry.mutate(id)} onDownload={download} />)}
+        <div className="flex flex-wrap gap-2 border-y py-3">
+          <Input className="min-w-48 flex-1" value={reportSearch} onChange={(event) => setReportSearch(event.target.value)} placeholder="Найти корабль, дату или заключение" />
+          <Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger className="w-full sm:w-48"><SelectValue placeholder="Статус анализа" /></SelectTrigger><SelectContent><SelectItem value="all">Все статусы</SelectItem><SelectItem value="succeeded">Анализ готов</SelectItem><SelectItem value="pending">Ожидает анализа</SelectItem><SelectItem value="running">Анализируется</SelectItem><SelectItem value="failed">Ошибка анализа</SelectItem></SelectContent></Select>
+        </div>
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+          {groupedReports.length ? groupedReports.map((group) => <section key={group.key} className="space-y-2"><h3 className="sticky top-0 z-10 border-b bg-background/95 py-2 text-xs font-semibold capitalize text-muted-foreground backdrop-blur">{group.label} <span className="font-normal">· {group.reports.length}</span></h3>{group.reports.map((report, index) => <RoundReportRow key={String(report.id ?? report.round_start_utc ?? index)} report={report} onOpen={(value) => openDetails(value, true)} />)}</section>) : <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">По выбранным условиям отчётов нет.</div>}
         </div>
       </DialogContent>
     </Dialog>
+    {selectedReport && <RoundReportDetails report={selectedReport} server={server} retrying={retry.isPending} onRetry={(id) => retry.mutate(id)} onDownload={download} onClose={() => setSelectedReport(null)} />}
   </>
 }
 
