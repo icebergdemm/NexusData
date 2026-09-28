@@ -217,7 +217,8 @@ class LLMError(Exception):
 
 
 def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float,
-                      temperature: float, top_p: float, on_ticket=None) -> str:
+                      temperature: float, top_p: float, on_ticket=None,
+                      max_tokens: int = 4096) -> str:
     """Submit to the durable AI Centre queue and wait for its worker result."""
     from services_llm_gateway import LLMGatewayError, poll, submit
 
@@ -225,7 +226,7 @@ def _chat_completions(messages: List[Dict[str, str]], model: str, timeout: float
         "model": model,
         "temperature": temperature,
         "top_p": top_p,
-        "max_tokens": 4096,
+        "max_tokens": max_tokens,
     }
     try:
         ticket = submit("monster_llm", messages, params, timeout=timeout,
@@ -1562,11 +1563,13 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
                 pending = None
             if pending is not None:
                 try:
+                    settings = get_settings()
                     content = _chat_completions(
                         [{"role": "system", "content": ROUND_PROMPT},
                          {"role": "user", "content": json.dumps(_round_brief(pending.report_json or {}), ensure_ascii=False)}],
-                        get_settings().monster_llm_model, get_settings().monster_llm_timeout_seconds,
-                        get_settings().monster_llm_temperature, get_settings().monster_llm_top_p)
+                        settings.monster_llm_model, max(settings.monster_llm_timeout_seconds, 600.0),
+                        settings.monster_llm_temperature, settings.monster_llm_top_p,
+                        max_tokens=2048)
                     conclusion = str(_extract_json(content).get("conclusion") or "").strip()[:8000]
                     if not conclusion:
                         raise LLMError("Модель не вернула заключение")

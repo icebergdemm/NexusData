@@ -194,7 +194,8 @@ def claim_next(last_client: str | None = None) -> AILlmRequest | None:
         ))
         row.status, row.attempts = "running", row.attempts + 1
         row.started_at = now
-        row.lease_expires_at = now + timedelta(seconds=240)
+        request_timeout = float((row.request_json or {}).get("timeout") or 0)
+        row.lease_expires_at = now + timedelta(seconds=max(240, request_timeout + 60))
         db.commit()
         # commit() expires ORM attributes by default.  The worker consumes the
         # detached row after this function returns, so reload the scalar

@@ -136,7 +136,10 @@ def post_chat_completions(payload: Dict[str, Any], timeout: float) -> Tuple[Dict
         with AI_REQUEST_LOCK:
             client = _get_ai_client(settings, timeout)
             try:
-                response = client.post(url, headers=headers, json=payload)
+                # The shared client is cached, so its construction-time timeout
+                # may belong to a shorter request from another AI consumer.
+                response = client.post(url, headers=headers, json=payload,
+                                       timeout=_build_timeout(timeout))
                 response.raise_for_status()
                 data = response.json()
             except httpx.RequestError:
