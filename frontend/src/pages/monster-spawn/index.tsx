@@ -993,6 +993,7 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
 function LLMAdviceCard({ server, config, record, onOpen }: { server: string; config: MonsterSpawnState["config"]; record: LLMRunRecord | null | undefined; onOpen: () => void }) {
   const queryClient = useQueryClient()
   const [decided, setDecided] = useState<Record<number, "accepted" | "rejected">>({})
+  const [proposalBaseline, setProposalBaseline] = useState<{ runId: string; values: Record<number, unknown> } | null>(null)
   const recommendations = record?.result?.recommendations ?? []
   const changes = record?.result?.proposed_changes ?? []
   const apply = useMutation({
@@ -1007,6 +1008,12 @@ function LLMAdviceCard({ server, config, record, onOpen }: { server: string; con
   const pending = changes.map((_, index) => index).filter((index) => !decided[index])
   const displayValue = (value: unknown) => value === undefined ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value)
   const currentValue = (key: string) => key.split(".").reduce<unknown>((value, part) => isRecord(value) ? value[part] : undefined, config.global)
+  const baselineValues = proposalBaseline && record && proposalBaseline.runId === record.run_id ? proposalBaseline.values : null
+  useEffect(() => {
+    if (!record?.run_id || (proposalBaseline !== null && proposalBaseline.runId === record.run_id)) return
+    setProposalBaseline({ runId: record.run_id, values: Object.fromEntries(changes.map((change, index) => [index, currentValue(change.key)])) })
+    setDecided({})
+  }, [record?.run_id])
   const warningPattern = /опас|потер|крит|незаверш|риск|проблем|ухудш|долг|слаб/i
   return <Card className="overflow-hidden py-0">
     <CardHeader className="border-b bg-gradient-to-r from-primary/10 via-muted/20 to-transparent px-4 py-3">
@@ -1032,7 +1039,7 @@ function LLMAdviceCard({ server, config, record, onOpen }: { server: string; con
       <section className="min-w-0 space-y-3 border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
         <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-semibold">Рекомендуемые настройки <span className="text-xs font-normal text-muted-foreground">{pending.length ? `· ${pending.length} ожидают решения` : "· все обработаны"}</span></div><div className="flex gap-2"><Button size="sm" disabled={!pending.length || apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate(pending)}><Check className="size-3.5" />Принять все</Button><Button size="sm" variant="outline" disabled={!pending.length} onClick={() => setDecided((current) => ({ ...current, ...Object.fromEntries(pending.map((index) => [index, "rejected" as const])) }))}><X className="size-3.5" />Отклонить все</Button></div></div>
         <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">{changes.length ? changes.map((change, index) => <div key={`${change.key}-${index}`} className="rounded-xl border bg-muted/10 p-3">
-          <div className="font-mono text-xs font-medium">{change.key}</div><div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs"><div className="min-w-0"><div className="text-muted-foreground">Сейчас</div><div className="break-all">{displayValue(change.old_value ?? currentValue(change.key))}</div></div><ChevronRight className="size-4 text-muted-foreground" /><div className="min-w-0"><div className="text-muted-foreground">Предлагается</div><div className="break-all font-medium">{displayValue(change.new_value)}</div></div></div>
+          <div className="font-mono text-xs font-medium">{change.key}</div><div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs"><div className="min-w-0"><div className="text-muted-foreground">Сейчас</div><div className="break-all">{displayValue(change.old_value ?? (baselineValues && index in baselineValues ? baselineValues[index] : currentValue(change.key)))}</div></div><ChevronRight className="size-4 text-muted-foreground" /><div className="min-w-0"><div className="text-muted-foreground">Предлагается</div><div className="break-all font-medium">{displayValue(change.new_value)}</div></div></div>
           {change.reason && <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{change.reason}</p>}
           <div className="mt-3 flex items-center justify-between gap-2">{decided[index] ? <Badge variant={decided[index] === "accepted" ? "default" : "secondary"}>{decided[index] === "accepted" ? "Принято" : "Отклонено"}</Badge> : <span />}{!decided[index] && <div className="flex gap-2"><Button size="sm" disabled={apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate([index])}><Check className="size-3.5" />Принять</Button><Button size="sm" variant="outline" onClick={() => setDecided((current) => ({ ...current, [index]: "rejected" }))}><X className="size-3.5" />Отклонить</Button></div>}</div>
         </div>) : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">LLM не предложила изменений настроек.</div>}</div>
