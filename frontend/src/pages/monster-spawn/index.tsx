@@ -997,11 +997,12 @@ function LLMAdviceCard({ server, config, record, onOpen }: { server: string; con
   const recommendations = record?.result?.recommendations ?? []
   const changes = record?.result?.proposed_changes ?? []
   const apply = useMutation({
-    mutationFn: (indices: number[]) => monsterSpawnApi.applyProposal(server, record!.run_id, indices),
-    onSuccess: (_result, indices) => {
-      setDecided((current) => ({ ...current, ...Object.fromEntries(indices.map((index) => [index, "accepted" as const])) }))
+    mutationFn: ({ indices, decision }: { indices: number[]; decision: "accepted" | "rejected" }) => monsterSpawnApi.applyProposal(server, record!.run_id, indices, decision),
+    onSuccess: (_result, { indices, decision }) => {
+      setDecided((current) => ({ ...current, ...Object.fromEntries(indices.map((index) => [index, decision])) }))
       queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] })
-      toast.success(indices.length === 1 ? "Корректировка применена" : "Корректировки применены")
+      queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] })
+      toast.success(decision === "accepted" ? indices.length === 1 ? "Корректировка применена" : "Корректировки применены" : "Предложения отклонены")
     },
     onError: (error: Error) => toast.error(error.message),
   })
@@ -1012,8 +1013,12 @@ function LLMAdviceCard({ server, config, record, onOpen }: { server: string; con
   useEffect(() => {
     if (!record?.run_id || (proposalBaseline !== null && proposalBaseline.runId === record.run_id)) return
     setProposalBaseline({ runId: record.run_id, values: Object.fromEntries(changes.map((change, index) => [index, currentValue(change.key)])) })
-    setDecided({})
+    setDecided(Object.fromEntries(Object.entries(record.result?.change_decisions ?? {}).map(([index, decision]) => [Number(index), decision])))
   }, [record?.run_id])
+  useEffect(() => {
+    if (!record?.run_id) return
+    setDecided(Object.fromEntries(Object.entries(record.result?.change_decisions ?? {}).map(([index, decision]) => [Number(index), decision])))
+  }, [record?.run_id, record?.result?.change_decisions])
   const warningPattern = /опас|потер|крит|незаверш|риск|проблем|ухудш|долг|слаб/i
   return <Card className="overflow-hidden py-0">
     <CardHeader className="border-b bg-gradient-to-r from-primary/10 via-muted/20 to-transparent px-4 py-3">
@@ -1037,12 +1042,12 @@ function LLMAdviceCard({ server, config, record, onOpen }: { server: string; con
       <div className="flex items-center justify-between gap-3 border-t pt-3"><span className="text-[11px] text-muted-foreground">Советы требуют проверки оператором</span><Button size="sm" variant="outline" onClick={onOpen}>Открыть ассистента <ChevronRight className="size-3.5" /></Button></div>
       </section>
       <section className="min-w-0 space-y-3 border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
-        <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-semibold">Рекомендуемые настройки <span className="text-xs font-normal text-muted-foreground">{pending.length ? `· ${pending.length} ожидают решения` : "· все обработаны"}</span></div><div className="flex gap-2"><Button size="sm" disabled={!pending.length || apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate(pending)}><Check className="size-3.5" />Принять все</Button><Button size="sm" variant="outline" disabled={!pending.length} onClick={() => setDecided((current) => ({ ...current, ...Object.fromEntries(pending.map((index) => [index, "rejected" as const])) }))}><X className="size-3.5" />Отклонить все</Button></div></div>
-        <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">{changes.length ? changes.map((change, index) => <div key={`${change.key}-${index}`} className="rounded-xl border bg-muted/10 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-semibold">Рекомендуемые настройки <span className="text-xs font-normal text-muted-foreground">{pending.length ? `· ${pending.length} ожидают решения` : "· все обработаны"}</span></div><div className="flex gap-2"><Button size="sm" disabled={!pending.length || apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate({ indices: pending, decision: "accepted" })}><Check className="size-3.5" />Принять все</Button><Button size="sm" variant="outline" disabled={!pending.length || apply.isPending} onClick={() => apply.mutate({ indices: pending, decision: "rejected" })}><X className="size-3.5" />Отклонить все</Button></div></div>
+        <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">{changes.length && pending.length ? changes.map((change, index) => decided[index] ? null : <div key={`${change.key}-${index}`} className="rounded-xl border bg-muted/10 p-3">
           <div className="font-mono text-xs font-medium">{change.key}</div><div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs"><div className="min-w-0"><div className="text-muted-foreground">Сейчас</div><div className="break-all">{displayValue(change.old_value ?? (baselineValues && index in baselineValues ? baselineValues[index] : currentValue(change.key)))}</div></div><ChevronRight className="size-4 text-muted-foreground" /><div className="min-w-0"><div className="text-muted-foreground">Предлагается</div><div className="break-all font-medium">{displayValue(change.new_value)}</div></div></div>
           {change.reason && <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{change.reason}</p>}
-          <div className="mt-3 flex items-center justify-between gap-2">{decided[index] ? <Badge variant={decided[index] === "accepted" ? "default" : "secondary"}>{decided[index] === "accepted" ? "Принято" : "Отклонено"}</Badge> : <span />}{!decided[index] && <div className="flex gap-2"><Button size="sm" disabled={apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate([index])}><Check className="size-3.5" />Принять</Button><Button size="sm" variant="outline" onClick={() => setDecided((current) => ({ ...current, [index]: "rejected" }))}><X className="size-3.5" />Отклонить</Button></div>}</div>
-        </div>) : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">LLM не предложила изменений настроек.</div>}</div>
+          <div className="mt-3 flex items-center justify-between gap-2">{decided[index] ? <Badge variant={decided[index] === "accepted" ? "default" : "secondary"}>{decided[index] === "accepted" ? "Принято" : "Отклонено"}</Badge> : <span />}{!decided[index] && <div className="flex gap-2"><Button size="sm" disabled={apply.isPending || record?.status !== "succeeded"} onClick={() => apply.mutate({ indices: [index], decision: "accepted" })}><Check className="size-3.5" />Принять</Button><Button size="sm" variant="outline" disabled={apply.isPending} onClick={() => apply.mutate({ indices: [index], decision: "rejected" })}><X className="size-3.5" />Отклонить</Button></div>}</div>
+        </div>) : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">{changes.length ? "Все предложения обработаны." : "LLM не предложила изменений настроек."}</div>}</div>
       </section>
     </CardContent>
   </Card>

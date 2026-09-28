@@ -373,6 +373,7 @@ export interface LLMRunRecord {
     recommendations?: { title: string; detail: string }[]
     applied_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
     proposed_changes?: { key: string; new_value: unknown; old_value?: unknown; reason?: string }[]
+    change_decisions?: Record<string, "accepted" | "rejected">
     rejected?: string[]
     spawn_requests?: { species: string; count: number; hp_multiplier: number; position_hint: string; reason?: string }[]
     plan_ids?: string[]
@@ -494,6 +495,6 @@ export const monsterSpawnApi = {
     api.post<{ status: string; run: LLMRun }>(`/api/v1/admin/monster-spawn/llm/run?server=${encodeURIComponent(server)}`, body),
   cancelLLMRun: (server: string, runId: string) =>
     api.post<{ status: string }>(`/api/v1/admin/monster-spawn/llm/runs/${encodeURIComponent(runId)}/cancel?server=${encodeURIComponent(server)}`, {}),
-  applyProposal: (server: string, runId: string, changeIndices?: number[]) =>
-    api.post<{ status: string; revision: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId, change_indices: changeIndices }),
+  applyProposal: (server: string, runId: string, changeIndices?: number[], decision: "accepted" | "rejected" = "accepted") =>
+    api.post<{ status: string; revision?: number }>(`/api/v1/admin/monster-spawn/llm/apply-proposal?server=${encodeURIComponent(server)}`, { run_id: runId, change_indices: changeIndices, decision }),
 }

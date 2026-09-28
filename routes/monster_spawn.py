@@ -614,6 +614,7 @@ class LLMRunRequest(BaseModel):
 class LLMApplyProposal(BaseModel):
     run_id: str
     change_indices: Optional[List[int]] = None
+    decision: str = Field("accepted", pattern="^(accepted|rejected)$")
 
 
 def _get_main_db() -> Session:
@@ -759,13 +760,28 @@ def admin_llm_apply_proposal(
     try:
         run = main_db.query(MonsterSpawnLLMRun).filter_by(
             server=server_key, run_id=payload.run_id, status="succeeded").first()
-        changes = (run.result_json or {}).get("proposed_changes") if run else None
-        if not isinstance(changes, list) or not changes:
+        result = dict(run.result_json or {}) if run else {}
+        proposals = result.get("proposed_changes")
+        if not isinstance(proposals, list) or not proposals:
             raise HTTPException(status_code=404, detail="Предложение не найдено")
-        changes = [change for index, change in enumerate(changes)
-                   if payload.change_indices is None or index in payload.change_indices]
-        if not changes:
+        decisions = dict(result.get("change_decisions") or {})
+        indices = list(dict.fromkeys(payload.change_indices if payload.change_indices is not None
+                                     else [index for index in range(len(proposals)) if str(index) not in decisions]))
+        if payload.change_indices is not None and any(index < 0 or index >= len(proposals) for index in indices):
             raise HTTPException(status_code=400, detail="Не выбраны изменения")
+        already_decided = [index for index in indices if str(index) in decisions]
+        if any(decisions[str(index)] != payload.decision for index in already_decided):
+            raise HTTPException(status_code=409, detail="Для части предложений уже принято другое решение")
+        pending_indices = [index for index in indices if str(index) not in decisions]
+        if payload.decision == "rejected":
+            decisions.update({str(index): "rejected" for index in pending_indices})
+            result["change_decisions"] = decisions
+            run.result_json = result
+            main_db.commit()
+            return {"status": "ok", "decision": "rejected", "changes": []}
+        changes = [proposals[index] for index in pending_indices]
+        if not changes:
+            return {"status": "ok", "decision": "accepted", "changes": []}
         row = _get_or_create(db, server_key)
         config = copy.deepcopy(row.config or {})
         current = config.get("global") or {}
@@ -785,6 +801,10 @@ def admin_llm_apply_proposal(
         row.updated_by_admin_id = admin.id
         row.updated_at = datetime.utcnow()
         db.commit()
+        decisions.update({str(index): "accepted" for index in pending_indices})
+        result["change_decisions"] = decisions
+        run.result_json = result
+        main_db.commit()
         return {"status": "ok", "revision": row.desired_revision, "changes": accepted}
     finally:
         main_db.close()
