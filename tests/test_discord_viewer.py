@@ -26,8 +26,14 @@ def _channel(channel_type, *, channel_id, position, can_view=True, can_send=True
         view_channel=can_view,
         send_messages=can_send,
     )
-    if channel_type in {"text", "forum"}:
+    if channel_type == "text":
         async def no_archived_threads(**_kwargs):
+            if False:
+                yield None
+
+        channel.archived_threads.side_effect = no_archived_threads
+    if channel_type == "forum":
+        async def no_archived_threads(*, limit=100, before=None):
             if False:
                 yield None
 
@@ -79,6 +85,37 @@ def test_viewer_tree_includes_forum_and_media_channels(monkeypatch):
         ("50", "forum"),
         ("60", "media"),
     ]
+
+
+def test_viewer_tree_fetches_archived_forum_threads_with_supported_arguments(monkeypatch):
+    forum = _channel("forum", channel_id=50, position=1)
+    archived = Mock(spec=discord.Thread)
+    archived.id = 99
+    archived.name = "old-forum-post"
+    archived.position = 0
+    archived.parent_id = forum.id
+    archived.parent = forum
+    archived.category_id = None
+    archived.archived = True
+    archived.permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=False)
+
+    async def archived_forum_threads(*, limit=100, before=None):
+        assert limit is None
+        yield archived
+
+    forum.archived_threads.side_effect = archived_forum_threads
+    guild = SimpleNamespace(
+        me=object(), channels=[forum], threads=[], categories=[],
+        id=123, name="Test guild", icon=None,
+    )
+    monkeypatch.setattr(bot_module, "_viewer_guild", lambda: guild)
+
+    result = asyncio.run(bot_module.viewer_get_tree())
+
+    thread = next(channel for channel in result["channels"] if channel["id"] == "99")
+    assert thread["parent_id"] == "50"
+    assert thread["type"] == "thread"
+    assert thread["archived"] is True
 
 
 def test_viewer_tree_includes_archived_threads_under_parent(monkeypatch):

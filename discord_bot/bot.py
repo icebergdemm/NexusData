@@ -1652,11 +1652,19 @@ async def viewer_get_tree() -> dict:
     channel_ids.update(int(thread.id) for thread in active_threads)
 
     for parent in guild.channels:
-        if not isinstance(parent, (discord.TextChannel, discord.ForumChannel)):
+        if isinstance(parent, discord.ForumChannel):
+            archived_queries = (parent.archived_threads(limit=None),)
+        elif isinstance(parent, discord.TextChannel):
+            archived_queries = (
+                parent.archived_threads(private=private, joined=joined, limit=None)
+                for private, joined in ((False, False), (True, True))
+            )
+        else:
             continue
-        for private, joined in ((False, False), (True, True)):
+
+        for archived_threads in archived_queries:
             try:
-                async for thread in parent.archived_threads(private=private, joined=joined, limit=None):
+                async for thread in archived_threads:
                     if int(thread.id) not in channel_ids:
                         channel_objects.append(thread)
                         channel_ids.add(int(thread.id))
