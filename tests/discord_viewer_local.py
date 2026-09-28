@@ -68,6 +68,11 @@ def create_stub_app(db_url: str) -> FastAPI:
 
     async def viewer_tree():
         return {"guild": {"id": "123", "name": "ASPER • Operations", "icon_url": None}, "categories": [{"id": "3001", "name": "ОСНОВНЫЕ", "position": 1}], "channels": channels, "can_send": True, "can_manage_roles": True}
+    async def viewer_archived_threads(channel_id, source, before=None):
+        threads = [{"id": "2102", "name": "archived-maintenance", "position": 0, "can_send": False, "category_id": "3001", "parent_id": str(channel_id), "type": "thread", "archived": True, "voice_members": []}]
+        if str(channel_id) != "2001" or source != "public" or before:
+            threads = []
+        return {"threads": threads, "before": None, "has_more": False}
     async def viewer_messages(channel_id, before, limit, around=None):
         items = list(messages.get(str(channel_id), []))
         if around:
@@ -85,7 +90,8 @@ def create_stub_app(db_url: str) -> FastAPI:
         return {"entries": page, "before": page[-1]["id"] if page else None, "has_more": len(remaining) > len(page)}
 
     for name, implementation in {
-        "viewer_get_tree": viewer_tree, "viewer_get_messages": viewer_messages,
+        "viewer_get_tree": viewer_tree, "viewer_get_archived_threads": viewer_archived_threads,
+        "viewer_get_messages": viewer_messages,
         "viewer_validate_channel": lambda *_args: asyncio.sleep(0, result=True),
         "viewer_search_messages": viewer_search, "viewer_get_roles": lambda: asyncio.sleep(0, result=roles),
         "viewer_get_audit_log": viewer_audit,

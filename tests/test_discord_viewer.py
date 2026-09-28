@@ -97,25 +97,27 @@ def test_viewer_tree_fetches_archived_forum_threads_with_supported_arguments(mon
     archived.parent = forum
     archived.category_id = None
     archived.archived = True
+    archived.archive_timestamp = datetime(2026, 9, 28, tzinfo=timezone.utc)
     archived.permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=False)
 
     async def archived_forum_threads(*, limit=100, before=None):
-        assert limit is None
+        assert limit == 101
+        assert before is None
         yield archived
 
     forum.archived_threads.side_effect = archived_forum_threads
-    guild = SimpleNamespace(
-        me=object(), channels=[forum], threads=[], categories=[],
-        id=123, name="Test guild", icon=None,
-    )
+    guild = SimpleNamespace(me=object(), channels=[forum])
     monkeypatch.setattr(bot_module, "_viewer_guild", lambda: guild)
 
-    result = asyncio.run(bot_module.viewer_get_tree())
+    result = asyncio.run(bot_module.viewer_get_archived_threads(50, "public"))
 
-    thread = next(channel for channel in result["channels"] if channel["id"] == "99")
-    assert thread["parent_id"] == "50"
-    assert thread["type"] == "thread"
-    assert thread["archived"] is True
+    assert result["threads"] == [{
+        "id": "99", "name": "old-forum-post", "position": 0, "can_send": False,
+        "category_id": None, "parent_id": "50", "type": "thread", "archived": True,
+        "voice_members": [],
+    }]
+    assert result["before"] == archived.archive_timestamp.isoformat()
+    assert result["has_more"] is False
 
 
 def test_viewer_tree_includes_archived_threads_under_parent(monkeypatch):
@@ -130,23 +132,85 @@ def test_viewer_tree_includes_archived_threads_under_parent(monkeypatch):
     archived.archived = True
     archived.permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=False)
 
-    async def archived_threads(**_kwargs):
-        assert _kwargs["limit"] is None
+    async def archived_threads(*, private=False, joined=False, limit=100, before=None):
+        assert private is False
+        assert joined is False
+        assert limit == 101
+        assert before is None
         yield archived
 
     parent.archived_threads.side_effect = archived_threads
-    guild = SimpleNamespace(
-        me=object(), channels=[parent], threads=[], categories=[],
-        id=123, name="Test guild", icon=None,
-    )
+    guild = SimpleNamespace(me=object(), channels=[parent])
     monkeypatch.setattr(bot_module, "_viewer_guild", lambda: guild)
 
-    result = asyncio.run(bot_module.viewer_get_tree())
+    result = asyncio.run(bot_module.viewer_get_archived_threads(10, "public"))
 
-    thread = next(channel for channel in result["channels"] if channel["id"] == "99")
-    assert thread["parent_id"] == "10"
-    assert thread["type"] == "thread"
-    assert thread["archived"] is True
+    assert result["threads"][0]["id"] == "99"
+    assert result["threads"][0]["parent_id"] == "10"
+    assert result["threads"][0]["type"] == "thread"
+    assert result["threads"][0]["archived"] is True
+
+
+def test_viewer_tree_fetches_archived_forum_threads_in_bounded_pages(monkeypatch):
+    forum = _channel("forum", channel_id=50, position=1)
+    archived = []
+    for thread_id in range(1000, 1101):
+        thread = Mock(spec=discord.Thread)
+        thread.id = thread_id
+        thread.name = f"old-{thread_id}"
+        thread.position = 0
+        thread.parent_id = forum.id
+        thread.parent = forum
+        thread.category_id = None
+        thread.archived = True
+        thread.archive_timestamp = datetime(2026, 9, 28, tzinfo=timezone.utc)
+        thread.permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=False)
+        archived.append(thread)
+
+    async def archived_forum_threads(*, limit=100, before=None):
+        assert limit == 101
+        assert before is None
+        for thread in archived:
+            yield thread
+
+    forum.archived_threads.side_effect = archived_forum_threads
+    monkeypatch.setattr(bot_module, "_viewer_guild", lambda: SimpleNamespace(me=object(), channels=[forum]))
+
+    result = asyncio.run(bot_module.viewer_get_archived_threads(50, "public"))
+
+    assert len(result["threads"]) == 100
+    assert result["threads"][0]["id"] == "1000"
+    assert result["threads"][-1]["id"] == "1099"
+    assert result["before"] == archived[99].archive_timestamp.isoformat()
+    assert result["has_more"] is True
+
+
+def test_viewer_get_archived_private_page_uses_snowflake_cursor(monkeypatch):
+    parent = _channel("text", channel_id=10, position=1)
+    archived = Mock(spec=discord.Thread)
+    archived.id = 99
+    archived.name = "private-thread"
+    archived.position = 0
+    archived.parent_id = parent.id
+    archived.parent = parent
+    archived.category_id = None
+    archived.archived = True
+    archived.archive_timestamp = datetime(2026, 9, 28, tzinfo=timezone.utc)
+    archived.permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=False)
+
+    async def private_archives(*, private=False, joined=False, limit=100, before=None):
+        assert private is True and joined is True and limit == 101
+        assert before.id == 42
+        yield archived
+
+    parent.archived_threads.side_effect = private_archives
+    monkeypatch.setattr(bot_module, "_viewer_guild", lambda: SimpleNamespace(me=object(), channels=[parent]))
+
+    result = asyncio.run(bot_module.viewer_get_archived_threads(10, "joined_private", "42"))
+
+    assert result["threads"][0]["id"] == "99"
+    assert result["before"] == "99"
+    assert result["has_more"] is False
 
 
 def test_viewer_tree_serializes_current_voice_members(monkeypatch):

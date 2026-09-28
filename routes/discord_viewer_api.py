@@ -117,6 +117,35 @@ async def api_viewer_tree(request: Request, db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/archived-threads")
+async def api_viewer_archived_threads(
+    channel_id: int,
+    request: Request,
+    source: str = Query(...),
+    before: Optional[str] = Query(default=None, max_length=64),
+    db: Session = Depends(get_db),
+):
+    admin = _get_admin(request, db)
+    if not check_permission(admin, "discord_bot", "view"):
+        raise HTTPException(status_code=403)
+    _validate_viewer_ids(channel_id)
+    if source not in {"public", "joined_private"}:
+        raise HTTPException(status_code=400, detail="Недопустимый источник архивных веток")
+    if before:
+        try:
+            if source == "joined_private":
+                _validate_viewer_ids(int(before))
+            else:
+                datetime.fromisoformat(before)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Некорректный курсор архивных веток")
+    from discord_bot import bot as discord_bot
+    return await _call_bot(
+        discord_bot.viewer_get_archived_threads(channel_id, source, before),
+        timeout=30.0,
+    )
+
+
 @router.get("/api/v1/admin/discord-bot/viewer/channels/{channel_id}/messages")
 async def api_viewer_messages(channel_id: int, request: Request, before: Optional[int] = None, around: Optional[int] = None, limit: int = 50, db: Session = Depends(get_db)):
     admin = _get_admin(request, db)

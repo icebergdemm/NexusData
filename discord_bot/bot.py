@@ -1637,8 +1637,31 @@ def _serialize_voice_member(member, state) -> dict:
     }
 
 
+def _serialize_viewer_channel(ch, me) -> Optional[dict]:
+    channel_type = _viewer_channel_type(ch)
+    if channel_type is None:
+        return None
+    perms = ch.permissions_for(me)
+    if not perms.view_channel:
+        return None
+    return {
+        "id": str(ch.id), "name": ch.name,
+        "position": getattr(ch, "position", getattr(getattr(ch, "parent", None), "position", 0)),
+        "can_send": perms.send_messages,
+        "category_id": str(getattr(ch, "category_id", None) or getattr(getattr(ch, "parent", None), "category_id", None) or "") or None,
+        "parent_id": str(getattr(ch, "parent_id", None)) if getattr(ch, "parent_id", None) else None,
+        "type": channel_type,
+        "archived": bool(getattr(ch, "archived", False)),
+        "voice_members": [
+            _serialize_voice_member(member, member.voice)
+            for member in getattr(ch, "members", ())
+            if getattr(member, "voice", None) is not None
+        ] if channel_type in {"voice", "stage"} else [],
+    }
+
+
 async def viewer_get_tree() -> dict:
-    """Возвращает доступные боту каналы и активные/архивные ветки гильдии."""
+    """Возвращает каналы и активные ветки; архивы загружаются отдельно страницами."""
     guild = _viewer_guild()
     me = guild.me
     channels = []
@@ -1649,51 +1672,10 @@ async def viewer_get_tree() -> dict:
         if not getattr(thread, "archived", False) and int(getattr(thread, "id", 0)) not in channel_ids
     ]
     channel_objects.extend(active_threads)
-    channel_ids.update(int(thread.id) for thread in active_threads)
-
-    for parent in guild.channels:
-        if isinstance(parent, discord.ForumChannel):
-            archived_queries = (parent.archived_threads(limit=None),)
-        elif isinstance(parent, discord.TextChannel):
-            archived_queries = (
-                parent.archived_threads(private=private, joined=joined, limit=None)
-                for private, joined in ((False, False), (True, True))
-            )
-        else:
-            continue
-
-        for archived_threads in archived_queries:
-            try:
-                async for thread in archived_threads:
-                    if int(thread.id) not in channel_ids:
-                        channel_objects.append(thread)
-                        channel_ids.add(int(thread.id))
-            except discord.Forbidden:
-                # Private archives may be unavailable without MANAGE_THREADS;
-                # public channels and already cached threads still render.
-                continue
-
     for ch in channel_objects:
-        channel_type = _viewer_channel_type(ch)
-        if channel_type is None:
-            continue
-        perms = ch.permissions_for(me)
-        if not perms.view_channel:
-            continue
-        channels.append({
-            "id": str(ch.id), "name": ch.name,
-            "position": getattr(ch, "position", getattr(getattr(ch, "parent", None), "position", 0)),
-            "can_send": perms.send_messages,
-            "category_id": str(getattr(ch, "category_id", None) or getattr(getattr(ch, "parent", None), "category_id", None) or "") or None,
-            "parent_id": str(getattr(ch, "parent_id", None)) if getattr(ch, "parent_id", None) else None,
-            "type": channel_type,
-            "archived": bool(getattr(ch, "archived", False)),
-            "voice_members": [
-                _serialize_voice_member(member, member.voice)
-                for member in getattr(ch, "members", ())
-                if getattr(member, "voice", None) is not None
-            ] if channel_type in {"voice", "stage"} else [],
-        })
+        item = _serialize_viewer_channel(ch, me)
+        if item is not None:
+            channels.append(item)
     categories = [{"id": str(c.id), "name": c.name, "position": c.position} for c in guild.categories]
     categories.sort(key=lambda c: c["position"])
     channels.sort(key=lambda c: c["position"])
@@ -1702,6 +1684,39 @@ async def viewer_get_tree() -> dict:
         "categories": categories,
         "channels": channels,
     }
+
+
+async def viewer_get_archived_threads(channel_id: int, source: str, before: Optional[str] = None) -> dict:
+    guild = _viewer_guild()
+    parent = next((channel for channel in guild.channels if int(channel.id) == int(channel_id)), None)
+    if parent is None or not isinstance(parent, (discord.TextChannel, discord.ForumChannel)):
+        raise ValueError("Unsupported archive parent channel")
+    if source not in {"public", "joined_private"}:
+        raise ValueError("Unsupported archived thread source")
+    if source == "joined_private" and not isinstance(parent, discord.TextChannel):
+        raise ValueError("Private archives are available only for text channels")
+
+    before_value = None
+    if before:
+        before_value = discord.Object(id=int(before)) if source == "joined_private" else datetime.fromisoformat(before)
+    if source == "joined_private":
+        iterator = parent.archived_threads(private=True, joined=True, limit=101, before=before_value)
+    elif isinstance(parent, discord.ForumChannel):
+        iterator = parent.archived_threads(limit=101, before=before_value)
+    else:
+        iterator = parent.archived_threads(private=False, joined=False, limit=101, before=before_value)
+
+    page = []
+    async for thread in iterator:
+        page.append(thread)
+    has_more = len(page) > 100
+    page = page[:100]
+    channels = [item for thread in page if (item := _serialize_viewer_channel(thread, guild.me)) is not None]
+    cursor = None
+    if page:
+        last = page[-1]
+        cursor = str(last.id) if source == "joined_private" else last.archive_timestamp.isoformat()
+    return {"threads": channels, "before": cursor, "has_more": has_more}
 
 
 async def _viewer_channel(channel_id: int):

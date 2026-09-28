@@ -17,6 +17,12 @@ export function groupThreadsByParent<T extends ViewerChannel>(channels: T[]) {
   return threadsByParent
 }
 
+export function mergeViewerChannels<T extends { id: string }>(current: T[], incoming: T[]) {
+  const channels = new Map(current.map((channel) => [channel.id, channel]))
+  for (const channel of incoming) channels.set(channel.id, channel)
+  return [...channels.values()]
+}
+
 export function groupMembersByRole(members: ViewerMember[], roles: ViewerRole[]) {
   const sortedRoles = [...roles].sort((a, b) => b.position - a.position)
   return [

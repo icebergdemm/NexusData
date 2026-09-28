@@ -78,6 +78,48 @@ def _viewer_client(monkeypatch, *, allowed_actions, patch_bot_bridge=True):
     return TestClient(app)
 
 
+def test_viewer_archived_threads_requires_view_permission(monkeypatch):
+    with _viewer_client(monkeypatch, allowed_actions=set()) as client:
+        response = client.get("/api/v1/admin/discord-bot/viewer/channels/10/archived-threads?source=public")
+
+    assert response.status_code == 403
+
+
+def test_viewer_archived_threads_forwards_cursor_and_uses_longer_timeout(monkeypatch):
+    from discord_bot import bot as bot_module
+
+    operation = Mock()
+
+    async def archives(channel_id, source, before):
+        operation(channel_id, source, before)
+        return {"threads": [], "before": None, "has_more": False}
+
+    monkeypatch.setattr(bot_module, "viewer_get_archived_threads", archives)
+    bridge_kwargs = {}
+
+    async def passthrough(coro, **kwargs):
+        bridge_kwargs.update(kwargs)
+        return await coro
+
+    with _viewer_client(monkeypatch, allowed_actions={"view"}, patch_bot_bridge=False) as client:
+        monkeypatch.setattr(discord_viewer_api, "_call_bot", passthrough)
+        response = client.get(
+            "/api/v1/admin/discord-bot/viewer/channels/10/archived-threads?source=joined_private&before=42",
+        )
+
+    assert response.status_code == 200
+    operation.assert_called_once_with(10, "joined_private", "42")
+    assert bridge_kwargs == {"timeout": 30.0}
+
+
+@pytest.mark.parametrize("query", ["source=invalid", "source=joined_private&before=nope", "source=public&before=nope"])
+def test_viewer_archived_threads_rejects_invalid_source_or_cursor(monkeypatch, query):
+    with _viewer_client(monkeypatch, allowed_actions={"view"}) as client:
+        response = client.get(f"/api/v1/admin/discord-bot/viewer/channels/10/archived-threads?{query}")
+
+    assert response.status_code == 400
+
+
 def test_viewer_reaction_mutation_requires_manage_config(monkeypatch):
     from discord_bot import bot as bot_module
 

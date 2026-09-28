@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { applyVoiceState, discordSearchSnowflake, groupMembersByRole, groupThreadsByParent, mergeAuditEntries, parseDiscordSearch } from "../src/pages/discord-bot/viewer-utils.ts"
+import { applyVoiceState, discordSearchSnowflake, groupMembersByRole, groupThreadsByParent, mergeAuditEntries, mergeViewerChannels, parseDiscordSearch } from "../src/pages/discord-bot/viewer-utils.ts"
 
 test("threads are grouped by parent, sorted and orphan threads are ignored", () => {
   const grouped = groupThreadsByParent([
@@ -10,6 +10,15 @@ test("threads are grouped by parent, sorted and orphan threads are ignored", () 
     { id: "4", name: "orphan", position: 0, type: "thread", parent_id: "404" },
   ])
   assert.deepEqual(grouped.get("1")?.map((thread) => thread.id), ["3", "2"])
+})
+
+test("archive pages merge into the channel tree without duplicating threads", () => {
+  assert.deepEqual(mergeViewerChannels(
+    [{ id: "1", name: "general" }, { id: "2", name: "old" }],
+    [{ id: "2", name: "updated" }, { id: "3", name: "older" }],
+  ), [
+    { id: "1", name: "general" }, { id: "2", name: "updated" }, { id: "3", name: "older" },
+  ])
 })
 
 test("members appear in each Discord role group with unassigned members at bottom", () => {

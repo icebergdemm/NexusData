@@ -11,13 +11,14 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Hash, Volume2, GitBranch, Paperclip, Send, Download, Search, Loader2, X, ShieldCheck, Reply, Headphones, ChevronDown, Users, MoreHorizontal, Copy, Link2, Trash2, Radio } from "lucide-react"
 import { api, ApiError } from "@/lib/api"
 import { formatBrowserDate } from "@/lib/format-date"
-import { applyVoiceState, discordSearchSnowflake, groupMembersByRole, groupThreadsByParent, mergeAuditEntries, parseDiscordSearch } from "./viewer-utils"
+import { applyVoiceState, discordSearchSnowflake, groupMembersByRole, groupThreadsByParent, mergeAuditEntries, mergeViewerChannels, parseDiscordSearch } from "./viewer-utils"
 
 // ── Типы ─────────────────────────────────────────────────────────────────
 
 interface VoiceMember { id: string; display_name: string; avatar_url: string | null; self_mute: boolean; self_deaf: boolean; mute: boolean; deaf: boolean; video: boolean; streaming: boolean }
 interface TreeChannel { id: string; name: string; position: number; can_send: boolean; category_id: string | null; parent_id?: string | null; archived?: boolean; voice_members?: VoiceMember[]; type: "text" | "thread" | "voice" | "stage" | "forum" | "media" }
 interface TreeCategory { id: string; name: string; position: number }
+interface ArchivePageState { before: string | null; hasMore: boolean; loaded: boolean; loading: boolean }
 interface ChannelTree {
   guild: { id: string; name: string; icon_url: string | null }
   categories: TreeCategory[]
@@ -564,6 +565,7 @@ export function DiscordViewerTab() {
   const [jumpTo, setJumpTo] = useState<string | null>(null)
   const [channelMenu, setChannelMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [memberAccess, setMemberAccess] = useState<string | null>(null)
+  const [archivePages, setArchivePages] = useState<Record<string, ArchivePageState>>({})
   const channelMenuRef = useRef<HTMLDivElement>(null)
   const threadsByParent = useMemo(() => groupThreadsByParent(tree?.channels ?? []), [tree?.channels])
 
@@ -594,6 +596,35 @@ export function DiscordViewerTab() {
     try { await api.post(`/api/v1/admin/discord-bot/viewer/members/${memberId}/voice`, { target_channel_id: targetId }); toast.success("Участник перемещён"); queryClient.invalidateQueries({ queryKey: ["discord-viewer-tree"] }) }
     catch (e) { toast.error((e as ApiError).message) }
     finally { setDraggingMember(null) }
+  }
+  const loadArchivedThreads = async (parent: TreeChannel) => {
+    const sources = parent.type === "text" ? ["public", "joined_private"] : ["public"]
+    const pending = sources.filter((source) => {
+      const state = archivePages[`${parent.id}:${source}`]
+      return !state?.loaded || state.hasMore
+    })
+    if (!pending.length) return
+    setArchivePages((current) => Object.fromEntries([
+      ...Object.entries(current),
+      ...pending.map((source) => {
+        const key = `${parent.id}:${source}`
+        return [key, { ...(current[key] ?? { before: null, hasMore: false, loaded: false }), loading: true }]
+      }),
+    ]))
+    await Promise.all(pending.map(async (source) => {
+      const key = `${parent.id}:${source}`
+      const params = new URLSearchParams({ source })
+      const before = archivePages[key]?.before
+      if (before) params.set("before", before)
+      try {
+        const page = await api.get<{ threads: TreeChannel[]; before: string | null; has_more: boolean }>(`/api/v1/admin/discord-bot/viewer/channels/${parent.id}/archived-threads?${params}`)
+        queryClient.setQueryData<ChannelTree>(["discord-viewer-tree"], (current) => current ? { ...current, channels: mergeViewerChannels(current.channels, page.threads) } : current)
+        setArchivePages((current) => ({ ...current, [key]: { before: page.before, hasMore: page.has_more, loaded: true, loading: false } }))
+      } catch (error) {
+        setArchivePages((current) => ({ ...current, [key]: { ...(current[key] ?? { before: null, hasMore: false, loaded: false }), loading: false } }))
+        toast.error((error as ApiError).message)
+      }
+    }))
   }
   const searchMessages = async (offset = 0) => {
     const parsed = parseDiscordSearch(search)
@@ -665,6 +696,14 @@ export function DiscordViewerTab() {
       <Avatar className="size-5"><AvatarImage src={member.avatar_url ?? undefined} /><AvatarFallback className="text-[8px]">{initials(member.display_name)}</AvatarFallback></Avatar><span className="min-w-0 flex-1 truncate">{member.display_name}</span>{member.streaming && <Radio className="size-3 text-[#23a55a]" />}{member.self_mute || member.mute ? <span title="Микрофон выключен">мьют</span> : null}
     </button>)}
     {threadsByParent.get(item.id)?.map((thread) => channelButton(thread, true))}
+    {!nested && (item.type === "text" || item.type === "forum" || item.type === "media") && (() => {
+      const sources = item.type === "text" ? ["public", "joined_private"] : ["public"]
+      const states = sources.map((source) => archivePages[`${item.id}:${source}`])
+      const loading = states.some((state) => state?.loading)
+      const canLoad = states.some((state) => !state?.loaded || state.hasMore)
+      const loaded = states.some((state) => state?.loaded)
+      return <button type="button" disabled={loading || !canLoad} onClick={() => void loadArchivedThreads(item)} className="ml-7 rounded px-1 py-0.5 text-left text-[10px] text-[#949ba4] hover:bg-[#35373c] disabled:opacity-50">{loading ? "Загрузка архивных веток…" : canLoad ? (loaded ? "Загрузить ещё архивные ветки" : "Показать архивные ветки") : "Архивные ветки загружены"}</button>
+    })()}
   </div>
 
   return <div data-discord-viewer className="discord-client flex h-[calc(100dvh-44px)] min-h-[420px] flex-col overflow-hidden">
