@@ -90,7 +90,8 @@ export const api = {
     request<T>(path, { method: "PUT", body: data !== undefined ? JSON.stringify(data) : undefined }),
   patch: <T>(path: string, data?: unknown) =>
     request<T>(path, { method: "PATCH", body: data !== undefined ? JSON.stringify(data) : undefined }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  delete: <T>(path: string, data?: unknown) =>
+    request<T>(path, { method: "DELETE", body: data !== undefined ? JSON.stringify(data) : undefined }),
   /** multipart/form-data POST (file uploads) — do not JSON-encode the body. */
   postForm: <T>(path: string, form: FormData) => request<T>(path, { method: "POST", body: form }),
 }

@@ -24,6 +24,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Tuple
 
 import aiofiles
@@ -1589,6 +1590,7 @@ def _serialize_reply(msg: discord.Message) -> Optional[dict]:
 def _serialize_message(msg: discord.Message) -> dict:
     return {
         "id": str(msg.id),
+        "channel_id": str(getattr(getattr(msg, "channel", None), "id", "")),
         "content": msg.content,
         "author": _serialize_author(msg.author),
         "created_at": msg.created_at.isoformat(),
@@ -1600,6 +1602,11 @@ def _serialize_message(msg: discord.Message) -> dict:
         "embeds": [e.to_dict() for e in msg.embeds],
         "reply_to_id": str(msg.reference.message_id) if msg.reference and msg.reference.message_id else None,
         "reply_to": _serialize_reply(msg),
+        "pinned": bool(getattr(msg, "pinned", False)),
+        "reactions": [
+            {"emoji": str(reaction.emoji), "count": int(reaction.count), "me": bool(reaction.me)}
+            for reaction in getattr(msg, "reactions", ())
+        ],
     }
 
 
@@ -1608,25 +1615,56 @@ def _viewer_channel_type(channel) -> Optional[str]:
         return "thread"
     if isinstance(channel, discord.TextChannel):
         return "text"
+    if isinstance(channel, discord.ForumChannel):
+        return "media" if channel.type is discord.ChannelType.media else "forum"
     if isinstance(channel, VocalGuildChannel):
         return "stage" if isinstance(channel, discord.StageChannel) else "voice"
     return None
 
 
+def _serialize_voice_member(member, state) -> dict:
+    return {
+        "id": str(member.id),
+        "display_name": getattr(member, "display_name", getattr(member, "name", "Unknown")),
+        "avatar_url": str(member.display_avatar.url) if getattr(member, "display_avatar", None) else None,
+        "bot": bool(getattr(member, "bot", False)),
+        "self_mute": bool(getattr(state, "self_mute", False)),
+        "self_deaf": bool(getattr(state, "self_deaf", False)),
+        "mute": bool(getattr(state, "mute", False)),
+        "deaf": bool(getattr(state, "deaf", False)),
+        "video": bool(getattr(state, "self_video", False)),
+        "streaming": bool(getattr(state, "self_stream", False)),
+    }
+
+
 async def viewer_get_tree() -> dict:
-    """Категории/каналы, доступные для просмотра именно этому боту (иначе
-    список выглядел бы полным, а половина каналов при открытии падала бы
-    403-й ошибкой Discord). Голосовые и форумные каналы не отдаются — вьюер
-    работает с каналами, у которых Discord поддерживает текстовый чат."""
+    """Возвращает доступные боту каналы и активные/архивные ветки гильдии."""
     guild = _viewer_guild()
     me = guild.me
     channels = []
     channel_objects = list(guild.channels)
     channel_ids = {int(getattr(ch, "id", 0)) for ch in channel_objects}
-    channel_objects.extend(
+    active_threads = [
         thread for thread in getattr(guild, "threads", ())
         if not getattr(thread, "archived", False) and int(getattr(thread, "id", 0)) not in channel_ids
-    )
+    ]
+    channel_objects.extend(active_threads)
+    channel_ids.update(int(thread.id) for thread in active_threads)
+
+    for parent in guild.channels:
+        if not isinstance(parent, (discord.TextChannel, discord.ForumChannel)):
+            continue
+        for private, joined in ((False, False), (True, True)):
+            try:
+                async for thread in parent.archived_threads(private=private, joined=joined, limit=None):
+                    if int(thread.id) not in channel_ids:
+                        channel_objects.append(thread)
+                        channel_ids.add(int(thread.id))
+            except discord.Forbidden:
+                # Private archives may be unavailable without MANAGE_THREADS;
+                # public channels and already cached threads still render.
+                continue
+
     for ch in channel_objects:
         channel_type = _viewer_channel_type(ch)
         if channel_type is None:
@@ -1641,6 +1679,12 @@ async def viewer_get_tree() -> dict:
             "category_id": str(getattr(ch, "category_id", None) or getattr(getattr(ch, "parent", None), "category_id", None) or "") or None,
             "parent_id": str(getattr(ch, "parent_id", None)) if getattr(ch, "parent_id", None) else None,
             "type": channel_type,
+            "archived": bool(getattr(ch, "archived", False)),
+            "voice_members": [
+                _serialize_voice_member(member, member.voice)
+                for member in getattr(ch, "members", ())
+                if getattr(member, "voice", None) is not None
+            ] if channel_type in {"voice", "stage"} else [],
         })
     categories = [{"id": str(c.id), "name": c.name, "position": c.position} for c in guild.categories]
     categories.sort(key=lambda c: c["position"])
@@ -1652,25 +1696,107 @@ async def viewer_get_tree() -> dict:
     }
 
 
-async def viewer_get_messages(channel_id: int, before: Optional[int], limit: int) -> list:
-    channel = bot.get_channel(channel_id)
-    if not channel:
+async def _viewer_channel(channel_id: int):
+    guild = _viewer_guild()
+    channel = guild.get_channel_or_thread(channel_id) if hasattr(guild, "get_channel_or_thread") else None
+    if channel is None:
+        channel = bot.get_channel(channel_id)
+    if channel is None:
         channel = await bot.fetch_channel(channel_id)
+    if getattr(getattr(channel, "guild", None), "id", None) != guild.id:
+        raise ValueError("Channel is not in the configured guild")
+    if _viewer_channel_type(channel) is None:
+        raise ValueError("Unsupported channel type")
+    if not channel.permissions_for(guild.me).view_channel:
+        raise ValueError("Channel is not visible to the bot")
+    return channel
+
+
+async def viewer_get_messages(channel_id: int, before: Optional[int], limit: int, around: Optional[int] = None) -> list:
+    channel = await _viewer_channel(channel_id)
+    if _viewer_channel_type(channel) in {"forum", "media"}:
+        raise ValueError("Open a forum post to read messages")
     limit = max(1, min(limit, 100))
     before_obj = discord.Object(id=before) if before else None
+    around_obj = discord.Object(id=around) if around else None
     out = []
-    async for msg in channel.history(limit=limit, before=before_obj):
+    async for msg in channel.history(limit=limit, before=before_obj, around=around_obj):
         out.append(_serialize_message(msg))
     return out  # порядок — от новых к старым (как отдаёт history())
 
 
+_VIEWER_SEARCH_ARRAY_PARAMS = (
+    "channel_id", "author_type", "author_id", "mentions", "mentions_role_id",
+    "replied_to_user_id", "replied_to_message_id", "has", "embed_type",
+    "embed_provider", "link_hostname", "attachment_filename", "attachment_extension",
+)
+_VIEWER_SEARCH_SCALAR_PARAMS = (
+    "mention_everyone", "pinned", "sort_by", "sort_order",
+    "max_id", "min_id", "slop", "include_nsfw",
+)
+
+
+def _serialize_search_message(guild, data):
+    if not isinstance(data, dict):
+        return _serialize_message(data)
+    channel_id = int(data["channel_id"])
+    channel = guild.get_channel_or_thread(channel_id)
+    if channel is None:
+        channel = SimpleNamespace(id=channel_id, guild=guild)
+    message = discord.Message(state=bot._connection, channel=channel, data=data)
+    return _serialize_message(message)
+
+
+async def viewer_search_messages(query: dict, offset: int, limit: int) -> dict:
+    guild = _viewer_guild()
+    limit = max(1, min(int(limit), 25))
+    offset = max(0, min(int(offset), 9975))
+    params = []
+    if query.get("content"):
+        params.insert(0, ("content", str(query["content"])[:1024]))
+    for key in _VIEWER_SEARCH_ARRAY_PARAMS:
+        for value in query.get(key) or ():
+            params.append((key, str(value)))
+    for key in _VIEWER_SEARCH_SCALAR_PARAMS:
+        value = query.get(key)
+        if value is None or value == "":
+            continue
+        if key in {"mention_everyone", "pinned", "include_nsfw"}:
+            value = "true" if value else "false"
+        params.append((key, str(value)))
+    params.extend((("limit", str(limit)), ("offset", str(offset))))
+
+    response = await bot.http.request(
+        discord.http.Route("GET", "/guilds/{guild_id}/messages/search", guild_id=guild.id),
+        params=params,
+    )
+    if response.get("code") == 110000:
+        return {
+            "messages": [], "total_results": 0, "offset": offset, "has_more": False,
+            "indexing": True, "retry_after": max(0.0, float(response.get("retry_after", 1) or 0)),
+        }
+
+    nested_messages = response.get("messages") or []
+    flat_messages = [message for group in nested_messages for message in (group if isinstance(group, list) else [group])]
+    messages = [_serialize_search_message(guild, message) for message in flat_messages]
+    total_results = int(response.get("total_results", 0) or 0)
+    return {
+        "messages": messages,
+        "total_results": total_results,
+        "offset": offset,
+        "has_more": offset + limit < min(total_results, 10000),
+        "indexing": False,
+        "retry_after": None,
+    }
+
+
 async def viewer_validate_channel(channel_id: int) -> bool:
     """Check the same bot-side visibility contract used by the channel tree."""
-    guild = _viewer_guild()
-    channel = guild.get_channel(channel_id)
-    if channel is None or _viewer_channel_type(channel) is None:
+    try:
+        channel = await _viewer_channel(channel_id)
+    except (discord.NotFound, discord.Forbidden, ValueError):
         return False
-    return bool(channel.permissions_for(guild.me).view_channel)
+    return True
 
 
 async def viewer_send_message(
@@ -1680,9 +1806,9 @@ async def viewer_send_message(
     file_bytes: Optional[bytes],
     reply_to_id: Optional[int] = None,
 ) -> dict:
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        channel = await bot.fetch_channel(channel_id)
+    channel = await _viewer_channel(channel_id)
+    if _viewer_channel_type(channel) in {"forum", "media"}:
+        raise ValueError("Open a forum post to send a message")
     import io
     file_obj = discord.File(io.BytesIO(file_bytes), filename=filename) if file_bytes else None
     send_kwargs = {
@@ -1703,14 +1829,252 @@ async def viewer_send_message(
     return _serialize_message(msg)
 
 
+async def _viewer_message(channel_id: int, message_id: int):
+    channel = await _viewer_channel(channel_id)
+    if _viewer_channel_type(channel) in {"forum", "media"}:
+        raise ValueError("Open a forum post to access message reactions")
+    return channel, await channel.fetch_message(message_id)
+
+
+async def viewer_toggle_reaction(channel_id: int, message_id: int, emoji: str) -> dict:
+    channel, message = await _viewer_message(channel_id, message_id)
+    reaction_emoji = discord.PartialEmoji.from_str(emoji)
+    existing = next((reaction for reaction in message.reactions if str(reaction.emoji) == str(reaction_emoji)), None)
+    if existing and existing.me:
+        if bot.user is None:
+            raise RuntimeError("Bot is not connected to Discord")
+        await message.remove_reaction(reaction_emoji, bot.user)
+        return {"emoji": str(reaction_emoji), "me": False}
+    await message.add_reaction(reaction_emoji)
+    return {"emoji": str(reaction_emoji), "me": True}
+
+
+async def viewer_get_reaction_users(
+    channel_id: int, message_id: int, emoji: str, after: Optional[int], limit: int,
+) -> dict:
+    _channel, message = await _viewer_message(channel_id, message_id)
+    reaction_emoji = discord.PartialEmoji.from_str(emoji)
+    reaction = next((item for item in message.reactions if str(item.emoji) == str(reaction_emoji)), None)
+    if reaction is None:
+        return {"users": [], "next_after": None}
+    limit = max(1, min(int(limit), 100))
+    after_object = discord.Object(id=int(after)) if after else None
+    users = []
+    async for user in reaction.users(limit=limit, after=after_object):
+        users.append(_serialize_author(user))
+    return {"users": users, "next_after": users[-1]["id"] if len(users) == limit else None}
+
+
+def _viewer_require_manage_messages(channel, guild) -> None:
+    if not channel.permissions_for(guild.me).manage_messages:
+        raise PermissionError("MANAGE_MESSAGES is required")
+
+
+async def viewer_remove_reaction(channel_id: int, message_id: int, emoji: str, user_id: int) -> dict:
+    channel = await _viewer_channel(channel_id)
+    guild = _viewer_guild()
+    _viewer_require_manage_messages(channel, guild)
+    member = guild.get_member(user_id)
+    if member is None:
+        member = await guild.fetch_member(user_id)
+    message = await channel.fetch_message(message_id)
+    await message.remove_reaction(discord.PartialEmoji.from_str(emoji), member)
+    return {"removed": True, "user_id": str(member.id)}
+
+
+async def viewer_clear_reactions(channel_id: int, message_id: int) -> dict:
+    channel = await _viewer_channel(channel_id)
+    guild = _viewer_guild()
+    _viewer_require_manage_messages(channel, guild)
+    message = await channel.fetch_message(message_id)
+    await message.clear_reactions()
+    return {"cleared": True}
+
+
+async def viewer_set_message_pinned(channel_id: int, message_id: int, pinned: bool) -> dict:
+    channel, message = await _viewer_message(channel_id, message_id)
+    guild = _viewer_guild()
+    _viewer_require_manage_messages(channel, guild)
+    if pinned:
+        await message.pin(reason="Закреплено из Discord-вьюера")
+    else:
+        await message.unpin(reason="Откреплено из Discord-вьюера")
+    return {"message_id": str(message.id), "pinned": pinned}
+
+
+async def viewer_delete_message(channel_id: int, message_id: int, reason: str) -> dict:
+    channel, message = await _viewer_message(channel_id, message_id)
+    _viewer_require_manage_messages(channel, _viewer_guild())
+    await message.delete(reason=str(reason).strip()[:512] or "Удалено из Discord-вьюера")
+    return {"deleted": True, "message_id": str(message_id)}
+
+
+async def viewer_create_message_thread(channel_id: int, message_id: int, name: str) -> dict:
+    channel, message = await _viewer_message(channel_id, message_id)
+    guild = _viewer_guild()
+    if not channel.permissions_for(guild.me).create_public_threads:
+        raise PermissionError("CREATE_PUBLIC_THREADS is required")
+    thread = await message.create_thread(name=str(name).strip()[:100], reason="Ветка создана из Discord-вьюера")
+    return {"id": str(thread.id), "name": thread.name, "parent_id": str(channel.id)}
+
+
+async def _viewer_member(member_id: int):
+    guild = _viewer_guild()
+    member = guild.get_member(member_id)
+    if member is None:
+        member = await guild.fetch_member(member_id)
+    if getattr(getattr(member, "guild", guild), "id", None) != guild.id:
+        raise ValueError("Member is not in the configured guild")
+    return guild, member
+
+
+def _viewer_require_manage_member(channel, guild, member) -> None:
+    if not channel.permissions_for(guild.me).manage_roles:
+        raise PermissionError("MANAGE_ROLES is required to change channel access")
+
+
+async def viewer_get_channel_member_access(channel_id: int, member_id: int) -> dict:
+    channel = await _viewer_channel(channel_id)
+    _guild, member = await _viewer_member(member_id)
+    overwrite = channel.overwrites_for(member)
+    effective = bool(channel.permissions_for(member).view_channel)
+    return {
+        "channel_id": str(channel.id),
+        "member_id": str(member.id),
+        "effective_view_channel": effective,
+        "explicit_view_channel": overwrite.view_channel,
+    }
+
+
+async def viewer_set_channel_member_access(channel_id: int, member_id: int, access: str) -> dict:
+    if access not in {"allow", "deny", "inherit"}:
+        raise ValueError("access must be allow, deny or inherit")
+    channel = await _viewer_channel(channel_id)
+    guild, member = await _viewer_member(member_id)
+    _viewer_require_manage_member(channel, guild, member)
+    overwrite = channel.overwrites_for(member)
+    overwrite.view_channel = {"allow": True, "deny": False, "inherit": None}[access]
+    await channel.set_permissions(
+        member,
+        overwrite=overwrite,
+        reason="Изменение доступа к Discord-каналу через Discord-вьюер",
+    )
+    return {
+        "channel_id": str(channel.id),
+        "member_id": str(member.id),
+        "access": access,
+        "effective_view_channel": bool(channel.permissions_for(member).view_channel),
+    }
+
+
+async def viewer_create_channel_invite(channel_id: int) -> dict:
+    channel = await _viewer_channel(channel_id)
+    if not channel.permissions_for(_viewer_guild().me).create_instant_invite:
+        raise PermissionError("CREATE_INSTANT_INVITE is required")
+    invite = await channel.create_invite(
+        max_age=604800,
+        max_uses=0,
+        reason="Приглашение создано через Discord-вьюер",
+    )
+    return {"code": invite.code, "url": invite.url}
+
+
+async def viewer_delete_channel(channel_id: int, reason: str) -> dict:
+    channel = await _viewer_channel(channel_id)
+    if not channel.permissions_for(_viewer_guild().me).manage_channels:
+        raise PermissionError("MANAGE_CHANNELS is required")
+    reason = str(reason).strip()[:512]
+    if not reason:
+        raise ValueError("Deletion reason is required")
+    channel_name = channel.name
+    await channel.delete(reason=reason)
+    return {"deleted": True, "channel_id": str(channel_id), "channel_name": channel_name}
+
+
+async def viewer_move_member(member_id: int, target_channel_id: int) -> dict:
+    guild, member = await _viewer_member(member_id)
+    target = await _viewer_channel(target_channel_id)
+    if _viewer_channel_type(target) not in {"voice", "stage"}:
+        raise ValueError("Target must be a voice or stage channel")
+    source = getattr(getattr(member, "voice", None), "channel", None)
+    if source is None:
+        raise ValueError("Member is not connected to a voice channel")
+    if not source.permissions_for(guild.me).move_members:
+        raise PermissionError("MOVE_MEMBERS is required in the source channel")
+    if not target.permissions_for(guild.me).connect:
+        raise PermissionError("CONNECT is required in the target channel")
+    await member.move_to(target, reason="Перенос участника через Discord-вьюер")
+    return {"member_id": str(member.id), "channel_id": str(target.id)}
+
+
+def _viewer_audit_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, discord.Enum):
+        return value.value
+    if isinstance(value, (list, tuple, set)):
+        return [_viewer_audit_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _viewer_audit_value(item) for key, item in value.items()}
+    object_id = getattr(value, "id", None)
+    if object_id is not None:
+        return {"id": str(object_id), "name": getattr(value, "name", None)}
+    return str(value)[:500]
+
+
+def _serialize_viewer_audit_entry(entry) -> dict:
+    before = getattr(getattr(getattr(entry, "changes", None), "before", None), "__dict__", {})
+    after = getattr(getattr(getattr(entry, "changes", None), "after", None), "__dict__", {})
+    changes = [
+        {"key": key, "old_value": _viewer_audit_value(before.get(key)), "new_value": _viewer_audit_value(after.get(key))}
+        for key in sorted(before.keys() | after.keys())
+    ]
+    actor = getattr(entry, "user", None)
+    target = getattr(entry, "target", None)
+    action = getattr(entry, "action", None)
+    return {
+        "id": str(entry.id),
+        "action_type": int(getattr(action, "value", action or 0)),
+        "action": getattr(action, "name", "unknown"),
+        "actor": {"id": str(actor.id), "name": getattr(actor, "display_name", None) or getattr(actor, "name", None)} if actor else None,
+        "target": {"id": str(target.id), "name": getattr(target, "name", None)} if getattr(target, "id", None) is not None else None,
+        "created_at": entry.created_at.isoformat(),
+        "reason": getattr(entry, "reason", None),
+        "changes": changes,
+    }
+
+
+async def viewer_get_audit_log(
+    before: int | None = None,
+    limit: int = 50,
+    user_id: int | None = None,
+    action_type: int | None = None,
+) -> dict:
+    guild = _viewer_guild()
+    if not guild.me.guild_permissions.view_audit_log:
+        raise PermissionError("VIEW_AUDIT_LOG is required to read the Discord audit log")
+    kwargs = {"limit": max(1, min(int(limit), 100))}
+    if before is not None:
+        kwargs["before"] = discord.Object(id=int(before))
+    if user_id is not None:
+        kwargs["user"] = discord.Object(id=int(user_id))
+    if action_type is not None:
+        action = discord.AuditLogAction.try_value(int(action_type))
+        if action is None:
+            raise ValueError("Unknown Discord audit action type")
+        kwargs["action"] = action
+    entries = [_serialize_viewer_audit_entry(entry) async for entry in guild.audit_logs(**kwargs)]
+    return {"entries": entries, "before": entries[-1]["id"] if entries else (str(before) if before else None), "has_more": len(entries) == kwargs["limit"]}
+
+
 async def viewer_export_messages(channel_id: int, max_messages: int) -> list:
     """Полная выгрузка канала в JSON (см. routes/discord_viewer_api.py).
     Ограничено max_messages, чтобы случайный экспорт древнего канала с
     десятками тысяч сообщений не подвесил бота на несколько минут внутри
     одного действия на общем event loop."""
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        channel = await bot.fetch_channel(channel_id)
+    channel = await _viewer_channel(channel_id)
+    if _viewer_channel_type(channel) in {"forum", "media"}:
+        raise ValueError("Open a forum post to export messages")
     max_messages = max(1, min(max_messages, 20000))
     out = []
     async for msg in channel.history(limit=max_messages, oldest_first=True):
@@ -4873,6 +5237,51 @@ async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
         "channel_id": str(payload.channel_id),
         "message_id": str(payload.message_id),
     })
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if getattr(getattr(member, "guild", None), "id", None) != GUILD_ID:
+        return
+
+    old_channel = getattr(before, "channel", None)
+    new_channel = getattr(after, "channel", None)
+    channel_ids = list(dict.fromkeys(
+        int(channel.id) for channel in (old_channel, new_channel) if channel is not None
+    ))
+    for channel_id in channel_ids:
+        if not viewer_events.has_subscribers(channel_id):
+            continue
+        connected = new_channel is not None and int(new_channel.id) == channel_id
+        voice = (
+            {"member": _serialize_voice_member(member, after), "member_id": str(member.id), "connected": True}
+            if connected else {"member_id": str(member.id), "connected": False}
+        )
+        viewer_events.publish(channel_id, {
+            "type": "voice_state",
+            "channel_id": str(channel_id),
+            "voice": voice,
+        })
+
+
+def _publish_viewer_reaction(payload) -> None:
+    if payload.guild_id != GUILD_ID or not viewer_events.has_subscribers(payload.channel_id):
+        return
+    viewer_events.publish(payload.channel_id, {
+        "type": "reaction_update",
+        "channel_id": str(payload.channel_id),
+        "message_id": str(payload.message_id),
+    })
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    _publish_viewer_reaction(payload)
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    _publish_viewer_reaction(payload)
 
 
 # Sync messages from ticket channels to NexusData

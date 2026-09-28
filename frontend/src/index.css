@@ -36,6 +36,62 @@
 
 @custom-variant dark (&:is(.dark *));
 
+.discord-client {
+  font-family: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="sidebar-wrapper"] {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="sidebar"],
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="sidebar-gap"],
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="app-header"] {
+  display: none !important;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="sidebar-inset"] {
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  border-radius: 0;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="app-content"] {
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="app-content"] > div {
+  height: 100%;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="tabs"] {
+  height: 100%;
+  min-height: 0;
+  gap: 0;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="tabs-list"] {
+  width: 100%;
+  height: 44px;
+  flex: 0 0 44px;
+  margin: 0 !important;
+  justify-content: flex-start;
+  border-bottom: 1px solid #1e1f22;
+  background: #2b2d31;
+  padding: 0 12px;
+}
+
+html[data-ui-version="classic"]:has([data-discord-viewer]) [data-slot="tabs-content"] {
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
 /*
   shadcn.com's own neutral/zinc dark theme for structure (background, card,
   border, muted), with a blue primary accent + vivid status colors layered on
