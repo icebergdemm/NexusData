@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Bar, Line } from "react-chartjs-2"
 import {
-  Activity, Anchor, Ban, Bot, BrainCircuit, CalendarDays, Check, ChevronRight, Clock3,
+  Activity, AlertTriangle, Anchor, Ban, Bot, BrainCircuit, CalendarDays, Check, ChevronRight, Clock3,
   Copy, Crosshair, Download, Eye, EyeOff, Files, Filter, FlaskConical, Gauge, Info, Layers, LocateFixed,
   MapPin, Pencil, Plus, Radar, Save, Search, ShipWheel, Skull, SlidersHorizontal, Sparkles,
   Target, Trash2, TrendingDown, TrendingUp, Wand2, X, Zap,
@@ -860,13 +860,52 @@ function SchemeRow({ scheme, index, onEdit, onDelete, overrideTag }: {
   </div>
 }
 
+function LLMRunDialog({ record, onOpenChange, onApply, applying }: {
+  record: LLMRunRecord | null
+  onOpenChange: (open: boolean) => void
+  onApply: (runId: string) => void
+  applying: boolean
+}) {
+  const result = record?.result
+  const changes = result?.proposed_changes ?? []
+  return <Dialog open={record !== null} onOpenChange={onOpenChange}>
+    {record && <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden p-0 sm:max-w-3xl">
+      <DialogHeader className="border-b bg-muted/20 px-6 py-5 pr-12">
+        <div className="flex flex-wrap items-center gap-2"><Badge variant={record.status === "succeeded" ? "default" : record.status === "failed" ? "destructive" : "secondary"}>{record.status}</Badge><Badge variant="outline">{record.mode}</Badge><Badge variant="secondary">{record.source === "live" ? "Наблюдение" : record.source === "auto" ? "Автоцикл" : "Вручную"}</Badge></div>
+        <DialogTitle className="mt-2">Результат LLM-цикла</DialogTitle>
+        <DialogDescription>{formatBrowserDate(record.requested_at)}{record.duration_ms != null ? ` · ${Math.round(record.duration_ms / 1000)} сек.` : ""}{record.confidence != null ? ` · уверенность ${Math.round(record.confidence * 100)}%` : ""}</DialogDescription>
+      </DialogHeader>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
+        {record.instruction && <div className="rounded-xl border bg-muted/20 p-3 text-sm"><div className="mb-1 text-xs font-medium text-muted-foreground">Инструкция оператора</div>{record.instruction}</div>}
+        {record.error_message && <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{record.error_message}</div>}
+        {result?.situation && <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm leading-relaxed">{result.situation}</div>}
+        {result?.scores && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{([
+          ["Экипаж", result.scores.crew_effectiveness], ["Монстры", result.scores.monster_strength],
+          ["Давление волн", result.scores.wave_pressure], ["Корабль", result.scores.ship_efficiency],
+        ] as const).map(([label, score]) => <div key={label} className="rounded-xl border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-xl font-semibold">{score == null ? "—" : `${Math.round(score)}/100`}</div></div>)}</div>}
+        {result?.scores?.basis && <p className="text-xs text-muted-foreground">Основание оценок: {result.scores.basis}</p>}
+        {result?.crew_summary && <section className="space-y-2"><h3 className="text-sm font-semibold">Эффективность экипажа</h3><div className="rounded-xl border p-4 text-sm leading-relaxed">{result.crew_summary}</div></section>}
+        {(result?.recommendations?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Рекомендации оператору</h3>{result!.recommendations!.map((item, index) => <div key={index} className="rounded-xl border bg-muted/10 p-3"><div className="font-medium">{item.title}</div><div className="mt-1 text-sm text-muted-foreground">{item.detail}</div></div>)}</section>}
+        {changes.length > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Предлагаемые изменения</h3>{changes.map((change, index) => <div key={index} className="grid gap-1 rounded-xl border p-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto]"><span className="font-mono">{change.key}</span><span>{String(change.old_value ?? "—")} → {String(change.new_value)}</span>{change.reason && <span className="text-muted-foreground sm:col-span-2">{change.reason}</span>}</div>)}</section>}
+        {(result?.applied_changes?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Применено</h3>{result!.applied_changes!.map((change, index) => <div key={index} className="rounded-xl border border-success/30 bg-success/5 p-3 text-sm"><span className="font-mono">{change.key}: {String(change.old_value ?? "—")} → {String(change.new_value)}</span>{change.reason && <p className="mt-1 text-muted-foreground">{change.reason}</p>}</div>)}</section>}
+        {(result?.spawn_requests?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold">Планы спавна</h3>{result!.spawn_requests!.map((item, index) => <div key={index} className="rounded-xl border p-3 text-sm">{item.species} × {item.count} · {item.position_hint}{item.reason ? ` — ${item.reason}` : ""}</div>)}</section>}
+        {(result?.rejected?.length ?? 0) > 0 && <section className="space-y-2"><h3 className="text-sm font-semibold text-warning">Отклонено проверкой</h3>{result!.rejected!.map((item, index) => <div key={index} className="rounded-xl border border-warning/30 bg-warning/5 p-3 text-sm">{item}</div>)}</section>}
+        {result?.live_metrics && <details className="rounded-xl border p-3"><summary className="cursor-pointer text-sm font-medium">Метрики живого снимка</summary><pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-muted/30 p-3 text-xs">{JSON.stringify(result.live_metrics, null, 2)}</pre></details>}
+      </div>
+      <DialogFooter className="border-t px-6 py-4 sm:flex-row">
+        {changes.length > 0 && record.status === "succeeded" && <Button disabled={applying} onClick={() => onApply(record.run_id)}><Check className="size-4" />Применить предложения</Button>}
+        <Button variant="outline" onClick={() => onOpenChange(false)}>Закрыть</Button>
+      </DialogFooter>
+    </DialogContent>}
+  </Dialog>
+}
+
 function LLMPanel({ server, reports, learning }: { server: string; reports: RoundReport[]; learning: boolean }) {
   const queryClient = useQueryClient()
   const [instruction, setInstruction] = useState("")
   const [mode, setMode] = useState<"analyze" | "apply" | "spawn">("analyze")
+  const [selectedRun, setSelectedRun] = useState<LLMRunRecord | null>(null)
   const runtime = useQuery({ queryKey: ["monster-spawn-llm", server], queryFn: () => monsterSpawnApi.llmRuntime(server), refetchInterval: 10000 })
-  // Durable run records: полный результат больше не в AppSetting (он
-  // обрезался 2000-символьным лимитом и «терялся»), а в таблице циклов.
   const runsQuery = useQuery({ queryKey: ["monster-spawn-llm-runs", server], queryFn: () => monsterSpawnApi.llmRuns(server, 30), refetchInterval: 5000 })
   const saveRuntime = useMutation({
     mutationFn: (body: Partial<Pick<LLMRuntime, "enabled" | "auto_apply" | "auto_interval_minutes" | "live_analysis_enabled" | "live_analysis_interval_seconds">>) => monsterSpawnApi.updateLLMRuntime(server, body),
@@ -875,7 +914,7 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
   })
   const run = useMutation({
     mutationFn: () => monsterSpawnApi.runLLM(server, { mode, instruction: instruction.trim() || undefined }),
-    onSuccess: () => { toast.success("Цикл поставлен в очередь — результат появится ниже"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] }) },
+    onSuccess: () => { toast.success("Цикл поставлен в очередь"); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm", server] }); queryClient.invalidateQueries({ queryKey: ["monster-spawn-llm-runs", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
   const cancelRun = useMutation({
@@ -891,100 +930,90 @@ function LLMPanel({ server, reports, learning }: { server: string; reports: Roun
   })
   const applyProposal = useMutation({
     mutationFn: (runId: string) => monsterSpawnApi.applyProposal(server, runId),
-    onSuccess: () => { toast.success("Предложенные настройки применены"); queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] }) },
+    onSuccess: () => { toast.success("Предложенные настройки применены"); setSelectedRun(null); queryClient.invalidateQueries({ queryKey: ["monster-spawn", server] }) },
     onError: (error: Error) => toast.error(error.message),
   })
 
   const r = runtime.data?.runtime
   const deployment = runtime.data?.deployment
-  const records: LLMRunRecord[] = runsQuery.data?.runs ?? []
+  const records = runsQuery.data?.runs ?? []
   const last = records[0] ?? null
   const latestProposal = records.find((record) => record.source === "auto" && record.instruction?.startsWith("round-report:"))
     ?? records.find((record) => record.source !== "live" && record.status === "succeeded" && (record.result?.proposed_changes?.length ?? 0) > 0)
   const queued = r?.pending_run ?? null
   const active = r?.active_run ?? null
   const busy = run.isPending || queued !== null || active !== null
+  const statusText = (status: string) => status === "succeeded" ? "Готово" : status === "failed" ? "Ошибка" : status === "running" ? "Выполняется" : status === "queued" ? "В очереди" : "Отменено"
+  const statusVariant = (status: string) => status === "succeeded" ? "default" as const : status === "failed" ? "destructive" as const : "secondary" as const
 
-  return <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3">
-    <CardTitle className="flex items-center gap-2 text-sm"><Bot className="size-4 text-primary" /> LLM-ассистент</CardTitle>
-    <CardDescription className="text-xs">{deployment?.has_base_url ? `агрегатор: ${deployment.base_url} · модель: ${deployment.model} · t=${deployment.temperature}` : "Не настроен — задайте AI_DOSSIER_URL и AI_DOSSIER_API_KEY в .env (см. docs/MONSTER_LLM_SETUP.md)"}</CardDescription>
-  </CardHeader>
-    <CardContent className="space-y-4 p-4">
-      {learning && <div className="rounded-lg border border-info/30 bg-info/5 p-3 text-xs">Режим обучения: модель анализирует ванильные волны и предлагает настройки для будущего активного режима. Автоцикл не применяет изменения и не создаёт спавны.</div>}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Ассистент включён</span><Switch checked={r?.enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ enabled: value })} /></div>
-        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Автоприменение</span><Switch checked={r?.auto_apply === true} onCheckedChange={(value) => saveRuntime.mutate({ auto_apply: value })} /></div>
-        <Label className="space-y-1 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Автоцикл, мин (0 = вручную)</span><Input type="number" min={0} max={1440} value={r?.auto_interval_minutes ?? 0} onChange={(event) => saveRuntime.mutate({ auto_interval_minutes: Math.max(0, Number(event.target.value) || 0) })} /></Label>
-        <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-xs"><span>Анализ раунда в реальном времени</span><Switch checked={r?.live_analysis_enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ live_analysis_enabled: value })} /></div>
-        <Label className="space-y-1 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Интервал live-анализа, сек. (30–600)</span><Input type="number" min={30} max={600} value={r?.live_analysis_interval_seconds ?? 60} onChange={(event) => saveRuntime.mutate({ live_analysis_interval_seconds: Math.max(30, Math.min(600, Number(event.target.value) || 60)) })} /></Label>
-      </div>
-      <p className="text-[11px] text-muted-foreground">Запускается только при включённом ассистенте, активном раунде и свежем снимке обзора мира. Отчёт сохраняется в журнале; настройки остаются предложениями для оператора.</p>
-      <div className="space-y-2">
-        <Label className="space-y-1 text-xs"><span className="text-muted-foreground">Промпт для LLM (необязательно; дополняет системный промпт анализа)</span><Textarea rows={3} maxLength={2000} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Например: удели внимание длительным столкновениям и потерям экипажа" /></Label>
-        <div className="flex flex-wrap gap-2">
-          <Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger className="w-56"><SelectValue /></SelectTrigger><SelectContent>
-            <SelectItem value="analyze">analyze · разбор и рекомендации</SelectItem>
-            <SelectItem value="apply">apply · применить настройки</SelectItem>
-            <SelectItem value="spawn">spawn · настройки + спавн</SelectItem>
-          </SelectContent></Select>
-          <Button disabled={busy || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" /> {active ? "Модель думает…" : queued ? "В очереди…" : run.isPending ? "Отправка…" : "Запустить LLM-цикл"}</Button>
+  return <div className="space-y-4">
+    <Card className="overflow-hidden border-primary/20 bg-gradient-to-br from-primary/10 via-card to-card py-0">
+      <CardContent className="flex flex-wrap items-center gap-4 p-5">
+        <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary"><Bot className="size-6" /></div>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold">LLM-ассистент</h2><Badge variant={runtime.data?.endpoint_configured ? "secondary" : "destructive"}>{runtime.data?.endpoint_configured ? "AI-центр подключён" : "Нет подключения"}</Badge></div><p className="mt-1 truncate text-sm text-muted-foreground">{deployment?.has_base_url ? `${deployment.model} · ${deployment.base_url}` : "Настройте агрегатор в AI-центре"}</p></div>
+        {last && <Button variant="outline" size="sm" onClick={() => setSelectedRun(last)}>Последний запуск <ChevronRight className="size-4" /></Button>}
+      </CardContent>
+    </Card>
+    {learning && <div className="flex items-start gap-3 rounded-xl border border-info/30 bg-info/5 p-4 text-sm"><Info className="mt-0.5 size-4 shrink-0 text-info" /><div><div className="font-medium">Режим обучения</div><p className="mt-1 text-muted-foreground">Анализируются ванильные волны. Предложения предназначены для будущего активного режима и не создают спавны.</p></div></div>}
+
+    <Tabs defaultValue="assistant" className="space-y-4">
+      <TabsList className="grid h-auto w-full grid-cols-3 rounded-xl border bg-muted/40 p-1"><TabsTrigger value="assistant" className="rounded-lg">Ассистент</TabsTrigger><TabsTrigger value="rounds" className="rounded-lg">Раунды · {reports.length}</TabsTrigger><TabsTrigger value="history" className="rounded-lg">История · {records.length}</TabsTrigger></TabsList>
+      <TabsContent value="assistant" className="space-y-4">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,.8fr)]">
+          <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Поведение ассистента</CardTitle><CardDescription className="text-xs">Автоматические изменения требуют явного включения автоприменения.</CardDescription></CardHeader><CardContent className="grid gap-3 p-4 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>Ассистент включён</span><Switch checked={r?.enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ enabled: value })} /></div>
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>Автоприменение</span><Switch checked={r?.auto_apply === true} onCheckedChange={(value) => saveRuntime.mutate({ auto_apply: value })} /></div>
+            <Label className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs"><span className="text-muted-foreground">Автоцикл, минут · 0 — вручную</span><Input type="number" min={0} max={1440} value={r?.auto_interval_minutes ?? 0} onChange={(event) => saveRuntime.mutate({ auto_interval_minutes: Math.max(0, Number(event.target.value) || 0) })} /></Label>
+            <div className="flex items-center justify-between gap-3 rounded-xl border bg-muted/10 p-3 text-sm"><span>Наблюдение за раундом</span><Switch checked={r?.live_analysis_enabled === true} onCheckedChange={(value) => saveRuntime.mutate({ live_analysis_enabled: value })} /></div>
+            <Label className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs sm:col-span-2"><span className="text-muted-foreground">Интервал наблюдения · 30–600 секунд</span><Input type="number" min={30} max={600} value={r?.live_analysis_interval_seconds ?? 60} onChange={(event) => saveRuntime.mutate({ live_analysis_interval_seconds: Math.max(30, Math.min(600, Number(event.target.value) || 60)) })} /></Label>
+          </CardContent></Card>
+
+          <Card className="py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">Новый запуск</CardTitle><CardDescription className="text-xs">Анализирует настройки, телеметрию и не более 15 последних раундов.</CardDescription></CardHeader><CardContent className="space-y-3 p-4">
+            <Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="analyze">Анализ и рекомендации</SelectItem><SelectItem value="apply">Подготовить настройки</SelectItem><SelectItem value="spawn">Настройки и планы спавна</SelectItem></SelectContent></Select>
+            <Textarea rows={4} maxLength={2000} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Дополнительная инструкция оператору…" />
+            <div className="flex flex-wrap items-center gap-2"><Button className="flex-1" disabled={busy || !runtime.data?.endpoint_configured} onClick={() => run.mutate()}><FlaskConical className="size-4" />{active ? "Ассистент работает…" : queued ? "Запуск в очереди…" : run.isPending ? "Отправка…" : "Запустить анализ"}</Button>{(queued || active) && <Button variant="outline" size="icon" title="Отменить запуск" onClick={() => cancelRun.mutate((active ?? queued)!.id)} disabled={cancelRun.isPending}><Ban className="size-4 text-destructive" /></Button>}</div>
+            {(queued || active) && <p className="text-xs text-muted-foreground">{active ? `Запущен ${formatBrowserDate(active.started_at)} · попытка ${active.attempts}` : `Ожидает в общей очереди с ${formatBrowserDate(queued!.requested_at)}`}</p>}
+            {!runtime.data?.endpoint_configured && <p className="text-xs text-destructive">Проверьте подключение к агрегатору в AI-центре.</p>}
+          </CardContent></Card>
         </div>
-        {(queued || active) && <div className="text-[11px] text-muted-foreground">
-          <div className="flex flex-wrap items-center gap-2">
-            <span>{active ? `Выполняется ${active.mode} (запущен ${active.started_at.slice(0, 16).replace("T", " ")}, попытка ${active.attempts}) — страница опрашивает статус, её можно закрыть.` : `В очереди ${queued!.mode} (запрошен ${queued!.requested_at.slice(0, 16).replace("T", " ")}) — выполняется воркером, результат появится ниже.`}</span>
-            <Button size="sm" variant="ghost" className="h-6 px-2 text-destructive" onClick={() => cancelRun.mutate((active ?? queued)!.id)} disabled={cancelRun.isPending}><Ban className="mr-1 size-3" />Отменить цикл</Button>
-          </div>
-        </div>}
-      </div>
-      <div className="rounded-xl border bg-muted/10 p-3 text-xs">
-        <div className="font-medium">Отчёт по последним 15 раундам</div>
-        <p className="mt-1 text-muted-foreground">Обновляется автоматически после каждого третьего завершённого раунда. Каждый раунд получает отдельное заключение.</p>
-        {latestProposal?.status === "succeeded" && latestProposal.result ? <div className="mt-3 space-y-2">
-          <div className="text-muted-foreground">{latestProposal.result?.crew_summary || latestProposal.result?.situation}</div>
-          {latestProposal.result?.proposed_changes?.map((change, index) => <div key={index} className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2"><span className="font-mono font-medium">{change.key}</span><span>{String(change.old_value ?? "—")} → {String(change.new_value)}</span><span className="text-muted-foreground">{change.reason}</span></div>)}
-          {(latestProposal.result.proposed_changes?.length ?? 0) > 0 ? <><details><summary className="cursor-pointer text-muted-foreground">Готовый JSON изменений</summary><pre className="mt-2 overflow-auto rounded-lg bg-background p-2">{JSON.stringify(latestProposal.result.proposed_changes, null, 2)}</pre></details><Button size="sm" disabled={applyProposal.isPending} onClick={() => applyProposal.mutate(latestProposal.run_id)}>Применить предложенные настройки</Button></> : <p className="text-muted-foreground">LLM не предложила менять настройки.</p>}
-        </div> : <p className="mt-2 text-muted-foreground">{latestProposal?.status === "running" || latestProposal?.status === "queued" ? "Отчёт формируется в общей очереди LLM…" : latestProposal?.status === "failed" ? `Ошибка отчёта: ${latestProposal.error_message}` : "Предложений пока нет."}</p>}
-      </div>
-      <RoundReports reports={reports} server={server} />
-      {last && <div className="space-y-2 rounded-xl border bg-muted/10 p-3 text-xs">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={last.status === "succeeded" ? "default" : last.status === "failed" ? "destructive" : "secondary"}>{last.status === "succeeded" ? "готово" : last.status === "failed" ? "ошибка" : last.status === "cancelled" ? "отменено" : last.status === "running" ? "выполняется" : "в очереди"}</Badge>
-          <Badge variant="outline">{last.mode}</Badge>
-          <Badge variant="secondary">{last.source === "live" ? "мониторинг раунда" : last.source === "auto" ? "автоцикл" : "вручную"}</Badge>
-          <span className="text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${last.duration_ms}мс` : ""}{last.confidence != null ? ` · уверенность ${Math.round(last.confidence * 100)}%` : ""}{last.applied_count ? ` · применено ${last.applied_count}` : ""}{last.spawned_count ? ` · спавн ${last.spawned_count}` : ""}{last.rejected_count ? ` · отклонено ${last.rejected_count}` : ""}</span>
-        </div>
-        {last.instruction && <div className="text-muted-foreground">Команда оператора: «{last.instruction}»</div>}
-        {last.status === "failed" && <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-destructive">Ошибка: {last.error_message || "неизвестная ошибка"}</div>}
-        {last.result && <div className="space-y-2">
-          {last.result.situation && <div className="text-foreground">{last.result.situation}</div>}
-          {last.result.scores && <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{([
-            ["Эффективность экипажа", last.result.scores.crew_effectiveness],
-            ["Сила монстров", last.result.scores.monster_strength],
-            ["Давление волн", last.result.scores.wave_pressure],
-            ["Эффективность корабля", last.result.scores.ship_efficiency],
-          ] as const).map(([label, score]) => <div key={label} className="rounded-lg bg-background/60 p-2"><div className="text-muted-foreground">{label}</div><div className="mt-1 text-lg font-semibold">{score == null ? "—" : `${Math.round(score)}/100`}</div></div>)}</div>}
-          {last.result.scores?.basis && <div className="text-muted-foreground">Основание оценок: {last.result.scores.basis}</div>}
-          {last.result.crew_summary && <div className="rounded-lg bg-background/60 p-3"><div className="mb-1 font-medium text-foreground">Эффективность экипажа</div><div className="text-muted-foreground">{last.result.crew_summary}</div></div>}
-          {(last.result.proposed_changes?.length ?? 0) > 0 && <div><div className="font-medium">Предложения настроек (не применены):</div><ul className="mt-1 space-y-1">{last.result.proposed_changes!.map((change, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-mono">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)}</span>{change.reason && <span className="text-muted-foreground"> — {change.reason}</span>}</li>)}</ul></div>}
-          {last.result.live_metrics && <details><summary className="cursor-pointer text-muted-foreground">Показатели снимка мира и расчётной силы волн</summary><pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-background p-2">{JSON.stringify(last.result.live_metrics, null, 2)}</pre></details>}
-          {(last.result.recommendations?.length ?? 0) > 0 && <div><div className="font-medium">Рекомендации оператору:</div><ul className="mt-1 space-y-1">{last.result.recommendations!.map((rec, index) => <li key={index} className="rounded-lg bg-background/60 p-2"><span className="font-medium text-foreground">{rec.title}</span>{rec.detail && <span className="text-muted-foreground"> — {rec.detail}</span>}</li>)}</ul></div>}
-          {(last.result.applied_changes?.length ?? 0) > 0 && <div><div className="font-medium">Применённые изменения:</div><ul className="mt-1 space-y-1">{last.result.applied_changes!.map((change, index) => <li key={index} className="font-mono text-[11px] text-success">{change.key}: {String(change.old_value ?? "?")} → {String(change.new_value)} {change.reason ? `— ${change.reason}` : ""}</li>)}</ul></div>}
-          {(last.result.spawn_requests?.length ?? 0) > 0 && <div><div className="font-medium">Спавн:</div><ul className="mt-1 space-y-1">{last.result.spawn_requests!.map((request, index) => <li key={index} className="font-mono text-[11px] text-info">{request.species} x{request.count} ({request.position_hint}) {request.reason ? `— ${request.reason}` : ""}</li>)}</ul></div>}
-          {(last.result.rejected?.length ?? 0) > 0 && <div><div className="font-medium text-warning">Отклонено валидатором:</div><ul className="mt-1 space-y-1">{last.result.rejected!.map((reason, index) => <li key={index} className="font-mono text-[11px] text-warning">{reason}</li>)}</ul></div>}
-        </div>}
-      </div>}
-      {records.length > 1 && <div className="space-y-1 text-[11px] text-muted-foreground">
-        <div className="font-medium text-foreground">История запусков (Журнал задач AI — поэтапный лог в AI-центре)</div>
-        {records.slice(1, 11).map((record) => <div key={record.id} className="flex flex-wrap gap-2">
-          <span className="font-mono">{record.requested_at?.slice(0, 16).replace("T", " ")}</span>
-          <Badge variant={record.status === "succeeded" ? "secondary" : record.status === "failed" ? "destructive" : "outline"} className="text-[9px]">{record.status}</Badge>
-          <Badge variant="outline" className="text-[9px]">{record.mode}</Badge>
-          <span>применено {record.applied_count}, отклонено {record.rejected_count}</span>
-          {record.source === "auto" && <span className="text-[9px]">авто</span>}{record.source === "live" && <span className="text-[9px]">live</span>}
-          <span className="truncate">{record.status === "failed" ? record.error_message : record.result?.situation}</span>
-        </div>)}
-      </div>}
-    </CardContent></Card>
+
+        <Card className="overflow-hidden py-0"><CardHeader className="flex flex-row items-center justify-between gap-3 border-b bg-muted/20 px-4 py-3"><div><CardTitle className="text-sm">Последний анализ и предложения</CardTitle><CardDescription className="text-xs">Подробный результат открывается в модальном окне.</CardDescription></div>{latestProposal?.result?.proposed_changes?.length ? <Button size="sm" variant="outline" disabled={applyProposal.isPending} onClick={() => applyProposal.mutate(latestProposal.run_id)}>Применить предложения</Button> : null}</CardHeader><CardContent className="p-4">
+          {last ? <button type="button" className="w-full rounded-xl border bg-muted/10 p-4 text-left transition hover:border-primary/40 hover:bg-muted/20" onClick={() => setSelectedRun(last)}><span className="flex flex-wrap items-center gap-2"><Badge variant={statusVariant(last.status)}>{statusText(last.status)}</Badge><Badge variant="outline">{last.mode}</Badge><span className="text-xs text-muted-foreground">{formatBrowserDate(last.requested_at)}{last.duration_ms != null ? ` · ${Math.round(last.duration_ms / 1000)} сек.` : ""}</span><ChevronRight className="ml-auto size-4 text-muted-foreground" /></span><span className="mt-3 block text-sm font-medium">{last.status === "failed" ? last.error_message || "Запуск завершился ошибкой" : last.result?.situation || last.result?.crew_summary || "Откройте подробный результат запуска"}</span>{last.result?.recommendations?.[0] && <span className="mt-2 block text-xs text-muted-foreground">Совет: {last.result.recommendations[0].title}</span>}</button> : <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">Запусков пока нет. Запустите анализ, чтобы получить разбор и рекомендации.</div>}
+          <p className="mt-3 text-xs text-muted-foreground">Каждый цикл использует до 15 последних раундов. Рекомендации — справочные; оператор проверяет их перед применением.</p>
+        </CardContent></Card>
+      </TabsContent>
+
+      <TabsContent value="rounds"><RoundReports reports={reports} server={server} /></TabsContent>
+      <TabsContent value="history"><Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="text-sm">История LLM-циклов</CardTitle><CardDescription className="text-xs">Поэтапные технические логи доступны в AI-центре.</CardDescription></CardHeader><CardContent className="space-y-2 p-4">{records.length ? records.map((record) => <button key={record.id} type="button" className="flex w-full flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-left transition hover:border-primary/40" onClick={() => setSelectedRun(record)}><Badge variant={statusVariant(record.status)}>{statusText(record.status)}</Badge><Badge variant="outline">{record.mode}</Badge><Badge variant="secondary">{record.source === "live" ? "Наблюдение" : record.source === "auto" ? "Авто" : "Вручную"}</Badge><span className="text-xs text-muted-foreground">{formatBrowserDate(record.requested_at)}</span><span className="min-w-0 flex-1 truncate text-sm">{record.status === "failed" ? record.error_message : record.result?.situation || record.instruction || "Результат готов"}</span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>) : <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">История запусков появится здесь.</div>}</CardContent></Card></TabsContent>
+    </Tabs>
+    <LLMRunDialog record={selectedRun} onOpenChange={(open) => { if (!open) setSelectedRun(null) }} onApply={(runId) => applyProposal.mutate(runId)} applying={applyProposal.isPending} />
+  </div>
+}
+
+function LLMAdviceCard({ record, onOpen }: { record: LLMRunRecord | null | undefined; onOpen: () => void }) {
+  const recommendations = record?.result?.recommendations ?? []
+  const warningPattern = /опас|потер|крит|незаверш|риск|проблем|ухудш|долг|слаб/i
+  return <Card className="overflow-hidden py-0">
+    <CardHeader className="border-b bg-gradient-to-r from-primary/10 via-muted/20 to-transparent px-4 py-3">
+      <CardTitle className="flex items-center gap-2 text-sm"><Sparkles className="size-4 text-primary" /> Рекомендации LLM оператору</CardTitle>
+      <CardDescription className="text-xs">На что обратить внимание по последнему анализу раундов</CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-3 p-4">
+      {record?.status === "failed" ? <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"><AlertTriangle className="mt-0.5 size-4 shrink-0" /><span>{record.error_message || "Последний анализ завершился ошибкой"}</span></div>
+        : recommendations.length > 0 ? <>
+          {(record?.result?.crew_summary || record?.result?.situation) && <p className="text-sm leading-relaxed text-muted-foreground">{record.result.crew_summary || record.result.situation}</p>}
+          <div className="space-y-2">{recommendations.slice(0, 3).map((item, index) => {
+            const warning = warningPattern.test(`${item.title} ${item.detail}`)
+            return <div key={index} className={`flex items-start gap-2 rounded-xl border p-3 ${warning ? "border-warning/30 bg-warning/5" : "bg-muted/10"}`}>
+              {warning ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" /> : <Info className="mt-0.5 size-4 shrink-0 text-info" />}
+              <div className="min-w-0"><div className="text-sm font-medium">{item.title}</div>{item.detail && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{item.detail}</p>}</div>
+            </div>
+          })}</div>
+        </>
+        : <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">{record?.status === "running" || record?.status === "queued" ? "LLM готовит рекомендации…" : "Советы появятся после анализа раундов."}</div>}
+      <div className="flex items-center justify-between gap-3 border-t pt-3"><span className="text-[11px] text-muted-foreground">Советы требуют проверки оператором</span><Button size="sm" variant="outline" onClick={onOpen}>Открыть ассистента <ChevronRight className="size-3.5" /></Button></div>
+    </CardContent>
+  </Card>
 }
 
 export function MonsterSpawnPage() {
@@ -1130,7 +1159,6 @@ export function MonsterSpawnPage() {
     ...pendingWaveDetails.filter((wave) => wave.x != null && wave.y != null && Number.isFinite(Number(wave.x)) && Number.isFinite(Number(wave.y))).map((wave, index) => ({ id: `pending:${index}`, x: Number(wave.x), y: Number(wave.y), label: wave.wave_name ?? "Ожидаемая волна", color: "#F6C453", pulse: true, detail: `Ожидает спавна\n${wave.wave_name ?? "Волна"}` })),
   ]
   const roundMapMarkers = [...waveMarkers, ...plannedMarkers]
-  const waveChart = { labels: waveLogs.slice(0, 8).map((item) => item.name.replace("vanilla:", "")), datasets: [{ label: "Среднее время зачистки, с", data: waveLogs.slice(0, 8).map((item) => Math.round(item.avg_repel_seconds)), backgroundColor: CHART_COLORS[0], ...barDatasetDefaults }] }
   const shipChart = { labels: shipLogs.slice(0, 8).map((item) => item.name), datasets: [{ label: "Performance EMA", data: shipLogs.slice(0, 8).map((item) => item.performance_ema), backgroundColor: CHART_COLORS[1], ...barDatasetDefaults }] }
   const trendValues = shipLogs.flatMap((item) => item.recent_performance).slice(-24)
   const trendChart = { labels: trendValues.map((_, index) => `${index + 1}`), datasets: [{ label: "Последние наблюдения", data: trendValues, borderColor: CHART_COLORS[2], backgroundColor: `${CHART_COLORS[2]}28`, fill: true, ...lineDatasetDefaults }] }
@@ -1300,7 +1328,7 @@ export function MonsterSpawnPage() {
       <span className="ml-auto text-muted-foreground">Контакт: {draft.last_seen_at ? formatBrowserDate(draft.last_seen_at) : "нет данных"}</span>
     </div>
 
-    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0">{activeTab === "logs" && <RoundReports reports={reports.data?.reports ?? []} server={server} />}
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-h-0">
       <TabsList className="flex h-auto w-full gap-1 overflow-x-auto rounded-xl border bg-muted/40 p-1.5"><TabsTrigger value="overview" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Activity className="size-4 shrink-0" /> Обзор</TabsTrigger><TabsTrigger value="monitoring" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Radar className="size-4 shrink-0" /> Мониторинг</TabsTrigger><TabsTrigger value="llm" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Bot className="size-4 shrink-0" /> LLM-ассистент</TabsTrigger><TabsTrigger value="control" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><SlidersHorizontal className="size-4 shrink-0" /> Настройки</TabsTrigger><TabsTrigger value="schemes" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Layers className="size-4 shrink-0" /> Схемы спавна</TabsTrigger><TabsTrigger value="logs" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><TrendingUp className="size-4 shrink-0" /> Логи и анализ</TabsTrigger><TabsTrigger value="manual" className="shrink-0 gap-1.5 rounded-lg px-3 py-2 text-xs sm:gap-2"><Target className="size-4 shrink-0" /> Ручная настройка</TabsTrigger></TabsList>
 
       <TabsContent value="overview" className="space-y-4 pt-2">
@@ -1311,7 +1339,7 @@ export function MonsterSpawnPage() {
             {recentWaves.slice(0, 4).map((wave) => <RecentWaveCard key={wave.wave_id + String(wave.resolved_at_seconds)} wave={wave} />)}
             {!activeWaves.length && !recentWaves.length && <Button variant="ghost" className="w-full justify-between" onClick={() => setActiveTab("logs")}>Открыть полный анализ <ChevronRight className="size-4" /></Button>}
           </CardContent></Card></div>
-        <div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Самые долгие волны" description="Среднее время от спавна до разрешения"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={waveChart} /></ChartCard><ChartCard title="Корабли по эффективности" description="Ниже 1.0 означает более тяжёлое прохождение"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div>
+        <div className="grid gap-4 lg:grid-cols-2"><LLMAdviceCard record={latestRoundAnalysis ?? null} onOpen={() => setActiveTab("llm")} /><ChartCard title="Корабли по эффективности" description="Ниже 1.0 означает более тяжёлое прохождение"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div>
         <Card className="overflow-hidden py-0"><CardHeader className="border-b bg-muted/20 px-4 py-3"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="size-4 text-primary" /> Карта раунда</CardTitle><CardDescription className="text-xs">Цвет точки волны совпадает с цветом её существ. Мигающие метки — планируемый спавн. Нажмите на метку или существо для подробностей.</CardDescription></CardHeader><CardContent className="p-4"><div className="relative h-[380px] overflow-hidden rounded-xl border">
           {rounds.isError ? <MapPlaceholder>Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>
             : !round ? <MapPlaceholder>Для {server} сейчас нет активного раунда — мир не транслируется</MapPlaceholder>
@@ -1384,7 +1412,7 @@ export function MonsterSpawnPage() {
           </CardContent></Card>
       </TabsContent>
 
-      <TabsContent value="logs" className="space-y-4 pt-2"><div className="grid gap-4 sm:grid-cols-3"><Metric icon={TrendingUp} label="Завершено волн" value={String(waveLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail={`${waveLogs.length} типа событий`} tone="primary" /><Metric icon={TrendingDown} label="Средняя скорость" value={waveLogs.length ? `${Math.round(waveLogs.filter((item) => item.avg_repel_seconds).reduce((sum, item) => sum + item.avg_repel_seconds, 0) / Math.max(1, waveLogs.filter((item) => item.avg_repel_seconds).length))} с` : "—"} detail="Среднее по типам волн" tone="warning" /><Metric icon={BrainCircuit} label="Наблюдений по кораблям" value={String(shipLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail="Используются в корреляции" tone="success" /></div><div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Performance trajectory" description="Последние доступные значения из adaptive-memory"><Line options={baseChartOptions} data={trendChart} /></ChartCard><ChartCard title="Efficiency by ship" description="Сравнение кораблей по performance EMA"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Лог разрешения волн</CardTitle><CardDescription className="text-xs">Как быстро экипажи закрывали волны и какой ущерб получили</CardDescription></CardHeader><CardContent><WaveLogs logs={waveLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Эффективность по кораблям</CardTitle><CardDescription className="text-xs">Детализация для сравнения дизайна субмарин</CardDescription></CardHeader><CardContent><ShipLogs logs={shipLogs} /></CardContent></Card><Card className="py-0"><CardHeader className="border-b px-4 py-3"><CardTitle className="text-sm">Автоматический анализ и предложения LLM</CardTitle><CardDescription className="text-xs">Новый отчёт создаётся после каждого третьего раунда на основе последних 15.</CardDescription></CardHeader><CardContent className="space-y-3 p-4 text-sm">{latestRoundAnalysis?.status === "running" || latestRoundAnalysis?.status === "queued" ? <p>LLM анализирует раунды…</p> : latestRoundAnalysis?.status === "failed" ? <p className="text-destructive">{latestRoundAnalysis.error_message}</p> : latestRoundAnalysis?.result ? <><p>{latestRoundAnalysis.result.crew_summary || latestRoundAnalysis.result.situation}</p>{latestRoundAnalysis.result.recommendations?.map((item, index) => <p key={index}><b>{item.title}</b> — {item.detail}</p>)}<Button variant="outline" size="sm" onClick={() => setActiveTab("llm")}>Открыть предложения настроек</Button></> : <p className="text-muted-foreground">Ожидаем анализа LLM после трёх раундов.</p>}</CardContent></Card></TabsContent>
+      <TabsContent value="logs" className="space-y-4 pt-2"><RoundReports reports={reports.data?.reports ?? []} server={server} /><div className="grid gap-4 sm:grid-cols-3"><Metric icon={TrendingUp} label="Завершено волн" value={String(waveLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail={`${waveLogs.length} типа событий`} tone="primary" /><Metric icon={TrendingDown} label="Средняя скорость" value={waveLogs.length ? `${Math.round(waveLogs.filter((item) => item.avg_repel_seconds).reduce((sum, item) => sum + item.avg_repel_seconds, 0) / Math.max(1, waveLogs.filter((item) => item.avg_repel_seconds).length))} с` : "—"} detail="Среднее по типам волн" tone="warning" /><Metric icon={BrainCircuit} label="Наблюдений по кораблям" value={String(shipLogs.reduce((sum, item) => sum + item.times_spawned, 0))} detail="Используются в корреляции" tone="success" /></div><div className="grid gap-4 lg:grid-cols-2"><ChartCard title="Performance trajectory" description="Последние доступные значения из adaptive-memory"><Line options={baseChartOptions} data={trendChart} /></ChartCard><ChartCard title="Efficiency by ship" description="Сравнение кораблей по performance EMA"><Bar options={{ ...baseChartOptions, plugins: { ...baseChartOptions.plugins, legend: { display: false } } }} data={shipChart} /></ChartCard></div><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Лог разрешения волн</CardTitle><CardDescription className="text-xs">Как быстро экипажи закрывали волны и какой ущерб получили</CardDescription></CardHeader><CardContent><WaveLogs logs={waveLogs} /></CardContent></Card><Card><CardHeader className="pb-3"><CardTitle className="text-sm">Эффективность по кораблям</CardTitle><CardDescription className="text-xs">Детализация для сравнения дизайна субмарин</CardDescription></CardHeader><CardContent><ShipLogs logs={shipLogs} /></CardContent></Card><Card className="py-0"><CardHeader className="border-b px-4 py-3"><CardTitle className="text-sm">Автоматический анализ и предложения LLM</CardTitle><CardDescription className="text-xs">Новый отчёт создаётся после каждого третьего раунда на основе последних 15.</CardDescription></CardHeader><CardContent className="space-y-3 p-4 text-sm">{latestRoundAnalysis?.status === "running" || latestRoundAnalysis?.status === "queued" ? <p>LLM анализирует раунды…</p> : latestRoundAnalysis?.status === "failed" ? <p className="text-destructive">{latestRoundAnalysis.error_message}</p> : latestRoundAnalysis?.result ? <><p>{latestRoundAnalysis.result.crew_summary || latestRoundAnalysis.result.situation}</p>{latestRoundAnalysis.result.recommendations?.map((item, index) => <p key={index}><b>{item.title}</b> — {item.detail}</p>)}<Button variant="outline" size="sm" onClick={() => setActiveTab("llm")}>Открыть предложения настроек</Button></> : <p className="text-muted-foreground">Ожидаем анализа LLM после трёх раундов.</p>}</CardContent></Card></TabsContent>
 
       <TabsContent value="manual" className="space-y-4 pt-2"><div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground"><div className="flex items-center gap-2 font-medium text-foreground"><Target className="size-4 text-primary" /> Полная ручная настройка</div><p className="mt-1">Здесь доступны планы, волны и сырой JSON без ограничений визуального режима. Изменения не попадут на сервер до нажатия «Сохранить».</p></div><Tabs defaultValue="plans"><TabsList className="grid w-full grid-cols-3"><TabsTrigger value="plans">Планы · {draft.plans.length}</TabsTrigger><TabsTrigger value="waves">Волны · {draft.config.waves.length}</TabsTrigger><TabsTrigger value="json">Raw JSON</TabsTrigger></TabsList><TabsContent value="plans" className="space-y-4 pt-3"><div className="grid min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(380px,.75fr)]"><div className="relative h-[480px] overflow-hidden rounded-xl border">
   {rounds.isError ? <MapPlaceholder height="480px">Не удалось загрузить активные раунды{rounds.error instanceof Error ? `: ${rounds.error.message}` : ""}</MapPlaceholder>

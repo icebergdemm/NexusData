@@ -68,10 +68,6 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Проекты и рейтинг",
     items: [
       { label: "Sub-карты", to: "/sub-projects", icon: Ship, permission: "sub_projects" },
-      {
-        label: "Тестовый полигон ASPER", to: "/sub-projects-polygon", icon: Ship,
-        isVisible: (admin) => !!admin && (admin.is_superuser || admin.my_departments.some((d) => d.test_server_view)),
-      },
       { label: "Чекер кораблей", to: "/sub-checker", icon: ClipboardCheck, permission: "sub_checker" },
       { label: "Рейтинг", to: "/ratings", icon: Star, permission: "ratings" },
     ],

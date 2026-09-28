@@ -425,7 +425,11 @@ def _build_user_prompt(state: dict, instruction: Optional[str], known_species: L
         payload["world_overview"] = state.get("world_overview") or {}
         payload["live_metrics"] = state.get("live_metrics") or {}
     if state.get("round_reports"):
-        payload["round_reports"] = state["round_reports"][-15:]
+        payload["round_reports"] = [
+            _round_history_brief(report)
+            for report in state["round_reports"][-15:]
+            if isinstance(report, dict)
+        ]
     if instruction:
         payload["operator_instruction"] = instruction
 
@@ -989,7 +993,7 @@ def get_llm_deployment_info() -> Dict[str, Any]:
     settings = get_settings()
     return {
         "base_url": settings.ai_dossier_url,
-        "model": settings.monster_llm_model,
+        "model": settings.ai_dossier_model,
         "temperature": settings.monster_llm_temperature,
         "top_p": settings.monster_llm_top_p,
         "timeout_seconds": settings.monster_llm_timeout_seconds,
@@ -1578,6 +1582,16 @@ def _round_brief(report: dict, sample_limit: int = 24) -> dict:
     }
 
 
+def _round_history_brief(report: dict) -> dict:
+    """Small history entry for multi-round cycles; never pass full report JSON."""
+    if isinstance(report.get("round"), list) and isinstance(report.get("summary"), list):
+        brief = {key: report[key] for key in ("round", "summary", "wave_count", "outcomes", "types")
+                 if key in report}
+        brief["waves"] = (report.get("waves") or [])[:3]
+        return brief
+    return _round_brief(report, sample_limit=3)
+
+
 def process_pending_round_reports() -> List[Dict[str, Any]]:
     """Analyze each new round and refresh the 15-round proposal every third round."""
     from database import GameSessionLocal, SessionLocal
@@ -1679,7 +1693,7 @@ def process_pending_round_reports() -> List[Dict[str, Any]]:
             main_db.commit()
             state = {"config": control.config or {}, "memory": control.memory or {},
                      "telemetry": {}, "dashboard": {},
-                     "round_reports": [_round_brief(entry.report_json or {}, 20) for entry in reversed(latest)]}
+                     "round_reports": [_round_history_brief(entry.report_json or {}) for entry in latest]}
             try:
                 result = run_llm_cycle(main_db, server, state, mode="analyze", task_ref=f"{server}:{run_id}")
                 _finish_run_record(main_db, record, result, None)
